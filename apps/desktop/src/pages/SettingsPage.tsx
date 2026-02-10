@@ -9,11 +9,19 @@ import {
   Trash2,
   Save,
   Languages,
+  Brain,
+  Download,
+  CheckCircle,
+  XCircle,
+  Loader2,
+  KeyRound,
+  AlertTriangle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../lib/api';
 import type { IndexStats } from '../types/index-stats';
 import type { PrivacyConfig, RedactRule } from '../types/privacy';
+import type { EmbedderConfig } from '../types/embedder';
 import { useTranslation } from '../i18n';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -106,6 +114,84 @@ export function SettingsPage() {
   const [newRule, setNewRule] = useState<RedactRule>({ name: '', pattern: '', replacement: '' });
   const [saveLoading, setSaveLoading] = useState(false);
 
+  /* ── Embedding state ─────────────────────────────────────────────── */
+  const [embedConfig, setEmbedConfig] = useState<EmbedderConfig | null>(null);
+  const [localModelReady, setLocalModelReady] = useState<boolean | null>(null);
+  const [downloadLoading, setDownloadLoading] = useState(false);
+  const [testLoading, setTestLoading] = useState(false);
+  const [embedSaveLoading, setEmbedSaveLoading] = useState(false);
+  const [rebuildEmbedLoading, setRebuildEmbedLoading] = useState(false);
+
+  useEffect(() => {
+    api.getEmbedderConfig().then((cfg) => {
+      setEmbedConfig(cfg);
+      if (cfg.provider === 'local') {
+        api.checkLocalModel().then(setLocalModelReady).catch(() => setLocalModelReady(false));
+      }
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (embedConfig?.provider === 'local') {
+      api.checkLocalModel().then(setLocalModelReady).catch(() => setLocalModelReady(false));
+    }
+  }, [embedConfig?.provider]);
+
+  const handleDownloadModel = async () => {
+    setDownloadLoading(true);
+    try {
+      await api.downloadLocalModel();
+      setLocalModelReady(true);
+      toast.success(t('settings.embeddingDownloaded'));
+    } catch {
+      toast.error(t('settings.embeddingTestFail'));
+    } finally {
+      setDownloadLoading(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!embedConfig) return;
+    setTestLoading(true);
+    try {
+      const ok = await api.testApiConnection(embedConfig.apiKey, embedConfig.apiBaseUrl);
+      if (ok) {
+        toast.success(t('settings.embeddingTestSuccess'));
+      } else {
+        toast.error(t('settings.embeddingTestFail'));
+      }
+    } catch {
+      toast.error(t('settings.embeddingTestFail'));
+    } finally {
+      setTestLoading(false);
+    }
+  };
+
+  const handleSaveEmbedConfig = async () => {
+    if (!embedConfig) return;
+    setEmbedSaveLoading(true);
+    try {
+      await api.saveEmbedderConfig(embedConfig);
+      toast.success(t('settings.privacySaved'));
+    } catch {
+      toast.error(t('settings.privacySaveError'));
+    } finally {
+      setEmbedSaveLoading(false);
+    }
+  };
+
+  const handleRebuildEmbeddings = async () => {
+    setRebuildEmbedLoading(true);
+    try {
+      await api.rebuildEmbeddings();
+      toast.success(t('cmd.rebuildComplete'));
+    } catch {
+      toast.error(t('cmd.rebuildError'));
+    } finally {
+      setRebuildEmbedLoading(false);
+    }
+  };
+
   useEffect(() => {
     api.getPrivacyConfig().then(setPrivacyConfig).catch(() => {
       toast.error(t('settings.loadPrivacyError'));
@@ -176,6 +262,150 @@ export function SettingsPage() {
         <h1 className="text-xl font-bold text-text-primary">{t('settings.title')}</h1>
         <p className="mt-1 text-sm text-text-secondary">{t('settings.subtitle')}</p>
       </motion.div>
+
+      {/* ── Section 0: AI Embedding ─────────────────────────────────── */}
+      <Section icon={<Brain size={20} />} title={t('settings.embeddingSection')} delay={0.03}>
+        {embedConfig && (
+          <div className="space-y-5">
+            {/* Provider pills */}
+            <div>
+              <p className="mb-2 text-sm font-medium text-text-primary">{t('settings.embeddingProvider')}</p>
+              <div className="inline-flex rounded-full border border-border bg-surface-1 p-0.5">
+                {(['local', 'api', 'tfidf'] as const).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setEmbedConfig({ ...embedConfig, provider: p })}
+                    className={`rounded-full px-4 py-1.5 text-xs font-medium transition-all duration-fast cursor-pointer ${
+                      embedConfig.provider === p
+                        ? 'bg-accent text-white shadow-sm'
+                        : 'text-text-tertiary hover:text-text-secondary'
+                    }`}
+                  >
+                    {p === 'local' ? t('settings.embeddingLocal') : p === 'api' ? t('settings.embeddingApi') : t('settings.embeddingTfidf')}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Local model panel */}
+            {embedConfig.provider === 'local' && (
+              <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-3">
+                <p className="text-sm text-text-primary">
+                  {t('settings.embeddingLocalModel')}
+                </p>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-text-secondary">{t('settings.embeddingLocalStatus')}:</span>
+                  {localModelReady === null ? (
+                    <Loader2 size={14} className="animate-spin text-text-tertiary" />
+                  ) : localModelReady ? (
+                    <Badge variant="default" className="gap-1">
+                      <CheckCircle size={12} className="text-green-500" />
+                      {t('settings.embeddingDownloaded')}
+                    </Badge>
+                  ) : (
+                    <Badge variant="default" className="gap-1">
+                      <XCircle size={12} className="text-red-400" />
+                      {t('settings.embeddingNotDownloaded')}
+                    </Badge>
+                  )}
+                </div>
+                {localModelReady === false && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={downloadLoading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                    loading={downloadLoading}
+                    onClick={handleDownloadModel}
+                  >
+                    {downloadLoading ? t('settings.embeddingDownloading') : t('settings.embeddingDownload')}
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {/* API panel */}
+            {embedConfig.provider === 'api' && (
+              <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-3">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-primary">{t('settings.embeddingApiKey')}</label>
+                  <div className="relative">
+                    <KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
+                    <Input
+                      type="password"
+                      value={embedConfig.apiKey}
+                      onChange={(e) => setEmbedConfig({ ...embedConfig, apiKey: e.target.value })}
+                      className="pl-9"
+                      placeholder="sk-..."
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-primary">{t('settings.embeddingBaseUrl')}</label>
+                  <Input
+                    value={embedConfig.apiBaseUrl}
+                    onChange={(e) => setEmbedConfig({ ...embedConfig, apiBaseUrl: e.target.value })}
+                    placeholder="https://api.openai.com/v1"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-primary">{t('settings.embeddingModel')}</label>
+                  <Input
+                    value={embedConfig.apiModel}
+                    onChange={(e) => setEmbedConfig({ ...embedConfig, apiModel: e.target.value })}
+                    placeholder="text-embedding-3-small"
+                  />
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={testLoading ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+                  loading={testLoading}
+                  onClick={handleTestConnection}
+                  disabled={!embedConfig.apiKey.trim() || !embedConfig.apiBaseUrl.trim()}
+                >
+                  {t('settings.embeddingTestConnection')}
+                </Button>
+              </div>
+            )}
+
+            {/* TF-IDF warning */}
+            {embedConfig.provider === 'tfidf' && (
+              <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0 text-yellow-500" />
+                <p className="text-sm text-yellow-600 dark:text-yellow-400">{t('settings.embeddingTfidfWarning')}</p>
+              </div>
+            )}
+
+            {/* Provider change warning + actions */}
+            <div className="space-y-3 border-t border-border pt-4">
+              <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0 text-yellow-500" />
+                <p className="text-sm text-yellow-600 dark:text-yellow-400">{t('settings.embeddingProviderChangeWarning')}</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="primary"
+                  size="md"
+                  icon={<Save size={16} />}
+                  loading={embedSaveLoading}
+                  onClick={handleSaveEmbedConfig}
+                >
+                  {t('settings.embeddingSave')}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="md"
+                  icon={rebuildEmbedLoading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+                  loading={rebuildEmbedLoading}
+                  onClick={handleRebuildEmbeddings}
+                >
+                  {rebuildEmbedLoading ? t('settings.embeddingRebuilding') : t('settings.embeddingRebuild')}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Section>
 
       {/* ── Section 1: 索引管理 ──────────────────────────────────────── */}
       <Section icon={<Database size={20} />} title={t('settings.indexSection')} delay={0.05}>

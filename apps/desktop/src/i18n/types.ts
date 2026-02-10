@@ -179,6 +179,28 @@ export interface TranslationKeys {
   'settings.patternExists': string;
   'settings.privacySaved': string;
   'settings.privacySaveError': string;
+  'settings.embeddingSection': string;
+  'settings.embeddingProvider': string;
+  'settings.embeddingLocal': string;
+  'settings.embeddingApi': string;
+  'settings.embeddingTfidf': string;
+  'settings.embeddingLocalModel': string;
+  'settings.embeddingLocalStatus': string;
+  'settings.embeddingDownloaded': string;
+  'settings.embeddingNotDownloaded': string;
+  'settings.embeddingDownload': string;
+  'settings.embeddingDownloading': string;
+  'settings.embeddingApiKey': string;
+  'settings.embeddingBaseUrl': string;
+  'settings.embeddingModel': string;
+  'settings.embeddingTestConnection': string;
+  'settings.embeddingTestSuccess': string;
+  'settings.embeddingTestFail': string;
+  'settings.embeddingTfidfWarning': string;
+  'settings.embeddingProviderChangeWarning': string;
+  'settings.embeddingSave': string;
+  'settings.embeddingRebuild': string;
+  'settings.embeddingRebuilding': string;
 
   // Command Palette
   'cmd.placeholder': string;

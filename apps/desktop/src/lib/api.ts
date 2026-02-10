@@ -13,6 +13,7 @@ import type {
   EmbedResult,
 } from "../types";
 import type { PrivacyConfig } from "../types/privacy";
+import type { EmbedderConfig } from "../types/embedder";
 
 // ── Sources ─────────────────────────────────────────────────────────────
 
@@ -130,6 +131,23 @@ export const getPrivacyConfig = () =>
 
 export const savePrivacyConfig = (config: PrivacyConfig) =>
   invoke<void>('save_privacy_config', { config });
+
+// ── Embedder Config ──────────────────────────────────────────────────
+
+export const getEmbedderConfig = () =>
+  invoke<EmbedderConfig>('get_embedder_config');
+
+export const saveEmbedderConfig = (config: EmbedderConfig) =>
+  invoke<void>('save_embedder_config', { config });
+
+export const testApiConnection = (apiKey: string, baseUrl: string) =>
+  invoke<boolean>('test_api_connection', { apiKey, baseUrl });
+
+export const checkLocalModel = () =>
+  invoke<boolean>('check_local_model');
+
+export const downloadLocalModel = () =>
+  invoke<void>('download_local_model');
 
 // ── Index (extra) ───────────────────────────────────────────────────────
 

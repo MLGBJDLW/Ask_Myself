@@ -4,11 +4,118 @@
 /// TF-IDF implementation that requires no external services.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
 use crate::error::CoreError;
+
+// ── Embedder Config ─────────────────────────────────────────────────
+
+/// Persisted configuration that determines which embedder the application
+/// uses and how it's parameterised.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbedderConfig {
+    /// `"local"` | `"api"` | `"tfidf"`
+    pub provider: String,
+    pub api_key: String,
+    pub api_base_url: String,
+    pub api_model: String,
+    pub model_path: String,
+    pub vector_dimensions: u32,
+}
+
+impl Default for EmbedderConfig {
+    fn default() -> Self {
+        Self {
+            provider: "local".into(),
+            api_key: String::new(),
+            api_base_url: "https://api.openai.com/v1".into(),
+            api_model: "text-embedding-3-small".into(),
+            model_path: String::new(),
+            vector_dimensions: 384,
+        }
+    }
+}
+
+/// Create the appropriate embedder based on an [`EmbedderConfig`].
+///
+/// - `"local"` → [`OnnxEmbedder`] (downloads model on first use)
+/// - `"api"`   → [`ApiEmbedder`] (OpenAI-compatible)
+/// - `"tfidf"` → returns an error; TF-IDF requires corpus-based
+///    construction via [`TfIdfEmbedder::build_from_corpus`] so this
+///    factory cannot create one directly. Callers should handle TF-IDF
+///    separately.
+pub fn create_embedder(config: &EmbedderConfig) -> Result<Box<dyn Embedder>, CoreError> {
+    match config.provider.as_str() {
+        "local" => {
+            let model_path = if config.model_path.is_empty() {
+                None
+            } else {
+                Some(config.model_path.as_str())
+            };
+            if check_local_model_exists(model_path) {
+                let model_dir = model_path.map(PathBuf::from);
+                let embedder = OnnxEmbedder::new(model_dir)?;
+                Ok(Box::new(embedder))
+            } else {
+                log::warn!(
+                    "ONNX model not found, falling back to TF-IDF embedder"
+                );
+                Ok(Box::new(TfIdfEmbedder::build_from_corpus(&[])))
+            }
+        }
+        "api" => {
+            let base_url = if config.api_base_url.is_empty() {
+                None
+            } else {
+                Some(config.api_base_url.clone())
+            };
+            let model = if config.api_model.is_empty() {
+                None
+            } else {
+                Some(config.api_model.clone())
+            };
+            let dims = if config.vector_dimensions > 0 {
+                Some(config.vector_dimensions as usize)
+            } else {
+                None
+            };
+            let embedder = ApiEmbedder::new(config.api_key.clone(), base_url, model, dims)?;
+            Ok(Box::new(embedder))
+        }
+        "tfidf" => Err(CoreError::InvalidInput(
+            "TF-IDF embedder requires corpus construction; use embed_source() directly".into(),
+        )),
+        other => Err(CoreError::InvalidInput(format!(
+            "Unknown embedder provider: {other}"
+        ))),
+    }
+}
+
+/// Check whether the local ONNX model files exist in the default (or given) directory.
+pub fn check_local_model_exists(model_path: Option<&str>) -> bool {
+    let dir = match model_path {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => match default_model_dir() {
+            Ok(d) => d,
+            Err(_) => return false,
+        },
+    };
+    dir.join("model.onnx").exists() && dir.join("tokenizer.json").exists()
+}
+
+/// Download the local ONNX model files to the default (or given) directory.
+pub fn download_local_model(model_path: Option<&str>) -> Result<(), CoreError> {
+    let dir = match model_path {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => default_model_dir()?,
+    };
+    download_model_files(&dir)
+}
 
 // ── Embedder trait ──────────────────────────────────────────────────
 
@@ -399,6 +506,67 @@ impl Database {
         Ok(())
     }
 
+    /// Read the [`EmbedderConfig`] from the `embedder_config` key-value table.
+    ///
+    /// Returns `EmbedderConfig::default()` if the table does not exist or
+    /// no rows are present.
+    pub fn get_embedder_config(&self) -> Result<EmbedderConfig, CoreError> {
+        let conn = self.conn();
+
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='embedder_config')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(EmbedderConfig::default());
+        }
+
+        let mut stmt = conn.prepare("SELECT key, value FROM embedder_config")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut config = EmbedderConfig::default();
+        for row in rows {
+            let (key, value) = row?;
+            match key.as_str() {
+                "provider" => config.provider = value,
+                "api_key" => config.api_key = value,
+                "api_base_url" => config.api_base_url = value,
+                "api_model" => config.api_model = value,
+                "model_path" => config.model_path = value,
+                "vector_dimensions" => {
+                    config.vector_dimensions = value.parse::<u32>().unwrap_or(384);
+                }
+                _ => {} // ignore unknown keys for forward compat
+            }
+        }
+        Ok(config)
+    }
+
+    /// Persist an [`EmbedderConfig`] to the `embedder_config` key-value table.
+    pub fn save_embedder_config(&self, config: &EmbedderConfig) -> Result<(), CoreError> {
+        let conn = self.conn();
+        let pairs: &[(&str, String)] = &[
+            ("provider", config.provider.clone()),
+            ("api_key", config.api_key.clone()),
+            ("api_base_url", config.api_base_url.clone()),
+            ("api_model", config.api_model.clone()),
+            ("model_path", config.model_path.clone()),
+            ("vector_dimensions", config.vector_dimensions.to_string()),
+        ];
+        for (key, value) in pairs {
+            conn.execute(
+                "INSERT INTO embedder_config (key, value)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Persist the embedder's vocabulary and IDF so it can be restored later.
     ///
     /// Uses a lightweight `model_state` table (auto-created on first call).
@@ -464,6 +632,403 @@ impl Database {
             None => Ok(None),
         }
     }
+}
+
+// ── ONNX Embedder (all-MiniLM-L6-v2) ────────────────────────────────
+
+const ONNX_MODEL_NAME: &str = "all-MiniLM-L6-v2";
+const ONNX_DIMENSIONS: usize = 384;
+const ONNX_MAX_LENGTH: usize = 128;
+const ONNX_MODEL_URL: &str =
+    "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx";
+const ONNX_TOKENIZER_URL: &str =
+    "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json";
+
+/// ONNX-based sentence embedder using `all-MiniLM-L6-v2`.
+///
+/// Produces 384-dimensional L2-normalized embeddings suitable for
+/// semantic similarity search.  Model files are downloaded from
+/// HuggingFace on first use and cached locally.
+pub struct OnnxEmbedder {
+    session: std::sync::Mutex<ort::session::Session>,
+    tokenizer: tokenizers::Tokenizer,
+}
+
+impl OnnxEmbedder {
+    /// Create a new ONNX embedder.
+    ///
+    /// If `model_dir` is `None`, uses the default cache path at
+    /// `<data_dir>/ask-myself/models/all-MiniLM-L6-v2/`.
+    /// Downloads model files from HuggingFace when not already present.
+    pub fn new(model_dir: Option<PathBuf>) -> Result<Self, CoreError> {
+        let dir = match model_dir {
+            Some(d) => d,
+            None => default_model_dir()?,
+        };
+
+        let model_path = dir.join("model.onnx");
+        let tokenizer_path = dir.join("tokenizer.json");
+
+        if !model_path.exists() || !tokenizer_path.exists() {
+            download_model_files(&dir)?;
+        }
+
+        log::info!("Loading ONNX model from {}", model_path.display());
+        let session = ort::session::Session::builder()
+            .map_err(|e| CoreError::Embedding(format!("session builder: {e}")))?
+            .commit_from_file(&model_path)
+            .map_err(|e| CoreError::Embedding(format!("load ONNX model: {e}")))?;
+
+        log::info!("Loading tokenizer from {}", tokenizer_path.display());
+        let mut tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
+            .map_err(|e| CoreError::Embedding(format!("load tokenizer: {e}")))?;
+
+        tokenizer
+            .with_truncation(Some(tokenizers::TruncationParams {
+                max_length: ONNX_MAX_LENGTH,
+                ..Default::default()
+            }))
+            .map_err(|e| CoreError::Embedding(format!("set truncation: {e}")))?;
+
+        tokenizer.with_padding(Some(tokenizers::PaddingParams::default()));
+
+        Ok(Self {
+            session: std::sync::Mutex::new(session),
+            tokenizer,
+        })
+    }
+}
+
+impl Embedder for OnnxEmbedder {
+    fn model_name(&self) -> &str {
+        ONNX_MODEL_NAME
+    }
+
+    fn dimensions(&self) -> usize {
+        ONNX_DIMENSIONS
+    }
+
+    fn embed(&self, text: &str) -> Result<Vec<f32>, CoreError> {
+        let results = self.embed_batch(&[text])?;
+        results
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoreError::Embedding("empty result from embed_batch".into()))
+    }
+
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let encodings = self
+            .tokenizer
+            .encode_batch(texts.to_vec(), true)
+            .map_err(|e| CoreError::Embedding(format!("tokenization: {e}")))?;
+
+        let batch_size = encodings.len();
+        let seq_len = encodings[0].get_ids().len();
+
+        let mut input_ids = ndarray::Array2::<i64>::zeros((batch_size, seq_len));
+        let mut attention_mask = ndarray::Array2::<i64>::zeros((batch_size, seq_len));
+        let mut token_type_ids = ndarray::Array2::<i64>::zeros((batch_size, seq_len));
+
+        for (i, enc) in encodings.iter().enumerate() {
+            for (j, &id) in enc.get_ids().iter().enumerate() {
+                input_ids[[i, j]] = id as i64;
+            }
+            for (j, &mask) in enc.get_attention_mask().iter().enumerate() {
+                attention_mask[[i, j]] = mask as i64;
+            }
+            for (j, &tid) in enc.get_type_ids().iter().enumerate() {
+                token_type_ids[[i, j]] = tid as i64;
+            }
+        }
+
+        let input_ids_tensor = ort::value::Tensor::from_array(input_ids)
+            .map_err(|e| CoreError::Embedding(format!("input_ids tensor: {e}")))?;
+        let attention_mask_tensor = ort::value::Tensor::from_array(attention_mask)
+            .map_err(|e| CoreError::Embedding(format!("attention_mask tensor: {e}")))?;
+        let token_type_ids_tensor = ort::value::Tensor::from_array(token_type_ids)
+            .map_err(|e| CoreError::Embedding(format!("token_type_ids tensor: {e}")))?;
+
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|e| CoreError::Embedding(format!("session lock: {e}")))?;
+
+        let outputs = session
+            .run(ort::inputs! {
+                "input_ids" => input_ids_tensor,
+                "attention_mask" => attention_mask_tensor,
+                "token_type_ids" => token_type_ids_tensor
+            })
+            .map_err(|e| CoreError::Embedding(format!("inference: {e}")))?;
+
+        // last_hidden_state: [batch, seq_len, hidden_size]
+        let hidden = outputs[0]
+            .try_extract_array::<f32>()
+            .map_err(|e| CoreError::Embedding(format!("extract output: {e}")))?;
+        let hidden_size = hidden.shape()[2];
+
+        // Mean pooling with attention mask, then L2-normalize.
+        let mut results = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            let mask = encodings[i].get_attention_mask();
+            let mut pooled = vec![0.0f32; hidden_size];
+            let mut mask_sum = 0.0f32;
+
+            for j in 0..seq_len {
+                let m = mask[j] as f32;
+                mask_sum += m;
+                for k in 0..hidden_size {
+                    pooled[k] += hidden[ndarray::IxDyn(&[i, j, k])] * m;
+                }
+            }
+
+            if mask_sum > 0.0 {
+                for v in pooled.iter_mut() {
+                    *v /= mask_sum;
+                }
+            }
+
+            l2_normalize(&mut pooled);
+            results.push(pooled);
+        }
+
+        Ok(results)
+    }
+}
+
+/// Default cache directory for ONNX model files.
+fn default_model_dir() -> Result<PathBuf, CoreError> {
+    let data_dir = dirs::data_dir()
+        .ok_or_else(|| CoreError::Embedding("cannot determine data directory".into()))?;
+    Ok(data_dir
+        .join("ask-myself")
+        .join("models")
+        .join(ONNX_MODEL_NAME))
+}
+
+/// Download `model.onnx` and `tokenizer.json` from HuggingFace.
+///
+/// Requires `reqwest` with the `blocking` feature.
+fn download_model_files(target_dir: &Path) -> Result<(), CoreError> {
+    std::fs::create_dir_all(target_dir)?;
+
+    let files = [
+        (ONNX_MODEL_URL, "model.onnx"),
+        (ONNX_TOKENIZER_URL, "tokenizer.json"),
+    ];
+
+    for (url, filename) in &files {
+        let dest = target_dir.join(filename);
+        if dest.exists() {
+            log::info!("{filename} already exists, skipping download");
+            continue;
+        }
+
+        log::info!("Downloading {filename} from {url}");
+        let response = reqwest::blocking::get(*url)
+            .map_err(|e| CoreError::Embedding(format!("download {filename}: {e}")))?;
+
+        if !response.status().is_success() {
+            return Err(CoreError::Embedding(format!(
+                "download {filename}: HTTP {}",
+                response.status()
+            )));
+        }
+
+        let bytes = response
+            .bytes()
+            .map_err(|e| CoreError::Embedding(format!("read {filename}: {e}")))?;
+
+        std::fs::write(&dest, &bytes)?;
+        log::info!("Downloaded {filename} ({} bytes)", bytes.len());
+    }
+
+    Ok(())
+}
+
+// ── API Embedder (OpenAI-compatible) ─────────────────────────────────
+
+/// Maximum number of texts per API request to avoid payload limits.
+const API_BATCH_SIZE: usize = 100;
+
+/// Request body for the OpenAI-compatible embeddings endpoint.
+#[derive(Serialize)]
+struct ApiEmbeddingRequest<'a> {
+    input: &'a [&'a str],
+    model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<usize>,
+}
+
+/// A single embedding entry in the API response.
+#[derive(Deserialize)]
+struct ApiEmbeddingData {
+    embedding: Vec<f32>,
+    index: usize,
+}
+
+/// Top-level API response from the embeddings endpoint.
+#[derive(Deserialize)]
+struct ApiEmbeddingResponse {
+    data: Vec<ApiEmbeddingData>,
+}
+
+/// Error body returned by the API on non-2xx responses.
+#[derive(Deserialize)]
+struct ApiErrorResponse {
+    error: Option<ApiErrorDetail>,
+}
+
+#[derive(Deserialize)]
+struct ApiErrorDetail {
+    message: Option<String>,
+}
+
+/// Embedding client for OpenAI-compatible embedding APIs.
+///
+/// Supports any service that follows the `/v1/embeddings` JSON contract
+/// (OpenAI, Azure OpenAI, Ollama, LM Studio, etc.).
+pub struct ApiEmbedder {
+    client: reqwest::blocking::Client,
+    api_key: String,
+    base_url: String,
+    model: String,
+    dimensions: Option<usize>,
+}
+
+impl ApiEmbedder {
+    /// Create a new API embedder.
+    ///
+    /// - `api_key` — Bearer token (must not be empty).
+    /// - `base_url` — API root, e.g. `https://api.openai.com/v1`. Defaults
+    ///   to OpenAI if `None`.
+    /// - `model` — Model identifier. Defaults to `text-embedding-3-small`.
+    /// - `dimensions` — Optional dimension override (OpenAI supports this
+    ///   for `text-embedding-3-*` models).
+    pub fn new(
+        api_key: String,
+        base_url: Option<String>,
+        model: Option<String>,
+        dimensions: Option<usize>,
+    ) -> Result<Self, CoreError> {
+        if api_key.trim().is_empty() {
+            return Err(CoreError::Embedding("API key is required".into()));
+        }
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| CoreError::Embedding(format!("HTTP client init: {e}")))?;
+
+        Ok(Self {
+            client,
+            api_key,
+            base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
+            model: model.unwrap_or_else(|| "text-embedding-3-small".into()),
+            dimensions,
+        })
+    }
+
+    /// Send a single batch (≤ `API_BATCH_SIZE`) to the API and return
+    /// embeddings sorted by the original input order.
+    fn call_api(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        let url = format!("{}/embeddings", self.base_url.trim_end_matches('/'));
+
+        let body = ApiEmbeddingRequest {
+            input: texts,
+            model: &self.model,
+            dimensions: self.dimensions,
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .map_err(|e| CoreError::Embedding(format!("API request failed: {e}")))?;
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            log::warn!("Embedding API rate-limited (429). Consider reducing batch frequency.");
+        }
+
+        if !status.is_success() {
+            let err_text = response.text().unwrap_or_default();
+            let detail = serde_json::from_str::<ApiErrorResponse>(&err_text)
+                .ok()
+                .and_then(|r| r.error)
+                .and_then(|e| e.message)
+                .unwrap_or_else(|| err_text);
+            return Err(CoreError::Embedding(format!(
+                "API returned HTTP {status}: {detail}"
+            )));
+        }
+
+        let resp: ApiEmbeddingResponse = response
+            .json()
+            .map_err(|e| CoreError::Embedding(format!("API response parse: {e}")))?;
+
+        // Sort by index to guarantee input order.
+        let mut data = resp.data;
+        data.sort_by_key(|d| d.index);
+
+        Ok(data.into_iter().map(|d| d.embedding).collect())
+    }
+}
+
+impl Embedder for ApiEmbedder {
+    fn model_name(&self) -> &str {
+        &self.model
+    }
+
+    fn dimensions(&self) -> usize {
+        self.dimensions.unwrap_or(1536)
+    }
+
+    fn embed(&self, text: &str) -> Result<Vec<f32>, CoreError> {
+        let results = self.embed_batch(&[text])?;
+        results
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoreError::Embedding("empty response from API".into()))
+    }
+
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Split into chunks of API_BATCH_SIZE to avoid payload limits.
+        let mut all_embeddings = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(API_BATCH_SIZE) {
+            let mut batch_result = self.call_api(chunk)?;
+            all_embeddings.append(&mut batch_result);
+        }
+
+        Ok(all_embeddings)
+    }
+}
+
+/// Test connectivity to an OpenAI-compatible embedding API.
+///
+/// Sends a single short text and returns `Ok(true)` if the API responds
+/// with a valid embedding. Any error is propagated as `CoreError`.
+pub fn test_api_connection(api_key: &str, base_url: &str) -> Result<bool, CoreError> {
+    let embedder = ApiEmbedder::new(
+        api_key.to_string(),
+        Some(base_url.to_string()),
+        None,
+        None,
+    )?;
+    let result = embedder.embed("connection test")?;
+    Ok(!result.is_empty())
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -865,5 +1430,53 @@ mod tests {
         // Offset past all results returns empty.
         let empty = db.get_embeddings_batched("tfidf-v1", 10, 100).unwrap();
         assert!(empty.is_empty());
+    }
+
+    // ── ONNX embedder ──────────────────────────────────────────────
+
+    #[test]
+    #[ignore] // requires model download (~23 MB)
+    fn test_onnx_embed_dimensions() {
+        let embedder = OnnxEmbedder::new(None).unwrap();
+        let vec = embedder.embed("hello world").unwrap();
+        assert_eq!(vec.len(), ONNX_DIMENSIONS);
+
+        let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-4,
+            "expected unit vector, got norm={norm}"
+        );
+    }
+
+    #[test]
+    #[ignore] // requires model download (~23 MB)
+    fn test_onnx_cosine_similarity() {
+        let embedder = OnnxEmbedder::new(None).unwrap();
+        let v1 = embedder.embed("the cat sat on the mat").unwrap();
+        let v2 = embedder.embed("a cat was sitting on a mat").unwrap();
+        let v3 = embedder
+            .embed("quantum physics and the theory of relativity")
+            .unwrap();
+
+        let sim_similar = cosine_similarity(&v1, &v2);
+        let sim_different = cosine_similarity(&v1, &v3);
+
+        assert!(
+            sim_similar > sim_different,
+            "similar texts should score higher: similar={sim_similar} vs different={sim_different}"
+        );
+    }
+
+    #[test]
+    #[ignore] // requires model download (~23 MB)
+    fn test_onnx_embed_batch() {
+        let embedder = OnnxEmbedder::new(None).unwrap();
+        let vecs = embedder
+            .embed_batch(&["hello world", "goodbye world", "rust programming"])
+            .unwrap();
+        assert_eq!(vecs.len(), 3);
+        for v in &vecs {
+            assert_eq!(v.len(), ONNX_DIMENSIONS);
+        }
     }
 }

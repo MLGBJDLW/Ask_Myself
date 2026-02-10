@@ -21,4 +21,7 @@ pub enum CoreError {
 
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+
+    #[error("Embedding error: {0}")]
+    Embedding(String),
 }

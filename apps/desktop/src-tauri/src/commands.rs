@@ -1,4 +1,5 @@
 use ask_core::db::Database;
+use ask_core::embed::EmbedderConfig;
 use ask_core::feedback::{Feedback, FeedbackAction};
 use ask_core::index::IndexStats;
 use ask_core::ingest::{self, EmbedResult, IngestResult};
@@ -392,4 +393,42 @@ pub fn reorder_citations(
         .db
         .reorder_citations(&playbook_id, &citation_ids)
         .map_err(|e| e.to_string())
+}
+
+// ── Embedder Config Commands ───────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_embedder_config_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<EmbedderConfig, String> {
+    state.db.get_embedder_config().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_embedder_config_cmd(
+    state: tauri::State<'_, AppState>,
+    config: EmbedderConfig,
+) -> Result<(), String> {
+    state
+        .db
+        .save_embedder_config(&config)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn test_api_connection_cmd(
+    api_key: String,
+    base_url: String,
+) -> Result<bool, String> {
+    ask_core::embed::test_api_connection(&api_key, &base_url).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn check_local_model_cmd() -> Result<bool, String> {
+    Ok(ask_core::embed::check_local_model_exists(None))
+}
+
+#[tauri::command]
+pub fn download_local_model_cmd() -> Result<(), String> {
+    ask_core::embed::download_local_model(None).map_err(|e| e.to_string())
 }

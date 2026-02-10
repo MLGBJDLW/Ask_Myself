@@ -13,7 +13,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
-use crate::embed::{Embedder, TfIdfEmbedder};
+use crate::embed::{create_embedder, Embedder, TfIdfEmbedder};
 use crate::error::CoreError;
 use crate::parse::{parse_file, ParsedChunk, ParsedDocument};
 use crate::privacy::{self, PrivacyConfig};
@@ -162,12 +162,50 @@ pub fn scan_source_with_privacy(
 
 /// Generate embeddings for all un-embedded chunks belonging to a source.
 ///
-/// Loads an existing TF-IDF embedder from the DB if one was previously saved;
-/// otherwise builds a new one from the full chunk corpus and persists it.
+/// Reads the persisted [`EmbedderConfig`] to decide which embedder to use:
+/// - `"tfidf"` — loads/builds TF-IDF from the corpus (original behaviour).
+/// - `"local"` or `"api"` — delegates to [`create_embedder`].
 pub fn embed_source(db: &Database, source_id: &str) -> Result<EmbedResult, CoreError> {
+    let config = db.get_embedder_config()?;
+
+    if config.provider == "tfidf" {
+        return embed_source_tfidf(db, source_id);
+    }
+
+    let embedder = create_embedder(&config)?;
+    let model = embedder.model_name().to_string();
+
+    let missing = db.get_chunks_without_embeddings(&model)?;
+    let mut batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(missing.len());
+    for (chunk_id, content) in &missing {
+        let vector = embedder.embed(content)?;
+        batch.push((chunk_id.clone(), model.clone(), vector));
+    }
+    let embedded = batch.len();
+    if !batch.is_empty() {
+        db.batch_store_embeddings(&batch)?;
+    }
+
+    let total_source_chunks = db.get_chunks_for_source(source_id)?.len();
+    let skipped = total_source_chunks.saturating_sub(embedded);
+
+    info!(
+        "Embedding complete for source {}: embedded={}, skipped={}, provider={}",
+        source_id, embedded, skipped, config.provider
+    );
+
+    Ok(EmbedResult {
+        source_id: source_id.to_string(),
+        chunks_embedded: embedded,
+        chunks_skipped: skipped,
+        model,
+    })
+}
+
+/// TF-IDF specific embedding path (original behaviour).
+fn embed_source_tfidf(db: &Database, source_id: &str) -> Result<EmbedResult, CoreError> {
     let model = "tfidf-v1";
 
-    // Build or load the embedder.
     let embedder = match db.load_embedder_state(model)? {
         Some((vocab, idf)) => {
             info!("Loaded existing embedder state for model '{}'", model);
@@ -183,7 +221,6 @@ pub fn embed_source(db: &Database, source_id: &str) -> Result<EmbedResult, CoreE
         }
     };
 
-    // Embed only chunks that don't have an embedding yet — batch for performance.
     let missing = db.get_chunks_without_embeddings(model)?;
     let mut batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(missing.len());
     for (chunk_id, content) in &missing {
@@ -195,7 +232,6 @@ pub fn embed_source(db: &Database, source_id: &str) -> Result<EmbedResult, CoreE
         db.batch_store_embeddings(&batch)?;
     }
 
-    // Count skipped (chunks that already had embeddings for this source).
     let total_source_chunks = db.get_chunks_for_source(source_id)?.len();
     let skipped = total_source_chunks.saturating_sub(embedded);
 
@@ -212,22 +248,56 @@ pub fn embed_source(db: &Database, source_id: &str) -> Result<EmbedResult, CoreE
     })
 }
 
-/// Delete all embeddings, rebuild the TF-IDF model from scratch, and
+/// Delete all embeddings, rebuild using the configured provider, and
 /// re-embed every chunk in the database.
 pub fn rebuild_embeddings(db: &Database) -> Result<EmbedResult, CoreError> {
-    let model = "tfidf-v1";
+    let config = db.get_embedder_config()?;
+
+    if config.provider == "tfidf" {
+        return rebuild_embeddings_tfidf(db);
+    }
+
+    let embedder = create_embedder(&config)?;
+    let model = embedder.model_name().to_string();
 
     // 1. Delete all existing embeddings for this model.
+    let deleted = db.delete_all_embeddings(&model)?;
+    info!("Deleted {} existing embeddings", deleted);
+
+    // 2. Embed every chunk.
+    let all_chunks = db.get_all_chunks()?;
+    let mut batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(all_chunks.len());
+    for (chunk_id, content) in &all_chunks {
+        let vector = embedder.embed(content)?;
+        batch.push((chunk_id.clone(), model.clone(), vector));
+    }
+    let embedded = batch.len();
+    if !batch.is_empty() {
+        db.batch_store_embeddings(&batch)?;
+    }
+
+    info!("Rebuild complete: {} chunks embedded (provider={})", embedded, config.provider);
+
+    Ok(EmbedResult {
+        source_id: "all".to_string(),
+        chunks_embedded: embedded,
+        chunks_skipped: 0,
+        model,
+    })
+}
+
+/// TF-IDF specific rebuild path (original behaviour).
+fn rebuild_embeddings_tfidf(db: &Database) -> Result<EmbedResult, CoreError> {
+    let model = "tfidf-v1";
+
     let deleted = db.delete_all_embeddings(model)?;
     info!("Deleted {} existing embeddings", deleted);
 
-    // 2. Collect the full corpus and rebuild the embedder.
     let all_chunks = db.get_all_chunks()?;
     let corpus: Vec<&str> = all_chunks.iter().map(|(_, c)| c.as_str()).collect();
     let embedder = TfIdfEmbedder::build_from_corpus(&corpus);
     db.save_embedder_state(model, &embedder.vocabulary, &embedder.idf)?;
 
-    // 3. Embed every chunk — batch for performance.
     let mut batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(all_chunks.len());
     for (chunk_id, content) in &all_chunks {
         let vector = embedder.embed(content)?;

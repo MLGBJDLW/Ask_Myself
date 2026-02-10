@@ -69,6 +69,12 @@ fn main() {
             // Citations (extra)
             commands::update_citation_note,
             commands::reorder_citations,
+            // Embedder config
+            commands::get_embedder_config_cmd,
+            commands::save_embedder_config_cmd,
+            commands::test_api_connection_cmd,
+            commands::check_local_model_cmd,
+            commands::download_local_model_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

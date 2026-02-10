@@ -10,3 +10,4 @@ export type { QueryLog } from "./query-log";
 export type { Feedback } from "./feedback";
 export type { EmbedResult } from "./embed";
 export type { PrivacyConfig, RedactRule } from "./privacy";
+export type { EmbedderConfig } from "./embedder";

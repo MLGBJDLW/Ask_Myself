@@ -12,6 +12,7 @@ const V002_FTS5: &str = include_str!("v002_fts5.sql");
 const V003_PLAYBOOKS: &str = include_str!("v003_playbooks.sql");
 const V004_EMBEDDINGS_FEEDBACK: &str = include_str!("v004_embeddings_feedback.sql");
 const V005_PRIVACY_CONFIG: &str = include_str!("v005_privacy_config.sql");
+const V006_EMBEDDER_CONFIG: &str = include_str!("v006_embedder_config.sql");
 
 /// Ordered list of migrations to apply.
 const MIGRATIONS: &[(&str, &str)] = &[
@@ -20,6 +21,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("v003_playbooks", V003_PLAYBOOKS),
     ("v004_embeddings_feedback", V004_EMBEDDINGS_FEEDBACK),
     ("v005_privacy_config", V005_PRIVACY_CONFIG),
+    ("v006_embedder_config", V006_EMBEDDER_CONFIG),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -105,6 +107,6 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM _migrations", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 5, "should have exactly 5 migration records");
+        assert_eq!(count, 6, "should have exactly 6 migration records");
     }
 }
