@@ -56,6 +56,12 @@ export const listPlaybooks = () => invoke<Playbook[]>("list_playbooks");
 export const getPlaybook = (playbookId: string) =>
   invoke<Playbook>("get_playbook", { playbookId });
 
+export const updatePlaybook = (
+  playbookId: string,
+  title: string,
+  description: string,
+) => invoke<Playbook>("update_playbook", { playbookId, title, description });
+
 export const deletePlaybook = (playbookId: string) =>
   invoke<void>("delete_playbook", { playbookId });
 

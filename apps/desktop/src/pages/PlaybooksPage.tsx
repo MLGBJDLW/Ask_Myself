@@ -192,8 +192,6 @@ export function PlaybooksPage() {
                       </p>
                     )}
                     <p className="mt-1 text-xs text-gray-600">
-                      {pb.citations.length} citation{pb.citations.length !== 1 ? "s" : ""}
-                      {" · "}
                       {new Date(pb.createdAt).toLocaleDateString()}
                     </p>
                   </div>

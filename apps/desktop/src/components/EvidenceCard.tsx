@@ -35,8 +35,8 @@ function renderHighlightedContent(content: string, highlights: Highlight[]) {
 }
 
 function scoreColor(score: number): string {
-  if (score >= 8) return "text-green-400";
-  if (score >= 5) return "text-yellow-400";
+  if (score >= 3) return "text-green-400";
+  if (score >= 1) return "text-yellow-400";
   return "text-gray-400";
 }
 

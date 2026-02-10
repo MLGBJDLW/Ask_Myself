@@ -139,7 +139,7 @@ export function SourcesPage() {
             type="text"
             value={formPath}
             onChange={(e) => setFormPath(e.target.value)}
-            placeholder="/home/user/notes"
+            placeholder="C:\\Users\\you\\notes  or  /home/user/notes"
             className="mb-3 w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 placeholder-gray-600"
           />
 

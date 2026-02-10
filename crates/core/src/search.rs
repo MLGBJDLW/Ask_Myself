@@ -47,6 +47,14 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
     }
 
     let fts_query = build_fts_query(trimmed);
+    if fts_query.is_empty() {
+        return Ok(SearchResult {
+            query: query.text.clone(),
+            total_matches: 0,
+            evidence_cards: Vec::new(),
+            search_time_ms: start.elapsed().as_millis() as u64,
+        });
+    }
     let limit = if query.limit == 0 { 20 } else { query.limit };
     let terms = extract_terms(trimmed);
 
@@ -156,7 +164,69 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    let total_matches = cards.len();
+    // Count total matches (without LIMIT/OFFSET) for accurate pagination info.
+    let total_matches = if cards.len() < limit as usize && query.offset == 0 {
+        // If we got fewer results than the limit on the first page, total = len.
+        cards.len()
+    } else {
+        // Run a separate count query for the true total.
+        let mut count_sql = String::from(
+            "SELECT COUNT(*)
+             FROM fts_chunks fts
+             JOIN chunks c ON c.rowid = fts.rowid
+             JOIN documents d ON d.id = c.document_id
+             JOIN sources s ON s.id = d.source_id
+             WHERE fts_chunks MATCH ?1",
+        );
+        // Re-apply the same filters (reuse the filter params before limit/offset).
+        // The param_values list has filters then limit then offset at the end.
+        // Rebuild a minimal count param list with just the fts_query + filters.
+        let mut count_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        count_params.push(Box::new(fts_query.clone()));
+        let mut cp_idx: usize = 2;
+
+        if !filters.source_ids.is_empty() {
+            let placeholders: Vec<String> = filters
+                .source_ids
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", cp_idx + i))
+                .collect();
+            count_sql.push_str(&format!(" AND d.source_id IN ({})", placeholders.join(",")));
+            for sid in &filters.source_ids {
+                count_params.push(Box::new(sid.to_string()));
+                cp_idx += 1;
+            }
+        }
+        if !filters.file_types.is_empty() {
+            let placeholders: Vec<String> = filters
+                .file_types
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", cp_idx + i))
+                .collect();
+            count_sql.push_str(&format!(" AND d.mime_type IN ({})", placeholders.join(",")));
+            for ft in &filters.file_types {
+                count_params.push(Box::new(file_type_to_mime(ft)));
+                cp_idx += 1;
+            }
+        }
+        if let Some(ref from) = filters.date_from {
+            count_sql.push_str(&format!(" AND d.indexed_at >= ?{}", cp_idx));
+            count_params.push(Box::new(from.to_rfc3339()));
+            cp_idx += 1;
+        }
+        if let Some(ref to) = filters.date_to {
+            count_sql.push_str(&format!(" AND d.indexed_at <= ?{}", cp_idx));
+            count_params.push(Box::new(to.to_rfc3339()));
+            let _ = cp_idx;
+        }
+
+        let count_refs: Vec<&dyn rusqlite::types::ToSql> =
+            count_params.iter().map(|p| p.as_ref()).collect();
+        conn.query_row(&count_sql, count_refs.as_slice(), |row| row.get::<_, usize>(0))
+            .unwrap_or(cards.len())
+    };
 
     Ok(SearchResult {
         query: query.text.clone(),
@@ -675,5 +745,20 @@ mod tests {
         let card = &result.evidence_cards[0];
         assert_eq!(card.highlights.len(), 2);
         assert_eq!(card.highlights[0].term, "rust");
+    }
+
+    #[test]
+    fn test_search_lone_star_does_not_crash() {
+        let db = test_db();
+        {
+            let conn = db.conn();
+            let sid = insert_source(&conn);
+            let did = insert_document(&conn, &sid, "text/plain");
+            insert_chunk(&conn, &did, "test content for star search");
+        }
+        // A lone "*" now produces an empty FTS query → returns empty result
+        let result = search(&db, &default_query("*")).unwrap();
+        assert_eq!(result.total_matches, 0);
+        assert!(result.evidence_cards.is_empty());
     }
 }
