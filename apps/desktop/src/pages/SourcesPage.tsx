@@ -89,6 +89,7 @@ export function SourcesPage() {
   const [scanningAll, setScanningAll] = useState(false);
   const [embeddingId, setEmbeddingId] = useState<string | null>(null);
   const [rebuildingEmbeddings, setRebuildingEmbeddings] = useState(false);
+  const [indexingIds, setIndexingIds] = useState<Set<string>>(new Set());
 
   // Add source modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -192,11 +193,31 @@ export function SourcesPage() {
     try {
       const includeGlobs = parseTags(formInclude);
       const excludeGlobs = parseTags(formExclude);
-      await api.addSource(formPath.trim(), includeGlobs, excludeGlobs);
-      toast.success(t('sources.added'));
+      const newSource = await api.addSource(formPath.trim(), includeGlobs, excludeGlobs);
+      toast.success(t('sources.autoIndexing'));
       resetForm();
       setShowAddModal(false);
       await loadSources();
+
+      // Auto-index: scan + embed in background
+      const sourceId = newSource.id;
+      setIndexingIds((prev) => new Set(prev).add(sourceId));
+      try {
+        const scanResult = await api.scanSource(sourceId);
+        toast.info(formatScanResult(scanResult, t));
+        await loadSources();
+        const embedResult = await api.embedSource(sourceId);
+        toast.success(`${t('sources.indexingComplete')} ${formatEmbedResult(embedResult, t)}`);
+      } catch (e) {
+        toast.error(`${t('sources.scanError')}: ${String(e)}`);
+      } finally {
+        setIndexingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(sourceId);
+          return next;
+        });
+        await loadSources();
+      }
     } catch (e) {
       toast.error(`${t('sources.addError')}: ${String(e)}`);
     } finally {
@@ -269,6 +290,16 @@ export function SourcesPage() {
       const added = results.reduce((sum, r) => sum + r.filesAdded, 0);
       const updated = results.reduce((sum, r) => sum + r.filesUpdated, 0);
       toast.success(t('sources.scanAllComplete', { total, added, updated }));
+      await loadSources();
+
+      // Auto-embed all sources after scan
+      toast.info(t('sources.indexingInProgress'));
+      try {
+        const embedResult = await api.rebuildEmbeddings();
+        toast.success(`${t('sources.indexingComplete')} ${formatEmbedResult(embedResult, t)}`);
+      } catch (e) {
+        toast.error(`${t('sources.embedError')}: ${String(e)}`);
+      }
     } catch (e) {
       toast.error(`${t('sources.scanAllError')}: ${String(e)}`);
     } finally {
@@ -393,6 +424,12 @@ export function SourcesPage() {
                           {source.rootPath}
                         </p>
                         <Badge variant="default">{kindLabel(source.kind, t)}</Badge>
+                        {indexingIds.has(source.id) && (
+                          <Badge variant="info">
+                            <RefreshCw size={10} className="animate-spin mr-1" />
+                            {t('sources.indexingInProgress')}
+                          </Badge>
+                        )}
                       </div>
 
                       {/* Globs */}

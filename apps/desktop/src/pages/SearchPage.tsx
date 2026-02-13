@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search,
@@ -11,6 +12,12 @@ import {
   BotMessageSquare,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  Database,
+  FileText,
+  Layers,
+  FolderOpen,
+  ExternalLink,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../lib/api';
@@ -21,6 +28,7 @@ import type {
   Source,
   Playbook,
   SearchFilters,
+  IndexStats,
 } from '../types';
 import type { FileType } from '../types/document';
 import { EvidenceCardComponent } from '../components/EvidenceCard';
@@ -56,6 +64,7 @@ const FILE_TYPE_OPTIONS: { value: FileType; label: string; labelKey: 'search.mar
 
 export function SearchPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   // ── Core search state ────────────────────────────────────────────────
   const [query, setQuery] = useState('');
   const [result, setResult] = useState<SearchResult | null>(null);
@@ -85,6 +94,10 @@ export function SearchPage() {
 
   // ── Refs ─────────────────────────────────────────────────────────────
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // ── Knowledge Base stats ─────────────────────────────────────────────
+  const [indexStats, setIndexStats] = useState<IndexStats | null>(null);
+  const [kbOpen, setKbOpen] = useState(true);
 
   // ── Chat panel state ────────────────────────────────────────────────
   const [chatOpen, setChatOpen] = useState(false);
@@ -140,6 +153,7 @@ export function SearchPage() {
   // ── Load sources for filters ─────────────────────────────────────────
   useEffect(() => {
     api.listSources().then(setSources).catch(() => {});
+    api.getIndexStats().then(setIndexStats).catch(() => {});
   }, []);
 
   // ── Reset page when query or filters change ─────────────────────────
@@ -310,6 +324,98 @@ export function SearchPage() {
           </kbd>
         </p>
       </div>
+
+      {/* ── Knowledge Base Overview ── */}
+      {indexStats && (
+        <div className="mb-6 rounded-lg border border-border bg-surface-1 overflow-hidden">
+          <button
+            onClick={() => setKbOpen(!kbOpen)}
+            className="flex w-full items-center justify-between px-4 py-2.5 text-left hover:bg-surface-2 transition-colors duration-fast"
+          >
+            <div className="flex items-center gap-2">
+              <Database size={14} className="text-accent" />
+              <span className="text-xs font-semibold text-text-primary">{t('search.knowledgeBase')}</span>
+            </div>
+            <ChevronDown
+              size={14}
+              className={`text-text-tertiary transition-transform duration-200 ${kbOpen ? '' : '-rotate-90'}`}
+            />
+          </button>
+          <AnimatePresence>
+            {kbOpen && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                className="overflow-hidden"
+              >
+                <div className="px-4 pb-3 pt-1">
+                  {/* Stat cards */}
+                  <div className="grid grid-cols-3 gap-3 mb-3">
+                    <div className="rounded-md border border-border bg-surface-2 px-3 py-2 text-center">
+                      <div className="flex items-center justify-center gap-1.5 mb-0.5">
+                        <FolderOpen size={12} className="text-accent" />
+                        <span className="text-[10px] font-medium text-text-tertiary">{t('search.totalSources')}</span>
+                      </div>
+                      <p className="text-lg font-bold text-text-primary">{indexStats.totalSources}</p>
+                    </div>
+                    <div className="rounded-md border border-border bg-surface-2 px-3 py-2 text-center">
+                      <div className="flex items-center justify-center gap-1.5 mb-0.5">
+                        <FileText size={12} className="text-accent" />
+                        <span className="text-[10px] font-medium text-text-tertiary">{t('search.totalDocuments')}</span>
+                      </div>
+                      <p className="text-lg font-bold text-text-primary">{indexStats.totalDocuments}</p>
+                    </div>
+                    <div className="rounded-md border border-border bg-surface-2 px-3 py-2 text-center">
+                      <div className="flex items-center justify-center gap-1.5 mb-0.5">
+                        <Layers size={12} className="text-accent" />
+                        <span className="text-[10px] font-medium text-text-tertiary">{t('search.totalChunks')}</span>
+                      </div>
+                      <p className="text-lg font-bold text-text-primary">{indexStats.totalChunks}</p>
+                    </div>
+                  </div>
+
+                  {/* Source list */}
+                  {sources.length > 0 ? (
+                    <div className="space-y-1">
+                      {sources.map((s) => (
+                        <div
+                          key={s.id}
+                          className="flex items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-xs hover:bg-surface-2 transition-colors duration-fast"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <FolderOpen size={12} className="text-text-tertiary shrink-0" />
+                            <span className="truncate text-text-secondary font-mono text-[11px]">
+                              {s.rootPath.split(/[/\\]/).pop()}
+                            </span>
+                          </div>
+                          <Badge variant="default" className="shrink-0 text-[10px]">
+                            {s.kind === 'local_folder' ? t('sources.addModal.kindFolder') : s.kind}
+                          </Badge>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-text-tertiary text-center py-2">
+                      {t('search.kbEmptyDesc')}
+                    </p>
+                  )}
+
+                  {/* Manage sources link */}
+                  <button
+                    onClick={() => navigate('/sources')}
+                    className="mt-2 flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover transition-colors"
+                  >
+                    <ExternalLink size={10} />
+                    {t('search.viewSources')}
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
 
       {/* ── Search input ── */}
       <div className="mb-4">

@@ -69,6 +69,13 @@ export const zhCN: TranslationKeys = {
   'search.next': '下一页',
   'search.showingResults': '显示 {from}-{to} / 共 {total}',
   'search.clearHistory': '清除历史',
+  'search.knowledgeBase': '知识库',
+  'search.totalDocuments': '文档',
+  'search.totalChunks': '嵌入',
+  'search.totalSources': '数据源',
+  'search.viewSources': '管理数据源',
+  'search.kbEmpty': '暂无索引内容',
+  'search.kbEmptyDesc': '添加数据源并索引，即可开始搜索。',
 
   // Evidence Card
   'card.relevance': '相关度',
@@ -129,6 +136,9 @@ export const zhCN: TranslationKeys = {
   'sources.watcherStop': '监听已停止',
   'sources.watcherActive': '监听中',
   'sources.watcherFileChanged': '文件变更：{path}',
+  'sources.indexingInProgress': '索引中...',
+  'sources.indexingComplete': '索引完成！',
+  'sources.autoIndexing': '数据源已添加，正在索引...',
 
   // Collections
   'playbooks.title': '收藏集',

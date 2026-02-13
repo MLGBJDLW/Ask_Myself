@@ -69,6 +69,13 @@ export const ko: TranslationKeys = {
   'search.next': '다음',
   'search.showingResults': '{from}-{to} / 전체 {total}',
   'search.clearHistory': '기록 삭제',
+  'search.knowledgeBase': '지식 베이스',
+  'search.totalDocuments': '문서',
+  'search.totalChunks': '임베딩',
+  'search.totalSources': '소스',
+  'search.viewSources': '소스 관리',
+  'search.kbEmpty': '인덱스된 콘텐츠 없음',
+  'search.kbEmptyDesc': '소스를 추가하고 인덱싱하면 검색할 수 있습니다.',
 
   // Evidence Card
   'card.relevance': '관련도',
@@ -129,6 +136,9 @@ export const ko: TranslationKeys = {
   'sources.watcherStop': '감시 중지됨',
   'sources.watcherActive': '감시 중',
   'sources.watcherFileChanged': '파일 변경: {path}',
+  'sources.indexingInProgress': '인덱싱 중...',
+  'sources.indexingComplete': '인덱싱 완료!',
+  'sources.autoIndexing': '소스가 추가되었습니다. 인덱싱 중...',
 
   // Collections
   'playbooks.title': '컴렉션',

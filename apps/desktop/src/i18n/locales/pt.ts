@@ -69,6 +69,13 @@ export const pt: TranslationKeys = {
   'search.next': 'Próximo',
   'search.showingResults': 'Exibindo {from}-{to} de {total}',
   'search.clearHistory': 'Limpar histórico',
+  'search.knowledgeBase': 'Base de Conhecimento',
+  'search.totalDocuments': 'Documentos',
+  'search.totalChunks': 'Embeddings',
+  'search.totalSources': 'Fontes',
+  'search.viewSources': 'Gerenciar fontes',
+  'search.kbEmpty': 'Nenhum conteúdo indexado',
+  'search.kbEmptyDesc': 'Adicione uma fonte e indexe para começar a pesquisar.',
 
   // Evidence Card
   'card.relevance': 'Relevância',
@@ -129,6 +136,9 @@ export const pt: TranslationKeys = {
   'sources.watcherStop': 'Monitoramento parado',
   'sources.watcherActive': 'Monitorando',
   'sources.watcherFileChanged': 'Arquivo modificado: {path}',
+  'sources.indexingInProgress': 'Indexando...',
+  'sources.indexingComplete': 'Indexação concluída!',
+  'sources.autoIndexing': 'Fonte adicionada. Indexando...',
 
   // Collections
   'playbooks.title': 'Coleções',

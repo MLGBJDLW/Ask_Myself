@@ -69,6 +69,13 @@ export const ja: TranslationKeys = {
   'search.next': '次へ',
   'search.showingResults': '{from}-{to} / 全{total}件',
   'search.clearHistory': '履歴をクリア',
+  'search.knowledgeBase': 'ナレッジベース',
+  'search.totalDocuments': 'ドキュメント',
+  'search.totalChunks': '埋め込み',
+  'search.totalSources': 'ソース',
+  'search.viewSources': 'ソース管理',
+  'search.kbEmpty': 'インデックスされたコンテンツなし',
+  'search.kbEmptyDesc': 'ソースを追加してインデックスすると検索できます。',
 
   // Evidence Card
   'card.relevance': '関連度',
@@ -129,6 +136,9 @@ export const ja: TranslationKeys = {
   'sources.watcherStop': '監視を停止',
   'sources.watcherActive': '監視中',
   'sources.watcherFileChanged': 'ファイル変更: {path}',
+  'sources.indexingInProgress': 'インデックス中...',
+  'sources.indexingComplete': 'インデックス完了！',
+  'sources.autoIndexing': 'ソースが追加されました。インデックス中...',
 
   // Collections
   'playbooks.title': 'コレクション',

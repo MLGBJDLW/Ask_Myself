@@ -69,6 +69,13 @@ export interface TranslationKeys {
   'search.next': string;
   'search.showingResults': string;
   'search.clearHistory': string;
+  'search.knowledgeBase': string;
+  'search.totalDocuments': string;
+  'search.totalChunks': string;
+  'search.totalSources': string;
+  'search.viewSources': string;
+  'search.kbEmpty': string;
+  'search.kbEmptyDesc': string;
 
   // Evidence Card
   'card.relevance': string;
@@ -129,6 +136,9 @@ export interface TranslationKeys {
   'sources.watcherStop': string;
   'sources.watcherActive': string;
   'sources.watcherFileChanged': string;
+  'sources.indexingInProgress': string;
+  'sources.indexingComplete': string;
+  'sources.autoIndexing': string;
 
   // Playbooks
   'playbooks.title': string;

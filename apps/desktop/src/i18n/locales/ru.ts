@@ -69,6 +69,13 @@ export const ru: TranslationKeys = {
   'search.next': 'Далее',
   'search.showingResults': 'Показано {from}-{to} из {total}',
   'search.clearHistory': 'Очистить историю',
+  'search.knowledgeBase': 'База знаний',
+  'search.totalDocuments': 'Документы',
+  'search.totalChunks': 'Эмбеддинги',
+  'search.totalSources': 'Источники',
+  'search.viewSources': 'Управление источниками',
+  'search.kbEmpty': 'Нет индексированного контента',
+  'search.kbEmptyDesc': 'Добавьте источник и проиндексируйте его, чтобы начать поиск.',
 
   // Evidence Card
   'card.relevance': 'Релевантность',
@@ -129,6 +136,9 @@ export const ru: TranslationKeys = {
   'sources.watcherStop': 'Наблюдение остановлено',
   'sources.watcherActive': 'Наблюдение',
   'sources.watcherFileChanged': 'Файл изменён: {path}',
+  'sources.indexingInProgress': 'Индексация...',
+  'sources.indexingComplete': 'Индексация завершена!',
+  'sources.autoIndexing': 'Источник добавлен. Индексация...',
 
   // Collections
   'playbooks.title': 'Коллекции',

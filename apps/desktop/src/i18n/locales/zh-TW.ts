@@ -69,6 +69,13 @@ export const zhTW: TranslationKeys = {
   'search.next': '下一頁',
   'search.showingResults': '顯示 {from}-{to} / 共 {total}',
   'search.clearHistory': '清除歷史',
+  'search.knowledgeBase': '知識庫',
+  'search.totalDocuments': '文件',
+  'search.totalChunks': '嵌入',
+  'search.totalSources': '資料源',
+  'search.viewSources': '管理資料源',
+  'search.kbEmpty': '尚無索引內容',
+  'search.kbEmptyDesc': '新增資料源並索引，即可開始搜尋。',
 
   // Evidence Card
   'card.relevance': '相關度',
@@ -129,6 +136,9 @@ export const zhTW: TranslationKeys = {
   'sources.watcherStop': '監聽已停止',
   'sources.watcherActive': '監聽中',
   'sources.watcherFileChanged': '檔案變更：{path}',
+  'sources.indexingInProgress': '索引中...',
+  'sources.indexingComplete': '索引完成！',
+  'sources.autoIndexing': '資料源已新增，正在索引...',
 
   // Collections
   'playbooks.title': '收藏集',
