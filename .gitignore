@@ -18,9 +18,6 @@ dist/
 *.db-wal
 *.db-shm
 
-# Tauri
-apps/desktop/src-tauri/target/
-
 # IDE
 .idea/
 *.swp
@@ -30,9 +27,24 @@ apps/desktop/src-tauri/target/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Build artifacts
 *.log
+.vite/
+build/
+
+# Coverage
+*.lcov
+coverage/
+tarpaulin-report.html
+
+# Debug/test output
+terr.txt
+test-output*.txt
+test[0-9]*.txt
+tfb.txt
+tout.txt
 
 # Github agents
 .github/agents/
