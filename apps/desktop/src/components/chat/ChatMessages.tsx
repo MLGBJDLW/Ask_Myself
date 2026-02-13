@@ -1,6 +1,9 @@
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, useCallback, useState, type ComponentPropsWithoutRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MessageCircle } from 'lucide-react';
+import { MessageCircle, Copy, Check } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { open } from '@tauri-apps/plugin-shell';
 import { useTranslation } from '../../i18n';
 import { ToolCallCard } from './ToolCallCard';
 import type { ConversationMessage } from '../../types/conversation';
@@ -27,63 +30,171 @@ interface ChatMessagesProps {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Basic markdown renderer (no external lib)                          */
+/*  Markdown component overrides                                       */
 /* ------------------------------------------------------------------ */
 
-function renderSimpleMarkdown(text: string): React.ReactNode[] {
-  // Split by code blocks first
-  const parts = text.split(/(```[\s\S]*?```)/g);
+/** Open links in the system browser via Tauri shell */
+function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>) {
+  const handleClick = useCallback(
+    (e: React.MouseEvent<HTMLAnchorElement>) => {
+      e.preventDefault();
+      if (href) open(href);
+    },
+    [href],
+  );
+  return (
+    <a
+      {...rest}
+      href={href}
+      onClick={handleClick}
+      className="text-accent hover:text-accent-hover underline underline-offset-2"
+    >
+      {children}
+    </a>
+  );
+}
 
-  return parts.map((part, i) => {
-    // Code block
-    if (part.startsWith('```') && part.endsWith('```')) {
-      const inner = part.slice(3, -3);
-      const newlineIdx = inner.indexOf('\n');
-      const code = newlineIdx >= 0 ? inner.slice(newlineIdx + 1) : inner;
+/** Shared markdown component map for ReactMarkdown */
+const markdownComponents: Record<string, React.ComponentType<ComponentPropsWithoutRef<any>>> = {
+  a: MarkdownLink,
+  pre({ children, ...rest }: ComponentPropsWithoutRef<'pre'>) {
+    return (
+      <pre
+        {...rest}
+        className="bg-surface-0 border border-border rounded-md px-3 py-2 my-2 text-xs overflow-x-auto"
+      >
+        {children}
+      </pre>
+    );
+  },
+  code({ children, className, ...rest }: ComponentPropsWithoutRef<'code'> & { className?: string }) {
+    // If wrapped in <pre> it's a fenced code block – className contains language
+    const isBlock = className?.startsWith('language-');
+    if (isBlock) {
       return (
-        <pre
-          key={i}
-          className="bg-surface-0 border border-border rounded-md px-3 py-2 my-2 text-xs overflow-x-auto"
-        >
-          <code>{code}</code>
-        </pre>
+        <code {...rest} className={className}>
+          {children}
+        </code>
       );
     }
-
-    // Inline formatting
-    const elements: React.ReactNode[] = [];
-    const inlineParts = part.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
-
-    for (let j = 0; j < inlineParts.length; j++) {
-      const seg = inlineParts[j];
-      if (seg.startsWith('**') && seg.endsWith('**')) {
-        elements.push(<strong key={`${i}-${j}`}>{seg.slice(2, -2)}</strong>);
-      } else if (seg.startsWith('`') && seg.endsWith('`')) {
-        elements.push(
-          <code
-            key={`${i}-${j}`}
-            className="bg-surface-0 border border-border rounded px-1 py-0.5 text-xs"
-          >
-            {seg.slice(1, -1)}
-          </code>,
-        );
-      } else {
-        // Split by newlines for paragraphs
-        const lines = seg.split('\n');
-        for (let k = 0; k < lines.length; k++) {
-          if (k > 0) elements.push(<br key={`${i}-${j}-br-${k}`} />);
-          elements.push(<span key={`${i}-${j}-${k}`}>{lines[k]}</span>);
-        }
-      }
-    }
-
-    return <span key={i}>{elements}</span>;
-  });
-}
+    return (
+      <code
+        {...rest}
+        className="bg-surface-0 border border-border rounded px-1 py-0.5 text-xs"
+      >
+        {children}
+      </code>
+    );
+  },
+  h1({ children, ...r }: ComponentPropsWithoutRef<'h1'>) {
+    return <h1 {...r} className="text-xl font-bold mt-4 mb-2">{children}</h1>;
+  },
+  h2({ children, ...r }: ComponentPropsWithoutRef<'h2'>) {
+    return <h2 {...r} className="text-lg font-semibold mt-3 mb-1.5">{children}</h2>;
+  },
+  h3({ children, ...r }: ComponentPropsWithoutRef<'h3'>) {
+    return <h3 {...r} className="text-base font-semibold mt-3 mb-1">{children}</h3>;
+  },
+  h4({ children, ...r }: ComponentPropsWithoutRef<'h4'>) {
+    return <h4 {...r} className="text-sm font-semibold mt-2 mb-1">{children}</h4>;
+  },
+  ul({ children, ...r }: ComponentPropsWithoutRef<'ul'>) {
+    return <ul {...r} className="list-disc list-inside my-1.5 space-y-0.5">{children}</ul>;
+  },
+  ol({ children, ...r }: ComponentPropsWithoutRef<'ol'>) {
+    return <ol {...r} className="list-decimal list-inside my-1.5 space-y-0.5">{children}</ol>;
+  },
+  li({ children, ...r }: ComponentPropsWithoutRef<'li'>) {
+    return <li {...r} className="leading-relaxed">{children}</li>;
+  },
+  blockquote({ children, ...r }: ComponentPropsWithoutRef<'blockquote'>) {
+    return (
+      <blockquote
+        {...r}
+        className="border-l-2 border-accent/40 pl-3 my-2 text-text-secondary italic"
+      >
+        {children}
+      </blockquote>
+    );
+  },
+  table({ children, ...r }: ComponentPropsWithoutRef<'table'>) {
+    return (
+      <div className="overflow-x-auto my-2">
+        <table {...r} className="min-w-full text-xs border border-border rounded-md">
+          {children}
+        </table>
+      </div>
+    );
+  },
+  thead({ children, ...r }: ComponentPropsWithoutRef<'thead'>) {
+    return <thead {...r} className="bg-surface-3">{children}</thead>;
+  },
+  th({ children, ...r }: ComponentPropsWithoutRef<'th'>) {
+    return (
+      <th {...r} className="px-2 py-1 text-left font-medium border-b border-border">
+        {children}
+      </th>
+    );
+  },
+  td({ children, ...r }: ComponentPropsWithoutRef<'td'>) {
+    return (
+      <td {...r} className="px-2 py-1 border-b border-border">
+        {children}
+      </td>
+    );
+  },
+  tr({ children, ...r }: ComponentPropsWithoutRef<'tr'>) {
+    return <tr {...r} className="even:bg-surface-0/30">{children}</tr>;
+  },
+  hr(r: ComponentPropsWithoutRef<'hr'>) {
+    return <hr {...r} className="border-border my-3" />;
+  },
+  p({ children, ...r }: ComponentPropsWithoutRef<'p'>) {
+    return <p {...r} className="my-1.5 leading-relaxed">{children}</p>;
+  },
+  strong({ children, ...r }: ComponentPropsWithoutRef<'strong'>) {
+    return <strong {...r} className="font-semibold">{children}</strong>;
+  },
+};
 
 /* ------------------------------------------------------------------ */
 /*  Message bubble                                                     */
 /* ------------------------------------------------------------------ */
+
+function CopyButton({ text }: { text: string }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Silently fail if clipboard access is denied
+    }
+  }, [text]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      title={copied ? t('chat.copied') : t('chat.copyMessage')}
+      className="absolute top-1.5 right-1.5 p-1 rounded-md
+        bg-surface-0/80 border border-border/50
+        text-text-tertiary hover:text-text-primary
+        opacity-0 group-hover:opacity-100
+        transition-opacity duration-150
+        cursor-pointer"
+    >
+      {copied ? (
+        <Check className="h-3.5 w-3.5 text-green-500" />
+      ) : (
+        <Copy className="h-3.5 w-3.5" />
+      )}
+    </button>
+  );
+}
 
 function MessageBubble({ msg }: { msg: ConversationMessage }) {
   const isUser = msg.role === 'user';
@@ -98,16 +209,21 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
       className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-3`}
     >
       <div
-        className={`max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed
+        className={`group relative max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed
           ${isUser
             ? 'bg-accent/20 text-text-primary'
             : 'bg-surface-2 text-text-primary'
           }`}
       >
+        <CopyButton text={msg.content} />
         {isUser ? (
           <span className="whitespace-pre-wrap">{msg.content}</span>
         ) : (
-          <div className="prose-chat">{renderSimpleMarkdown(msg.content)}</div>
+          <div className="prose-chat">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {msg.content}
+            </ReactMarkdown>
+          </div>
         )}
       </div>
     </motion.div>
@@ -222,7 +338,9 @@ export function ChatMessages({ messages, streamText, toolCalls, isStreaming }: C
         >
           <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
             <div className="prose-chat">
-              {renderSimpleMarkdown(streamText)}
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                {streamText}
+              </ReactMarkdown>
               <span className="inline-block w-1.5 h-4 bg-accent animate-pulse ml-0.5 align-text-bottom rounded-sm" />
             </div>
           </div>

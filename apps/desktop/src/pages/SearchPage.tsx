@@ -8,6 +8,8 @@ import {
   Filter,
   X,
   BotMessageSquare,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../lib/api';
@@ -35,11 +37,16 @@ import { useTranslation } from '../i18n';
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
 
-const FILE_TYPE_OPTIONS: { value: FileType; label: string; labelKey: 'search.plaintext' | 'search.log' | 'search.pdf' }[] = [
-  { value: 'markdown', label: 'Markdown', labelKey: 'search.plaintext' },
+const PAGE_SIZE = 20;
+
+const FILE_TYPE_OPTIONS: { value: FileType; label: string; labelKey: 'search.markdown' | 'search.plaintext' | 'search.log' | 'search.pdf' | 'search.docx' | 'search.excel' | 'search.pptx' }[] = [
+  { value: 'markdown', label: 'Markdown', labelKey: 'search.markdown' },
   { value: 'plaintext', label: 'Plain text', labelKey: 'search.plaintext' },
   { value: 'log', label: 'Log', labelKey: 'search.log' },
   { value: 'pdf', label: 'PDF', labelKey: 'search.pdf' },
+  { value: 'docx', label: 'Word Document', labelKey: 'search.docx' },
+  { value: 'excel', label: 'Excel Spreadsheet', labelKey: 'search.excel' },
+  { value: 'pptx', label: 'PowerPoint', labelKey: 'search.pptx' },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -55,6 +62,7 @@ export function SearchPage() {
   const [loading, setLoading] = useState(false);
   const [searchMode, setSearchMode] = useState<'fts' | 'hybrid'>('fts');
   const [feedbackMap, setFeedbackMap] = useState<Record<string, Feedback>>({});
+  const [currentPage, setCurrentPage] = useState(1);
 
   // ── Filters ──────────────────────────────────────────────────────────
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -124,17 +132,25 @@ export function SearchPage() {
     api.listSources().then(setSources).catch(() => {});
   }, []);
 
+  // ── Reset page when query or filters change ─────────────────────────
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchMode, filters]);
+
   // ── Search handler ───────────────────────────────────────────────────
-  const handleSearch = async (text?: string) => {
+  const handleSearch = async (text?: string, page?: number) => {
     const q = text ?? query;
     if (!q.trim()) return;
+    const targetPage = page ?? 1;
+    if (!page) setCurrentPage(1);
     setLoading(true);
     setFeedbackMap({});
+    const offset = (targetPage - 1) * PAGE_SIZE;
     try {
       const res =
         searchMode === 'hybrid'
           ? await api.hybridSearch(q.trim(), filters)
-          : await api.search(q.trim(), undefined, undefined, filters);
+          : await api.search(q.trim(), PAGE_SIZE, offset, filters);
       setResult({ ...res, searchMode });
       loadRecentQueries();
 
@@ -253,7 +269,8 @@ export function SearchPage() {
   };
 
   const activeFilterCount =
-    filters.sourceIds.length + filters.fileTypes.length;
+    filters.sourceIds.length + filters.fileTypes.length +
+    (filters.dateFrom ? 1 : 0) + (filters.dateTo ? 1 : 0);
 
   // ── Uncertainty detection ────────────────────────────────────────────
   const showUncertainty =
@@ -418,6 +435,67 @@ export function SearchPage() {
                 </div>
               )}
 
+              {/* Date range filters */}
+              <div className="mb-3">
+                <label className="mb-1.5 block text-[11px] font-medium text-text-tertiary">
+                  {t('search.dateRange')}
+                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-text-tertiary">{t('search.dateFrom')}</span>
+                    <div className="relative">
+                      <input
+                        type="date"
+                        value={filters.dateFrom ?? ''}
+                        onChange={(e) =>
+                          setFilters((prev) => ({
+                            ...prev,
+                            dateFrom: e.target.value || null,
+                          }))
+                        }
+                        className="rounded-full border border-border bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-all duration-fast hover:border-border-hover focus:border-accent focus:outline-none"
+                      />
+                      {filters.dateFrom && (
+                        <button
+                          onClick={() =>
+                            setFilters((prev) => ({ ...prev, dateFrom: null }))
+                          }
+                          className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-accent text-white"
+                        >
+                          <X size={8} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-text-tertiary">{t('search.dateTo')}</span>
+                    <div className="relative">
+                      <input
+                        type="date"
+                        value={filters.dateTo ?? ''}
+                        onChange={(e) =>
+                          setFilters((prev) => ({
+                            ...prev,
+                            dateTo: e.target.value || null,
+                          }))
+                        }
+                        className="rounded-full border border-border bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-all duration-fast hover:border-border-hover focus:border-accent focus:outline-none"
+                      />
+                      {filters.dateTo && (
+                        <button
+                          onClick={() =>
+                            setFilters((prev) => ({ ...prev, dateTo: null }))
+                          }
+                          className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-accent text-white"
+                        >
+                          <X size={8} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {/* File type filters */}
               <div>
                 <label className="mb-1.5 block text-[11px] font-medium text-text-tertiary">
@@ -437,7 +515,7 @@ export function SearchPage() {
                         }`}
                       >
                         {active && <X size={10} />}
-                        {ft.value === 'markdown' ? 'Markdown' : ft.value === 'plaintext' ? t('search.plaintext') : t('search.log')}
+                        {t(ft.labelKey)}
                       </button>
                     );
                   })}
@@ -503,8 +581,20 @@ export function SearchPage() {
             </motion.div>
           )}
 
+          {/* Pagination info */}
+          {result.totalMatches > PAGE_SIZE && (
+            <div className="mb-3 text-xs text-text-tertiary">
+              {t('search.showingResults', {
+                from: String((currentPage - 1) * PAGE_SIZE + 1),
+                to: String(Math.min(currentPage * PAGE_SIZE, result.totalMatches)),
+                total: String(result.totalMatches),
+              })}
+            </div>
+          )}
+
           {/* Evidence cards with staggered animation */}
           {result.evidenceCards.length > 0 ? (
+            <>
             <motion.div
               className="space-y-3"
               initial="hidden"
@@ -548,6 +638,44 @@ export function SearchPage() {
                 </motion.div>
               ))}
             </motion.div>
+            {/* Pagination controls */}
+            {result.totalMatches > PAGE_SIZE && (() => {
+              const totalPages = Math.ceil(result.totalMatches / PAGE_SIZE);
+              return (
+                <div className="mt-6 flex items-center justify-center gap-3">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon={<ChevronLeft size={14} />}
+                    disabled={currentPage <= 1}
+                    onClick={() => {
+                      const prev = currentPage - 1;
+                      setCurrentPage(prev);
+                      handleSearch(undefined, prev);
+                    }}
+                  >
+                    {t('search.previous')}
+                  </Button>
+                  <span className="text-xs text-text-secondary">
+                    {t('search.page')} {currentPage} {t('search.of')} {totalPages}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={currentPage >= totalPages}
+                    onClick={() => {
+                      const next = currentPage + 1;
+                      setCurrentPage(next);
+                      handleSearch(undefined, next);
+                    }}
+                  >
+                    {t('search.next')}
+                    <ChevronRight size={14} className="ml-1" />
+                  </Button>
+                </div>
+              );
+            })()}
+            </>
           ) : (
             <>
               {/* Uncertainty banner for zero results */}

@@ -14,6 +14,7 @@ interface ButtonProps {
   disabled?: boolean;
   onClick?: React.MouseEventHandler<HTMLButtonElement>;
   type?: 'button' | 'submit' | 'reset';
+  title?: string;
 }
 
 const variants: Record<ButtonVariant, string> = {

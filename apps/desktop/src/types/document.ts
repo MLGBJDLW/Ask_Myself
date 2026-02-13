@@ -1,4 +1,4 @@
-export type FileType = "markdown" | "plaintext" | "log" | "pdf";
+export type FileType = "markdown" | "plaintext" | "log" | "pdf" | "docx" | "excel" | "pptx";
 
 export interface Document {
   id: string;

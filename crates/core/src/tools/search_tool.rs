@@ -62,6 +62,7 @@ impl Tool for SearchTool {
         call_id: &str,
         arguments: &str,
         db: &Database,
+        source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let args: SearchArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid search_knowledge_base arguments: {e}"))
@@ -69,9 +70,17 @@ impl Tool for SearchTool {
 
         let limit = args.limit.min(20).max(1);
 
+        let mut filters = crate::models::SearchFilters::default();
+        if !source_scope.is_empty() {
+            filters.source_ids = source_scope
+                .iter()
+                .filter_map(|s| uuid::Uuid::parse_str(s).ok())
+                .collect();
+        }
+
         let sq = SearchQuery {
             text: args.query,
-            filters: Default::default(),
+            filters,
             limit,
             offset: 0,
         };

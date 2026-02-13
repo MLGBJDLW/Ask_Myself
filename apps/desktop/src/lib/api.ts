@@ -224,6 +224,9 @@ export const deleteConversation = (id: string) =>
 export const renameConversation = (id: string, title: string) =>
   invoke<void>('rename_conversation_cmd', { id, title });
 
+export const updateConversationSystemPrompt = (id: string, systemPrompt: string) =>
+  invoke<void>('update_conversation_system_prompt_cmd', { id, systemPrompt });
+
 // ── Agent Chat ──────────────────────────────────────────────────────────
 
 export const agentChat = (conversationId: string, message: string) =>
@@ -231,3 +234,11 @@ export const agentChat = (conversationId: string, message: string) =>
 
 export const agentStop = (conversationId: string) =>
   invoke<void>('agent_stop_cmd', { conversationId });
+
+// ── Conversation Sources ────────────────────────────────────────────────
+
+export const setConversationSources = (conversationId: string, sourceIds: string[]) =>
+  invoke<void>('set_conversation_sources_cmd', { conversationId, sourceIds });
+
+export const getConversationSources = (conversationId: string) =>
+  invoke<string[]>('get_conversation_sources_cmd', { conversationId });

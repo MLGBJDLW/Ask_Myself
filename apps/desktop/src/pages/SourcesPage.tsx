@@ -4,8 +4,6 @@ import {
   FolderOpen,
   FolderPlus,
   FolderSearch,
-  File,
-  Globe,
   ScanSearch,
   Cpu,
   Trash2,
@@ -14,6 +12,7 @@ import {
   Pencil,
   Eye,
   EyeOff,
+  Info,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { listen } from '@tauri-apps/api/event';
@@ -37,21 +36,12 @@ import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 
 const KIND_OPTIONS = [
   { value: 'local_folder', labelKey: 'sources.addModal.kindFolder' as const, icon: FolderOpen },
-  { value: 'single_file', labelKey: 'sources.addModal.kindFile' as const, icon: File },
-  { value: 'web', labelKey: 'sources.addModal.kindWeb' as const, icon: Globe },
 ] as const;
 
 type TFunc = (key: keyof TranslationKeys, params?: Record<string, string | number>) => string;
 
-function kindIcon(kind: string) {
-  switch (kind) {
-    case 'single_file':
-      return <File size={18} />;
-    case 'web':
-      return <Globe size={18} />;
-    default:
-      return <FolderOpen size={18} />;
-  }
+function kindIcon(_kind: string) {
+  return <FolderOpen size={18} />;
 }
 
 function kindLabel(kind: string, t: TFunc) {
@@ -102,7 +92,6 @@ export function SourcesPage() {
 
   // Add source modal
   const [showAddModal, setShowAddModal] = useState(false);
-  const [formKind, setFormKind] = useState('local_folder');
   const [formPath, setFormPath] = useState('');
   const [formInclude, setFormInclude] = useState('**/*.md');
   const [formExclude, setFormExclude] = useState('');
@@ -192,7 +181,6 @@ export function SourcesPage() {
   /* ── Add ──────────────────────────────────────────────────────────── */
 
   const resetForm = () => {
-    setFormKind('local_folder');
     setFormPath('');
     setFormInclude('**/*.md');
     setFormExclude('');
@@ -503,33 +491,14 @@ export function SourcesPage() {
         }
       >
         <div className="space-y-4">
-          {/* Kind selector */}
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1.5">{t('sources.addModal.kind')}</label>
-            <div className="flex gap-2">
-              {KIND_OPTIONS.map((opt) => {
-                const Icon = opt.icon;
-                const active = formKind === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => setFormKind(opt.value)}
-                    className={`
-                      flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
-                      border transition-colors duration-fast cursor-pointer
-                      ${active
-                        ? 'border-accent bg-accent-subtle text-accent'
-                        : 'border-border bg-surface-1 text-text-secondary hover:border-border-hover'
-                      }
-                    `}
-                  >
-                    <Icon size={14} />
-                    {t(opt.labelKey)}
-                  </button>
-                );
-              })}
-            </div>
+          {/* Source type info */}
+          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-surface-1 border border-border">
+            <FolderOpen size={14} className="text-accent shrink-0" />
+            <span className="text-xs font-medium text-text-primary">{t('sources.addModal.kindFolder')}</span>
+            <span className="ml-auto flex items-center gap-1 text-[11px] text-text-tertiary">
+              <Info size={12} />
+              {t('sources.moreTypesSoon')}
+            </span>
           </div>
 
           {/* Root path */}
@@ -540,30 +509,28 @@ export function SourcesPage() {
                 <Input
                   value={formPath}
                   onChange={(e) => setFormPath(e.target.value)}
-                  placeholder={formKind === 'web' ? 'https://example.com' : 'C:\\Users\\you\\notes  /  /home/user/notes'}
-                  icon={formKind === 'web' ? <Globe size={15} /> : <FolderOpen size={15} />}
+                  placeholder="C:\\Users\\you\\notes  /  /home/user/notes"
+                  icon={<FolderOpen size={15} />}
                 />
               </div>
-              {formKind !== 'web' && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="shrink-0 h-10"
-                  onClick={async () => {
-                    const selected = await open({
-                      directory: formKind === 'local_folder',
-                      multiple: false,
-                      title: t('sources.addModal.rootPath'),
-                    });
-                    if (selected) {
-                      setFormPath(typeof selected === 'string' ? selected : selected[0]);
-                    }
-                  }}
-                >
-                  <FolderSearch size={15} className="mr-1" />
-                  Browse
-                </Button>
-              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="shrink-0 h-10"
+                onClick={async () => {
+                  const selected = await open({
+                    directory: true,
+                    multiple: false,
+                    title: t('sources.addModal.rootPath'),
+                  });
+                  if (selected) {
+                    setFormPath(typeof selected === 'string' ? selected : selected[0]);
+                  }
+                }}
+              >
+                <FolderSearch size={15} className="mr-1" />
+                Browse
+              </Button>
             </div>
           </div>
 

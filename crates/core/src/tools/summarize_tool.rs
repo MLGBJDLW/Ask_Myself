@@ -49,6 +49,7 @@ impl Tool for SummarizeTool {
         call_id: &str,
         arguments: &str,
         db: &Database,
+        _source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let args: SummarizeArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid summarize_evidence arguments: {e}"))

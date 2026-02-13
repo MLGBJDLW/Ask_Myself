@@ -39,6 +39,9 @@ export interface TranslationKeys {
   'search.clearFilters': string;
   'search.sourceFilter': string;
   'search.fileTypeFilter': string;
+  'search.dateRange': string;
+  'search.dateFrom': string;
+  'search.dateTo': string;
   'search.resultCount': string;
   'search.totalCount': string;
   'search.initialTitle': string;
@@ -51,11 +54,20 @@ export interface TranslationKeys {
   'search.needSelectPlaybook': string;
   'search.savedToPlaybook': string;
   'search.saveError': string;
+  'search.markdown': string;
   'search.plaintext': string;
   'search.log': string;
   'search.pdf': string;
+  'search.docx': string;
+  'search.excel': string;
+  'search.pptx': string;
   'search.optional': string;
   'search.ms': string;
+  'search.page': string;
+  'search.of': string;
+  'search.previous': string;
+  'search.next': string;
+  'search.showingResults': string;
 
   // Evidence Card
   'card.relevance': string;
@@ -84,8 +96,7 @@ export interface TranslationKeys {
   'sources.addModal.title': string;
   'sources.addModal.kind': string;
   'sources.addModal.kindFolder': string;
-  'sources.addModal.kindFile': string;
-  'sources.addModal.kindWeb': string;
+  'sources.moreTypesSoon': string;
   'sources.addModal.rootPath': string;
   'sources.addModal.includeGlobs': string;
   'sources.addModal.excludeGlobs': string;
@@ -156,6 +167,14 @@ export interface TranslationKeys {
   'playbooks.queryPlaceholder': string;
   'playbooks.chunkId': string;
   'playbooks.remove': string;
+  'playbooks.editNote': string;
+  'playbooks.saveNote': string;
+  'playbooks.cancelEdit': string;
+  'playbooks.moveUp': string;
+  'playbooks.moveDown': string;
+  'playbooks.noteUpdated': string;
+  'playbooks.noteUpdateError': string;
+  'playbooks.reorderError': string;
 
   // Settings
   'settings.title': string;
@@ -243,6 +262,7 @@ export interface TranslationKeys {
   'chat.stop': string;
   'chat.retry': string;
   'chat.copyMessage': string;
+  'chat.copied': string;
   'chat.noProvider': string;
   'chat.noProviderDesc': string;
   'chat.configureProvider': string;
@@ -257,6 +277,23 @@ export interface TranslationKeys {
   'chat.createError': string;
   'chat.newConversation': string;
   'chat.askAboutPrompt': string;
+  'chat.searchConversations': string;
+  'chat.pinned': string;
+  'chat.today': string;
+  'chat.yesterday': string;
+  'chat.last7Days': string;
+  'chat.last30Days': string;
+  'chat.older': string;
+  'chat.conversationCount': string;
+  'chat.noSearchResults': string;
+  'chat.knowledgeSources': string;
+  'chat.allSources': string;
+  'chat.selectSources': string;
+  'chat.systemPrompt': string;
+  'chat.editSystemPrompt': string;
+  'chat.defaultPrompt': string;
+  'chat.customPrompt': string;
+  'chat.savePrompt': string;
 
   // Time
   'time.justNow': string;

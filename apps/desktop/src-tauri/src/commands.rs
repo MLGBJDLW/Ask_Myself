@@ -844,7 +844,44 @@ pub async fn rename_conversation_cmd(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn update_conversation_system_prompt_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    system_prompt: String,
+) -> Result<(), String> {
+    state
+        .db
+        .update_conversation_system_prompt(&id, &system_prompt)
+        .map_err(|e| e.to_string())
+}
+
 // ── Agent Config Commands ───────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn set_conversation_sources_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+    source_ids: Vec<String>,
+) -> Result<(), String> {
+    state
+        .db
+        .set_conversation_sources(&conversation_id, &source_ids)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_conversation_sources_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Vec<String>, String> {
+    state
+        .db
+        .get_linked_sources(&conversation_id)
+        .map_err(|e| e.to_string())
+}
+
+// ── Agent Config Commands (LLM providers) ───────────────────────────────
 
 #[tauri::command]
 pub async fn list_agent_configs_cmd(
@@ -986,7 +1023,7 @@ pub async fn agent_chat_cmd(
 
         // Run the agent.
         let executor = AgentExecutor::new(provider, tools, executor_config);
-        let result = executor.run(history, message, &db, tx).await;
+        let result = executor.run(history, message, &db, Some(&conv_id), tx).await;
 
         // Wait for event forwarder to finish.
         let _ = event_forwarder.await;

@@ -62,6 +62,7 @@ impl Tool for FileTool {
         call_id: &str,
         arguments: &str,
         db: &Database,
+        _source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let args: FileArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid read_file arguments: {e}"))

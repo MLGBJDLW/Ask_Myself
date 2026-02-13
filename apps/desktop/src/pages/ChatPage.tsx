@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Settings, MessageCircle } from 'lucide-react';
+import { SourceSelector } from '../components/chat/SourceSelector';
+import { SystemPromptEditor } from '../components/chat/SystemPromptEditor';
 import { toast } from 'sonner';
 import * as api from '../lib/api';
 import { useAgentStream } from '../lib/useAgentStream';
@@ -10,6 +12,22 @@ import { ChatSidebar } from '../components/chat/ChatSidebar';
 import { ChatMessages } from '../components/chat/ChatMessages';
 import { ChatInput } from '../components/chat/ChatInput';
 import type { Conversation, ConversationMessage, AgentConfig } from '../types/conversation';
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function generateTitle(message: string): string {
+  const trimmed = message.trim();
+  if (!trimmed) return '';
+  if (trimmed.length <= 50) return trimmed;
+  const truncated = trimmed.slice(0, 50);
+  const lastSpace = truncated.lastIndexOf(' ');
+  if (lastSpace > 20) {
+    return truncated.slice(0, lastSpace) + '...';
+  }
+  return truncated + '...';
+}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -24,6 +42,7 @@ export function ChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [defaultConfig, setDefaultConfig] = useState<AgentConfig | null>(null);
+  const [customSystemPrompt, setCustomSystemPrompt] = useState<string>('');
   const [loadingConvos, setLoadingConvos] = useState(true);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
 
@@ -72,8 +91,11 @@ export function ChatPage() {
     reset();
     api
       .getConversation(activeId)
-      .then(([, msgs]) => {
-        if (!cancelled) setMessages(msgs);
+      .then(([conv, msgs]) => {
+        if (!cancelled) {
+          setMessages(msgs);
+          setCustomSystemPrompt(conv.systemPrompt ?? '');
+        }
       })
       .catch(() => {
         if (!cancelled) setMessages([]);
@@ -95,6 +117,24 @@ export function ChatPage() {
       }).catch(() => {});
       // Also refresh conversation list (updatedAt changes)
       loadConversations();
+
+      // Auto-title: generate title from first user message if untitled
+      const conv = conversations.find((c) => c.id === activeId);
+      if (conv && !conv.title) {
+        const firstUserMsg = messages.find((m) => m.role === 'user');
+        if (firstUserMsg) {
+          const title = generateTitle(firstUserMsg.content);
+          if (title) {
+            api.renameConversation(activeId, title)
+              .then(() => {
+                setConversations((prev) =>
+                  prev.map((c) => (c.id === activeId ? { ...c, title } : c)),
+                );
+              })
+              .catch(() => {});
+          }
+        }
+      }
     }
     // Only trigger on isStreaming becoming false
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -117,6 +157,7 @@ export function ChatPage() {
   const handleNewConversation = useCallback(() => {
     navigate('/chat');
     setMessages([]);
+    setCustomSystemPrompt('');
     reset();
   }, [navigate, reset]);
 
@@ -162,6 +203,7 @@ export function ChatPage() {
           const conv = await api.createConversation(
             defaultConfig.provider,
             defaultConfig.model,
+            customSystemPrompt || undefined,
           );
           convId = conv.id;
           setConversations((prev) => [conv, ...prev]);
@@ -188,7 +230,7 @@ export function ChatPage() {
 
       await send(convId, message);
     },
-    [activeId, defaultConfig, messages.length, navigate, send],
+    [activeId, defaultConfig, customSystemPrompt, messages.length, navigate, send],
   );
 
   const handleStop = useCallback(() => {
@@ -245,6 +287,16 @@ export function ChatPage() {
           </div>
         ) : (
           <>
+            {activeId && (
+              <div className="shrink-0 border-b border-border px-4 py-2 flex items-center gap-2">
+                <SourceSelector conversationId={activeId} />
+                <SystemPromptEditor
+                  conversationId={activeId}
+                  systemPrompt={customSystemPrompt}
+                  onSaved={(newPrompt) => setCustomSystemPrompt(newPrompt)}
+                />
+              </div>
+            )}
             <ChatMessages
               messages={messages}
               streamText={streamText}

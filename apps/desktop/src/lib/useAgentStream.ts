@@ -3,6 +3,8 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import * as api from './api';
 import type { AgentEvent } from '../types';
 
+const STREAM_TIMEOUT_MS = 120_000; // 120 seconds
+
 interface ToolCallEvent {
   callId: string;
   toolName: string;
@@ -29,6 +31,31 @@ export function useAgentStream(): UseAgentStreamReturn {
   const [toolCalls, setToolCalls] = useState<ToolCallEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const unlistenRef = useRef<UnlistenFn | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearStreamTimeout = useCallback(() => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  }, []);
+
+  const cleanup = useCallback(() => {
+    clearStreamTimeout();
+    if (unlistenRef.current) {
+      unlistenRef.current();
+      unlistenRef.current = null;
+    }
+  }, [clearStreamTimeout]);
+
+  const resetStreamTimeout = useCallback(() => {
+    clearStreamTimeout();
+    timeoutRef.current = setTimeout(() => {
+      setError('Agent response timed out. Please try again.');
+      setIsStreaming(false);
+      cleanup();
+    }, STREAM_TIMEOUT_MS);
+  }, [clearStreamTimeout, cleanup]);
 
   const reset = useCallback(() => {
     setStreamText('');
@@ -37,19 +64,24 @@ export function useAgentStream(): UseAgentStreamReturn {
   }, []);
 
   const send = useCallback(async (conversationId: string, message: string) => {
-    // Cleanup previous listener
-    if (unlistenRef.current) {
-      unlistenRef.current();
-    }
+    // Cleanup previous listener and timeout
+    cleanup();
 
     setIsStreaming(true);
     setError(null);
     setStreamText('');
     setToolCalls([]);
 
+    // Start the inactivity timeout
+    resetStreamTimeout();
+
     // Listen for agent events BEFORE sending the command
     unlistenRef.current = await listen<AgentEvent>('agent:event', (event) => {
       const data = event.payload;
+
+      // Reset timeout on every received event
+      resetStreamTimeout();
+
       switch (data.type) {
         case 'textDelta':
           setStreamText(prev => prev + (data.delta || ''));
@@ -73,18 +105,12 @@ export function useAgentStream(): UseAgentStreamReturn {
           break;
         case 'done':
           setIsStreaming(false);
-          if (unlistenRef.current) {
-            unlistenRef.current();
-            unlistenRef.current = null;
-          }
+          cleanup();
           break;
         case 'error':
           setError((data.message as unknown as string) || 'Unknown error');
           setIsStreaming(false);
-          if (unlistenRef.current) {
-            unlistenRef.current();
-            unlistenRef.current = null;
-          }
+          cleanup();
           break;
       }
     });
@@ -95,8 +121,9 @@ export function useAgentStream(): UseAgentStreamReturn {
     } catch (err) {
       setError(String(err));
       setIsStreaming(false);
+      cleanup();
     }
-  }, []);
+  }, [cleanup, resetStreamTimeout]);
 
   const stop = useCallback(async (conversationId: string) => {
     try {
@@ -105,11 +132,8 @@ export function useAgentStream(): UseAgentStreamReturn {
       // Ignore errors on stop
     }
     setIsStreaming(false);
-    if (unlistenRef.current) {
-      unlistenRef.current();
-      unlistenRef.current = null;
-    }
-  }, []);
+    cleanup();
+  }, [cleanup]);
 
   return { send, stop, isStreaming, streamText, toolCalls, error, reset };
 }

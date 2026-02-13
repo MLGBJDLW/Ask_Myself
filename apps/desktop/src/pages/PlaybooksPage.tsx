@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { BookOpen, Plus, Trash2, X, Pencil, FileText, Calendar } from 'lucide-react';
+import { BookOpen, Plus, Trash2, X, Pencil, FileText, Calendar, ChevronUp, ChevronDown, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../lib/api';
 import type { Playbook, PlaybookCitation } from '../types';
@@ -75,6 +75,11 @@ export function PlaybooksPage() {
 
   /* ── Remove citation confirm ────────────────────────────────────── */
   const [removeCitTarget, setRemoveCitTarget] = useState<string | null>(null);
+
+  /* ── Citation note editing ──────────────────────────────────────── */
+  const [editingCitId, setEditingCitId] = useState<string | null>(null);
+  const [editNoteText, setEditNoteText] = useState('');
+  const [savingNote, setSavingNote] = useState(false);
 
   /* ================================================================ */
   /*  Data loading                                                     */
@@ -187,6 +192,53 @@ export function PlaybooksPage() {
       toast.error(`${t('playbooks.updateError')}: ${String(e)}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  /* ── Citation note editing ──────────────────────────────────────── */
+
+  const startEditNote = (cit: PlaybookCitation) => {
+    setEditingCitId(cit.id);
+    setEditNoteText(cit.annotation ?? '');
+  };
+
+  const cancelEditNote = () => {
+    setEditingCitId(null);
+    setEditNoteText('');
+  };
+
+  const handleSaveNote = async () => {
+    if (!editingCitId) return;
+    setSavingNote(true);
+    try {
+      await api.updateCitationNote(editingCitId, editNoteText.trim());
+      setCitations((prev) =>
+        prev.map((c) => (c.id === editingCitId ? { ...c, annotation: editNoteText.trim() } : c)),
+      );
+      toast.success(t('playbooks.noteUpdated'));
+      setEditingCitId(null);
+      setEditNoteText('');
+    } catch (e) {
+      toast.error(`${t('playbooks.noteUpdateError')}: ${String(e)}`);
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  /* ── Citation reordering ────────────────────────────────────────── */
+
+  const handleMoveCitation = async (index: number, direction: 'up' | 'down') => {
+    if (!selectedPlaybook) return;
+    const swapIndex = direction === 'up' ? index - 1 : index + 1;
+    if (swapIndex < 0 || swapIndex >= citations.length) return;
+    const reordered = [...citations];
+    [reordered[index], reordered[swapIndex]] = [reordered[swapIndex], reordered[index]];
+    setCitations(reordered);
+    try {
+      await api.reorderCitations(selectedPlaybook.id, reordered.map((c) => c.id));
+    } catch (e) {
+      setCitations(citations); // revert on error
+      toast.error(`${t('playbooks.reorderError')}: ${String(e)}`);
     }
   };
 
@@ -416,19 +468,80 @@ export function PlaybooksPage() {
                                 <p className="text-xs font-mono text-text-tertiary">
                                   {t('playbooks.chunkId')}: {cit.chunkId.slice(0, 12)}…
                                 </p>
-                                {cit.annotation && (
-                                  <p className="mt-1.5 text-sm text-text-secondary leading-relaxed">
-                                    {cit.annotation}
-                                  </p>
+                                {editingCitId === cit.id ? (
+                                  <div className="mt-1.5 space-y-2">
+                                    <textarea
+                                      value={editNoteText}
+                                      onChange={(e) => setEditNoteText(e.target.value)}
+                                      className="w-full rounded-md border border-border bg-surface-1 px-2.5 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30 resize-y min-h-[60px]"
+                                      placeholder={t('playbooks.editNote')}
+                                      autoFocus
+                                    />
+                                    <div className="flex items-center gap-1.5">
+                                      <Button
+                                        variant="primary"
+                                        size="sm"
+                                        icon={<Check size={13} />}
+                                        onClick={handleSaveNote}
+                                        loading={savingNote}
+                                      >
+                                        {t('playbooks.saveNote')}
+                                      </Button>
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={cancelEditNote}
+                                        disabled={savingNote}
+                                      >
+                                        {t('playbooks.cancelEdit')}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  cit.annotation && (
+                                    <p className="mt-1.5 text-sm text-text-secondary leading-relaxed">
+                                      {cit.annotation}
+                                    </p>
+                                  )
                                 )}
                               </div>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                icon={<X size={14} />}
-                                className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                                onClick={() => setRemoveCitTarget(cit.id)}
-                              />
+                              <div className="flex items-center gap-0.5 shrink-0">
+                                {editingCitId !== cit.id && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    icon={<Pencil size={13} />}
+                                    className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                    onClick={() => startEditNote(cit)}
+                                    title={t('playbooks.editNote')}
+                                  />
+                                )}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  icon={<ChevronUp size={14} />}
+                                  className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                  onClick={() => handleMoveCitation(i, 'up')}
+                                  disabled={i === 0}
+                                  title={t('playbooks.moveUp')}
+                                />
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  icon={<ChevronDown size={14} />}
+                                  className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                  onClick={() => handleMoveCitation(i, 'down')}
+                                  disabled={i === citations.length - 1}
+                                  title={t('playbooks.moveDown')}
+                                />
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  icon={<X size={14} />}
+                                  className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                  onClick={() => setRemoveCitTarget(cit.id)}
+                                />
+                              </div>
                             </div>
                           </motion.div>
                         ))}

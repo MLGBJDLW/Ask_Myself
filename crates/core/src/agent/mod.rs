@@ -137,6 +137,7 @@ impl AgentExecutor {
     /// * `history` — prior conversation messages (already stored in DB).
     /// * `user_message` — the new user input.
     /// * `db` — database handle passed through to tools and privacy config.
+    /// * `conversation_id` — optional conversation ID for source scoping.
     /// * `tx` — channel for streaming [`AgentEvent`]s to the caller (e.g. Tauri).
     ///
     /// Returns the final assistant [`Message`] on success.
@@ -145,6 +146,7 @@ impl AgentExecutor {
         history: Vec<Message>,
         user_message: String,
         db: &Database,
+        conversation_id: Option<&str>,
         tx: mpsc::Sender<AgentEvent>,
     ) -> Result<Message, CoreError> {
         let model = self.config.model.as_deref().unwrap_or(DEFAULT_MODEL);
@@ -177,6 +179,12 @@ impl AgentExecutor {
             None
         } else {
             Some(tool_defs)
+        };
+
+        // --- 3b. Resolve source scope for this conversation ------------------
+        let source_scope: Vec<String> = match conversation_id {
+            Some(cid) => db.get_linked_sources(cid).unwrap_or_default(),
+            None => Vec::new(),
         };
 
         let mut total_usage = Usage::default();
@@ -281,7 +289,7 @@ impl AgentExecutor {
 
                 let tool_msg = match self
                     .tools
-                    .execute(&tc.name, &tc.id, &tc.arguments, db)
+                    .execute(&tc.name, &tc.id, &tc.arguments, db, &source_scope)
                     .await
                 {
                     Ok(result) => {

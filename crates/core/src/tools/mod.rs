@@ -52,11 +52,15 @@ pub trait Tool: Send + Sync {
     }
 
     /// Execute the tool with the given JSON-encoded arguments.
+    ///
+    /// `source_scope` restricts results to the given source IDs when non-empty
+    /// (used for per-conversation source scoping).
     async fn execute(
         &self,
         call_id: &str,
         arguments: &str,
         db: &Database,
+        source_scope: &[String],
     ) -> Result<ToolResult, CoreError>;
 }
 
@@ -100,11 +104,12 @@ impl ToolRegistry {
         call_id: &str,
         arguments: &str,
         db: &Database,
+        source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let tool = self
             .get(name)
             .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
-        tool.execute(call_id, arguments, db).await
+        tool.execute(call_id, arguments, db, source_scope).await
     }
 }
 

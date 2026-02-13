@@ -15,6 +15,7 @@ const V005_PRIVACY_CONFIG: &str = include_str!("v005_privacy_config.sql");
 const V006_EMBEDDER_CONFIG: &str = include_str!("v006_embedder_config.sql");
 const V007_CONVERSATIONS: &str = include_str!("v007_conversations.sql");
 const V008_AGENT_CONFIG_CONTEXT_WINDOW: &str = include_str!("v008_agent_config_context_window.sql");
+const V009_CONVERSATION_SOURCES: &str = include_str!("v009_conversation_sources.sql");
 
 /// Ordered list of migrations to apply.
 const MIGRATIONS: &[(&str, &str)] = &[
@@ -26,6 +27,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("v006_embedder_config", V006_EMBEDDER_CONFIG),
     ("v007_conversations", V007_CONVERSATIONS),
     ("v008_agent_config_context_window", V008_AGENT_CONFIG_CONTEXT_WINDOW),
+    ("v009_conversation_sources", V009_CONVERSATION_SOURCES),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -111,6 +113,6 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM _migrations", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 6, "should have exactly 6 migration records");
+        assert_eq!(count, MIGRATIONS.len() as i64, "should have exactly {} migration records", MIGRATIONS.len());
     }
 }

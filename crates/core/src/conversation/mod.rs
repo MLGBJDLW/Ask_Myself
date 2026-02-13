@@ -219,6 +219,23 @@ impl Database {
         }
         Ok(())
     }
+
+    /// Update the system prompt of a conversation (also bumps `updated_at`).
+    pub fn update_conversation_system_prompt(
+        &self,
+        id: &str,
+        system_prompt: &str,
+    ) -> Result<(), CoreError> {
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE conversations SET system_prompt = ?2, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![id, system_prompt],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!("Conversation {id}")));
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +493,88 @@ impl Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(CoreError::Database(e)),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Conversation Source Scoping
+// ---------------------------------------------------------------------------
+
+impl Database {
+    /// Link multiple sources to a conversation.
+    pub fn link_sources(
+        &self,
+        conversation_id: &str,
+        source_ids: &[String],
+    ) -> Result<(), CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "INSERT OR IGNORE INTO conversation_sources (conversation_id, source_id)
+             VALUES (?1, ?2)",
+        )?;
+        for sid in source_ids {
+            stmt.execute(rusqlite::params![conversation_id, sid])?;
+        }
+        Ok(())
+    }
+
+    /// Unlink a single source from a conversation.
+    pub fn unlink_source(
+        &self,
+        conversation_id: &str,
+        source_id: &str,
+    ) -> Result<(), CoreError> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM conversation_sources
+             WHERE conversation_id = ?1 AND source_id = ?2",
+            rusqlite::params![conversation_id, source_id],
+        )?;
+        Ok(())
+    }
+
+    /// Get all source IDs linked to a conversation.
+    pub fn get_linked_sources(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<String>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT source_id FROM conversation_sources
+             WHERE conversation_id = ?1
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    /// Replace all source links for a conversation (delete old, insert new).
+    pub fn set_conversation_sources(
+        &self,
+        conversation_id: &str,
+        source_ids: &[String],
+    ) -> Result<(), CoreError> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM conversation_sources WHERE conversation_id = ?1",
+            rusqlite::params![conversation_id],
+        )?;
+        if !source_ids.is_empty() {
+            let mut stmt = conn.prepare(
+                "INSERT INTO conversation_sources (conversation_id, source_id)
+                 VALUES (?1, ?2)",
+            )?;
+            for sid in source_ids {
+                stmt.execute(rusqlite::params![conversation_id, sid])?;
+            }
+        }
+        Ok(())
     }
 }
 

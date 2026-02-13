@@ -72,6 +72,7 @@ impl Tool for PlaybookTool {
         call_id: &str,
         arguments: &str,
         db: &Database,
+        _source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let args: PlaybookArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid manage_playbook arguments: {e}"))

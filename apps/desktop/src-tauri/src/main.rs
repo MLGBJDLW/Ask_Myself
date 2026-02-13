@@ -103,6 +103,10 @@ fn main() {
             commands::get_conversation_cmd,
             commands::delete_conversation_cmd,
             commands::rename_conversation_cmd,
+            commands::update_conversation_system_prompt_cmd,
+            // Conversation sources
+            commands::set_conversation_sources_cmd,
+            commands::get_conversation_sources_cmd,
             // Agent configs
             commands::list_agent_configs_cmd,
             commands::save_agent_config_cmd,
