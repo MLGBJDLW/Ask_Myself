@@ -3,8 +3,8 @@
 use futures::StreamExt;
 use tokio::sync::mpsc;
 
-use crate::error::CoreError;
 use super::{FinishReason, StreamChunk, ToolCallDelta, Usage};
+use crate::error::CoreError;
 
 // ---------------------------------------------------------------------------
 // SSE JSON wire types (OpenAI streaming format)
@@ -32,7 +32,6 @@ struct SseDelta {
 struct SseToolCallDelta {
     id: Option<String>,
     function: Option<SseFunctionDelta>,
-    #[allow(dead_code)]
     index: Option<u32>,
 }
 
@@ -63,41 +62,16 @@ fn parse_finish_reason(s: &str) -> FinishReason {
     }
 }
 
-fn map_sse_chunk(sse: SseChunk) -> StreamChunk {
-    let choice = sse.choices.as_ref().and_then(|c| c.first());
-
-    let delta = choice
-        .and_then(|c| c.delta.content.clone())
-        .unwrap_or_default();
-
-    let tool_call_delta = choice
-        .and_then(|c| c.delta.tool_calls.as_ref())
-        .and_then(|tcs| tcs.first())
-        .map(|tc| ToolCallDelta {
-            id: tc.id.clone().unwrap_or_default(),
-            name: tc.function.as_ref().and_then(|f| f.name.clone()),
-            arguments_delta: tc
-                .function
-                .as_ref()
-                .and_then(|f| f.arguments.clone())
-                .unwrap_or_default(),
-        });
-
-    let finish_reason = choice
-        .and_then(|c| c.finish_reason.as_deref())
-        .map(parse_finish_reason);
-
-    let usage = sse.usage.map(|u| Usage {
-        prompt_tokens: u.prompt_tokens,
-        completion_tokens: u.completion_tokens,
-        total_tokens: u.total_tokens,
-    });
-
-    StreamChunk {
-        delta,
-        tool_call_delta,
-        finish_reason,
-        usage,
+fn map_tool_call_delta(tc: &SseToolCallDelta) -> ToolCallDelta {
+    ToolCallDelta {
+        id: tc.id.clone().unwrap_or_default(),
+        name: tc.function.as_ref().and_then(|f| f.name.clone()),
+        arguments_delta: tc
+            .function
+            .as_ref()
+            .and_then(|f| f.arguments.clone())
+            .unwrap_or_default(),
+        index: tc.index,
     }
 }
 
@@ -117,8 +91,7 @@ pub async fn parse_sse_stream(
     let mut buffer = String::new();
 
     while let Some(chunk_result) = byte_stream.next().await {
-        let chunk =
-            chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
+        let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
         let text = std::str::from_utf8(&chunk)
             .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in SSE stream: {e}")))?;
         buffer.push_str(text);
@@ -134,7 +107,10 @@ pub async fn parse_sse_stream(
             }
 
             // Only process `data:` lines; ignore `event:`, `id:`, `retry:`, etc.
-            let Some(data) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) else {
+            let Some(data) = line
+                .strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+            else {
                 continue;
             };
 
@@ -148,10 +124,52 @@ pub async fn parse_sse_stream(
             // Parse JSON and send through channel.
             match serde_json::from_str::<SseChunk>(data) {
                 Ok(sse) => {
-                    let chunk = map_sse_chunk(sse);
-                    if tx.send(Ok(chunk)).await.is_err() {
-                        // Receiver dropped — stop processing.
-                        return Ok(());
+                    let choice = sse.choices.as_ref().and_then(|c| c.first());
+                    let delta = choice
+                        .and_then(|c| c.delta.content.clone())
+                        .unwrap_or_default();
+                    let finish_reason = choice
+                        .and_then(|c| c.finish_reason.as_deref())
+                        .map(parse_finish_reason);
+                    let usage = sse.usage.map(|u| Usage {
+                        prompt_tokens: u.prompt_tokens,
+                        completion_tokens: u.completion_tokens,
+                        total_tokens: u.total_tokens,
+                    });
+
+                    // Emit text/finish/usage metadata as one chunk.
+                    if !delta.is_empty() || finish_reason.is_some() || usage.is_some() {
+                        if tx
+                            .send(Ok(StreamChunk {
+                                delta,
+                                tool_call_delta: None,
+                                finish_reason,
+                                usage,
+                            }))
+                            .await
+                            .is_err()
+                        {
+                            return Ok(());
+                        }
+                    }
+
+                    // Emit each tool call delta separately so multiple tool calls
+                    // in one SSE frame are preserved.
+                    if let Some(tool_calls) = choice.and_then(|c| c.delta.tool_calls.as_ref()) {
+                        for tc in tool_calls {
+                            if tx
+                                .send(Ok(StreamChunk {
+                                    delta: String::new(),
+                                    tool_call_delta: Some(map_tool_call_delta(tc)),
+                                    finish_reason: None,
+                                    usage: None,
+                                }))
+                                .await
+                                .is_err()
+                            {
+                                return Ok(());
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -159,6 +177,7 @@ pub async fn parse_sse_stream(
                     let _ = tx
                         .send(Err(CoreError::Llm(format!("SSE JSON parse error: {e}"))))
                         .await;
+                    continue;
                 }
             }
         }

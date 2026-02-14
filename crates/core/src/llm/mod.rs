@@ -137,6 +137,9 @@ pub struct ToolCallDelta {
     pub name: Option<String>,
     /// Partial JSON arguments appended incrementally.
     pub arguments_delta: String,
+    /// Optional tool-call index from providers that stream multiple calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------

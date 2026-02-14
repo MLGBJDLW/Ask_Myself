@@ -50,6 +50,7 @@ tout.txt
 .github/agents/
 .github/prompts/
 .github/copilot*
+.github/skills/
 
 # Ouroboros working files (keep templates/agents)
 .ouroboros/

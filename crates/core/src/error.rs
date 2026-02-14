@@ -1,5 +1,4 @@
 /// Core error types for the ask-core crate.
-
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -36,4 +35,7 @@ pub enum CoreError {
 
     #[error("Agent error: {0}")]
     Agent(String),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
 }

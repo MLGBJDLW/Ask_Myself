@@ -1,0 +1,26 @@
+{
+  "name": "list_dir",
+  "description": "List contents of a directory within the knowledge base. Use this to discover files and navigate the directory structure before reading specific files.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Directory path to list. Must be within a registered source directory."
+      },
+      "recursive": {
+        "type": "boolean",
+        "description": "If true, list contents recursively up to max_depth. Default: false."
+      },
+      "max_depth": {
+        "type": "integer",
+        "description": "Maximum recursion depth when recursive is true. Default: 3."
+      },
+      "pattern": {
+        "type": "string",
+        "description": "Optional filename pattern filter (e.g., '*.md', '*.pdf'). Only files matching this pattern are included."
+      }
+    },
+    "required": ["path"]
+  }
+}

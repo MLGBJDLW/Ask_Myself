@@ -58,63 +58,69 @@ impl Tool for RetrieveEvidenceTool {
             });
         }
 
-        let conn = db.conn();
+        let db = db.clone();
+        let call_id = call_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = db.conn();
 
-        let mut text = String::new();
-        let mut found = 0usize;
-        let mut artifacts: Vec<serde_json::Value> = Vec::new();
+            let mut text = String::new();
+            let mut found = 0usize;
+            let mut artifacts: Vec<serde_json::Value> = Vec::new();
 
-        for chunk_id in &args.chunk_ids {
-            let row = conn.query_row(
-                "SELECT c.id, c.content, d.path, d.title
-                 FROM chunks c
-                 JOIN documents d ON d.id = c.document_id
-                 WHERE c.id = ?1",
-                params![chunk_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                },
+            for chunk_id in &args.chunk_ids {
+                let row = conn.query_row(
+                    "SELECT c.id, c.content, d.path, d.title
+                     FROM chunks c
+                     JOIN documents d ON d.id = c.document_id
+                     WHERE c.id = ?1",
+                    params![chunk_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                );
+
+                match row {
+                    Ok((id, content, path, title)) => {
+                        found += 1;
+                        text.push_str(&format!(
+                            "--- Chunk {} ---\n\
+                             Path: {}\n\
+                             Title: {}\n\
+                             Content:\n{}\n\n",
+                            id, path, title, content
+                        ));
+                        artifacts.push(json!({
+                            "chunkId": id,
+                            "path": path,
+                            "title": title,
+                            "content": content,
+                        }));
+                    }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => {
+                        text.push_str(&format!("--- Chunk {} ---\nNot found.\n\n", chunk_id));
+                    }
+                    Err(e) => return Err(CoreError::Database(e)),
+                }
+            }
+
+            let header = format!(
+                "Retrieved {found} of {} requested chunk(s).\n\n",
+                args.chunk_ids.len()
             );
 
-            match row {
-                Ok((id, content, path, title)) => {
-                    found += 1;
-                    text.push_str(&format!(
-                        "--- Chunk {} ---\n\
-                         Path: {}\n\
-                         Title: {}\n\
-                         Content:\n{}\n\n",
-                        id, path, title, content
-                    ));
-                    artifacts.push(json!({
-                        "chunkId": id,
-                        "path": path,
-                        "title": title,
-                        "content": content,
-                    }));
-                }
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    text.push_str(&format!("--- Chunk {} ---\nNot found.\n\n", chunk_id));
-                }
-                Err(e) => return Err(CoreError::Database(e)),
-            }
-        }
-
-        let header = format!(
-            "Retrieved {found} of {} requested chunk(s).\n\n",
-            args.chunk_ids.len()
-        );
-
-        Ok(ToolResult {
-            call_id: call_id.to_string(),
-            content: format!("{header}{text}"),
-            is_error: false,
-            artifacts: Some(serde_json::to_value(&artifacts).unwrap_or_default()),
+            Ok(ToolResult {
+                call_id,
+                content: format!("{header}{text}"),
+                is_error: false,
+                artifacts: Some(serde_json::to_value(&artifacts).unwrap_or_default()),
+            })
         })
+        .await
+        .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?
     }
 }

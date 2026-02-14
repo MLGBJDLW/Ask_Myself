@@ -235,6 +235,7 @@ export const zhTW: TranslationKeys = {
   'settings.embeddingTestConnection': '測試連線',
   'settings.embeddingTestSuccess': 'API 連線成功',
   'settings.embeddingTestFail': 'API 連線失敗',
+  'settings.embeddingDownloadFail': '模型下載失敗',
   'settings.embeddingTfidfWarning': 'TF-IDF 僅做關鍵字匹配，無語義理解能力',
   'settings.embeddingProviderChangeWarning': '切換提供商後需要重新嵌入所有文件',
   'settings.embeddingSave': '儲存設定',

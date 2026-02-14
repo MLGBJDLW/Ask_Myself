@@ -10,11 +10,11 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::error::CoreError;
 use super::{
     CompletionRequest, CompletionResponse, FinishReason, LlmProvider, Message, ProviderConfig,
     Role, StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
 };
+use crate::error::CoreError;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -170,7 +170,10 @@ enum AnthropicStreamContentBlock {
         #[allow(dead_code)]
         text: String,
     },
-    ToolUse { id: String, name: String },
+    ToolUse {
+        id: String,
+        name: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -351,8 +354,7 @@ async fn parse_anthropic_stream(
     let mut current_tool_name: Option<String> = None;
 
     while let Some(chunk_result) = byte_stream.next().await {
-        let chunk =
-            chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
+        let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
         let text = std::str::from_utf8(&chunk)
             .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in stream: {e}")))?;
         buffer.push_str(text);
@@ -368,7 +370,10 @@ async fn parse_anthropic_stream(
             for line in block.lines() {
                 if let Some(ev) = line.strip_prefix("event: ") {
                     event_type = ev.trim().to_string();
-                } else if let Some(d) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) {
+                } else if let Some(d) = line
+                    .strip_prefix("data: ")
+                    .or_else(|| line.strip_prefix("data:"))
+                {
                     data = d.trim().to_string();
                 }
             }
@@ -409,6 +414,7 @@ async fn parse_anthropic_stream(
                                     id,
                                     name: Some(name),
                                     arguments_delta: String::new(),
+                                    index: None,
                                 }),
                                 finish_reason: None,
                                 usage: None,
@@ -438,6 +444,7 @@ async fn parse_anthropic_stream(
                                 id: current_tool_id.clone(),
                                 name: current_tool_name.clone(),
                                 arguments_delta: partial_json,
+                                index: None,
                             }),
                             finish_reason: None,
                             usage: None,
@@ -498,10 +505,7 @@ impl AnthropicProvider {
     }
 
     fn base_url(&self) -> &str {
-        self.config
-            .base_url
-            .as_deref()
-            .unwrap_or(DEFAULT_BASE_URL)
+        self.config.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)
     }
 
     fn api_key(&self) -> Result<&str, CoreError> {
@@ -557,10 +561,7 @@ impl LlmProvider for AnthropicProvider {
         ])
     }
 
-    async fn complete(
-        &self,
-        request: &CompletionRequest,
-    ) -> Result<CompletionResponse, CoreError> {
+    async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let url = format!("{}/messages", self.base_url());
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
@@ -658,8 +659,9 @@ impl LlmProvider for AnthropicProvider {
             }
         });
 
-        let stream =
-            futures::stream::unfold(rx, |mut rx| async { rx.recv().await.map(|item| (item, rx)) });
+        let stream = futures::stream::unfold(rx, |mut rx| async {
+            rx.recv().await.map(|item| (item, rx))
+        });
 
         Ok(Box::pin(stream))
     }

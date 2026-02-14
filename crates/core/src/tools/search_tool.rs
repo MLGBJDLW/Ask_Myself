@@ -117,42 +117,49 @@ impl Tool for SearchTool {
             offset: 0,
         };
 
-        // Try hybrid search first; fall back to FTS-only on failure.
-        let result = match search::hybrid_search(db, &sq) {
-            Ok(r) => r,
-            Err(_) => search::search(db, &sq)?,
-        };
+        // Run blocking search on a dedicated thread to avoid deadlocking the async runtime.
+        let db = db.clone();
+        let call_id = call_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            // Try hybrid search first; fall back to FTS-only on failure.
+            let result = match search::hybrid_search(&db, &sq) {
+                Ok(r) => r,
+                Err(_) => search::search(&db, &sq)?,
+            };
 
-        // Format human-readable text for the LLM.
-        let mut text = format!(
-            "Found {} results ({} ms, mode: {}):\n\n",
-            result.total_matches, result.search_time_ms, result.search_mode
-        );
+            // Format human-readable text for the LLM.
+            let mut text = format!(
+                "Found {} results ({} ms, mode: {}):\n\n",
+                result.total_matches, result.search_time_ms, result.search_mode
+            );
 
-        for (i, card) in result.evidence_cards.iter().enumerate() {
-            text.push_str(&format!(
-                "--- Result {} (score: {:.3}) ---\n\
-                 Source: {}\n\
-                 Path: {}\n\
-                 Title: {}\n\
-                 Content:\n{}\n\n",
-                i + 1,
-                card.score,
-                card.source_name,
-                card.document_path,
-                card.document_title,
-                card.content,
-            ));
-        }
+            for (i, card) in result.evidence_cards.iter().enumerate() {
+                text.push_str(&format!(
+                    "--- Result {} (score: {:.3}) ---\n\
+                     Source: {}\n\
+                     Path: {}\n\
+                     Title: {}\n\
+                     Content:\n{}\n\n",
+                    i + 1,
+                    card.score,
+                    card.source_name,
+                    card.document_path,
+                    card.document_title,
+                    card.content,
+                ));
+            }
 
-        // Structured artifacts for frontend consumption.
-        let artifacts = serde_json::to_value(&result.evidence_cards).ok();
+            // Structured artifacts for frontend consumption.
+            let artifacts = serde_json::to_value(&result.evidence_cards).ok();
 
-        Ok(ToolResult {
-            call_id: call_id.to_string(),
-            content: text,
-            is_error: false,
-            artifacts,
+            Ok(ToolResult {
+                call_id,
+                content: text,
+                is_error: false,
+                artifacts,
+            })
         })
+        .await
+        .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?
     }
 }

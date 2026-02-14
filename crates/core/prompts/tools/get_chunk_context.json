@@ -1,0 +1,18 @@
+{
+  "name": "get_chunk_context",
+  "description": "Retrieve a chunk and its surrounding context chunks from the same document. Use this after search to get more context around a relevant result.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "chunk_id": {
+        "type": "string",
+        "description": "The UUID of the chunk to get context for."
+      },
+      "context_chunks": {
+        "type": "integer",
+        "description": "Number of chunks before and after to include. Default: 2, max: 5."
+      }
+    },
+    "required": ["chunk_id"]
+  }
+}

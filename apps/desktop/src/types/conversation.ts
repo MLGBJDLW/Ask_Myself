@@ -77,3 +77,17 @@ export interface AgentEvent {
   message?: ConversationMessage | string;
   usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number };
 }
+
+export interface AgentFrontendEvent {
+  conversationId: string;
+  type: AgentEvent['type'];
+  delta?: string;
+  callId?: string;
+  toolName?: string;
+  arguments?: string;
+  content?: string;
+  isError?: boolean;
+  artifacts?: Record<string, unknown>;
+  message?: ConversationMessage | string;
+  usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number };
+}

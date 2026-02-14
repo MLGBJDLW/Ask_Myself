@@ -51,19 +51,25 @@ impl Tool for PlaybookTool {
             CoreError::InvalidInput(format!("Invalid manage_playbook arguments: {e}"))
         })?;
 
-        match args.action.as_str() {
-            "create" => execute_create(call_id, &args, db),
-            "add_citation" => execute_add_citation(call_id, &args, db),
-            "list" => execute_list(call_id, db),
-            "get" => execute_get(call_id, &args, db),
-            "delete" => execute_delete(call_id, &args, db),
-            other => Ok(ToolResult {
-                call_id: call_id.to_string(),
-                content: format!("Unknown action: {other}. Valid actions: create, add_citation, list, get, delete"),
-                is_error: true,
-                artifacts: None,
-            }),
-        }
+        let db = db.clone();
+        let call_id = call_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            match args.action.as_str() {
+                "create" => execute_create(&call_id, &args, &db),
+                "add_citation" => execute_add_citation(&call_id, &args, &db),
+                "list" => execute_list(&call_id, &db),
+                "get" => execute_get(&call_id, &args, &db),
+                "delete" => execute_delete(&call_id, &args, &db),
+                other => Ok(ToolResult {
+                    call_id: call_id.to_string(),
+                    content: format!("Unknown action: {other}. Valid actions: create, add_citation, list, get, delete"),
+                    is_error: true,
+                    artifacts: None,
+                }),
+            }
+        })
+        .await
+        .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?
     }
 }
 
@@ -72,10 +78,7 @@ fn execute_create(
     args: &PlaybookArgs,
     db: &Database,
 ) -> Result<ToolResult, CoreError> {
-    let title = args
-        .title
-        .as_deref()
-        .unwrap_or("Untitled Playbook");
+    let title = args.title.as_deref().unwrap_or("Untitled Playbook");
     let description = args.description.as_deref().unwrap_or("");
 
     let playbook = db.create_playbook(title, description, "")?;
@@ -102,9 +105,10 @@ fn execute_add_citation(
     let playbook_id = args.playbook_id.as_deref().ok_or_else(|| {
         CoreError::InvalidInput("playbook_id is required for add_citation".into())
     })?;
-    let chunk_id = args.chunk_id.as_deref().ok_or_else(|| {
-        CoreError::InvalidInput("chunk_id is required for add_citation".into())
-    })?;
+    let chunk_id = args
+        .chunk_id
+        .as_deref()
+        .ok_or_else(|| CoreError::InvalidInput("chunk_id is required for add_citation".into()))?;
     let annotation = args.annotation.as_deref().unwrap_or("");
 
     // Determine the next sort_order by checking existing citations.
@@ -127,14 +131,11 @@ fn execute_add_citation(
     })
 }
 
-fn execute_get(
-    call_id: &str,
-    args: &PlaybookArgs,
-    db: &Database,
-) -> Result<ToolResult, CoreError> {
-    let playbook_id = args.playbook_id.as_deref().ok_or_else(|| {
-        CoreError::InvalidInput("playbook_id is required for get".into())
-    })?;
+fn execute_get(call_id: &str, args: &PlaybookArgs, db: &Database) -> Result<ToolResult, CoreError> {
+    let playbook_id = args
+        .playbook_id
+        .as_deref()
+        .ok_or_else(|| CoreError::InvalidInput("playbook_id is required for get".into()))?;
 
     let playbook = db.get_playbook(playbook_id)?;
 
@@ -148,9 +149,7 @@ fn execute_get(
     for c in &playbook.citations {
         text.push_str(&format!(
             "  - chunk {} (order {}): {}\n",
-            c.chunk_id,
-            c.order,
-            c.annotation
+            c.chunk_id, c.order, c.annotation
         ));
     }
 
@@ -169,9 +168,10 @@ fn execute_delete(
     args: &PlaybookArgs,
     db: &Database,
 ) -> Result<ToolResult, CoreError> {
-    let playbook_id = args.playbook_id.as_deref().ok_or_else(|| {
-        CoreError::InvalidInput("playbook_id is required for delete".into())
-    })?;
+    let playbook_id = args
+        .playbook_id
+        .as_deref()
+        .ok_or_else(|| CoreError::InvalidInput("playbook_id is required for delete".into()))?;
 
     db.delete_playbook(playbook_id)?;
 

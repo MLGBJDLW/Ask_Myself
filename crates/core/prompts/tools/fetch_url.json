@@ -1,0 +1,18 @@
+{
+  "name": "fetch_url",
+  "description": "Fetch and read the text content of a web page. Use this when the user shares a URL or you need to reference web content. Returns the page text with HTML stripped.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "The URL to fetch (must be http:// or https://)."
+      },
+      "max_length": {
+        "type": "integer",
+        "description": "Maximum number of characters to return. Default: 5000."
+      }
+    },
+    "required": ["url"]
+  }
+}

@@ -36,63 +36,69 @@ impl Tool for ListSourcesTool {
         db: &Database,
         _source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
-        let conn = db.conn();
-        let mut stmt = conn.prepare(
-            "SELECT s.id, s.kind, s.root_path, s.created_at, s.updated_at,
-                    COUNT(d.id) AS doc_count,
-                    MAX(d.indexed_at) AS last_scan
-             FROM sources s
-             LEFT JOIN documents d ON d.source_id = s.id
-             GROUP BY s.id
-             ORDER BY s.created_at",
-        )?;
+        let db = db.clone();
+        let call_id = call_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = db.conn();
+            let mut stmt = conn.prepare(
+                "SELECT s.id, s.kind, s.root_path, s.created_at, s.updated_at,
+                        COUNT(d.id) AS doc_count,
+                        MAX(d.indexed_at) AS last_scan
+                 FROM sources s
+                 LEFT JOIN documents d ON d.source_id = s.id
+                 GROUP BY s.id
+                 ORDER BY s.created_at",
+            )?;
 
-        let rows: Vec<(String, String, String, String, String, i64, Option<String>)> = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            let rows: Vec<(String, String, String, String, String, i64, Option<String>)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
 
-        if rows.is_empty() {
-            return Ok(ToolResult {
-                call_id: call_id.to_string(),
-                content: "No sources registered.".to_string(),
+            if rows.is_empty() {
+                return Ok(ToolResult {
+                    call_id: call_id.clone(),
+                    content: "No sources registered.".to_string(),
+                    is_error: false,
+                    artifacts: None,
+                });
+            }
+
+            let mut text = format!("Found {} source(s):\n\n", rows.len());
+            let mut artifacts = Vec::new();
+
+            for (id, kind, root_path, created_at, _updated_at, doc_count, last_scan) in &rows {
+                let scan_display = last_scan.as_deref().unwrap_or("never");
+                text.push_str(&format!(
+                    "- ID: {id}\n  Path: {root_path}\n  Kind: {kind}\n  Documents: {doc_count}\n  Last scan: {scan_display}\n  Created: {created_at}\n\n",
+                ));
+                artifacts.push(serde_json::json!({
+                    "id": id,
+                    "kind": kind,
+                    "root_path": root_path,
+                    "doc_count": doc_count,
+                    "last_scan": last_scan,
+                    "created_at": created_at,
+                }));
+            }
+
+            Ok(ToolResult {
+                call_id,
+                content: text,
                 is_error: false,
-                artifacts: None,
-            });
-        }
-
-        let mut text = format!("Found {} source(s):\n\n", rows.len());
-        let mut artifacts = Vec::new();
-
-        for (id, kind, root_path, created_at, _updated_at, doc_count, last_scan) in &rows {
-            let scan_display = last_scan.as_deref().unwrap_or("never");
-            text.push_str(&format!(
-                "- ID: {id}\n  Path: {root_path}\n  Kind: {kind}\n  Documents: {doc_count}\n  Last scan: {scan_display}\n  Created: {created_at}\n\n",
-            ));
-            artifacts.push(serde_json::json!({
-                "id": id,
-                "kind": kind,
-                "root_path": root_path,
-                "doc_count": doc_count,
-                "last_scan": last_scan,
-                "created_at": created_at,
-            }));
-        }
-
-        Ok(ToolResult {
-            call_id: call_id.to_string(),
-            content: text,
-            is_error: false,
-            artifacts: Some(serde_json::Value::Array(artifacts)),
+                artifacts: Some(serde_json::Value::Array(artifacts)),
+            })
         })
+        .await
+        .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?
     }
 }

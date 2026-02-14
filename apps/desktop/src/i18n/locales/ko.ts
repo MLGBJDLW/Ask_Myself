@@ -235,6 +235,7 @@ export const ko: TranslationKeys = {
   'settings.embeddingTestConnection': '연결 테스트',
   'settings.embeddingTestSuccess': 'API 연결 성공',
   'settings.embeddingTestFail': 'API 연결 실패',
+  'settings.embeddingDownloadFail': '모델 다운로드 실패',
   'settings.embeddingTfidfWarning': 'TF-IDF는 키워드 매칭만 수행하며 의미 이해 기능이 없습니다',
   'settings.embeddingProviderChangeWarning': '제공자를 전환한 후 모든 문서를 다시 임베딩해야 합니다',
   'settings.embeddingSave': '설정 저장',

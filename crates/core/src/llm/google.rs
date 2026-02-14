@@ -4,17 +4,19 @@
 //! System prompts use top-level `systemInstruction`, roles map "assistant" → "model",
 //! and tool calls use `functionCall`/`functionResponse` parts.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::error::CoreError;
 use super::{
     CompletionRequest, CompletionResponse, FinishReason, LlmProvider, Message, ProviderConfig,
     Role, StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
 };
+use crate::error::CoreError;
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -173,6 +175,7 @@ fn convert_messages(
 ) -> (Option<GeminiSystemInstructionV2>, Vec<GeminiContentV2>) {
     let mut system_parts: Vec<GeminiPartV2> = Vec::new();
     let mut contents: Vec<GeminiContentV2> = Vec::new();
+    let mut tool_id_to_name: HashMap<String, String> = HashMap::new();
 
     for msg in messages {
         match msg.role {
@@ -198,6 +201,7 @@ fn convert_messages(
                 }
                 if let Some(ref calls) = msg.tool_calls {
                     for tc in calls {
+                        tool_id_to_name.insert(tc.id.clone(), tc.name.clone());
                         let args: serde_json::Value =
                             serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null);
                         parts.push(GeminiPartV2::FunctionCall {
@@ -215,9 +219,15 @@ fn convert_messages(
             }
             Role::Tool => {
                 // Gemini expects function responses as user-role parts.
-                let tool_name = msg.name.clone().unwrap_or_default();
-                let response_val: serde_json::Value = serde_json::from_str(&msg.content)
-                    .unwrap_or(serde_json::Value::String(msg.content.clone()));
+                let tool_ref = msg.name.clone().unwrap_or_default();
+                let tool_name = tool_id_to_name.get(&tool_ref).cloned().unwrap_or(tool_ref);
+
+                // Gemini requires an object-like payload for functionResponse.response.
+                let mut response_val: serde_json::Value = serde_json::from_str(&msg.content)
+                    .unwrap_or_else(|_| serde_json::json!({ "content": msg.content }));
+                if !response_val.is_object() {
+                    response_val = serde_json::json!({ "content": response_val });
+                }
 
                 let make_part = || GeminiPartV2::FunctionResponse {
                     function_response: GeminiFunctionResponse {
@@ -363,8 +373,7 @@ async fn parse_gemini_stream(
     let mut buffer = String::new();
 
     while let Some(chunk_result) = byte_stream.next().await {
-        let chunk =
-            chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
+        let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
         let text = std::str::from_utf8(&chunk)
             .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in stream: {e}")))?;
         buffer.push_str(text);
@@ -401,19 +410,16 @@ async fn parse_gemini_stream(
 
             let (text_content, tool_calls, finish_reason, usage) = extract_response(&resp);
 
-            // Emit text chunk.
-            let tool_call_delta = tool_calls.first().map(|tc| ToolCallDelta {
-                id: tc.id.clone(),
-                name: Some(tc.name.clone()),
-                arguments_delta: tc.arguments.clone(),
-            });
-
             let has_finish = finish_reason != FinishReason::Other;
 
             let chunk = StreamChunk {
                 delta: text_content,
-                tool_call_delta,
-                finish_reason: if has_finish { Some(finish_reason) } else { None },
+                tool_call_delta: None,
+                finish_reason: if has_finish {
+                    Some(finish_reason)
+                } else {
+                    None
+                },
                 usage: if usage.total_tokens > 0 {
                     Some(usage)
                 } else {
@@ -423,6 +429,26 @@ async fn parse_gemini_stream(
 
             if tx.send(Ok(chunk)).await.is_err() {
                 return Ok(());
+            }
+
+            for tc in &tool_calls {
+                let delta_chunk = StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: Some(ToolCallDelta {
+                        id: tc.id.clone(),
+                        name: Some(tc.name.clone()),
+                        arguments_delta: tc.arguments.clone(),
+                        index: tc
+                            .id
+                            .strip_prefix("call_")
+                            .and_then(|s| s.parse::<u32>().ok()),
+                    }),
+                    finish_reason: None,
+                    usage: None,
+                };
+                if tx.send(Ok(delta_chunk)).await.is_err() {
+                    return Ok(());
+                }
             }
         }
     }
@@ -451,10 +477,7 @@ impl GeminiProvider {
     }
 
     fn base_url(&self) -> &str {
-        self.config
-            .base_url
-            .as_deref()
-            .unwrap_or(DEFAULT_BASE_URL)
+        self.config.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)
     }
 
     fn api_key(&self) -> Result<&str, CoreError> {
@@ -532,10 +555,7 @@ impl LlmProvider for GeminiProvider {
             .collect())
     }
 
-    async fn complete(
-        &self,
-        request: &CompletionRequest,
-    ) -> Result<CompletionResponse, CoreError> {
+    async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let api_key = self.api_key()?;
         let url = format!(
             "{}/models/{}:generateContent?key={}",
@@ -611,8 +631,9 @@ impl LlmProvider for GeminiProvider {
             }
         });
 
-        let stream =
-            futures::stream::unfold(rx, |mut rx| async { rx.recv().await.map(|item| (item, rx)) });
+        let stream = futures::stream::unfold(rx, |mut rx| async {
+            rx.recv().await.map(|item| (item, rx))
+        });
 
         Ok(Box::pin(stream))
     }
@@ -620,5 +641,80 @@ impl LlmProvider for GeminiProvider {
     async fn health_check(&self) -> Result<(), CoreError> {
         self.list_models().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_convert_messages_maps_tool_call_id_to_function_name() {
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: String::new(),
+                name: None,
+                tool_calls: Some(vec![ToolCallRequest {
+                    id: "call_0".to_string(),
+                    name: "search_knowledge_base".to_string(),
+                    arguments: r#"{"query":"rust"}"#.to_string(),
+                }]),
+            },
+            Message {
+                role: Role::Tool,
+                content: r#"{"ok":true}"#.to_string(),
+                name: Some("call_0".to_string()),
+                tool_calls: None,
+            },
+        ];
+
+        let (_system, contents) = convert_messages(&messages);
+        let last = contents.last().expect("expected tool response message");
+        assert_eq!(last.role, "user");
+        let part = last.parts.last().expect("expected function response part");
+        match part {
+            GeminiPartV2::FunctionResponse { function_response } => {
+                assert_eq!(function_response.name, "search_knowledge_base");
+            }
+            _ => panic!("expected FunctionResponse part"),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_wraps_non_object_tool_result() {
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: String::new(),
+                name: None,
+                tool_calls: Some(vec![ToolCallRequest {
+                    id: "call_0".to_string(),
+                    name: "write_note".to_string(),
+                    arguments: r#"{"filename":"a.md"}"#.to_string(),
+                }]),
+            },
+            Message {
+                role: Role::Tool,
+                content: "plain text result".to_string(),
+                name: Some("call_0".to_string()),
+                tool_calls: None,
+            },
+        ];
+
+        let (_system, contents) = convert_messages(&messages);
+        let last = contents.last().expect("expected tool response message");
+        let part = last.parts.last().expect("expected function response part");
+        match part {
+            GeminiPartV2::FunctionResponse { function_response } => {
+                assert_eq!(function_response.name, "write_note");
+                assert!(function_response.response.is_object());
+                assert_eq!(
+                    function_response.response["content"],
+                    serde_json::Value::String("plain text result".to_string())
+                );
+            }
+            _ => panic!("expected FunctionResponse part"),
+        }
     }
 }

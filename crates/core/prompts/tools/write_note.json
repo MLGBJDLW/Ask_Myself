@@ -1,0 +1,27 @@
+{
+  "name": "write_note",
+  "description": "Create or update a note file in the knowledge base. The note is saved in the 'notes' subdirectory of a source folder. Use this to save summaries, analysis results, meeting notes, or other generated content.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "filename": {
+        "type": "string",
+        "description": "Name for the note file (e.g., 'meeting-summary.md'). Must end with .md, .txt, .org, or .rst."
+      },
+      "content": {
+        "type": "string",
+        "description": "The text content to write."
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["create", "append", "overwrite"],
+        "description": "Write mode. 'create': fail if exists. 'append': add to end. 'overwrite': replace content. Default: 'create'."
+      },
+      "source_id": {
+        "type": "string",
+        "description": "Source directory ID to write to. If omitted, uses the first available source."
+      }
+    },
+    "required": ["filename", "content"]
+  }
+}

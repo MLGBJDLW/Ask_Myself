@@ -235,6 +235,7 @@ export const es: TranslationKeys = {
   'settings.embeddingTestConnection': 'Probar conexión',
   'settings.embeddingTestSuccess': 'Conexión API exitosa',
   'settings.embeddingTestFail': 'Conexión API fallida',
+  'settings.embeddingDownloadFail': 'Error al descargar el modelo',
   'settings.embeddingTfidfWarning': 'TF-IDF solo realiza coincidencia de palabras clave sin comprensión semántica',
   'settings.embeddingProviderChangeWarning': 'Cambiar de proveedor requiere re-embeddar todos los documentos',
   'settings.embeddingSave': 'Guardar configuración',

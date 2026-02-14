@@ -235,6 +235,7 @@ export const zhCN: TranslationKeys = {
   'settings.embeddingTestConnection': '测试连接',
   'settings.embeddingTestSuccess': 'API 连接成功',
   'settings.embeddingTestFail': 'API 连接失败',
+  'settings.embeddingDownloadFail': '模型下载失败',
   'settings.embeddingTfidfWarning': 'TF-IDF 仅做关键词匹配，无语义理解能力',
   'settings.embeddingProviderChangeWarning': '切换提供商后需要重新嵌入所有文档',
   'settings.embeddingSave': '保存配置',

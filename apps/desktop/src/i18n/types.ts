@@ -235,6 +235,7 @@ export interface TranslationKeys {
   'settings.embeddingTestConnection': string;
   'settings.embeddingTestSuccess': string;
   'settings.embeddingTestFail': string;
+  'settings.embeddingDownloadFail': string;
   'settings.embeddingTfidfWarning': string;
   'settings.embeddingProviderChangeWarning': string;
   'settings.embeddingSave': string;

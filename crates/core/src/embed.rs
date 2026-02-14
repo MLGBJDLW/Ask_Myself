@@ -2,7 +2,6 @@
 ///
 /// Provides a trait-based pluggable embedder design with a concrete
 /// TF-IDF implementation that requires no external services.
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -63,7 +62,9 @@ pub fn create_embedder(config: &EmbedderConfig) -> Result<Box<dyn Embedder>, Cor
                 Ok(Box::new(embedder))
             } else {
                 log::warn!(
-                    "ONNX model not found, falling back to TF-IDF embedder"
+                    "ONNX model not available, falling back to TF-IDF — \
+                     search quality will be degraded. \
+                     Download the model in Settings."
                 );
                 Ok(Box::new(TfIdfEmbedder::build_from_corpus(&[])))
             }
@@ -137,17 +138,16 @@ pub trait Embedder: Send + Sync {
 // ── TF-IDF Embedder ─────────────────────────────────────────────────
 
 /// Maximum vocabulary size (and therefore vector dimensionality).
-const MAX_DIMENSIONS: usize = 512;
+const MAX_DIMENSIONS: usize = 2048;
 
 /// Basic English stop words filtered during tokenization.
 const STOP_WORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
-    "had", "has", "have", "he", "her", "his", "how", "if", "in", "into",
-    "is", "it", "its", "me", "my", "no", "nor", "not", "of", "on", "or",
-    "our", "out", "own", "she", "so", "than", "that", "the", "their",
-    "them", "then", "there", "these", "they", "this", "to", "too", "up",
-    "us", "very", "was", "we", "were", "what", "when", "where", "which",
-    "who", "whom", "why", "will", "with", "would", "you", "your",
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "had", "has", "have",
+    "he", "her", "his", "how", "if", "in", "into", "is", "it", "its", "me", "my", "no", "nor",
+    "not", "of", "on", "or", "our", "out", "own", "she", "so", "than", "that", "the", "their",
+    "them", "then", "there", "these", "they", "this", "to", "too", "up", "us", "very", "was", "we",
+    "were", "what", "when", "where", "which", "who", "whom", "why", "will", "with", "would", "you",
+    "your",
 ];
 
 /// TF-IDF based embedder that builds a vocabulary from a corpus.
@@ -427,9 +427,8 @@ impl Database {
         model: &str,
     ) -> Result<Option<Vec<f32>>, CoreError> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT vector FROM embeddings WHERE chunk_id = ?1 AND model = ?2",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT vector FROM embeddings WHERE chunk_id = ?1 AND model = ?2")?;
         let mut rows = stmt.query(rusqlite::params![chunk_id, model])?;
         match rows.next()? {
             Some(row) => {
@@ -441,14 +440,9 @@ impl Database {
     }
 
     /// Retrieve all embeddings for a given model as `(chunk_id, vector)` pairs.
-    pub fn get_all_embeddings(
-        &self,
-        model: &str,
-    ) -> Result<Vec<(String, Vec<f32>)>, CoreError> {
+    pub fn get_all_embeddings(&self, model: &str) -> Result<Vec<(String, Vec<f32>)>, CoreError> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT chunk_id, vector FROM embeddings WHERE model = ?1",
-        )?;
+        let mut stmt = conn.prepare("SELECT chunk_id, vector FROM embeddings WHERE model = ?1")?;
         let rows = stmt.query_map(rusqlite::params![model], |row| {
             let chunk_id: String = row.get(0)?;
             let blob: Vec<u8> = row.get(1)?;
@@ -495,10 +489,7 @@ impl Database {
 
     /// Delete all embeddings belonging to chunks of a given document.
     // TODO: integrate — per-document cleanup for incremental re-indexing
-    pub fn delete_embeddings_for_document(
-        &self,
-        document_id: &str,
-    ) -> Result<(), CoreError> {
+    pub fn delete_embeddings_for_document(&self, document_id: &str) -> Result<(), CoreError> {
         let conn = self.conn();
         conn.execute(
             "DELETE FROM embeddings WHERE chunk_id IN (
@@ -620,9 +611,8 @@ impl Database {
             return Ok(None);
         }
 
-        let mut stmt = conn.prepare(
-            "SELECT vocab_json, idf_json FROM model_state WHERE model = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT vocab_json, idf_json FROM model_state WHERE model = ?1")?;
         let mut rows = stmt.query(rusqlite::params![model])?;
         match rows.next()? {
             Some(row) => {
@@ -639,13 +629,17 @@ impl Database {
 
 // ── ONNX Embedder (all-MiniLM-L6-v2) ────────────────────────────────
 
-const ONNX_MODEL_NAME: &str = "all-MiniLM-L6-v2";
+pub const ONNX_MODEL_NAME: &str = "all-MiniLM-L6-v2";
 const ONNX_DIMENSIONS: usize = 384;
-const ONNX_MAX_LENGTH: usize = 128;
+const ONNX_MAX_LENGTH: usize = 256;
 const ONNX_MODEL_URL: &str =
     "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx";
 const ONNX_TOKENIZER_URL: &str =
     "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json";
+const ONNX_MODEL_MIRROR_URL: &str =
+    "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx";
+const ONNX_TOKENIZER_MIRROR_URL: &str =
+    "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json";
 
 /// ONNX-based sentence embedder using `all-MiniLM-L6-v2`.
 ///
@@ -673,7 +667,11 @@ impl OnnxEmbedder {
         let tokenizer_path = dir.join("tokenizer.json");
 
         if !model_path.exists() || !tokenizer_path.exists() {
-            download_model_files(&dir)?;
+            return Err(CoreError::Embedding(
+                "ONNX model not downloaded. Please download the model \
+                 in Settings before using local embeddings."
+                    .into(),
+            ));
         }
 
         log::info!("Loading ONNX model from {}", model_path.display());
@@ -815,32 +813,51 @@ fn default_model_dir() -> Result<PathBuf, CoreError> {
 
 /// Download `model.onnx` and `tokenizer.json` from HuggingFace.
 ///
+/// Tries the primary HuggingFace URL first, then falls back to the
+/// `hf-mirror.com` mirror (useful in regions where HuggingFace is blocked).
+///
 /// Requires `reqwest` with the `blocking` feature.
 fn download_model_files(target_dir: &Path) -> Result<(), CoreError> {
+    use std::time::Duration;
+
     std::fs::create_dir_all(target_dir)?;
 
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(600))
+        .connect_timeout(Duration::from_secs(30))
+        .user_agent("ask-myself/1.0")
+        .build()
+        .map_err(|e| CoreError::Embedding(format!("create HTTP client: {e}")))?;
+
     let files = [
-        (ONNX_MODEL_URL, "model.onnx"),
-        (ONNX_TOKENIZER_URL, "tokenizer.json"),
+        (ONNX_MODEL_URL, ONNX_MODEL_MIRROR_URL, "model.onnx"),
+        (
+            ONNX_TOKENIZER_URL,
+            ONNX_TOKENIZER_MIRROR_URL,
+            "tokenizer.json",
+        ),
     ];
 
-    for (url, filename) in &files {
+    for (primary_url, mirror_url, filename) in &files {
         let dest = target_dir.join(filename);
         if dest.exists() {
             log::info!("{filename} already exists, skipping download");
             continue;
         }
 
-        log::info!("Downloading {filename} from {url}");
-        let response = reqwest::blocking::get(*url)
-            .map_err(|e| CoreError::Embedding(format!("download {filename}: {e}")))?;
-
-        if !response.status().is_success() {
-            return Err(CoreError::Embedding(format!(
-                "download {filename}: HTTP {}",
-                response.status()
-            )));
-        }
+        let response = match download_single(&client, primary_url, filename) {
+            Ok(resp) => resp,
+            Err(primary_err) => {
+                log::warn!(
+                    "Primary download failed for {filename}: {primary_err}, trying mirror..."
+                );
+                download_single(&client, mirror_url, filename).map_err(|mirror_err| {
+                    CoreError::Embedding(format!(
+                        "download {filename} failed — primary: {primary_err}; mirror: {mirror_err}"
+                    ))
+                })?
+            }
+        };
 
         let bytes = response
             .bytes()
@@ -851,6 +868,25 @@ fn download_model_files(target_dir: &Path) -> Result<(), CoreError> {
     }
 
     Ok(())
+}
+
+/// Try to download a single file, returning the response on success.
+fn download_single(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    filename: &str,
+) -> Result<reqwest::blocking::Response, String> {
+    log::info!("Downloading {filename} from {url}");
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("network error: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+
+    Ok(response)
 }
 
 // ── API Embedder (OpenAI-compatible) ─────────────────────────────────
@@ -1024,12 +1060,7 @@ impl Embedder for ApiEmbedder {
 /// Sends a single short text and returns `Ok(true)` if the API responds
 /// with a valid embedding. Any error is propagated as `CoreError`.
 pub fn test_api_connection(api_key: &str, base_url: &str) -> Result<bool, CoreError> {
-    let embedder = ApiEmbedder::new(
-        api_key.to_string(),
-        Some(base_url.to_string()),
-        None,
-        None,
-    )?;
+    let embedder = ApiEmbedder::new(api_key.to_string(), Some(base_url.to_string()), None, None)?;
     let result = embedder.embed("connection test")?;
     Ok(!result.is_empty())
 }
@@ -1398,7 +1429,11 @@ mod tests {
         };
 
         let batch = vec![
-            (chunk_id.clone(), "tfidf-v1".to_string(), vec![0.1, 0.2, 0.3]),
+            (
+                chunk_id.clone(),
+                "tfidf-v1".to_string(),
+                vec![0.1, 0.2, 0.3],
+            ),
             (
                 chunk_id_2.clone(),
                 "tfidf-v1".to_string(),
@@ -1411,10 +1446,7 @@ mod tests {
         let v1 = db.get_embedding(&chunk_id, "tfidf-v1").unwrap().unwrap();
         assert_eq!(v1, vec![0.1, 0.2, 0.3]);
 
-        let v2 = db
-            .get_embedding(&chunk_id_2, "tfidf-v1")
-            .unwrap()
-            .unwrap();
+        let v2 = db.get_embedding(&chunk_id_2, "tfidf-v1").unwrap().unwrap();
         assert_eq!(v2, vec![0.4, 0.5, 0.6]);
     }
 

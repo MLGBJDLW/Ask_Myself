@@ -58,75 +58,78 @@ impl Tool for FileTool {
         db: &Database,
         _source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
-        let args: FileArgs = serde_json::from_str(arguments).map_err(|e| {
-            CoreError::InvalidInput(format!("Invalid read_file arguments: {e}"))
-        })?;
+        let args: FileArgs = serde_json::from_str(arguments)
+            .map_err(|e| CoreError::InvalidInput(format!("Invalid read_file arguments: {e}")))?;
 
-        let requested = PathBuf::from(&args.path);
+        let db = db.clone();
+        let call_id = call_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let requested = PathBuf::from(&args.path);
 
-        // Canonicalize the requested path so we can compare prefixes reliably.
-        let canonical = std::fs::canonicalize(&requested).map_err(|e| {
-            CoreError::InvalidInput(format!("Cannot resolve path '{}': {e}", args.path))
-        })?;
+            // Canonicalize the requested path so we can compare prefixes reliably.
+            let canonical = std::fs::canonicalize(&requested).map_err(|e| {
+                CoreError::InvalidInput(format!("Cannot resolve path '{}': {e}", args.path))
+            })?;
 
-        // Validate that the file is inside a registered source root.
-        let sources = db.list_sources()?;
-        let allowed = sources.iter().any(|s| {
-            if let Ok(root) = std::fs::canonicalize(Path::new(&s.root_path)) {
-                canonical.starts_with(&root)
-            } else {
-                false
-            }
-        });
-
-        if !allowed {
-            return Ok(ToolResult {
-                call_id: call_id.to_string(),
-                content: format!(
-                    "Access denied: '{}' is not within any registered source directory.",
-                    args.path
-                ),
-                is_error: true,
-                artifacts: None,
+            // Validate that the file is inside a registered source root.
+            let sources = db.list_sources()?;
+            let allowed = sources.iter().any(|s| {
+                if let Ok(root) = std::fs::canonicalize(Path::new(&s.root_path)) {
+                    canonical.starts_with(&root)
+                } else {
+                    false
+                }
             });
-        }
 
-        // Read the file.
-        let raw = std::fs::read_to_string(&canonical).map_err(|e| {
-            CoreError::Io(e)
-        })?;
+            if !allowed {
+                return Ok(ToolResult {
+                    call_id: call_id.clone(),
+                    content: format!(
+                        "Access denied: '{}' is not within any registered source directory.",
+                        args.path
+                    ),
+                    is_error: true,
+                    artifacts: None,
+                });
+            }
 
-        // Skip to start_line (1-based) and truncate to max_lines.
-        let start = args.start_line.max(1);
-        let max = args.max_lines.max(1);
-        let total_lines = raw.lines().count();
-        let lines: Vec<&str> = raw.lines().skip(start - 1).take(max).collect();
-        let showing_end = (start - 1 + lines.len()).min(total_lines);
-        let truncated = showing_end < total_lines || start > 1;
-        let content = lines.join("\n");
+            // Read the file.
+            let raw = std::fs::read_to_string(&canonical).map_err(|e| CoreError::Io(e))?;
 
-        // Apply privacy redaction.
-        let privacy_config = db.load_privacy_config().unwrap_or_default();
-        let redacted = if privacy_config.enabled {
-            privacy::redact_content(&content, &privacy_config.redact_patterns)
-        } else {
-            content
-        };
+            // Skip to start_line (1-based) and truncate to max_lines.
+            let start = args.start_line.max(1);
+            let max = args.max_lines.max(1);
+            let total_lines = raw.lines().count();
+            let lines: Vec<&str> = raw.lines().skip(start - 1).take(max).collect();
+            let showing_end = (start - 1 + lines.len()).min(total_lines);
+            let truncated = showing_end < total_lines || start > 1;
+            let content = lines.join("\n");
 
-        let mut text = format!("File: {}\n", canonical.display());
-        if truncated {
-            text.push_str(&format!(
-                "(showing lines {start}–{showing_end} of {total_lines})\n"
-            ));
-        }
-        text.push_str("---\n");
-        text.push_str(&redacted);
+            // Apply privacy redaction.
+            let privacy_config = db.load_privacy_config().unwrap_or_default();
+            let redacted = if privacy_config.enabled {
+                privacy::redact_content(&content, &privacy_config.redact_patterns)
+            } else {
+                content
+            };
 
-        Ok(ToolResult {
-            call_id: call_id.to_string(),
-            content: text,
-            is_error: false,
-            artifacts: None,
+            let mut text = format!("File: {}\n", canonical.display());
+            if truncated {
+                text.push_str(&format!(
+                    "(showing lines {start}–{showing_end} of {total_lines})\n"
+                ));
+            }
+            text.push_str("---\n");
+            text.push_str(&redacted);
+
+            Ok(ToolResult {
+                call_id,
+                content: text,
+                is_error: false,
+                artifacts: None,
+            })
         })
+        .await
+        .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?
     }
 }

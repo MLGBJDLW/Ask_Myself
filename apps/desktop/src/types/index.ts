@@ -19,4 +19,5 @@ export type {
   SaveAgentConfigInput,
   ProviderType,
   AgentEvent,
+  AgentFrontendEvent,
 } from "./conversation";

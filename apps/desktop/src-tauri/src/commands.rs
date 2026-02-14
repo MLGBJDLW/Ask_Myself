@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use ask_core::agent::{AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor};
 use ask_core::conversation::{
-    AgentConfig as DbAgentConfig, Conversation, ConversationMessage,
-    CreateConversationInput, SaveAgentConfigInput,
+    AgentConfig as DbAgentConfig, Conversation, ConversationMessage, CreateConversationInput,
+    SaveAgentConfigInput,
 };
 use ask_core::db::Database;
 use ask_core::embed::EmbedderConfig;
@@ -56,13 +56,19 @@ pub struct WatchedSourceInfo {
     pub root_path: String,
 }
 
+/// Envelope for agent stream events sent to frontend.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentFrontendEvent {
+    conversation_id: String,
+    #[serde(flatten)]
+    event: AgentEvent,
+}
+
 /// Initialise the file watcher, start watching all sources with
 /// `watch_enabled = true`, and spawn a background thread that processes
 /// file-change events (debounced, auto-scan, emit to frontend).
-pub fn init_watcher(
-    app_handle: tauri::AppHandle,
-    db: &Database,
-) {
+pub fn init_watcher(app_handle: tauri::AppHandle, db: &Database) {
     let (file_watcher, rx) = match FileWatcher::new() {
         Ok(pair) => pair,
         Err(e) => {
@@ -117,7 +123,8 @@ pub fn init_watcher(
                         None => continue,
                     };
                     let watched = ws.watched.lock().unwrap();
-                    let matched: Option<&String> = watched.iter()
+                    let matched: Option<&String> = watched
+                        .iter()
                         .find(|(_, root)| event.path.starts_with(root.as_str()))
                         .map(|(sid, _)| sid);
                     if let Some(sid) = matched {
@@ -216,10 +223,7 @@ pub fn list_sources(state: tauri::State<'_, AppState>) -> Result<Vec<Source>, St
 }
 
 #[tauri::command]
-pub fn get_source(
-    state: tauri::State<'_, AppState>,
-    source_id: String,
-) -> Result<Source, String> {
+pub fn get_source(state: tauri::State<'_, AppState>, source_id: String) -> Result<Source, String> {
     state.db.get_source(&source_id).map_err(|e| e.to_string())
 }
 
@@ -243,10 +247,7 @@ pub fn update_source(
 }
 
 #[tauri::command]
-pub fn delete_source(
-    state: tauri::State<'_, AppState>,
-    source_id: String,
-) -> Result<(), String> {
+pub fn delete_source(state: tauri::State<'_, AppState>, source_id: String) -> Result<(), String> {
     state
         .db
         .delete_source(&source_id)
@@ -264,14 +265,11 @@ pub fn scan_source(
 }
 
 #[tauri::command]
-pub fn scan_all_sources(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<IngestResult>, String> {
+pub fn scan_all_sources(state: tauri::State<'_, AppState>) -> Result<Vec<IngestResult>, String> {
     let sources = state.db.list_sources().map_err(|e| e.to_string())?;
     let mut results = Vec::with_capacity(sources.len());
     for source in &sources {
-        let result =
-            ingest::scan_source(&state.db, &source.id).map_err(|e| e.to_string())?;
+        let result = ingest::scan_source(&state.db, &source.id).map_err(|e| e.to_string())?;
         results.push(result);
     }
     Ok(results)
@@ -316,9 +314,7 @@ pub fn get_evidence_card(
 // ── Index Commands ──────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_index_stats(
-    state: tauri::State<'_, AppState>,
-) -> Result<IndexStats, String> {
+pub fn get_index_stats(state: tauri::State<'_, AppState>) -> Result<IndexStats, String> {
     state.db.get_index_stats().map_err(|e| e.to_string())
 }
 
@@ -343,9 +339,7 @@ pub fn create_playbook(
 }
 
 #[tauri::command]
-pub fn list_playbooks(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<Playbook>, String> {
+pub fn list_playbooks(state: tauri::State<'_, AppState>) -> Result<Vec<Playbook>, String> {
     state.db.list_playbooks().map_err(|e| e.to_string())
 }
 
@@ -436,13 +430,8 @@ pub fn get_recent_queries(
 }
 
 #[tauri::command]
-pub fn clear_recent_queries(
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    state
-        .db
-        .clear_query_logs()
-        .map_err(|e| e.to_string())
+pub fn clear_recent_queries(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.db.clear_query_logs().map_err(|e| e.to_string())
 }
 
 // ── Hybrid Search Commands ──────────────────────────────────────────────
@@ -475,9 +464,7 @@ pub fn embed_source(
 }
 
 #[tauri::command]
-pub fn rebuild_embeddings(
-    state: tauri::State<'_, AppState>,
-) -> Result<EmbedResult, String> {
+pub fn rebuild_embeddings(state: tauri::State<'_, AppState>) -> Result<EmbedResult, String> {
     ingest::rebuild_embeddings(&state.db).map_err(|e| e.to_string())
 }
 
@@ -527,9 +514,7 @@ pub fn delete_feedback(
 // ── Privacy Commands ────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_privacy_config(
-    state: tauri::State<'_, AppState>,
-) -> Result<PrivacyConfig, String> {
+pub fn get_privacy_config(state: tauri::State<'_, AppState>) -> Result<PrivacyConfig, String> {
     state.db.load_privacy_config().map_err(|e| e.to_string())
 }
 
@@ -547,9 +532,7 @@ pub fn save_privacy_config(
 // ── Index Commands (extra) ──────────────────────────────────────────────
 
 #[tauri::command]
-pub fn optimize_fts_index(
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+pub fn optimize_fts_index(state: tauri::State<'_, AppState>) -> Result<(), String> {
     state.db.optimize_fts_index().map_err(|e| e.to_string())
 }
 
@@ -600,10 +583,7 @@ pub fn save_embedder_config_cmd(
 }
 
 #[tauri::command]
-pub fn test_api_connection_cmd(
-    api_key: String,
-    base_url: String,
-) -> Result<bool, String> {
+pub fn test_api_connection_cmd(api_key: String, base_url: String) -> Result<bool, String> {
     ask_core::embed::test_api_connection(&api_key, &base_url).map_err(|e| e.to_string())
 }
 
@@ -668,11 +648,7 @@ pub fn show_in_file_explorer(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "linux")]
     {
-        let parent = p
-            .parent()
-            .unwrap_or(p)
-            .to_str()
-            .unwrap_or(&path);
+        let parent = p.parent().unwrap_or(p).to_str().unwrap_or(&path);
         std::process::Command::new("xdg-open")
             .arg(parent)
             .spawn()
@@ -690,7 +666,10 @@ pub fn start_watching(
     watcher_state: tauri::State<'_, WatcherState>,
     source_id: String,
 ) -> Result<(), String> {
-    let source = app_state.db.get_source(&source_id).map_err(|e| e.to_string())?;
+    let source = app_state
+        .db
+        .get_source(&source_id)
+        .map_err(|e| e.to_string())?;
     let path = std::path::Path::new(&source.root_path);
     if !path.exists() {
         return Err(format!("Path does not exist: {}", source.root_path));
@@ -838,10 +817,7 @@ pub async fn delete_conversation_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    state
-        .db
-        .delete_conversation(&id)
-        .map_err(|e| e.to_string())
+    state.db.delete_conversation(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -918,10 +894,7 @@ pub async fn delete_agent_config_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    state
-        .db
-        .delete_agent_config(&id)
-        .map_err(|e| e.to_string())
+    state.db.delete_agent_config(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -946,14 +919,8 @@ pub async fn test_agent_connection_cmd(
         org_id: None,
     };
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
-    provider
-        .health_check()
-        .await
-        .map_err(|e| e.to_string())?;
-    let models = provider
-        .list_models()
-        .await
-        .map_err(|e| e.to_string())?;
+    provider.health_check().await.map_err(|e| e.to_string())?;
+    let models = provider.list_models().await.map_err(|e| e.to_string())?;
     Ok(models)
 }
 
@@ -972,7 +939,9 @@ pub async fn agent_chat_cmd(
         .db
         .get_default_agent_config()
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "No default agent config set. Please configure an LLM provider first.".to_string())?;
+        .ok_or_else(|| {
+            "No default agent config set. Please configure an LLM provider first.".to_string()
+        })?;
 
     // 2. Create LLM provider.
     let provider_config = db_config_to_provider_config(&db_config);
@@ -998,10 +967,7 @@ pub async fn agent_chat_cmd(
         created_at: String::new(),
         sort_order: next_sort_order,
     };
-    state
-        .db
-        .add_message(&user_msg)
-        .map_err(|e| e.to_string())?;
+    state.db.add_message(&user_msg).map_err(|e| e.to_string())?;
 
     // 5. Load conversation to check for custom system prompt.
     let conv = state
@@ -1038,9 +1004,14 @@ pub async fn agent_chat_cmd(
 
         // Forward events to the frontend in a separate task.
         let event_handle = handle.clone();
+        let stream_conv_id = conv_id.clone();
         let event_forwarder = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                let _ = event_handle.emit("agent:event", &event);
+                let payload = AgentFrontendEvent {
+                    conversation_id: stream_conv_id.clone(),
+                    event,
+                };
+                let _ = event_handle.emit("agent:event", &payload);
             }
         });
 
@@ -1048,15 +1019,43 @@ pub async fn agent_chat_cmd(
         // tool-call assistants, tool results, and the final answer) to the DB
         // using incrementing sort_order starting at `assistant_sort_order`.
         let executor = AgentExecutor::new(provider, tools, executor_config);
-        let result = executor
-            .run(history, message, &db, Some(&conv_id), tx, assistant_sort_order)
-            .await;
+        let run_future = executor.run(
+            history,
+            message,
+            &db,
+            Some(&conv_id),
+            tx,
+            assistant_sort_order,
+        );
+
+        // Hard cap: ensure one chat turn cannot run forever.
+        let result = tokio::time::timeout(Duration::from_secs(180), run_future).await;
 
         // Wait for event forwarder to finish.
         let _ = event_forwarder.await;
 
-        if let Err(e) = result {
-            warn!("Agent execution failed for conversation {conv_id}: {e}");
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                warn!("Agent execution failed for conversation {conv_id}: {e}");
+                let payload = AgentFrontendEvent {
+                    conversation_id: conv_id.clone(),
+                    event: AgentEvent::Error {
+                        message: "Agent execution failed unexpectedly.".to_string(),
+                    },
+                };
+                let _ = handle.emit("agent:event", payload);
+            }
+            Err(_elapsed) => {
+                warn!("Agent execution timed out for conversation {conv_id}");
+                let payload = AgentFrontendEvent {
+                    conversation_id: conv_id.clone(),
+                    event: AgentEvent::Error {
+                        message: "Agent execution timed out.".to_string(),
+                    },
+                };
+                let _ = handle.emit("agent:event", payload);
+            }
         }
     });
 

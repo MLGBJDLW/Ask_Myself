@@ -10,11 +10,11 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::error::CoreError;
 use super::{
     CompletionRequest, CompletionResponse, FinishReason, LlmProvider, Message, ProviderConfig,
     Role, StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
 };
+use crate::error::CoreError;
 
 const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_TIMEOUT_SECS: u64 = 300; // Local models can be slow on first load.
@@ -153,8 +153,8 @@ fn convert_message(msg: &Message) -> OllamaMessage {
             calls
                 .iter()
                 .map(|tc| {
-                    let args: serde_json::Value = serde_json::from_str(&tc.arguments)
-                        .unwrap_or(serde_json::Value::Null);
+                    let args: serde_json::Value =
+                        serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null);
                     OllamaToolCallOut {
                         function: OllamaFunctionOut {
                             name: tc.name.clone(),
@@ -242,8 +242,7 @@ async fn parse_ollama_ndjson_stream(
     let mut buffer = String::new();
 
     while let Some(chunk_result) = byte_stream.next().await {
-        let chunk =
-            chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
+        let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
         let text = std::str::from_utf8(&chunk)
             .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in stream: {e}")))?;
         buffer.push_str(text);
@@ -273,19 +272,6 @@ async fn parse_ollama_ndjson_stream(
                 .and_then(|m| m.content.clone())
                 .unwrap_or_default();
 
-            // Handle tool calls in streaming (Ollama sends them in a single chunk).
-            let tool_call_delta = resp
-                .message
-                .as_ref()
-                .and_then(|m| m.tool_calls.as_ref())
-                .and_then(|tcs| tcs.first())
-                .map(|tc| ToolCallDelta {
-                    id: format!("call_0"),
-                    name: Some(tc.function.name.clone()),
-                    arguments_delta: serde_json::to_string(&tc.function.arguments)
-                        .unwrap_or_default(),
-                });
-
             let (finish_reason, usage) = if resp.done {
                 let reason = parse_finish_reason(&resp);
                 let prompt_tokens = resp.prompt_eval_count.unwrap_or(0);
@@ -304,13 +290,33 @@ async fn parse_ollama_ndjson_stream(
 
             let chunk = StreamChunk {
                 delta,
-                tool_call_delta,
+                tool_call_delta: None,
                 finish_reason,
                 usage,
             };
 
             if tx.send(Ok(chunk)).await.is_err() {
                 return Ok(());
+            }
+
+            if let Some(tool_calls) = resp.message.as_ref().and_then(|m| m.tool_calls.as_ref()) {
+                for (index, tc) in tool_calls.iter().enumerate() {
+                    let tc_chunk = StreamChunk {
+                        delta: String::new(),
+                        tool_call_delta: Some(ToolCallDelta {
+                            id: format!("call_{index}"),
+                            name: Some(tc.function.name.clone()),
+                            arguments_delta: serde_json::to_string(&tc.function.arguments)
+                                .unwrap_or_default(),
+                            index: Some(index as u32),
+                        }),
+                        finish_reason: None,
+                        usage: None,
+                    };
+                    if tx.send(Ok(tc_chunk)).await.is_err() {
+                        return Ok(());
+                    }
+                }
             }
 
             if resp.done {
@@ -343,10 +349,7 @@ impl OllamaProvider {
     }
 
     fn base_url(&self) -> &str {
-        self.config
-            .base_url
-            .as_deref()
-            .unwrap_or(DEFAULT_BASE_URL)
+        self.config.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)
     }
 
     async fn check_response(
@@ -410,10 +413,7 @@ impl LlmProvider for OllamaProvider {
             .collect())
     }
 
-    async fn complete(
-        &self,
-        request: &CompletionRequest,
-    ) -> Result<CompletionResponse, CoreError> {
+    async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let url = format!("{}/api/chat", self.base_url());
         let body = build_request_body(request, false);
 
@@ -499,8 +499,9 @@ impl LlmProvider for OllamaProvider {
             }
         });
 
-        let stream =
-            futures::stream::unfold(rx, |mut rx| async { rx.recv().await.map(|item| (item, rx)) });
+        let stream = futures::stream::unfold(rx, |mut rx| async {
+            rx.recv().await.map(|item| (item, rx))
+        });
 
         Ok(Box::pin(stream))
     }

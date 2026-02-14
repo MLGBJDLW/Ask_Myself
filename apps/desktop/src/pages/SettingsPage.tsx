@@ -155,8 +155,8 @@ export function SettingsPage() {
       await api.downloadLocalModel();
       setLocalModelReady(true);
       toast.success(t('settings.embeddingDownloaded'));
-    } catch {
-      toast.error(t('settings.embeddingTestFail'));
+    } catch (e) {
+      toast.error(t('settings.embeddingDownloadFail') + ': ' + String(e));
     } finally {
       setDownloadLoading(false);
     }

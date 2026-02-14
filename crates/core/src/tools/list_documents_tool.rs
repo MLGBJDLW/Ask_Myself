@@ -55,83 +55,89 @@ impl Tool for ListDocumentsTool {
             CoreError::InvalidInput(format!("Invalid list_documents arguments: {e}"))
         })?;
 
-        let limit = args.limit.min(200).max(1);
-        let offset = args.offset;
+        let db = db.clone();
+        let call_id = call_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let limit = args.limit.min(200).max(1);
+            let offset = args.offset;
 
-        // Verify the source exists.
-        let _ = db.get_source(&args.source_id)?;
+            // Verify the source exists.
+            let _ = db.get_source(&args.source_id)?;
 
-        let conn = db.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, path, title, mime_type, file_size, modified_at, indexed_at
-             FROM documents
-             WHERE source_id = ?1
-             ORDER BY path
-             LIMIT ?2 OFFSET ?3",
-        )?;
+            let conn = db.conn();
+            let mut stmt = conn.prepare(
+                "SELECT id, path, title, mime_type, file_size, modified_at, indexed_at
+                 FROM documents
+                 WHERE source_id = ?1
+                 ORDER BY path
+                 LIMIT ?2 OFFSET ?3",
+            )?;
 
-        let rows: Vec<(String, String, Option<String>, String, i64, String, String)> = stmt
-            .query_map(params![&args.source_id, limit, offset], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            let rows: Vec<(String, String, Option<String>, String, i64, String, String)> = stmt
+                .query_map(params![&args.source_id, limit, offset], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
 
-        // Get total count for pagination info.
-        let total: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM documents WHERE source_id = ?1",
-            params![&args.source_id],
-            |row| row.get(0),
-        )?;
+            // Get total count for pagination info.
+            let total: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM documents WHERE source_id = ?1",
+                params![&args.source_id],
+                |row| row.get(0),
+            )?;
 
-        if rows.is_empty() {
-            return Ok(ToolResult {
-                call_id: call_id.to_string(),
-                content: format!(
-                    "No documents found in source '{}'.",
-                    args.source_id
-                ),
+            if rows.is_empty() {
+                return Ok(ToolResult {
+                    call_id: call_id.clone(),
+                    content: format!(
+                        "No documents found in source '{}'.",
+                        args.source_id
+                    ),
+                    is_error: false,
+                    artifacts: None,
+                });
+            }
+
+            let mut text = format!(
+                "Showing {}-{} of {} document(s) in source '{}':\n\n",
+                offset + 1,
+                (offset + rows.len() as u32).min(total as u32),
+                total,
+                args.source_id,
+            );
+            let mut artifacts = Vec::new();
+
+            for (id, path, title, mime_type, file_size, modified_at, _indexed_at) in &rows {
+                let title_display = title.as_deref().unwrap_or("(untitled)");
+                text.push_str(&format!(
+                    "- {path}\n  Title: {title_display}\n  Type: {mime_type} | Size: {file_size} bytes\n  Modified: {modified_at}\n\n",
+                ));
+                artifacts.push(serde_json::json!({
+                    "id": id,
+                    "path": path,
+                    "title": title,
+                    "mime_type": mime_type,
+                    "file_size": file_size,
+                    "modified_at": modified_at,
+                }));
+            }
+
+            Ok(ToolResult {
+                call_id,
+                content: text,
                 is_error: false,
-                artifacts: None,
-            });
-        }
-
-        let mut text = format!(
-            "Showing {}-{} of {} document(s) in source '{}':\n\n",
-            offset + 1,
-            (offset + rows.len() as u32).min(total as u32),
-            total,
-            args.source_id,
-        );
-        let mut artifacts = Vec::new();
-
-        for (id, path, title, mime_type, file_size, modified_at, _indexed_at) in &rows {
-            let title_display = title.as_deref().unwrap_or("(untitled)");
-            text.push_str(&format!(
-                "- {path}\n  Title: {title_display}\n  Type: {mime_type} | Size: {file_size} bytes\n  Modified: {modified_at}\n\n",
-            ));
-            artifacts.push(serde_json::json!({
-                "id": id,
-                "path": path,
-                "title": title,
-                "mime_type": mime_type,
-                "file_size": file_size,
-                "modified_at": modified_at,
-            }));
-        }
-
-        Ok(ToolResult {
-            call_id: call_id.to_string(),
-            content: text,
-            is_error: false,
-            artifacts: Some(serde_json::Value::Array(artifacts)),
+                artifacts: Some(serde_json::Value::Array(artifacts)),
+            })
         })
+        .await
+        .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?
     }
 }

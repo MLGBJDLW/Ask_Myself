@@ -235,6 +235,7 @@ export const en: TranslationKeys = {
   'settings.embeddingTestConnection': 'Test Connection',
   'settings.embeddingTestSuccess': 'API connection successful',
   'settings.embeddingTestFail': 'API connection failed',
+  'settings.embeddingDownloadFail': 'Model download failed',
   'settings.embeddingTfidfWarning': 'TF-IDF only performs keyword matching with no semantic understanding',
   'settings.embeddingProviderChangeWarning': 'Switching providers requires re-embedding all documents',
   'settings.embeddingSave': 'Save Config',

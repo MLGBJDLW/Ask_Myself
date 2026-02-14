@@ -296,15 +296,15 @@ export function ChatMessages({ messages, streamText, toolCalls, isStreaming }: C
               {/* Show tool call cards after assistant messages with tool calls */}
               {msg.role === 'assistant' && msg.toolCalls.length > 0 && (
                 <div className="mb-3">
-                  {msg.toolCalls.map((tc) => {
+                  {msg.toolCalls.map((tc, toolIdx) => {
                     const toolResult = messageToolCalls.get(idx)?.find(
                       (tr) => tr.toolCallId === tc.id,
                     );
                     return (
                       <ToolCallCard
-                        key={tc.id}
-                        toolName={tc.name}
-                        arguments={tc.arguments}
+                        key={`${msg.id}-tool-${tc.id || tc.name || toolIdx}`}
+                        toolName={tc.name || 'unknown_tool'}
+                        arguments={tc.arguments || ''}
                         status={toolResult ? 'done' : 'running'}
                         content={toolResult?.content}
                       />
@@ -320,9 +320,9 @@ export function ChatMessages({ messages, streamText, toolCalls, isStreaming }: C
       {/* Streaming tool calls */}
       {isStreaming && toolCalls.length > 0 && (
         <div className="mb-3">
-          {toolCalls.map((tc) => (
+          {toolCalls.map((tc, toolIdx) => (
             <ToolCallCard
-              key={tc.callId}
+              key={`${tc.callId || 'tool-call'}-${toolIdx}`}
               toolName={tc.toolName}
               arguments={tc.arguments}
               status={tc.status}

@@ -1,5 +1,4 @@
 /// Database module — manages SQLite connections and schema migrations.
-
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -10,6 +9,7 @@ use crate::error::CoreError;
 ///
 /// On construction the connection is configured with production PRAGMAs
 /// and all pending schema migrations are applied automatically.
+#[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
     #[allow(dead_code)]
@@ -229,18 +229,19 @@ mod tests {
 
         // Read
         let kind: String = conn
-            .query_row("SELECT kind FROM sources WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row("SELECT kind FROM sources WHERE id = ?1", [&id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(kind, "local_folder");
 
         // Update
-        conn.execute(
-            "UPDATE sources SET kind = 'remote' WHERE id = ?1",
-            [&id],
-        )
-        .unwrap();
+        conn.execute("UPDATE sources SET kind = 'remote' WHERE id = ?1", [&id])
+            .unwrap();
         let kind: String = conn
-            .query_row("SELECT kind FROM sources WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row("SELECT kind FROM sources WHERE id = ?1", [&id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(kind, "remote");
 
@@ -248,11 +249,9 @@ mod tests {
         conn.execute("DELETE FROM sources WHERE id = ?1", [&id])
             .unwrap();
         let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sources WHERE id = ?1",
-                [&id],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM sources WHERE id = ?1", [&id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count, 0);
     }
@@ -267,9 +266,11 @@ mod tests {
 
         // Read
         let title: String = conn
-            .query_row("SELECT title FROM documents WHERE id = ?1", [&doc_id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT title FROM documents WHERE id = ?1",
+                [&doc_id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(title, "Test Doc");
 
@@ -280,9 +281,11 @@ mod tests {
         )
         .unwrap();
         let title: String = conn
-            .query_row("SELECT title FROM documents WHERE id = ?1", [&doc_id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT title FROM documents WHERE id = ?1",
+                [&doc_id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(title, "Updated Doc");
 
@@ -328,7 +331,11 @@ mod tests {
 
         let source_id = insert_source(&conn);
         let doc_id = insert_document(&conn, &source_id);
-        insert_chunk(&conn, &doc_id, "the quick brown fox jumps over the lazy dog");
+        insert_chunk(
+            &conn,
+            &doc_id,
+            "the quick brown fox jumps over the lazy dog",
+        );
 
         let count: i64 = conn
             .query_row(
@@ -450,11 +457,9 @@ mod tests {
         conn.execute("DELETE FROM playbooks WHERE id = ?1", [&id])
             .unwrap();
         let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM playbooks WHERE id = ?1",
-                [&id],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM playbooks WHERE id = ?1", [&id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count, 0);
     }

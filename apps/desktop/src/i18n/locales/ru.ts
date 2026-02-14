@@ -235,6 +235,7 @@ export const ru: TranslationKeys = {
   'settings.embeddingTestConnection': 'Тест соединения',
   'settings.embeddingTestSuccess': 'API-соединение успешно',
   'settings.embeddingTestFail': 'Ошибка API-соединения',
+  'settings.embeddingDownloadFail': 'Ошибка загрузки модели',
   'settings.embeddingTfidfWarning': 'TF-IDF выполняет только сопоставление ключевых слов без семантического понимания',
   'settings.embeddingProviderChangeWarning': 'Смена провайдера требует повторного эмбеддинга всех документов',
   'settings.embeddingSave': 'Сохранить конфигурацию',

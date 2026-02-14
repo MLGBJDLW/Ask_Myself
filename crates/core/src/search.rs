@@ -9,7 +9,7 @@ use uuid::Uuid;
 use std::collections::HashMap;
 
 use crate::db::Database;
-use crate::embed::{cosine_similarity, Embedder, TfIdfEmbedder};
+use crate::embed::{cosine_similarity, create_embedder, Embedder, TfIdfEmbedder, ONNX_MODEL_NAME};
 use crate::error::CoreError;
 use crate::models::{EvidenceCard, FileType, Highlight, SearchQuery};
 
@@ -140,100 +140,102 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
             param_values.iter().map(|p| p.as_ref()).collect();
         let mut stmt = conn.prepare(&sql)?;
 
-    let cards: Vec<EvidenceCard> = stmt
-        .query_map(param_refs.as_slice(), |row| {
-            let chunk_id: String = row.get(0)?;
-            let document_id: String = row.get(1)?;
-            let content: String = row.get(2)?;
-            let _chunk_index: i64 = row.get(3)?;
-            let metadata_json: String = row.get(4)?;
-            let doc_path: String = row.get(5)?;
-            let doc_title: Option<String> = row.get(6)?;
-            let _source_id: String = row.get(7)?;
-            let source_root: String = row.get(8)?;
-            let rank: f64 = row.get(9)?;
+        let cards: Vec<EvidenceCard> = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                let chunk_id: String = row.get(0)?;
+                let document_id: String = row.get(1)?;
+                let content: String = row.get(2)?;
+                let _chunk_index: i64 = row.get(3)?;
+                let metadata_json: String = row.get(4)?;
+                let doc_path: String = row.get(5)?;
+                let doc_title: Option<String> = row.get(6)?;
+                let _source_id: String = row.get(7)?;
+                let source_root: String = row.get(8)?;
+                let rank: f64 = row.get(9)?;
 
-            let heading_path = parse_heading_path(&metadata_json);
-            let source_name = extract_source_name(&source_root);
-            let highlights = compute_highlights(&content, &terms);
+                let heading_path = parse_heading_path(&metadata_json);
+                let source_name = extract_source_name(&source_root);
+                let highlights = compute_highlights(&content, &terms);
 
-            Ok(EvidenceCard {
-                chunk_id: Uuid::parse_str(&chunk_id).unwrap_or_default(),
-                document_id: Uuid::parse_str(&document_id).unwrap_or_default(),
-                source_name,
-                document_path: doc_path,
-                document_title: doc_title.unwrap_or_default(),
-                content,
-                heading_path,
-                score: -rank, // negate: FTS5 BM25 is negative
-                highlights,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+                Ok(EvidenceCard {
+                    chunk_id: Uuid::parse_str(&chunk_id).unwrap_or_default(),
+                    document_id: Uuid::parse_str(&document_id).unwrap_or_default(),
+                    source_name,
+                    document_path: doc_path,
+                    document_title: doc_title.unwrap_or_default(),
+                    content,
+                    heading_path,
+                    score: -rank, // negate: FTS5 BM25 is negative
+                    highlights,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
-    // Count total matches (without LIMIT/OFFSET) for accurate pagination info.
-    let total_matches = if cards.len() < limit as usize && query.offset == 0 {
-        // If we got fewer results than the limit on the first page, total = len.
-        cards.len()
-    } else {
-        // Run a separate count query for the true total.
-        let mut count_sql = String::from(
-            "SELECT COUNT(*)
+        // Count total matches (without LIMIT/OFFSET) for accurate pagination info.
+        let total_matches = if cards.len() < limit as usize && query.offset == 0 {
+            // If we got fewer results than the limit on the first page, total = len.
+            cards.len()
+        } else {
+            // Run a separate count query for the true total.
+            let mut count_sql = String::from(
+                "SELECT COUNT(*)
              FROM fts_chunks fts
              JOIN chunks c ON c.rowid = fts.rowid
              JOIN documents d ON d.id = c.document_id
              JOIN sources s ON s.id = d.source_id
              WHERE fts_chunks MATCH ?1",
-        );
-        // Re-apply the same filters (reuse the filter params before limit/offset).
-        // The param_values list has filters then limit then offset at the end.
-        // Rebuild a minimal count param list with just the fts_query + filters.
-        let mut count_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        count_params.push(Box::new(fts_query.clone()));
-        let mut cp_idx: usize = 2;
+            );
+            // Re-apply the same filters (reuse the filter params before limit/offset).
+            // The param_values list has filters then limit then offset at the end.
+            // Rebuild a minimal count param list with just the fts_query + filters.
+            let mut count_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            count_params.push(Box::new(fts_query.clone()));
+            let mut cp_idx: usize = 2;
 
-        if !filters.source_ids.is_empty() {
-            let placeholders: Vec<String> = filters
-                .source_ids
-                .iter()
-                .enumerate()
-                .map(|(i, _)| format!("?{}", cp_idx + i))
-                .collect();
-            count_sql.push_str(&format!(" AND d.source_id IN ({})", placeholders.join(",")));
-            for sid in &filters.source_ids {
-                count_params.push(Box::new(sid.to_string()));
+            if !filters.source_ids.is_empty() {
+                let placeholders: Vec<String> = filters
+                    .source_ids
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", cp_idx + i))
+                    .collect();
+                count_sql.push_str(&format!(" AND d.source_id IN ({})", placeholders.join(",")));
+                for sid in &filters.source_ids {
+                    count_params.push(Box::new(sid.to_string()));
+                    cp_idx += 1;
+                }
+            }
+            if !filters.file_types.is_empty() {
+                let placeholders: Vec<String> = filters
+                    .file_types
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", cp_idx + i))
+                    .collect();
+                count_sql.push_str(&format!(" AND d.mime_type IN ({})", placeholders.join(",")));
+                for ft in &filters.file_types {
+                    count_params.push(Box::new(file_type_to_mime(ft)));
+                    cp_idx += 1;
+                }
+            }
+            if let Some(ref from) = filters.date_from {
+                count_sql.push_str(&format!(" AND d.indexed_at >= ?{}", cp_idx));
+                count_params.push(Box::new(from.to_rfc3339()));
                 cp_idx += 1;
             }
-        }
-        if !filters.file_types.is_empty() {
-            let placeholders: Vec<String> = filters
-                .file_types
-                .iter()
-                .enumerate()
-                .map(|(i, _)| format!("?{}", cp_idx + i))
-                .collect();
-            count_sql.push_str(&format!(" AND d.mime_type IN ({})", placeholders.join(",")));
-            for ft in &filters.file_types {
-                count_params.push(Box::new(file_type_to_mime(ft)));
-                cp_idx += 1;
+            if let Some(ref to) = filters.date_to {
+                count_sql.push_str(&format!(" AND d.indexed_at <= ?{}", cp_idx));
+                count_params.push(Box::new(to.to_rfc3339()));
+                let _ = cp_idx;
             }
-        }
-        if let Some(ref from) = filters.date_from {
-            count_sql.push_str(&format!(" AND d.indexed_at >= ?{}", cp_idx));
-            count_params.push(Box::new(from.to_rfc3339()));
-            cp_idx += 1;
-        }
-        if let Some(ref to) = filters.date_to {
-            count_sql.push_str(&format!(" AND d.indexed_at <= ?{}", cp_idx));
-            count_params.push(Box::new(to.to_rfc3339()));
-            let _ = cp_idx;
-        }
 
-        let count_refs: Vec<&dyn rusqlite::types::ToSql> =
-            count_params.iter().map(|p| p.as_ref()).collect();
-        conn.query_row(&count_sql, count_refs.as_slice(), |row| row.get::<_, usize>(0))
+            let count_refs: Vec<&dyn rusqlite::types::ToSql> =
+                count_params.iter().map(|p| p.as_ref()).collect();
+            conn.query_row(&count_sql, count_refs.as_slice(), |row| {
+                row.get::<_, usize>(0)
+            })
             .unwrap_or(cards.len())
-    };
+        };
 
         (cards, total_matches)
     }; // conn dropped here
@@ -328,13 +330,91 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
     };
     let fts_result = search(db, &fts_query)?;
 
-    // Step 2: Vector search.
-    let vec_results = vector_search(db, trimmed, internal_limit)?;
+    // Step 2: Vector search — use the configured embedder model.
+    let vec_results =
+        {
+            let config = db.get_embedder_config()?;
+            match config.provider.as_str() {
+                "local" | "api" => {
+                    // Determine model name for DB embedding lookup.
+                    let model_name = if config.provider == "local" {
+                        ONNX_MODEL_NAME.to_string()
+                    } else {
+                        if config.api_model.is_empty() {
+                            "text-embedding-3-small".to_string()
+                        } else {
+                            config.api_model.clone()
+                        }
+                    };
+
+                    match create_embedder(&config) {
+                        Ok(embedder) => {
+                            // If create_embedder fell back to an empty TF-IDF
+                            // (e.g. ONNX not downloaded), its dimensions will be 0.
+                            if embedder.dimensions() == 0 {
+                                log::warn!(
+                                    "Configured embedder ({}) returned empty dimensions, \
+                                 falling back to TF-IDF state from DB",
+                                    config.provider
+                                );
+                                tfidf_vector_search(db, trimmed, internal_limit)
+                            } else {
+                                match embedder.embed(trimmed) {
+                                    Ok(query_vec) => {
+                                        if query_vec.iter().all(|&v| v == 0.0) {
+                                            Vec::new()
+                                        } else {
+                                            vector_search_top_k(
+                                                db,
+                                                &query_vec,
+                                                &model_name,
+                                                internal_limit,
+                                            )
+                                            .unwrap_or_else(|e| {
+                                                log::warn!(
+                                                    "Vector search with {} failed: {e}, \
+                                                 trying TF-IDF fallback",
+                                                    model_name
+                                                );
+                                                tfidf_vector_search(db, trimmed, internal_limit)
+                                            })
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "Failed to embed query with {}: {e}, \
+                                         trying TF-IDF fallback",
+                                            config.provider
+                                        );
+                                        tfidf_vector_search(db, trimmed, internal_limit)
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to create embedder ({}): {e}, \
+                             trying TF-IDF fallback",
+                                config.provider
+                            );
+                            tfidf_vector_search(db, trimmed, internal_limit)
+                        }
+                    }
+                }
+                _ => {
+                    // TF-IDF or unknown provider — use TF-IDF from DB state.
+                    tfidf_vector_search(db, trimmed, internal_limit)
+                }
+            }
+        };
 
     // Fallback: no embeddings available → return pure FTS.
     if vec_results.is_empty() {
-        let final_cards: Vec<EvidenceCard> =
-            fts_result.evidence_cards.into_iter().take(user_limit).collect();
+        let final_cards: Vec<EvidenceCard> = fts_result
+            .evidence_cards
+            .into_iter()
+            .take(user_limit)
+            .collect();
         let total = final_cards.len();
         return Ok(SearchResult {
             query: query.text.clone(),
@@ -392,11 +472,44 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
     })
 }
 
+/// Try TF-IDF vector search using saved embedder state from the DB.
+///
+/// Returns an empty vec if no TF-IDF state exists (graceful degradation).
+fn tfidf_vector_search(db: &Database, query_text: &str, limit: usize) -> Vec<(String, f32)> {
+    match db.load_embedder_state("tfidf-v1") {
+        Ok(Some((vocab, idf))) => {
+            let embedder = TfIdfEmbedder::from_vocabulary(vocab, idf);
+            match embedder.embed(query_text) {
+                Ok(query_vec) => {
+                    if query_vec.iter().all(|&v| v == 0.0) {
+                        return Vec::new();
+                    }
+                    vector_search_top_k(db, &query_vec, "tfidf-v1", limit).unwrap_or_else(|e| {
+                        log::warn!("TF-IDF vector search failed: {e}");
+                        Vec::new()
+                    })
+                }
+                Err(e) => {
+                    log::warn!("TF-IDF query embedding failed: {e}");
+                    Vec::new()
+                }
+            }
+        }
+        Ok(None) => {
+            log::debug!("No TF-IDF embedder state in DB, skipping vector search");
+            Vec::new()
+        }
+        Err(e) => {
+            log::warn!("Failed to load TF-IDF embedder state: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// Vector search optimized for large datasets using batched loading and a
 /// min-heap to maintain top-k results without loading all embeddings at once.
 ///
 /// Returns `(chunk_id, cosine_similarity)` pairs sorted by similarity DESC.
-// TODO: integrate — batched vector search, more scalable than vector_search()
 pub fn vector_search_top_k(
     db: &Database,
     query_vec: &[f32],
@@ -428,10 +541,7 @@ pub fn vector_search_top_k(
             if top_k.len() < k {
                 top_k.push((chunk_id, sim));
                 if top_k.len() == k {
-                    threshold = top_k
-                        .iter()
-                        .map(|(_, s)| *s)
-                        .fold(f32::INFINITY, f32::min);
+                    threshold = top_k.iter().map(|(_, s)| *s).fold(f32::INFINITY, f32::min);
                 }
             } else if sim > threshold {
                 // Replace the element with the lowest score.
@@ -444,10 +554,7 @@ pub fn vector_search_top_k(
                     .map(|(i, _)| i)
                     .unwrap();
                 top_k[min_idx] = (chunk_id, sim);
-                threshold = top_k
-                    .iter()
-                    .map(|(_, s)| *s)
-                    .fold(f32::INFINITY, f32::min);
+                threshold = top_k.iter().map(|(_, s)| *s).fold(f32::INFINITY, f32::min);
             }
         }
 
@@ -488,7 +595,11 @@ fn apply_feedback_reranking(
             card.score = (card.score + adj).clamp(0.0, 1.0);
         }
     }
-    cards.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    cards.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     Ok(())
 }
 
@@ -599,9 +710,15 @@ fn file_type_to_mime(ft: &FileType) -> String {
         FileType::PlainText => "text/plain".to_string(),
         FileType::Log => "text/x-log".to_string(),
         FileType::Pdf => "application/pdf".to_string(),
-        FileType::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string(),
-        FileType::Excel => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
-        FileType::Pptx => "application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string(),
+        FileType::Docx => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
+        }
+        FileType::Excel => {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string()
+        }
+        FileType::Pptx => {
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string()
+        }
     }
 }
 
@@ -609,6 +726,7 @@ fn file_type_to_mime(ft: &FileType) -> String {
 ///
 /// Returns `(chunk_id, cosine_similarity)` pairs sorted by similarity DESC.
 /// Returns an empty vec when no embedder state or embeddings exist.
+#[allow(dead_code)] // kept for tests; hybrid_search now uses vector_search_top_k
 fn vector_search(
     db: &Database,
     query_text: &str,
@@ -739,7 +857,14 @@ mod tests {
                                  start_offset, end_offset, line_start, line_end,
                                  content_hash, metadata_json)
              VALUES (?1, ?2, ?3, 'text', ?4, 0, ?5, 1, 10, ?6, '{}')",
-            params![&id, document_id, idx, content, content.len() as i64, format!("hash-{}", &id[..8])],
+            params![
+                &id,
+                document_id,
+                idx,
+                content,
+                content.len() as i64,
+                format!("hash-{}", &id[..8])
+            ],
         )
         .expect("insert chunk");
         id
@@ -762,7 +887,15 @@ mod tests {
                                  start_offset, end_offset, line_start, line_end,
                                  content_hash, metadata_json)
              VALUES (?1, ?2, ?3, 'text', ?4, 0, ?5, 1, 10, ?6, ?7)",
-            params![&id, document_id, idx, content, content.len() as i64, format!("hash-{}", &id[..8]), &metadata],
+            params![
+                &id,
+                document_id,
+                idx,
+                content,
+                content.len() as i64,
+                format!("hash-{}", &id[..8]),
+                &metadata
+            ],
         )
         .expect("insert chunk");
         id
@@ -803,7 +936,11 @@ mod tests {
             let sid = insert_source(&conn);
             let did = insert_document(&conn, &sid, "text/plain");
             insert_chunk(&conn, &did, "rust is a systems programming language");
-            insert_chunk(&conn, &did, "rust guarantees memory safety without garbage collection");
+            insert_chunk(
+                &conn,
+                &did,
+                "rust guarantees memory safety without garbage collection",
+            );
             insert_chunk(&conn, &did, "python is an interpreted language");
         }
 
@@ -1142,7 +1279,11 @@ mod tests {
             chunk_id_1 = insert_chunk(&conn, &did, "rust programming language systems");
             chunk_id_2 = insert_chunk(&conn, &did, "python scripting dynamic typing");
             chunk_id_3 = insert_chunk(&conn, &did, "rust compiler memory safety performance");
-            chunk_id_4 = insert_chunk(&conn, &did, "javascript web frontend development frameworks");
+            chunk_id_4 = insert_chunk(
+                &conn,
+                &did,
+                "javascript web frontend development frameworks",
+            );
             chunk_id_5 = insert_chunk(&conn, &did, "database sql query optimization indexes");
             chunk_id_6 = insert_chunk(&conn, &did, "networking protocols http server requests");
             chunk_id_7 = insert_chunk(&conn, &did, "testing integration unit coverage reports");
@@ -1438,8 +1579,10 @@ mod tests {
         }
 
         // Seed feedback for query "test".
-        db.add_feedback(&chunk_c, "test", FeedbackAction::Pin).unwrap();   // +0.25
-        db.add_feedback(&chunk_a, "test", FeedbackAction::Downvote).unwrap(); // -0.15
+        db.add_feedback(&chunk_c, "test", FeedbackAction::Pin)
+            .unwrap(); // +0.25
+        db.add_feedback(&chunk_a, "test", FeedbackAction::Downvote)
+            .unwrap(); // -0.15
 
         // Build cards with known scores.
         let mut cards = vec![
@@ -1484,9 +1627,21 @@ mod tests {
         // chunk_b: 0.50 (no feedback)
         // chunk_c: 0.40 + 0.25 = 0.65
         // Sorted DESC: chunk_a(0.65) == chunk_c(0.65), then chunk_b(0.50)
-        assert!((cards[0].score - 0.65).abs() < 1e-6, "first score: {}", cards[0].score);
-        assert!((cards[1].score - 0.65).abs() < 1e-6, "second score: {}", cards[1].score);
-        assert!((cards[2].score - 0.50).abs() < 1e-6, "third score: {}", cards[2].score);
+        assert!(
+            (cards[0].score - 0.65).abs() < 1e-6,
+            "first score: {}",
+            cards[0].score
+        );
+        assert!(
+            (cards[1].score - 0.65).abs() < 1e-6,
+            "second score: {}",
+            cards[1].score
+        );
+        assert!(
+            (cards[2].score - 0.50).abs() < 1e-6,
+            "third score: {}",
+            cards[2].score
+        );
         // chunk_b should be last
         assert_eq!(cards[2].chunk_id.to_string(), chunk_b);
     }
@@ -1506,7 +1661,8 @@ mod tests {
 
         // 4 upvotes = 4 * 0.15 = 0.60 → clamped to 0.50
         for _ in 0..4 {
-            db.add_feedback(&chunk_id, "clamp", FeedbackAction::Upvote).unwrap();
+            db.add_feedback(&chunk_id, "clamp", FeedbackAction::Upvote)
+                .unwrap();
         }
 
         let adjustments = db

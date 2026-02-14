@@ -235,6 +235,7 @@ export const ja: TranslationKeys = {
   'settings.embeddingTestConnection': '接続テスト',
   'settings.embeddingTestSuccess': 'API 接続成功',
   'settings.embeddingTestFail': 'API 接続失敗',
+  'settings.embeddingDownloadFail': 'モデルのダウンロードに失敗しました',
   'settings.embeddingTfidfWarning': 'TF-IDF はキーワードマッチングのみで、意味理解機能はありません',
   'settings.embeddingProviderChangeWarning': 'プロバイダーを切り替えた後、すべてのドキュメントを再埋め込みする必要があります',
   'settings.embeddingSave': '設定を保存',
