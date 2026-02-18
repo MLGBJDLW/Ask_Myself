@@ -7,3 +7,11 @@ export interface IngestResult {
   filesFailed: number;
   errors: string[];
 }
+
+export interface ScanProgress {
+  sourceId: string;
+  phase: string;
+  current: number;
+  total: number;
+  currentFile: string | null;
+}

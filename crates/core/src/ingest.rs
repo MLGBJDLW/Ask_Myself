@@ -45,6 +45,28 @@ pub struct EmbedResult {
     pub model: String,
 }
 
+/// Progress information emitted during scanning or embedding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanProgress {
+    pub source_id: String,
+    pub phase: String,
+    pub current: usize,
+    pub total: usize,
+    pub current_file: Option<String>,
+}
+
+/// Result of ingesting a single file (for incremental watcher events).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IngestFileResult {
+    /// File was new and inserted.
+    Added,
+    /// File content changed and was updated.
+    Updated,
+    /// File content unchanged — skipped.
+    Unchanged,
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -55,7 +77,7 @@ pub struct EmbedResult {
 /// and for each matching file: parses it, checks for changes via content hash,
 /// and inserts or updates the document and its chunks in the database.
 pub fn scan_source(db: &Database, source_id: &str) -> Result<IngestResult, CoreError> {
-    scan_source_with_privacy(db, source_id, None)
+    scan_source_inner(db, source_id, None, None)
 }
 
 /// Scan a source directory with an optional [`PrivacyConfig`].
@@ -68,6 +90,28 @@ pub fn scan_source_with_privacy(
     db: &Database,
     source_id: &str,
     privacy: Option<&PrivacyConfig>,
+) -> Result<IngestResult, CoreError> {
+    scan_source_inner(db, source_id, privacy, None)
+}
+
+/// Scan a source directory with progress reporting.
+///
+/// Same as [`scan_source`] but calls `on_progress` at regular intervals
+/// during the file-walk loop (approximately every 10 files).
+pub fn scan_source_with_progress(
+    db: &Database,
+    source_id: &str,
+    on_progress: impl Fn(ScanProgress),
+) -> Result<IngestResult, CoreError> {
+    scan_source_inner(db, source_id, None, Some(&on_progress))
+}
+
+/// Internal scan implementation shared by all public scan functions.
+fn scan_source_inner(
+    db: &Database,
+    source_id: &str,
+    privacy: Option<&PrivacyConfig>,
+    on_progress: Option<&dyn Fn(ScanProgress)>,
 ) -> Result<IngestResult, CoreError> {
     let source = db.get_source(source_id)?;
 
@@ -109,10 +153,30 @@ pub fn scan_source_with_privacy(
 
     // Collect all files recursively, sorted for deterministic order.
     let files = walk_directory(root)?;
+    let total_files = files.len();
+
+    // Emit initial progress.
+    if let Some(cb) = &on_progress {
+        cb(ScanProgress {
+            source_id: source_id.to_string(),
+            phase: "scanning".to_string(),
+            current: 0,
+            total: total_files,
+            current_file: None,
+        });
+    }
 
     // Pre-fetch all existing document paths and hashes for this source
     // to avoid N individual database lookups during scanning.
     let existing_docs = db.get_document_paths_for_source(source_id)?;
+
+    // Collect new and updated documents for batched database operations.
+    let mut new_docs: Vec<ParsedDocument> = Vec::new();
+    let mut update_docs: Vec<(String, ParsedDocument)> = Vec::new(); // (doc_id, parsed)
+
+    // Progress throttle: emit every 10 files.
+    let progress_interval: usize = 10;
+    let mut files_processed: usize = 0;
 
     for file_path in &files {
         // Compute relative path for glob matching, normalised to forward slashes.
@@ -124,20 +188,59 @@ pub fn scan_source_with_privacy(
 
         // Include filter: if globs are specified, file must match at least one.
         if has_includes && !include_set.is_match(&rel_str) {
+            files_processed += 1;
             continue;
         }
 
         // Exclude filter: skip files matching any exclude pattern.
         if exclude_set.is_match(&rel_str) {
+            files_processed += 1;
             continue;
         }
 
         result.files_scanned += 1;
+        files_processed += 1;
 
-        match ingest_file(db, source_id, file_path, &existing_docs, privacy_cfg) {
-            Ok(IngestAction::Added) => result.files_added += 1,
-            Ok(IngestAction::Updated) => result.files_updated += 1,
-            Ok(IngestAction::Skipped) => result.files_skipped += 1,
+        // Emit progress at regular intervals.
+        if let Some(cb) = &on_progress {
+            if files_processed % progress_interval == 0 || files_processed == total_files {
+                cb(ScanProgress {
+                    source_id: source_id.to_string(),
+                    phase: "scanning".to_string(),
+                    current: files_processed,
+                    total: total_files,
+                    current_file: Some(rel_str.clone()),
+                });
+            }
+        }
+
+        // Skip files exceeding the size limit to avoid excessive memory usage.
+        const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
+        match std::fs::metadata(file_path) {
+            Ok(meta) if meta.len() > MAX_FILE_SIZE => {
+                warn!(
+                    "Skipping large file ({}MB): {}",
+                    meta.len() / 1024 / 1024,
+                    file_path.display()
+                );
+                result.files_skipped += 1;
+                continue;
+            }
+            _ => {} // proceed normally (missing metadata is handled by parse_file)
+        }
+
+        match classify_file(file_path, &existing_docs, privacy_cfg) {
+            Ok(FileClassification::New(parsed)) => {
+                new_docs.push(parsed);
+                result.files_added += 1;
+            }
+            Ok(FileClassification::Changed(doc_id, parsed)) => {
+                update_docs.push((doc_id, parsed));
+                result.files_updated += 1;
+            }
+            Ok(FileClassification::Unchanged) => {
+                result.files_skipped += 1;
+            }
             Err(e) => {
                 let msg = format!("{}: {}", file_path.display(), e);
                 warn!("Failed to ingest file: {}", msg);
@@ -145,6 +248,29 @@ pub fn scan_source_with_privacy(
                 result.files_failed += 1;
             }
         }
+    }
+
+    // Batch-insert all new documents in a single transaction.
+    if !new_docs.is_empty() {
+        debug!("Batch-inserting {} new documents", new_docs.len());
+        batch_insert_documents(db, source_id, &new_docs)?;
+    }
+
+    // Batch-update all changed documents in a single transaction.
+    if !update_docs.is_empty() {
+        debug!("Batch-updating {} changed documents", update_docs.len());
+        batch_update_documents(db, &update_docs)?;
+    }
+
+    // Emit final progress.
+    if let Some(cb) = &on_progress {
+        cb(ScanProgress {
+            source_id: source_id.to_string(),
+            phase: "scanning".to_string(),
+            current: total_files,
+            total: total_files,
+            current_file: None,
+        });
     }
 
     info!(
@@ -166,24 +292,77 @@ pub fn scan_source_with_privacy(
 /// - `"tfidf"` — loads/builds TF-IDF from the corpus (original behaviour).
 /// - `"local"` or `"api"` — delegates to [`create_embedder`].
 pub fn embed_source(db: &Database, source_id: &str) -> Result<EmbedResult, CoreError> {
+    embed_source_inner(db, source_id, None)
+}
+
+/// Generate embeddings with progress reporting.
+///
+/// Same as [`embed_source`] but calls `on_progress` after each batch of
+/// chunks is embedded.
+pub fn embed_source_with_progress(
+    db: &Database,
+    source_id: &str,
+    on_progress: impl Fn(ScanProgress),
+) -> Result<EmbedResult, CoreError> {
+    embed_source_inner(db, source_id, Some(&on_progress))
+}
+
+/// Internal embed implementation shared by public embed functions.
+fn embed_source_inner(
+    db: &Database,
+    source_id: &str,
+    on_progress: Option<&dyn Fn(ScanProgress)>,
+) -> Result<EmbedResult, CoreError> {
     let config = db.get_embedder_config()?;
 
     if config.provider == "tfidf" {
-        return embed_source_tfidf(db, source_id);
+        return embed_source_tfidf(db, source_id, on_progress);
     }
 
     let embedder = create_embedder(&config)?;
     let model = embedder.model_name().to_string();
 
     let missing = db.get_chunks_without_embeddings(&model)?;
-    let mut batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(missing.len());
-    for (chunk_id, content) in &missing {
-        let vector = embedder.embed(content)?;
-        batch.push((chunk_id.clone(), model.clone(), vector));
+    let total_chunks = missing.len();
+
+    // Emit initial progress.
+    if let Some(cb) = &on_progress {
+        cb(ScanProgress {
+            source_id: source_id.to_string(),
+            phase: "embedding".to_string(),
+            current: 0,
+            total: total_chunks,
+            current_file: None,
+        });
     }
-    let embedded = batch.len();
-    if !batch.is_empty() {
-        db.batch_store_embeddings(&batch)?;
+
+    // Process embeddings in sub-batches for progress reporting.
+    const EMBED_BATCH_SIZE: usize = 64;
+    let mut all_batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(total_chunks);
+    let mut embedded_so_far: usize = 0;
+
+    for chunk in missing.chunks(EMBED_BATCH_SIZE) {
+        let texts: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
+        let vectors = embedder.embed_batch(&texts)?;
+        for ((chunk_id, _), vector) in chunk.iter().zip(vectors.into_iter()) {
+            all_batch.push((chunk_id.clone(), model.clone(), vector));
+        }
+        embedded_so_far += chunk.len();
+
+        if let Some(cb) = &on_progress {
+            cb(ScanProgress {
+                source_id: source_id.to_string(),
+                phase: "embedding".to_string(),
+                current: embedded_so_far,
+                total: total_chunks,
+                current_file: None,
+            });
+        }
+    }
+
+    let embedded = all_batch.len();
+    if !all_batch.is_empty() {
+        db.batch_store_embeddings(&all_batch)?;
     }
 
     let total_source_chunks = db.get_chunks_for_source(source_id)?.len();
@@ -203,7 +382,11 @@ pub fn embed_source(db: &Database, source_id: &str) -> Result<EmbedResult, CoreE
 }
 
 /// TF-IDF specific embedding path (original behaviour).
-fn embed_source_tfidf(db: &Database, source_id: &str) -> Result<EmbedResult, CoreError> {
+fn embed_source_tfidf(
+    db: &Database,
+    source_id: &str,
+    on_progress: Option<&dyn Fn(ScanProgress)>,
+) -> Result<EmbedResult, CoreError> {
     let model = "tfidf-v1";
 
     let embedder = match db.load_embedder_state(model)? {
@@ -222,10 +405,35 @@ fn embed_source_tfidf(db: &Database, source_id: &str) -> Result<EmbedResult, Cor
     };
 
     let missing = db.get_chunks_without_embeddings(model)?;
+    let total_chunks = missing.len();
+
+    if let Some(cb) = &on_progress {
+        cb(ScanProgress {
+            source_id: source_id.to_string(),
+            phase: "embedding".to_string(),
+            current: 0,
+            total: total_chunks,
+            current_file: None,
+        });
+    }
+
     let mut batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(missing.len());
-    for (chunk_id, content) in &missing {
+    for (i, (chunk_id, content)) in missing.iter().enumerate() {
         let vector = embedder.embed(content)?;
         batch.push((chunk_id.clone(), model.to_string(), vector));
+
+        // Report progress every 50 chunks.
+        if let Some(cb) = &on_progress {
+            if (i + 1) % 50 == 0 || i + 1 == total_chunks {
+                cb(ScanProgress {
+                    source_id: source_id.to_string(),
+                    phase: "embedding".to_string(),
+                    current: i + 1,
+                    total: total_chunks,
+                    current_file: None,
+                });
+            }
+        }
     }
     let embedded = batch.len();
     if !batch.is_empty() {
@@ -266,11 +474,13 @@ pub fn rebuild_embeddings(db: &Database) -> Result<EmbedResult, CoreError> {
 
     // 2. Embed every chunk.
     let all_chunks = db.get_all_chunks()?;
-    let mut batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(all_chunks.len());
-    for (chunk_id, content) in &all_chunks {
-        let vector = embedder.embed(content)?;
-        batch.push((chunk_id.clone(), model.clone(), vector));
-    }
+    let texts: Vec<&str> = all_chunks.iter().map(|(_, c)| c.as_str()).collect();
+    let all_vectors = embedder.embed_batch(&texts)?;
+    let batch: Vec<(String, String, Vec<f32>)> = all_chunks
+        .iter()
+        .zip(all_vectors.into_iter())
+        .map(|((chunk_id, _), vector)| (chunk_id.clone(), model.clone(), vector))
+        .collect();
     let embedded = batch.len();
     if !batch.is_empty() {
         db.batch_store_embeddings(&batch)?;
@@ -322,7 +532,6 @@ fn rebuild_embeddings_tfidf(db: &Database) -> Result<EmbedResult, CoreError> {
 ///
 /// Much faster than calling `insert_document` per file, as SQLite transactions
 /// are expensive per-call. Returns the number of documents inserted.
-// TODO: integrate — batch ingestion optimization, currently inserting one-at-a-time
 pub fn batch_insert_documents(
     db: &Database,
     source_id: &str,
@@ -348,6 +557,45 @@ pub fn batch_insert_documents(
             ],
         )?;
         insert_chunks(&tx, &doc_id, &parsed.chunks)?;
+        count += 1;
+    }
+    tx.commit()?;
+    Ok(count)
+}
+
+/// Update multiple existing documents in a single transaction for bulk operations.
+///
+/// Each entry is `(doc_id, parsed_document)`. Old chunks are deleted first
+/// and new chunks are inserted, all within a single transaction.
+pub fn batch_update_documents(
+    db: &Database,
+    updates: &[(String, ParsedDocument)],
+) -> Result<usize, CoreError> {
+    let mut conn = db.conn();
+    let tx = conn.transaction()?;
+    let mut count = 0usize;
+    for (doc_id, parsed) in updates {
+        // Delete old chunks — FTS triggers fire automatically.
+        tx.execute(
+            "DELETE FROM chunks WHERE document_id = ?1",
+            params![doc_id],
+        )?;
+
+        // Update the document record.
+        tx.execute(
+            "UPDATE documents
+             SET mime_type = ?1, file_size = ?2, modified_at = datetime('now'),
+                 content_hash = ?3, indexed_at = datetime('now')
+             WHERE id = ?4",
+            params![
+                &parsed.mime_type,
+                parsed.file_size,
+                &parsed.content_hash,
+                doc_id,
+            ],
+        )?;
+
+        insert_chunks(&tx, doc_id, &parsed.chunks)?;
         count += 1;
     }
     tx.commit()?;
@@ -511,21 +759,22 @@ impl Database {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Outcome of ingesting a single file.
-enum IngestAction {
-    Added,
-    Updated,
-    Skipped,
+/// Classification of a file during scanning.
+enum FileClassification {
+    /// New file — not yet in the database.
+    New(ParsedDocument),
+    /// Changed file — content hash differs from stored version.
+    Changed(String, ParsedDocument), // (doc_id, parsed)
+    /// Unchanged file — content hash matches, skip.
+    Unchanged,
 }
 
-/// Parse a single file and insert/update it in the database.
-fn ingest_file(
-    db: &Database,
-    source_id: &str,
+/// Classify a file as new, changed, or unchanged (without performing DB writes).
+fn classify_file(
     path: &Path,
     existing_docs: &HashMap<String, (String, String)>,
     privacy: &PrivacyConfig,
-) -> Result<IngestAction, CoreError> {
+) -> Result<FileClassification, CoreError> {
     let mut parsed = parse_file(path)?;
 
     // Apply content redaction when privacy is enabled.
@@ -539,17 +788,15 @@ fn ingest_file(
         Some((doc_id, existing_hash)) => {
             if *existing_hash == parsed.content_hash {
                 debug!("Skipping unchanged file: {}", parsed.file_path);
-                Ok(IngestAction::Skipped)
+                Ok(FileClassification::Unchanged)
             } else {
-                debug!("Updating changed file: {}", parsed.file_path);
-                db.update_document(doc_id, &parsed)?;
-                Ok(IngestAction::Updated)
+                debug!("File changed: {}", parsed.file_path);
+                Ok(FileClassification::Changed(doc_id.clone(), parsed))
             }
         }
         None => {
-            debug!("Adding new file: {}", parsed.file_path);
-            db.insert_document(source_id, &parsed)?;
-            Ok(IngestAction::Added)
+            debug!("New file: {}", parsed.file_path);
+            Ok(FileClassification::New(parsed))
         }
     }
 }
@@ -607,6 +854,67 @@ fn build_glob_set(patterns: &[String]) -> Result<GlobSet, CoreError> {
     builder
         .build()
         .map_err(|e| CoreError::InvalidInput(format!("Failed to build glob set: {e}")))
+}
+
+/// Ingest a single file for incremental watcher events.
+///
+/// Parses the file, checks its content hash against the database, and
+/// inserts or updates the document accordingly. Returns the outcome.
+pub fn ingest_single_file(
+    db: &Database,
+    source_id: &str,
+    path: &Path,
+) -> Result<IngestFileResult, CoreError> {
+    if !path.is_file() {
+        return Err(CoreError::InvalidInput(format!(
+            "Path is not a file: {}",
+            path.display()
+        )));
+    }
+
+    // Skip files exceeding the size limit.
+    const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > MAX_FILE_SIZE {
+            warn!(
+                "Skipping large file ({}MB): {}",
+                meta.len() / 1024 / 1024,
+                path.display()
+            );
+            return Ok(IngestFileResult::Unchanged);
+        }
+    }
+
+    // Load privacy config for redaction.
+    let privacy_cfg = db.load_privacy_config()?;
+
+    let mut parsed = parse_file(path)?;
+
+    // Apply content redaction when privacy is enabled.
+    if privacy_cfg.enabled {
+        for chunk in &mut parsed.chunks {
+            chunk.content = privacy::redact_content(&chunk.content, &privacy_cfg.redact_patterns);
+        }
+    }
+
+    // Check if the document already exists.
+    match db.get_document_by_path(&parsed.file_path)? {
+        Some((doc_id, existing_hash)) => {
+            if existing_hash == parsed.content_hash {
+                debug!("Single-file ingest: unchanged {}", parsed.file_path);
+                Ok(IngestFileResult::Unchanged)
+            } else {
+                debug!("Single-file ingest: updating {}", parsed.file_path);
+                db.update_document(&doc_id, &parsed)?;
+                Ok(IngestFileResult::Updated)
+            }
+        }
+        None => {
+            debug!("Single-file ingest: adding {}", parsed.file_path);
+            db.insert_document(source_id, &parsed)?;
+            Ok(IngestFileResult::Added)
+        }
+    }
 }
 
 /// Recursively walk a directory, collecting all file paths (sorted).

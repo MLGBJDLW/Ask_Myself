@@ -4,7 +4,7 @@ export type { Chunk } from "./chunk";
 export type { EvidenceCard, Highlight } from "./evidence";
 export type { Playbook, PlaybookCitation } from "./playbook";
 export type { SearchFilters, SearchResult } from "./search";
-export type { IngestResult } from "./ingest";
+export type { IngestResult, ScanProgress } from "./ingest";
 export type { IndexStats } from "./index-stats";
 export type { QueryLog } from "./query-log";
 export type { Feedback } from "./feedback";

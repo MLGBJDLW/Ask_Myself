@@ -25,6 +25,9 @@ pub struct EmbedderConfig {
     pub api_model: String,
     pub model_path: String,
     pub vector_dimensions: u32,
+    /// Which local ONNX model to use: `"MultilingualMiniLM"` (default) or `"MultilingualE5Base"`.
+    #[serde(default)]
+    pub local_model: String,
 }
 
 impl Default for EmbedderConfig {
@@ -36,7 +39,15 @@ impl Default for EmbedderConfig {
             api_model: "text-embedding-3-small".into(),
             model_path: String::new(),
             vector_dimensions: 384,
+            local_model: LocalEmbeddingModel::default().to_config_str().to_string(),
         }
+    }
+}
+
+impl EmbedderConfig {
+    /// Parse the `local_model` field into a [`LocalEmbeddingModel`].
+    pub fn local_embedding_model(&self) -> LocalEmbeddingModel {
+        LocalEmbeddingModel::from_config_str(&self.local_model)
     }
 }
 
@@ -56,9 +67,10 @@ pub fn create_embedder(config: &EmbedderConfig) -> Result<Box<dyn Embedder>, Cor
             } else {
                 Some(config.model_path.as_str())
             };
-            if check_local_model_exists(model_path) {
+            let local_model = config.local_embedding_model();
+            if check_local_model_exists_for(model_path, &local_model) {
                 let model_dir = model_path.map(PathBuf::from);
-                let embedder = OnnxEmbedder::new(model_dir)?;
+                let embedder = OnnxEmbedder::new(model_dir, local_model)?;
                 Ok(Box::new(embedder))
             } else {
                 log::warn!(
@@ -99,9 +111,14 @@ pub fn create_embedder(config: &EmbedderConfig) -> Result<Box<dyn Embedder>, Cor
 
 /// Check whether the local ONNX model files exist in the default (or given) directory.
 pub fn check_local_model_exists(model_path: Option<&str>) -> bool {
+    check_local_model_exists_for(model_path, &LocalEmbeddingModel::default())
+}
+
+/// Check whether a specific local ONNX model's files exist.
+pub fn check_local_model_exists_for(model_path: Option<&str>, model: &LocalEmbeddingModel) -> bool {
     let dir = match model_path {
         Some(p) if !p.is_empty() => PathBuf::from(p),
-        _ => match default_model_dir() {
+        _ => match default_model_dir_for(model) {
             Ok(d) => d,
             Err(_) => return false,
         },
@@ -111,11 +128,19 @@ pub fn check_local_model_exists(model_path: Option<&str>) -> bool {
 
 /// Download the local ONNX model files to the default (or given) directory.
 pub fn download_local_model(model_path: Option<&str>) -> Result<(), CoreError> {
+    download_local_model_for(model_path, &LocalEmbeddingModel::default())
+}
+
+/// Download a specific local ONNX model's files.
+pub fn download_local_model_for(
+    model_path: Option<&str>,
+    model: &LocalEmbeddingModel,
+) -> Result<(), CoreError> {
     let dir = match model_path {
         Some(p) if !p.is_empty() => PathBuf::from(p),
-        _ => default_model_dir()?,
+        _ => default_model_dir_for(model)?,
     };
-    download_model_files(&dir)
+    download_model_files(&dir, model)
 }
 
 // ── Embedder trait ──────────────────────────────────────────────────
@@ -533,6 +558,7 @@ impl Database {
                 "vector_dimensions" => {
                     config.vector_dimensions = value.parse::<u32>().unwrap_or(384);
                 }
+                "local_model" => config.local_model = value,
                 _ => {} // ignore unknown keys for forward compat
             }
         }
@@ -549,6 +575,7 @@ impl Database {
             ("api_model", config.api_model.clone()),
             ("model_path", config.model_path.clone()),
             ("vector_dimensions", config.vector_dimensions.to_string()),
+            ("local_model", config.local_model.clone()),
         ];
         for (key, value) in pairs {
             conn.execute(
@@ -627,40 +654,121 @@ impl Database {
     }
 }
 
-// ── ONNX Embedder (all-MiniLM-L6-v2) ────────────────────────────────
+// ── Local Embedding Model Selection ──────────────────────────────────
 
-pub const ONNX_MODEL_NAME: &str = "all-MiniLM-L6-v2";
-const ONNX_DIMENSIONS: usize = 384;
-const ONNX_MAX_LENGTH: usize = 256;
-const ONNX_MODEL_URL: &str =
-    "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx";
-const ONNX_TOKENIZER_URL: &str =
-    "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json";
-const ONNX_MODEL_MIRROR_URL: &str =
-    "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx";
-const ONNX_TOKENIZER_MIRROR_URL: &str =
-    "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json";
+/// Selectable local ONNX embedding model.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum LocalEmbeddingModel {
+    /// ~46 MB, 384-dim, 50+ languages. Default, fast.
+    MultilingualMiniLM,
+    /// ~470 MB, 768-dim, 100+ languages. Highest quality.
+    MultilingualE5Base,
+}
 
-/// ONNX-based sentence embedder using `all-MiniLM-L6-v2`.
+impl Default for LocalEmbeddingModel {
+    fn default() -> Self {
+        Self::MultilingualMiniLM
+    }
+}
+
+impl LocalEmbeddingModel {
+    pub fn model_name(&self) -> &str {
+        match self {
+            Self::MultilingualMiniLM => "paraphrase-multilingual-MiniLM-L12-v2",
+            Self::MultilingualE5Base => "multilingual-e5-base",
+        }
+    }
+
+    pub fn dimensions(&self) -> usize {
+        match self {
+            Self::MultilingualMiniLM => 384,
+            Self::MultilingualE5Base => 768,
+        }
+    }
+
+    pub fn max_length(&self) -> usize {
+        match self {
+            Self::MultilingualMiniLM => 128,
+            Self::MultilingualE5Base => 512,
+        }
+    }
+
+    pub fn model_url(&self) -> &str {
+        match self {
+            Self::MultilingualMiniLM => "https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model.onnx",
+            Self::MultilingualE5Base => "https://huggingface.co/intfloat/multilingual-e5-base/resolve/main/onnx/model.onnx",
+        }
+    }
+
+    pub fn tokenizer_url(&self) -> &str {
+        match self {
+            Self::MultilingualMiniLM => "https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer.json",
+            Self::MultilingualE5Base => "https://huggingface.co/intfloat/multilingual-e5-base/resolve/main/tokenizer.json",
+        }
+    }
+
+    pub fn fallback_model_url(&self) -> &str {
+        match self {
+            Self::MultilingualMiniLM => "https://hf-mirror.com/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model.onnx",
+            Self::MultilingualE5Base => "https://hf-mirror.com/intfloat/multilingual-e5-base/resolve/main/onnx/model.onnx",
+        }
+    }
+
+    pub fn fallback_tokenizer_url(&self) -> &str {
+        match self {
+            Self::MultilingualMiniLM => "https://hf-mirror.com/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer.json",
+            Self::MultilingualE5Base => "https://hf-mirror.com/intfloat/multilingual-e5-base/resolve/main/tokenizer.json",
+        }
+    }
+
+    /// Whether this model requires a prefix on input texts (e.g. E5 models).
+    pub fn requires_prefix(&self) -> bool {
+        matches!(self, Self::MultilingualE5Base)
+    }
+
+    /// Parse from string stored in DB / config.
+    pub fn from_config_str(s: &str) -> Self {
+        match s {
+            "multilingual-e5-base" | "MultilingualE5Base" => Self::MultilingualE5Base,
+            _ => Self::MultilingualMiniLM, // default
+        }
+    }
+
+    /// String suitable for storing in config.
+    pub fn to_config_str(&self) -> &str {
+        match self {
+            Self::MultilingualMiniLM => "MultilingualMiniLM",
+            Self::MultilingualE5Base => "MultilingualE5Base",
+        }
+    }
+}
+
+/// Public constant: default ONNX model name used for embedding lookup.
+/// This now delegates to `LocalEmbeddingModel::default().model_name()`
+/// but callers that import the constant directly can still work.
+pub const ONNX_MODEL_NAME: &str = "paraphrase-multilingual-MiniLM-L12-v2";
+
+/// ONNX-based sentence embedder with configurable model selection.
 ///
-/// Produces 384-dimensional L2-normalized embeddings suitable for
-/// semantic similarity search.  Model files are downloaded from
-/// HuggingFace on first use and cached locally.
+/// Produces L2-normalized embeddings suitable for semantic similarity
+/// search.  Model files are downloaded from HuggingFace on first use
+/// and cached locally.
 pub struct OnnxEmbedder {
     session: std::sync::Mutex<ort::session::Session>,
     tokenizer: tokenizers::Tokenizer,
+    model: LocalEmbeddingModel,
 }
 
 impl OnnxEmbedder {
     /// Create a new ONNX embedder.
     ///
     /// If `model_dir` is `None`, uses the default cache path at
-    /// `<data_dir>/ask-myself/models/all-MiniLM-L6-v2/`.
+    /// `<data_dir>/ask-myself/models/<model_name>/`.
     /// Downloads model files from HuggingFace when not already present.
-    pub fn new(model_dir: Option<PathBuf>) -> Result<Self, CoreError> {
+    pub fn new(model_dir: Option<PathBuf>, model: LocalEmbeddingModel) -> Result<Self, CoreError> {
         let dir = match model_dir {
             Some(d) => d,
-            None => default_model_dir()?,
+            None => default_model_dir_for(&model)?,
         };
 
         let model_path = dir.join("model.onnx");
@@ -674,9 +782,19 @@ impl OnnxEmbedder {
             ));
         }
 
-        log::info!("Loading ONNX model from {}", model_path.display());
+        // Use half of available CPUs for intra-op parallelism, minimum 1.
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| (n.get() / 2).max(1))
+            .unwrap_or(1);
+        log::info!(
+            "Loading ONNX model from {} (intra_threads={})",
+            model_path.display(),
+            num_threads
+        );
         let session = ort::session::Session::builder()
             .map_err(|e| CoreError::Embedding(format!("session builder: {e}")))?
+            .with_intra_threads(num_threads)
+            .map_err(|e| CoreError::Embedding(format!("set intra threads: {e}")))?
             .commit_from_file(&model_path)
             .map_err(|e| CoreError::Embedding(format!("load ONNX model: {e}")))?;
 
@@ -686,7 +804,7 @@ impl OnnxEmbedder {
 
         tokenizer
             .with_truncation(Some(tokenizers::TruncationParams {
-                max_length: ONNX_MAX_LENGTH,
+                max_length: model.max_length(),
                 ..Default::default()
             }))
             .map_err(|e| CoreError::Embedding(format!("set truncation: {e}")))?;
@@ -696,17 +814,18 @@ impl OnnxEmbedder {
         Ok(Self {
             session: std::sync::Mutex::new(session),
             tokenizer,
+            model,
         })
     }
 }
 
 impl Embedder for OnnxEmbedder {
     fn model_name(&self) -> &str {
-        ONNX_MODEL_NAME
+        self.model.model_name()
     }
 
     fn dimensions(&self) -> usize {
-        ONNX_DIMENSIONS
+        self.model.dimensions()
     }
 
     fn embed(&self, text: &str) -> Result<Vec<f32>, CoreError> {
@@ -722,9 +841,19 @@ impl Embedder for OnnxEmbedder {
             return Ok(vec![]);
         }
 
+        // E5 models require "query: " or "passage: " prefix.
+        // For batch embedding (typically documents), use "passage: ".
+        let prefixed: Vec<String>;
+        let input_texts: Vec<&str> = if self.model.requires_prefix() {
+            prefixed = texts.iter().map(|t| format!("passage: {t}")).collect();
+            prefixed.iter().map(|s| s.as_str()).collect()
+        } else {
+            texts.to_vec()
+        };
+
         let encodings = self
             .tokenizer
-            .encode_batch(texts.to_vec(), true)
+            .encode_batch(input_texts, true)
             .map_err(|e| CoreError::Embedding(format!("tokenization: {e}")))?;
 
         let batch_size = encodings.len();
@@ -801,14 +930,14 @@ impl Embedder for OnnxEmbedder {
     }
 }
 
-/// Default cache directory for ONNX model files.
-fn default_model_dir() -> Result<PathBuf, CoreError> {
+/// Default cache directory for a specific ONNX model.
+fn default_model_dir_for(model: &LocalEmbeddingModel) -> Result<PathBuf, CoreError> {
     let data_dir = dirs::data_dir()
         .ok_or_else(|| CoreError::Embedding("cannot determine data directory".into()))?;
     Ok(data_dir
         .join("ask-myself")
         .join("models")
-        .join(ONNX_MODEL_NAME))
+        .join(model.model_name()))
 }
 
 /// Download `model.onnx` and `tokenizer.json` from HuggingFace.
@@ -817,7 +946,7 @@ fn default_model_dir() -> Result<PathBuf, CoreError> {
 /// `hf-mirror.com` mirror (useful in regions where HuggingFace is blocked).
 ///
 /// Requires `reqwest` with the `blocking` feature.
-fn download_model_files(target_dir: &Path) -> Result<(), CoreError> {
+fn download_model_files(target_dir: &Path, model: &LocalEmbeddingModel) -> Result<(), CoreError> {
     use std::time::Duration;
 
     std::fs::create_dir_all(target_dir)?;
@@ -830,10 +959,10 @@ fn download_model_files(target_dir: &Path) -> Result<(), CoreError> {
         .map_err(|e| CoreError::Embedding(format!("create HTTP client: {e}")))?;
 
     let files = [
-        (ONNX_MODEL_URL, ONNX_MODEL_MIRROR_URL, "model.onnx"),
+        (model.model_url(), model.fallback_model_url(), "model.onnx"),
         (
-            ONNX_TOKENIZER_URL,
-            ONNX_TOKENIZER_MIRROR_URL,
+            model.tokenizer_url(),
+            model.fallback_tokenizer_url(),
             "tokenizer.json",
         ),
     ];
@@ -1022,6 +1151,39 @@ impl ApiEmbedder {
     }
 }
 
+impl ApiEmbedder {
+    /// Maximum number of retry attempts for transient API errors.
+    const MAX_RETRIES: u32 = 3;
+
+    /// Send a batch with retry + exponential backoff for transient errors.
+    fn call_api_with_retry(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        let mut attempt = 0u32;
+        loop {
+            match self.call_api(texts) {
+                Ok(result) => return Ok(result),
+                Err(e) if attempt < Self::MAX_RETRIES && Self::is_retryable(&e) => {
+                    attempt += 1;
+                    let wait = std::time::Duration::from_millis(100 * 2u64.pow(attempt)); // 200ms, 400ms, 800ms
+                    log::warn!("Embed API retry {}/{}: {}", attempt, Self::MAX_RETRIES, e);
+                    std::thread::sleep(wait);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Check if an error is transient and worth retrying.
+    fn is_retryable(e: &CoreError) -> bool {
+        let msg = e.to_string();
+        msg.contains("429")
+            || msg.contains("500")
+            || msg.contains("502")
+            || msg.contains("503")
+            || msg.contains("timeout")
+            || msg.contains("connection")
+    }
+}
+
 impl Embedder for ApiEmbedder {
     fn model_name(&self) -> &str {
         &self.model
@@ -1044,10 +1206,11 @@ impl Embedder for ApiEmbedder {
             return Ok(vec![]);
         }
 
-        // Split into chunks of API_BATCH_SIZE to avoid payload limits.
+        // Split into chunks of API_BATCH_SIZE to avoid payload limits,
+        // with retry + exponential backoff on each sub-batch.
         let mut all_embeddings = Vec::with_capacity(texts.len());
         for chunk in texts.chunks(API_BATCH_SIZE) {
-            let mut batch_result = self.call_api(chunk)?;
+            let mut batch_result = self.call_api_with_retry(chunk)?;
             all_embeddings.append(&mut batch_result);
         }
 
@@ -1470,11 +1633,12 @@ mod tests {
     // ── ONNX embedder ──────────────────────────────────────────────
 
     #[test]
-    #[ignore] // requires model download (~23 MB)
+    #[ignore] // requires model download (~46 MB)
     fn test_onnx_embed_dimensions() {
-        let embedder = OnnxEmbedder::new(None).unwrap();
+        let model = LocalEmbeddingModel::default();
+        let embedder = OnnxEmbedder::new(None, model.clone()).unwrap();
         let vec = embedder.embed("hello world").unwrap();
-        assert_eq!(vec.len(), ONNX_DIMENSIONS);
+        assert_eq!(vec.len(), model.dimensions());
 
         let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!(
@@ -1484,9 +1648,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires model download (~23 MB)
+    #[ignore] // requires model download (~46 MB)
     fn test_onnx_cosine_similarity() {
-        let embedder = OnnxEmbedder::new(None).unwrap();
+        let embedder = OnnxEmbedder::new(None, LocalEmbeddingModel::default()).unwrap();
         let v1 = embedder.embed("the cat sat on the mat").unwrap();
         let v2 = embedder.embed("a cat was sitting on a mat").unwrap();
         let v3 = embedder
@@ -1503,15 +1667,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires model download (~23 MB)
+    #[ignore] // requires model download (~46 MB)
     fn test_onnx_embed_batch() {
-        let embedder = OnnxEmbedder::new(None).unwrap();
+        let embedder = OnnxEmbedder::new(None, LocalEmbeddingModel::default()).unwrap();
         let vecs = embedder
             .embed_batch(&["hello world", "goodbye world", "rust programming"])
             .unwrap();
         assert_eq!(vecs.len(), 3);
         for v in &vecs {
-            assert_eq!(v.len(), ONNX_DIMENSIONS);
+            assert_eq!(v.len(), LocalEmbeddingModel::default().dimensions());
         }
     }
 }

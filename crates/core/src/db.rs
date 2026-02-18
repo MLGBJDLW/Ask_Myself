@@ -109,9 +109,8 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT c.id, c.content FROM chunks c
-             WHERE c.id NOT IN (
-                 SELECT chunk_id FROM embeddings WHERE model = ?1
-             )
+             LEFT JOIN embeddings e ON c.id = e.chunk_id AND e.model = ?1
+             WHERE e.chunk_id IS NULL
              ORDER BY c.id",
         )?;
         let rows = stmt.query_map(rusqlite::params![model], |row| {
