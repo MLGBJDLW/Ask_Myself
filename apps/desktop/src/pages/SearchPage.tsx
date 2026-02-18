@@ -19,6 +19,7 @@ import {
   FolderOpen,
   ExternalLink,
 } from 'lucide-react';
+import { Logo } from '../components/Logo';
 import { toast } from 'sonner';
 import * as api from '../lib/api';
 import type {
@@ -865,7 +866,7 @@ export function SearchPage() {
       {/* ── Initial empty state ── */}
       {!result && !loading && recentQueries.length === 0 && (
         <EmptyState
-          icon={<Search size={32} />}
+          icon={<Logo size={64} />}
           title={t('search.initialTitle')}
           description={t('search.initialDesc')}
         />

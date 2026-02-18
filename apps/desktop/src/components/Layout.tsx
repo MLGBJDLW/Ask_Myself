@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, FolderOpen, BookOpen, MessageCircle, Settings, Brain, ChevronLeft, ChevronRight, BotMessageSquare } from 'lucide-react';
+import { Search, FolderOpen, BookOpen, MessageCircle, Settings, ChevronLeft, ChevronRight, BotMessageSquare } from 'lucide-react';
+import { Logo } from './Logo';
 import { Toaster } from 'sonner';
 import { useTranslation } from '../i18n';
 import type { TranslationKey } from '../i18n';
@@ -81,7 +82,7 @@ export function Layout() {
       >
         {/* Branding */}
         <div className="flex items-center gap-2.5 px-3.5 py-4 overflow-hidden">
-          <Brain className="h-5 w-5 shrink-0 text-accent" />
+          <Logo size={20} className="shrink-0" />
           <AnimatePresence>
             {!collapsed && (
               <motion.div
