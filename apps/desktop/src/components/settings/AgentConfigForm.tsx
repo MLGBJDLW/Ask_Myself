@@ -67,6 +67,7 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving }: 
   const [reasoningEnabled, setReasoningEnabled] = useState<boolean | null>(config?.reasoningEnabled ?? null);
   const [thinkingBudget, setThinkingBudget] = useState<number | null>(config?.thinkingBudget ?? null);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(config?.reasoningEffort ?? null);
+  const [maxIterations, setMaxIterations] = useState<number | null>(config?.maxIterations ?? null);
   const [showKey, setShowKey] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -94,7 +95,8 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving }: 
     reasoningEnabled,
     thinkingBudget,
     reasoningEffort,
-  }), [config?.id, name, provider, apiKey, baseUrl, model, temperature, maxTokens, contextWindow, isDefault, reasoningEnabled, thinkingBudget, reasoningEffort, isLocal]);
+    maxIterations,
+  }), [config?.id, name, provider, apiKey, baseUrl, model, temperature, maxTokens, contextWindow, isDefault, reasoningEnabled, thinkingBudget, reasoningEffort, maxIterations, isLocal]);
 
   const handleTest = async () => {
     setTestLoading(true);
@@ -130,7 +132,7 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving }: 
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="My OpenAI GPT-4o"
+          placeholder={t('settings.providerNamePlaceholder')}
         />
       </div>
 
@@ -349,6 +351,28 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving }: 
           </div>
         )}
       </div>
+
+      {/* Max Tool Iterations */}
+      {showAdvanced && (
+      <div className="space-y-2">
+        <label className="text-sm font-medium text-text-primary">{t('settings.maxIterations')}</label>
+        <Input
+          type="number"
+          value={maxIterations ?? ''}
+          onChange={(e) => {
+            const val = e.target.value.trim();
+            setMaxIterations(val ? parseInt(val) || null : null);
+          }}
+          placeholder="10"
+          min={1}
+          max={50}
+          step={1}
+        />
+        <p className="text-xs text-text-tertiary">
+          {t('settings.maxIterationsHelp')}
+        </p>
+      </div>
+      )}
 
       {/* Set as Default */}
       <label className="flex items-center gap-2 cursor-pointer">

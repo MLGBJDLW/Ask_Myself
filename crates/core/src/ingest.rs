@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use log::{debug, info, warn};
+use tracing::{debug, info, warn};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -459,10 +459,22 @@ fn embed_source_tfidf(
 /// Delete all embeddings, rebuild using the configured provider, and
 /// re-embed every chunk in the database.
 pub fn rebuild_embeddings(db: &Database) -> Result<EmbedResult, CoreError> {
+    rebuild_embeddings_with_progress(db, |_| {})
+}
+
+/// Delete all embeddings, rebuild using the configured provider, and
+/// re-embed every chunk in the database — with progress reporting.
+///
+/// Emits [`ScanProgress`] updates with `source_id: "all"` and
+/// `phase: "embedding"` as chunks are processed.
+pub fn rebuild_embeddings_with_progress(
+    db: &Database,
+    on_progress: impl Fn(ScanProgress),
+) -> Result<EmbedResult, CoreError> {
     let config = db.get_embedder_config()?;
 
     if config.provider == "tfidf" {
-        return rebuild_embeddings_tfidf(db);
+        return rebuild_embeddings_tfidf_inner(db, Some(&on_progress));
     }
 
     let embedder = create_embedder(&config)?;
@@ -472,18 +484,43 @@ pub fn rebuild_embeddings(db: &Database) -> Result<EmbedResult, CoreError> {
     let deleted = db.delete_all_embeddings(&model)?;
     info!("Deleted {} existing embeddings", deleted);
 
-    // 2. Embed every chunk.
+    // 2. Embed every chunk in sub-batches with progress.
     let all_chunks = db.get_all_chunks()?;
-    let texts: Vec<&str> = all_chunks.iter().map(|(_, c)| c.as_str()).collect();
-    let all_vectors = embedder.embed_batch(&texts)?;
-    let batch: Vec<(String, String, Vec<f32>)> = all_chunks
-        .iter()
-        .zip(all_vectors.into_iter())
-        .map(|((chunk_id, _), vector)| (chunk_id.clone(), model.clone(), vector))
-        .collect();
-    let embedded = batch.len();
-    if !batch.is_empty() {
-        db.batch_store_embeddings(&batch)?;
+    let total_chunks = all_chunks.len();
+
+    // Emit initial progress.
+    on_progress(ScanProgress {
+        source_id: "all".to_string(),
+        phase: "embedding".to_string(),
+        current: 0,
+        total: total_chunks,
+        current_file: None,
+    });
+
+    const EMBED_BATCH_SIZE: usize = 64;
+    let mut all_batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(total_chunks);
+    let mut embedded_so_far: usize = 0;
+
+    for chunk in all_chunks.chunks(EMBED_BATCH_SIZE) {
+        let texts: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
+        let vectors = embedder.embed_batch(&texts)?;
+        for ((chunk_id, _), vector) in chunk.iter().zip(vectors.into_iter()) {
+            all_batch.push((chunk_id.clone(), model.clone(), vector));
+        }
+        embedded_so_far += chunk.len();
+
+        on_progress(ScanProgress {
+            source_id: "all".to_string(),
+            phase: "embedding".to_string(),
+            current: embedded_so_far,
+            total: total_chunks,
+            current_file: None,
+        });
+    }
+
+    let embedded = all_batch.len();
+    if !all_batch.is_empty() {
+        db.batch_store_embeddings(&all_batch)?;
     }
 
     info!("Rebuild complete: {} chunks embedded (provider={})", embedded, config.provider);
@@ -496,8 +533,11 @@ pub fn rebuild_embeddings(db: &Database) -> Result<EmbedResult, CoreError> {
     })
 }
 
-/// TF-IDF specific rebuild path (original behaviour).
-fn rebuild_embeddings_tfidf(db: &Database) -> Result<EmbedResult, CoreError> {
+/// TF-IDF rebuild with optional progress reporting.
+fn rebuild_embeddings_tfidf_inner(
+    db: &Database,
+    on_progress: Option<&dyn Fn(ScanProgress)>,
+) -> Result<EmbedResult, CoreError> {
     let model = "tfidf-v1";
 
     let deleted = db.delete_all_embeddings(model)?;
@@ -508,10 +548,36 @@ fn rebuild_embeddings_tfidf(db: &Database) -> Result<EmbedResult, CoreError> {
     let embedder = TfIdfEmbedder::build_from_corpus(&corpus);
     db.save_embedder_state(model, &embedder.vocabulary, &embedder.idf)?;
 
+    let total_chunks = all_chunks.len();
+
+    // Emit initial progress.
+    if let Some(cb) = &on_progress {
+        cb(ScanProgress {
+            source_id: "all".to_string(),
+            phase: "embedding".to_string(),
+            current: 0,
+            total: total_chunks,
+            current_file: None,
+        });
+    }
+
     let mut batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(all_chunks.len());
-    for (chunk_id, content) in &all_chunks {
+    for (i, (chunk_id, content)) in all_chunks.iter().enumerate() {
         let vector = embedder.embed(content)?;
         batch.push((chunk_id.clone(), model.to_string(), vector));
+
+        // Report progress every 50 chunks.
+        if let Some(cb) = &on_progress {
+            if (i + 1) % 50 == 0 || i + 1 == total_chunks {
+                cb(ScanProgress {
+                    source_id: "all".to_string(),
+                    phase: "embedding".to_string(),
+                    current: i + 1,
+                    total: total_chunks,
+                    current_file: None,
+                });
+            }
+        }
     }
     let embedded = batch.len();
     if !batch.is_empty() {

@@ -19,6 +19,7 @@ import type {
   SaveAgentConfigInput,
   Conversation,
   ConversationMessage,
+  ConversationStats,
   ImageAttachment,
 } from "../types/conversation";
 
@@ -239,6 +240,9 @@ export const agentChat = (conversationId: string, message: string, attachments?:
 export const agentStop = (conversationId: string) =>
   invoke<void>('agent_stop_cmd', { conversationId });
 
+export const getModelContextWindow = (model: string) =>
+  invoke<number>('get_model_context_window', { model });
+
 // ── Image Attachment ────────────────────────────────────────────────────
 
 export const prepareImageAttachment = (path: string) =>
@@ -251,3 +255,11 @@ export const setConversationSources = (conversationId: string, sourceIds: string
 
 export const getConversationSources = (conversationId: string) =>
   invoke<string[]>('get_conversation_sources_cmd', { conversationId });
+
+// ── Conversation Maintenance ────────────────────────────────────────
+
+export const getConversationStats = () =>
+  invoke<ConversationStats>('get_conversation_stats_cmd');
+
+export const cleanupEmptyConversations = (daysOld: number) =>
+  invoke<number>('cleanup_empty_conversations_cmd', { daysOld });

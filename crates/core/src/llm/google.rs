@@ -450,6 +450,7 @@ fn extract_response(
             prompt_tokens: u.prompt_token_count.unwrap_or(0),
             completion_tokens: u.candidates_token_count.unwrap_or(0),
             total_tokens: u.total_token_count.unwrap_or(0),
+            thinking_tokens: u.thoughts_token_count.map(|t| t.max(0) as u32),
         })
         .unwrap_or_default();
 
@@ -507,7 +508,7 @@ async fn parse_gemini_stream(
             let resp: GeminiResponse = match serde_json::from_str(data) {
                 Ok(r) => r,
                 Err(e) => {
-                    log::debug!("Gemini SSE parse skip: {e}");
+                    tracing::debug!("Gemini SSE parse skip: {e}");
                     continue;
                 }
             };

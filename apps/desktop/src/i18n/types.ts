@@ -139,6 +139,9 @@ export interface TranslationKeys {
   'sources.indexingInProgress': string;
   'sources.indexingComplete': string;
   'sources.autoIndexing': string;
+  'sources.scanningAll': string;
+  'sources.rebuildingEmbeddings_progress': string;
+  'sources.sourceProgress': string;
 
   // Playbooks
   'playbooks.title': string;
@@ -198,6 +201,8 @@ export interface TranslationKeys {
   'settings.ftsEntries': string;
   'settings.rebuildIndex': string;
   'settings.optimizeIndex': string;
+  'settings.rebuildingIndex': string;
+  'settings.optimizingIndex': string;
   'settings.excludePatterns': string;
   'settings.excludePatternsDesc': string;
   'settings.addPattern': string;
@@ -235,6 +240,7 @@ export interface TranslationKeys {
   'settings.embeddingNotDownloaded': string;
   'settings.embeddingDownload': string;
   'settings.embeddingDownloading': string;
+  'settings.downloadingFile': string;
   'settings.embeddingApiKey': string;
   'settings.embeddingBaseUrl': string;
   'settings.embeddingModel': string;
@@ -319,6 +325,15 @@ export interface TranslationKeys {
   'chat.thoughtFor': string;
   'chat.thinkingCompleted': string;
   'chat.tokenEstimate': string;
+  'chat.tokenUsage': string;
+  'chat.tokenUsagePercent': string;
+  'chat.contextFillingUp': string;
+  'chat.contextNearlyFull': string;
+  'chat.imageMessage': string;
+  'chat.tokensLabel': string;
+  'chat.tokensShort': string;
+  'chat.removeAttachment': string;
+  'chat.attachImage': string;
 
   // Time
   'time.justNow': string;
@@ -332,6 +347,7 @@ export interface TranslationKeys {
   'settings.addProvider': string;
   'settings.editProvider': string;
   'settings.providerName': string;
+  'settings.providerNamePlaceholder': string;
   'settings.providerType': string;
   'settings.apiKey': string;
   'settings.baseUrl': string;
@@ -373,6 +389,8 @@ export interface TranslationKeys {
   'settings.reasoningMedium': string;
   'settings.reasoningHigh': string;
   'settings.reasoningEffortHelp': string;
+  'settings.maxIterations': string;
+  'settings.maxIterationsHelp': string;
 
   // Common
   'common.save': string;
@@ -389,6 +407,7 @@ export interface TranslationKeys {
   'common.remove': string;
   'common.collapse': string;
   'common.expand': string;
+  'common.clear': string;
 }
 
 export type TranslationKey = keyof TranslationKeys;

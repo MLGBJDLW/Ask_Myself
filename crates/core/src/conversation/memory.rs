@@ -51,9 +51,22 @@ fn is_cjk(ch: char) -> bool {
     )
 }
 
-/// Estimate the total token cost of a message, including tool_calls.
+/// Estimate the total token cost of a message, including tool_calls and images.
 pub fn estimate_message_tokens(msg: &Message) -> u32 {
     let mut tokens = estimate_tokens(&msg.text_content());
+
+    // Estimate tokens for image parts.
+    // OpenAI vision: 85 base + 170 per 512x512 tile. Since we don't know
+    // resolution, use base64 data length as a rough proxy:
+    //   max(258, data_len / 1500)
+    // 258 ≈ low-res mode (85 + 170 for one tile + overhead).
+    for part in &msg.parts {
+        if let crate::llm::ContentPart::Image { data, .. } = part {
+            let estimated = (data.len() / 1500) as u32;
+            tokens += estimated.max(258);
+        }
+    }
+
     if let Some(ref calls) = msg.tool_calls {
         for tc in calls {
             // Each tool call: id + name + arguments JSON

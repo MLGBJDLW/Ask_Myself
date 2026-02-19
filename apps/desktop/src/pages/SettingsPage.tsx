@@ -23,11 +23,13 @@ import {
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { listen } from '@tauri-apps/api/event';
 import * as api from '../lib/api';
 import type { IndexStats } from '../types/index-stats';
 import type { PrivacyConfig, RedactRule } from '../types/privacy';
 import type { EmbedderConfig } from '../types/embedder';
 import type { AgentConfig, SaveAgentConfigInput } from '../types/conversation';
+import type { ScanProgress, FtsProgress, DownloadProgress } from '../types/ingest';
 import { useTranslation } from '../i18n';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -74,6 +76,13 @@ function StatCard({ label, value }: { label: string; value: number | string }) {
   );
 }
 
+/* ── Helpers ───────────────────────────────────────────────────────── */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /* ── Settings page ────────────────────────────────────────────────── */
 type SettingsTab = 'embedding' | 'index' | 'privacy' | 'language' | 'providers';
 
@@ -84,6 +93,8 @@ export function SettingsPage() {
   const [stats, setStats] = useState<IndexStats | null>(null);
   const [rebuildLoading, setRebuildLoading] = useState(false);
   const [optimizeLoading, setOptimizeLoading] = useState(false);
+  const [ftsProgress, setFtsProgress] = useState<FtsProgress | null>(null);
+  const [embedRebuildProgress, setEmbedRebuildProgress] = useState<ScanProgress | null>(null);
 
   const loadStats = useCallback(() => {
     api.getIndexStats().then(setStats).catch(() => {
@@ -94,6 +105,39 @@ export function SettingsPage() {
   useEffect(() => {
     loadStats();
   }, [loadStats]);
+
+  /* ── FTS & rebuild progress listeners ───────────────────────────── */
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlistenFts: (() => void) | undefined;
+    let unlistenRebuild: (() => void) | undefined;
+
+    listen<FtsProgress>('batch:fts-progress', (event) => {
+      if (cancelled) return;
+      const p = event.payload;
+      if (p.phase === 'complete') {
+        setFtsProgress(null);
+      } else {
+        setFtsProgress(p);
+      }
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlistenFts = fn; }
+    });
+
+    listen<ScanProgress>('batch:rebuild-progress', (event) => {
+      if (cancelled) return;
+      setEmbedRebuildProgress(event.payload);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlistenRebuild = fn; }
+    });
+
+    return () => {
+      cancelled = true;
+      unlistenFts?.();
+      unlistenRebuild?.();
+    };
+  }, []);
 
   const handleRebuild = async () => {
     setRebuildLoading(true);
@@ -130,9 +174,27 @@ export function SettingsPage() {
   const [embedConfig, setEmbedConfig] = useState<EmbedderConfig | null>(null);
   const [localModelReady, setLocalModelReady] = useState<boolean | null>(null);
   const [downloadLoading, setDownloadLoading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [testLoading, setTestLoading] = useState(false);
   const [embedSaveLoading, setEmbedSaveLoading] = useState(false);
   const [rebuildEmbedLoading, setRebuildEmbedLoading] = useState(false);
+
+  useEffect(() => {
+    if (!rebuildEmbedLoading) {
+      setEmbedRebuildProgress(null);
+    }
+  }, [rebuildEmbedLoading]);
+
+  useEffect(() => {
+    if (!downloadLoading) {
+      setDownloadProgress(null);
+      return;
+    }
+    const unlisten = listen<DownloadProgress>('model:download-progress', (event) => {
+      setDownloadProgress(event.payload);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, [downloadLoading]);
 
   useEffect(() => {
     api.getEmbedderConfig().then((cfg) => {
@@ -372,7 +434,7 @@ export function SettingsPage() {
         ))}
       </div>
 
-      {/* ── Tab: AI Embedding ─────────────────────────────────────── */}
+      {/* ── Tab: Embedding ──────────────────────────────────────── */}
       {activeTab === 'embedding' && (
       <Section icon={<Brain size={20} />} title={t('settings.embeddingSection')} delay={0.03}>
         {embedConfig && (
@@ -469,6 +531,38 @@ export function SettingsPage() {
                     {downloadLoading ? t('settings.embeddingDownloading') : t('settings.embeddingDownload')}
                   </Button>
                 )}
+                {downloadLoading && downloadProgress && (
+                  <div className="mt-2">
+                    <div className="flex items-center gap-2 text-xs text-text-tertiary mb-1">
+                      <Loader2 size={12} className="animate-spin" />
+                      <span>
+                        {t('settings.downloadingFile', {
+                          filename: downloadProgress.filename,
+                          current: String(downloadProgress.fileIndex + 1),
+                          total: String(downloadProgress.totalFiles),
+                        })}
+                      </span>
+                    </div>
+                    {downloadProgress.totalBytes ? (
+                      <>
+                        <div className="flex justify-between text-[10px] text-text-tertiary/70 mb-0.5">
+                          <span>{formatBytes(downloadProgress.bytesDownloaded)} / {formatBytes(downloadProgress.totalBytes)}</span>
+                          <span>{Math.round((downloadProgress.bytesDownloaded / downloadProgress.totalBytes) * 100)}%</span>
+                        </div>
+                        <div className="w-full bg-surface-3 rounded h-1.5">
+                          <div
+                            className="bg-accent h-1.5 rounded transition-all duration-300"
+                            style={{ width: `${Math.min(100, (downloadProgress.bytesDownloaded / downloadProgress.totalBytes) * 100)}%` }}
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <div className="w-full bg-surface-3 rounded h-1.5 overflow-hidden">
+                        <div className="bg-accent h-1.5 rounded animate-pulse w-full" />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -551,6 +645,22 @@ export function SettingsPage() {
                   {rebuildEmbedLoading ? t('settings.embeddingRebuilding') : t('settings.embeddingRebuild')}
                 </Button>
               </div>
+              {embedRebuildProgress && (
+                <div className="mt-2">
+                  <div className="flex items-center gap-2 text-xs text-muted">
+                    <RefreshCw size={12} className="animate-spin" />
+                    <span>{embedRebuildProgress.current}/{embedRebuildProgress.total}</span>
+                  </div>
+                  {embedRebuildProgress.total > 0 && (
+                    <div className="w-full bg-surface-3 rounded h-1 mt-1">
+                      <div
+                        className="bg-accent h-1 rounded transition-all duration-300"
+                        style={{ width: `${Math.min(100, (embedRebuildProgress.current / embedRebuildProgress.total) * 100)}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -732,6 +842,17 @@ export function SettingsPage() {
             {t('settings.optimizeIndex')}
           </Button>
         </div>
+        {ftsProgress && (
+          <div className="mt-2">
+            <div className="flex items-center gap-2 text-xs text-muted">
+              <RefreshCw size={12} className="animate-spin" />
+              <span>{ftsProgress.operation === 'rebuild-fts' ? t('settings.rebuildingIndex') : t('settings.optimizingIndex')}</span>
+            </div>
+            <div className="w-full bg-surface-3 rounded h-1 mt-1 overflow-hidden">
+              <div className="bg-accent h-1 rounded animate-pulse w-full" />
+            </div>
+          </div>
+        )}
       </Section>
       )}
 

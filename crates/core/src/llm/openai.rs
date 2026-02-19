@@ -154,6 +154,14 @@ struct OaiUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
+    #[serde(default)]
+    completion_tokens_details: Option<OaiCompletionTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct OaiCompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -474,6 +482,9 @@ impl LlmProvider for OpenAiProvider {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
+                thinking_tokens: u
+                    .completion_tokens_details
+                    .and_then(|d| d.reasoning_tokens),
             })
             .unwrap_or_default();
 

@@ -1,6 +1,7 @@
 //! Conversation persistence — types and CRUD for conversations, messages, and agent configs.
 
 pub mod memory;
+pub mod summarizer;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -59,8 +60,19 @@ pub struct AgentConfig {
     pub reasoning_enabled: Option<bool>,
     pub thinking_budget: Option<i64>,
     pub reasoning_effort: Option<String>,
+    pub max_iterations: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Statistics about conversations and messages in the database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationStats {
+    pub total_conversations: usize,
+    pub total_messages: usize,
+    pub oldest_conversation: Option<String>,
+    pub db_size_bytes: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +106,7 @@ pub struct SaveAgentConfigInput {
     pub reasoning_enabled: Option<bool>,
     pub thinking_budget: Option<i64>,
     pub reasoning_effort: Option<String>,
+    pub max_iterations: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +256,61 @@ impl Database {
         }
         Ok(())
     }
+
+    /// Delete empty conversations older than `days_old` days.
+    ///
+    /// An "empty" conversation has zero messages. Returns the number of
+    /// conversations deleted.
+    pub fn cleanup_empty_conversations(&self, days_old: u32) -> Result<usize, CoreError> {
+        let conn = self.conn();
+        let deleted = conn.execute(
+            "DELETE FROM conversations WHERE id IN (
+                SELECT c.id FROM conversations c
+                LEFT JOIN messages m ON m.conversation_id = c.id
+                WHERE c.created_at <= datetime('now', ?1)
+                GROUP BY c.id
+                HAVING COUNT(m.id) = 0
+            )",
+            rusqlite::params![format!("-{days_old} days")],
+        )?;
+        Ok(deleted)
+    }
+
+    /// Return high-level statistics about conversations and messages.
+    pub fn get_conversation_stats(&self) -> Result<ConversationStats, CoreError> {
+        let conn = self.conn();
+
+        let total_conversations: usize = conn.query_row(
+            "SELECT COUNT(*) FROM conversations",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let total_messages: usize = conn.query_row(
+            "SELECT COUNT(*) FROM messages",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let oldest_conversation: Option<String> = conn
+            .query_row(
+                "SELECT MIN(created_at) FROM conversations",
+                [],
+                |r| r.get(0),
+            )?;
+
+        let db_size_bytes: u64 = match self.db_path() {
+            Some(p) => std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
+            None => 0,
+        };
+
+        Ok(ConversationStats {
+            total_conversations,
+            total_messages,
+            oldest_conversation,
+            db_size_bytes,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -349,8 +417,8 @@ impl Database {
         let id = input.id.clone().unwrap_or_else(new_id);
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 provider = excluded.provider,
@@ -364,6 +432,7 @@ impl Database {
                 reasoning_enabled = excluded.reasoning_enabled,
                 thinking_budget = excluded.thinking_budget,
                 reasoning_effort = excluded.reasoning_effort,
+                max_iterations = excluded.max_iterations,
                 updated_at = datetime('now')",
             rusqlite::params![
                 &id,
@@ -379,6 +448,7 @@ impl Database {
                 input.reasoning_enabled,
                 input.thinking_budget,
                 &input.reasoning_effort,
+                input.max_iterations,
             ],
         )?;
         drop(conn);
@@ -389,7 +459,7 @@ impl Database {
     pub fn list_agent_configs(&self) -> Result<Vec<AgentConfig>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations
              FROM agent_configs ORDER BY name ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -409,6 +479,7 @@ impl Database {
                 reasoning_effort: row.get(12)?,
                 created_at: row.get(13)?,
                 updated_at: row.get(14)?,
+                max_iterations: row.get(15)?,
             })
         })?;
         let mut results = Vec::new();
@@ -422,7 +493,7 @@ impl Database {
     pub fn get_agent_config(&self, id: &str) -> Result<AgentConfig, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations
              FROM agent_configs WHERE id = ?1",
             rusqlite::params![id],
             |row| {
@@ -442,6 +513,7 @@ impl Database {
                     reasoning_effort: row.get(12)?,
                     created_at: row.get(13)?,
                     updated_at: row.get(14)?,
+                    max_iterations: row.get(15)?,
                 })
             },
         )
@@ -490,7 +562,7 @@ impl Database {
     pub fn get_default_agent_config(&self) -> Result<Option<AgentConfig>, CoreError> {
         let conn = self.conn();
         let result = conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations
              FROM agent_configs WHERE is_default = 1 LIMIT 1",
             [],
             |row| {
@@ -510,6 +582,7 @@ impl Database {
                     reasoning_effort: row.get(12)?,
                     created_at: row.get(13)?,
                     updated_at: row.get(14)?,
+                    max_iterations: row.get(15)?,
                 })
             },
         );
@@ -746,6 +819,7 @@ mod tests {
                 reasoning_enabled: None,
                 thinking_budget: None,
                 reasoning_effort: None,
+                max_iterations: None,
             })
             .unwrap();
         assert_eq!(config.name, "My GPT-4");
@@ -770,6 +844,7 @@ mod tests {
                 reasoning_enabled: None,
                 thinking_budget: None,
                 reasoning_effort: None,
+                max_iterations: None,
             })
             .unwrap();
         assert_eq!(updated.name, "Renamed");
@@ -802,6 +877,7 @@ mod tests {
                 reasoning_enabled: None,
                 thinking_budget: None,
                 reasoning_effort: None,
+                max_iterations: None,
             })
             .unwrap();
 
@@ -820,6 +896,7 @@ mod tests {
                 reasoning_enabled: None,
                 thinking_budget: None,
                 reasoning_effort: None,
+                max_iterations: None,
             })
             .unwrap();
 

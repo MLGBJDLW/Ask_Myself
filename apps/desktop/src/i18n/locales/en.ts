@@ -139,6 +139,9 @@ export const en: TranslationKeys = {
   'sources.indexingInProgress': 'Indexing...',
   'sources.indexingComplete': 'Indexing complete!',
   'sources.autoIndexing': 'Source added. Indexing in progress...',
+  'sources.scanningAll': 'Scanning all sources...',
+  'sources.rebuildingEmbeddings_progress': 'Rebuilding embeddings...',
+  'sources.sourceProgress': 'Source {current}/{total}',
 
   // Collections
   'playbooks.title': 'Collections',
@@ -198,6 +201,8 @@ export const en: TranslationKeys = {
   'settings.ftsEntries': 'FTS entries',
   'settings.rebuildIndex': 'Rebuild Index',
   'settings.optimizeIndex': 'Optimize Index',
+  'settings.rebuildingIndex': 'Rebuilding FTS index...',
+  'settings.optimizingIndex': 'Optimizing FTS index...',
   'settings.excludePatterns': 'Exclude Patterns',
   'settings.excludePatternsDesc': 'File paths matching these patterns will be skipped',
   'settings.addPattern': 'Add',
@@ -218,7 +223,7 @@ export const en: TranslationKeys = {
   'settings.patternExists': 'This pattern already exists',
   'settings.privacySaved': 'Privacy config saved',
   'settings.privacySaveError': 'Failed to save privacy config',
-  'settings.embeddingSection': 'AI Embedding Configuration',
+  'settings.embeddingSection': 'Embedding Configuration',
   'settings.embeddingProvider': 'Embedding Provider',
   'settings.embeddingLocal': 'Local Model',
   'settings.embeddingApi': 'API',
@@ -235,6 +240,7 @@ export const en: TranslationKeys = {
   'settings.embeddingNotDownloaded': 'Not Downloaded',
   'settings.embeddingDownload': 'Download Model',
   'settings.embeddingDownloading': 'Downloading...',
+  'settings.downloadingFile': 'Downloading {{filename}} ({{current}}/{{total}})...',
   'settings.embeddingApiKey': 'API Key',
   'settings.embeddingBaseUrl': 'Base URL',
   'settings.embeddingModel': 'Model',
@@ -319,6 +325,15 @@ export const en: TranslationKeys = {
   'chat.thoughtFor': 'Thought for {seconds}s',
   'chat.thinkingCompleted': 'Thinking completed',
   'chat.tokenEstimate': '~{count} tokens',
+  'chat.tokenUsage': '{used} / {total} tokens',
+  'chat.tokenUsagePercent': '{percent}% context used',
+  'chat.contextFillingUp': 'Context window is filling up ({percent}%). Consider starting a new conversation.',
+  'chat.contextNearlyFull': 'Context window nearly full ({percent}%). Older messages may be lost.',
+  'chat.imageMessage': '(image)',
+  'chat.tokensLabel': 'tokens',
+  'chat.tokensShort': 'tok',
+  'chat.removeAttachment': 'Remove attachment',
+  'chat.attachImage': 'Attach image',
 
   // Time
   'time.justNow': 'just now',
@@ -332,6 +347,7 @@ export const en: TranslationKeys = {
   'settings.addProvider': 'Add Provider',
   'settings.editProvider': 'Edit Provider',
   'settings.providerName': 'Provider Name',
+  'settings.providerNamePlaceholder': 'My OpenAI GPT-4o',
   'settings.providerType': 'Provider Type',
   'settings.apiKey': 'API Key',
   'settings.baseUrl': 'Base URL',
@@ -373,6 +389,8 @@ export const en: TranslationKeys = {
   'settings.reasoningMedium': 'Medium',
   'settings.reasoningHigh': 'High',
   'settings.reasoningEffortHelp': 'Reasoning effort level. Used by OpenAI o-series models.',
+  'settings.maxIterations': 'Max Tool Iterations',
+  'settings.maxIterationsHelp': 'Maximum number of tool-use round-trips per message. Default is 10. Increase for deep research tasks.',
 
   // Common
   'common.save': 'Save',
@@ -389,4 +407,5 @@ export const en: TranslationKeys = {
   'common.remove': 'Remove',
   'common.collapse': 'Collapse',
   'common.expand': 'Expand',
+  'common.clear': 'Clear',
 };

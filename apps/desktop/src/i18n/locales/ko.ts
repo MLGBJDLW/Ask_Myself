@@ -139,6 +139,9 @@ export const ko: TranslationKeys = {
   'sources.indexingInProgress': '인덱싱 중...',
   'sources.indexingComplete': '인덱싱 완료!',
   'sources.autoIndexing': '소스가 추가되었습니다. 인덱싱 중...',
+  'sources.scanningAll': '모든 소스 스캔 중...',
+  'sources.rebuildingEmbeddings_progress': '임베딩 재구축 중...',
+  'sources.sourceProgress': '소스 {current}/{total}',
 
   // Collections
   'playbooks.title': '컴렉션',
@@ -198,6 +201,8 @@ export const ko: TranslationKeys = {
   'settings.ftsEntries': 'FTS 항목 수',
   'settings.rebuildIndex': '인덱스 재구축',
   'settings.optimizeIndex': '인덱스 최적화',
+  'settings.rebuildingIndex': 'FTS 인덱스 재구축 중...',
+  'settings.optimizingIndex': 'FTS 인덱스 최적화 중...',
   'settings.excludePatterns': '제외 패턴',
   'settings.excludePatternsDesc': '이 패턴과 일치하는 파일 경로는 건너뜁니다',
   'settings.addPattern': '추가',
@@ -235,6 +240,7 @@ export const ko: TranslationKeys = {
   'settings.embeddingNotDownloaded': '다운로드되지 않음',
   'settings.embeddingDownload': '모델 다운로드',
   'settings.embeddingDownloading': '다운로드 중...',
+  'settings.downloadingFile': '{{filename}} 다운로드 중 ({{current}}/{{total}})...',
   'settings.embeddingApiKey': 'API Key',
   'settings.embeddingBaseUrl': 'Base URL',
   'settings.embeddingModel': '모델',
@@ -319,6 +325,15 @@ export const ko: TranslationKeys = {
   'chat.thoughtFor': '{seconds}초 동안 생각했습니다',
   'chat.thinkingCompleted': '사고 완료',
   'chat.tokenEstimate': '약 {count} 토큰',
+  'chat.tokenUsage': '{used} / {total} 토큰',
+  'chat.tokenUsagePercent': '컨텍스트 {percent}% 사용됨',
+  'chat.contextFillingUp': '컨텍스트 창이 거의 찼습니다 ({percent}%). 새 대화를 시작하세요.',
+  'chat.contextNearlyFull': '컨텍스트 창이 거의 가득 찼습니다 ({percent}%). 이전 메시지가 손실될 수 있습니다.',
+  'chat.imageMessage': '(이미지)',
+  'chat.tokensLabel': '토큰',
+  'chat.tokensShort': '토큰',
+  'chat.removeAttachment': '첨부 파일 제거',
+  'chat.attachImage': '이미지 첨부',
 
   // Time
   'time.justNow': '방금',
@@ -332,6 +347,7 @@ export const ko: TranslationKeys = {
   'settings.addProvider': 'Add Provider',
   'settings.editProvider': 'Edit Provider',
   'settings.providerName': 'Provider Name',
+  'settings.providerNamePlaceholder': '내 OpenAI GPT-4o',
   'settings.providerType': 'Provider Type',
   'settings.apiKey': 'API Key',
   'settings.baseUrl': 'Base URL',
@@ -373,6 +389,8 @@ export const ko: TranslationKeys = {
   'settings.reasoningMedium': '보통',
   'settings.reasoningHigh': '높음',
   'settings.reasoningEffortHelp': '추론 강도 수준. OpenAI o 시리즈 모델에서 사용됩니다.',
+  'settings.maxIterations': '최대 도구 반복 횟수',
+  'settings.maxIterationsHelp': '메시지당 최대 도구 사용 왕복 횟수. 기본값은 10. 심층 연구 작업에는 늘리세요.',
 
   // Common
   'common.save': '저장',
@@ -389,4 +407,5 @@ export const ko: TranslationKeys = {
   'common.remove': '제거',
   'common.collapse': '접기',
   'common.expand': '펼치기',
+  'common.clear': '지우기',
 };

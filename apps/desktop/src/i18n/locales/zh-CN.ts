@@ -139,6 +139,9 @@ export const zhCN: TranslationKeys = {
   'sources.indexingInProgress': '索引中...',
   'sources.indexingComplete': '索引完成！',
   'sources.autoIndexing': '数据源已添加，正在索引...',
+  'sources.scanningAll': '正在扫描所有来源...',
+  'sources.rebuildingEmbeddings_progress': '正在重建嵌入...',
+  'sources.sourceProgress': '来源 {current}/{total}',
 
   // Collections
   'playbooks.title': '收藏集',
@@ -198,6 +201,8 @@ export const zhCN: TranslationKeys = {
   'settings.ftsEntries': 'FTS 条目数',
   'settings.rebuildIndex': '重建索引',
   'settings.optimizeIndex': '优化索引',
+  'settings.rebuildingIndex': '正在重建全文索引...',
+  'settings.optimizingIndex': '正在优化全文索引...',
   'settings.excludePatterns': '排除模式',
   'settings.excludePatternsDesc': '匹配这些模式的文件路径将被跳过',
   'settings.addPattern': '添加',
@@ -235,6 +240,7 @@ export const zhCN: TranslationKeys = {
   'settings.embeddingNotDownloaded': '未下载',
   'settings.embeddingDownload': '下载模型',
   'settings.embeddingDownloading': '下载中...',
+  'settings.downloadingFile': '正在下载 {{filename}} ({{current}}/{{total}})...',
   'settings.embeddingApiKey': 'API Key',
   'settings.embeddingBaseUrl': 'Base URL',
   'settings.embeddingModel': '模型',
@@ -319,6 +325,15 @@ export const zhCN: TranslationKeys = {
   'chat.thoughtFor': '思考了 {seconds}秒',
   'chat.thinkingCompleted': '思考完成',
   'chat.tokenEstimate': '约{count}个token',
+  'chat.tokenUsage': '{used} / {total} 令牌',
+  'chat.tokenUsagePercent': '已使用 {percent}% 上下文',
+  'chat.contextFillingUp': '上下文窗口即将满载 ({percent}%)。建议开始新对话。',
+  'chat.contextNearlyFull': '上下文窗口即将满载 ({percent}%)。较早的消息可能会丢失。',
+  'chat.imageMessage': '(图片)',
+  'chat.tokensLabel': '令牌',
+  'chat.tokensShort': '令牌',
+  'chat.removeAttachment': '移除附件',
+  'chat.attachImage': '添加图片',
 
   // Time
   'time.justNow': '刚刚',
@@ -332,6 +347,7 @@ export const zhCN: TranslationKeys = {
   'settings.addProvider': '添加提供商',
   'settings.editProvider': '编辑提供商',
   'settings.providerName': '提供商名称',
+  'settings.providerNamePlaceholder': '我的 OpenAI GPT-4o',
   'settings.providerType': '提供商类型',
   'settings.apiKey': 'API Key',
   'settings.baseUrl': 'Base URL',
@@ -373,6 +389,8 @@ export const zhCN: TranslationKeys = {
   'settings.reasoningMedium': '中',
   'settings.reasoningHigh': '高',
   'settings.reasoningEffortHelp': '推理强度等级。适用于OpenAI o系列模型。',
+  'settings.maxIterations': '最大工具迭代次数',
+  'settings.maxIterationsHelp': '每条消息的最大工具调用往返次数。默认为 10，深度研究任务可适当增加。',
 
   // Common
   'common.save': '保存',
@@ -389,4 +407,5 @@ export const zhCN: TranslationKeys = {
   'common.remove': '移除',
   'common.collapse': '收起',
   'common.expand': '展开',
+  'common.clear': '清除',
 };

@@ -4,11 +4,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ask_core::agent::{AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor};
+use ask_core::agent::{AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor, CancellationToken};
 use ask_core::conversation::{
-    AgentConfig as DbAgentConfig, Conversation, ConversationMessage, CreateConversationInput,
+    AgentConfig as DbAgentConfig, Conversation, ConversationMessage, ConversationStats,
+    CreateConversationInput,
     SaveAgentConfigInput,
 };
+use ask_core::conversation::memory::estimate_tokens;
 use ask_core::db::Database;
 use ask_core::embed::{EmbedderConfig, LocalEmbeddingModel};
 use ask_core::feedback::{Feedback, FeedbackAction};
@@ -37,8 +39,8 @@ pub struct AppState {
 
 /// State for tracking running agent tasks (for cancellation).
 pub struct AgentState {
-    /// Map of conversation_id → running agent task handle.
-    pub running: TokioMutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Map of conversation_id → (cancellation token, task handle).
+    pub running: TokioMutex<HashMap<String, (CancellationToken, tokio::task::JoinHandle<()>)>>,
 }
 
 /// State for the file watcher.
@@ -54,6 +56,28 @@ pub struct WatcherState {
 pub struct WatchedSourceInfo {
     pub source_id: String,
     pub root_path: String,
+}
+
+/// Progress for batch operations spanning multiple sources.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchProgress {
+    pub operation: String,
+    pub source_index: usize,
+    pub source_count: usize,
+    pub source_id: String,
+    pub phase: String,
+    pub current: usize,
+    pub total: usize,
+    pub current_file: Option<String>,
+}
+
+/// Progress for FTS index operations.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FtsProgress {
+    pub operation: String,
+    pub phase: String,
 }
 
 /// Envelope for agent stream events sent to frontend.
@@ -289,13 +313,34 @@ pub async fn scan_source(
 }
 
 #[tauri::command]
-pub async fn scan_all_sources(state: tauri::State<'_, AppState>) -> Result<Vec<IngestResult>, String> {
+pub async fn scan_all_sources(
+    state: tauri::State<'_, AppState>,
+    app_handle: AppHandle,
+) -> Result<Vec<IngestResult>, String> {
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || {
         let sources = db.list_sources().map_err(|e| e.to_string())?;
-        let mut results = Vec::with_capacity(sources.len());
-        for source in &sources {
-            let result = ingest::scan_source(&db, &source.id).map_err(|e| e.to_string())?;
+        let source_count = sources.len();
+        let mut results = Vec::with_capacity(source_count);
+        for (i, source) in sources.iter().enumerate() {
+            let ah = app_handle.clone();
+            let sid = source.id.clone();
+            let result = ingest::scan_source_with_progress(&db, &source.id, move |progress| {
+                let _ = ah.emit(
+                    "batch:scan-progress",
+                    &BatchProgress {
+                        operation: "scan-all".to_string(),
+                        source_index: i + 1,
+                        source_count,
+                        source_id: sid.clone(),
+                        phase: progress.phase.clone(),
+                        current: progress.current,
+                        total: progress.total,
+                        current_file: progress.current_file.clone(),
+                    },
+                );
+            })
+            .map_err(|e| e.to_string())?;
             results.push(result);
         }
         Ok::<_, String>(results)
@@ -348,8 +393,31 @@ pub fn get_index_stats(state: tauri::State<'_, AppState>) -> Result<IndexStats, 
 }
 
 #[tauri::command]
-pub fn rebuild_index(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.db.rebuild_fts_index().map_err(|e| e.to_string())
+pub async fn rebuild_index(
+    state: tauri::State<'_, AppState>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = app_handle.emit(
+            "batch:fts-progress",
+            &FtsProgress {
+                operation: "rebuild-fts".to_string(),
+                phase: "running".to_string(),
+            },
+        );
+        let result = db.rebuild_fts_index().map_err(|e| e.to_string());
+        let _ = app_handle.emit(
+            "batch:fts-progress",
+            &FtsProgress {
+                operation: "rebuild-fts".to_string(),
+                phase: "complete".to_string(),
+            },
+        );
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ── Playbook Commands ───────────────────────────────────────────────────
@@ -503,8 +571,19 @@ pub async fn embed_source(
 }
 
 #[tauri::command]
-pub fn rebuild_embeddings(state: tauri::State<'_, AppState>) -> Result<EmbedResult, String> {
-    ingest::rebuild_embeddings(&state.db).map_err(|e| e.to_string())
+pub async fn rebuild_embeddings(
+    state: tauri::State<'_, AppState>,
+    app_handle: AppHandle,
+) -> Result<EmbedResult, String> {
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        ingest::rebuild_embeddings_with_progress(&db, |progress| {
+            let _ = app_handle.emit("batch:rebuild-progress", &progress);
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 // ── Feedback Commands ───────────────────────────────────────────────────
@@ -571,8 +650,31 @@ pub fn save_privacy_config(
 // ── Index Commands (extra) ──────────────────────────────────────────────
 
 #[tauri::command]
-pub fn optimize_fts_index(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.db.optimize_fts_index().map_err(|e| e.to_string())
+pub async fn optimize_fts_index(
+    state: tauri::State<'_, AppState>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = app_handle.emit(
+            "batch:fts-progress",
+            &FtsProgress {
+                operation: "optimize-fts".to_string(),
+                phase: "running".to_string(),
+            },
+        );
+        let result = db.optimize_fts_index().map_err(|e| e.to_string());
+        let _ = app_handle.emit(
+            "batch:fts-progress",
+            &FtsProgress {
+                operation: "optimize-fts".to_string(),
+                phase: "complete".to_string(),
+            },
+        );
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ── Citation Commands (extra) ───────────────────────────────────────────
@@ -635,11 +737,21 @@ pub fn check_local_model_cmd(local_model: Option<String>) -> Result<bool, String
 }
 
 #[tauri::command]
-pub fn download_local_model_cmd(local_model: Option<String>) -> Result<(), String> {
-    let model = local_model
-        .map(|s| LocalEmbeddingModel::from_config_str(&s))
-        .unwrap_or_default();
-    ask_core::embed::download_local_model_for(None, &model).map_err(|e| e.to_string())
+pub async fn download_local_model_cmd(
+    app_handle: AppHandle,
+    local_model: Option<String>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let model = local_model
+            .map(|s| LocalEmbeddingModel::from_config_str(&s))
+            .unwrap_or_default();
+        ask_core::embed::download_local_model_for_with_progress(None, &model, |progress| {
+            let _ = app_handle.emit("model:download-progress", &progress);
+        })
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 // ── Image Attachment Commands ───────────────────────────────────────────
@@ -927,6 +1039,26 @@ pub async fn update_conversation_system_prompt_cmd(
         .map_err(|e| e.to_string())
 }
 
+// ── Conversation Maintenance Commands ────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_conversation_stats_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<ConversationStats, String> {
+    state.db.get_conversation_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cleanup_empty_conversations_cmd(
+    state: tauri::State<'_, AppState>,
+    days_old: u32,
+) -> Result<usize, String> {
+    state
+        .db
+        .cleanup_empty_conversations(days_old)
+        .map_err(|e| e.to_string())
+}
+
 // ── Agent Config Commands ───────────────────────────────────────────────
 
 #[tauri::command]
@@ -1047,7 +1179,7 @@ pub async fn agent_chat_cmd(
         content: message.clone(),
         tool_call_id: None,
         tool_calls: vec![],
-        token_count: (message.len() / 4) as u32,
+        token_count: estimate_tokens(&message),
         created_at: String::new(),
         sort_order: next_sort_order,
         thinking: None,
@@ -1074,7 +1206,7 @@ pub async fn agent_chat_cmd(
 
     // 6. Build executor config from DB config.
     let executor_config = ExecutorConfig {
-        max_iterations: 10,
+        max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(10),
         system_prompt,
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
@@ -1111,7 +1243,11 @@ pub async fn agent_chat_cmd(
     let handle = app_handle.clone();
     let assistant_sort_order = next_sort_order + 1;
 
+    let cancel_token = CancellationToken::new();
+    let cancel_token_clone = cancel_token.clone();
+
     let task = tokio::spawn(async move {
+        let cancel_token = cancel_token_clone;
         let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
 
         // Forward events to the frontend in a separate task.
@@ -1130,7 +1266,8 @@ pub async fn agent_chat_cmd(
         // Run the agent.  The executor now saves ALL messages (intermediate
         // tool-call assistants, tool results, and the final answer) to the DB
         // using incrementing sort_order starting at `assistant_sort_order`.
-        let executor = AgentExecutor::new(provider, tools, executor_config);
+        let executor = AgentExecutor::new(provider, tools, executor_config)
+            .with_cancel_token(cancel_token);
         let run_future = executor.run(
             history,
             user_parts,
@@ -1175,13 +1312,21 @@ pub async fn agent_chat_cmd(
     {
         let mut running = agent_state.running.lock().await;
         // Cancel any existing task for this conversation.
-        if let Some(prev) = running.remove(&conversation_id) {
-            prev.abort();
+        if let Some((prev_token, prev_task)) = running.remove(&conversation_id) {
+            prev_token.cancel();
+            prev_task.abort();
         }
-        running.insert(conversation_id, task);
+        running.insert(conversation_id, (cancel_token, task));
     }
 
     Ok(())
+}
+
+// ── Model Context Window ─────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_model_context_window(model: String) -> u32 {
+    ask_core::conversation::memory::model_context_window(&model)
 }
 
 // ── Agent Stop Command ──────────────────────────────────────────────────
@@ -1192,7 +1337,10 @@ pub async fn agent_stop_cmd(
     conversation_id: String,
 ) -> Result<(), String> {
     let mut running = agent_state.running.lock().await;
-    if let Some(task) = running.remove(&conversation_id) {
+    if let Some((token, task)) = running.remove(&conversation_id) {
+        // Signal cooperative cancellation first so the agent can save
+        // partial work, then abort the task as a fallback.
+        token.cancel();
         task.abort();
     }
     Ok(())

@@ -335,6 +335,7 @@ interface MessageBubbleProps {
 }
 
 function MessageBubble({ msg, chunkIds, queryText }: MessageBubbleProps) {
+  const { t } = useTranslation();
   const isUser = msg.role === 'user';
 
   if (msg.role === 'tool' || msg.role === 'system') return null;
@@ -354,6 +355,14 @@ function MessageBubble({ msg, chunkIds, queryText }: MessageBubbleProps) {
           }`}
       >
         <MessageActions text={msg.content} showFeedback={!isUser} chunkIds={chunkIds} queryText={queryText} />
+        {msg.tokenCount > 0 && (
+          <span
+            className="absolute bottom-0.5 right-2 text-[9px] text-text-tertiary/0 group-hover:text-text-tertiary/60 transition-colors tabular-nums select-none"
+            title={`${msg.tokenCount.toLocaleString()} tokens`}
+          >
+            {msg.tokenCount.toLocaleString()} {t('chat.tokensShort')}
+          </span>
+        )}
         {isUser ? (
           <>
             <span className="whitespace-pre-wrap">{msg.content}</span>

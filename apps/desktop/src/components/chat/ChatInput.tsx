@@ -8,18 +8,31 @@ import type { ImageAttachment } from '../../types/conversation';
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
+interface TokenUsage {
+  promptTokens: number;
+  totalTokens: number;
+  contextWindow: number;
+}
+
 interface ChatInputProps {
   onSend: (message: string, attachments?: ImageAttachment[]) => void;
   onStop: () => void;
   isStreaming: boolean;
   disabled: boolean;
+  tokenUsage?: TokenUsage | null;
 }
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function ChatInput({ onSend, onStop, isStreaming, disabled }: ChatInputProps) {
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
+  return String(n);
+}
+
+export function ChatInput({ onSend, onStop, isStreaming, disabled, tokenUsage }: ChatInputProps) {
   const { t } = useTranslation();
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
@@ -43,7 +56,7 @@ export function ChatInput({ onSend, onStop, isStreaming, disabled }: ChatInputPr
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed && attachments.length === 0) return;
-    onSend(trimmed || '(image)', attachments.length > 0 ? attachments : undefined);
+    onSend(trimmed || t('chat.imageMessage'), attachments.length > 0 ? attachments : undefined);
     setValue('');
     setAttachments([]);
     // Reset height after send
@@ -140,6 +153,25 @@ export function ChatInput({ onSend, onStop, isStreaming, disabled }: ChatInputPr
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
+      {/* Token usage bar */}
+      {tokenUsage && tokenUsage.contextWindow > 0 && (() => {
+        const percentage = Math.min(100, (tokenUsage.totalTokens / tokenUsage.contextWindow) * 100);
+        return (
+          <div className="flex items-center gap-2 px-1 pb-2 text-[10px] text-muted/60">
+            <div className="flex-1 bg-surface-3 rounded h-1">
+              <div
+                className={`h-1 rounded transition-all duration-500 ${
+                  percentage > 80 ? 'bg-red-500' : percentage > 50 ? 'bg-yellow-500' : 'bg-accent'
+                }`}
+                style={{ width: `${Math.max(percentage, 0.5)}%` }}
+              />
+            </div>
+            <span className="shrink-0 tabular-nums">
+              {formatTokens(tokenUsage.totalTokens)} / {formatTokens(tokenUsage.contextWindow)} {t('chat.tokensLabel')}
+            </span>
+          </div>
+        );
+      })()}
       {/* Attachment preview */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-2 pb-2">
@@ -155,7 +187,7 @@ export function ChatInput({ onSend, onStop, isStreaming, disabled }: ChatInputPr
                 className="absolute -top-1.5 -right-1.5 bg-danger text-white rounded-full
                   w-4 h-4 flex items-center justify-center text-[10px] leading-none
                   opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-                aria-label="Remove attachment"
+                aria-label={t('chat.removeAttachment')}
               >
                 <X className="w-3 h-3" />
               </button>
@@ -177,7 +209,7 @@ export function ChatInput({ onSend, onStop, isStreaming, disabled }: ChatInputPr
             rounded-lg text-text-tertiary hover:bg-surface-2 hover:text-text-secondary
             transition-colors duration-fast ease-out cursor-pointer
             disabled:opacity-40 disabled:pointer-events-none"
-          aria-label="Attach image"
+          aria-label={t('chat.attachImage')}
         >
           <Paperclip className="h-4 w-4" />
         </motion.button>

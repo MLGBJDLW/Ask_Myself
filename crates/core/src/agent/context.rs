@@ -5,6 +5,9 @@ use chrono::Utc;
 use crate::conversation::memory::{model_context_window, trim_to_context_window};
 use crate::llm::{ContentPart, Message, Role};
 
+/// Approximate character limit for the system prompt (~4 000 tokens).
+const MAX_SYSTEM_PROMPT_CHARS: usize = 16_000;
+
 /// Build a complete message list for an LLM request, trimmed to fit the
 /// model's context window.
 ///
@@ -31,6 +34,7 @@ pub fn prepare_messages(
         system_prompt,
         Utc::now().format("%Y-%m-%d %H:%M UTC")
     );
+    let system_with_datetime = cap_system_prompt(system_with_datetime);
     messages.push(Message::text(Role::System, system_with_datetime));
 
     // Prior conversation turns.
@@ -65,7 +69,7 @@ pub fn prepare_messages(
         if !recap.is_empty() {
             if let Some(sys) = trimmed.iter_mut().find(|m| m.role == Role::System) {
                 if let Some(ContentPart::Text { text }) = sys.parts.first_mut() {
-                    *text = format!("{}\n\n{}", text, recap);
+                    *text = cap_system_prompt(format!("{}\n\n{}", text, recap));
                 }
             }
         }
@@ -91,7 +95,17 @@ fn build_evicted_recap(evicted: &[&Message]) -> String {
 
         match msg.role {
             Role::User => {
-                let summary = truncate_text(&msg.text_content(), 100);
+                let text = msg.text_content();
+                let summary = if text.trim().is_empty() {
+                    if msg.has_images() {
+                        "[image]".to_string()
+                    } else {
+                        continue;
+                    }
+                } else {
+                    let label = if msg.has_images() { "[image] " } else { "" };
+                    format!("{}{}", label, truncate_text(&text, 100))
+                };
                 let line = format!("- User asked: {}", summary);
                 total_chars += line.len();
                 parts.push(line);
@@ -101,7 +115,12 @@ fn build_evicted_recap(evicted: &[&Message]) -> String {
                 if msg.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty()) {
                     continue;
                 }
-                let summary = truncate_text(&msg.text_content(), 80);
+                let text = msg.text_content();
+                let summary = if text.trim().is_empty() {
+                    continue;
+                } else {
+                    truncate_text(&text, 80)
+                };
                 let line = format!("- You answered: {}", summary);
                 total_chars += line.len();
                 parts.push(line);
@@ -119,6 +138,28 @@ fn build_evicted_recap(evicted: &[&Message]) -> String {
          These topics were discussed earlier but trimmed for context space:\n{}",
         parts.join("\n")
     )
+}
+
+/// Public entry-point for building an extractive recap from owned messages.
+///
+/// This is used by `AgentExecutor::summarize_if_needed` as the extractive
+/// fallback string that gets passed to the LLM summariser.
+pub fn build_evicted_recap_from_messages(evicted: &[Message]) -> String {
+    let refs: Vec<&Message> = evicted.iter().collect();
+    build_evicted_recap(&refs)
+}
+
+/// Enforce `MAX_SYSTEM_PROMPT_CHARS` on the system prompt.
+///
+/// If the prompt exceeds the limit it is truncated on a word boundary and
+/// a `...[truncated]` marker is appended so the LLM can see signalling.
+fn cap_system_prompt(text: String) -> String {
+    if text.len() <= MAX_SYSTEM_PROMPT_CHARS {
+        return text;
+    }
+    let truncated = &text[..MAX_SYSTEM_PROMPT_CHARS];
+    let cut = truncated.rfind('\n').or_else(|| truncated.rfind(' ')).unwrap_or(MAX_SYSTEM_PROMPT_CHARS);
+    format!("{}\n...[truncated]", &text[..cut])
 }
 
 /// Truncate text to `max_chars` on a word boundary, appending "..." if truncated.

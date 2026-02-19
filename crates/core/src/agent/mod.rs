@@ -2,13 +2,15 @@
 
 use std::time::Duration;
 
-use futures::StreamExt;
-use log::{debug, warn};
+use futures::{StreamExt, future::join_all};
+use tracing::{debug, warn, info_span, Instrument};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::conversation::ConversationMessage;
+use crate::conversation::memory::{estimate_message_tokens, estimate_tokens, model_context_window, trim_to_context_window};
+use crate::conversation::summarizer;
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::{
@@ -20,31 +22,183 @@ use crate::tools::ToolRegistry;
 
 pub mod context;
 
+// Re-export so consumers don't need to depend on tokio-util directly.
+pub use tokio_util::sync::CancellationToken;
+
 /// Maximum characters to keep in a tool result for LLM context.
 /// ~4K tokens ≈ 16K chars for English text.
 const MAX_TOOL_RESULT_CHARS: usize = 16_000;
 
 /// Truncate tool result content to fit within a character budget.
-/// If truncated, appends a note indicating truncation.
+///
+/// Uses intelligent compression strategies before falling back to hard
+/// truncation:
+///   1. JSON arrays  — truncate long string values, then drop tail items.
+///   2. Section-based text (--- / ===) — keep first & last sections fully,
+///      truncate middle sections.
+///   3. Fallback — keep beginning + end with a gap note.
 fn truncate_tool_result(content: &str, max_chars: usize) -> String {
     if content.len() <= max_chars {
         return content.to_string();
     }
 
-    // Find a char-boundary–safe cut point, then try to land on a line break.
-    let mut cut = max_chars;
-    while !content.is_char_boundary(cut) {
-        cut -= 1;
+    // Try intelligent compression first.
+    if let Some(compressed) = try_smart_compress(content, max_chars) {
+        if compressed.len() <= max_chars {
+            return compressed;
+        }
     }
-    if let Some(nl) = content[..cut].rfind('\n') {
-        cut = nl;
+
+    // Fallback: keep beginning + end (char-boundary–safe).
+    let keep_each = max_chars / 2 - 100; // 100 chars reserved for separator
+    let mut start_cut = keep_each;
+    while !content.is_char_boundary(start_cut) {
+        start_cut -= 1;
+    }
+    // Try to land on a line break for readability.
+    if let Some(nl) = content[..start_cut].rfind('\n') {
+        start_cut = nl;
+    }
+
+    let mut end_start = content.len() - keep_each;
+    while !content.is_char_boundary(end_start) {
+        end_start += 1;
+    }
+    if let Some(nl) = content[end_start..].find('\n') {
+        end_start += nl + 1;
     }
 
     format!(
-        "{}\n\n[... truncated: {} more characters not shown. The full result was saved.]",
-        &content[..cut],
-        content.len() - cut
+        "{}\n\n[... {} chars omitted ...]\n\n{}",
+        &content[..start_cut],
+        content.len() - start_cut - (content.len() - end_start),
+        &content[end_start..]
     )
+}
+
+// ---------------------------------------------------------------------------
+// Smart compression helpers
+// ---------------------------------------------------------------------------
+
+/// Attempt to compress the result using structure-aware strategies.
+fn try_smart_compress(result: &str, max_chars: usize) -> Option<String> {
+    let trimmed = result.trim();
+
+    // JSON array → compress entries.
+    if trimmed.starts_with('[') {
+        return compress_json_array(trimmed, max_chars);
+    }
+
+    // Section-delimited text → compress middle sections.
+    if trimmed.contains("---") || trimmed.contains("===") {
+        return compress_sections(trimmed);
+    }
+
+    None
+}
+
+/// Compress a JSON array by truncating long string values inside each item,
+/// then dropping trailing items if the total still exceeds the budget.
+fn compress_json_array(json_str: &str, max_chars: usize) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let arr = parsed.as_array()?;
+    let total = arr.len();
+    let mut compressed: Vec<serde_json::Value> = Vec::with_capacity(total);
+
+    for (i, item) in arr.iter().enumerate() {
+        let item_json = serde_json::to_string(item).ok()?;
+        if item_json.len() > 500 {
+            compressed.push(truncate_json_values(item, 500));
+        } else {
+            compressed.push(item.clone());
+        }
+
+        // Check cumulative size periodically (every item for small arrays,
+        // every 5th item for larger ones).
+        if total < 20 || (i + 1) % 5 == 0 || i == total - 1 {
+            let current_len: usize = compressed
+                .iter()
+                .filter_map(|v| serde_json::to_string(v).ok())
+                .map(|s| s.len())
+                .sum();
+            if current_len > max_chars.saturating_sub(200) {
+                let remaining = total - i - 1;
+                let out =
+                    serde_json::to_string_pretty(&serde_json::Value::Array(compressed)).ok()?;
+                return Some(format!("{}\n[... {} more items omitted]", out, remaining));
+            }
+        }
+    }
+
+    serde_json::to_string_pretty(&serde_json::Value::Array(compressed)).ok()
+}
+
+/// Recursively truncate string values inside a JSON value.
+fn truncate_json_values(value: &serde_json::Value, max_str_len: usize) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => {
+            if s.len() > max_str_len {
+                // Find a char-boundary–safe cut point.
+                let mut cut = max_str_len;
+                while !s.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                serde_json::Value::String(format!("{}...[truncated]", &s[..cut]))
+            } else {
+                value.clone()
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let new_map: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), truncate_json_values(v, max_str_len)))
+                .collect();
+            serde_json::Value::Object(new_map)
+        }
+        serde_json::Value::Array(arr) => serde_json::Value::Array(
+            arr.iter()
+                .map(|v| truncate_json_values(v, max_str_len))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+/// Compress section-delimited text by keeping first & last sections fully and
+/// truncating middle sections to 300 chars each.
+fn compress_sections(text: &str) -> Option<String> {
+    let separator = if text.contains("---") { "---" } else { "===" };
+    let sections: Vec<&str> = text.split(separator).collect();
+
+    if sections.len() < 3 {
+        return None;
+    }
+
+    let mut result: Vec<String> = Vec::with_capacity(sections.len());
+    for (i, section) in sections.iter().enumerate() {
+        if i == 0 || i == sections.len() - 1 {
+            result.push(section.to_string());
+        } else {
+            let trimmed = section.trim();
+            if trimmed.len() > 300 {
+                // Char-boundary–safe cut.
+                let mut cut = 300;
+                while !trimmed.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                result.push(format!("{}...", &trimmed[..cut]));
+            } else {
+                result.push(trimmed.to_string());
+            }
+        }
+    }
+
+    let compressed = result.join(&format!("\n{}\n", separator));
+    if compressed.len() < text.len() {
+        Some(compressed)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +306,7 @@ pub struct AgentExecutor {
     provider: Box<dyn LlmProvider>,
     tools: ToolRegistry,
     config: AgentConfig,
+    cancel_token: CancellationToken,
 }
 
 impl AgentExecutor {
@@ -161,7 +316,17 @@ impl AgentExecutor {
             provider,
             tools,
             config,
+            cancel_token: CancellationToken::new(),
         }
+    }
+
+    /// Attach a cancellation token for cooperative cancellation.
+    ///
+    /// When the token is cancelled, the agent will stop at the next
+    /// checkpoint, save any partial conversation, and return gracefully.
+    pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
+        self.cancel_token = token;
+        self
     }
 
     /// Run the agent loop for a single user turn.
@@ -187,6 +352,21 @@ impl AgentExecutor {
     ) -> Result<Message, CoreError> {
         let model = self.config.model.as_deref().unwrap_or(DEFAULT_MODEL);
         let max_response_tokens = self.config.max_tokens.unwrap_or(4096);
+
+        // --- 0. Early cancellation check before any work ----------------------
+        if self.cancel_token.is_cancelled() {
+            let msg = Message::text(Role::Assistant, "Request cancelled by user.".to_string());
+            let _ = tx.send(AgentEvent::Done {
+                message: msg.clone(),
+                usage_total: Usage::default(),
+            }).await;
+            return Ok(msg);
+        }
+
+        // --- 0b. Pre-summarize evicted history if context is getting full -----
+        let history = self
+            .summarize_if_needed(history, model, max_response_tokens)
+            .await;
 
         // --- 1. Build initial messages with context-window trimming -----------
         let mut messages = context::prepare_messages(
@@ -231,8 +411,51 @@ impl AgentExecutor {
         let mut accumulated_content = String::new();
         let mut thinking_buffer = String::new();
 
+        // Macro for cancellation checkpoints — saves partial conversation and
+        // returns gracefully when the token is cancelled.
+        macro_rules! check_cancelled {
+            () => {
+                if self.cancel_token.is_cancelled() {
+                    warn!("Agent execution cancelled by user");
+                    if !accumulated_content.is_empty() {
+                        let note = "\n\n*[Request cancelled by user]*";
+                        let _ = tx.send(AgentEvent::TextDelta { delta: note.to_string() }).await;
+                        accumulated_content.push_str(note);
+                    }
+                    let cancel_text = if accumulated_content.is_empty() {
+                        "Request cancelled by user.".to_string()
+                    } else {
+                        accumulated_content.clone()
+                    };
+                    let final_msg = Message::text(Role::Assistant, cancel_text);
+                    if let Some(cid) = conversation_id {
+                        let conv_msg = ConversationMessage {
+                            id: Uuid::new_v4().to_string(),
+                            conversation_id: cid.to_string(),
+                            role: Role::Assistant,
+                            content: final_msg.text_content(),
+                            tool_call_id: None,
+                            tool_calls: vec![],
+                            token_count: estimate_message_tokens(&final_msg),
+                            created_at: String::new(),
+                            sort_order,
+                            thinking: if thinking_buffer.is_empty() { None } else { Some(thinking_buffer.clone()) },
+                        };
+                        let _ = db.add_message(&conv_msg);
+                    }
+                    let _ = tx.send(AgentEvent::Done {
+                        message: final_msg.clone(),
+                        usage_total: total_usage.clone(),
+                    }).await;
+                    return Ok(final_msg);
+                }
+            };
+        }
+
         // --- 4. ReAct loop ----------------------------------------------------
         for iteration in 0..self.config.max_iterations {
+            // ── Cancellation checkpoint: before LLM call ─────────────────
+            check_cancelled!();
             debug!(
                 "Agent iteration {}/{}",
                 iteration + 1,
@@ -259,16 +482,50 @@ impl AgentExecutor {
                 provider_type: self.config.provider_type.clone(),
             };
 
-            // -- 4a. Stream LLM response --------------------------------------
-            let mut stream = match self.provider.stream(&request).await {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = tx
-                        .send(AgentEvent::Error {
-                            message: e.to_string(),
-                        })
-                        .await;
-                    return Err(e);
+            // -- 4a. Stream LLM response (with rate-limit retry) ----------------
+            const MAX_LLM_RETRIES: u32 = 3;
+            let mut retry_count = 0u32;
+            let mut stream = loop {
+                match self.provider.stream(&request).await {
+                    Ok(s) => break s,
+                    Err(CoreError::RateLimited { retry_after_secs }) => {
+                        retry_count += 1;
+                        if retry_count > MAX_LLM_RETRIES {
+                            let _ = tx
+                                .send(AgentEvent::Error {
+                                    message: format!(
+                                        "Rate limited after {} retries",
+                                        MAX_LLM_RETRIES
+                                    ),
+                                })
+                                .await;
+                            return Err(CoreError::RateLimited { retry_after_secs });
+                        }
+                        // Use server's Retry-After, falling back to exponential backoff.
+                        let wait = if retry_after_secs > 0 {
+                            retry_after_secs
+                        } else {
+                            2u64.pow(retry_count)
+                        };
+                        warn!(
+                            "Rate limited. Retry {}/{} after {}s",
+                            retry_count, MAX_LLM_RETRIES, wait
+                        );
+                        let _ = tx
+                            .send(AgentEvent::Thinking {
+                                content: format!("Rate limited. Retrying in {}s…", wait),
+                            })
+                            .await;
+                        tokio::time::sleep(Duration::from_secs(wait)).await;
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(AgentEvent::Error {
+                                message: e.to_string(),
+                            })
+                            .await;
+                        return Err(e);
+                    }
                 }
             };
 
@@ -321,6 +578,9 @@ impl AgentExecutor {
                 total_usage.prompt_tokens += u.prompt_tokens;
                 total_usage.completion_tokens += u.completion_tokens;
                 total_usage.total_tokens += u.total_tokens;
+                if let Some(t) = u.thinking_tokens {
+                    *total_usage.thinking_tokens.get_or_insert(0) += t;
+                }
             }
 
             // Merge iteration thinking into buffer
@@ -355,7 +615,7 @@ impl AgentExecutor {
                         content: assistant_msg.text_content(),
                         tool_call_id: None,
                         tool_calls: assistant_msg.tool_calls.clone().unwrap_or_default(),
-                        token_count: (assistant_msg.text_content().len() / 4) as u32,
+                        token_count: estimate_message_tokens(&assistant_msg),
                         created_at: String::new(),
                         sort_order,
                         thinking: if thinking_buffer.is_empty() { None } else { Some(thinking_buffer.clone()) },
@@ -383,7 +643,7 @@ impl AgentExecutor {
                     content: assistant_msg.text_content(),
                     tool_call_id: None,
                     tool_calls: tool_calls.clone(),
-                    token_count: (assistant_msg.text_content().len() / 4) as u32,
+                    token_count: estimate_message_tokens(&assistant_msg),
                     created_at: String::new(),
                     sort_order,
                     thinking: if iteration_thinking.is_empty() { None } else { Some(iteration_thinking.clone()) },
@@ -394,7 +654,11 @@ impl AgentExecutor {
                 sort_order += 1;
             }
 
-            // -- 4e. Execute tool calls ----------------------------------------
+            // ── Cancellation checkpoint: before tool execution ────────
+            check_cancelled!();
+
+            // -- 4e. Execute tool calls in parallel ------------------------------
+            // Emit ToolCallStart events for all tools before launching.
             for tc in &tool_calls {
                 let _ = tx
                     .send(AgentEvent::ToolCallStart {
@@ -403,20 +667,30 @@ impl AgentExecutor {
                         arguments: tc.arguments.clone(),
                     })
                     .await;
+            }
 
-                // Per-tool timeout to prevent hangs.
+            // Build futures for all tool calls and execute concurrently.
+            let tool_futures: Vec<_> = tool_calls.iter().map(|tc| {
                 let tool_timeout = match tc.name.as_str() {
                     "retrieve_evidence" => Duration::from_secs(60),
                     _ => Duration::from_secs(30),
                 };
+                let source_scope = &source_scope;
+                let tool_span = info_span!("tool_execution", tool = %tc.name);
+                async move {
+                    let result = tokio::time::timeout(
+                        tool_timeout,
+                        self.tools.execute(&tc.name, &tc.id, &tc.arguments, db, source_scope),
+                    )
+                    .await;
+                    (tc, tool_timeout, result)
+                }.instrument(tool_span)
+            }).collect();
 
-                let tool_result = tokio::time::timeout(
-                    tool_timeout,
-                    self.tools
-                        .execute(&tc.name, &tc.id, &tc.arguments, db, &source_scope),
-                )
-                .await;
+            let tool_results = join_all(tool_futures).await;
 
+            // Process results in original order (join_all preserves order).
+            for (tc, tool_timeout, tool_result) in tool_results {
                 let tool_msg = match tool_result {
                     Ok(Ok(result)) => {
                         let _ = tx
@@ -478,7 +752,7 @@ impl AgentExecutor {
                         content: content.clone(),
                         tool_call_id: Some(tc.id.clone()),
                         tool_calls: vec![],
-                        token_count: (content.len() / 4) as u32,
+                        token_count: estimate_tokens(&content),
                         created_at: String::new(),
                         sort_order,
                         thinking: None,
@@ -495,6 +769,15 @@ impl AgentExecutor {
 
                 messages.push(Message::text_with_name(Role::Tool, context_content, tc.id.clone()));
             }
+
+            // ── Cancellation checkpoint: after tool execution ─────────
+            check_cancelled!();
+
+            // Re-trim messages to fit context window after appending tool results.
+            // This prevents unbounded growth across iterations.
+            let max_ctx = self.config.context_window.unwrap_or_else(|| model_context_window(model));
+            messages = trim_to_context_window(&messages, max_ctx, max_response_tokens);
+
             // Loop back → next LLM call with tool results.
         }
 
@@ -524,7 +807,7 @@ impl AgentExecutor {
                 content: final_msg.text_content(),
                 tool_call_id: None,
                 tool_calls: vec![],
-                token_count: (final_msg.text_content().len() / 4) as u32,
+                token_count: estimate_message_tokens(&final_msg),
                 created_at: String::new(),
                 sort_order,
                 thinking: if thinking_buffer.is_empty() { None } else { Some(thinking_buffer.clone()) },
@@ -541,6 +824,89 @@ impl AgentExecutor {
             })
             .await;
         Ok(final_msg)
+    }
+
+    // -----------------------------------------------------------------------
+    // Pre-summarization helper
+    // -----------------------------------------------------------------------
+
+    /// If the conversation history is large enough to trigger eviction,
+    /// use the LLM to produce an abstractive summary of the messages that
+    /// *would* be evicted, then replace those messages with a single
+    /// `System` summary message.  This keeps more nuance than the
+    /// extractive (truncation-based) recap in `context.rs`.
+    ///
+    /// The method is intentionally conservative: it only fires when the
+    /// total estimated token count exceeds 50% of the context window so
+    /// that short conversations are unaffected.
+    async fn summarize_if_needed(
+        &self,
+        history: Vec<Message>,
+        model: &str,
+        max_response_tokens: u32,
+    ) -> Vec<Message> {
+        if history.is_empty() {
+            return history;
+        }
+
+        let ctx_window = self
+            .config
+            .context_window
+            .unwrap_or_else(|| model_context_window(model));
+
+        // Budget available for history (context window minus response reservation).
+        let budget = ctx_window.saturating_sub(max_response_tokens);
+        if budget == 0 {
+            return history;
+        }
+
+        // Estimate total tokens across the history.
+        let total_tokens: u32 = history.iter().map(|m| estimate_message_tokens(m)).sum();
+
+        // Only trigger when history consumes >50% of available budget.
+        if total_tokens <= budget / 2 {
+            return history;
+        }
+
+        // Figure out which messages would be evicted by trim_to_context_window.
+        // That function keeps the system message + newest messages. We simulate
+        // it to identify the split point.
+        let trimmed = trim_to_context_window(&history, ctx_window, max_response_tokens);
+        let kept_count = trimmed.len();
+        let evict_count = history.len().saturating_sub(kept_count);
+
+        if evict_count == 0 {
+            return history;
+        }
+
+        let evicted = &history[..evict_count];
+
+        // Build the extractive fallback first (cheap, in-process).
+        let extractive_fallback = context::build_evicted_recap_from_messages(evicted);
+
+        // Attempt LLM summarization.
+        let summary = summarizer::summarize_evicted_messages(
+            self.provider.as_ref(),
+            model,
+            evicted,
+            &extractive_fallback,
+        )
+        .await;
+
+        // Build a replacement history: summary message + surviving messages.
+        let mut new_history =
+            Vec::with_capacity(1 + history.len() - evict_count);
+        new_history.push(Message::text(
+            Role::System,
+            format!(
+                "## Earlier conversation context (summarized)\n\
+                 The following is a summary of earlier conversation turns that \
+                 were condensed to save context space:\n{}",
+                summary
+            ),
+        ));
+        new_history.extend_from_slice(&history[evict_count..]);
+        new_history
     }
 }
 

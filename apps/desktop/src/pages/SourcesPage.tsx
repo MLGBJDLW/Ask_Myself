@@ -20,6 +20,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import * as api from '../lib/api';
 import type { Source, IngestResult, EmbedResult, ScanProgress } from '../types';
+import type { BatchProgress } from '../types/ingest';
 import { useTranslation } from '../i18n';
 import type { TranslationKeys } from '../i18n/types';
 import { Button } from '../components/ui/Button';
@@ -120,6 +121,7 @@ export function SourcesPage() {
 
   // Scan/embed progress
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
 
   /* ── Load ─────────────────────────────────────────────────────────── */
 
@@ -190,6 +192,50 @@ export function SourcesPage() {
       unlisten?.();
     };
   }, []);
+
+  /* ── Batch progress event listeners ────────────────────────────── */
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlistenBatch: (() => void) | undefined;
+    let unlistenRebuild: (() => void) | undefined;
+
+    listen<BatchProgress>('batch:scan-progress', (event) => {
+      if (cancelled) return;
+      setBatchProgress(event.payload);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlistenBatch = fn; }
+    });
+
+    listen<ScanProgress>('batch:rebuild-progress', (event) => {
+      if (cancelled) return;
+      const p = event.payload;
+      setBatchProgress({
+        operation: 'rebuild-embeddings',
+        sourceIndex: 0,
+        sourceCount: 0,
+        sourceId: p.sourceId,
+        phase: p.phase,
+        current: p.current,
+        total: p.total,
+        currentFile: p.currentFile,
+      });
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlistenRebuild = fn; }
+    });
+
+    return () => {
+      cancelled = true;
+      unlistenBatch?.();
+      unlistenRebuild?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!scanningAll && !rebuildingEmbeddings) {
+      setBatchProgress(null);
+    }
+  }, [scanningAll, rebuildingEmbeddings]);
 
   /* ── Watch toggle ────────────────────────────────────────────────── */
 
@@ -338,6 +384,7 @@ export function SourcesPage() {
       toast.error(`${t('sources.scanAllError')}: ${String(e)}`);
     } finally {
       setScanningAll(false);
+      setBatchProgress(null);
     }
   };
 
@@ -366,6 +413,7 @@ export function SourcesPage() {
       toast.error(`${t('sources.rebuildEmbedError')}: ${String(e)}`);
     } finally {
       setRebuildingEmbeddings(false);
+      setBatchProgress(null);
     }
   };
 
@@ -433,6 +481,43 @@ export function SourcesPage() {
       </div>
 
       {/* Source list or empty state */}
+      {/* Batch progress bar */}
+      {(scanningAll || rebuildingEmbeddings) && batchProgress && (
+        <div className="mb-4 p-3 bg-surface-2 rounded-lg border border-border">
+          <div className="flex items-center gap-2 text-sm text-muted mb-1">
+            <RefreshCw size={14} className="animate-spin" />
+            <span className="font-medium">
+              {batchProgress.operation === 'scan-all'
+                ? t('sources.scanningAll')
+                : t('sources.rebuildingEmbeddings_progress')
+              }
+            </span>
+            {batchProgress.sourceCount > 0 && (
+              <span className="text-xs">
+                ({t('sources.sourceProgress', { current: batchProgress.sourceIndex, total: batchProgress.sourceCount })})
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-muted/70 mb-1">
+            <span className="capitalize">{batchProgress.phase}</span>
+            {batchProgress.total > 0 && (
+              <span>{batchProgress.current}/{batchProgress.total}</span>
+            )}
+          </div>
+          {batchProgress.currentFile && (
+            <div className="text-[10px] text-muted/50 truncate mb-1">{batchProgress.currentFile}</div>
+          )}
+          {batchProgress.total > 0 && (
+            <div className="w-full bg-surface-3 rounded h-1.5">
+              <div
+                className="bg-accent h-1.5 rounded transition-all duration-300"
+                style={{ width: `${Math.min(100, (batchProgress.current / batchProgress.total) * 100)}%` }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
       {sources.length === 0 ? (
         <EmptyState
           icon={<FolderPlus size={32} />}

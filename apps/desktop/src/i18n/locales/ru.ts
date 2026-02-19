@@ -139,6 +139,9 @@ export const ru: TranslationKeys = {
   'sources.indexingInProgress': 'Индексация...',
   'sources.indexingComplete': 'Индексация завершена!',
   'sources.autoIndexing': 'Источник добавлен. Индексация...',
+  'sources.scanningAll': 'Сканирование всех источников...',
+  'sources.rebuildingEmbeddings_progress': 'Перестройка эмбеддингов...',
+  'sources.sourceProgress': 'Источник {current}/{total}',
 
   // Collections
   'playbooks.title': 'Коллекции',
@@ -198,6 +201,8 @@ export const ru: TranslationKeys = {
   'settings.ftsEntries': 'Записей FTS',
   'settings.rebuildIndex': 'Пересоздать индекс',
   'settings.optimizeIndex': 'Оптимизировать индекс',
+  'settings.rebuildingIndex': 'Перестройка FTS индекса...',
+  'settings.optimizingIndex': 'Оптимизация FTS индекса...',
   'settings.excludePatterns': 'Шаблоны исключения',
   'settings.excludePatternsDesc': 'Файловые пути, соответствующие этим шаблонам, будут пропущены',
   'settings.addPattern': 'Добавить',
@@ -235,6 +240,7 @@ export const ru: TranslationKeys = {
   'settings.embeddingNotDownloaded': 'Не скачана',
   'settings.embeddingDownload': 'Скачать модель',
   'settings.embeddingDownloading': 'Скачивание...',
+  'settings.downloadingFile': 'Загрузка {{filename}} ({{current}}/{{total}})...',
   'settings.embeddingApiKey': 'API-ключ',
   'settings.embeddingBaseUrl': 'Базовый URL',
   'settings.embeddingModel': 'Модель',
@@ -319,6 +325,15 @@ export const ru: TranslationKeys = {
   'chat.thoughtFor': 'Думал {seconds}с',
   'chat.thinkingCompleted': 'Размышление завершено',
   'chat.tokenEstimate': '~{count} токенов',
+  'chat.tokenUsage': '{used} / {total} токенов',
+  'chat.tokenUsagePercent': '{percent}% контекста использовано',
+  'chat.contextFillingUp': 'Окно контекста заполняется ({percent}%). Рассмотрите начало нового разговора.',
+  'chat.contextNearlyFull': 'Окно контекста почти заполнено ({percent}%). Старые сообщения могут быть утеряны.',
+  'chat.imageMessage': '(изображение)',
+  'chat.tokensLabel': 'токены',
+  'chat.tokensShort': 'ток.',
+  'chat.removeAttachment': 'Удалить вложение',
+  'chat.attachImage': 'Прикрепить изображение',
 
   // Time
   'time.justNow': 'только что',
@@ -332,6 +347,7 @@ export const ru: TranslationKeys = {
   'settings.addProvider': 'Add Provider',
   'settings.editProvider': 'Edit Provider',
   'settings.providerName': 'Provider Name',
+  'settings.providerNamePlaceholder': 'Мой OpenAI GPT-4o',
   'settings.providerType': 'Provider Type',
   'settings.apiKey': 'API Key',
   'settings.baseUrl': 'Base URL',
@@ -373,6 +389,8 @@ export const ru: TranslationKeys = {
   'settings.reasoningMedium': 'Средняя',
   'settings.reasoningHigh': 'Высокая',
   'settings.reasoningEffortHelp': 'Уровень интенсивности рассуждения. Используется моделями OpenAI серии o.',
+  'settings.maxIterations': 'Макс. итераций инструментов',
+  'settings.maxIterationsHelp': 'Максимальное количество циклов использования инструментов на сообщение. По умолчанию 10. Увеличьте для глубокого анализа.',
 
   // Common
   'common.save': 'Сохранить',
@@ -389,4 +407,5 @@ export const ru: TranslationKeys = {
   'common.remove': 'Удалить',
   'common.collapse': 'Свернуть',
   'common.expand': 'Развернуть',
+  'common.clear': 'Очистить',
 };

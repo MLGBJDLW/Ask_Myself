@@ -365,7 +365,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
                             // If create_embedder fell back to an empty TF-IDF
                             // (e.g. ONNX not downloaded), its dimensions will be 0.
                             if embedder.dimensions() == 0 {
-                                log::warn!(
+                                tracing::warn!(
                                     "Configured embedder ({}) returned empty dimensions, \
                                  falling back to TF-IDF state from DB",
                                     config.provider
@@ -384,7 +384,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
                                                 internal_limit,
                                             )
                                             .unwrap_or_else(|e| {
-                                                log::warn!(
+                                                tracing::warn!(
                                                     "Vector search with {} failed: {e}, \
                                                  trying TF-IDF fallback",
                                                     model_name
@@ -394,7 +394,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
                                         }
                                     }
                                     Err(e) => {
-                                        log::warn!(
+                                        tracing::warn!(
                                             "Failed to embed query with {}: {e}, \
                                          trying TF-IDF fallback",
                                             config.provider
@@ -405,7 +405,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
                             }
                         }
                         Err(e) => {
-                            log::warn!(
+                            tracing::warn!(
                                 "Failed to create embedder ({}): {e}, \
                              trying TF-IDF fallback",
                                 config.provider
@@ -498,22 +498,22 @@ fn tfidf_vector_search(db: &Database, query_text: &str, limit: usize) -> Vec<(St
                         return Vec::new();
                     }
                     vector_search_top_k(db, &query_vec, "tfidf-v1", limit).unwrap_or_else(|e| {
-                        log::warn!("TF-IDF vector search failed: {e}");
+                        tracing::warn!("TF-IDF vector search failed: {e}");
                         Vec::new()
                     })
                 }
                 Err(e) => {
-                    log::warn!("TF-IDF query embedding failed: {e}");
+                    tracing::warn!("TF-IDF query embedding failed: {e}");
                     Vec::new()
                 }
             }
         }
         Ok(None) => {
-            log::debug!("No TF-IDF embedder state in DB, skipping vector search");
+            tracing::debug!("No TF-IDF embedder state in DB, skipping vector search");
             Vec::new()
         }
         Err(e) => {
-            log::warn!("Failed to load TF-IDF embedder state: {e}");
+            tracing::warn!("Failed to load TF-IDF embedder state: {e}");
             Vec::new()
         }
     }

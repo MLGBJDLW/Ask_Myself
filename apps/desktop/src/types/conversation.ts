@@ -49,6 +49,7 @@ export interface AgentConfig {
   reasoningEnabled: boolean | null;
   thinkingBudget: number | null;
   reasoningEffort: string | null;
+  maxIterations: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -67,6 +68,7 @@ export interface SaveAgentConfigInput {
   reasoningEnabled: boolean | null;
   thinkingBudget: number | null;
   reasoningEffort: string | null;
+  maxIterations: number | null;
 }
 
 export type ProviderType =
@@ -90,7 +92,7 @@ export interface AgentEvent {
   artifacts?: Record<string, unknown>;
   // `Done` events carry a full ConversationMessage; `Error` events carry a plain string.
   message?: ConversationMessage | string;
-  usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number };
 }
 
 export interface AgentFrontendEvent {
@@ -104,5 +106,12 @@ export interface AgentFrontendEvent {
   isError?: boolean;
   artifacts?: Record<string, unknown>;
   message?: ConversationMessage | string;
-  usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number };
+}
+
+export interface ConversationStats {
+  totalConversations: number;
+  totalMessages: number;
+  oldestConversation: string | null;
+  dbSizeBytes: number;
 }

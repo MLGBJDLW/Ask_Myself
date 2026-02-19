@@ -60,6 +60,13 @@ function finalizeToolCall(
   };
 }
 
+export interface UsageTotal {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  thinkingTokens?: number;
+}
+
 interface UseAgentStreamReturn {
   send: (conversationId: string, message: string, attachments?: ImageAttachment[]) => Promise<void>;
   stop: (conversationId: string) => Promise<void>;
@@ -69,6 +76,7 @@ interface UseAgentStreamReturn {
   isThinking: boolean;
   toolCalls: ToolCallEvent[];
   error: string | null;
+  lastUsage: UsageTotal | null;
   reset: () => void;
 }
 
@@ -79,6 +87,7 @@ export function useAgentStream(): UseAgentStreamReturn {
   const [isThinking, setIsThinking] = useState(false);
   const [toolCalls, setToolCalls] = useState<ToolCallEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [lastUsage, setLastUsage] = useState<UsageTotal | null>(null);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeConversationRef = useRef<string | null>(null);
@@ -119,6 +128,7 @@ export function useAgentStream(): UseAgentStreamReturn {
     setIsThinking(false);
     setToolCalls([]);
     setError(null);
+    setLastUsage(null);
   }, []);
 
   const send = useCallback(async (conversationId: string, message: string, attachments?: ImageAttachment[]) => {
@@ -242,16 +252,21 @@ export function useAgentStream(): UseAgentStreamReturn {
           // After tool result, reset text for new LLM response
           setStreamText('');
           break;
-        case 'done':
+        case 'done': {
           setIsThinking(false);
           setToolCalls(prev => prev.map(tc =>
             tc.status === 'running'
               ? { ...tc, status: 'done', content: tc.content || 'Completed without explicit output.' }
               : tc,
           ));
+          const usage = data.usageTotal ?? (raw.usage_total as UsageTotal | undefined);
+          if (usage) {
+            setLastUsage(usage);
+          }
           setIsStreaming(false);
           cleanup();
           break;
+        }
         case 'error':
           setToolCalls(prev => prev.map(tc =>
             tc.status === 'running'
@@ -295,5 +310,5 @@ export function useAgentStream(): UseAgentStreamReturn {
     cleanup();
   }, [cleanup]);
 
-  return { send, stop, isStreaming, streamText, thinkingText, isThinking, toolCalls, error, reset };
+  return { send, stop, isStreaming, streamText, thinkingText, isThinking, toolCalls, error, lastUsage, reset };
 }

@@ -266,7 +266,7 @@ export function PlaybooksPage() {
           <Skeleton className="h-9 w-28 rounded-md" />
         </div>
         <div className="flex gap-6">
-          <div className="w-[340px] shrink-0 space-y-2">
+          <div className="w-[clamp(260px,28vw,340px)] shrink-0 space-y-2">
             {Array.from({ length: 4 }).map((_, i) => (
               <CardSkeleton key={i} />
             ))}
@@ -302,7 +302,7 @@ export function PlaybooksPage() {
       {/* ── Split panel ─────────────────────────────────────────── */}
       <div className="flex gap-6 items-start">
         {/* ── Left: list ──────────────────────────────────────── */}
-        <div className="w-[340px] shrink-0 space-y-1.5 overflow-y-auto max-h-[calc(100vh-160px)] pr-1">
+        <div className="w-[clamp(260px,28vw,340px)] shrink-0 space-y-1.5 overflow-y-auto max-h-[calc(100vh-160px)] pr-1">
           {playbooks.length === 0 ? (
             <EmptyState
               icon={<BookOpen size={32} />}

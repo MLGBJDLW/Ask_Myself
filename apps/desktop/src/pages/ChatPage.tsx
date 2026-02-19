@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Settings } from 'lucide-react';
+import { Settings, AlertTriangle } from 'lucide-react';
 import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput } from '../components/chat';
 import { toast } from 'sonner';
@@ -42,8 +42,9 @@ export function ChatPage() {
   const [customSystemPrompt, setCustomSystemPrompt] = useState<string>('');
   const [loadingConvos, setLoadingConvos] = useState(true);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
+  const [contextWindow, setContextWindow] = useState<number>(0);
 
-  const { send, stop, isStreaming, streamText, thinkingText, isThinking, toolCalls, error, reset } = useAgentStream();
+  const { send, stop, isStreaming, streamText, thinkingText, isThinking, toolCalls, error, lastUsage, reset } = useAgentStream();
 
   const activeId = conversationId ?? null;
 
@@ -66,8 +67,11 @@ export function ChatPage() {
     try {
       const configs = await api.listAgentConfigs();
       const def = configs.find((c) => c.isDefault) ?? configs[0] ?? null;
-      setDefaultConfig(def);
-    } catch {
+      setDefaultConfig(def);      // Fetch context window for the model
+      if (def) {
+        const cw = def.contextWindow ?? await api.getModelContextWindow(def.model).catch(() => 0);
+        setContextWindow(cw);
+      }    } catch {
       setDefaultConfig(null);
     }
   }, []);
@@ -259,7 +263,7 @@ export function ChatPage() {
   return (
     <div className="flex h-full">
       {/* Sidebar */}
-      <div className="w-[260px] shrink-0">
+      <div className="w-[clamp(200px,20vw,260px)] shrink-0">
         <ChatSidebar
           conversations={conversations}
           activeId={activeId}
@@ -304,11 +308,34 @@ export function ChatPage() {
               toolCalls={toolCalls}
               isStreaming={isStreaming}
             />
+            {lastUsage && contextWindow > 0 && (() => {
+              const pct = (lastUsage.promptTokens / contextWindow) * 100;
+              if (pct < 80) return null;
+              const isRed = pct > 95;
+              return (
+                <div className={`mx-3 mb-2 px-3 py-2 rounded-lg text-xs flex items-center gap-2 ${
+                  isRed ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-yellow-500/10 text-yellow-500 border border-yellow-500/20'
+                }`}>
+                  <AlertTriangle size={14} />
+                  <span>
+                    {isRed
+                      ? t('chat.contextNearlyFull', { percent: Math.round(pct) })
+                      : t('chat.contextFillingUp', { percent: Math.round(pct) })
+                    }
+                  </span>
+                </div>
+              );
+            })()}
             <ChatInput
               onSend={handleSendMessage}
               onStop={handleStop}
               isStreaming={isStreaming}
               disabled={!defaultConfig || loadingMsgs}
+              tokenUsage={lastUsage ? {
+                promptTokens: lastUsage.promptTokens,
+                totalTokens: lastUsage.totalTokens,
+                contextWindow,
+              } : null}
             />
           </>
         )}

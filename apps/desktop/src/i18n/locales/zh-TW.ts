@@ -139,6 +139,9 @@ export const zhTW: TranslationKeys = {
   'sources.indexingInProgress': '索引中...',
   'sources.indexingComplete': '索引完成！',
   'sources.autoIndexing': '資料源已新增，正在索引...',
+  'sources.scanningAll': '正在掃描所有來源...',
+  'sources.rebuildingEmbeddings_progress': '正在重建嵌入...',
+  'sources.sourceProgress': '來源 {current}/{total}',
 
   // Collections
   'playbooks.title': '收藏集',
@@ -198,6 +201,8 @@ export const zhTW: TranslationKeys = {
   'settings.ftsEntries': 'FTS 條目數',
   'settings.rebuildIndex': '重建索引',
   'settings.optimizeIndex': '最佳化索引',
+  'settings.rebuildingIndex': '正在重建全文索引...',
+  'settings.optimizingIndex': '正在優化全文索引...',
   'settings.excludePatterns': '排除模式',
   'settings.excludePatternsDesc': '匹配這些模式的檔案路徑將被跳過',
   'settings.addPattern': '新增',
@@ -235,6 +240,7 @@ export const zhTW: TranslationKeys = {
   'settings.embeddingNotDownloaded': '未下載',
   'settings.embeddingDownload': '下載模型',
   'settings.embeddingDownloading': '下載中...',
+  'settings.downloadingFile': '正在下載 {{filename}} ({{current}}/{{total}})...',
   'settings.embeddingApiKey': 'API Key',
   'settings.embeddingBaseUrl': 'Base URL',
   'settings.embeddingModel': '模型',
@@ -319,6 +325,15 @@ export const zhTW: TranslationKeys = {
   'chat.thoughtFor': '思考了 {seconds}秒',
   'chat.thinkingCompleted': '思考完成',
   'chat.tokenEstimate': '約{count}個token',
+  'chat.tokenUsage': '{used} / {total} 權杖',
+  'chat.tokenUsagePercent': '已使用 {percent}% 上下文',
+  'chat.contextFillingUp': '上下文視窗即將滿載 ({percent}%)。建議開始新對話。',
+  'chat.contextNearlyFull': '上下文視窗即將滿載 ({percent}%)。較早的訊息可能會遺失。',
+  'chat.imageMessage': '(圖片)',
+  'chat.tokensLabel': '權杖',
+  'chat.tokensShort': '權杖',
+  'chat.removeAttachment': '移除附件',
+  'chat.attachImage': '新增圖片',
 
   // Time
   'time.justNow': '剛剛',
@@ -332,6 +347,7 @@ export const zhTW: TranslationKeys = {
   'settings.addProvider': 'Add Provider',
   'settings.editProvider': 'Edit Provider',
   'settings.providerName': 'Provider Name',
+  'settings.providerNamePlaceholder': '我的 OpenAI GPT-4o',
   'settings.providerType': 'Provider Type',
   'settings.apiKey': 'API Key',
   'settings.baseUrl': 'Base URL',
@@ -373,6 +389,8 @@ export const zhTW: TranslationKeys = {
   'settings.reasoningMedium': '中',
   'settings.reasoningHigh': '高',
   'settings.reasoningEffortHelp': '推理強度等級。適用於OpenAI o系列模型。',
+  'settings.maxIterations': '最大工具迭代次數',
+  'settings.maxIterationsHelp': '每條訊息的最大工具呼叫往返次數。預設為 10，深度研究任務可適當增加。',
 
   // Common
   'common.save': '儲存',
@@ -389,4 +407,5 @@ export const zhTW: TranslationKeys = {
   'common.remove': '移除',
   'common.collapse': '收合',
   'common.expand': '展開',
+  'common.clear': '清除',
 };

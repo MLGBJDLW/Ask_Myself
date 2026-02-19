@@ -139,6 +139,9 @@ export const ja: TranslationKeys = {
   'sources.indexingInProgress': 'インデックス中...',
   'sources.indexingComplete': 'インデックス完了！',
   'sources.autoIndexing': 'ソースが追加されました。インデックス中...',
+  'sources.scanningAll': 'すべてのソースをスキャン中...',
+  'sources.rebuildingEmbeddings_progress': '埋め込みを再構築中...',
+  'sources.sourceProgress': 'ソース {current}/{total}',
 
   // Collections
   'playbooks.title': 'コレクション',
@@ -198,6 +201,8 @@ export const ja: TranslationKeys = {
   'settings.ftsEntries': 'FTS エントリ数',
   'settings.rebuildIndex': 'インデックス再構築',
   'settings.optimizeIndex': 'インデックス最適化',
+  'settings.rebuildingIndex': 'FTSインデックスを再構築中...',
+  'settings.optimizingIndex': 'FTSインデックスを最適化中...',
   'settings.excludePatterns': '除外パターン',
   'settings.excludePatternsDesc': 'これらのパターンに一致するファイルパスはスキップされます',
   'settings.addPattern': '追加',
@@ -235,6 +240,7 @@ export const ja: TranslationKeys = {
   'settings.embeddingNotDownloaded': '未ダウンロード',
   'settings.embeddingDownload': 'モデルをダウンロード',
   'settings.embeddingDownloading': 'ダウンロード中...',
+  'settings.downloadingFile': '{{filename}} をダウンロード中 ({{current}}/{{total}})...',
   'settings.embeddingApiKey': 'API Key',
   'settings.embeddingBaseUrl': 'Base URL',
   'settings.embeddingModel': 'モデル',
@@ -319,6 +325,15 @@ export const ja: TranslationKeys = {
   'chat.thoughtFor': '{seconds}秒間思考しました',
   'chat.thinkingCompleted': '思考完了',
   'chat.tokenEstimate': '約{count}トークン',
+  'chat.tokenUsage': '{used} / {total} トークン',
+  'chat.tokenUsagePercent': 'コンテキスト {percent}% 使用',
+  'chat.contextFillingUp': 'コンテキストウィンドウが満杯に近づいています ({percent}%)。新しい会話を開始してください。',
+  'chat.contextNearlyFull': 'コンテキストウィンドウがほぼ一杯です ({percent}%)。古いメッセージが失われる可能性があります。',
+  'chat.imageMessage': '(画像)',
+  'chat.tokensLabel': 'トークン',
+  'chat.tokensShort': 'トークン',
+  'chat.removeAttachment': '添付ファイルを削除',
+  'chat.attachImage': '画像を添付',
 
   // Time
   'time.justNow': 'たった今',
@@ -332,6 +347,7 @@ export const ja: TranslationKeys = {
   'settings.addProvider': 'Add Provider',
   'settings.editProvider': 'Edit Provider',
   'settings.providerName': 'Provider Name',
+  'settings.providerNamePlaceholder': 'マイ OpenAI GPT-4o',
   'settings.providerType': 'Provider Type',
   'settings.apiKey': 'API Key',
   'settings.baseUrl': 'Base URL',
@@ -373,6 +389,8 @@ export const ja: TranslationKeys = {
   'settings.reasoningMedium': '中',
   'settings.reasoningHigh': '高',
   'settings.reasoningEffortHelp': '推論強度レベル。OpenAI oシリーズモデルで使用されます。',
+  'settings.maxIterations': '最大ツール反復回数',
+  'settings.maxIterationsHelp': 'メッセージごとのツール使用ラウンドトリップの最大数。デフォルトは10。深い調査タスクには増やしてください。',
 
   // Common
   'common.save': '保存',
@@ -389,4 +407,5 @@ export const ja: TranslationKeys = {
   'common.remove': '削除',
   'common.collapse': '折りたたむ',
   'common.expand': '展開する',
+  'common.clear': 'クリア',
 };

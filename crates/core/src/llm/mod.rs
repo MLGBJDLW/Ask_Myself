@@ -189,6 +189,9 @@ pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Tokens consumed by model thinking/reasoning (if supported).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_tokens: Option<u32>,
 }
 
 /// Why the model stopped generating.

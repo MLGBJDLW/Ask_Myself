@@ -139,6 +139,9 @@ export const de: TranslationKeys = {
   'sources.indexingInProgress': 'Indexierung...',
   'sources.indexingComplete': 'Indexierung abgeschlossen!',
   'sources.autoIndexing': 'Quelle hinzugefügt. Indexierung läuft...',
+  'sources.scanningAll': 'Alle Quellen werden gescannt...',
+  'sources.rebuildingEmbeddings_progress': 'Einbettungen werden neu erstellt...',
+  'sources.sourceProgress': 'Quelle {current}/{total}',
 
   // Collections
   'playbooks.title': 'Sammlungen',
@@ -198,6 +201,8 @@ export const de: TranslationKeys = {
   'settings.ftsEntries': 'FTS-Einträge',
   'settings.rebuildIndex': 'Index neu erstellen',
   'settings.optimizeIndex': 'Index optimieren',
+  'settings.rebuildingIndex': 'FTS-Index wird neu erstellt...',
+  'settings.optimizingIndex': 'FTS-Index wird optimiert...',
   'settings.excludePatterns': 'Ausschlussmuster',
   'settings.excludePatternsDesc': 'Dateipfade, die diesen Mustern entsprechen, werden übersprungen',
   'settings.addPattern': 'Hinzufügen',
@@ -235,6 +240,7 @@ export const de: TranslationKeys = {
   'settings.embeddingNotDownloaded': 'Nicht heruntergeladen',
   'settings.embeddingDownload': 'Modell herunterladen',
   'settings.embeddingDownloading': 'Wird heruntergeladen...',
+  'settings.downloadingFile': '{{filename}} wird heruntergeladen ({{current}}/{{total}})...',
   'settings.embeddingApiKey': 'API-Schlüssel',
   'settings.embeddingBaseUrl': 'Basis-URL',
   'settings.embeddingModel': 'Modell',
@@ -317,6 +323,15 @@ export const de: TranslationKeys = {
   'chat.thoughtFor': '{seconds}s nachgedacht',
   'chat.thinkingCompleted': 'Nachdenken abgeschlossen',
   'chat.tokenEstimate': '~{count} Token',
+  'chat.tokenUsage': '{used} / {total} Token',
+  'chat.tokenUsagePercent': '{percent}% Kontext verwendet',
+  'chat.contextFillingUp': 'Kontextfenster füllt sich ({percent}%). Erwägen Sie ein neues Gespräch.',
+  'chat.contextNearlyFull': 'Kontextfenster fast voll ({percent}%). Ältere Nachrichten können verloren gehen.',
+  'chat.imageMessage': '(Bild)',
+  'chat.tokensLabel': 'Token',
+  'chat.tokensShort': 'Tok.',
+  'chat.removeAttachment': 'Anhang entfernen',
+  'chat.attachImage': 'Bild anhängen',
 
   // Time
   'time.justNow': 'gerade',
@@ -330,6 +345,7 @@ export const de: TranslationKeys = {
   'settings.addProvider': 'Add Provider',
   'settings.editProvider': 'Edit Provider',
   'settings.providerName': 'Provider Name',
+  'settings.providerNamePlaceholder': 'Mein OpenAI GPT-4o',
   'settings.providerType': 'Provider Type',
   'settings.apiKey': 'API Key',
   'settings.baseUrl': 'Base URL',
@@ -370,6 +386,8 @@ export const de: TranslationKeys = {
   'settings.reasoningMedium': 'Mittel',
   'settings.reasoningHigh': 'Hoch',
   'settings.reasoningEffortHelp': 'Reasoning-Intensitätsstufe. Wird von OpenAI o-Serie-Modellen verwendet.',
+  'settings.maxIterations': 'Max. Werkzeug-Iterationen',
+  'settings.maxIterationsHelp': 'Maximale Anzahl von Tool-Roundtrips pro Nachricht. Standard ist 10. Für tiefgehende Recherchen erhöhen.',
   // Common
   'common.save': 'Speichern',
   'common.cancel': 'Abbrechen',
@@ -385,4 +403,5 @@ export const de: TranslationKeys = {
   'common.remove': 'Entfernen',
   'common.collapse': 'Einklappen',
   'common.expand': 'Ausklappen',
+  'common.clear': 'Löschen',
 };

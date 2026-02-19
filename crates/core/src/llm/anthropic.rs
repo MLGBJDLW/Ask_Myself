@@ -14,6 +14,7 @@ use super::{
     CompletionRequest, CompletionResponse, ContentPart, FinishReason, LlmProvider, Message,
     ProviderConfig, Role, StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
 };
+use crate::conversation::memory::estimate_tokens;
 use crate::error::CoreError;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
@@ -431,6 +432,8 @@ async fn parse_anthropic_stream(
     // Track current tool call id/name from content_block_start.
     let mut current_tool_id = String::new();
     let mut current_tool_name: Option<String> = None;
+    // Accumulate thinking content for token estimation.
+    let mut thinking_text = String::new();
 
 
     while let Some(chunk_result) = byte_stream.next().await {
@@ -467,7 +470,7 @@ async fn parse_anthropic_stream(
                 Ok(ev) => ev,
                 Err(e) => {
                     // Skip unparseable events (may be unknown new event types).
-                    log::debug!("Anthropic SSE parse skip (event={event_type}): {e}");
+                    tracing::debug!("Anthropic SSE parse skip (event={event_type}): {e}");
                     continue;
                 }
             };
@@ -524,6 +527,7 @@ async fn parse_anthropic_stream(
                         }
                     }
                     AnthropicStreamDelta::ThinkingDelta { thinking } => {
+                        thinking_text.push_str(&thinking);
                         let chunk = StreamChunk {
                             delta: String::new(),
                             tool_call_delta: None,
@@ -555,10 +559,16 @@ async fn parse_anthropic_stream(
                 },
                 AnthropicStreamEvent::MessageDelta { delta, usage } => {
                     let finish = delta.stop_reason.as_deref().map(parse_finish_reason);
+                    let estimated_thinking = if !thinking_text.is_empty() {
+                        Some(estimate_tokens(&thinking_text))
+                    } else {
+                        None
+                    };
                     let usage_info = usage.map(|u| Usage {
                         prompt_tokens: input_tokens,
                         completion_tokens: u.output_tokens,
                         total_tokens: input_tokens + u.output_tokens,
+                        thinking_tokens: estimated_thinking,
                     });
                     let chunk = StreamChunk {
                         delta: String::new(),
@@ -710,12 +720,20 @@ impl LlmProvider for AnthropicProvider {
             .map(parse_finish_reason)
             .unwrap_or(FinishReason::Other);
 
+        let estimated_thinking = if !thinking_parts.is_empty() {
+            let thinking_text = thinking_parts.join("");
+            Some(estimate_tokens(&thinking_text))
+        } else {
+            None
+        };
+
         let usage = resp
             .usage
             .map(|u| Usage {
                 prompt_tokens: u.input_tokens,
                 completion_tokens: u.output_tokens,
                 total_tokens: u.input_tokens + u.output_tokens,
+                thinking_tokens: estimated_thinking,
             })
             .unwrap_or_default();
 

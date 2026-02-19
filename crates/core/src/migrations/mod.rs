@@ -62,11 +62,11 @@ pub fn run_migrations(conn: &Connection) -> Result<(), CoreError> {
         )?;
 
         if already_applied {
-            log::debug!("Migration '{name}' already applied, skipping.");
+            tracing::debug!("Migration '{name}' already applied, skipping.");
             continue;
         }
 
-        log::info!("Applying migration '{name}'…");
+        tracing::info!("Applying migration '{name}'…");
         conn.execute_batch(sql)?;
         conn.execute(
             "INSERT INTO _migrations (name) VALUES (?1)",

@@ -73,7 +73,7 @@ pub fn create_embedder(config: &EmbedderConfig) -> Result<Box<dyn Embedder>, Cor
                 let embedder = OnnxEmbedder::new(model_dir, local_model)?;
                 Ok(Box::new(embedder))
             } else {
-                log::warn!(
+                tracing::warn!(
                     "ONNX model not available, falling back to TF-IDF — \
                      search quality will be degraded. \
                      Download the model in Settings."
@@ -141,6 +141,30 @@ pub fn download_local_model_for(
         _ => default_model_dir_for(model)?,
     };
     download_model_files(&dir, model)
+}
+
+/// Progress information emitted during model download.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadProgress {
+    pub filename: String,
+    pub bytes_downloaded: u64,
+    pub total_bytes: Option<u64>,
+    pub file_index: usize,
+    pub total_files: usize,
+}
+
+/// Download a specific local ONNX model's files, reporting progress via a callback.
+pub fn download_local_model_for_with_progress(
+    model_path: Option<&str>,
+    model: &LocalEmbeddingModel,
+    on_progress: impl Fn(DownloadProgress),
+) -> Result<(), CoreError> {
+    let dir = match model_path {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => default_model_dir_for(model)?,
+    };
+    download_model_files_with_progress(&dir, model, on_progress)
 }
 
 // ── Embedder trait ──────────────────────────────────────────────────
@@ -786,7 +810,7 @@ impl OnnxEmbedder {
         let num_threads = std::thread::available_parallelism()
             .map(|n| (n.get() / 2).max(1))
             .unwrap_or(1);
-        log::info!(
+        tracing::info!(
             "Loading ONNX model from {} (intra_threads={})",
             model_path.display(),
             num_threads
@@ -798,7 +822,7 @@ impl OnnxEmbedder {
             .commit_from_file(&model_path)
             .map_err(|e| CoreError::Embedding(format!("load ONNX model: {e}")))?;
 
-        log::info!("Loading tokenizer from {}", tokenizer_path.display());
+        tracing::info!("Loading tokenizer from {}", tokenizer_path.display());
         let mut tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| CoreError::Embedding(format!("load tokenizer: {e}")))?;
 
@@ -970,14 +994,14 @@ fn download_model_files(target_dir: &Path, model: &LocalEmbeddingModel) -> Resul
     for (primary_url, mirror_url, filename) in &files {
         let dest = target_dir.join(filename);
         if dest.exists() {
-            log::info!("{filename} already exists, skipping download");
+            tracing::info!("{filename} already exists, skipping download");
             continue;
         }
 
         let response = match download_single(&client, primary_url, filename) {
             Ok(resp) => resp,
             Err(primary_err) => {
-                log::warn!(
+                tracing::warn!(
                     "Primary download failed for {filename}: {primary_err}, trying mirror..."
                 );
                 download_single(&client, mirror_url, filename).map_err(|mirror_err| {
@@ -993,7 +1017,96 @@ fn download_model_files(target_dir: &Path, model: &LocalEmbeddingModel) -> Resul
             .map_err(|e| CoreError::Embedding(format!("read {filename}: {e}")))?;
 
         std::fs::write(&dest, &bytes)?;
-        log::info!("Downloaded {filename} ({} bytes)", bytes.len());
+        tracing::info!("Downloaded {filename} ({} bytes)", bytes.len());
+    }
+
+    Ok(())
+}
+
+/// Download model files with progress reporting.
+fn download_model_files_with_progress(
+    target_dir: &Path,
+    model: &LocalEmbeddingModel,
+    on_progress: impl Fn(DownloadProgress),
+) -> Result<(), CoreError> {
+    use std::io::Read;
+    use std::time::Duration;
+
+    std::fs::create_dir_all(target_dir)?;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(600))
+        .connect_timeout(Duration::from_secs(30))
+        .user_agent("ask-myself/1.0")
+        .build()
+        .map_err(|e| CoreError::Embedding(format!("create HTTP client: {e}")))?;
+
+    let files = [
+        (model.model_url(), model.fallback_model_url(), "model.onnx"),
+        (
+            model.tokenizer_url(),
+            model.fallback_tokenizer_url(),
+            "tokenizer.json",
+        ),
+    ];
+
+    let total_files = files.len();
+
+    for (file_index, (primary_url, mirror_url, filename)) in files.iter().enumerate() {
+        let dest = target_dir.join(filename);
+        if dest.exists() {
+            tracing::info!("{filename} already exists, skipping download");
+            continue;
+        }
+
+        let response = match download_single(&client, primary_url, filename) {
+            Ok(resp) => resp,
+            Err(primary_err) => {
+                tracing::warn!(
+                    "Primary download failed for {filename}: {primary_err}, trying mirror..."
+                );
+                download_single(&client, mirror_url, filename).map_err(|mirror_err| {
+                    CoreError::Embedding(format!(
+                        "download {filename} failed — primary: {primary_err}; mirror: {mirror_err}"
+                    ))
+                })?
+            }
+        };
+
+        let total_bytes = response.content_length();
+        let mut bytes_downloaded: u64 = 0;
+        let mut reader = response;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 65536];
+
+        on_progress(DownloadProgress {
+            filename: filename.to_string(),
+            bytes_downloaded: 0,
+            total_bytes,
+            file_index,
+            total_files,
+        });
+
+        loop {
+            let n = reader
+                .read(&mut chunk)
+                .map_err(|e| CoreError::Embedding(format!("read {filename}: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            bytes_downloaded += n as u64;
+            on_progress(DownloadProgress {
+                filename: filename.to_string(),
+                bytes_downloaded,
+                total_bytes,
+                file_index,
+                total_files,
+            });
+        }
+
+        std::fs::write(&dest, &buf)?;
+        tracing::info!("Downloaded {filename} ({} bytes)", buf.len());
     }
 
     Ok(())
@@ -1005,7 +1118,7 @@ fn download_single(
     url: &str,
     filename: &str,
 ) -> Result<reqwest::blocking::Response, String> {
-    log::info!("Downloading {filename} from {url}");
+    tracing::info!("Downloading {filename} from {url}");
     let response = client
         .get(url)
         .send()
@@ -1124,7 +1237,7 @@ impl ApiEmbedder {
         let status = response.status();
 
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            log::warn!("Embedding API rate-limited (429). Consider reducing batch frequency.");
+            tracing::warn!("Embedding API rate-limited (429). Consider reducing batch frequency.");
         }
 
         if !status.is_success() {
@@ -1164,7 +1277,7 @@ impl ApiEmbedder {
                 Err(e) if attempt < Self::MAX_RETRIES && Self::is_retryable(&e) => {
                     attempt += 1;
                     let wait = std::time::Duration::from_millis(100 * 2u64.pow(attempt)); // 200ms, 400ms, 800ms
-                    log::warn!("Embed API retry {}/{}: {}", attempt, Self::MAX_RETRIES, e);
+                    tracing::warn!("Embed API retry {}/{}: {}", attempt, Self::MAX_RETRIES, e);
                     std::thread::sleep(wait);
                 }
                 Err(e) => return Err(e),

@@ -358,7 +358,7 @@ export function ChatSidebar({
                 onClick={() => setSearchQuery('')}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary
                   hover:text-text-secondary cursor-pointer"
-                aria-label="Clear"
+                aria-label={t('common.clear')}
               >
                 <X className="h-3.5 w-3.5" />
               </button>

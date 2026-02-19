@@ -54,6 +54,14 @@ struct SseUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
+    #[serde(default)]
+    completion_tokens_details: Option<SseCompletionTokensDetails>,
+}
+
+#[derive(serde::Deserialize)]
+struct SseCompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +211,9 @@ pub async fn parse_sse_stream(
                         prompt_tokens: u.prompt_tokens,
                         completion_tokens: u.completion_tokens,
                         total_tokens: u.total_tokens,
+                        thinking_tokens: u
+                            .completion_tokens_details
+                            .and_then(|d| d.reasoning_tokens),
                     });
 
                     // Emit provider-specific reasoning/thinking deltas if present.
