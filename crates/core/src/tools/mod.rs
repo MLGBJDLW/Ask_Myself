@@ -43,6 +43,7 @@ pub mod list_dir_tool;
 pub mod list_documents_tool;
 pub mod list_sources_tool;
 pub mod playbook_tool;
+pub mod search_playbooks_tool;
 pub mod search_tool;
 pub mod summarize_tool;
 pub mod write_note_tool;
@@ -171,5 +172,6 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(chunk_context_tool::ChunkContextTool));
     registry.register(Box::new(fetch_url_tool::FetchUrlTool));
     registry.register(Box::new(write_note_tool::WriteNoteTool));
+    registry.register(Box::new(search_playbooks_tool::SearchPlaybooksTool));
     registry
 }

@@ -1,30 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Settings, AlertTriangle } from 'lucide-react';
+import { Settings, AlertTriangle, PanelLeftClose, PanelLeftOpen, Plus } from 'lucide-react';
+import { motion } from 'framer-motion';
 import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput } from '../components/chat';
-import { toast } from 'sonner';
-import * as api from '../lib/api';
-import { useAgentStream } from '../lib/useAgentStream';
 import { useTranslation } from '../i18n';
 import { EmptyState } from '../components/ui/EmptyState';
-import type { Conversation, ConversationMessage, AgentConfig, ImageAttachment } from '../types/conversation';
-
-/* ------------------------------------------------------------------ */
-/*  Helpers                                                            */
-/* ------------------------------------------------------------------ */
-
-function generateTitle(message: string): string {
-  const trimmed = message.trim();
-  if (!trimmed) return '';
-  if (trimmed.length <= 50) return trimmed;
-  const truncated = trimmed.slice(0, 50);
-  const lastSpace = truncated.lastIndexOf(' ');
-  if (lastSpace > 20) {
-    return truncated.slice(0, lastSpace) + '...';
-  }
-  return truncated + '...';
-}
+import { useChatSession } from '../lib/useChatSession';
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -35,215 +17,78 @@ export function ChatPage() {
   const { conversationId } = useParams<{ conversationId?: string }>();
   const navigate = useNavigate();
 
-  /* ── State ──────────────────────────────────────────────────────── */
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [messages, setMessages] = useState<ConversationMessage[]>([]);
-  const [defaultConfig, setDefaultConfig] = useState<AgentConfig | null>(null);
-  const [customSystemPrompt, setCustomSystemPrompt] = useState<string>('');
-  const [loadingConvos, setLoadingConvos] = useState(true);
-  const [loadingMsgs, setLoadingMsgs] = useState(false);
-  const [contextWindow, setContextWindow] = useState<number>(0);
+  const onConversationCreated = useCallback(
+    (id: string) => navigate(`/chat/${id}`, { replace: true }),
+    [navigate],
+  );
 
-  const { send, stop, isStreaming, streamText, thinkingText, isThinking, toolCalls, error, lastUsage, reset } = useAgentStream();
+  const chat = useChatSession({
+    conversationId,
+    onConversationCreated,
+  });
 
-  const activeId = conversationId ?? null;
+  /* ── Sidebar collapsed state ──────────────────────────────────────── */
 
-  /* ── Load conversations ─────────────────────────────────────────── */
-  const loadConversations = useCallback(async () => {
-    try {
-      const list = await api.listConversations();
-      // Sort by updatedAt desc
-      list.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-      setConversations(list);
-    } catch (e) {
-      toast.error(`${t('chat.loadError')}: ${String(e)}`);
-    } finally {
-      setLoadingConvos(false);
-    }
+  const SIDEBAR_STORAGE_KEY = 'chat-sidebar-collapsed';
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'true'; } catch { return false; }
+  });
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next)); } catch { /* ignore */ }
+      return next;
+    });
   }, []);
 
-  /* ── Load default agent config ──────────────────────────────────── */
-  const loadDefaultConfig = useCallback(async () => {
-    try {
-      const configs = await api.listAgentConfigs();
-      const def = configs.find((c) => c.isDefault) ?? configs[0] ?? null;
-      setDefaultConfig(def);      // Fetch context window for the model
-      if (def) {
-        const cw = def.contextWindow ?? await api.getModelContextWindow(def.model).catch(() => 0);
-        setContextWindow(cw);
-      }    } catch {
-      setDefaultConfig(null);
-    }
-  }, []);
-
+  // Auto-collapse on narrow viewports
   useEffect(() => {
-    loadConversations();
-    loadDefaultConfig();
-  }, [loadConversations, loadDefaultConfig]);
-
-  /* ── Load messages when conversation changes ────────────────────── */
-  useEffect(() => {
-    if (!activeId) {
-      setMessages([]);
-      return;
-    }
-    let cancelled = false;
-    setLoadingMsgs(true);
-    reset();
-    api
-      .getConversation(activeId)
-      .then(([conv, msgs]) => {
-        if (!cancelled) {
-          setMessages(msgs);
-          setCustomSystemPrompt(conv.systemPrompt ?? '');
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setMessages([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingMsgs(false);
-      });
-    return () => {
-      cancelled = true;
+    const mq = window.matchMedia('(max-width: 767px)');
+    const handler = (e: MediaQueryListEvent | MediaQueryList) => {
+      if (e.matches) setSidebarCollapsed(true);
     };
-  }, [activeId, reset]);
+    handler(mq);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
 
-  /* ── Reload messages when streaming completes ───────────────────── */
+  // Ctrl+B to toggle sidebar
   useEffect(() => {
-    if (!isStreaming && activeId && messages.length > 0) {
-      // Re-fetch messages after agent is done
-      api.getConversation(activeId).then(([, msgs]) => {
-        setMessages(msgs);
-      }).catch(() => {});
-      // Also refresh conversation list (updatedAt changes)
-      loadConversations();
-
-      // Auto-title: generate title from first user message if untitled
-      const conv = conversations.find((c) => c.id === activeId);
-      if (conv && !conv.title) {
-        const firstUserMsg = messages.find((m) => m.role === 'user');
-        if (firstUserMsg) {
-          const title = generateTitle(firstUserMsg.content);
-          if (title) {
-            api.renameConversation(activeId, title)
-              .then(() => {
-                setConversations((prev) =>
-                  prev.map((c) => (c.id === activeId ? { ...c, title } : c)),
-                );
-              })
-              .catch(() => {});
-          }
-        }
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+        e.preventDefault();
+        toggleSidebar();
       }
-    }
-    // Only trigger on isStreaming becoming false
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStreaming]);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [toggleSidebar]);
 
-  /* ── Show error toast ───────────────────────────────────────────── */
-  useEffect(() => {
-    if (error) toast.error(error);
-  }, [error]);
-
-  /* ── Handlers ───────────────────────────────────────────────────── */
+  /* ── Handlers (navigation-aware wrappers) ───────────────────────── */
 
   const handleSelectConversation = useCallback(
-    (id: string) => {
-      navigate(`/chat/${id}`);
-    },
+    (id: string) => navigate(`/chat/${id}`),
     [navigate],
   );
 
   const handleNewConversation = useCallback(() => {
     navigate('/chat');
-    setMessages([]);
-    setCustomSystemPrompt('');
-    reset();
-  }, [navigate, reset]);
+    chat.createNewConversation();
+  }, [navigate, chat.createNewConversation]);
 
   const handleDeleteConversation = useCallback(
     async (id: string) => {
-      try {
-        await api.deleteConversation(id);
-        setConversations((prev) => prev.filter((c) => c.id !== id));
-        if (activeId === id) {
-          navigate('/chat');
-          setMessages([]);
-        }
-      } catch (e) {
-        toast.error(`${t('chat.deleteError')}: ${String(e)}`);
+      await chat.deleteConversation(id);
+      if (chat.activeId === id) {
+        navigate('/chat');
       }
     },
-    [activeId, navigate],
+    [chat.deleteConversation, chat.activeId, navigate],
   );
-
-  const handleRenameConversation = useCallback(
-    async (id: string, title: string) => {
-      try {
-        await api.renameConversation(id, title);
-        setConversations((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, title } : c)),
-        );
-      } catch (e) {
-        toast.error(`${t('chat.renameError')}: ${String(e)}`);
-      }
-    },
-    [],
-  );
-
-  const handleSendMessage = useCallback(
-    async (message: string, attachments?: ImageAttachment[]) => {
-      if (!defaultConfig) return;
-
-      let convId = activeId;
-
-      // Auto-create conversation if none active
-      if (!convId) {
-        try {
-          const conv = await api.createConversation(
-            defaultConfig.provider,
-            defaultConfig.model,
-            customSystemPrompt || undefined,
-          );
-          convId = conv.id;
-          setConversations((prev) => [conv, ...prev]);
-          navigate(`/chat/${conv.id}`, { replace: true });
-        } catch (e) {
-          toast.error(`${t('chat.createError')}: ${String(e)}`);
-          return;
-        }
-      }
-
-      // Add optimistic user message
-      const optimisticMsg: ConversationMessage = {
-        id: `temp-${Date.now()}`,
-        conversationId: convId,
-        role: 'user',
-        content: message,
-        toolCallId: null,
-        toolCalls: [],
-        tokenCount: 0,
-        createdAt: new Date().toISOString(),
-        sortOrder: messages.length,
-        thinking: null,
-        imageAttachments: attachments ?? null,
-      };
-      setMessages((prev) => [...prev, optimisticMsg]);
-
-      await send(convId, message, attachments);
-    },
-    [activeId, defaultConfig, customSystemPrompt, messages.length, navigate, send],
-  );
-
-  const handleStop = useCallback(() => {
-    if (activeId) {
-      stop(activeId);
-    }
-  }, [activeId, stop]);
 
   /* ── No provider configured ─────────────────────────────────────── */
-  if (!loadingConvos && !defaultConfig) {
+  if (!chat.loadingConfig && !chat.agentConfig) {
     return (
       <div className="flex items-center justify-center h-full">
         <EmptyState
@@ -263,20 +108,41 @@ export function ChatPage() {
   return (
     <div className="flex h-full">
       {/* Sidebar */}
-      <div className="w-[clamp(200px,20vw,260px)] shrink-0">
-        <ChatSidebar
-          conversations={conversations}
-          activeId={activeId}
-          onSelect={handleSelectConversation}
-          onNew={handleNewConversation}
-          onDelete={handleDeleteConversation}
-          onRename={handleRenameConversation}
-        />
-      </div>
+      <motion.div
+        initial={false}
+        animate={{ width: sidebarCollapsed ? 0 : 'clamp(200px, 20vw, 260px)' }}
+        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+        className="shrink-0 overflow-hidden"
+      >
+        <div className="w-[clamp(200px,20vw,260px)] h-full">
+          <ChatSidebar
+            conversations={chat.conversations}
+            activeId={chat.activeId}
+            onSelect={handleSelectConversation}
+            onNew={handleNewConversation}
+            onDelete={handleDeleteConversation}
+            onRename={chat.renameConversation}
+          />
+        </div>
+      </motion.div>
 
       {/* Main chat area */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {!activeId && !isStreaming ? (
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        {/* Sidebar toggle */}
+        <div className="absolute top-2 left-2 z-20">
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            className="p-1.5 rounded-md bg-surface-2/80 backdrop-blur border border-border/50
+              text-text-tertiary hover:text-text-primary hover:bg-surface-3
+              transition-colors cursor-pointer"
+            title={t('chat.toggleSidebar')}
+            aria-label={t('chat.toggleSidebar')}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+          </button>
+        </div>
+        {!chat.activeId && !chat.isStreaming ? (
           <div className="flex-1 flex items-center justify-center">
             <EmptyState
               icon={<Logo size={64} />}
@@ -290,26 +156,32 @@ export function ChatPage() {
           </div>
         ) : (
           <>
-            {activeId && (
+            {chat.activeId && (
               <div className="shrink-0 border-b border-border px-4 py-2 flex items-center gap-2">
-                <SourceSelector conversationId={activeId} />
+                <SourceSelector conversationId={chat.activeId} />
                 <SystemPromptEditor
-                  conversationId={activeId}
-                  systemPrompt={customSystemPrompt}
-                  onSaved={(newPrompt) => setCustomSystemPrompt(newPrompt)}
+                  conversationId={chat.activeId}
+                  systemPrompt={chat.customSystemPrompt}
+                  onSaved={(newPrompt) => chat.setCustomSystemPrompt(newPrompt)}
                 />
               </div>
             )}
             <ChatMessages
-              messages={messages}
-              streamText={streamText}
-              thinkingText={thinkingText}
-              isThinking={isThinking}
-              toolCalls={toolCalls}
-              isStreaming={isStreaming}
+              messages={chat.messages}
+              streamText={chat.streamText}
+              thinkingText={chat.thinkingText}
+              isThinking={chat.isThinking}
+              toolCalls={chat.toolCalls}
+              isStreaming={chat.isStreaming}
+              error={chat.error}
+              onRetry={chat.retry}
+              onDismissError={() => chat.clearError()}
+              onDeleteMessage={chat.deleteMessage}
+              onEditAndResend={chat.editAndResend}
+              loadingMsgs={chat.loadingMsgs}
             />
-            {lastUsage && contextWindow > 0 && (() => {
-              const pct = (lastUsage.promptTokens / contextWindow) * 100;
+            {chat.lastUsage && chat.contextWindow > 0 && (() => {
+              const pct = (chat.lastUsage.promptTokens / chat.contextWindow) * 100;
               if (pct < 80) return null;
               const isRed = pct > 95;
               return (
@@ -317,25 +189,33 @@ export function ChatPage() {
                   isRed ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-yellow-500/10 text-yellow-500 border border-yellow-500/20'
                 }`}>
                   <AlertTriangle size={14} />
-                  <span>
+                  <span className="flex-1">
                     {isRed
                       ? t('chat.contextNearlyFull', { percent: Math.round(pct) })
                       : t('chat.contextFillingUp', { percent: Math.round(pct) })
                     }
                   </span>
+                  <button
+                    type="button"
+                    onClick={handleNewConversation}
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer shrink-0 ${
+                      isRed
+                        ? 'bg-red-500/20 text-red-300 hover:bg-red-500/30'
+                        : 'bg-yellow-500/20 text-yellow-600 hover:bg-yellow-500/30'
+                    }`}
+                  >
+                    <Plus size={12} />
+                    {t('chat.startNewChat')}
+                  </button>
                 </div>
               );
             })()}
             <ChatInput
-              onSend={handleSendMessage}
-              onStop={handleStop}
-              isStreaming={isStreaming}
-              disabled={!defaultConfig || loadingMsgs}
-              tokenUsage={lastUsage ? {
-                promptTokens: lastUsage.promptTokens,
-                totalTokens: lastUsage.totalTokens,
-                contextWindow,
-              } : null}
+              onSend={chat.send}
+              onStop={chat.stop}
+              isStreaming={chat.isStreaming}
+              disabled={!chat.agentConfig || chat.loadingMsgs}
+              tokenUsage={chat.tokenUsage}
             />
           </>
         )}

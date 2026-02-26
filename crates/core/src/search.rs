@@ -77,6 +77,9 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
     };
 
     let limit = if query.limit == 0 { 20 } else { query.limit };
+    // Over-fetch so feedback reranking can surface high-value results
+    // that BM25 alone might rank outside the requested limit.
+    let internal_limit = std::cmp::min(limit * 3, limit + 30);
     let terms = extract_terms(trimmed);
 
     // -- build dynamic SQL ------------------------------------------------
@@ -84,7 +87,7 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
     let mut sql = String::from(
         "SELECT c.id, c.document_id, c.content, c.chunk_index, c.metadata_json,
                 d.path, d.title, d.source_id, s.root_path,
-                fts.rank
+                fts.rank, COALESCE(d.metadata, '{}')
          FROM fts_chunks fts
          JOIN chunks c ON c.rowid = fts.rowid
          JOIN documents d ON d.id = c.document_id
@@ -141,7 +144,7 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
     // FTS5 `rank` is negative BM25 — lower (more negative) = better match.
     sql.push_str(" ORDER BY fts.rank");
     sql.push_str(&format!(" LIMIT ?{}", param_idx));
-    param_values.push(Box::new(limit as i64));
+    param_values.push(Box::new(internal_limit as i64));
     param_idx += 1;
 
     sql.push_str(&format!(" OFFSET ?{}", param_idx));
@@ -167,6 +170,7 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
                 let _source_id: String = row.get(7)?;
                 let source_root: String = row.get(8)?;
                 let rank: f64 = row.get(9)?;
+                let doc_metadata: String = row.get(10)?;
 
                 let heading_path = parse_heading_path(&metadata_json);
                 let source_name = extract_source_name(&source_root);
@@ -182,13 +186,14 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
                     heading_path,
                     score: -rank, // negate: FTS5 BM25 is negative
                     highlights,
+                    document_date: extract_document_date(&doc_metadata),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         // Count total matches (without LIMIT/OFFSET) for accurate pagination info.
-        let total_matches = if cards.len() < limit as usize && query.offset == 0 {
-            // If we got fewer results than the limit on the first page, total = len.
+        let total_matches = if cards.len() < internal_limit as usize && query.offset == 0 {
+            // If we got fewer results than the internal limit on the first page, total = len.
             cards.len()
         } else {
             // Run a separate count query for the true total.
@@ -258,6 +263,9 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
     // Apply feedback-based re-ranking (must happen after conn is released).
     apply_feedback_reranking(&mut cards, db, trimmed)?;
 
+    // Truncate to the user-requested limit after reranking.
+    cards.truncate(limit as usize);
+
     Ok(SearchResult {
         query: query.text.clone(),
         total_matches,
@@ -272,7 +280,8 @@ pub fn get_evidence_card(db: &Database, chunk_id: &str) -> Result<EvidenceCard, 
     let conn = db.conn();
     conn.query_row(
         "SELECT c.id, c.document_id, c.content, c.chunk_index, c.metadata_json,
-                d.path, d.title, d.source_id, s.root_path
+                d.path, d.title, d.source_id, s.root_path,
+                COALESCE(d.metadata, '{}')
          FROM chunks c
          JOIN documents d ON d.id = c.document_id
          JOIN sources s ON s.id = d.source_id
@@ -288,6 +297,7 @@ pub fn get_evidence_card(db: &Database, chunk_id: &str) -> Result<EvidenceCard, 
             let doc_title: Option<String> = row.get(6)?;
             let _source_id: String = row.get(7)?;
             let source_root: String = row.get(8)?;
+            let doc_metadata: String = row.get(9)?;
 
             Ok(EvidenceCard {
                 chunk_id: Uuid::parse_str(&cid).unwrap_or_default(),
@@ -299,6 +309,7 @@ pub fn get_evidence_card(db: &Database, chunk_id: &str) -> Result<EvidenceCard, 
                 heading_path: parse_heading_path(&metadata_json),
                 score: 0.0,
                 highlights: Vec::new(),
+                document_date: extract_document_date(&doc_metadata),
             })
         },
     )
@@ -333,7 +344,8 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
     }
 
     let user_limit = if query.limit == 0 { 20 } else { query.limit } as usize;
-    let internal_limit: usize = 50;
+    // Over-fetch so reranking has more candidates to work with.
+    let internal_limit: usize = std::cmp::min(user_limit * 3, user_limit + 30);
     let terms = extract_terms(trimmed);
 
     // Step 1: FTS5 search with larger internal limit.
@@ -445,8 +457,37 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
         .map(|card| (card.chunk_id.to_string(), card.score as f32))
         .collect();
 
-    // Step 4: RRF merge.
-    let merged = rrf_merge(&fts_ranked, &vec_results, 60.0);
+    // Step 4: RRF merge (with optional feedback-based query expansion as third signal).
+    let mut merged = rrf_merge(&fts_ranked, &vec_results, 60.0);
+
+    // Query expansion: add feedback-derived terms as a third RRF signal.
+    let extra_terms = db.get_related_feedback_terms(trimmed, 5).unwrap_or_default();
+    if !extra_terms.is_empty() {
+        let expansion_text = extra_terms.join(" ");
+        let expansion_query = SearchQuery {
+            text: expansion_text,
+            filters: query.filters.clone(),
+            limit: internal_limit as u32,
+            offset: 0,
+        };
+        if let Ok(exp_result) = search(db, &expansion_query) {
+            if !exp_result.evidence_cards.is_empty() {
+                let k = 60.0_f32;
+                let mut score_map: HashMap<String, f32> = merged.into_iter().collect();
+                for (rank, card) in exp_result.evidence_cards.iter().enumerate() {
+                    let r = (rank + 1) as f32;
+                    *score_map
+                        .entry(card.chunk_id.to_string())
+                        .or_insert(0.0) += 1.0 / (k + r);
+                }
+                merged = score_map.into_iter().collect();
+                merged.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        }
+    }
 
     // Step 5: Assemble EvidenceCards for the top results.
     let fts_card_map: HashMap<String, EvidenceCard> = fts_result
@@ -657,14 +698,35 @@ fn get_document_recency_boosts(
     Ok(boosts)
 }
 
+/// Query the `playbook_citations` table and return a map of chunk_id → number of
+/// distinct playbooks citing that chunk. Used by Layer 5 of feedback reranking.
+fn get_playbook_cited_chunks(db: &Database) -> Result<HashMap<String, usize>, CoreError> {
+    let conn = db.conn();
+    let mut stmt = conn.prepare(
+        "SELECT chunk_id, COUNT(DISTINCT playbook_id) FROM playbook_citations GROUP BY chunk_id",
+    )?;
+    let mut map = HashMap::new();
+    let rows = stmt.query_map([], |row| {
+        let chunk_id: String = row.get(0)?;
+        let count: i64 = row.get(1)?;
+        Ok((chunk_id, count as usize))
+    })?;
+    for row in rows {
+        let (chunk_id, count) = row?;
+        map.insert(chunk_id, count);
+    }
+    Ok(map)
+}
+
 /// Apply feedback-based score adjustments, document-level feedback propagation,
-/// recency boost, source preference injection, and re-sort results.
+/// recency boost, source preference injection, playbook citation boost, and re-sort.
 ///
 /// Layers applied:
 /// 1. Direct chunk/query feedback (upvote +0.15, downvote −0.15, pin +0.25, clamped ±0.5)
 /// 2. Document-level feedback propagation (+0.03*N/-0.02*N, only if no direct feedback)
 /// 3. Recency boost based on document modified_at
 /// 4. Source preference boost (+0.05 for preferred sources)
+/// 5. Playbook citation boost (+0.10 single playbook, +0.15 multiple playbooks)
 fn apply_feedback_reranking(
     cards: &mut Vec<EvidenceCard>,
     db: &Database,
@@ -693,6 +755,9 @@ fn apply_feedback_reranking(
         .map(|p| extract_source_name(p))
         .collect();
 
+    // Layer 5: Playbook citation boost
+    let playbook_cited = get_playbook_cited_chunks(db)?;
+
     for card in cards.iter_mut() {
         let id = card.chunk_id.to_string();
         let mut adj = adjustments.get(&id).copied().unwrap_or(0.0);
@@ -709,6 +774,11 @@ fn apply_feedback_reranking(
         // Add source preference boost
         if preferred_names.contains(&card.source_name) {
             adj += 0.05;
+        }
+
+        // Add playbook citation boost
+        if let Some(&count) = playbook_cited.get(&id) {
+            adj += if count > 1 { 0.15 } else { 0.10 };
         }
 
         if adj.abs() > 1e-9 {
@@ -821,6 +891,20 @@ fn extract_source_name(root_path: &str) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| root_path.to_string())
+}
+
+/// Extract a document date from serialized metadata JSON.
+///
+/// Checks for `date`, `created`, `modified`, `fs_created_at`, `fs_modified_at`
+/// keys (in that priority order) and returns the first found.
+fn extract_document_date(metadata_json: &str) -> Option<String> {
+    let map: HashMap<String, String> = serde_json::from_str(metadata_json).unwrap_or_default();
+    map.get("date")
+        .or_else(|| map.get("created"))
+        .or_else(|| map.get("modified"))
+        .or_else(|| map.get("fs_created_at"))
+        .or_else(|| map.get("fs_modified_at"))
+        .cloned()
 }
 
 /// Convert a [`FileType`] enum variant to the MIME string stored in the DB.
@@ -1722,6 +1806,7 @@ mod tests {
                 heading_path: Vec::new(),
                 score: 0.80,
                 highlights: Vec::new(),
+                document_date: None,
             },
             EvidenceCard {
                 chunk_id: Uuid::parse_str(&chunk_b).unwrap(),
@@ -1733,6 +1818,7 @@ mod tests {
                 heading_path: Vec::new(),
                 score: 0.50,
                 highlights: Vec::new(),
+                document_date: None,
             },
             EvidenceCard {
                 chunk_id: Uuid::parse_str(&chunk_c).unwrap(),
@@ -1744,6 +1830,7 @@ mod tests {
                 heading_path: Vec::new(),
                 score: 0.40,
                 highlights: Vec::new(),
+                document_date: None,
             },
         ];
 

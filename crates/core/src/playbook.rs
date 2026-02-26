@@ -9,6 +9,18 @@ use crate::db::Database;
 use crate::error::CoreError;
 use crate::models::{Playbook, PlaybookCitation};
 
+/// Result of a playbook search operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybookSearchResult {
+    pub id: Uuid,
+    pub title: String,
+    pub description: String,
+    pub citation_count: usize,
+    pub cited_content_preview: Vec<String>,
+    pub relevance_score: f64,
+}
+
 /// A logged search query for analytics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -143,6 +155,164 @@ impl Database {
             .query_map([], playbook_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Search playbooks by keyword across title, description, goal, and cited chunk content.
+    ///
+    /// Results include citation counts and a preview of cited content. Playbooks matching
+    /// title/description/goal score higher than those matching only via cited chunks.
+    pub fn search_playbooks(&self, query: &str) -> Result<Vec<PlaybookSearchResult>, CoreError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.conn();
+        let like_pattern = format!(
+            "%{}%",
+            query.replace('%', "\\%").replace('_', "\\_")
+        );
+
+        let mut results: Vec<PlaybookSearchResult> = Vec::new();
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // Pass 1: Match against playbook title, description (body_md), and goal.
+        {
+            let mut stmt = conn.prepare(
+                "SELECT id, title, body_md, goal FROM playbooks
+                 WHERE title LIKE ?1 ESCAPE '\\'
+                    OR body_md LIKE ?1 ESCAPE '\\'
+                    OR goal LIKE ?1 ESCAPE '\\'
+                 ORDER BY updated_at DESC",
+            )?;
+            let rows = stmt.query_map(params![&like_pattern], |row| {
+                let id: String = row.get(0)?;
+                let title: String = row.get(1)?;
+                let description: String = row.get(2)?;
+                let goal: String = row.get(3)?;
+                Ok((id, title, description, goal))
+            })?;
+
+            for row in rows {
+                let (id, title, description, goal) = row?;
+                if !seen_ids.insert(id.clone()) {
+                    continue;
+                }
+
+                // Score: title match > description/goal match.
+                let title_lower = title.to_lowercase();
+                let query_lower = query.to_lowercase();
+                let relevance = if title_lower.contains(&query_lower) {
+                    1.0
+                } else if description.to_lowercase().contains(&query_lower) {
+                    0.8
+                } else if goal.to_lowercase().contains(&query_lower) {
+                    0.7
+                } else {
+                    0.6
+                };
+
+                let (citation_count, previews) =
+                    Self::citation_summary_static(&conn, &id)?;
+
+                results.push(PlaybookSearchResult {
+                    id: parse_uuid(&id)?,
+                    title,
+                    description,
+                    citation_count,
+                    cited_content_preview: previews,
+                    relevance_score: relevance,
+                });
+            }
+        }
+
+        // Pass 2: Match against cited chunk content.
+        {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT pc.playbook_id
+                 FROM playbook_citations pc
+                 JOIN chunks c ON c.id = pc.chunk_id
+                 WHERE c.content LIKE ?1 ESCAPE '\\'",
+            )?;
+            let rows = stmt.query_map(params![&like_pattern], |row| {
+                let pb_id: String = row.get(0)?;
+                Ok(pb_id)
+            })?;
+
+            for row in rows {
+                let pb_id = row?;
+                if !seen_ids.insert(pb_id.clone()) {
+                    continue;
+                }
+
+                let pb_row = conn.query_row(
+                    "SELECT id, title, body_md FROM playbooks WHERE id = ?1",
+                    params![&pb_id],
+                    |row| {
+                        let id: String = row.get(0)?;
+                        let title: String = row.get(1)?;
+                        let desc: String = row.get(2)?;
+                        Ok((id, title, desc))
+                    },
+                );
+
+                match pb_row {
+                    Ok((id, title, description)) => {
+                        let (citation_count, previews) =
+                            Self::citation_summary_static(&conn, &id)?;
+
+                        results.push(PlaybookSearchResult {
+                            id: parse_uuid(&id)?,
+                            title,
+                            description,
+                            citation_count,
+                            cited_content_preview: previews,
+                            relevance_score: 0.5,
+                        });
+                    }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                    Err(e) => return Err(CoreError::Database(e)),
+                }
+            }
+        }
+
+        // Sort by relevance descending, then by title.
+        results.sort_by(|a, b| {
+            b.relevance_score
+                .partial_cmp(&a.relevance_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.title.cmp(&b.title))
+        });
+
+        Ok(results)
+    }
+
+    /// Helper: get citation count and content previews for a playbook.
+    fn citation_summary_static(
+        conn: &std::sync::MutexGuard<'_, rusqlite::Connection>,
+        playbook_id: &str,
+    ) -> Result<(usize, Vec<String>), CoreError> {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM playbook_citations WHERE playbook_id = ?1",
+            params![playbook_id],
+            |row| row.get(0),
+        )?;
+
+        let mut stmt = conn.prepare(
+            "SELECT c.content FROM playbook_citations pc
+             JOIN chunks c ON c.id = pc.chunk_id
+             WHERE pc.playbook_id = ?1
+             ORDER BY pc.sort_order
+             LIMIT 3",
+        )?;
+        let previews: Vec<String> = stmt
+            .query_map(params![playbook_id], |row| {
+                let content: String = row.get(0)?;
+                Ok(content.chars().take(200).collect::<String>())
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok((count as usize, previews))
     }
 
     /// Update a playbook's title and description. Returns the updated playbook.

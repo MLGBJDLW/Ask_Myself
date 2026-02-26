@@ -286,6 +286,7 @@ export const de: TranslationKeys = {
   'chat.stop': 'Stop',
   'chat.retry': 'Retry',
   'chat.copyMessage': 'Copy message',
+  'chat.copyCode': 'Copy',
   'chat.copied': 'Copied!',
   'chat.noProvider': 'No AI provider configured',
   'chat.noProviderDesc': 'Configure an AI provider in settings to start chatting.',
@@ -332,6 +333,28 @@ export const de: TranslationKeys = {
   'chat.tokensShort': 'Tok.',
   'chat.removeAttachment': 'Anhang entfernen',
   'chat.attachImage': 'Bild anhängen',
+  'chat.scrollToBottom': 'Nach unten scrollen',
+  'chat.errorOccurred': 'Ein Fehler ist aufgetreten',
+  'chat.dismiss': 'Schließen',
+  'chat.userMessage': 'User message',
+  'chat.assistantResponse': 'Assistant response',
+  'chat.messageArea': 'Chat messages',
+  'chat.edit': 'Edit',
+  'chat.delete': 'Delete',
+  'chat.confirmDelete': 'Confirm?',
+  'chat.save': 'Save',
+  'chat.cancel': 'Cancel',
+  'chat.editing': 'Editing message',
+  'chat.toggleSidebar': 'Seitenleiste umschalten',
+  'chat.startNewChat': 'Neuen Chat starten',
+  'chat.loadingMessages': 'Nachrichten laden...',
+  'chat.dragDropHint': 'Bilder hier ablegen',
+
+  // Citations
+  'citation.evidence': 'Beleg',
+  'citation.openFile': 'Datei öffnen',
+  'citation.showInFolder': 'Im Ordner anzeigen',
+  'citation.copy': 'Kopieren',
 
   // Time
   'time.justNow': 'gerade',
@@ -339,6 +362,8 @@ export const de: TranslationKeys = {
   'time.hourShort': 'Std',
   'time.dayShort': 'T',
   'time.monthShort': 'Mon',
+  'time.minutesAgo': 'vor {n}Min',
+  'time.hoursAgo': 'vor {n}Std',
 
   // Settings - AI Providers
   'settings.aiProviders': 'AI Providers',
@@ -388,6 +413,13 @@ export const de: TranslationKeys = {
   'settings.reasoningEffortHelp': 'Reasoning-Intensitätsstufe. Wird von OpenAI o-Serie-Modellen verwendet.',
   'settings.maxIterations': 'Max. Werkzeug-Iterationen',
   'settings.maxIterationsHelp': 'Maximale Anzahl von Tool-Roundtrips pro Nachricht. Standard ist 10. Für tiefgehende Recherchen erhöhen.',
+  'settings.summarizationSection': 'Zusammenfassung (Kosteneinsparung)',
+  'settings.summarizationHelp': 'Verwenden Sie ein günstigeres Modell für die Gesprächszusammenfassung. Wenn leer, wird das Hauptmodell verwendet.',
+  'settings.summarizationModel': 'Zusammenfassungsmodell',
+  'settings.summarizationProvider': 'Zusammenfassungsanbieter',
+  'settings.sameAsMain': 'Gleich wie Hauptanbieter',
+  'settings.summarizationProviderHelp': 'Nur ändern, wenn das Zusammenfassungsmodell einen anderen Anbieter als das Hauptmodell verwendet.',
+
   // Common
   'common.save': 'Speichern',
   'common.cancel': 'Abbrechen',

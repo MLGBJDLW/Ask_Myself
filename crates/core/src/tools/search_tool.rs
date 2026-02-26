@@ -1,5 +1,6 @@
 //! SearchTool — wraps the existing hybrid/FTS search for agent use.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
@@ -7,7 +8,7 @@ use serde::Deserialize;
 
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::models::{FileType, SearchQuery};
+use crate::models::{EvidenceCard, FileType, SearchQuery};
 use crate::search;
 
 use super::{Tool, ToolDef, ToolResult};
@@ -22,6 +23,8 @@ pub struct SearchTool;
 #[derive(Deserialize)]
 struct SearchArgs {
     query: String,
+    #[serde(default)]
+    queries: Option<Vec<String>>,
     #[serde(default = "default_limit")]
     limit: u32,
     #[serde(default)]
@@ -36,6 +39,58 @@ struct SearchArgs {
 
 fn default_limit() -> u32 {
     5
+}
+
+/// RRF merge across multiple ranked result lists.
+fn multi_query_rrf_merge(
+    ranked_lists: &[Vec<(String, f32)>],
+    k: f32,
+) -> Vec<(String, f32)> {
+    let mut scores: HashMap<String, f32> = HashMap::new();
+    for ranked in ranked_lists {
+        for (rank, (chunk_id, _)) in ranked.iter().enumerate() {
+            let r = (rank + 1) as f32;
+            *scores.entry(chunk_id.clone()).or_insert(0.0) += 1.0 / (k + r);
+        }
+    }
+    let mut merged: Vec<(String, f32)> = scores.into_iter().collect();
+    merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    merged
+}
+
+/// Format a SearchResult into a ToolResult for the LLM.
+fn format_search_result(call_id: &str, result: &search::SearchResult) -> ToolResult {
+    let mut text = format!(
+        "Found {} results ({} ms, mode: {}):\n\n",
+        result.total_matches, result.search_time_ms, result.search_mode
+    );
+
+    for (i, card) in result.evidence_cards.iter().enumerate() {
+        text.push_str(&format!(
+            "--- Result {} (score: {:.3}) ---\n\
+             [chunk_id: {}]\n\
+             Source: {}\n\
+             Path: {}\n\
+             Title: {}\n\
+             Content:\n{}\n\n",
+            i + 1,
+            card.score,
+            card.chunk_id,
+            card.source_name,
+            card.document_path,
+            card.document_title,
+            card.content,
+        ));
+    }
+
+    let artifacts = serde_json::to_value(&result.evidence_cards).ok();
+
+    ToolResult {
+        call_id: call_id.to_string(),
+        content: text,
+        is_error: false,
+        artifacts,
+    }
 }
 
 #[async_trait]
@@ -111,54 +166,90 @@ impl Tool for SearchTool {
                 .map(|dt| dt.with_timezone(&chrono::Utc));
         }
 
-        let sq = SearchQuery {
-            text: args.query,
-            filters,
-            limit,
-            offset: 0,
+        // Determine which queries to run.
+        let queries: Vec<String> = match args.queries {
+            Some(ref qs) if !qs.is_empty() => qs.clone(),
+            _ => vec![args.query.clone()],
         };
 
         // Run blocking search on a dedicated thread to avoid deadlocking the async runtime.
         let db = db.clone();
         let call_id = call_id.to_string();
+
         tokio::task::spawn_blocking(move || {
-            // Try hybrid search first; fall back to FTS-only on failure.
-            let result = match search::hybrid_search(&db, &sq) {
-                Ok(r) => r,
-                Err(_) => search::search(&db, &sq)?,
-            };
+            if queries.len() == 1 {
+                // Single query — original path.
+                let sq = SearchQuery {
+                    text: queries[0].clone(),
+                    filters,
+                    limit,
+                    offset: 0,
+                };
 
-            // Format human-readable text for the LLM.
-            let mut text = format!(
-                "Found {} results ({} ms, mode: {}):\n\n",
-                result.total_matches, result.search_time_ms, result.search_mode
-            );
+                let result = match search::hybrid_search(&db, &sq) {
+                    Ok(r) => r,
+                    Err(_) => search::search(&db, &sq)?,
+                };
 
-            for (i, card) in result.evidence_cards.iter().enumerate() {
-                text.push_str(&format!(
-                    "--- Result {} (score: {:.3}) ---\n\
-                     Source: {}\n\
-                     Path: {}\n\
-                     Title: {}\n\
-                     Content:\n{}\n\n",
-                    i + 1,
-                    card.score,
-                    card.source_name,
-                    card.document_path,
-                    card.document_title,
-                    card.content,
-                ));
+                Ok(format_search_result(&call_id, &result))
+            } else {
+                // Multi-query — run each and merge via Reciprocal Rank Fusion.
+                let mut all_ranked: Vec<Vec<(String, f32)>> = Vec::new();
+                let mut card_map: HashMap<String, EvidenceCard> = HashMap::new();
+                let mut total_time_ms: u64 = 0;
+                let query_count = queries.len();
+
+                // Over-fetch per query so RRF has more candidates.
+                let per_query_limit = std::cmp::min(limit * 2, 20);
+
+                for q in &queries {
+                    let sq = SearchQuery {
+                        text: q.clone(),
+                        filters: filters.clone(),
+                        limit: per_query_limit,
+                        offset: 0,
+                    };
+                    let result = match search::hybrid_search(&db, &sq) {
+                        Ok(r) => r,
+                        Err(_) => search::search(&db, &sq)?,
+                    };
+                    total_time_ms += result.search_time_ms;
+
+                    let ranked: Vec<(String, f32)> = result
+                        .evidence_cards
+                        .iter()
+                        .map(|c| (c.chunk_id.to_string(), c.score as f32))
+                        .collect();
+                    all_ranked.push(ranked);
+
+                    for card in result.evidence_cards {
+                        let id = card.chunk_id.to_string();
+                        card_map.entry(id).or_insert(card);
+                    }
+                }
+
+                // RRF merge across all query result lists.
+                let merged = multi_query_rrf_merge(&all_ranked, 60.0);
+
+                // Assemble final evidence cards up to the requested limit.
+                let mut cards: Vec<EvidenceCard> = Vec::new();
+                for (chunk_id, rrf_score) in merged.iter().take(limit as usize) {
+                    if let Some(mut card) = card_map.remove(chunk_id) {
+                        card.score = *rrf_score as f64;
+                        cards.push(card);
+                    }
+                }
+
+                let merged_result = search::SearchResult {
+                    query: queries.join(" | "),
+                    total_matches: cards.len(),
+                    evidence_cards: cards,
+                    search_time_ms: total_time_ms,
+                    search_mode: format!("multi-query ({} queries, hybrid)", query_count),
+                };
+
+                Ok(format_search_result(&call_id, &merged_result))
             }
-
-            // Structured artifacts for frontend consumption.
-            let artifacts = serde_json::to_value(&result.evidence_cards).ok();
-
-            Ok(ToolResult {
-                call_id,
-                content: text,
-                is_error: false,
-                artifacts,
-            })
         })
         .await
         .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?

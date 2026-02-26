@@ -79,9 +79,11 @@ export function SystemPromptEditor({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="dialog"
         className="
           flex items-center gap-1.5 px-2 py-1 rounded-md text-xs
-          hover:bg-bg-secondary transition-colors duration-fast
+          hover:bg-surface-2 transition-colors duration-fast
           border border-transparent hover:border-border
         "
         title={hasCustomPrompt ? t('chat.customPrompt') : t('chat.defaultPrompt')}
@@ -108,7 +110,7 @@ export function SystemPromptEditor({
             transition={{ duration: 0.15 }}
             className="
               absolute left-0 top-full mt-1 z-50
-              w-80 rounded-lg border border-border bg-bg-primary shadow-lg
+              w-80 rounded-lg border border-border bg-surface-1 shadow-lg
             "
           >
             <div className="px-3 py-2 border-b border-border">
@@ -124,7 +126,7 @@ export function SystemPromptEditor({
                 placeholder={t('chat.defaultPrompt')}
                 rows={4}
                 className="
-                  w-full rounded-md border border-border bg-bg-secondary
+                  w-full rounded-md border border-border bg-surface-2
                   px-2.5 py-2 text-xs text-text-primary
                   placeholder:text-text-tertiary
                   focus:outline-none focus:ring-1 focus:ring-accent
@@ -142,11 +144,11 @@ export function SystemPromptEditor({
                   className="
                     flex items-center gap-1 px-2 py-1 rounded text-xs
                     text-text-tertiary hover:text-text-primary
-                    hover:bg-bg-secondary transition-colors
+                    hover:bg-surface-2 transition-colors
                   "
                 >
                   <X size={12} />
-                  <span>Clear</span>
+                  <span>{t('common.clear')}</span>
                 </button>
               )}
               <div className="flex-1" />

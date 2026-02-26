@@ -20,6 +20,10 @@ const V010_AGENT_CONFIG_REASONING: &str = include_str!("v010_agent_config_reason
 const V011_MESSAGE_THINKING: &str = include_str!("v011_message_thinking.sql");
 const V012_AGENT_CONFIG_MAX_ITERATIONS: &str =
     include_str!("v012_agent_config_max_iterations.sql");
+const V013_DOCUMENT_METADATA: &str = include_str!("v013_document_metadata.sql");
+const V014_AGENT_CONFIG_SUMMARIZATION: &str =
+    include_str!("v014_agent_config_summarization.sql");
+const V015_ANSWER_CACHE: &str = include_str!("v015_answer_cache.sql");
 
 /// Ordered list of migrations to apply.
 const MIGRATIONS: &[(&str, &str)] = &[
@@ -35,6 +39,9 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("v010_agent_config_reasoning", V010_AGENT_CONFIG_REASONING),
     ("v011_message_thinking", V011_MESSAGE_THINKING),
     ("v012_agent_config_max_iterations", V012_AGENT_CONFIG_MAX_ITERATIONS),
+    ("v013_document_metadata", V013_DOCUMENT_METADATA),
+    ("v014_agent_config_summarization", V014_AGENT_CONFIG_SUMMARIZATION),
+    ("v015_answer_cache", V015_ANSWER_CACHE),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

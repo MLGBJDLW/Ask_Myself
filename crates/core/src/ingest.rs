@@ -608,18 +608,21 @@ pub fn batch_insert_documents(
     let mut count = 0usize;
     for parsed in parsed_docs {
         let doc_id = uuid::Uuid::new_v4().to_string();
+        let metadata_json =
+            serde_json::to_string(&parsed.metadata).unwrap_or_else(|_| "{}".to_string());
         tx.execute(
             "INSERT INTO documents (id, source_id, path, title, mime_type, file_size,
-                                    modified_at, content_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), ?7)",
+                                    modified_at, content_hash, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), ?7, ?8)",
             params![
                 &doc_id,
                 source_id,
                 &parsed.file_path,
-                &parsed.file_name,
+                &parsed.title,
                 &parsed.mime_type,
                 parsed.file_size,
                 &parsed.content_hash,
+                &metadata_json,
             ],
         )?;
         insert_chunks(&tx, &doc_id, &parsed.chunks)?;
@@ -648,15 +651,20 @@ pub fn batch_update_documents(
         )?;
 
         // Update the document record.
+        let metadata_json =
+            serde_json::to_string(&parsed.metadata).unwrap_or_else(|_| "{}".to_string());
         tx.execute(
             "UPDATE documents
              SET mime_type = ?1, file_size = ?2, modified_at = datetime('now'),
-                 content_hash = ?3, indexed_at = datetime('now')
-             WHERE id = ?4",
+                 content_hash = ?3, indexed_at = datetime('now'),
+                 title = ?4, metadata = ?5
+             WHERE id = ?6",
             params![
                 &parsed.mime_type,
                 parsed.file_size,
                 &parsed.content_hash,
+                &parsed.title,
+                &metadata_json,
                 doc_id,
             ],
         )?;
@@ -733,18 +741,21 @@ impl Database {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
 
+        let metadata_json =
+            serde_json::to_string(&parsed.metadata).unwrap_or_else(|_| "{}".to_string());
         tx.execute(
             "INSERT INTO documents (id, source_id, path, title, mime_type, file_size,
-                                    modified_at, content_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), ?7)",
+                                    modified_at, content_hash, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), ?7, ?8)",
             params![
                 &doc_id,
                 source_id,
                 &parsed.file_path,
-                &parsed.file_name,
+                &parsed.title,
                 &parsed.mime_type,
                 parsed.file_size,
                 &parsed.content_hash,
+                &metadata_json,
             ],
         )?;
 
@@ -773,15 +784,20 @@ impl Database {
         )?;
 
         // Update the document record.
+        let metadata_json =
+            serde_json::to_string(&parsed.metadata).unwrap_or_else(|_| "{}".to_string());
         tx.execute(
             "UPDATE documents
              SET mime_type = ?1, file_size = ?2, modified_at = datetime('now'),
-                 content_hash = ?3, indexed_at = datetime('now')
-             WHERE id = ?4",
+                 content_hash = ?3, indexed_at = datetime('now'),
+                 title = ?4, metadata = ?5
+             WHERE id = ?6",
             params![
                 &parsed.mime_type,
                 parsed.file_size,
                 &parsed.content_hash,
+                &parsed.title,
+                &metadata_json,
                 doc_id,
             ],
         )?;
@@ -879,12 +895,21 @@ fn insert_chunks(
             .to_hex()
             .to_string();
         let line_end = chunk.content.lines().count().max(1) as i64;
-        let metadata = match &chunk.heading_context {
-            Some(h) => format!(
-                r#"{{"heading_context":{}}}"#,
-                serde_json::to_string(h).unwrap_or_default()
-            ),
-            None => "{}".to_string(),
+        let metadata = {
+            let mut meta = serde_json::Map::new();
+            if let Some(h) = &chunk.heading_context {
+                meta.insert(
+                    "heading_context".to_string(),
+                    serde_json::Value::String(h.clone()),
+                );
+            }
+            if chunk.overlap_start > 0 {
+                meta.insert(
+                    "overlap_start".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(chunk.overlap_start)),
+                );
+            }
+            serde_json::Value::Object(meta).to_string()
         };
 
         tx.execute(

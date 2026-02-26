@@ -1,14 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { X, Plus, Settings, Maximize2 } from 'lucide-react';
-import { toast } from 'sonner';
-import * as api from '../../lib/api';
-import { useAgentStream } from '../../lib/useAgentStream';
 import { useTranslation } from '../../i18n';
 import { ChatMessages } from './ChatMessages';
 import { ChatInput } from './ChatInput';
 import { EmptyState } from '../ui/EmptyState';
-import type { ConversationMessage, AgentConfig, ImageAttachment } from '../../types/conversation';
+import { useChatSession } from '../../lib/useChatSession';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -31,123 +28,33 @@ export function ChatPanel({ initialMessage, onClose, className }: ChatPanelProps
   const { t } = useTranslation();
   const navigate = useNavigate();
 
-  /* ── State ──────────────────────────────────────────────────────── */
-  const [messages, setMessages] = useState<ConversationMessage[]>([]);
-  const [defaultConfig, setDefaultConfig] = useState<AgentConfig | null>(null);
-  const [configLoading, setConfigLoading] = useState(true);
-  const [conversationId, setConversationId] = useState<string | null>(null);
-
-  const { send, stop, isStreaming, streamText, thinkingText, isThinking, toolCalls, error, reset } = useAgentStream();
+  const chat = useChatSession();
 
   // Track the last initialMessage we auto-sent, to avoid re-sending
   const sentInitialRef = useRef<string | null>(null);
-
-  /* ── Load default agent config ──────────────────────────────────── */
-  const loadDefaultConfig = useCallback(async () => {
-    try {
-      const configs = await api.listAgentConfigs();
-      const def = configs.find((c) => c.isDefault) ?? configs[0] ?? null;
-      setDefaultConfig(def);
-    } catch {
-      setDefaultConfig(null);
-    } finally {
-      setConfigLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadDefaultConfig();
-  }, [loadDefaultConfig]);
-
-  /* ── Reload messages when streaming completes ───────────────────── */
-  useEffect(() => {
-    if (!isStreaming && conversationId && messages.length > 0) {
-      api.getConversation(conversationId).then(([, msgs]) => {
-        setMessages(msgs);
-      }).catch(() => {});
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStreaming]);
-
-  /* ── Show error toast ───────────────────────────────────────────── */
-  useEffect(() => {
-    if (error) toast.error(error);
-  }, [error]);
 
   /* ── Auto-send initialMessage ───────────────────────────────────── */
   useEffect(() => {
     if (
       initialMessage &&
       initialMessage.trim() &&
-      defaultConfig &&
-      !configLoading &&
+      chat.agentConfig &&
+      !chat.loadingConfig &&
       sentInitialRef.current !== initialMessage
     ) {
       sentInitialRef.current = initialMessage;
-      handleSendMessage(initialMessage);
+      chat.send(initialMessage);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialMessage, defaultConfig, configLoading]);
-
-  /* ── Handlers ───────────────────────────────────────────────────── */
-
-  const handleSendMessage = useCallback(
-    async (message: string, attachments?: ImageAttachment[]) => {
-      if (!defaultConfig) return;
-
-      let convId = conversationId;
-
-      // Auto-create conversation if none active
-      if (!convId) {
-        try {
-          const conv = await api.createConversation(
-            defaultConfig.provider,
-            defaultConfig.model,
-          );
-          convId = conv.id;
-          setConversationId(convId);
-        } catch (e) {
-          toast.error(`Create conversation failed: ${String(e)}`);
-          return;
-        }
-      }
-
-      // Add optimistic user message
-      const optimisticMsg: ConversationMessage = {
-        id: `temp-${Date.now()}`,
-        conversationId: convId,
-        role: 'user',
-        content: message,
-        toolCallId: null,
-        toolCalls: [],
-        tokenCount: 0,
-        createdAt: new Date().toISOString(),
-        sortOrder: messages.length,
-        thinking: null,
-        imageAttachments: attachments ?? null,
-      };
-      setMessages((prev) => [...prev, optimisticMsg]);
-
-      await send(convId, message, attachments);
-    },
-    [conversationId, defaultConfig, messages.length, send],
-  );
-
-  const handleStop = useCallback(() => {
-    if (conversationId) {
-      stop(conversationId);
-    }
-  }, [conversationId, stop]);
+  }, [initialMessage, chat.agentConfig, chat.loadingConfig]);
 
   const handleNewChat = useCallback(() => {
-    setConversationId(null);
-    setMessages([]);
+    chat.createNewConversation();
     sentInitialRef.current = null;
-    reset();
-  }, [reset]);
+  }, [chat.createNewConversation]);
 
   /* ── No provider configured ─────────────────────────────────────── */
-  if (!configLoading && !defaultConfig) {
+  if (!chat.loadingConfig && !chat.agentConfig) {
     return (
       <div className={`flex flex-col h-full ${className ?? ''}`}>
         {/* Header */}
@@ -196,9 +103,9 @@ export function ChatPanel({ initialMessage, onClose, className }: ChatPanelProps
             <Plus size={13} />
             {t('chat.newChatShort')}
           </button>
-          {conversationId && (
+          {chat.activeId && (
             <button
-              onClick={() => { navigate(`/chat/${conversationId}`); onClose(); }}
+              onClick={() => { navigate(`/chat/${chat.activeId}`); onClose(); }}
               className="rounded-md px-2 py-1.5 text-xs font-medium text-text-tertiary hover:bg-surface-3 hover:text-text-secondary transition-colors cursor-pointer flex items-center gap-1"
               title={t('chat.openFullChat')}
             >
@@ -217,20 +124,25 @@ export function ChatPanel({ initialMessage, onClose, className }: ChatPanelProps
 
       {/* Messages area */}
       <ChatMessages
-        messages={messages}
-        streamText={streamText}
-        thinkingText={thinkingText}
-        isThinking={isThinking}
-        toolCalls={toolCalls}
-        isStreaming={isStreaming}
+        messages={chat.messages}
+        streamText={chat.streamText}
+        thinkingText={chat.thinkingText}
+        isThinking={chat.isThinking}
+        toolCalls={chat.toolCalls}
+        isStreaming={chat.isStreaming}
+        error={chat.error}
+        onRetry={chat.retry}
+        onDismissError={() => chat.clearError()}
+        onDeleteMessage={chat.deleteMessage}
+        onEditAndResend={chat.editAndResend}
       />
 
       {/* Input */}
       <ChatInput
-        onSend={handleSendMessage}
-        onStop={handleStop}
-        isStreaming={isStreaming}
-        disabled={!defaultConfig || configLoading}
+        onSend={chat.send}
+        onStop={chat.stop}
+        isStreaming={chat.isStreaming}
+        disabled={!chat.agentConfig || chat.loadingConfig}
       />
     </div>
   );

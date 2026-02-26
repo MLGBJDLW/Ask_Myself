@@ -1,16 +1,16 @@
 {
   "name": "write_note",
-  "description": "Create or update a note file in the knowledge base. The note is saved in the 'notes' subdirectory of a source folder. Use this to save summaries, analysis results, meeting notes, or other generated content.",
+  "description": "Create or update a note file in the knowledge base. The note is saved in the 'notes' subdirectory of a source folder.\n\nUse this to save:\n- Research syntheses after multi-step exploration\n- Meeting summaries or key takeaways\n- User-requested drafts or analyses\n- Curated findings that the user might want to reference later\n\nProactively suggest note creation when:\n- You've synthesized information from 3+ sources into a useful summary\n- The user explicitly says 'save this' or 'remember this'\n- A conversation has produced a valuable analysis worth preserving\n\nFormat recommendations:\n- Start with a clear # Title\n- Include a date line: `_Created: YYYY-MM-DD_`\n- Use ## sections for different aspects\n- Include [cite:CHUNK_ID] references to source material\n- Keep notes concise and scannable",
   "parameters": {
     "type": "object",
     "properties": {
       "filename": {
         "type": "string",
-        "description": "Name for the note file (e.g., 'meeting-summary.md'). Must end with .md, .txt, .org, or .rst."
+        "description": "Name for the note file (e.g., 'meeting-summary.md'). Must end with .md, .txt, .org, or .rst. Use descriptive kebab-case names."
       },
       "content": {
         "type": "string",
-        "description": "The text content to write."
+        "description": "The text content to write. Use markdown formatting with headers, lists, and citations."
       },
       "mode": {
         "type": "string",

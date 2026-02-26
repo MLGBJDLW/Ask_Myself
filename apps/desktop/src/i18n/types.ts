@@ -286,6 +286,7 @@ export interface TranslationKeys {
   'chat.stop': string;
   'chat.retry': string;
   'chat.copyMessage': string;
+  'chat.copyCode': string;
   'chat.copied': string;
   'chat.noProvider': string;
   'chat.noProviderDesc': string;
@@ -334,6 +335,28 @@ export interface TranslationKeys {
   'chat.tokensShort': string;
   'chat.removeAttachment': string;
   'chat.attachImage': string;
+  'chat.scrollToBottom': string;
+  'chat.errorOccurred': string;
+  'chat.dismiss': string;
+  'chat.userMessage': string;
+  'chat.assistantResponse': string;
+  'chat.messageArea': string;
+  'chat.edit': string;
+  'chat.delete': string;
+  'chat.confirmDelete': string;
+  'chat.save': string;
+  'chat.cancel': string;
+  'chat.editing': string;
+  'chat.toggleSidebar': string;
+  'chat.startNewChat': string;
+  'chat.loadingMessages': string;
+  'chat.dragDropHint': string;
+
+  // Citations
+  'citation.evidence': string;
+  'citation.openFile': string;
+  'citation.showInFolder': string;
+  'citation.copy': string;
 
   // Time
   'time.justNow': string;
@@ -341,6 +364,8 @@ export interface TranslationKeys {
   'time.hourShort': string;
   'time.dayShort': string;
   'time.monthShort': string;
+  'time.minutesAgo': string;
+  'time.hoursAgo': string;
 
   // Settings - AI Providers
   'settings.aiProviders': string;
@@ -391,6 +416,12 @@ export interface TranslationKeys {
   'settings.reasoningEffortHelp': string;
   'settings.maxIterations': string;
   'settings.maxIterationsHelp': string;
+  'settings.summarizationSection': string;
+  'settings.summarizationHelp': string;
+  'settings.summarizationModel': string;
+  'settings.summarizationProvider': string;
+  'settings.sameAsMain': string;
+  'settings.summarizationProviderHelp': string;
 
   // Common
   'common.save': string;

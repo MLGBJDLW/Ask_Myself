@@ -286,6 +286,7 @@ export const ru: TranslationKeys = {
   'chat.stop': 'Stop',
   'chat.retry': 'Retry',
   'chat.copyMessage': 'Copy message',
+  'chat.copyCode': 'Copy',
   'chat.copied': 'Copied!',
   'chat.noProvider': 'No AI provider configured',
   'chat.noProviderDesc': 'Configure an AI provider in settings to start chatting.',
@@ -334,6 +335,28 @@ export const ru: TranslationKeys = {
   'chat.tokensShort': 'ток.',
   'chat.removeAttachment': 'Удалить вложение',
   'chat.attachImage': 'Прикрепить изображение',
+  'chat.scrollToBottom': 'Прокрутить вниз',
+  'chat.errorOccurred': 'Произошла ошибка',
+  'chat.dismiss': 'Закрыть',
+  'chat.userMessage': 'User message',
+  'chat.assistantResponse': 'Assistant response',
+  'chat.messageArea': 'Chat messages',
+  'chat.edit': 'Edit',
+  'chat.delete': 'Delete',
+  'chat.confirmDelete': 'Confirm?',
+  'chat.save': 'Save',
+  'chat.cancel': 'Cancel',
+  'chat.editing': 'Editing message',
+  'chat.toggleSidebar': 'Переключить боковую панель',
+  'chat.startNewChat': 'Начать новый чат',
+  'chat.loadingMessages': 'Загрузка сообщений...',
+  'chat.dragDropHint': 'Перетащите изображения сюда',
+
+  // Citations
+  'citation.evidence': 'Доказательство',
+  'citation.openFile': 'Открыть файл',
+  'citation.showInFolder': 'Показать в папке',
+  'citation.copy': 'Копировать',
 
   // Time
   'time.justNow': 'только что',
@@ -341,6 +364,8 @@ export const ru: TranslationKeys = {
   'time.hourShort': 'ч',
   'time.dayShort': 'д',
   'time.monthShort': 'мес',
+  'time.minutesAgo': '{n}мин назад',
+  'time.hoursAgo': '{n}ч назад',
 
   // Settings - AI Providers
   'settings.aiProviders': 'AI Providers',
@@ -391,6 +416,12 @@ export const ru: TranslationKeys = {
   'settings.reasoningEffortHelp': 'Уровень интенсивности рассуждения. Используется моделями OpenAI серии o.',
   'settings.maxIterations': 'Макс. итераций инструментов',
   'settings.maxIterationsHelp': 'Максимальное количество циклов использования инструментов на сообщение. По умолчанию 10. Увеличьте для глубокого анализа.',
+  'settings.summarizationSection': 'Резюмирование (Экономия затрат)',
+  'settings.summarizationHelp': 'Используйте более дешёвую модель для резюмирования диалогов. Если пусто, используется основная модель.',
+  'settings.summarizationModel': 'Модель резюмирования',
+  'settings.summarizationProvider': 'Провайдер резюмирования',
+  'settings.sameAsMain': 'Такой же, как основной провайдер',
+  'settings.summarizationProviderHelp': 'Изменяйте только если модель резюмирования использует другого провайдера, чем основная модель.',
 
   // Common
   'common.save': 'Сохранить',

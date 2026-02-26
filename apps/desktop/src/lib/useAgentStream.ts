@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import * as api from './api';
 import type { AgentFrontendEvent } from '../types';
@@ -329,6 +329,11 @@ export function useAgentStream(): UseAgentStreamReturn {
     setIsStreaming(false);
     cleanup();
   }, [cleanup, clearThinkingTimeout]);
+
+  // Clean up listeners and timeouts on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => cleanup();
+  }, [cleanup]);
 
   return { send, stop, isStreaming, streamText, thinkingText, isThinking, toolCalls, error, lastUsage, reset };
 }

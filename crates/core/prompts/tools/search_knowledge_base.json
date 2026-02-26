@@ -1,16 +1,21 @@
 {
   "name": "search_knowledge_base",
-  "description": "Search the local knowledge base using full-text and vector search. Returns evidence cards with content, source paths, and relevance scores. Supports optional filters to narrow results by source, file type, or date range.",
+  "description": "Search the local knowledge base using full-text and vector search. Returns evidence cards with content, source paths, relevance scores, and chunk_ids for citation.\n\nThis is your PRIMARY tool — call it FIRST for any factual question.\n\nQuery construction tips:\n- Use the same language as the indexed content. If unsure, try both languages.\n- Use specific noun phrases rather than full sentences: \"OAuth PKCE mobile\" not \"What authentication method was chosen for the mobile app?\"\n- For recall queries (vague clues), use the `queries` parameter to submit 3-5 keyword variants in a SINGLE call instead of making separate calls.\n- When user mentions time periods, always set date_from/date_to to narrow results.\n- Use source_ids when you know which source is relevant (from prior searches or list_sources).\n\nBatch search (cost saver):\n- Use the `queries` parameter to search multiple variants at once. Example: queries: [\"authentication login\", \"auth module 2024\", \"security password\"]\n- Results from all queries are automatically merged and deduplicated using rank fusion.\n- This is much more efficient than making separate search calls for each variant.\n\nAfter receiving results:\n- Extract chunk_id from each result for citation: [cite:CHUNK_ID]\n- If results are insufficient, retry with synonyms, broader terms, or translated terms.\n- Use retrieve_evidence on the best chunk_ids for exact quotation text.\n- Use get_chunk_context when a result seems relevant but you need surrounding context.",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "The search query text. For best results, use the same language as the indexed content. If the user asks in a different language, translate key terms to match the content language."
+        "description": "A single search query. Use concise noun phrases in the content's language. For multiple query variants, prefer the `queries` parameter instead of separate calls."
+      },
+      "queries": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Multiple search queries to execute in a single call. Results are merged using rank fusion for better recall. Use this instead of making separate search calls when you want to try synonyms or keyword variants. Example: [\"authentication login\", \"auth module 2024\", \"security password\"]. If provided, takes precedence over `query`."
       },
       "limit": {
         "type": "integer",
-        "description": "Maximum number of results to return (default 5, max 20)",
+        "description": "Maximum number of results to return (default 5, max 20). Use higher limits (10-15) for broad exploration, lower (3-5) for precise lookups.",
         "default": 5,
         "minimum": 1,
         "maximum": 20
@@ -18,7 +23,7 @@
       "source_ids": {
         "type": "array",
         "items": { "type": "string" },
-        "description": "Optional list of source IDs to restrict search to. Use list_sources to discover available IDs."
+        "description": "Optional list of source IDs to restrict search to. Use list_sources to discover available IDs. Useful when user mentions a specific folder or source."
       },
       "file_types": {
         "type": "array",
@@ -26,15 +31,15 @@
           "type": "string",
           "enum": ["markdown", "plaintext", "log", "pdf", "docx", "excel", "pptx"]
         },
-        "description": "Optional list of file types to filter by (e.g. [\"markdown\", \"pdf\"])"
+        "description": "Optional list of file types to filter by (e.g. [\"markdown\", \"pdf\"]). Use when user references a specific document type."
       },
       "date_from": {
         "type": "string",
-        "description": "Optional ISO 8601 date-time string. Only return results modified on or after this date."
+        "description": "Optional ISO 8601 date-time string. Only return results modified on or after this date. Use for time-based recall: 'last month' → calculate the date."
       },
       "date_to": {
         "type": "string",
-        "description": "Optional ISO 8601 date-time string. Only return results modified on or before this date."
+        "description": "Optional ISO 8601 date-time string. Only return results modified on or before this date. Combine with date_from for specific time windows."
       }
     },
     "required": ["query"]

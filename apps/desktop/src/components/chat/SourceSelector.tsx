@@ -94,6 +94,8 @@ export function SourceSelector({ conversationId, onUpdate }: SourceSelectorProps
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
         className="
           inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs
           text-text-secondary hover:text-text-primary
@@ -127,6 +129,7 @@ export function SourceSelector({ conversationId, onUpdate }: SourceSelectorProps
               w-72 max-h-64 overflow-y-auto
               bg-surface-1 border border-border rounded-lg shadow-lg
             "
+            role="listbox"
           >
             {/* Header */}
             <div className="px-3 py-2 border-b border-border">
@@ -149,7 +152,7 @@ export function SourceSelector({ conversationId, onUpdate }: SourceSelectorProps
                 {sources.map((source) => {
                   const checked = linkedIds.has(source.id);
                   return (
-                    <li key={source.id}>
+                    <li key={source.id} role="option" aria-selected={checked}>
                       <button
                         type="button"
                         onClick={() => toggle(source.id)}

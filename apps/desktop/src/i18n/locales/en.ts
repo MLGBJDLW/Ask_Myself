@@ -286,6 +286,7 @@ export const en: TranslationKeys = {
   'chat.stop': 'Stop',
   'chat.retry': 'Retry',
   'chat.copyMessage': 'Copy message',
+  'chat.copyCode': 'Copy',
   'chat.copied': 'Copied!',
   'chat.noProvider': 'No AI provider configured',
   'chat.noProviderDesc': 'Configure an AI provider in settings to start chatting.',
@@ -334,6 +335,28 @@ export const en: TranslationKeys = {
   'chat.tokensShort': 'tok',
   'chat.removeAttachment': 'Remove attachment',
   'chat.attachImage': 'Attach image',
+  'chat.scrollToBottom': 'Scroll to bottom',
+  'chat.errorOccurred': 'An error occurred',
+  'chat.dismiss': 'Dismiss',
+  'chat.userMessage': 'User message',
+  'chat.assistantResponse': 'Assistant response',
+  'chat.messageArea': 'Chat messages',
+  'chat.edit': 'Edit',
+  'chat.delete': 'Delete',
+  'chat.confirmDelete': 'Confirm?',
+  'chat.save': 'Save',
+  'chat.cancel': 'Cancel',
+  'chat.editing': 'Editing message',
+  'chat.toggleSidebar': 'Toggle sidebar',
+  'chat.startNewChat': 'Start New Chat',
+  'chat.loadingMessages': 'Loading messages...',
+  'chat.dragDropHint': 'Drop images here',
+
+  // Citations
+  'citation.evidence': 'Evidence',
+  'citation.openFile': 'Open File',
+  'citation.showInFolder': 'Show in Folder',
+  'citation.copy': 'Copy',
 
   // Time
   'time.justNow': 'just now',
@@ -341,6 +364,8 @@ export const en: TranslationKeys = {
   'time.hourShort': 'h',
   'time.dayShort': 'd',
   'time.monthShort': 'mo',
+  'time.minutesAgo': '{n}m ago',
+  'time.hoursAgo': '{n}h ago',
 
   // Settings - AI Providers
   'settings.aiProviders': 'AI Providers',
@@ -391,6 +416,12 @@ export const en: TranslationKeys = {
   'settings.reasoningEffortHelp': 'Reasoning effort level. Used by OpenAI o-series models.',
   'settings.maxIterations': 'Max Tool Iterations',
   'settings.maxIterationsHelp': 'Maximum number of tool-use round-trips per message. Default is 10. Increase for deep research tasks.',
+  'settings.summarizationSection': 'Summarization (Cost Saving)',
+  'settings.summarizationHelp': 'Use a cheaper model for conversation summarization. If empty, the main model is used.',
+  'settings.summarizationModel': 'Summarization Model',
+  'settings.summarizationProvider': 'Summarization Provider',
+  'settings.sameAsMain': 'Same as main provider',
+  'settings.summarizationProviderHelp': 'Only change if the summarization model uses a different provider than the main model.',
 
   // Common
   'common.save': 'Save',

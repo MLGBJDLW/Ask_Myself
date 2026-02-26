@@ -4,7 +4,10 @@
 //! and splits the content into heading-aware (Markdown) or
 //! paragraph-aware (plain text / log) chunks.
 
+use std::collections::HashMap;
 use std::path::Path;
+
+use chrono::{DateTime, Utc};
 
 use crate::error::CoreError;
 
@@ -17,10 +20,14 @@ use crate::error::CoreError;
 pub struct ParsedDocument {
     pub file_path: String,
     pub file_name: String,
+    /// Document title — from frontmatter, first heading, or file name.
+    pub title: String,
     pub mime_type: String,
     pub file_size: i64,
     pub content_hash: String,
     pub chunks: Vec<ParsedChunk>,
+    /// Extracted metadata (frontmatter fields, filesystem dates, etc.).
+    pub metadata: HashMap<String, String>,
 }
 
 /// A single chunk extracted from a document.
@@ -31,6 +38,10 @@ pub struct ParsedChunk {
     pub start_offset: i64,
     pub end_offset: i64,
     pub heading_context: Option<String>,
+    /// Byte offset within `content` where actual (non-overlap) text begins.
+    /// Zero for the first chunk; positive when overlap from the previous chunk
+    /// has been prepended.
+    pub overlap_start: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +53,12 @@ const MAX_CHUNK_CHARS: usize = 2000;
 
 /// Chunks smaller than this are discarded.
 const MIN_CHUNK_CHARS: usize = 50;
+
+/// Number of bytes of overlap between adjacent chunks.
+///
+/// The ending portion of each chunk is prepended to the next so that
+/// search queries spanning chunk boundaries can still match.
+const CHUNK_OVERLAP_CHARS: usize = 80;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -75,28 +92,46 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, CoreError> {
     }
 
     let content = std::fs::read_to_string(path)?;
-    let metadata = std::fs::metadata(path)?;
+    let fs_meta = std::fs::metadata(path)?;
 
     let file_path = path.to_string_lossy().to_string();
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let file_size = metadata.len() as i64;
+    let file_size = fs_meta.len() as i64;
+    // Content hash is computed on the raw file content, not the chunked content,
+    // so chunk overlap does not affect change detection.
     let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
-    let chunks = match mime_type.as_str() {
-        "text/markdown" => chunk_markdown(&content),
-        _ => chunk_plaintext(&content),
+    // Extract filesystem timestamps as baseline metadata.
+    let mut doc_metadata = extract_fs_metadata(path);
+
+    let (title, chunks) = match mime_type.as_str() {
+        "text/markdown" => {
+            let (frontmatter, body) = extract_frontmatter(&content);
+            // Merge frontmatter fields (take priority over FS metadata).
+            for (k, v) in &frontmatter {
+                doc_metadata.insert(k.clone(), v.clone());
+            }
+            let title = frontmatter
+                .get("title")
+                .cloned()
+                .unwrap_or_else(|| file_name.clone());
+            (title, chunk_markdown(body))
+        }
+        _ => (file_name.clone(), chunk_plaintext(&content)),
     };
 
     Ok(ParsedDocument {
         file_path,
         file_name,
+        title,
         mime_type,
         file_size,
         content_hash,
         chunks,
+        metadata: doc_metadata,
     })
 }
 
@@ -118,16 +153,19 @@ pub fn parse_pdf(path: &Path) -> Result<ParsedDocument, CoreError> {
 
     let chunks = chunk_plaintext(&text);
 
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     Ok(ParsedDocument {
         file_path: path.to_string_lossy().to_string(),
-        file_name: path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default(),
+        title: file_name.clone(),
+        file_name,
         mime_type: "application/pdf".to_string(),
         file_size,
         content_hash,
         chunks,
+        metadata: extract_fs_metadata(path),
     })
 }
 
@@ -149,17 +187,20 @@ pub fn parse_docx(path: &Path) -> Result<ParsedDocument, CoreError> {
     let text = text.replace("\r\n", "\n");
     let chunks = chunk_plaintext(&text);
 
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     Ok(ParsedDocument {
         file_path: path.to_string_lossy().to_string(),
-        file_name: path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default(),
+        title: file_name.clone(),
+        file_name,
         mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             .to_string(),
         file_size,
         content_hash,
         chunks,
+        metadata: extract_fs_metadata(path),
     })
 }
 
@@ -204,16 +245,19 @@ pub fn parse_xlsx(path: &Path) -> Result<ParsedDocument, CoreError> {
 
     let chunks = chunk_plaintext(&all_text);
 
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     Ok(ParsedDocument {
         file_path: path.to_string_lossy().to_string(),
-        file_name: path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default(),
+        title: file_name.clone(),
+        file_name,
         mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
         file_size,
         content_hash,
         chunks,
+        metadata: extract_fs_metadata(path),
     })
 }
 
@@ -235,17 +279,20 @@ pub fn parse_pptx(path: &Path) -> Result<ParsedDocument, CoreError> {
     let text = text.replace("\r\n", "\n");
     let chunks = chunk_plaintext(&text);
 
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     Ok(ParsedDocument {
         file_path: path.to_string_lossy().to_string(),
-        file_name: path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default(),
+        title: file_name.clone(),
+        file_name,
         mime_type: "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             .to_string(),
         file_size,
         content_hash,
         chunks,
+        metadata: extract_fs_metadata(path),
     })
 }
 
@@ -282,15 +329,18 @@ pub fn parse_image(path: &Path, mime_type: &str) -> Result<ParsedDocument, CoreE
         start_offset: 0,
         end_offset: file_size,
         heading_context: None,
+        overlap_start: 0,
     }];
 
     Ok(ParsedDocument {
         file_path,
+        title: file_name.clone(),
         file_name,
         mime_type: mime_type.to_string(),
         file_size,
         content_hash,
         chunks,
+        metadata: extract_fs_metadata(path),
     })
 }
 
@@ -410,6 +460,9 @@ pub fn chunk_markdown(content: &str) -> Vec<ParsedChunk> {
         chunk.chunk_index = i as i32;
     }
 
+    // Apply overlap from previous chunks for search continuity.
+    apply_chunk_overlap(&mut chunks);
+
     chunks
 }
 
@@ -470,12 +523,162 @@ pub fn chunk_plaintext(content: &str) -> Vec<ParsedChunk> {
         chunk.chunk_index = i as i32;
     }
 
+    // Apply overlap from previous chunks for search continuity.
+    apply_chunk_overlap(&mut chunks);
+
     chunks
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Prepend the ending portion of each chunk to the next chunk, creating
+/// overlapping windows for better search continuity across boundaries.
+///
+/// The first chunk is left unchanged (`overlap_start` remains 0).
+/// Subsequent chunks receive an overlap prefix and their `overlap_start`
+/// field is set to the byte length of that prefix.
+fn apply_chunk_overlap(chunks: &mut Vec<ParsedChunk>) {
+    if chunks.len() <= 1 {
+        return;
+    }
+
+    // Collect tail text from each chunk (except the last).
+    let tails: Vec<String> = chunks[..chunks.len() - 1]
+        .iter()
+        .map(|c| {
+            let content = &c.content;
+            if content.len() <= CHUNK_OVERLAP_CHARS {
+                content.clone()
+            } else {
+                let mut start = content.len() - CHUNK_OVERLAP_CHARS;
+                // Ensure we land on a valid UTF-8 character boundary.
+                while start < content.len() && !content.is_char_boundary(start) {
+                    start += 1;
+                }
+                // Advance to the next whitespace to avoid mid-word cuts.
+                let adjusted = if let Some(ws_pos) = content[start..].find(char::is_whitespace) {
+                    let ws_start = start + ws_pos;
+                    // Skip past the whitespace character (may be multi-byte).
+                    let ws_char_len = content[ws_start..]
+                        .chars()
+                        .next()
+                        .map(|ch| ch.len_utf8())
+                        .unwrap_or(1);
+                    ws_start + ws_char_len
+                } else {
+                    start
+                };
+                content[adjusted..].to_string()
+            }
+        })
+        .collect();
+
+    for i in 1..chunks.len() {
+        let overlap = &tails[i - 1];
+        if overlap.is_empty() {
+            continue;
+        }
+        let overlap_len = overlap.len();
+        chunks[i].content = format!("{}{}", overlap, chunks[i].content);
+        chunks[i].overlap_start = overlap_len;
+    }
+}
+
+/// Extract YAML frontmatter from markdown content.
+///
+/// If the content starts with `---`, extracts key-value pairs from the
+/// YAML block and returns the metadata and the remaining body content.
+/// If no valid frontmatter is found, returns empty metadata and the
+/// original content unchanged.
+fn extract_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return (HashMap::new(), content);
+    }
+
+    // Find end of the opening --- line.
+    let after_opening = match trimmed[3..].find('\n') {
+        Some(pos) => 3 + pos + 1,
+        None => return (HashMap::new(), content),
+    };
+
+    // Find the closing --- line.
+    let rest = &trimmed[after_opening..];
+    match rest.find("\n---") {
+        Some(pos) => {
+            let yaml_block = &rest[..pos];
+            let after_closing = &rest[pos + 4..];
+            // Skip rest of closing line (trailing dashes, newline).
+            let body_start = after_closing
+                .find('\n')
+                .map(|i| i + 1)
+                .unwrap_or(after_closing.len());
+            let body = &after_closing[body_start..];
+            (parse_yaml_simple(yaml_block), body)
+        }
+        None => (HashMap::new(), content),
+    }
+}
+
+/// Parse simple YAML key-value pairs from a frontmatter block.
+///
+/// Handles scalar values, quoted strings, and inline arrays (`[a, b, c]`).
+/// Does not support nested structures or multi-line values.
+fn parse_yaml_simple(yaml: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in yaml.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // Skip YAML list items (block sequences).
+        if trimmed.starts_with("- ") {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let key = key.trim().to_lowercase();
+            let mut value = value.trim().to_string();
+            // Remove surrounding quotes.
+            if (value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\''))
+            {
+                if value.len() >= 2 {
+                    value = value[1..value.len() - 1].to_string();
+                }
+            }
+            // Handle inline YAML arrays: [tag1, tag2, tag3]
+            if value.starts_with('[') && value.ends_with(']') && value.len() >= 2 {
+                value = value[1..value.len() - 1]
+                    .split(',')
+                    .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+            }
+            if !value.is_empty() {
+                map.insert(key, value);
+            }
+        }
+    }
+    map
+}
+
+/// Extract filesystem timestamps from a file path as metadata.
+fn extract_fs_metadata(path: &Path) -> HashMap<String, String> {
+    let mut meta = HashMap::new();
+    if let Ok(fs_meta) = std::fs::metadata(path) {
+        if let Ok(modified) = fs_meta.modified() {
+            let dt: DateTime<Utc> = modified.into();
+            meta.insert("fs_modified_at".to_string(), dt.to_rfc3339());
+        }
+        if let Ok(created) = fs_meta.created() {
+            let dt: DateTime<Utc> = created.into();
+            meta.insert("fs_created_at".to_string(), dt.to_rfc3339());
+        }
+    }
+    meta
+}
 
 /// Detect a Markdown heading line and return the heading text (without `#` prefix).
 fn parse_heading(line: &str) -> Option<String> {
@@ -546,6 +749,7 @@ fn make_chunk(
         start_offset,
         end_offset,
         heading_context,
+        overlap_start: 0,
     }
 }
 

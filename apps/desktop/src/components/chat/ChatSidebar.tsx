@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, Trash2, Pencil, MessageCircle, Check, X, Search, Star } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
+import { relativeTime } from '../../lib/relativeTime';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
 import { EmptyState } from '../ui/EmptyState';
@@ -46,20 +47,6 @@ function getPinnedIds(): Set<string> {
 
 function savePinnedIds(ids: Set<string>) {
   localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify([...ids]));
-}
-
-function relativeTime(iso: string, t: (key: TranslationKey) => string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const secs = Math.floor(diff / 1000);
-  if (secs < 60) return t('time.justNow');
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}${t('time.minuteShort')}`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}${t('time.hourShort')}`;
-  const days = Math.floor(hrs / 24);
-  if (days < 30) return `${days}${t('time.dayShort')}`;
-  const months = Math.floor(days / 30);
-  return `${months}${t('time.monthShort')}`;
 }
 
 function getTimeGroup(iso: string): TimeGroup {

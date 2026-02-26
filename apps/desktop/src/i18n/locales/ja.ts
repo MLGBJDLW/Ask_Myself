@@ -286,6 +286,7 @@ export const ja: TranslationKeys = {
   'chat.stop': 'Stop',
   'chat.retry': 'Retry',
   'chat.copyMessage': 'Copy message',
+  'chat.copyCode': 'Copy',
   'chat.copied': 'Copied!',
   'chat.noProvider': 'No AI provider configured',
   'chat.noProviderDesc': 'Configure an AI provider in settings to start chatting.',
@@ -334,6 +335,28 @@ export const ja: TranslationKeys = {
   'chat.tokensShort': 'トークン',
   'chat.removeAttachment': '添付ファイルを削除',
   'chat.attachImage': '画像を添付',
+  'chat.scrollToBottom': '一番下までスクロール',
+  'chat.errorOccurred': 'エラーが発生しました',
+  'chat.dismiss': '閉じる',
+  'chat.userMessage': 'User message',
+  'chat.assistantResponse': 'Assistant response',
+  'chat.messageArea': 'Chat messages',
+  'chat.edit': 'Edit',
+  'chat.delete': 'Delete',
+  'chat.confirmDelete': 'Confirm?',
+  'chat.save': 'Save',
+  'chat.cancel': 'Cancel',
+  'chat.editing': 'Editing message',
+  'chat.toggleSidebar': 'サイドバーの切り替え',
+  'chat.startNewChat': '新しいチャットを開始',
+  'chat.loadingMessages': 'メッセージを読み込み中...',
+  'chat.dragDropHint': 'ここに画像をドロップ',
+
+  // Citations
+  'citation.evidence': '証拠',
+  'citation.openFile': 'ファイルを開く',
+  'citation.showInFolder': 'フォルダで表示',
+  'citation.copy': 'コピー',
 
   // Time
   'time.justNow': 'たった今',
@@ -341,6 +364,8 @@ export const ja: TranslationKeys = {
   'time.hourShort': '時',
   'time.dayShort': '日',
   'time.monthShort': '月',
+  'time.minutesAgo': '{n}分前',
+  'time.hoursAgo': '{n}時間前',
 
   // Settings - AI Providers
   'settings.aiProviders': 'AI Providers',
@@ -391,6 +416,12 @@ export const ja: TranslationKeys = {
   'settings.reasoningEffortHelp': '推論強度レベル。OpenAI oシリーズモデルで使用されます。',
   'settings.maxIterations': '最大ツール反復回数',
   'settings.maxIterationsHelp': 'メッセージごとのツール使用ラウンドトリップの最大数。デフォルトは10。深い調査タスクには増やしてください。',
+  'settings.summarizationSection': '要約（コスト削減）',
+  'settings.summarizationHelp': '会話の要約に安価なモデルを使用します。空の場合、メインモデルが使用されます。',
+  'settings.summarizationModel': '要約モデル',
+  'settings.summarizationProvider': '要約プロバイダー',
+  'settings.sameAsMain': 'メインプロバイダーと同じ',
+  'settings.summarizationProviderHelp': '要約モデルがメインモデルと異なるプロバイダーを使用する場合にのみ変更してください。',
 
   // Common
   'common.save': '保存',

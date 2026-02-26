@@ -88,7 +88,8 @@ impl Tool for RetrieveEvidenceTool {
                     Ok((id, content, path, title)) => {
                         found += 1;
                         text.push_str(&format!(
-                            "--- Chunk {} ---\n\
+                            "--- Chunk ---\n\
+                             [chunk_id: {}]\n\
                              Path: {}\n\
                              Title: {}\n\
                              Content:\n{}\n\n",

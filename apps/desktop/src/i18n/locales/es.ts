@@ -286,6 +286,7 @@ export const es: TranslationKeys = {
   'chat.stop': 'Stop',
   'chat.retry': 'Retry',
   'chat.copyMessage': 'Copy message',
+  'chat.copyCode': 'Copy',
   'chat.copied': 'Copied!',
   'chat.noProvider': 'No AI provider configured',
   'chat.noProviderDesc': 'Configure an AI provider in settings to start chatting.',
@@ -334,6 +335,28 @@ export const es: TranslationKeys = {
   'chat.tokensShort': 'tok.',
   'chat.removeAttachment': 'Eliminar archivo adjunto',
   'chat.attachImage': 'Adjuntar imagen',
+  'chat.scrollToBottom': 'Ir al final',
+  'chat.errorOccurred': 'Ocurrió un error',
+  'chat.dismiss': 'Cerrar',
+  'chat.userMessage': 'User message',
+  'chat.assistantResponse': 'Assistant response',
+  'chat.messageArea': 'Chat messages',
+  'chat.edit': 'Edit',
+  'chat.delete': 'Delete',
+  'chat.confirmDelete': 'Confirm?',
+  'chat.save': 'Save',
+  'chat.cancel': 'Cancel',
+  'chat.editing': 'Editing message',
+  'chat.toggleSidebar': 'Alternar barra lateral',
+  'chat.startNewChat': 'Iniciar nuevo chat',
+  'chat.loadingMessages': 'Cargando mensajes...',
+  'chat.dragDropHint': 'Soltar imágenes aquí',
+
+  // Citations
+  'citation.evidence': 'Evidencia',
+  'citation.openFile': 'Abrir archivo',
+  'citation.showInFolder': 'Mostrar en carpeta',
+  'citation.copy': 'Copiar',
 
   // Time
   'time.justNow': 'ahora',
@@ -341,6 +364,8 @@ export const es: TranslationKeys = {
   'time.hourShort': 'h',
   'time.dayShort': 'd',
   'time.monthShort': 'me',
+  'time.minutesAgo': 'hace {n}min',
+  'time.hoursAgo': 'hace {n}h',
 
   // Settings - AI Providers
   'settings.aiProviders': 'AI Providers',
@@ -391,6 +416,12 @@ export const es: TranslationKeys = {
   'settings.reasoningEffortHelp': 'Nivel de esfuerzo de razonamiento. Usado por modelos OpenAI serie o.',
   'settings.maxIterations': 'Iteraciones máx. de herramientas',
   'settings.maxIterationsHelp': 'Número máximo de viajes de ida y vuelta de herramientas por mensaje. El valor predeterminado es 10. Aumente para tareas de investigación profunda.',
+  'settings.summarizationSection': 'Resumen (Ahorro de costos)',
+  'settings.summarizationHelp': 'Use un modelo más económico para el resumen de conversaciones. Si está vacío, se usa el modelo principal.',
+  'settings.summarizationModel': 'Modelo de resumen',
+  'settings.summarizationProvider': 'Proveedor de resumen',
+  'settings.sameAsMain': 'Igual que el proveedor principal',
+  'settings.summarizationProviderHelp': 'Solo cambie si el modelo de resumen usa un proveedor diferente al modelo principal.',
 
   // Common
   'common.save': 'Guardar',

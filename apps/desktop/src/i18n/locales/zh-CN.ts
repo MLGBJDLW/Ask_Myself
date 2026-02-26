@@ -286,6 +286,7 @@ export const zhCN: TranslationKeys = {
   'chat.stop': '停止',
   'chat.retry': '重试',
   'chat.copyMessage': '复制消息',
+  'chat.copyCode': '复制',
   'chat.copied': '已复制！',
   'chat.noProvider': '未配置 AI 提供商',
   'chat.noProviderDesc': '请在设置中配置 AI 提供商以开始对话。',
@@ -334,6 +335,28 @@ export const zhCN: TranslationKeys = {
   'chat.tokensShort': '令牌',
   'chat.removeAttachment': '移除附件',
   'chat.attachImage': '添加图片',
+  'chat.scrollToBottom': '滚动到底部',
+  'chat.errorOccurred': '发生错误',
+  'chat.dismiss': '关闭',
+  'chat.userMessage': '用户消息',
+  'chat.assistantResponse': '助手回复',
+  'chat.messageArea': '聊天消息',
+  'chat.edit': '编辑',
+  'chat.delete': '删除',
+  'chat.confirmDelete': '确认？',
+  'chat.save': '保存',
+  'chat.cancel': '取消',
+  'chat.editing': '编辑消息',
+  'chat.toggleSidebar': '切换侧边栏',
+  'chat.startNewChat': '开始新对话',
+  'chat.loadingMessages': '加载消息中...',
+  'chat.dragDropHint': '拖放图片到此处',
+
+  // Citations
+  'citation.evidence': '证据',
+  'citation.openFile': '打开文件',
+  'citation.showInFolder': '在文件夹中显示',
+  'citation.copy': '复制',
 
   // Time
   'time.justNow': '刚刚',
@@ -341,6 +364,8 @@ export const zhCN: TranslationKeys = {
   'time.hourShort': '时',
   'time.dayShort': '天',
   'time.monthShort': '月',
+  'time.minutesAgo': '{n}分钟前',
+  'time.hoursAgo': '{n}小时前',
 
   // Settings - AI Providers
   'settings.aiProviders': 'AI 提供商',
@@ -391,6 +416,12 @@ export const zhCN: TranslationKeys = {
   'settings.reasoningEffortHelp': '推理强度等级。适用于OpenAI o系列模型。',
   'settings.maxIterations': '最大工具迭代次数',
   'settings.maxIterationsHelp': '每条消息的最大工具调用往返次数。默认为 10，深度研究任务可适当增加。',
+  'settings.summarizationSection': '摘要（节省费用）',
+  'settings.summarizationHelp': '使用更便宜的模型来生成对话摘要。如果留空，则使用主模型。',
+  'settings.summarizationModel': '摘要模型',
+  'settings.summarizationProvider': '摘要提供商',
+  'settings.sameAsMain': '与主提供商相同',
+  'settings.summarizationProviderHelp': '仅在摘要模型使用与主模型不同的提供商时才需要更改。',
 
   // Common
   'common.save': '保存',

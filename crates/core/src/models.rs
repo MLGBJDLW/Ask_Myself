@@ -45,6 +45,9 @@ pub struct EvidenceCard {
     pub heading_path: Vec<String>,
     pub score: f64,
     pub highlights: Vec<Highlight>,
+    /// Document date from metadata (frontmatter `date`/`created` or filesystem).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_date: Option<String>,
 }
 
 /// A highlighted span within content.

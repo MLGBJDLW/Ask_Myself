@@ -68,6 +68,8 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving }: 
   const [thinkingBudget, setThinkingBudget] = useState<number | null>(config?.thinkingBudget ?? null);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(config?.reasoningEffort ?? null);
   const [maxIterations, setMaxIterations] = useState<number | null>(config?.maxIterations ?? null);
+  const [summarizationModel, setSummarizationModel] = useState<string | null>(config?.summarizationModel ?? null);
+  const [summarizationProvider, setSummarizationProvider] = useState<string | null>(config?.summarizationProvider ?? null);
   const [showKey, setShowKey] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -96,7 +98,9 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving }: 
     thinkingBudget,
     reasoningEffort,
     maxIterations,
-  }), [config?.id, name, provider, apiKey, baseUrl, model, temperature, maxTokens, contextWindow, isDefault, reasoningEnabled, thinkingBudget, reasoningEffort, maxIterations, isLocal]);
+    summarizationModel: summarizationModel?.trim() || null,
+    summarizationProvider: summarizationProvider || null,
+  }), [config?.id, name, provider, apiKey, baseUrl, model, temperature, maxTokens, contextWindow, isDefault, reasoningEnabled, thinkingBudget, reasoningEffort, maxIterations, summarizationModel, summarizationProvider, isLocal]);
 
   const handleTest = async () => {
     setTestLoading(true);
@@ -363,7 +367,7 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving }: 
             const val = e.target.value.trim();
             setMaxIterations(val ? parseInt(val) || null : null);
           }}
-          placeholder="10"
+          placeholder="6"
           min={1}
           max={50}
           step={1}
@@ -371,6 +375,40 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving }: 
         <p className="text-xs text-text-tertiary">
           {t('settings.maxIterationsHelp')}
         </p>
+      </div>
+      )}
+
+      {/* Summarization Model (cost optimization) */}
+      {showAdvanced && (
+      <div className="space-y-3 border-t border-border pt-4">
+        <h4 className="text-sm font-semibold text-text-primary">{t('settings.summarizationSection')}</h4>
+        <p className="text-xs text-text-tertiary">
+          {t('settings.summarizationHelp')}
+        </p>
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-text-primary">{t('settings.summarizationModel')}</label>
+          <Input
+            value={summarizationModel ?? ''}
+            onChange={(e) => setSummarizationModel(e.target.value || null)}
+            placeholder="gpt-4o-mini, deepseek-chat, etc."
+          />
+        </div>
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-text-primary">{t('settings.summarizationProvider')}</label>
+          <select
+            value={summarizationProvider ?? ''}
+            onChange={(e) => setSummarizationProvider(e.target.value || null)}
+            className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
+          >
+            <option value="">{t('settings.sameAsMain')}</option>
+            {PROVIDER_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <p className="text-xs text-text-tertiary">
+            {t('settings.summarizationProviderHelp')}
+          </p>
+        </div>
       </div>
       )}
 

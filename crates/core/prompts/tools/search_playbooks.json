@@ -1,0 +1,14 @@
+{
+  "name": "search_playbooks",
+  "description": "Search existing playbooks by topic or keyword. Searches playbook titles, descriptions, goal queries, and the content of cited chunks within playbooks. Use this to find relevant playbooks before creating new ones or to discover curated evidence collections on a topic.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "The search query — keywords or phrases to match against playbook titles, descriptions, goals, and cited chunk content."
+      }
+    },
+    "required": ["query"]
+  }
+}

@@ -36,8 +36,10 @@ export function ChatInput({ onSend, onStop, isStreaming, disabled, tokenUsage }:
   const { t } = useTranslation();
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragCounterRef = useRef(0);
 
   // Auto-resize textarea
   const adjustHeight = useCallback(() => {
@@ -119,9 +121,30 @@ export function ChatInput({ onSend, onStop, isStreaming, disabled, tokenUsage }:
     e.stopPropagation();
   }, []);
 
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragging(false);
+    }
+  }, []);
+
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
     const files = e.dataTransfer.files;
     if (!files) return;
     for (const file of Array.from(files)) {
@@ -149,10 +172,20 @@ export function ChatInput({ onSend, onStop, isStreaming, disabled, tokenUsage }:
 
   return (
     <div
-      className="border-t border-border bg-surface-1 px-4 py-3"
+      className={`relative border-t border-border bg-surface-1 px-4 py-3 transition-colors ${
+        isDragging ? 'ring-2 ring-accent/50 bg-accent-subtle' : ''
+      }`}
       onDragOver={handleDragOver}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {/* Drag overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 flex items-center justify-center bg-accent-subtle/50 border-2 border-dashed border-accent rounded-lg z-10 pointer-events-none">
+          <span className="text-sm font-medium text-accent">{t('chat.dragDropHint')}</span>
+        </div>
+      )}
       {/* Token usage bar */}
       {tokenUsage && tokenUsage.contextWindow > 0 && (() => {
         const percentage = Math.min(100, (tokenUsage.totalTokens / tokenUsage.contextWindow) * 100);

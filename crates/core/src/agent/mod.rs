@@ -237,6 +237,9 @@ pub enum AgentEvent {
         message: Message,
         #[serde(rename = "usageTotal")]
         usage_total: Usage,
+        /// Whether this response came from the answer cache.
+        #[serde(default)]
+        cached: bool,
     },
     /// An error occurred during execution.
     Error { message: String },
@@ -270,12 +273,15 @@ pub struct AgentConfig {
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Provider type hint — passed through to CompletionRequest.
     pub provider_type: Option<ProviderType>,
+    /// Optional cheaper model name for summarization (e.g. "gpt-4o-mini").
+    /// Falls back to main model when `None`.
+    pub summarization_model: Option<String>,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 10,
+            max_iterations: 6,
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
             model: None,
             temperature: Some(0.3),
@@ -285,6 +291,7 @@ impl Default for AgentConfig {
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: None,
+            summarization_model: None,
         }
     }
 }
@@ -292,6 +299,12 @@ impl Default for AgentConfig {
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompts/system.md");
 
 const DEFAULT_MODEL: &str = "gpt-4o-mini";
+
+/// Internal result of a direct-dispatch pattern match.
+struct DirectDispatch {
+    tool_name: String,
+    arguments: String,
+}
 
 // ---------------------------------------------------------------------------
 // Executor
@@ -304,6 +317,8 @@ const DEFAULT_MODEL: &str = "gpt-4o-mini";
 /// produces a final text answer (or the iteration cap is hit).
 pub struct AgentExecutor {
     provider: Box<dyn LlmProvider>,
+    /// Optional separate provider for summarization (cheaper model).
+    summarization_provider: Option<Box<dyn LlmProvider>>,
     tools: ToolRegistry,
     config: AgentConfig,
     cancel_token: CancellationToken,
@@ -314,6 +329,7 @@ impl AgentExecutor {
     pub fn new(provider: Box<dyn LlmProvider>, tools: ToolRegistry, config: AgentConfig) -> Self {
         Self {
             provider,
+            summarization_provider: None,
             tools,
             config,
             cancel_token: CancellationToken::new(),
@@ -326,6 +342,16 @@ impl AgentExecutor {
     /// checkpoint, save any partial conversation, and return gracefully.
     pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
         self.cancel_token = token;
+        self
+    }
+
+    /// Attach a separate LLM provider for summarization (cheaper model).
+    ///
+    /// When set, context-window summarization will use this provider
+    /// instead of the main one, saving cost on a task that doesn't
+    /// need the full model's reasoning ability.
+    pub fn with_summarization_provider(mut self, provider: Box<dyn LlmProvider>) -> Self {
+        self.summarization_provider = Some(provider);
         self
     }
 
@@ -359,6 +385,7 @@ impl AgentExecutor {
             let _ = tx.send(AgentEvent::Done {
                 message: msg.clone(),
                 usage_total: Usage::default(),
+                cached: false,
             }).await;
             return Ok(msg);
         }
@@ -411,6 +438,83 @@ impl AgentExecutor {
         let mut accumulated_content = String::new();
         let mut thinking_buffer = String::new();
 
+        // --- 3c. Extract user query text and build cache key -----------------
+        let user_query_text: String = user_parts
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let cache_source_filter: Option<String> = if source_scope.is_empty() {
+            None
+        } else {
+            let mut sorted = source_scope.clone();
+            sorted.sort();
+            Some(sorted.join(","))
+        };
+
+        // --- 3c'. Try direct dispatch (skip LLM for simple commands) ---------
+        if let Some(msg) = self
+            .try_direct_dispatch(
+                &user_query_text,
+                db,
+                &source_scope,
+                &tx,
+                conversation_id,
+                next_sort_order,
+            )
+            .await
+        {
+            return Ok(msg);
+        }
+
+        // --- 3d. Check answer cache before ReAct loop ------------------------
+        if !user_query_text.is_empty() {
+            if let Ok(Some(cached)) = db.find_cached_answer(
+                &user_query_text,
+                cache_source_filter.as_deref(),
+                None,
+            ) {
+                let _ = db.increment_cache_hit(&cached.id);
+                debug!("Cache hit for query: {}", user_query_text);
+                let _ = tx
+                    .send(AgentEvent::TextDelta {
+                        delta: cached.answer_text.clone(),
+                    })
+                    .await;
+                let msg = Message::text(Role::Assistant, cached.answer_text);
+
+                // Save cached response to conversation history.
+                if let Some(cid) = conversation_id {
+                    let conv_msg = ConversationMessage {
+                        id: Uuid::new_v4().to_string(),
+                        conversation_id: cid.to_string(),
+                        role: Role::Assistant,
+                        content: msg.text_content(),
+                        tool_call_id: None,
+                        tool_calls: vec![],
+                        token_count: estimate_message_tokens(&msg),
+                        created_at: String::new(),
+                        sort_order,
+                        thinking: None,
+                    };
+                    let _ = db.add_message(&conv_msg);
+                }
+
+                let _ = tx
+                    .send(AgentEvent::Done {
+                        message: msg.clone(),
+                        usage_total: Usage::default(),
+                        cached: true,
+                    })
+                    .await;
+                return Ok(msg);
+            }
+        }
+
         // Macro for cancellation checkpoints — saves partial conversation and
         // returns gracefully when the token is cancelled.
         macro_rules! check_cancelled {
@@ -446,6 +550,7 @@ impl AgentExecutor {
                     let _ = tx.send(AgentEvent::Done {
                         message: final_msg.clone(),
                         usage_total: total_usage.clone(),
+                        cached: false,
                     }).await;
                     return Ok(final_msg);
                 }
@@ -625,10 +730,25 @@ impl AgentExecutor {
                     }
                 }
 
+                // Cache the answer if it contains citations (used the knowledge base).
+                let final_text = assistant_msg.text_content();
+                if !final_text.is_empty() && !user_query_text.is_empty() {
+                    let citations = crate::cache::extract_citations(&final_text);
+                    if !citations.is_empty() {
+                        let _ = db.cache_answer(
+                            &user_query_text,
+                            &final_text,
+                            &citations,
+                            cache_source_filter.as_deref(),
+                        );
+                    }
+                }
+
                 let _ = tx
                     .send(AgentEvent::Done {
                         message: assistant_msg.clone(),
                         usage_total: total_usage,
+                        cached: false,
                     })
                     .await;
                 return Ok(assistant_msg);
@@ -821,6 +941,7 @@ impl AgentExecutor {
             .send(AgentEvent::Done {
                 message: final_msg.clone(),
                 usage_total: total_usage,
+                cached: false,
             })
             .await;
         Ok(final_msg)
@@ -885,9 +1006,20 @@ impl AgentExecutor {
         let extractive_fallback = context::build_evicted_recap_from_messages(evicted);
 
         // Attempt LLM summarization.
+        // Use dedicated summarization provider/model if configured,
+        // otherwise fall back to the main provider and model.
+        let summ_provider: &dyn LlmProvider = self
+            .summarization_provider
+            .as_deref()
+            .unwrap_or(self.provider.as_ref());
+        let summ_model = self
+            .config
+            .summarization_model
+            .as_deref()
+            .unwrap_or(model);
         let summary = summarizer::summarize_evicted_messages(
-            self.provider.as_ref(),
-            model,
+            summ_provider,
+            summ_model,
             evicted,
             &extractive_fallback,
         )
@@ -907,6 +1039,238 @@ impl AgentExecutor {
         ));
         new_history.extend_from_slice(&history[evict_count..]);
         new_history
+    }
+
+    // -----------------------------------------------------------------------
+    // Direct dispatch — skip LLM for simple commands
+    // -----------------------------------------------------------------------
+
+    /// Attempt to handle the query without an LLM call by detecting simple,
+    /// unambiguous command patterns. Returns `Some(Message)` if handled
+    /// directly, `None` to fall through to the normal ReAct loop.
+    async fn try_direct_dispatch(
+        &self,
+        user_text: &str,
+        db: &Database,
+        source_scope: &[String],
+        tx: &mpsc::Sender<AgentEvent>,
+        conversation_id: Option<&str>,
+        sort_order: i64,
+    ) -> Option<Message> {
+        if user_text.is_empty() {
+            return None;
+        }
+
+        let dispatch = self.match_direct_pattern(user_text, db)?;
+
+        debug!(
+            "Direct dispatch: tool={}, args={}",
+            dispatch.tool_name, dispatch.arguments
+        );
+
+        let call_id = format!("direct_{}", Uuid::new_v4());
+
+        // Emit ToolCallStart so the frontend shows tool-call UI.
+        let _ = tx
+            .send(AgentEvent::ToolCallStart {
+                call_id: call_id.clone(),
+                tool_name: dispatch.tool_name.clone(),
+                arguments: dispatch.arguments.clone(),
+            })
+            .await;
+
+        // Execute the tool directly.
+        let result = self
+            .tools
+            .execute(
+                &dispatch.tool_name,
+                &call_id,
+                &dispatch.arguments,
+                db,
+                source_scope,
+            )
+            .await;
+
+        match result {
+            Ok(tool_result) => {
+                let _ = tx
+                    .send(AgentEvent::ToolCallResult {
+                        call_id: tool_result.call_id.clone(),
+                        tool_name: dispatch.tool_name.clone(),
+                        content: tool_result.content.clone(),
+                        is_error: tool_result.is_error,
+                        artifacts: tool_result.artifacts.clone(),
+                    })
+                    .await;
+
+                if tool_result.is_error {
+                    // Tool returned an error — fall through to LLM for
+                    // a better user-facing response.
+                    return None;
+                }
+
+                // Emit the content as text so streaming listeners see it.
+                let _ = tx
+                    .send(AgentEvent::TextDelta {
+                        delta: tool_result.content.clone(),
+                    })
+                    .await;
+
+                let msg = Message::text(Role::Assistant, tool_result.content);
+
+                // Persist the assistant message.
+                if let Some(cid) = conversation_id {
+                    let conv_msg = ConversationMessage {
+                        id: Uuid::new_v4().to_string(),
+                        conversation_id: cid.to_string(),
+                        role: Role::Assistant,
+                        content: msg.text_content(),
+                        tool_call_id: None,
+                        tool_calls: vec![],
+                        token_count: estimate_message_tokens(&msg),
+                        created_at: String::new(),
+                        sort_order,
+                        thinking: None,
+                    };
+                    let _ = db.add_message(&conv_msg);
+                }
+
+                let _ = tx
+                    .send(AgentEvent::Done {
+                        message: msg.clone(),
+                        usage_total: Usage::default(),
+                        cached: false,
+                    })
+                    .await;
+
+                Some(msg)
+            }
+            Err(e) => {
+                warn!("Direct dispatch failed ({}): {}", dispatch.tool_name, e);
+                None // Fall through to LLM
+            }
+        }
+    }
+
+    /// Match user query text against known direct-dispatch patterns.
+    ///
+    /// Only matches CLEAR, unambiguous commands. Anything vague or
+    /// conversational falls through to the LLM.
+    fn match_direct_pattern(&self, user_text: &str, db: &Database) -> Option<DirectDispatch> {
+        let q = user_text.trim().to_lowercase();
+        let q = q
+            .trim_end_matches(|c: char| ".?!\u{3002}\u{ff1f}\u{ff01}".contains(c))
+            .trim();
+
+        // Strip common polite prefixes/suffixes.
+        let q = q.strip_prefix("please ").unwrap_or(q);
+        let q = q.strip_prefix("can you ").unwrap_or(q);
+        let q = q.strip_prefix("could you ").unwrap_or(q);
+        let q = q.strip_suffix(" please").unwrap_or(q);
+        let q = q.strip_prefix('\u{8BF7}').unwrap_or(q); // 请
+
+        // --- List sources (no arguments) ------------------------------------
+        const LIST_SOURCES: &[&str] = &[
+            "list sources",
+            "list my sources",
+            "show sources",
+            "show my sources",
+            "show all sources",
+            "what sources do i have",
+            "what are my sources",
+            "\u{663E}\u{793A}\u{6570}\u{636E}\u{6E90}",     // 显示数据源
+            "\u{5217}\u{51FA}\u{6570}\u{636E}\u{6E90}",     // 列出数据源
+            "\u{67E5}\u{770B}\u{6570}\u{636E}\u{6E90}",     // 查看数据源
+            "\u{6570}\u{636E}\u{6E90}\u{5217}\u{8868}",     // 数据源列表
+            "\u{30BD}\u{30FC}\u{30B9}\u{4E00}\u{89A7}",     // ソース一覧
+            "\u{30BD}\u{30FC}\u{30B9}\u{3092}\u{8868}\u{793A}", // ソースを表示
+        ];
+        if LIST_SOURCES.iter().any(|p| q == *p) {
+            return Some(DirectDispatch {
+                tool_name: "list_sources".into(),
+                arguments: "{}".into(),
+            });
+        }
+
+        // --- List playbooks (action: list) ----------------------------------
+        const LIST_PLAYBOOKS: &[&str] = &[
+            "list playbooks",
+            "list my playbooks",
+            "show playbooks",
+            "show my playbooks",
+            "what playbooks do i have",
+            "what are my playbooks",
+            "\u{663E}\u{793A}\u{5267}\u{672C}",             // 显示剧本
+            "\u{5217}\u{51FA}\u{5267}\u{672C}",             // 列出剧本
+            "\u{67E5}\u{770B}\u{5267}\u{672C}",             // 查看剧本
+            "\u{5267}\u{672C}\u{5217}\u{8868}",             // 剧本列表
+            "\u{30D7}\u{30EC}\u{30A4}\u{30D6}\u{30C3}\u{30AF}\u{4E00}\u{89A7}", // プレイブック一覧
+        ];
+        if LIST_PLAYBOOKS.iter().any(|p| q == *p) {
+            return Some(DirectDispatch {
+                tool_name: "manage_playbook".into(),
+                arguments: r#"{"action":"list"}"#.into(),
+            });
+        }
+
+        // --- Browse directory (extract path) --------------------------------
+        let path = None
+            .or_else(|| q.strip_prefix("ls "))
+            .or_else(|| q.strip_prefix("dir "))
+            .or_else(|| q.strip_prefix("browse "))
+            .or_else(|| q.strip_prefix("list directory "))
+            .or_else(|| q.strip_prefix("list dir "));
+
+        if let Some(raw_path) = path {
+            let raw_path = raw_path.trim().trim_matches('"').trim_matches('\'');
+            if !raw_path.is_empty() {
+                let escaped = serde_json::to_string(raw_path)
+                    .unwrap_or_else(|_| format!("\"{}\"", raw_path));
+                return Some(DirectDispatch {
+                    tool_name: "list_dir".into(),
+                    arguments: format!(r#"{{"path":{}}}"#, escaped),
+                });
+            }
+        }
+
+        // --- List documents in source (resolve source name → ID) ------------
+        let source_phrase = None
+            .or_else(|| q.strip_prefix("list files in "))
+            .or_else(|| q.strip_prefix("show files in "))
+            .or_else(|| q.strip_prefix("list documents in "))
+            .or_else(|| q.strip_prefix("show documents in "))
+            .or_else(|| q.strip_suffix("\u{91CC}\u{7684}\u{6587}\u{4EF6}")) // 里的文件
+            .or_else(|| q.strip_suffix("\u{306E}\u{30D5}\u{30A1}\u{30A4}\u{30EB}")); // のファイル
+
+        if let Some(source_name) = source_phrase {
+            let source_name = source_name.trim().trim_matches('"').trim_matches('\'');
+            if !source_name.is_empty() {
+                if let Ok(sources) = db.list_sources() {
+                    let name_lower = source_name.to_lowercase();
+                    let matches: Vec<_> = sources
+                        .iter()
+                        .filter(|s| {
+                            let root_lower = s.root_path.to_lowercase();
+                            s.id == source_name
+                                || root_lower.ends_with(&name_lower)
+                                || root_lower.contains(&name_lower)
+                        })
+                        .collect();
+
+                    if matches.len() == 1 {
+                        let source_id =
+                            serde_json::to_string(&matches[0].id).unwrap_or_default();
+                        return Some(DirectDispatch {
+                            tool_name: "list_documents".into(),
+                            arguments: format!(r#"{{"source_id":{}}}"#, source_id),
+                        });
+                    }
+                    // 0 or >1 matches → ambiguous, fall through to LLM.
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -1098,8 +1462,8 @@ mod tests {
     #[test]
     fn test_default_config() {
         let cfg = AgentConfig::default();
-        assert_eq!(cfg.max_iterations, 10);
-        assert!(cfg.system_prompt.contains("knowledge assistant"));
+        assert_eq!(cfg.max_iterations, 6);
+        assert!(cfg.system_prompt.contains("knowledge recall engine"));
         assert_eq!(cfg.temperature, Some(0.3));
         assert_eq!(cfg.max_tokens, Some(4096));
     }

@@ -61,6 +61,10 @@ pub struct AgentConfig {
     pub thinking_budget: Option<i64>,
     pub reasoning_effort: Option<String>,
     pub max_iterations: Option<i64>,
+    /// Optional cheaper model for summarization (e.g. "gpt-4o-mini").
+    pub summarization_model: Option<String>,
+    /// Optional provider override for summarization (e.g. "open_ai").
+    pub summarization_provider: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -107,6 +111,10 @@ pub struct SaveAgentConfigInput {
     pub thinking_budget: Option<i64>,
     pub reasoning_effort: Option<String>,
     pub max_iterations: Option<i64>,
+    /// Optional cheaper model for summarization (e.g. "gpt-4o-mini").
+    pub summarization_model: Option<String>,
+    /// Optional provider override for summarization (e.g. "open_ai").
+    pub summarization_provider: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -417,8 +425,8 @@ impl Database {
         let id = input.id.clone().unwrap_or_else(new_id);
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 provider = excluded.provider,
@@ -433,6 +441,8 @@ impl Database {
                 thinking_budget = excluded.thinking_budget,
                 reasoning_effort = excluded.reasoning_effort,
                 max_iterations = excluded.max_iterations,
+                summarization_model = excluded.summarization_model,
+                summarization_provider = excluded.summarization_provider,
                 updated_at = datetime('now')",
             rusqlite::params![
                 &id,
@@ -449,6 +459,8 @@ impl Database {
                 input.thinking_budget,
                 &input.reasoning_effort,
                 input.max_iterations,
+                &input.summarization_model,
+                &input.summarization_provider,
             ],
         )?;
         drop(conn);
@@ -459,7 +471,7 @@ impl Database {
     pub fn list_agent_configs(&self) -> Result<Vec<AgentConfig>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider
              FROM agent_configs ORDER BY name ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -480,6 +492,8 @@ impl Database {
                 created_at: row.get(13)?,
                 updated_at: row.get(14)?,
                 max_iterations: row.get(15)?,
+                summarization_model: row.get(16)?,
+                summarization_provider: row.get(17)?,
             })
         })?;
         let mut results = Vec::new();
@@ -493,7 +507,7 @@ impl Database {
     pub fn get_agent_config(&self, id: &str) -> Result<AgentConfig, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider
              FROM agent_configs WHERE id = ?1",
             rusqlite::params![id],
             |row| {
@@ -514,6 +528,8 @@ impl Database {
                     created_at: row.get(13)?,
                     updated_at: row.get(14)?,
                     max_iterations: row.get(15)?,
+                    summarization_model: row.get(16)?,
+                    summarization_provider: row.get(17)?,
                 })
             },
         )
@@ -562,7 +578,7 @@ impl Database {
     pub fn get_default_agent_config(&self) -> Result<Option<AgentConfig>, CoreError> {
         let conn = self.conn();
         let result = conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider
              FROM agent_configs WHERE is_default = 1 LIMIT 1",
             [],
             |row| {
@@ -583,6 +599,8 @@ impl Database {
                     created_at: row.get(13)?,
                     updated_at: row.get(14)?,
                     max_iterations: row.get(15)?,
+                    summarization_model: row.get(16)?,
+                    summarization_provider: row.get(17)?,
                 })
             },
         );
@@ -820,6 +838,8 @@ mod tests {
                 thinking_budget: None,
                 reasoning_effort: None,
                 max_iterations: None,
+                summarization_model: None,
+                summarization_provider: None,
             })
             .unwrap();
         assert_eq!(config.name, "My GPT-4");
@@ -845,6 +865,8 @@ mod tests {
                 thinking_budget: None,
                 reasoning_effort: None,
                 max_iterations: None,
+                summarization_model: None,
+                summarization_provider: None,
             })
             .unwrap();
         assert_eq!(updated.name, "Renamed");
@@ -878,6 +900,8 @@ mod tests {
                 thinking_budget: None,
                 reasoning_effort: None,
                 max_iterations: None,
+                summarization_model: None,
+                summarization_provider: None,
             })
             .unwrap();
 
@@ -897,6 +921,8 @@ mod tests {
                 thinking_budget: None,
                 reasoning_effort: None,
                 max_iterations: None,
+                summarization_model: None,
+                summarization_provider: None,
             })
             .unwrap();
 

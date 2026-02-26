@@ -50,6 +50,10 @@ export interface AgentConfig {
   thinkingBudget: number | null;
   reasoningEffort: string | null;
   maxIterations: number | null;
+  /** Optional cheaper model for summarization (e.g. "gpt-4o-mini"). */
+  summarizationModel: string | null;
+  /** Optional provider override for summarization (e.g. "open_ai"). */
+  summarizationProvider: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -69,6 +73,10 @@ export interface SaveAgentConfigInput {
   thinkingBudget: number | null;
   reasoningEffort: string | null;
   maxIterations: number | null;
+  /** Optional cheaper model for summarization (e.g. "gpt-4o-mini"). */
+  summarizationModel: string | null;
+  /** Optional provider override for summarization (e.g. "open_ai"). */
+  summarizationProvider: string | null;
 }
 
 export type ProviderType =

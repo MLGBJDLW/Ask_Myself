@@ -32,12 +32,25 @@ struct AnthropicThinking {
     budget_tokens: u32,
 }
 
+#[derive(Clone, Serialize)]
+struct CacheControl {
+    r#type: String,
+}
+
+#[derive(Serialize)]
+struct AnthropicSystemBlock {
+    r#type: String,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
 #[derive(Serialize)]
 struct AnthropicRequest {
     model: String,
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<Vec<AnthropicSystemBlock>>,
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
@@ -98,6 +111,8 @@ struct AnthropicTool {
     name: String,
     description: String,
     input_schema: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
 }
 
 // ---------------------------------------------------------------------------
@@ -240,8 +255,8 @@ fn parse_finish_reason(s: &str) -> FinishReason {
 /// - System messages are extracted and returned separately (Anthropic puts them top-level).
 /// - Tool-result messages are wrapped in user messages with `tool_result` content blocks.
 /// - Assistant messages with tool_calls become content block arrays.
-fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<AnthropicMessage>) {
-    let mut system: Option<String> = None;
+fn convert_messages(messages: &[Message]) -> (Option<Vec<AnthropicSystemBlock>>, Vec<AnthropicMessage>) {
+    let mut system_text: Option<String> = None;
     let mut out: Vec<AnthropicMessage> = Vec::new();
 
     for msg in messages {
@@ -249,12 +264,12 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<AnthropicMessa
             Role::System => {
                 // Anthropic only supports a single system prompt; concat if multiple.
                 let text = msg.text_content();
-                match &mut system {
+                match &mut system_text {
                     Some(existing) => {
                         existing.push('\n');
                         existing.push_str(&text);
                     }
-                    None => system = Some(text),
+                    None => system_text = Some(text),
                 }
             }
             Role::User => {
@@ -354,23 +369,46 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<AnthropicMessa
         }
     }
 
+    // Wrap system text in content blocks with cache_control for prompt caching.
+    // Anthropic caches everything up to a cache_control breakpoint, so placing
+    // one on the system block ensures the system prompt is cached across turns.
+    let system = system_text.map(|text| vec![AnthropicSystemBlock {
+        r#type: "text".to_string(),
+        text,
+        cache_control: Some(CacheControl {
+            r#type: "ephemeral".to_string(),
+        }),
+    }]);
+
     (system, out)
 }
 
 fn convert_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
+    let len = tools.len();
     tools
         .iter()
-        .map(|t| AnthropicTool {
+        .enumerate()
+        .map(|(i, t)| AnthropicTool {
             name: t.name.clone(),
             description: t.description.clone(),
             input_schema: t.parameters.clone(),
+            // Place cache_control breakpoint on the last tool definition.
+            // Anthropic caches everything UP TO the breakpoint, so this
+            // ensures all tool definitions (+ system prompt) are cached.
+            cache_control: if i == len - 1 {
+                Some(CacheControl {
+                    r#type: "ephemeral".to_string(),
+                })
+            } else {
+                None
+            },
         })
         .collect()
 }
 
 fn build_request_body(
     request: &CompletionRequest,
-    system: Option<String>,
+    system: Option<Vec<AnthropicSystemBlock>>,
     messages: Vec<AnthropicMessage>,
     stream: bool,
 ) -> AnthropicRequest {
@@ -682,6 +720,7 @@ impl LlmProvider for AnthropicProvider {
             .post(&url)
             .header("x-api-key", api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", "prompt-caching-2024-07-31")
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
@@ -768,6 +807,7 @@ impl LlmProvider for AnthropicProvider {
             .post(&url)
             .header("x-api-key", api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", "prompt-caching-2024-07-31")
             .header("Content-Type", "application/json")
             .json(&body)
             .send()

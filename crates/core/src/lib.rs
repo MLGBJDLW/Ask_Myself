@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod cache;
 pub mod conversation;
 pub mod db;
 pub mod embed;

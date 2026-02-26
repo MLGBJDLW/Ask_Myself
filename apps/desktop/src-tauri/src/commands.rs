@@ -302,14 +302,19 @@ pub async fn scan_source(
 ) -> Result<IngestResult, String> {
     let db = state.db.clone();
     let sid = source_id.clone();
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         ingest::scan_source_with_progress(&db, &sid, |progress| {
             let _ = app_handle.emit("source:scan-progress", &progress);
         })
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    // Invalidate cached answers that may reference this source.
+    let _ = state.db.invalidate_cache_for_source(&source_id);
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -318,7 +323,7 @@ pub async fn scan_all_sources(
     app_handle: AppHandle,
 ) -> Result<Vec<IngestResult>, String> {
     let db = state.db.clone();
-    tokio::task::spawn_blocking(move || {
+    let results = tokio::task::spawn_blocking(move || {
         let sources = db.list_sources().map_err(|e| e.to_string())?;
         let source_count = sources.len();
         let mut results = Vec::with_capacity(source_count);
@@ -346,7 +351,12 @@ pub async fn scan_all_sources(
         Ok::<_, String>(results)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    // Invalidate all cached answers after re-scanning all sources.
+    let _ = state.db.clear_answer_cache();
+
+    results
 }
 
 // ── Search Commands ─────────────────────────────────────────────────────
@@ -529,6 +539,13 @@ pub fn get_recent_queries(
 #[tauri::command]
 pub fn clear_recent_queries(state: tauri::State<'_, AppState>) -> Result<(), String> {
     state.db.clear_query_logs().map_err(|e| e.to_string())
+}
+
+// ── Answer Cache Commands ───────────────────────────────────────────────
+
+#[tauri::command]
+pub fn clear_answer_cache(state: tauri::State<'_, AppState>) -> Result<usize, String> {
+    state.db.clear_answer_cache().map_err(|e| e.to_string())
 }
 
 // ── Hybrid Search Commands ──────────────────────────────────────────────
@@ -1206,7 +1223,7 @@ pub async fn agent_chat_cmd(
 
     // 6. Build executor config from DB config.
     let executor_config = ExecutorConfig {
-        max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(10),
+        max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(6),
         system_prompt,
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
@@ -1221,7 +1238,25 @@ pub async fn agent_chat_cmd(
             _ => None,
         }),
         provider_type: Some(parse_provider_type(&db_config.provider)),
+        summarization_model: db_config.summarization_model.clone(),
     };
+
+    // 6b. Create a separate summarization provider if configured.
+    let summarization_provider: Option<Box<dyn ask_core::llm::LlmProvider>> =
+        if let Some(ref summ_provider_name) = db_config.summarization_provider {
+            let summ_config = ProviderConfig {
+                provider_type: parse_provider_type(summ_provider_name),
+                api_key: Some(db_config.api_key.clone()),
+                base_url: db_config.base_url.clone(),
+                org_id: None,
+            };
+            create_provider(summ_config).ok()
+        } else if db_config.summarization_model.is_some() {
+            // Same provider, different model — reuse the main provider config.
+            None
+        } else {
+            None
+        };
 
     // 7. Create tool registry.
     let tools = default_tool_registry();
@@ -1266,8 +1301,11 @@ pub async fn agent_chat_cmd(
         // Run the agent.  The executor now saves ALL messages (intermediate
         // tool-call assistants, tool results, and the final answer) to the DB
         // using incrementing sort_order starting at `assistant_sort_order`.
-        let executor = AgentExecutor::new(provider, tools, executor_config)
+        let mut executor = AgentExecutor::new(provider, tools, executor_config)
             .with_cancel_token(cancel_token);
+        if let Some(summ_provider) = summarization_provider {
+            executor = executor.with_summarization_provider(summ_provider);
+        }
         let run_future = executor.run(
             history,
             user_parts,

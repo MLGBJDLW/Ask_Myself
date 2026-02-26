@@ -286,6 +286,7 @@ export const zhTW: TranslationKeys = {
   'chat.stop': 'Stop',
   'chat.retry': 'Retry',
   'chat.copyMessage': 'Copy message',
+  'chat.copyCode': 'Copy',
   'chat.copied': 'Copied!',
   'chat.noProvider': 'No AI provider configured',
   'chat.noProviderDesc': 'Configure an AI provider in settings to start chatting.',
@@ -334,6 +335,28 @@ export const zhTW: TranslationKeys = {
   'chat.tokensShort': '權杖',
   'chat.removeAttachment': '移除附件',
   'chat.attachImage': '新增圖片',
+  'chat.scrollToBottom': '捲動至底部',
+  'chat.errorOccurred': '發生錯誤',
+  'chat.dismiss': '關閉',
+  'chat.userMessage': 'User message',
+  'chat.assistantResponse': 'Assistant response',
+  'chat.messageArea': 'Chat messages',
+  'chat.edit': 'Edit',
+  'chat.delete': 'Delete',
+  'chat.confirmDelete': 'Confirm?',
+  'chat.save': 'Save',
+  'chat.cancel': 'Cancel',
+  'chat.editing': 'Editing message',
+  'chat.toggleSidebar': '切換側邊欄',
+  'chat.startNewChat': '開始新對話',
+  'chat.loadingMessages': '載入訊息中...',
+  'chat.dragDropHint': '拖放圖片到此處',
+
+  // Citations
+  'citation.evidence': '證據',
+  'citation.openFile': '開啟檔案',
+  'citation.showInFolder': '在資料夾中顯示',
+  'citation.copy': '複製',
 
   // Time
   'time.justNow': '剛剛',
@@ -341,6 +364,8 @@ export const zhTW: TranslationKeys = {
   'time.hourShort': '時',
   'time.dayShort': '天',
   'time.monthShort': '月',
+  'time.minutesAgo': '{n}分鐘前',
+  'time.hoursAgo': '{n}小時前',
 
   // Settings - AI Providers
   'settings.aiProviders': 'AI Providers',
@@ -391,6 +416,12 @@ export const zhTW: TranslationKeys = {
   'settings.reasoningEffortHelp': '推理強度等級。適用於OpenAI o系列模型。',
   'settings.maxIterations': '最大工具迭代次數',
   'settings.maxIterationsHelp': '每條訊息的最大工具呼叫往返次數。預設為 10，深度研究任務可適當增加。',
+  'settings.summarizationSection': '摘要（節省費用）',
+  'settings.summarizationHelp': '使用更便宜的模型來生成對話摘要。如果留空，則使用主模型。',
+  'settings.summarizationModel': '摘要模型',
+  'settings.summarizationProvider': '摘要提供商',
+  'settings.sameAsMain': '與主提供商相同',
+  'settings.summarizationProviderHelp': '僅在摘要模型使用與主模型不同的提供商時才需要更改。',
 
   // Common
   'common.save': '儲存',

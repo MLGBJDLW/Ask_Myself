@@ -286,6 +286,7 @@ export const ko: TranslationKeys = {
   'chat.stop': 'Stop',
   'chat.retry': 'Retry',
   'chat.copyMessage': 'Copy message',
+  'chat.copyCode': 'Copy',
   'chat.copied': 'Copied!',
   'chat.noProvider': 'No AI provider configured',
   'chat.noProviderDesc': 'Configure an AI provider in settings to start chatting.',
@@ -334,6 +335,28 @@ export const ko: TranslationKeys = {
   'chat.tokensShort': '토큰',
   'chat.removeAttachment': '첨부 파일 제거',
   'chat.attachImage': '이미지 첨부',
+  'chat.scrollToBottom': '맨 아래로 스크롤',
+  'chat.errorOccurred': '오류가 발생했습니다',
+  'chat.dismiss': '닫기',
+  'chat.userMessage': 'User message',
+  'chat.assistantResponse': 'Assistant response',
+  'chat.messageArea': 'Chat messages',
+  'chat.edit': 'Edit',
+  'chat.delete': 'Delete',
+  'chat.confirmDelete': 'Confirm?',
+  'chat.save': 'Save',
+  'chat.cancel': 'Cancel',
+  'chat.editing': 'Editing message',
+  'chat.toggleSidebar': '사이드바 전환',
+  'chat.startNewChat': '새 채팅 시작',
+  'chat.loadingMessages': '메시지 로딩 중...',
+  'chat.dragDropHint': '여기에 이미지를 놓으세요',
+
+  // Citations
+  'citation.evidence': '증거',
+  'citation.openFile': '파일 열기',
+  'citation.showInFolder': '폴더에서 보기',
+  'citation.copy': '복사',
 
   // Time
   'time.justNow': '방금',
@@ -341,6 +364,8 @@ export const ko: TranslationKeys = {
   'time.hourShort': '시',
   'time.dayShort': '일',
   'time.monthShort': '월',
+  'time.minutesAgo': '{n}분 전',
+  'time.hoursAgo': '{n}시간 전',
 
   // Settings - AI Providers
   'settings.aiProviders': 'AI Providers',
@@ -391,6 +416,12 @@ export const ko: TranslationKeys = {
   'settings.reasoningEffortHelp': '추론 강도 수준. OpenAI o 시리즈 모델에서 사용됩니다.',
   'settings.maxIterations': '최대 도구 반복 횟수',
   'settings.maxIterationsHelp': '메시지당 최대 도구 사용 왕복 횟수. 기본값은 10. 심층 연구 작업에는 늘리세요.',
+  'settings.summarizationSection': '요약 (비용 절감)',
+  'settings.summarizationHelp': '대화 요약에 더 저렴한 모델을 사용합니다. 비어 있으면 기본 모델이 사용됩니다.',
+  'settings.summarizationModel': '요약 모델',
+  'settings.summarizationProvider': '요약 제공자',
+  'settings.sameAsMain': '기본 제공자와 동일',
+  'settings.summarizationProviderHelp': '요약 모델이 기본 모델과 다른 제공자를 사용하는 경우에만 변경하세요.',
 
   // Common
   'common.save': '저장',
