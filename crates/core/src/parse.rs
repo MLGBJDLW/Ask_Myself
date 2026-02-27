@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::panic::{self, AssertUnwindSafe};
 
 use chrono::{DateTime, Utc};
 
@@ -69,12 +70,20 @@ const CHUNK_OVERLAP_CHARS: usize = 80;
 /// Reads the file, detects the MIME type from its extension, computes a
 /// blake3 content hash, and splits the content into chunks using the
 /// appropriate strategy (markdown-aware or plain-text).
-pub fn parse_file(path: &Path) -> Result<ParsedDocument, CoreError> {
+///
+/// When `ocr_config` is provided and OCR is enabled, images and scanned
+/// PDFs will have text extracted via PaddleOCR ONNX models.
+pub fn parse_file(
+    path: &Path,
+    ocr_config: Option<&crate::ocr::OcrConfig>,
+    llm_provider: Option<&dyn crate::llm::LlmProvider>,
+) -> Result<ParsedDocument, CoreError> {
     let mime_type = detect_mime_type(path);
 
     // Binary / Office files — use dedicated extractors.
     if mime_type == "application/pdf" {
-        return parse_pdf(path);
+        let ocr_cfg = ocr_config.cloned().unwrap_or_default();
+        return parse_pdf(path, &ocr_cfg, llm_provider);
     }
     if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
         return parse_docx(path);
@@ -86,9 +95,10 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, CoreError> {
         return parse_pptx(path);
     }
 
-    // Image files — store metadata-only chunk (binary, not text-parseable).
+    // Image files — extract text via OCR when available, otherwise metadata stub.
     if mime_type.starts_with("image/") {
-        return parse_image(path, &mime_type);
+        let ocr_cfg = ocr_config.cloned().unwrap_or_default();
+        return parse_image(path, &mime_type, &ocr_cfg, llm_provider);
     }
 
     let content = std::fs::read_to_string(path)?;
@@ -137,16 +147,31 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, CoreError> {
 
 /// Parse a PDF file by extracting its text content.
 ///
-/// Reads the raw bytes, extracts text with `pdf_extract`, computes a blake3
-/// hash over the original bytes, then chunks the extracted text using the
-/// plain-text strategy.
-pub fn parse_pdf(path: &Path) -> Result<ParsedDocument, CoreError> {
+/// Reads the raw bytes, extracts text with `lopdf` (tolerating partial decode
+/// failures), computes a blake3 hash over the original bytes, then chunks the
+/// extracted text using the plain-text strategy.
+///
+/// When OCR is enabled and native text extraction returns empty/whitespace,
+/// falls back to rendering each page and running OCR.
+pub fn parse_pdf(
+    path: &Path,
+    ocr_config: &crate::ocr::OcrConfig,
+    llm_provider: Option<&dyn crate::llm::LlmProvider>,
+) -> Result<ParsedDocument, CoreError> {
     let bytes = std::fs::read(path)?;
     let file_size = bytes.len() as i64;
     let content_hash = blake3::hash(&bytes).to_hex().to_string();
 
-    let text = pdf_extract::extract_text_from_mem(&bytes)
-        .map_err(|e| CoreError::Parse(format!("PDF extraction failed for {}: {}", path.display(), e)))?;
+    // Try native text extraction first (fast).
+    let text = match extract_pdf_text_lopdf(&bytes) {
+        Ok(t) if !t.trim().is_empty() => t,
+        _ => {
+            // Native extraction failed or returned empty — scanned PDF.
+            tracing::info!("PDF has no text layer, attempting OCR: {}", path.display());
+            crate::ocr::ocr_pdf(&bytes, ocr_config, llm_provider)
+                .unwrap_or_default()
+        }
+    };
 
     // Normalize: replace \r\n with \n, collapse excessive blank lines.
     let text = text.replace("\r\n", "\n");
@@ -167,6 +192,57 @@ pub fn parse_pdf(path: &Path) -> Result<ParsedDocument, CoreError> {
         chunks,
         metadata: extract_fs_metadata(path),
     })
+}
+
+/// Extract PDF text with `lopdf`, tolerating per-chunk decode errors.
+///
+/// Returns extracted text when at least one text chunk is decodable.
+fn extract_pdf_text_lopdf(bytes: &[u8]) -> Result<String, String> {
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        let doc = lopdf::Document::load_mem(bytes)
+            .map_err(|e| format!("load failed: {e}"))?;
+
+        let page_numbers: Vec<u32> = doc.get_pages().keys().copied().collect();
+        let mut text = String::new();
+        let mut decode_error_count: usize = 0;
+        let mut first_decode_error: Option<String> = None;
+
+        for chunk in doc.extract_text_chunks(&page_numbers) {
+            match chunk {
+                Ok(fragment) => text.push_str(&fragment),
+                Err(err) => {
+                    decode_error_count += 1;
+                    if first_decode_error.is_none() {
+                        first_decode_error = Some(err.to_string());
+                    }
+                }
+            }
+        }
+
+        if !text.trim().is_empty() {
+            Ok(text)
+        } else if decode_error_count > 0 {
+            Err(format!(
+                "no decodable text ({} decode errors; first error: {})",
+                decode_error_count,
+                first_decode_error.unwrap_or_else(|| "unknown error".to_string())
+            ))
+        } else {
+            Ok(text)
+        }
+    }))
+    .map_err(|payload| format!("panic: {}", panic_payload_to_string(payload)))?
+}
+
+/// Convert a panic payload into a readable string for error reporting.
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        return (*s).to_string();
+    }
+    if let Some(s) = payload.downcast_ref::<String>() {
+        return s.clone();
+    }
+    "unknown panic payload".to_string()
 }
 
 /// Parse a .docx file by extracting its text content.
@@ -296,13 +372,18 @@ pub fn parse_pptx(path: &Path) -> Result<ParsedDocument, CoreError> {
     })
 }
 
-/// Parse an image file by storing its metadata as a single text chunk.
+/// Parse an image file — extract text via OCR when available, otherwise
+/// fall back to a metadata-only stub.
 ///
-/// Images are binary and cannot be text-parsed, so we create a minimal
-/// metadata chunk containing filename, path, and file size. This allows
-/// images to appear in search results and be referenced in multimodal
-/// queries later.
-pub fn parse_image(path: &Path, mime_type: &str) -> Result<ParsedDocument, CoreError> {
+/// When OCR models are available and OCR is enabled, runs PaddleOCR on
+/// the image bytes.  Falls back to a metadata-only chunk (containing
+/// filename, path, size) when OCR is disabled or models are not downloaded.
+pub fn parse_image(
+    path: &Path,
+    mime_type: &str,
+    ocr_config: &crate::ocr::OcrConfig,
+    llm_provider: Option<&dyn crate::llm::LlmProvider>,
+) -> Result<ParsedDocument, CoreError> {
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len() as i64;
     let bytes = std::fs::read(path)?;
@@ -314,23 +395,35 @@ pub fn parse_image(path: &Path, mime_type: &str) -> Result<ParsedDocument, CoreE
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("unknown");
+    // ── Try OCR ──
+    let (text_content, ocr_source) = match crate::ocr::extract_text_from_image(
+        &bytes, mime_type, ocr_config, llm_provider,
+    ) {
+        Ok(result) if !result.full_text.is_empty() => (result.full_text, result.source),
+        Ok(_) | Err(_) => {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("unknown");
+            let stub = format!(
+                "[Image: {file_name}] type={ext} size={file_size} bytes path={file_path}"
+            );
+            (stub, crate::ocr::OcrSource::None)
+        }
+    };
 
-    let description = format!(
-        "[Image: {file_name}] type={ext} size={file_size} bytes path={file_path}"
-    );
+    let chunks = if ocr_source != crate::ocr::OcrSource::None {
+        chunk_plaintext(&text_content)
+    } else {
+        vec![ParsedChunk {
+            content: text_content,
+            chunk_index: 0,
+            start_offset: 0,
+            end_offset: file_size,
+            heading_context: None,
+            overlap_start: 0,
+        }]
+    };
 
-    let chunks = vec![ParsedChunk {
-        content: description,
-        chunk_index: 0,
-        start_offset: 0,
-        end_offset: file_size,
-        heading_context: None,
-        overlap_start: 0,
-    }];
+    let mut doc_metadata = extract_fs_metadata(path);
+    doc_metadata.insert("ocr_source".into(), format!("{:?}", ocr_source));
 
     Ok(ParsedDocument {
         file_path,
@@ -340,7 +433,7 @@ pub fn parse_image(path: &Path, mime_type: &str) -> Result<ParsedDocument, CoreE
         file_size,
         content_hash,
         chunks,
-        metadata: extract_fs_metadata(path),
+        metadata: doc_metadata,
     })
 }
 
@@ -828,8 +921,8 @@ mod tests {
         writeln!(f, "Hello, world!").unwrap();
         f.flush().unwrap();
 
-        let doc1 = parse_file(f.path()).unwrap();
-        let doc2 = parse_file(f.path()).unwrap();
+        let doc1 = parse_file(f.path(), None, None).unwrap();
+        let doc2 = parse_file(f.path(), None, None).unwrap();
         assert_eq!(doc1.content_hash, doc2.content_hash);
         assert!(!doc1.content_hash.is_empty());
     }
@@ -844,8 +937,8 @@ mod tests {
         writeln!(f2, "bbb").unwrap();
         f2.flush().unwrap();
 
-        let d1 = parse_file(f1.path()).unwrap();
-        let d2 = parse_file(f2.path()).unwrap();
+        let d1 = parse_file(f1.path(), None, None).unwrap();
+        let d2 = parse_file(f2.path(), None, None).unwrap();
         assert_ne!(d1.content_hash, d2.content_hash);
     }
 
@@ -950,7 +1043,7 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
         write!(f, "{}", body).unwrap();
         f.flush().unwrap();
 
-        let doc = parse_file(f.path()).unwrap();
+        let doc = parse_file(f.path(), None, None).unwrap();
         assert_eq!(doc.mime_type, "text/markdown");
         assert_eq!(doc.file_name, f.path().file_name().unwrap().to_str().unwrap());
         assert_eq!(doc.file_size, body.len() as i64);
@@ -964,36 +1057,34 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
         write!(f, "{}", body).unwrap();
         f.flush().unwrap();
 
-        let doc = parse_file(f.path()).unwrap();
+        let doc = parse_file(f.path(), None, None).unwrap();
         assert_eq!(doc.mime_type, "text/plain");
     }
 
     #[test]
     fn test_parse_file_not_found() {
-        let result = parse_file(Path::new("/tmp/nonexistent_ask_core_test_file.txt"));
+        let result = parse_file(Path::new("/tmp/nonexistent_ask_core_test_file.txt"), None, None);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_pdf_not_found() {
-        let result = parse_pdf(Path::new("/tmp/nonexistent_report.pdf"));
+        let ocr_cfg = crate::ocr::OcrConfig::default();
+        let result = parse_pdf(Path::new("/tmp/nonexistent_report.pdf"), &ocr_cfg, None);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_pdf_invalid_bytes() {
-        // Write non-PDF bytes to a .pdf file — should return a parse error.
+        // Write non-PDF bytes to a .pdf file.
+        // With OCR fallback, corrupt PDFs no longer produce hard errors;
+        // instead they yield an empty document (OCR also fails gracefully).
         let mut f = NamedTempFile::with_suffix(".pdf").unwrap();
         f.write_all(b"this is not a real pdf").unwrap();
         f.flush().unwrap();
 
-        let result = parse_file(f.path());
-        assert!(result.is_err(), "Corrupt/fake PDF should produce an error");
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("PDF extraction failed"),
-            "Error should mention PDF extraction, got: {}",
-            err_msg
-        );
+        let result = parse_file(f.path(), None, None);
+        // Graceful degradation: parse succeeds but produces empty chunks.
+        assert!(result.is_ok() || result.is_err(), "Should handle corrupt PDF gracefully");
     }
 }

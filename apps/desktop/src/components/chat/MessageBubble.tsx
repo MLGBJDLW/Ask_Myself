@@ -23,6 +23,8 @@ export interface MessageBubbleProps {
   citationLookup?: { getCard(chunkId: string): CitationCardData | undefined };
   /** Show retry button on this message */
   isLastAssistant?: boolean;
+  /** Whether the last response came from cache */
+  lastCached?: boolean;
   /** Called when retry is clicked */
   onRetry?: () => void;
   /** Always show timestamp (when gap > 5min) */
@@ -37,7 +39,7 @@ export interface MessageBubbleProps {
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAssistant, onRetry, alwaysShowTimestamp, onDeleteMessage, onEditAndResend }: MessageBubbleProps) {
+function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAssistant, lastCached, onRetry, alwaysShowTimestamp, onDeleteMessage, onEditAndResend }: MessageBubbleProps) {
   const { t } = useTranslation();
   const isUser = msg.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
@@ -123,6 +125,11 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
               title={`${msg.tokenCount.toLocaleString()} tokens`}
             >
               {msg.tokenCount.toLocaleString()} {t('chat.tokensShort')}
+            </span>
+          )}
+          {isLastAssistant && lastCached && !isEditing && (
+            <span className="absolute top-1 right-2 text-[9px] text-accent/70 select-none" title={t('chat.cached')}>
+              ⚡ {t('chat.cached')}
             </span>
           )}
           {isEditing ? (

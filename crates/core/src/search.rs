@@ -1,12 +1,11 @@
 //! Search module — query execution and result ranking.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-
-use std::collections::HashMap;
 
 use crate::db::Database;
 use crate::embed::{cosine_similarity, create_embedder, Embedder, TfIdfEmbedder};
@@ -116,15 +115,19 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
     }
 
     if !filters.file_types.is_empty() {
-        let placeholders: Vec<String> = filters
+        let all_mimes: Vec<String> = filters
             .file_types
+            .iter()
+            .flat_map(file_type_to_mimes)
+            .collect();
+        let placeholders: Vec<String> = all_mimes
             .iter()
             .enumerate()
             .map(|(i, _)| format!("?{}", param_idx + i))
             .collect();
         sql.push_str(&format!(" AND d.mime_type IN ({})", placeholders.join(",")));
-        for ft in &filters.file_types {
-            param_values.push(Box::new(file_type_to_mime(ft)));
+        for mime in all_mimes {
+            param_values.push(Box::new(mime));
             param_idx += 1;
         }
     }
@@ -226,15 +229,19 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
                 }
             }
             if !filters.file_types.is_empty() {
-                let placeholders: Vec<String> = filters
+                let all_mimes: Vec<String> = filters
                     .file_types
+                    .iter()
+                    .flat_map(file_type_to_mimes)
+                    .collect();
+                let placeholders: Vec<String> = all_mimes
                     .iter()
                     .enumerate()
                     .map(|(i, _)| format!("?{}", cp_idx + i))
                     .collect();
                 count_sql.push_str(&format!(" AND d.mime_type IN ({})", placeholders.join(",")));
-                for ft in &filters.file_types {
-                    count_params.push(Box::new(file_type_to_mime(ft)));
+                for mime in all_mimes {
+                    count_params.push(Box::new(mime));
                     cp_idx += 1;
                 }
             }
@@ -907,23 +914,28 @@ fn extract_document_date(metadata_json: &str) -> Option<String> {
         .cloned()
 }
 
-/// Convert a [`FileType`] enum variant to the MIME string stored in the DB.
-fn file_type_to_mime(ft: &FileType) -> String {
+/// Convert a [`FileType`] enum variant to the MIME string(s) stored in the DB.
+fn file_type_to_mimes(ft: &FileType) -> Vec<String> {
     match ft {
-        FileType::Markdown => "text/markdown".to_string(),
-        FileType::PlainText => "text/plain".to_string(),
-        FileType::Log => "text/x-log".to_string(),
-        FileType::Pdf => "application/pdf".to_string(),
+        FileType::Markdown => vec!["text/markdown".to_string()],
+        FileType::PlainText => vec!["text/plain".to_string()],
+        FileType::Log => vec!["text/x-log".to_string()],
+        FileType::Pdf => vec!["application/pdf".to_string()],
         FileType::Docx => {
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
+            vec!["application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()]
         }
         FileType::Excel => {
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string()
+            vec!["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string()]
         }
         FileType::Pptx => {
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string()
+            vec!["application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string()]
         }
-        FileType::Image => "image/jpeg".to_string(),
+        FileType::Image => vec![
+            "image/jpeg".to_string(),
+            "image/png".to_string(),
+            "image/gif".to_string(),
+            "image/webp".to_string(),
+        ],
     }
 }
 

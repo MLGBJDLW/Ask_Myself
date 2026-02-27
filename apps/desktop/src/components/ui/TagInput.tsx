@@ -1,4 +1,5 @@
 import { useState, useCallback, type KeyboardEvent, type ChangeEvent } from 'react';
+import { useTranslation } from '../../i18n';
 
 interface TagInputProps {
   value: string;
@@ -6,6 +7,7 @@ interface TagInputProps {
   presets?: { label: string; value: string }[];
   placeholder?: string;
   label?: string;
+  showSelectAll?: boolean;
 }
 
 export function parseTags(value: string): string[] {
@@ -38,7 +40,9 @@ export function TagInput({
   presets,
   placeholder = 'Type and press Enter…',
   label,
+  showSelectAll,
 }: TagInputProps) {
+  const { t } = useTranslation();
   const [inputValue, setInputValue] = useState('');
   const tags = parseTags(value);
   const tagSet = new Set(tags);
@@ -158,6 +162,37 @@ export function TagInput({
       {/* Preset buttons */}
       {presets && presets.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
+          {showSelectAll && (() => {
+            const allActive = presets.every((p) => tagSet.has(p.value));
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  if (allActive) {
+                    // Clear all preset values
+                    const presetValues = new Set(presets.map((p) => p.value));
+                    onChange(joinTags(tags.filter((t) => !presetValues.has(t))));
+                  } else {
+                    // Add all missing presets
+                    const missing = presets.filter((p) => !tagSet.has(p.value)).map((p) => p.value);
+                    onChange(joinTags([...tags, ...missing]));
+                  }
+                }}
+                className={`
+                  inline-flex items-center px-2 py-0.5 text-[11px] font-semibold
+                  rounded-full cursor-pointer select-none
+                  transition-colors duration-fast ease-out
+                  ${
+                    allActive
+                      ? 'bg-red-500/15 text-red-400 border border-red-500/40 hover:bg-red-500/25'
+                      : 'bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20'
+                  }
+                `}
+              >
+                {allActive ? t('common.clearAll') : t('common.selectAll')}
+              </button>
+            );
+          })()}
           {presets.map((preset) => {
             const active = tagSet.has(preset.value);
             return (

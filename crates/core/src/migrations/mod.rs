@@ -1,47 +1,65 @@
 /// Schema migration runner for ask-core.
 ///
-/// Embeds SQL migration files and applies them in order,
-/// tracking applied migrations in a `_migrations` table.
+/// Uses a single consolidated schema for fresh installs, with support
+/// for future incremental migrations (v017+). Tracks applied migrations
+/// in a `_migrations` table.
 
 use rusqlite::Connection;
 
 use crate::error::CoreError;
 
-const V001_CORE_TABLES: &str = include_str!("v001_core_tables.sql");
-const V002_FTS5: &str = include_str!("v002_fts5.sql");
-const V003_PLAYBOOKS: &str = include_str!("v003_playbooks.sql");
-const V004_EMBEDDINGS_FEEDBACK: &str = include_str!("v004_embeddings_feedback.sql");
-const V005_PRIVACY_CONFIG: &str = include_str!("v005_privacy_config.sql");
-const V006_EMBEDDER_CONFIG: &str = include_str!("v006_embedder_config.sql");
-const V007_CONVERSATIONS: &str = include_str!("v007_conversations.sql");
-const V008_AGENT_CONFIG_CONTEXT_WINDOW: &str = include_str!("v008_agent_config_context_window.sql");
-const V009_CONVERSATION_SOURCES: &str = include_str!("v009_conversation_sources.sql");
-const V010_AGENT_CONFIG_REASONING: &str = include_str!("v010_agent_config_reasoning.sql");
-const V011_MESSAGE_THINKING: &str = include_str!("v011_message_thinking.sql");
-const V012_AGENT_CONFIG_MAX_ITERATIONS: &str =
-    include_str!("v012_agent_config_max_iterations.sql");
-const V013_DOCUMENT_METADATA: &str = include_str!("v013_document_metadata.sql");
-const V014_AGENT_CONFIG_SUMMARIZATION: &str =
-    include_str!("v014_agent_config_summarization.sql");
-const V015_ANSWER_CACHE: &str = include_str!("v015_answer_cache.sql");
+/// Consolidated schema covering v001–v016 for fresh installs.
+const V_INITIAL_CONSOLIDATED: &str = include_str!("v_initial_consolidated.sql");
 
-/// Ordered list of migrations to apply.
-const MIGRATIONS: &[(&str, &str)] = &[
-    ("v001_core_tables", V001_CORE_TABLES),
-    ("v002_fts5", V002_FTS5),
-    ("v003_playbooks", V003_PLAYBOOKS),
-    ("v004_embeddings_feedback", V004_EMBEDDINGS_FEEDBACK),
-    ("v005_privacy_config", V005_PRIVACY_CONFIG),
-    ("v006_embedder_config", V006_EMBEDDER_CONFIG),
-    ("v007_conversations", V007_CONVERSATIONS),
-    ("v008_agent_config_context_window", V008_AGENT_CONFIG_CONTEXT_WINDOW),
-    ("v009_conversation_sources", V009_CONVERSATION_SOURCES),
-    ("v010_agent_config_reasoning", V010_AGENT_CONFIG_REASONING),
-    ("v011_message_thinking", V011_MESSAGE_THINKING),
-    ("v012_agent_config_max_iterations", V012_AGENT_CONFIG_MAX_ITERATIONS),
-    ("v013_document_metadata", V013_DOCUMENT_METADATA),
-    ("v014_agent_config_summarization", V014_AGENT_CONFIG_SUMMARIZATION),
-    ("v015_answer_cache", V015_ANSWER_CACHE),
+/// Names of the original v001–v016 migrations (now consolidated).
+const MIGRATION_NAMES: &[&str] = &[
+    "v001_core_tables",
+    "v002_fts5",
+    "v003_playbooks",
+    "v004_embeddings_feedback",
+    "v005_privacy_config",
+    "v006_embedder_config",
+    "v007_conversations",
+    "v008_agent_config_context_window",
+    "v009_conversation_sources",
+    "v010_agent_config_reasoning",
+    "v011_message_thinking",
+    "v012_agent_config_max_iterations",
+    "v013_document_metadata",
+    "v014_agent_config_summarization",
+    "v015_answer_cache",
+];
+
+/// Future incremental migrations (v017+). Add new entries here.
+/// Each entry is `(name, sql)`.
+const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
+    ("v016_ocr_config",
+     "CREATE TABLE IF NOT EXISTS ocr_config (
+          key TEXT PRIMARY KEY NOT NULL,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );"),
+    ("v017_conversation_checkpoints",
+     "CREATE TABLE IF NOT EXISTS conversation_checkpoints (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+          label TEXT NOT NULL DEFAULT '',
+          message_count INTEGER NOT NULL,
+          estimated_tokens INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS archived_messages (
+          id TEXT PRIMARY KEY,
+          checkpoint_id TEXT NOT NULL REFERENCES conversation_checkpoints(id) ON DELETE CASCADE,
+          conversation_id TEXT NOT NULL,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL DEFAULT '',
+          tool_call_id TEXT,
+          tool_calls_json TEXT,
+          token_count INTEGER NOT NULL DEFAULT 0,
+          original_sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );"),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -58,33 +76,78 @@ fn ensure_migrations_table(conn: &Connection) -> Result<(), CoreError> {
 
 /// Runs all pending migrations against the given connection.
 ///
-/// Migrations are applied inside individual transactions so that a
-/// failure in one migration does not silently leave the database in a
-/// half-migrated state.
+/// - Fresh DB (empty `_migrations`): runs the consolidated schema and
+///   records all `MIGRATION_NAMES` plus any `FUTURE_MIGRATIONS`.
+/// - Existing DB: verifies consolidated names are present (marks any
+///   missing ones as applied), then applies any un-applied future
+///   migrations.
 pub fn run_migrations(conn: &Connection) -> Result<(), CoreError> {
     ensure_migrations_table(conn)?;
 
-    for (name, sql) in MIGRATIONS {
+    let migration_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM _migrations",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if migration_count == 0 {
+        // Fresh install: apply consolidated schema.
+        tracing::info!("Fresh install detected – applying consolidated schema…");
+        conn.execute_batch(V_INITIAL_CONSOLIDATED)?;
+        for name in MIGRATION_NAMES {
+            conn.execute(
+                "INSERT INTO _migrations (name) VALUES (?1)",
+                [name],
+            )?;
+        }
+    } else {
+        // Existing DB: ensure all consolidated names are recorded.
+        for name in MIGRATION_NAMES {
+            let already_applied: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM _migrations WHERE name = ?1)",
+                [name],
+                |row| row.get(0),
+            )?;
+            if !already_applied {
+                tracing::warn!(
+                    "Migration '{name}' not in _migrations table but DB exists; marking as applied."
+                );
+                conn.execute(
+                    "INSERT INTO _migrations (name) VALUES (?1)",
+                    [name],
+                )?;
+            }
+        }
+    }
+
+    // Apply any future incremental migrations.
+    for (name, sql) in FUTURE_MIGRATIONS {
         let already_applied: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM _migrations WHERE name = ?1)",
             [name],
             |row| row.get(0),
         )?;
 
-        if already_applied {
-            tracing::debug!("Migration '{name}' already applied, skipping.");
-            continue;
-        }
-
-        tracing::info!("Applying migration '{name}'…");
+        // Always execute — uses IF NOT EXISTS, safe to re-run.
+        // Self-heals databases where name was recorded without SQL running.
         conn.execute_batch(sql)?;
-        conn.execute(
-            "INSERT INTO _migrations (name) VALUES (?1)",
-            [name],
-        )?;
+
+        if !already_applied {
+            tracing::info!("Applying migration '{name}'…");
+            conn.execute(
+                "INSERT INTO _migrations (name) VALUES (?1)",
+                [name],
+            )?;
+        }
     }
 
     Ok(())
+}
+
+/// Total number of all migration names (consolidated + future).
+#[cfg(test)]
+fn total_migration_count() -> usize {
+    MIGRATION_NAMES.len() + FUTURE_MIGRATIONS.len()
 }
 
 #[cfg(test)]
@@ -127,6 +190,11 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM _migrations", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, MIGRATIONS.len() as i64, "should have exactly {} migration records", MIGRATIONS.len());
+        assert_eq!(
+            count,
+            total_migration_count() as i64,
+            "should have exactly {} migration records",
+            total_migration_count()
+        );
     }
 }

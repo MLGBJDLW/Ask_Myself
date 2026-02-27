@@ -14,6 +14,7 @@ import type {
 } from "../types";
 import type { PrivacyConfig } from "../types/privacy";
 import type { EmbedderConfig } from "../types/embedder";
+import type { OcrConfig } from "../types/ocr";
 import type {
   AgentConfig,
   SaveAgentConfigInput,
@@ -21,6 +22,7 @@ import type {
   ConversationMessage,
   ConversationStats,
   ImageAttachment,
+  Checkpoint,
 } from "../types/conversation";
 
 // ── Sources ─────────────────────────────────────────────────────────────
@@ -263,3 +265,34 @@ export const getConversationStats = () =>
 
 export const cleanupEmptyConversations = (daysOld: number) =>
   invoke<number>('cleanup_empty_conversations_cmd', { daysOld });
+
+export const compactConversation = (conversationId: string) =>
+  invoke<void>('compact_conversation_cmd', { conversationId });
+
+// ── Checkpoints ─────────────────────────────────────────────────────
+
+export const listCheckpoints = (conversationId: string) =>
+  invoke<Checkpoint[]>('list_checkpoints_cmd', { conversationId });
+
+export const restoreCheckpoint = (checkpointId: string) =>
+  invoke<ConversationMessage[]>('restore_checkpoint_cmd', { checkpointId });
+
+export const deleteCheckpoint = (checkpointId: string) =>
+  invoke<void>('delete_checkpoint_cmd', { checkpointId });
+
+// ── OCR ─────────────────────────────────────────────────────────────
+
+export const getOcrConfig = () =>
+  invoke<OcrConfig>('get_ocr_config_cmd');
+
+export const saveOcrConfig = (config: OcrConfig) =>
+  invoke<void>('save_ocr_config_cmd', { config });
+
+export const checkOcrModels = (config: OcrConfig) =>
+  invoke<boolean>('check_ocr_models_cmd', { config });
+
+export const downloadOcrModels = (config: OcrConfig) =>
+  invoke<void>('download_ocr_models_cmd', { config });
+
+export const clearAnswerCache = () =>
+  invoke<number>('clear_answer_cache');

@@ -310,7 +310,7 @@ export function ChatSidebar({
   let runningIndex = 0;
 
   return (
-    <div className="flex flex-col h-full bg-surface-1 border-r border-border">
+    <div className="flex flex-col h-full min-h-0 bg-surface-1 border-r border-border">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-3 border-b border-border">
         <div className="flex items-center gap-1.5">
@@ -355,7 +355,7 @@ export function ChatSidebar({
       )}
 
       {/* Conversation list */}
-      <div className="flex-1 overflow-y-auto px-1.5 py-1.5">
+      <div className="flex-1 min-h-0 overflow-y-auto px-1.5 py-1.5">
         {conversations.length === 0 ? (
           <EmptyState
             icon={<MessageCircle className="h-6 w-6" />}

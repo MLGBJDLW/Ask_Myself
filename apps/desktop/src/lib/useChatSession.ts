@@ -48,7 +48,11 @@ export interface UseChatSessionReturn {
   agentConfig: AgentConfig | null;
   contextWindow: number;
   lastUsage: UsageTotal | null;
-  tokenUsage: { promptTokens: number; totalTokens: number; contextWindow: number } | null;
+  tokenUsage: { promptTokens: number; totalTokens: number; contextWindow: number; completionTokens: number; thinkingTokens: number } | null;
+  lastCached: boolean;
+  finishReason: string | null;
+  contextOverflow: boolean;
+  rateLimited: boolean;
   send: (content: string, images?: ImageAttachment[]) => Promise<void>;
   stop: () => void;
   deleteConversation: (id: string) => Promise<void>;
@@ -62,6 +66,7 @@ export interface UseChatSessionReturn {
   retry: () => Promise<void>;
   clearError: () => void;
   loadConversations: () => Promise<void>;
+  reloadMessages: () => Promise<void>;
   deleteMessage: (messageId: string) => void;
   editAndResend: (messageId: string, newContent: string) => Promise<void>;
 }
@@ -86,7 +91,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const [contextWindow, setContextWindow] = useState<number>(0);
   const [chatError, setChatError] = useState<string | null>(null);
 
-  // Internal conversation id for when no external id is provided (ChatPanel case)
+  // Internal conversation id used when the caller does not control routing.
   const [internalConversationId, setInternalConversationId] = useState<string | null>(null);
 
   // The effective active conversation id
@@ -105,6 +110,11 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     toolCalls,
     error: streamError,
     lastUsage,
+    lastCached,
+    finishReason,
+    contextOverflow,
+    rateLimited,
+    autoCompacted,
     reset,
   } = useAgentStream();
 
@@ -173,10 +183,29 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   /* ── Reload messages when streaming completes ───────────────────── */
   useEffect(() => {
+    let cancelled = false;
     if (!isStreaming && activeId && messages.length > 0) {
-      // Re-fetch messages after agent is done
+      // Immediately add an optimistic assistant message from streamText
+      // so content stays visible during the async re-fetch gap.
+      if (streamText.trim()) {
+        const optimisticAssistant: ConversationMessage = {
+          id: `temp-assistant-${Date.now()}`,
+          conversationId: activeId,
+          role: 'assistant',
+          content: streamText,
+          toolCallId: null,
+          toolCalls: [],
+          tokenCount: 0,
+          createdAt: new Date().toISOString(),
+          sortOrder: messages.length,
+          thinking: null,
+        };
+        setMessages(prev => [...prev, optimisticAssistant]);
+      }
+
+      // Re-fetch messages after agent is done (replaces optimistic message)
       api.getConversation(activeId).then(([, msgs]) => {
-        setMessages(msgs);
+        if (!cancelled) setMessages(msgs);
       }).catch(() => {});
       // Also refresh conversation list (updatedAt changes)
       loadConversations();
@@ -190,15 +219,18 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           if (title) {
             api.renameConversation(activeId, title)
               .then(() => {
-                setConversations((prev) =>
-                  prev.map((c) => (c.id === activeId ? { ...c, title } : c)),
-                );
+                if (!cancelled) {
+                  setConversations((prev) =>
+                    prev.map((c) => (c.id === activeId ? { ...c, title } : c)),
+                  );
+                }
               })
               .catch(() => {});
           }
         }
       }
     }
+    return () => { cancelled = true; };
     // Only trigger on isStreaming becoming false
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStreaming]);
@@ -211,11 +243,18 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     }
   }, [streamError]);
 
+  /* ── Handle auto-compacted notification ──────────────────────────── */
+  useEffect(() => {
+    if (autoCompacted) {
+      toast.info(t('chat.autoCompacted'));
+    }
+  }, [autoCompacted, t]);
+
   /* ── Handlers ───────────────────────────────────────────────────── */
 
   const setActiveConversation = useCallback((id: string) => {
-    // When externally controlled, the caller (ChatPage) handles navigation.
-    // For internal mode (ChatPanel), update internal id.
+    // When route-controlled, the caller handles navigation.
+    // In uncontrolled mode, we keep the active id locally.
     setInternalConversationId(id);
   }, []);
 
@@ -385,10 +424,25 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     await streamSend(activeId, newContent);
   }, [activeId, messages, streamSend]);
 
+  /* ── Reload messages (e.g. after compaction) ────────────────────── */
+  const reloadMessages = useCallback(async () => {
+    if (!activeId) return;
+    try {
+      const [, msgs] = await api.getConversation(activeId);
+      setMessages(msgs);
+    } catch { /* ignore */ }
+  }, [activeId]);
+
   /* ── Computed ────────────────────────────────────────────────────── */
 
   const tokenUsage = lastUsage && contextWindow > 0
-    ? { promptTokens: lastUsage.promptTokens, totalTokens: lastUsage.totalTokens, contextWindow }
+    ? {
+        promptTokens: lastUsage.lastPromptTokens ?? lastUsage.promptTokens,
+        totalTokens: lastUsage.totalTokens,
+        contextWindow,
+        completionTokens: lastUsage.completionTokens,
+        thinkingTokens: lastUsage.thinkingTokens ?? 0,
+      }
     : null;
 
   return {
@@ -406,6 +460,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     contextWindow,
     lastUsage,
     tokenUsage,
+    lastCached,
+    finishReason,
+    contextOverflow,
+    rateLimited,
     send,
     stop,
     deleteConversation,
@@ -419,6 +477,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     retry,
     clearError: () => setChatError(null),
     loadConversations,
+    reloadMessages,
     deleteMessage,
     editAndResend,
   };

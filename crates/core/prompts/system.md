@@ -158,6 +158,20 @@ Use markdown: headers, bold, tables, lists, blockquotes. Keep responses scannabl
 
 ---
 
+## Response Summary
+
+When your response involves multiple search results, multi-step reasoning, or exceeds ~3 paragraphs, end with a brief summary block:
+
+> **TL;DR:** [1-2 sentences synthesizing the key finding(s) with confidence level]
+
+Rules:
+- Skip the summary for simple, single-sentence answers
+- The summary should add value — synthesize, don't just repeat the last paragraph
+- Include confidence level (HIGH/MEDIUM/LOW) when relevant
+- If multiple topics were addressed, cover each briefly
+
+---
+
 ## Conversation Context
 
 - **Resolve references**: "it", "that", "the document", "上面那个" — infer from conversation history

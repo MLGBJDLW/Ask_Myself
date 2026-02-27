@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   FolderOpen,
@@ -31,7 +32,6 @@ import { Modal } from '../components/ui/Modal';
 import { CardSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
-import { ChatPanel } from '../components/chat/ChatPanel';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -81,11 +81,40 @@ const listItem = {
 };
 
 /* ------------------------------------------------------------------ */
+/*  Shared preset definitions                                          */
+/* ------------------------------------------------------------------ */
+
+const INCLUDE_PRESETS = [
+  { label: 'Markdown', value: '**/*.md' },
+  { label: 'Text', value: '**/*.txt' },
+  { label: 'HTML', value: '**/*.html' },
+  { label: 'Word', value: '**/*.docx' },
+  { label: 'Excel', value: '**/*.{xlsx,xls}' },
+  { label: 'PowerPoint', value: '**/*.pptx' },
+  { label: 'PDF', value: '**/*.pdf' },
+  { label: 'Image', value: '**/*.{jpg,jpeg,png,gif,webp}' },
+  { label: 'JSON', value: '**/*.json' },
+  { label: 'YAML', value: '**/*.{yml,yaml}' },
+  { label: 'Code', value: '**/*.{ts,js,py,rs}' },
+  { label: 'Log', value: '**/*.log' },
+];
+
+const EXCLUDE_PRESETS = [
+  { label: 'node_modules', value: '**/node_modules/**' },
+  { label: '.git', value: '**/.git/**' },
+  { label: '.obsidian', value: '**/.obsidian/**' },
+  { label: 'dist', value: '**/dist/**' },
+  { label: 'build', value: '**/build/**' },
+  { label: 'target', value: '**/target/**' },
+];
+
+/* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
 export function SourcesPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [sources, setSources] = useState<Source[]>([]);
   const [loading, setLoading] = useState(true);
   const [scanningId, setScanningId] = useState<string | null>(null);
@@ -112,10 +141,6 @@ export function SourcesPage() {
   const [editWatch, setEditWatch] = useState(false);
   const [editing, setEditing] = useState(false);
 
-  // Chat panel
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatMessage, setChatMessage] = useState('');
-
   // Watcher
   const [togglingWatch, setTogglingWatch] = useState<string | null>(null);
 
@@ -123,7 +148,7 @@ export function SourcesPage() {
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
 
-  /* ── Load ─────────────────────────────────────────────────────────── */
+  /* 鈹€鈹€ Load 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const loadSources = useCallback(async () => {
     try {
@@ -140,7 +165,7 @@ export function SourcesPage() {
     loadSources();
   }, [loadSources]);
 
-  /* ── File-change event listener ───────────────────────────────────── */
+  /* 鈹€鈹€ File-change event listener 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   useEffect(() => {
     let cancelled = false;
@@ -170,7 +195,7 @@ export function SourcesPage() {
     };
   }, [sources, loadSources, t]);
 
-  /* ── Scan/embed progress event listener ───────────────────────────── */
+  /* 鈹€鈹€ Scan/embed progress event listener 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   useEffect(() => {
     let cancelled = false;
@@ -193,7 +218,7 @@ export function SourcesPage() {
     };
   }, []);
 
-  /* ── Batch progress event listeners ────────────────────────────── */
+  /* 鈹€鈹€ Batch progress event listeners 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   useEffect(() => {
     let cancelled = false;
@@ -237,7 +262,7 @@ export function SourcesPage() {
     }
   }, [scanningAll, rebuildingEmbeddings]);
 
-  /* ── Watch toggle ────────────────────────────────────────────────── */
+  /* 鈹€鈹€ Watch toggle 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const handleToggleWatch = async (source: Source) => {
     setTogglingWatch(source.id);
@@ -257,7 +282,7 @@ export function SourcesPage() {
     }
   };
 
-  /* ── Add ──────────────────────────────────────────────────────────── */
+  /* 鈹€鈹€ Add 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const resetForm = () => {
     setFormPath('');
@@ -303,7 +328,7 @@ export function SourcesPage() {
     }
   };
 
-  /* ── Delete ───────────────────────────────────────────────────────── */
+  /* 鈹€鈹€ Delete 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
@@ -320,7 +345,7 @@ export function SourcesPage() {
     }
   };
 
-  /* ── Edit ──────────────────────────────────────────────────────────── */
+  /* 鈹€鈹€ Edit 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const openEditModal = (source: Source) => {
     setEditTarget(source);
@@ -346,7 +371,7 @@ export function SourcesPage() {
     }
   };
 
-  /* ── Scan ──────────────────────────────────────────────────────────── */
+  /* 鈹€鈹€ Scan 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const handleScan = async (sourceId: string) => {
     setScanningId(sourceId);
@@ -388,7 +413,7 @@ export function SourcesPage() {
     }
   };
 
-  /* ── Embed ─────────────────────────────────────────────────────────── */
+  /* 鈹€鈹€ Embed 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const handleEmbed = async (sourceId: string) => {
     setEmbeddingId(sourceId);
@@ -417,14 +442,16 @@ export function SourcesPage() {
     }
   };
 
-  /* ── Ask AI handler ────────────────────────────────────────────────── */
+  /* 鈹€鈹€ Ask AI handler 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const handleAskAI = (context: string) => {
-    setChatMessage(context);
-    setChatOpen(true);
+    const trimmed = context.trim();
+    navigate('/chat', {
+      state: trimmed ? { initialMessage: trimmed } : null,
+    });
   };
 
-  /* ── Loading skeleton ──────────────────────────────────────────────── */
+  /* 鈹€鈹€ Loading skeleton 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   if (loading) {
     return (
@@ -440,7 +467,7 @@ export function SourcesPage() {
     );
   }
 
-  /* ── Render ─────────────────────────────────────────────────────────── */
+  /* 鈹€鈹€ Render 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   return (
     <div className="flex h-full">
@@ -588,7 +615,7 @@ export function SourcesPage() {
                           <Badge key={i} variant="success">{g}</Badge>
                         ))}
                         {source.excludeGlobs.map((g, i) => (
-                          <Badge key={`e-${i}`} variant="danger">✕ {g}</Badge>
+                          <Badge key={`e-${i}`} variant="danger">x {g}</Badge>
                         ))}
                       </div>
 
@@ -662,7 +689,7 @@ export function SourcesPage() {
         </motion.div>
       )}
 
-      {/* ── Add Source Modal ──────────────────────────────────────────── */}
+      {/* 鈹€鈹€ Add Source Modal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
       <Modal
         open={showAddModal}
         onClose={() => { setShowAddModal(false); resetForm(); }}
@@ -734,19 +761,8 @@ export function SourcesPage() {
             <TagInput
               value={formInclude}
               onChange={setFormInclude}
-              presets={[
-                { label: 'Markdown', value: '**/*.md' },
-                { label: 'Text', value: '**/*.txt' },
-                { label: 'HTML', value: '**/*.html' },
-                { label: 'Word', value: '**/*.docx' },
-                { label: 'Excel', value: '**/*.{xlsx,xls}' },
-                { label: 'PowerPoint', value: '**/*.pptx' },
-                { label: 'PDF', value: '**/*.pdf' },
-                { label: 'Image', value: '**/*.{jpg,jpeg,png,gif,webp}' },
-                { label: 'JSON', value: '**/*.json' },
-                { label: 'YAML', value: '**/*.{yml,yaml}' },
-                { label: 'Code', value: '**/*.{ts,js,py,rs}' },
-              ]}
+              presets={INCLUDE_PRESETS}
+              showSelectAll
               placeholder="Add glob pattern..."
             />
           </div>
@@ -757,21 +773,15 @@ export function SourcesPage() {
             <TagInput
               value={formExclude}
               onChange={setFormExclude}
-              presets={[
-                { label: 'node_modules', value: '**/node_modules/**' },
-                { label: '.git', value: '**/.git/**' },
-                { label: '.obsidian', value: '**/.obsidian/**' },
-                { label: 'dist', value: '**/dist/**' },
-                { label: 'build', value: '**/build/**' },
-                { label: 'target', value: '**/target/**' },
-              ]}
+              presets={EXCLUDE_PRESETS}
+              showSelectAll
               placeholder="Add exclude pattern..."
             />
           </div>
         </div>
       </Modal>
 
-      {/* ── Edit Source Modal ────────────────────────────────────────── */}
+      {/* 鈹€鈹€ Edit Source Modal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
       <Modal
         open={!!editTarget}
         onClose={() => setEditTarget(null)}
@@ -805,19 +815,8 @@ export function SourcesPage() {
             <TagInput
               value={editInclude}
               onChange={setEditInclude}
-              presets={[
-                { label: 'Markdown', value: '**/*.md' },
-                { label: 'Text', value: '**/*.txt' },
-                { label: 'HTML', value: '**/*.html' },
-                { label: 'Word', value: '**/*.docx' },
-                { label: 'Excel', value: '**/*.{xlsx,xls}' },
-                { label: 'PowerPoint', value: '**/*.pptx' },
-                { label: 'PDF', value: '**/*.pdf' },
-                { label: 'Image', value: '**/*.{jpg,jpeg,png,gif,webp}' },
-                { label: 'JSON', value: '**/*.json' },
-                { label: 'YAML', value: '**/*.{yml,yaml}' },
-                { label: 'Code', value: '**/*.{ts,js,py,rs}' },
-              ]}
+              presets={INCLUDE_PRESETS}
+              showSelectAll
               placeholder="Add glob pattern..."
             />
           </div>
@@ -828,14 +827,8 @@ export function SourcesPage() {
             <TagInput
               value={editExclude}
               onChange={setEditExclude}
-              presets={[
-                { label: 'node_modules', value: '**/node_modules/**' },
-                { label: '.git', value: '**/.git/**' },
-                { label: '.obsidian', value: '**/.obsidian/**' },
-                { label: 'dist', value: '**/dist/**' },
-                { label: 'build', value: '**/build/**' },
-                { label: 'target', value: '**/target/**' },
-              ]}
+              presets={EXCLUDE_PRESETS}
+              showSelectAll
               placeholder="Add exclude pattern..."
             />
           </div>
@@ -856,7 +849,7 @@ export function SourcesPage() {
         </div>
       </Modal>
 
-      {/* ── Delete Confirm Dialog ────────────────────────────────────── */}
+      {/* 鈹€鈹€ Delete Confirm Dialog 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
       <ConfirmDialog
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
@@ -869,24 +862,8 @@ export function SourcesPage() {
       />
     </div>
 
-    {/* ── Chat side panel ────────────────────────────────────── */}
-    <AnimatePresence>
-      {chatOpen && (
-        <motion.div
-          initial={{ width: 0, opacity: 0 }}
-          animate={{ width: 400, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-          className="shrink-0 border-l border-border h-full overflow-hidden"
-        >
-          <ChatPanel
-            initialMessage={chatMessage}
-            onClose={() => setChatOpen(false)}
-            className="h-full"
-          />
-        </motion.div>
-      )}
-    </AnimatePresence>
     </div>
   );
 }
+
+

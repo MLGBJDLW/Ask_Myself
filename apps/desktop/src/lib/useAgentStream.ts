@@ -17,6 +17,7 @@ interface ToolCallEvent {
 }
 
 type AgentEventType = AgentFrontendEvent['type'];
+type AutoCompactedInfo = { summary: string } | null;
 
 function normalizeAgentEventType(value: unknown): AgentEventType | null {
   if (typeof value !== 'string') return null;
@@ -40,6 +41,8 @@ function normalizeAgentEventType(value: unknown): AgentEventType | null {
       return 'done';
     case 'error':
       return 'error';
+    case 'autoCompacted':
+      return 'autoCompacted';
     default:
       return null;
   }
@@ -65,6 +68,7 @@ export interface UsageTotal {
   completionTokens: number;
   totalTokens: number;
   thinkingTokens?: number;
+  lastPromptTokens?: number;
 }
 
 interface UseAgentStreamReturn {
@@ -77,6 +81,11 @@ interface UseAgentStreamReturn {
   toolCalls: ToolCallEvent[];
   error: string | null;
   lastUsage: UsageTotal | null;
+  lastCached: boolean;
+  finishReason: string | null;
+  contextOverflow: boolean;
+  rateLimited: boolean;
+  autoCompacted: AutoCompactedInfo;
   reset: () => void;
 }
 
@@ -88,6 +97,11 @@ export function useAgentStream(): UseAgentStreamReturn {
   const [toolCalls, setToolCalls] = useState<ToolCallEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lastUsage, setLastUsage] = useState<UsageTotal | null>(null);
+  const [lastCached, setLastCached] = useState(false);
+  const [finishReason, setFinishReason] = useState<string | null>(null);
+  const [contextOverflow, setContextOverflow] = useState(false);
+  const [rateLimited, setRateLimited] = useState(false);
+  const [autoCompacted, setAutoCompacted] = useState<AutoCompactedInfo>(null);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -138,6 +152,11 @@ export function useAgentStream(): UseAgentStreamReturn {
     setToolCalls([]);
     setError(null);
     setLastUsage(null);
+    setLastCached(false);
+    setFinishReason(null);
+    setContextOverflow(false);
+    setRateLimited(false);
+    setAutoCompacted(null);
     clearThinkingTimeout();
   }, [clearThinkingTimeout]);
 
@@ -151,6 +170,11 @@ export function useAgentStream(): UseAgentStreamReturn {
     setThinkingText('');
     setIsThinking(false);
     setToolCalls([]);
+    setLastCached(false);
+    setFinishReason(null);
+    setContextOverflow(false);
+    setRateLimited(false);
+    setAutoCompacted(null);
     activeConversationRef.current = conversationId;
     toolCallSeqRef.current = 0;
 
@@ -184,6 +208,11 @@ export function useAgentStream(): UseAgentStreamReturn {
           setStreamText(prev => prev + (typeof data.delta === 'string' ? data.delta : (typeof raw.delta === 'string' ? raw.delta : '')));
           break;
         case 'toolCallStart':
+          // A tool round started. Keep only the *current* round's streamed text
+          // so the final assistant reply doesn't concatenate prior rounds.
+          setStreamText('');
+          setThinkingText('');
+          setIsThinking(false);
           setToolCalls(prev => {
             const incomingCallIdRaw = (typeof data.callId === 'string' && data.callId)
               || (typeof raw.call_id === 'string' ? raw.call_id : '');
@@ -262,8 +291,7 @@ export function useAgentStream(): UseAgentStreamReturn {
             }
             return updated;
           });
-          // After tool result, reset text for new LLM response
-          setStreamText('');
+          // Keep text as-is here; round reset happens on toolCallStart.
           break;
         case 'done': {
           clearThinkingTimeout();
@@ -275,13 +303,30 @@ export function useAgentStream(): UseAgentStreamReturn {
           ));
           const usage = data.usageTotal ?? (raw.usage_total as UsageTotal | undefined);
           if (usage) {
-            setLastUsage(usage);
+            // Include lastPromptTokens from the event (serde camelCase field).
+            const lastPrompt = (raw.lastPromptTokens ?? raw.last_prompt_tokens) as number | undefined;
+            setLastUsage({
+              ...usage,
+              lastPromptTokens: lastPrompt ?? usage.lastPromptTokens,
+            });
           }
+          // Extract cached flag from done event
+          const cached = raw.cached ?? false;
+          setLastCached(Boolean(cached));
+          // Extract finish reason
+          const fr = raw.finishReason ?? raw.finish_reason ?? null;
+          setFinishReason(typeof fr === 'string' ? fr : null);
           setIsStreaming(false);
           cleanup();
           break;
         }
-        case 'error':
+        case 'autoCompacted': {
+          const summary = (typeof data.summary === 'string' ? data.summary : '')
+            || (typeof raw.summary === 'string' ? raw.summary as string : '');
+          setAutoCompacted({ summary });
+          break;
+        }
+        case 'error': {
           clearThinkingTimeout();
           setIsThinking(false);
           setToolCalls(prev => prev.map(tc =>
@@ -289,10 +334,22 @@ export function useAgentStream(): UseAgentStreamReturn {
               ? { ...tc, status: 'error', content: tc.content || 'Tool call interrupted by agent error.', isError: true }
               : tc,
           ));
-          setError((typeof data.message === 'string' ? data.message : (typeof raw.message === 'string' ? raw.message : 'Unknown error')));
+          const errMsg = (typeof data.message === 'string' ? data.message : (typeof raw.message === 'string' ? raw.message : 'Unknown error'));
+          // Detect context overflow
+          if (/context.*(window|overflow|exceeded)|ContextOverflow/i.test(errMsg)) {
+            setContextOverflow(true);
+          }
+          // Detect rate limiting
+          if (/rate.?limit/i.test(errMsg)) {
+            setRateLimited(true);
+            setError('Rate limited by provider. Please wait and try again.');
+          } else {
+            setError(errMsg);
+          }
           setIsStreaming(false);
           cleanup();
           break;
+        }
       }
     });
 
@@ -335,5 +392,5 @@ export function useAgentStream(): UseAgentStreamReturn {
     return () => cleanup();
   }, [cleanup]);
 
-  return { send, stop, isStreaming, streamText, thinkingText, isThinking, toolCalls, error, lastUsage, reset };
+  return { send, stop, isStreaming, streamText, thinkingText, isThinking, toolCalls, error, lastUsage, lastCached, finishReason, contextOverflow, rateLimited, autoCompacted, reset };
 }

@@ -79,6 +79,18 @@ pub struct ConversationStats {
     pub db_size_bytes: u64,
 }
 
+/// A snapshot of conversation state before compaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Checkpoint {
+    pub id: String,
+    pub conversation_id: String,
+    pub label: String,
+    pub message_count: u32,
+    pub estimated_tokens: u32,
+    pub created_at: String,
+}
+
 // ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------
@@ -409,6 +421,180 @@ impl Database {
             });
         }
         Ok(results)
+    }
+
+    /// Delete all messages for a conversation.
+    pub fn delete_messages(&self, conversation_id: &str) -> Result<(), CoreError> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1",
+            rusqlite::params![conversation_id],
+        )?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoint CRUD
+// ---------------------------------------------------------------------------
+
+impl Database {
+    /// Create a checkpoint (snapshot label) before compaction.
+    /// Returns the new checkpoint ID.
+    pub fn create_checkpoint(
+        &self,
+        conversation_id: &str,
+        label: &str,
+        message_count: u32,
+        estimated_tokens: u32,
+    ) -> Result<String, CoreError> {
+        let id = new_id();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO conversation_checkpoints (id, conversation_id, label, message_count, estimated_tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![&id, conversation_id, label, message_count, estimated_tokens],
+        )?;
+        Ok(id)
+    }
+
+    /// Bulk-insert messages into the archived_messages table for a checkpoint.
+    pub fn archive_messages(
+        &self,
+        checkpoint_id: &str,
+        conversation_id: &str,
+        messages: &[ConversationMessage],
+    ) -> Result<(), CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "INSERT INTO archived_messages (id, checkpoint_id, conversation_id, role, content, tool_call_id, tool_calls_json, token_count, original_sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        )?;
+        for msg in messages {
+            let role_str = role_to_str(&msg.role);
+            let tc_json = if msg.tool_calls.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&msg.tool_calls)?)
+            };
+            stmt.execute(rusqlite::params![
+                &Uuid::new_v4().to_string(),
+                checkpoint_id,
+                conversation_id,
+                role_str,
+                &msg.content,
+                &msg.tool_call_id,
+                &tc_json,
+                msg.token_count,
+                msg.sort_order,
+            ])?;
+        }
+        Ok(())
+    }
+
+    /// List checkpoints for a conversation, newest first.
+    pub fn list_checkpoints(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<Checkpoint>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, label, message_count, estimated_tokens, created_at
+             FROM conversation_checkpoints
+             WHERE conversation_id = ?1
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
+            Ok(Checkpoint {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                label: row.get(2)?,
+                message_count: row.get(3)?,
+                estimated_tokens: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    /// Restore archived messages from a checkpoint.
+    pub fn restore_checkpoint(
+        &self,
+        checkpoint_id: &str,
+    ) -> Result<Vec<ConversationMessage>, CoreError> {
+        let conn = self.conn();
+
+        // First get the conversation_id for this checkpoint.
+        let conversation_id: String = conn.query_row(
+            "SELECT conversation_id FROM conversation_checkpoints WHERE id = ?1",
+            rusqlite::params![checkpoint_id],
+            |row| row.get(0),
+        )?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, role, content, tool_call_id, tool_calls_json, token_count, created_at, original_sort_order
+             FROM archived_messages
+             WHERE checkpoint_id = ?1
+             ORDER BY original_sort_order ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![checkpoint_id], |row| {
+            let role_str: String = row.get(2)?;
+            let tc_json: Option<String> = row.get(5)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                role_str,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                tc_json,
+                row.get::<_, u32>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let (id, conv_id, role_str, content, tool_call_id, tc_json, token_count, created_at, sort_order) = row?;
+            let tool_calls: Vec<ToolCallRequest> = match tc_json {
+                Some(json) => serde_json::from_str(&json)?,
+                None => Vec::new(),
+            };
+            results.push(ConversationMessage {
+                id,
+                conversation_id: conv_id,
+                role: str_to_role(&role_str),
+                content,
+                tool_call_id,
+                tool_calls,
+                token_count,
+                created_at,
+                sort_order,
+                thinking: None, // Archived messages don't preserve thinking
+            });
+        }
+
+        let _ = conversation_id; // used for query validation
+        Ok(results)
+    }
+
+    /// Delete a checkpoint (cascade deletes archived_messages via FK).
+    pub fn delete_checkpoint(&self, checkpoint_id: &str) -> Result<(), CoreError> {
+        let conn = self.conn();
+        // Delete archived messages first (SQLite FK cascade may not be on).
+        conn.execute(
+            "DELETE FROM archived_messages WHERE checkpoint_id = ?1",
+            rusqlite::params![checkpoint_id],
+        )?;
+        conn.execute(
+            "DELETE FROM conversation_checkpoints WHERE id = ?1",
+            rusqlite::params![checkpoint_id],
+        )?;
+        Ok(())
     }
 }
 
@@ -939,5 +1125,105 @@ mod tests {
         // c1 should no longer be default
         let c1_refetch = db.get_agent_config(&c1.id).unwrap();
         assert!(!c1_refetch.is_default);
+    }
+
+    #[test]
+    fn test_checkpoint_create_and_restore() {
+        let db = Database::open_memory().unwrap();
+
+        // Create a conversation with some messages.
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+            })
+            .unwrap();
+
+        let msgs: Vec<ConversationMessage> = (0..5)
+            .map(|i| {
+                let msg = ConversationMessage {
+                    id: new_id(),
+                    conversation_id: conv.id.clone(),
+                    role: if i % 2 == 0 { Role::User } else { Role::Assistant },
+                    content: format!("Message {i}"),
+                    tool_call_id: None,
+                    tool_calls: vec![],
+                    token_count: 20,
+                    created_at: String::new(),
+                    sort_order: i,
+                    thinking: None,
+                };
+                db.add_message(&msg).unwrap();
+                msg
+            })
+            .collect();
+
+        // Create checkpoint and archive first 3 messages.
+        let cp_id = db
+            .create_checkpoint(&conv.id, "auto", 3, 60)
+            .unwrap();
+        db.archive_messages(&cp_id, &conv.id, &msgs[..3]).unwrap();
+
+        // List checkpoints.
+        let checkpoints = db.list_checkpoints(&conv.id).unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0].label, "auto");
+        assert_eq!(checkpoints[0].message_count, 3);
+        assert_eq!(checkpoints[0].estimated_tokens, 60);
+
+        // Restore checkpoint.
+        let restored = db.restore_checkpoint(&cp_id).unwrap();
+        assert_eq!(restored.len(), 3);
+        assert_eq!(restored[0].content, "Message 0");
+        assert_eq!(restored[1].content, "Message 1");
+        assert_eq!(restored[2].content, "Message 2");
+        assert_eq!(restored[0].role, Role::User);
+        assert_eq!(restored[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn test_checkpoint_delete_cascades() {
+        let db = Database::open_memory().unwrap();
+
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+            })
+            .unwrap();
+
+        let msg = ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::User,
+            content: "Hello".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            token_count: 5,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+        };
+        db.add_message(&msg).unwrap();
+
+        let cp_id = db.create_checkpoint(&conv.id, "manual", 1, 5).unwrap();
+        db.archive_messages(&cp_id, &conv.id, &[msg]).unwrap();
+
+        // Verify restore works.
+        let restored = db.restore_checkpoint(&cp_id).unwrap();
+        assert_eq!(restored.len(), 1);
+
+        // Delete checkpoint.
+        db.delete_checkpoint(&cp_id).unwrap();
+
+        // Restore should now return empty (checkpoint gone).
+        let restored = db.restore_checkpoint(&cp_id);
+        assert!(restored.is_err()); // Query on non-existent checkpoint fails.
+
+        // List should be empty.
+        let checkpoints = db.list_checkpoints(&conv.id).unwrap();
+        assert!(checkpoints.is_empty());
     }
 }

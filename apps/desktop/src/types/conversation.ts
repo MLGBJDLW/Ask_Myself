@@ -90,7 +90,7 @@ export type ProviderType =
   | 'custom';
 
 export interface AgentEvent {
-  type: 'textDelta' | 'toolCallStart' | 'toolCallResult' | 'thinking' | 'done' | 'error';
+  type: 'textDelta' | 'toolCallStart' | 'toolCallResult' | 'thinking' | 'done' | 'error' | 'autoCompacted';
   delta?: string;
   callId?: string;
   toolName?: string;
@@ -100,12 +100,13 @@ export interface AgentEvent {
   artifacts?: Record<string, unknown>;
   // `Done` events carry a full ConversationMessage; `Error` events carry a plain string.
   message?: ConversationMessage | string;
-  usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number };
+  usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number; lastPromptTokens?: number };
 }
 
 export interface AgentFrontendEvent {
   conversationId: string;
   type: AgentEvent['type'];
+  summary?: string;
   delta?: string;
   callId?: string;
   toolName?: string;
@@ -114,7 +115,7 @@ export interface AgentFrontendEvent {
   isError?: boolean;
   artifacts?: Record<string, unknown>;
   message?: ConversationMessage | string;
-  usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number };
+  usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number; lastPromptTokens?: number };
 }
 
 export interface ConversationStats {
@@ -122,4 +123,13 @@ export interface ConversationStats {
   totalMessages: number;
   oldestConversation: string | null;
   dbSizeBytes: number;
+}
+
+export interface Checkpoint {
+  id: string;
+  conversationId: string;
+  label: string;
+  messageCount: number;
+  estimatedTokens: number;
+  createdAt: string;
 }

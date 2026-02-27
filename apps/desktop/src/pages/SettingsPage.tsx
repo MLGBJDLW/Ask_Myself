@@ -21,6 +21,7 @@ import {
   Pencil,
   Settings2,
   X,
+  ScanLine,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { listen } from '@tauri-apps/api/event';
@@ -30,6 +31,7 @@ import type { PrivacyConfig, RedactRule } from '../types/privacy';
 import type { EmbedderConfig } from '../types/embedder';
 import type { AgentConfig, SaveAgentConfigInput } from '../types/conversation';
 import type { ScanProgress, FtsProgress, DownloadProgress } from '../types/ingest';
+import type { OcrConfig, OcrDownloadProgress } from '../types/ocr';
 import { useTranslation } from '../i18n';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -84,7 +86,7 @@ function formatBytes(bytes: number): string {
 }
 
 /* ── Settings page ────────────────────────────────────────────────── */
-type SettingsTab = 'embedding' | 'index' | 'privacy' | 'language' | 'providers';
+type SettingsTab = 'embedding' | 'index' | 'privacy' | 'language' | 'providers' | 'ocr';
 
 export function SettingsPage() {
   const { t, locale, setLocale, availableLocales } = useTranslation();
@@ -93,6 +95,7 @@ export function SettingsPage() {
   const [stats, setStats] = useState<IndexStats | null>(null);
   const [rebuildLoading, setRebuildLoading] = useState(false);
   const [optimizeLoading, setOptimizeLoading] = useState(false);
+  const [clearCacheLoading, setClearCacheLoading] = useState(false);
   const [ftsProgress, setFtsProgress] = useState<FtsProgress | null>(null);
   const [embedRebuildProgress, setEmbedRebuildProgress] = useState<ScanProgress | null>(null);
 
@@ -164,6 +167,18 @@ export function SettingsPage() {
     }
   };
 
+  const handleClearCache = async () => {
+    setClearCacheLoading(true);
+    try {
+      const deleted = await api.clearAnswerCache();
+      toast.success(t('settings.cacheClearedCount', { count: deleted }));
+    } catch {
+      toast.error(t('settings.clearCacheError'));
+    } finally {
+      setClearCacheLoading(false);
+    }
+  };
+
   /* ── Privacy state ───────────────────────────────────────────────── */
   const [privacyConfig, setPrivacyConfig] = useState<PrivacyConfig | null>(null);
   const [newPattern, setNewPattern] = useState('');
@@ -178,6 +193,13 @@ export function SettingsPage() {
   const [testLoading, setTestLoading] = useState(false);
   const [embedSaveLoading, setEmbedSaveLoading] = useState(false);
   const [rebuildEmbedLoading, setRebuildEmbedLoading] = useState(false);
+
+  /* ── OCR state ────────────────────────────────────────────────────── */
+  const [ocrConfig, setOcrConfig] = useState<OcrConfig | null>(null);
+  const [ocrModelsExist, setOcrModelsExist] = useState<boolean | null>(null);
+  const [ocrDownloading, setOcrDownloading] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState<OcrDownloadProgress | null>(null);
+  const [ocrSaveLoading, setOcrSaveLoading] = useState(false);
 
   useEffect(() => {
     if (!rebuildEmbedLoading) {
@@ -264,6 +286,54 @@ export function SettingsPage() {
       toast.error(t('cmd.rebuildError'));
     } finally {
       setRebuildEmbedLoading(false);
+    }
+  };
+
+  /* ── OCR effects & handlers ──────────────────────────────────────── */
+  useEffect(() => {
+    api.getOcrConfig().then((cfg) => {
+      setOcrConfig(cfg);
+      api.checkOcrModels(cfg).then(setOcrModelsExist).catch(() => setOcrModelsExist(false));
+    }).catch(() => {
+      toast.error(t('settings.ocrLoadError'));
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!ocrDownloading) {
+      setOcrProgress(null);
+      return;
+    }
+    const unlisten = listen<OcrDownloadProgress>('ocr:download-progress', (event) => {
+      setOcrProgress(event.payload);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, [ocrDownloading]);
+
+  const handleDownloadOcrModels = async () => {
+    if (!ocrConfig) return;
+    setOcrDownloading(true);
+    try {
+      await api.downloadOcrModels(ocrConfig);
+      setOcrModelsExist(true);
+      toast.success(t('settings.ocrModelsDownloaded'));
+    } catch (e) {
+      toast.error(t('settings.ocrDownloadFail') + ': ' + String(e));
+    } finally {
+      setOcrDownloading(false);
+    }
+  };
+
+  const handleSaveOcrConfig = async () => {
+    if (!ocrConfig) return;
+    setOcrSaveLoading(true);
+    try {
+      await api.saveOcrConfig(ocrConfig);
+      toast.success(t('settings.ocrSaved'));
+    } catch {
+      toast.error(t('settings.ocrSaveError'));
+    } finally {
+      setOcrSaveLoading(false);
     }
   };
 
@@ -398,6 +468,7 @@ export function SettingsPage() {
   const tabs: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
     { id: 'embedding', label: t('settings.embeddingSection'), icon: <Brain size={16} /> },
     { id: 'providers', label: t('settings.aiProviders'), icon: <Bot size={16} /> },
+    { id: 'ocr', label: t('settings.ocrTab'), icon: <ScanLine size={16} /> },
     { id: 'index', label: t('settings.indexSection'), icon: <Database size={16} /> },
     { id: 'privacy', label: t('settings.privacySection'), icon: <Shield size={16} /> },
     { id: 'language', label: t('settings.languageSection'), icon: <Languages size={16} /> },
@@ -841,6 +912,15 @@ export function SettingsPage() {
           >
             {t('settings.optimizeIndex')}
           </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<Trash2 size={14} />}
+            loading={clearCacheLoading}
+            onClick={handleClearCache}
+          >
+            {t('settings.clearCache')}
+          </Button>
         </div>
         {ftsProgress && (
           <div className="mt-2">
@@ -1014,6 +1094,188 @@ export function SettingsPage() {
             </button>
           ))}
         </div>
+      </Section>
+      )}
+
+      {/* ── Tab: OCR ──────────────────────────────────────────────── */}
+      {activeTab === 'ocr' && (
+      <Section icon={<ScanLine size={20} />} title={t('settings.ocrSection')} delay={0.03}>
+        {ocrConfig && (
+          <div className="space-y-5">
+            {/* Enable toggle */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-text-primary">{t('settings.ocrEnabled')}</p>
+                <p className="text-xs text-text-tertiary">{t('settings.ocrEnabledDesc')}</p>
+              </div>
+              <button
+                onClick={() => setOcrConfig({ ...ocrConfig, enabled: !ocrConfig.enabled })}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+                  ocrConfig.enabled ? 'bg-accent' : 'bg-surface-3'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+                    ocrConfig.enabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Model download section */}
+            <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-text-primary">{t('settings.ocrModels')}</p>
+                <span className="text-xs text-text-tertiary">{t('settings.ocrModelSize')}</span>
+              </div>
+
+              {/* Download status */}
+              <div className="flex items-center gap-2 text-sm">
+                {ocrModelsExist === null ? (
+                  <Loader2 size={14} className="animate-spin text-text-tertiary" />
+                ) : ocrModelsExist ? (
+                  <Badge variant="default" className="gap-1">
+                    <CheckCircle size={12} className="text-success" />
+                    {t('settings.ocrModelsDownloaded')}
+                  </Badge>
+                ) : (
+                  <Badge variant="default" className="gap-1">
+                    <XCircle size={12} className="text-danger" />
+                    {t('settings.ocrModelsNotDownloaded')}
+                  </Badge>
+                )}
+              </div>
+
+              {ocrModelsExist === false && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={ocrDownloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                  loading={ocrDownloading}
+                  onClick={handleDownloadOcrModels}
+                >
+                  {ocrDownloading ? t('settings.ocrDownloading') : t('settings.ocrDownload')}
+                </Button>
+              )}
+
+              {ocrDownloading && ocrProgress && (
+                <div className="mt-2">
+                  <div className="flex items-center gap-2 text-xs text-text-tertiary mb-1">
+                    <Loader2 size={12} className="animate-spin" />
+                    <span>
+                      {t('settings.ocrDownloadingFile', {
+                        filename: ocrProgress.filename,
+                        current: String(ocrProgress.fileIndex + 1),
+                        total: String(ocrProgress.totalFiles),
+                      })}
+                    </span>
+                  </div>
+                  {ocrProgress.totalBytes ? (
+                    <>
+                      <div className="flex justify-between text-[10px] text-text-tertiary/70 mb-0.5">
+                        <span>{formatBytes(ocrProgress.bytesDownloaded)} / {formatBytes(ocrProgress.totalBytes)}</span>
+                        <span>{Math.round((ocrProgress.bytesDownloaded / ocrProgress.totalBytes) * 100)}%</span>
+                      </div>
+                      <div className="w-full bg-surface-3 rounded h-1.5">
+                        <div
+                          className="bg-accent h-1.5 rounded transition-all duration-300"
+                          style={{ width: `${Math.min(100, (ocrProgress.bytesDownloaded / ocrProgress.totalBytes) * 100)}%` }}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="w-full bg-surface-3 rounded h-1.5 overflow-hidden">
+                      <div className="bg-accent h-1.5 rounded animate-pulse w-full" />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Confidence threshold */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-sm font-medium text-text-primary">{t('settings.ocrConfidence')}</p>
+                <span className="text-xs font-mono text-text-tertiary">{ocrConfig.confidenceThreshold.toFixed(2)}</span>
+              </div>
+              <p className="text-xs text-text-tertiary mb-2">{t('settings.ocrConfidenceDesc')}</p>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={ocrConfig.confidenceThreshold}
+                onChange={(e) => setOcrConfig({ ...ocrConfig, confidenceThreshold: parseFloat(e.target.value) })}
+                className="w-full accent-accent"
+              />
+            </div>
+
+            {/* LLM fallback toggle */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-text-primary">{t('settings.ocrLlmFallback')}</p>
+                <p className="text-xs text-text-tertiary">{t('settings.ocrLlmFallbackDesc')}</p>
+              </div>
+              <button
+                onClick={() => setOcrConfig({ ...ocrConfig, llmFallbackEnabled: !ocrConfig.llmFallbackEnabled })}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+                  ocrConfig.llmFallbackEnabled ? 'bg-accent' : 'bg-surface-3'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+                    ocrConfig.llmFallbackEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Detection size limit */}
+            <div>
+              <p className="text-sm font-medium text-text-primary mb-1">{t('settings.ocrDetLimit')}</p>
+              <p className="text-xs text-text-tertiary mb-2">{t('settings.ocrDetLimitDesc')}</p>
+              <Input
+                type="number"
+                value={ocrConfig.detLimitSideLen}
+                onChange={(e) => setOcrConfig({ ...ocrConfig, detLimitSideLen: parseInt(e.target.value) || 960 })}
+                className="w-32"
+              />
+            </div>
+
+            {/* Orientation detection toggle */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-text-primary">{t('settings.ocrUseCls')}</p>
+                <p className="text-xs text-text-tertiary">{t('settings.ocrUseClsDesc')}</p>
+              </div>
+              <button
+                onClick={() => setOcrConfig({ ...ocrConfig, useCls: !ocrConfig.useCls })}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+                  ocrConfig.useCls ? 'bg-accent' : 'bg-surface-3'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+                    ocrConfig.useCls ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Save button */}
+            <div className="flex justify-end pt-2">
+              <Button
+                variant="primary"
+                size="md"
+                icon={<Save size={16} />}
+                loading={ocrSaveLoading}
+                onClick={handleSaveOcrConfig}
+              >
+                {t('settings.saveConfig')}
+              </Button>
+            </div>
+          </div>
+        )}
       </Section>
       )}
     </div>

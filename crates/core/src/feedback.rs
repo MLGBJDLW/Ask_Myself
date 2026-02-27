@@ -1,4 +1,4 @@
-/// User feedback module — 👍/👎/pin on evidence cards.
+//! User feedback module — 👍/👎/pin on evidence cards.
 
 use std::collections::HashMap;
 use std::fmt;

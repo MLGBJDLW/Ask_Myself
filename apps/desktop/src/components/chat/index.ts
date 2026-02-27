@@ -3,6 +3,5 @@ export { ChatMessages } from './ChatMessages';
 export { ChatInput } from './ChatInput';
 export { ToolCallCard } from './ToolCallCard';
 export { ThinkingBlock } from './ThinkingBlock';
-export { ChatPanel } from './ChatPanel';
 export { SourceSelector } from './SourceSelector';
 export { SystemPromptEditor } from './SystemPromptEditor';

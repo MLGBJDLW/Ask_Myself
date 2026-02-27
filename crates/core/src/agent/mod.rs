@@ -237,12 +237,25 @@ pub enum AgentEvent {
         message: Message,
         #[serde(rename = "usageTotal")]
         usage_total: Usage,
+        /// The prompt token count from the *last* LLM iteration (best
+        /// represents how full the context window currently is).
+        #[serde(rename = "lastPromptTokens")]
+        last_prompt_tokens: u32,
         /// Whether this response came from the answer cache.
         #[serde(default)]
         cached: bool,
+        /// Why the model stopped generating (e.g. "stop", "length", "content_filter").
+        #[serde(rename = "finishReason", skip_serializing_if = "Option::is_none")]
+        finish_reason: Option<String>,
     },
     /// An error occurred during execution.
     Error { message: String },
+    /// The agent auto-compacted the conversation to free context space.
+    AutoCompacted {
+        /// Number of messages that were summarized.
+        #[serde(rename = "evictedCount")]
+        evicted_count: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +398,9 @@ impl AgentExecutor {
             let _ = tx.send(AgentEvent::Done {
                 message: msg.clone(),
                 usage_total: Usage::default(),
+                last_prompt_tokens: 0,
                 cached: false,
+                finish_reason: Some("stop".to_string()),
             }).await;
             return Ok(msg);
         }
@@ -434,9 +449,11 @@ impl AgentExecutor {
         };
 
         let mut total_usage = Usage::default();
+        let mut last_prompt_tokens: u32 = 0;
         let mut sort_order = next_sort_order;
         let mut accumulated_content = String::new();
         let mut thinking_buffer = String::new();
+        let mut last_finish_reason: Option<String> = None;
 
         // --- 3c. Extract user query text and build cache key -----------------
         let user_query_text: String = user_parts
@@ -508,7 +525,9 @@ impl AgentExecutor {
                     .send(AgentEvent::Done {
                         message: msg.clone(),
                         usage_total: Usage::default(),
+                        last_prompt_tokens: 0,
                         cached: true,
+                        finish_reason: Some("stop".to_string()),
                     })
                     .await;
                 return Ok(msg);
@@ -550,7 +569,9 @@ impl AgentExecutor {
                     let _ = tx.send(AgentEvent::Done {
                         message: final_msg.clone(),
                         usage_total: total_usage.clone(),
+                        last_prompt_tokens,
                         cached: false,
+                        finish_reason: last_finish_reason.clone(),
                     }).await;
                     return Ok(final_msg);
                 }
@@ -663,6 +684,9 @@ impl AgentExecutor {
                         if let Some(ref tc_delta) = chunk.tool_call_delta {
                             accumulate_tool_call(&mut tool_calls, tc_delta);
                         }
+                        if let Some(ref fr) = chunk.finish_reason {
+                            last_finish_reason = Some(format!("{:?}", fr).to_lowercase());
+                        }
                         if let Some(u) = chunk.usage {
                             chunk_usage = Some(u);
                         }
@@ -680,11 +704,22 @@ impl AgentExecutor {
 
             // -- 4b. Accumulate usage ------------------------------------------
             if let Some(u) = chunk_usage {
+                last_prompt_tokens = u.prompt_tokens; // Always overwrite — we want the LAST iteration
                 total_usage.prompt_tokens += u.prompt_tokens;
                 total_usage.completion_tokens += u.completion_tokens;
                 total_usage.total_tokens += u.total_tokens;
                 if let Some(t) = u.thinking_tokens {
                     *total_usage.thinking_tokens.get_or_insert(0) += t;
+                }
+
+                // -- 4b'. Auto-compact at 85% of context budget ----------------
+                let ctx_window = self.config.context_window.unwrap_or(128_000);
+                let max_response = self.config.max_tokens.unwrap_or(4096);
+                let budget = ctx_window.saturating_sub(max_response);
+                if budget > 0 && u.prompt_tokens > (budget as f64 * 0.85) as u32 {
+                    if let Err(e) = self.aggressive_compact(&mut messages, model, &tx).await {
+                        warn!("Auto-compact failed: {e}");
+                    }
                 }
             }
 
@@ -748,7 +783,9 @@ impl AgentExecutor {
                     .send(AgentEvent::Done {
                         message: assistant_msg.clone(),
                         usage_total: total_usage,
+                        last_prompt_tokens,
                         cached: false,
+                        finish_reason: last_finish_reason,
                     })
                     .await;
                 return Ok(assistant_msg);
@@ -941,7 +978,9 @@ impl AgentExecutor {
             .send(AgentEvent::Done {
                 message: final_msg.clone(),
                 usage_total: total_usage,
+                last_prompt_tokens,
                 cached: false,
+                finish_reason: last_finish_reason,
             })
             .await;
         Ok(final_msg)
@@ -1042,6 +1081,220 @@ impl AgentExecutor {
     }
 
     // -----------------------------------------------------------------------
+    // Aggressive auto-compact (85% threshold, in-loop)
+    // -----------------------------------------------------------------------
+
+    /// Summarize the oldest half of non-system messages in-place, replacing
+    /// them with a single system recap. Used when the context window hits 85%.
+    async fn aggressive_compact(
+        &self,
+        messages: &mut Vec<Message>,
+        model: &str,
+        tx: &mpsc::Sender<AgentEvent>,
+    ) -> Result<(), CoreError> {
+        // Find the first non-system message.
+        let non_system_start = messages
+            .iter()
+            .position(|m| m.role != Role::System)
+            .unwrap_or(0);
+        let non_system_count = messages.len() - non_system_start;
+        if non_system_count <= 2 {
+            return Ok(()); // Too few to compact
+        }
+
+        // Evict the first half of non-system messages.
+        let evict_end = non_system_start + non_system_count / 2;
+        let evicted = &messages[non_system_start..evict_end];
+
+        let extractive_fallback = context::build_evicted_recap_from_messages(evicted);
+
+        let summ_provider: &dyn LlmProvider = self
+            .summarization_provider
+            .as_deref()
+            .unwrap_or(self.provider.as_ref());
+        let summ_model = self
+            .config
+            .summarization_model
+            .as_deref()
+            .unwrap_or(model);
+        let summary = summarizer::summarize_evicted_messages(
+            summ_provider,
+            summ_model,
+            evicted,
+            &extractive_fallback,
+        )
+        .await;
+
+        let evicted_count = evict_end - non_system_start;
+
+        // Build replacement: keep system prefix + summary + kept tail.
+        let summary_msg = Message::text(
+            Role::System,
+            format!(
+                "## Earlier conversation context (auto-compacted)\n\
+                 The following is a summary of {} earlier messages that \
+                 were condensed because the context window was nearly full:\n{}",
+                evicted_count, summary
+            ),
+        );
+
+        let mut new_messages = Vec::with_capacity(non_system_start + 1 + messages.len() - evict_end);
+        new_messages.extend_from_slice(&messages[..non_system_start]);
+        new_messages.push(summary_msg);
+        new_messages.extend_from_slice(&messages[evict_end..]);
+        *messages = new_messages;
+
+        let _ = tx
+            .send(AgentEvent::AutoCompacted { evicted_count })
+            .await;
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Force-compact a conversation
+    // -----------------------------------------------------------------------
+
+    /// Force-compact a conversation's history by summarizing older messages,
+    /// regardless of the normal 50 % threshold.  Returns the compacted
+    /// messages that should replace the old ones.
+    ///
+    /// When `db` is provided, a checkpoint is created before eviction so the
+    /// user can restore the original messages later.
+    pub async fn compact_conversation(
+        &self,
+        conversation_id: &str,
+        messages: Vec<ConversationMessage>,
+        db: Option<&Database>,
+        label: &str,
+    ) -> Result<Vec<ConversationMessage>, CoreError> {
+        if messages.is_empty() {
+            return Ok(messages);
+        }
+        let model = self
+            .config
+            .model
+            .as_deref()
+            .unwrap_or("gpt-4o");
+        let max_response_tokens = self.config.max_tokens.unwrap_or(4096);
+
+        // Convert to LLM Messages.
+        let llm_msgs: Vec<Message> = messages
+            .iter()
+            .map(|m| {
+                let mut msg = Message::text(m.role.clone(), &m.content);
+                msg.name = m.tool_call_id.clone();
+                msg.tool_calls = if m.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(m.tool_calls.clone())
+                };
+                msg
+            })
+            .collect();
+
+        let ctx_window = self
+            .config
+            .context_window
+            .unwrap_or_else(|| model_context_window(model));
+        let budget = ctx_window.saturating_sub(max_response_tokens);
+        if budget == 0 {
+            return Ok(messages);
+        }
+
+        // Determine eviction split using trim_to_context_window.
+        let trimmed = trim_to_context_window(&llm_msgs, ctx_window, max_response_tokens);
+        let kept_count = trimmed.len();
+        let evict_count = llm_msgs.len().saturating_sub(kept_count);
+
+        // If nothing would be evicted under normal rules, force evict at
+        // least the first half (minus system messages).
+        let evict_count = if evict_count == 0 {
+            // Force-evict first half of non-system messages.
+            let non_system_start = llm_msgs
+                .iter()
+                .position(|m| m.role != Role::System)
+                .unwrap_or(0);
+            let non_system_count = llm_msgs.len() - non_system_start;
+            if non_system_count <= 2 {
+                return Ok(messages); // too few to compact
+            }
+            non_system_start + non_system_count / 2
+        } else {
+            evict_count
+        };
+
+        let evicted = &llm_msgs[..evict_count];
+        let extractive_fallback = context::build_evicted_recap_from_messages(evicted);
+
+        let summ_provider: &dyn LlmProvider = self
+            .summarization_provider
+            .as_deref()
+            .unwrap_or(self.provider.as_ref());
+        let summ_model = self
+            .config
+            .summarization_model
+            .as_deref()
+            .unwrap_or(model);
+        let summary = summarizer::summarize_evicted_messages(
+            summ_provider,
+            summ_model,
+            evicted,
+            &extractive_fallback,
+        )
+        .await;
+
+        // Archive evicted messages as a checkpoint before replacing.
+        if let Some(db) = db {
+            let est_tokens: u32 = messages[..evict_count].iter().map(|m| m.token_count).sum();
+            match db.create_checkpoint(
+                conversation_id,
+                label,
+                evict_count as u32,
+                est_tokens,
+            ) {
+                Ok(cp_id) => {
+                    if let Err(e) = db.archive_messages(&cp_id, conversation_id, &messages[..evict_count]) {
+                        warn!("Failed to archive messages for checkpoint: {e}");
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to create checkpoint: {e}");
+                }
+            }
+        }
+
+        // Build compacted ConversationMessages to persist.
+        let summary_msg = ConversationMessage {
+            id: Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: Role::System,
+            content: format!(
+                "## Earlier conversation context (summarized)\n\
+                 The following is a summary of earlier conversation turns that \
+                 were condensed to save context space:\n{}",
+                summary
+            ),
+            tool_call_id: None,
+            tool_calls: vec![],
+            token_count: estimate_tokens(&summary),
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+        };
+
+        let mut compacted = Vec::with_capacity(1 + messages.len() - evict_count);
+        compacted.push(summary_msg);
+        for (i, m) in messages[evict_count..].iter().enumerate() {
+            let mut m = m.clone();
+            m.sort_order = (i + 1) as i64;
+            compacted.push(m);
+        }
+
+        Ok(compacted)
+    }
+
+    // -----------------------------------------------------------------------
     // Direct dispatch — skip LLM for simple commands
     // -----------------------------------------------------------------------
 
@@ -1139,7 +1392,9 @@ impl AgentExecutor {
                     .send(AgentEvent::Done {
                         message: msg.clone(),
                         usage_total: Usage::default(),
+                        last_prompt_tokens: 0,
                         cached: false,
+                        finish_reason: Some("stop".to_string()),
                     })
                     .await;
 

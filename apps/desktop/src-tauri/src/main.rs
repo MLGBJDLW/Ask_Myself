@@ -110,6 +110,11 @@ fn main() {
             // Conversation maintenance
             commands::get_conversation_stats_cmd,
             commands::cleanup_empty_conversations_cmd,
+            commands::compact_conversation_cmd,
+            // Conversation checkpoints
+            commands::list_checkpoints_cmd,
+            commands::restore_checkpoint_cmd,
+            commands::delete_checkpoint_cmd,
             // Conversation sources
             commands::set_conversation_sources_cmd,
             commands::get_conversation_sources_cmd,
@@ -126,6 +131,11 @@ fn main() {
             commands::get_model_context_window,
             // Image attachment
             commands::prepare_image_attachment,
+            // OCR
+            commands::get_ocr_config_cmd,
+            commands::save_ocr_config_cmd,
+            commands::check_ocr_models_cmd,
+            commands::download_ocr_models_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

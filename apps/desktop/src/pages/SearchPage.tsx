@@ -33,7 +33,6 @@ import type {
 } from '../types';
 import type { FileType } from '../types/document';
 import { EvidenceCardComponent } from '../components/EvidenceCard';
-import { ChatPanel } from '../components/chat/ChatPanel';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
@@ -66,7 +65,7 @@ const FILE_TYPE_OPTIONS: { value: FileType; label: string; labelKey: 'search.mar
 export function SearchPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  // ── Core search state ────────────────────────────────────────────────
+  // 鈹€鈹€ Core search state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const [query, setQuery] = useState('');
   const [result, setResult] = useState<SearchResult | null>(null);
   const [recentQueries, setRecentQueries] = useState<QueryLog[]>([]);
@@ -75,7 +74,7 @@ export function SearchPage() {
   const [feedbackMap, setFeedbackMap] = useState<Record<string, Feedback>>({});
   const [currentPage, setCurrentPage] = useState(1);
 
-  // ── Filters ──────────────────────────────────────────────────────────
+  // 鈹€鈹€ Filters 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sources, setSources] = useState<Source[]>([]);
   const [filters, setFilters] = useState<SearchFilters>({
@@ -85,7 +84,7 @@ export function SearchPage() {
     dateTo: null,
   });
 
-  // ── Save-to-playbook modal ───────────────────────────────────────────
+  // 鈹€鈹€ Save-to-playbook modal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const [savingChunkId, setSavingChunkId] = useState<string | null>(null);
   const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
   const [selectedPlaybookId, setSelectedPlaybookId] = useState('');
@@ -93,23 +92,22 @@ export function SearchPage() {
   const [citationNote, setCitationNote] = useState('');
   const [saveLoading, setSaveLoading] = useState(false);
 
-  // ── Refs ─────────────────────────────────────────────────────────────
+  // 鈹€鈹€ Refs 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // ── Knowledge Base stats ─────────────────────────────────────────────
+  // 鈹€鈹€ Knowledge Base stats 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const [indexStats, setIndexStats] = useState<IndexStats | null>(null);
   const [kbOpen, setKbOpen] = useState(true);
 
-  // ── Chat panel state ────────────────────────────────────────────────
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatInitialMessage, setChatInitialMessage] = useState<string>('');
-
+  // Navigate to full chat page (optional one-off initial message)
   const openChatWithMessage = useCallback((message: string) => {
-    setChatInitialMessage(message);
-    setChatOpen(true);
-  }, []);
+    const trimmed = message.trim();
+    navigate('/chat', {
+      state: trimmed ? { initialMessage: trimmed } : null,
+    });
+  }, [navigate]);
 
-  // ── Auto-focus + Ctrl+K shortcut + Ctrl+Shift+A chat toggle ──────
+  // Auto-focus + Ctrl/Cmd+K + Ctrl/Cmd+Shift+A shortcuts
   useEffect(() => {
     inputRef.current?.focus();
 
@@ -121,14 +119,14 @@ export function SearchPage() {
       }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'a' || e.key === 'A')) {
         e.preventDefault();
-        setChatOpen((prev) => !prev);
+        openChatWithMessage(query);
       }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [openChatWithMessage, query]);
 
-  // ── Load recent queries on mount ─────────────────────────────────────
+  // 鈹€鈹€ Load recent queries on mount 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const loadRecentQueries = useCallback(async () => {
     try {
       const recent = await api.getRecentQueries(10);
@@ -151,18 +149,18 @@ export function SearchPage() {
     loadRecentQueries();
   }, [loadRecentQueries]);
 
-  // ── Load sources for filters ─────────────────────────────────────────
+  // 鈹€鈹€ Load sources for filters 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   useEffect(() => {
     api.listSources().then(setSources).catch(() => {});
     api.getIndexStats().then(setIndexStats).catch(() => {});
   }, []);
 
-  // ── Reset page when query or filters change ─────────────────────────
+  // 鈹€鈹€ Reset page when query or filters change 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   useEffect(() => {
     setCurrentPage(1);
   }, [searchMode, filters]);
 
-  // ── Search handler ───────────────────────────────────────────────────
+  // 鈹€鈹€ Search handler 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const handleSearch = async (text?: string, page?: number) => {
     const q = text ?? query;
     if (!q.trim()) return;
@@ -202,7 +200,7 @@ export function SearchPage() {
     }
   };
 
-  // ── Feedback handler ─────────────────────────────────────────────────
+  // 鈹€鈹€ Feedback handler 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const handleFeedback = async (
     chunkId: string,
     action: 'upvote' | 'downvote' | 'pin',
@@ -229,7 +227,7 @@ export function SearchPage() {
     }
   };
 
-  // ── Open save modal ──────────────────────────────────────────────────
+  // 鈹€鈹€ Open save modal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const openSaveModal = async (chunkId: string) => {
     setSavingChunkId(chunkId);
     setSelectedPlaybookId('');
@@ -244,7 +242,7 @@ export function SearchPage() {
     }
   };
 
-  // ── Confirm save to playbook ─────────────────────────────────────────
+  // 鈹€鈹€ Confirm save to playbook 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const confirmSave = async () => {
     if (!savingChunkId) return;
     setSaveLoading(true);
@@ -279,7 +277,7 @@ export function SearchPage() {
     }
   };
 
-  // ── Filter helpers ───────────────────────────────────────────────────
+  // 鈹€鈹€ Filter helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const toggleSourceFilter = (id: string) => {
     setFilters((prev) => ({
       ...prev,
@@ -302,20 +300,20 @@ export function SearchPage() {
     filters.sourceIds.length + filters.fileTypes.length +
     (filters.dateFrom ? 1 : 0) + (filters.dateTo ? 1 : 0);
 
-  // ── Uncertainty detection ────────────────────────────────────────────
+  // 鈹€鈹€ Uncertainty detection 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const showUncertainty =
     result !== null &&
     result.evidenceCards.length > 0 &&
     result.evidenceCards.length < 3 &&
     result.evidenceCards.every((c) => c.score < 1);
 
-  // ── Render ───────────────────────────────────────────────────────────
+  // 鈹€鈹€ Render 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   return (
     <div className="flex h-full">
-      {/* ── Main search area ── */}
-      <div className={`flex-1 transition-all duration-300 ${chatOpen ? 'mr-[420px]' : ''}`}>
+      {/* 鈹€鈹€ Main search area 鈹€鈹€ */}
+      <div className="flex-1 transition-all duration-300">
         <div className="mx-auto max-w-3xl px-6 py-8">
-      {/* ── Header ── */}
+      {/* 鈹€鈹€ Header 鈹€鈹€ */}
       <div className="mb-8">
         <h1 className="mb-1.5 text-lg font-semibold text-text-primary">{t('nav.search')}</h1>
         <p className="text-xs text-text-tertiary">
@@ -326,7 +324,7 @@ export function SearchPage() {
         </p>
       </div>
 
-      {/* ── Knowledge Base Overview ── */}
+      {/* 鈹€鈹€ Knowledge Base Overview 鈹€鈹€ */}
       {indexStats && (
         <div className="mb-6 rounded-lg border border-border bg-surface-1 overflow-hidden">
           <button
@@ -418,7 +416,7 @@ export function SearchPage() {
         </div>
       )}
 
-      {/* ── Search input ── */}
+      {/* 鈹€鈹€ Search input 鈹€鈹€ */}
       <div className="mb-4">
         <div className="flex gap-2">
           <Input
@@ -455,7 +453,7 @@ export function SearchPage() {
         </div>
       </div>
 
-      {/* ── Mode toggle + filters row ── */}
+      {/* 鈹€鈹€ Mode toggle + filters row 鈹€鈹€ */}
       <div className="mb-6 flex items-center justify-between gap-3">
         {/* Pill toggle */}
         <div className="inline-flex rounded-full border border-border bg-surface-1 p-0.5">
@@ -499,7 +497,7 @@ export function SearchPage() {
         </Button>
       </div>
 
-      {/* ── Collapsible filters ── */}
+      {/* 鈹€鈹€ Collapsible filters 鈹€鈹€ */}
       <AnimatePresence>
         {filtersOpen && (
           <motion.div
@@ -648,7 +646,7 @@ export function SearchPage() {
         )}
       </AnimatePresence>
 
-      {/* ── Loading skeletons ── */}
+      {/* 鈹€鈹€ Loading skeletons 鈹€鈹€ */}
       {loading && (
         <div className="space-y-3">
           <CardSkeleton />
@@ -657,7 +655,7 @@ export function SearchPage() {
         </div>
       )}
 
-      {/* ── Results ── */}
+      {/* 鈹€鈹€ Results 鈹€鈹€ */}
       {result && !loading && (
         <>
           {/* Results header */}
@@ -827,7 +825,7 @@ export function SearchPage() {
         </>
       )}
 
-      {/* ── Recent queries (shown when no results/loading) ── */}
+      {/* 鈹€鈹€ Recent queries (shown when no results/loading) 鈹€鈹€ */}
       {!result && !loading && recentQueries.length > 0 && (
         <div className="mt-2">
           <div className="mb-3 flex items-center justify-between">
@@ -863,7 +861,7 @@ export function SearchPage() {
         </div>
       )}
 
-      {/* ── Initial empty state ── */}
+      {/* 鈹€鈹€ Initial empty state 鈹€鈹€ */}
       {!result && !loading && recentQueries.length === 0 && (
         <EmptyState
           icon={<Logo size={64} />}
@@ -872,7 +870,7 @@ export function SearchPage() {
         />
       )}
 
-      {/* ── Save to Playbook modal ── */}
+      {/* 鈹€鈹€ Save to Playbook modal 鈹€鈹€ */}
       <Modal
         open={savingChunkId !== null}
         onClose={() => {
@@ -983,23 +981,8 @@ export function SearchPage() {
         </div>
       </div>
 
-      {/* ── Sliding chat panel ── */}
-      <AnimatePresence>
-        {chatOpen && (
-          <motion.div
-            initial={{ x: '100%' }}
-            animate={{ x: 0 }}
-            exit={{ x: '100%' }}
-            transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className="fixed right-0 top-0 h-full w-[420px] bg-surface-1 border-l border-border shadow-lg z-30"
-          >
-            <ChatPanel
-              initialMessage={chatInitialMessage}
-              onClose={() => setChatOpen(false)}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }
+
+

@@ -1,4 +1,4 @@
-/// Data model structs for the ask-core crate.
+//! Data model structs for the ask-core crate.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

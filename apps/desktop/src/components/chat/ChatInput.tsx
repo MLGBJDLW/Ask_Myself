@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Send, Square, Paperclip, X } from 'lucide-react';
+import { Send, Square, Paperclip, X, Scissors } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { ImageAttachment } from '../../types/conversation';
+import { CheckpointMenu } from './CheckpointMenu';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -12,6 +13,8 @@ interface TokenUsage {
   promptTokens: number;
   totalTokens: number;
   contextWindow: number;
+  completionTokens: number;
+  thinkingTokens: number;
 }
 
 interface ChatInputProps {
@@ -20,6 +23,12 @@ interface ChatInputProps {
   isStreaming: boolean;
   disabled: boolean;
   tokenUsage?: TokenUsage | null;
+  onCompact?: () => void;
+  finishReason?: string | null;
+  contextOverflow?: boolean;
+  rateLimited?: boolean;
+  conversationId?: string;
+  onRestoreCheckpoint?: () => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -32,7 +41,7 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-export function ChatInput({ onSend, onStop, isStreaming, disabled, tokenUsage }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, isStreaming, disabled, tokenUsage, onCompact, finishReason, contextOverflow, rateLimited, conversationId, onRestoreCheckpoint }: ChatInputProps) {
   const { t } = useTranslation();
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
@@ -186,22 +195,74 @@ export function ChatInput({ onSend, onStop, isStreaming, disabled, tokenUsage }:
           <span className="text-sm font-medium text-accent">{t('chat.dragDropHint')}</span>
         </div>
       )}
+      {/* Finish reason warnings */}
+      {finishReason === 'length' && !isStreaming && (
+        <div className="flex items-center gap-1.5 px-1 pb-2 text-[10px] text-yellow-500">
+          <span>⚠️ {t('chat.truncated')}</span>
+        </div>
+      )}
+      {finishReason === 'contentfilter' && !isStreaming && (
+        <div className="flex items-center gap-1.5 px-1 pb-2 text-[10px] text-red-400">
+          <span>⚠️ {t('chat.contentFiltered')}</span>
+        </div>
+      )}
+      {/* Context overflow banner */}
+      {contextOverflow && !isStreaming && (
+        <div className="flex items-center gap-2 px-2 pb-2 text-xs text-orange-400 bg-orange-500/10 rounded-md py-1.5 mb-1">
+          <span className="flex-1">✂️ {t('chat.contextOverflow')}</span>
+          {onCompact && (
+            <button
+              onClick={onCompact}
+              className="px-2 py-0.5 rounded text-[10px] font-medium bg-orange-500/20 hover:bg-orange-500/30 transition-colors cursor-pointer"
+            >
+              {t('chat.compact')}
+            </button>
+          )}
+        </div>
+      )}
+      {/* Rate limited banner */}
+      {rateLimited && !isStreaming && (
+        <div className="flex items-center gap-1.5 px-2 pb-2 text-xs text-yellow-500 bg-yellow-500/10 rounded-md py-1.5 mb-1">
+          <span>⏳ {t('chat.rateLimited')}</span>
+        </div>
+      )}
       {/* Token usage bar */}
       {tokenUsage && tokenUsage.contextWindow > 0 && (() => {
-        const percentage = Math.min(100, (tokenUsage.totalTokens / tokenUsage.contextWindow) * 100);
+        const percentage = Math.min(100, (tokenUsage.promptTokens / tokenUsage.contextWindow) * 100);
+        const color = percentage > 90 ? '#ef4444' : percentage > 75 ? '#f97316' : percentage > 50 ? '#eab308' : undefined;
         return (
           <div className="flex items-center gap-2 px-1 pb-2 text-[10px] text-muted/60">
             <div className="flex-1 bg-surface-3 rounded h-1">
               <div
                 className={`h-1 rounded transition-all duration-500 ${
-                  percentage > 80 ? 'bg-red-500' : percentage > 50 ? 'bg-yellow-500' : 'bg-accent'
+                  !color ? 'bg-accent' : ''
                 }`}
-                style={{ width: `${Math.max(percentage, 0.5)}%` }}
+                style={{ width: `${Math.max(percentage, 0.5)}%`, ...(color ? { backgroundColor: color } : {}) }}
               />
             </div>
             <span className="shrink-0 tabular-nums">
-              {formatTokens(tokenUsage.totalTokens)} / {formatTokens(tokenUsage.contextWindow)} {t('chat.tokensLabel')}
+              ↑{formatTokens(tokenUsage.promptTokens)} ↓{formatTokens(tokenUsage.completionTokens)} / {formatTokens(tokenUsage.contextWindow)} {t('chat.tokensLabel')}
             </span>
+            {tokenUsage.thinkingTokens > 0 && (
+              <span className="shrink-0 tabular-nums text-accent/70" title={t('chat.thinkingTokens', { tokens: String(tokenUsage.thinkingTokens) })}>
+                🧠{formatTokens(tokenUsage.thinkingTokens)}
+              </span>
+            )}
+            {percentage > 60 && onCompact && (
+              <button
+                onClick={onCompact}
+                className="p-0.5 rounded hover:bg-surface-3 text-muted/60 hover:text-text-secondary transition-colors cursor-pointer"
+                title={t('chat.compact')}
+              >
+                <Scissors size={12} />
+              </button>
+            )}
+            {conversationId && onRestoreCheckpoint && (
+              <CheckpointMenu
+                conversationId={conversationId}
+                onRestore={onRestoreCheckpoint}
+              />
+            )}
           </div>
         );
       })()}

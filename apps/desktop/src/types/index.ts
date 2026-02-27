@@ -11,6 +11,7 @@ export type { Feedback } from "./feedback";
 export type { EmbedResult } from "./embed";
 export type { PrivacyConfig, RedactRule } from "./privacy";
 export type { EmbedderConfig } from "./embedder";
+export type { OcrConfig, OcrDownloadProgress } from "./ocr";
 export type {
   Conversation,
   ConversationMessage,
@@ -20,4 +21,5 @@ export type {
   ProviderType,
   AgentEvent,
   AgentFrontendEvent,
+  Checkpoint,
 } from "./conversation";

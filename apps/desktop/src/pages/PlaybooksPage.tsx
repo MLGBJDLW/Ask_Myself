@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BookOpen, Plus, Trash2, X, Pencil, FileText, Calendar, ChevronUp, ChevronDown, Check, BotMessageSquare } from 'lucide-react';
 import { toast } from 'sonner';
@@ -12,7 +13,6 @@ import { Modal } from '../components/ui/Modal';
 import { Skeleton, CardSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
-import { ChatPanel } from '../components/chat/ChatPanel';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -48,40 +48,38 @@ const detailVariants = {
 
 export function PlaybooksPage() {
   const { t, locale } = useTranslation();
-  /* ── Data state ─────────────────────────────────────────────────── */
+  const navigate = useNavigate();
+  /* 鈹€鈹€ Data state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
   const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
   const [loading, setLoading] = useState(true);
 
-  /* ── Create modal ───────────────────────────────────────────────── */
+  /* 鈹€鈹€ Create modal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [formTitle, setFormTitle] = useState('');
   const [formDesc, setFormDesc] = useState('');
   const [formQuery, setFormQuery] = useState('');
   const [creating, setCreating] = useState(false);
 
-  /* ── Detail view ────────────────────────────────────────────────── */
+  /* 鈹€鈹€ Detail view 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
   const [selectedPlaybook, setSelectedPlaybook] = useState<Playbook | null>(null);
   const [citations, setCitations] = useState<PlaybookCitation[]>([]);
   const [loadingCitations, setLoadingCitations] = useState(false);
 
-  /* ── Delete confirmation ────────────────────────────────────────── */
+  /* 鈹€鈹€ Delete confirmation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
   const [deleteTarget, setDeleteTarget] = useState<Playbook | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  /* ── Inline edit ────────────────────────────────────────────────── */
+  /* 鈹€鈹€ Inline edit 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
   const [editMode, setEditMode] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editDesc, setEditDesc] = useState('');
   const [saving, setSaving] = useState(false);
 
-  /* ── Chat panel ─────────────────────────────────────────────────── */
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatMessage, setChatMessage] = useState('');
-
-  /* ── Remove citation confirm ────────────────────────────────────── */
+  /* 鈹€鈹€ Chat panel 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+  /* 鈹€鈹€ Remove citation confirm 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
   const [removeCitTarget, setRemoveCitTarget] = useState<string | null>(null);
 
-  /* ── Citation note editing ──────────────────────────────────────── */
+  /* 鈹€鈹€ Citation note editing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
   const [editingCitId, setEditingCitId] = useState<string | null>(null);
   const [editNoteText, setEditNoteText] = useState('');
   const [savingNote, setSavingNote] = useState(false);
@@ -200,7 +198,7 @@ export function PlaybooksPage() {
     }
   };
 
-  /* ── Citation note editing ──────────────────────────────────────── */
+  /* 鈹€鈹€ Citation note editing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const startEditNote = (cit: PlaybookCitation) => {
     setEditingCitId(cit.id);
@@ -230,14 +228,16 @@ export function PlaybooksPage() {
     }
   };
 
-  /* ── Ask AI handler ──────────────────────────────────────────────── */
+  /* 鈹€鈹€ Ask AI handler 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const handleAskAI = (context: string) => {
-    setChatMessage(context);
-    setChatOpen(true);
+    const trimmed = context.trim();
+    navigate('/chat', {
+      state: trimmed ? { initialMessage: trimmed } : null,
+    });
   };
 
-  /* ── Citation reordering ────────────────────────────────────────── */
+  /* 鈹€鈹€ Citation reordering 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const handleMoveCitation = async (index: number, direction: 'up' | 'down') => {
     if (!selectedPlaybook) return;
@@ -286,7 +286,7 @@ export function PlaybooksPage() {
   return (
     <div className="flex h-full">
     <div className="mx-auto max-w-6xl p-6 flex-1 min-w-0 overflow-y-auto">
-      {/* ── Header ──────────────────────────────────────────────── */}
+      {/* 鈹€鈹€ Header 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-lg font-semibold text-text-primary">{t('playbooks.title')}</h1>
         <Button
@@ -299,9 +299,9 @@ export function PlaybooksPage() {
         </Button>
       </div>
 
-      {/* ── Split panel ─────────────────────────────────────────── */}
+      {/* 鈹€鈹€ Split panel 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
       <div className="flex gap-6 items-start">
-        {/* ── Left: list ──────────────────────────────────────── */}
+        {/* 鈹€鈹€ Left: list 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
         <div className="w-[clamp(260px,28vw,340px)] shrink-0 space-y-1.5 overflow-y-auto max-h-[calc(100vh-160px)] pr-1">
           {playbooks.length === 0 ? (
             <EmptyState
@@ -363,7 +363,7 @@ export function PlaybooksPage() {
           )}
         </div>
 
-        {/* ── Right: detail ───────────────────────────────────── */}
+        {/* 鈹€鈹€ Right: detail 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
         <div className="flex-1 min-w-0 min-h-[400px]">
           <AnimatePresence mode="wait">
             {selectedPlaybook ? (
@@ -497,7 +497,7 @@ export function PlaybooksPage() {
                             <div className="flex items-start justify-between gap-2">
                               <div className="min-w-0 flex-1">
                                 <p className="text-xs font-mono text-text-tertiary">
-                                  {t('playbooks.chunkId')}: {cit.chunkId.slice(0, 12)}…
+                                  {t('playbooks.chunkId')}: {cit.chunkId.slice(0, 12)}...
                                 </p>
                                 {editingCitId === cit.id ? (
                                   <div className="mt-1.5 space-y-2">
@@ -599,7 +599,7 @@ export function PlaybooksPage() {
         </div>
       </div>
 
-      {/* ── Create playbook modal ────────────────────────────────── */}
+      {/* 鈹€鈹€ Create playbook modal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
       <Modal
         open={showCreateModal}
         onClose={() => setShowCreateModal(false)}
@@ -656,7 +656,7 @@ export function PlaybooksPage() {
         </div>
       </Modal>
 
-      {/* ── Delete confirm dialog ────────────────────────────────── */}
+      {/* 鈹€鈹€ Delete confirm dialog 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
       <ConfirmDialog
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
@@ -668,7 +668,7 @@ export function PlaybooksPage() {
         loading={deleting}
       />
 
-      {/* ── Remove citation confirm dialog ───────────────────────── */}
+      {/* 鈹€鈹€ Remove citation confirm dialog 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
       <ConfirmDialog
         open={!!removeCitTarget}
         onClose={() => setRemoveCitTarget(null)}
@@ -680,24 +680,8 @@ export function PlaybooksPage() {
       />
     </div>
 
-    {/* ── Chat side panel ────────────────────────────────────── */}
-    <AnimatePresence>
-      {chatOpen && (
-        <motion.div
-          initial={{ width: 0, opacity: 0 }}
-          animate={{ width: 400, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-          className="shrink-0 border-l border-border h-full overflow-hidden"
-        >
-          <ChatPanel
-            initialMessage={chatMessage}
-            onClose={() => setChatOpen(false)}
-            className="h-full"
-          />
-        </motion.div>
-      )}
-    </AnimatePresence>
     </div>
   );
 }
+
+

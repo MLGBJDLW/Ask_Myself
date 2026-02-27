@@ -1,12 +1,14 @@
-import { useCallback, useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useCallback, useState, useEffect, useRef } from 'react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Settings, AlertTriangle, PanelLeftClose, PanelLeftOpen, Plus } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput } from '../components/chat';
 import { useTranslation } from '../i18n';
 import { EmptyState } from '../components/ui/EmptyState';
 import { useChatSession } from '../lib/useChatSession';
+import * as api from '../lib/api';
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -16,6 +18,7 @@ export function ChatPage() {
   const { t } = useTranslation();
   const { conversationId } = useParams<{ conversationId?: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const onConversationCreated = useCallback(
     (id: string) => navigate(`/chat/${id}`, { replace: true }),
@@ -26,6 +29,36 @@ export function ChatPage() {
     conversationId,
     onConversationCreated,
   });
+
+  const sentInitialRef = useRef<string | null>(null);
+  const initialMessage = (
+    (location.state as { initialMessage?: string } | null)?.initialMessage ?? ''
+  ).trim();
+
+  // Accept one-off initial message forwarded from other pages.
+  useEffect(() => {
+    if (!initialMessage || chat.loadingConfig || !chat.agentConfig || chat.isStreaming) {
+      return;
+    }
+    const key = `${location.key}:${initialMessage}`;
+    if (sentInitialRef.current === key) {
+      return;
+    }
+    sentInitialRef.current = key;
+    void chat.send(initialMessage);
+
+    const cleanPath = conversationId ? `/chat/${conversationId}` : '/chat';
+    navigate(cleanPath, { replace: true, state: null });
+  }, [
+    initialMessage,
+    chat.loadingConfig,
+    chat.agentConfig,
+    chat.isStreaming,
+    chat.send,
+    location.key,
+    conversationId,
+    navigate,
+  ]);
 
   /* ── Sidebar collapsed state ──────────────────────────────────────── */
 
@@ -72,10 +105,34 @@ export function ChatPage() {
     [navigate],
   );
 
-  const handleNewConversation = useCallback(() => {
-    navigate('/chat');
-    chat.createNewConversation();
-  }, [navigate, chat.createNewConversation]);
+  const handleNewConversation = useCallback(async () => {
+    if (!chat.agentConfig) {
+      navigate('/chat');
+      chat.createNewConversation();
+      return;
+    }
+
+    try {
+      const conv = await api.createConversation(
+        chat.agentConfig.provider,
+        chat.agentConfig.model,
+        chat.customSystemPrompt || undefined,
+      );
+      chat.setConversations((prev) => [conv, ...prev.filter((c) => c.id !== conv.id)]);
+      navigate(`/chat/${conv.id}`);
+    } catch (e) {
+      toast.error(`${t('chat.createError')}: ${String(e)}`);
+      navigate('/chat');
+      chat.createNewConversation();
+    }
+  }, [
+    chat.agentConfig,
+    chat.customSystemPrompt,
+    chat.setConversations,
+    chat.createNewConversation,
+    navigate,
+    t,
+  ]);
 
   const handleDeleteConversation = useCallback(
     async (id: string) => {
@@ -106,15 +163,15 @@ export function ChatPage() {
 
   /* ── Render ──────────────────────────────────────────────────────── */
   return (
-    <div className="flex h-full">
+    <div className="flex h-full min-h-0">
       {/* Sidebar */}
       <motion.div
         initial={false}
         animate={{ width: sidebarCollapsed ? 0 : 'clamp(200px, 20vw, 260px)' }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="shrink-0 overflow-hidden"
+        className="shrink-0 overflow-hidden h-full min-h-0"
       >
-        <div className="w-[clamp(200px,20vw,260px)] h-full">
+        <div className="w-[clamp(200px,20vw,260px)] h-full min-h-0">
           <ChatSidebar
             conversations={chat.conversations}
             activeId={chat.activeId}
@@ -127,7 +184,7 @@ export function ChatPage() {
       </motion.div>
 
       {/* Main chat area */}
-      <div className="flex-1 flex flex-col min-w-0 relative">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
         {/* Sidebar toggle */}
         <div className="absolute top-2 left-2 z-20">
           <button
@@ -158,6 +215,11 @@ export function ChatPage() {
           <>
             {chat.activeId && (
               <div className="shrink-0 border-b border-border px-4 py-2 flex items-center gap-2">
+                {chat.agentConfig && (
+                  <span className="text-[10px] text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded-md truncate max-w-[160px]" title={`${chat.agentConfig.provider} / ${chat.agentConfig.model}`}>
+                    {chat.agentConfig.model}
+                  </span>
+                )}
                 <SourceSelector conversationId={chat.activeId} />
                 <SystemPromptEditor
                   conversationId={chat.activeId}
@@ -179,6 +241,7 @@ export function ChatPage() {
               onDeleteMessage={chat.deleteMessage}
               onEditAndResend={chat.editAndResend}
               loadingMsgs={chat.loadingMsgs}
+              lastCached={chat.lastCached}
             />
             {chat.lastUsage && chat.contextWindow > 0 && (() => {
               const pct = (chat.lastUsage.promptTokens / chat.contextWindow) * 100;
@@ -216,6 +279,21 @@ export function ChatPage() {
               isStreaming={chat.isStreaming}
               disabled={!chat.agentConfig || chat.loadingMsgs}
               tokenUsage={chat.tokenUsage}
+              finishReason={chat.finishReason}
+              contextOverflow={chat.contextOverflow}
+              rateLimited={chat.rateLimited}
+              conversationId={chat.activeId ?? undefined}
+              onRestoreCheckpoint={chat.activeId ? async () => {
+                await chat.reloadMessages();
+              } : undefined}
+              onCompact={chat.activeId ? async () => {
+                try {
+                  await api.compactConversation(chat.activeId!);
+                  await chat.reloadMessages();
+                } catch (e) {
+                  toast.error(String(e));
+                }
+              } : undefined}
             />
           </>
         )}

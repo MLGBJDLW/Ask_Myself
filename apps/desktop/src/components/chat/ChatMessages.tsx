@@ -41,13 +41,14 @@ interface ChatMessagesProps {
   onDeleteMessage?: (messageId: string) => void;
   onEditAndResend?: (messageId: string, newContent: string) => void;
   loadingMsgs?: boolean;
+  lastCached?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function ChatMessages({ messages, streamText, thinkingText, isThinking, toolCalls, isStreaming, error, onRetry, onDismissError, onDeleteMessage, onEditAndResend, loadingMsgs }: ChatMessagesProps) {
+export function ChatMessages({ messages, streamText, thinkingText, isThinking, toolCalls, isStreaming, error, onRetry, onDismissError, onDeleteMessage, onEditAndResend, loadingMsgs, lastCached }: ChatMessagesProps) {
   const { t } = useTranslation();
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -229,8 +230,10 @@ export function ChatMessages({ messages, streamText, thinkingText, isThinking, t
             ? (messages.slice(0, idx).reverse().find((m) => m.role === 'user')?.content ?? '')
             : '';
           const chunkIds = chunkIdCacheRef.current.get(msg.id) ?? [];
+          // Show text bubble for assistant messages whenever they have content.
           const hasRenderableAssistantContent =
-            msg.role !== 'assistant' || msg.content.trim().length > 0;
+            msg.role !== 'assistant' ||
+            msg.content.trim().length > 0;
 
           return (
             <div key={msg.id}>
@@ -249,6 +252,7 @@ export function ChatMessages({ messages, streamText, thinkingText, isThinking, t
                   chunkIds={chunkIds}
                   queryText={queryText}
                   isLastAssistant={idx === lastAssistantIdx && !isStreaming}
+                  lastCached={idx === lastAssistantIdx ? lastCached : undefined}
                   onRetry={onRetry}
                   alwaysShowTimestamp={(() => {
                     // Find previous visible message

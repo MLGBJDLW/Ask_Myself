@@ -1,7 +1,8 @@
-/// TF-IDF embedding module for local vector search.
-///
-/// Provides a trait-based pluggable embedder design with a concrete
-/// TF-IDF implementation that requires no external services.
+//! TF-IDF embedding module for local vector search.
+//!
+//! Provides a trait-based pluggable embedder design with a concrete
+//! TF-IDF implementation that requires no external services.
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 

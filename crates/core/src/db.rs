@@ -1,4 +1,5 @@
-/// Database module — manages SQLite connections and schema migrations.
+//! Database module — manages SQLite connections and schema migrations.
+
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};

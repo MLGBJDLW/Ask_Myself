@@ -219,6 +219,9 @@ export interface TranslationKeys {
   'settings.indexRebuildError': string;
   'settings.ftsOptimized': string;
   'settings.ftsOptimizeError': string;
+  'settings.clearCache': string;
+  'settings.cacheClearedCount': string;
+  'settings.clearCacheError': string;
   'settings.loadPrivacyError': string;
   'settings.patternExists': string;
   'settings.privacySaved': string;
@@ -253,6 +256,31 @@ export interface TranslationKeys {
   'settings.embeddingSave': string;
   'settings.embeddingRebuild': string;
   'settings.embeddingRebuilding': string;
+
+  // Settings - OCR
+  'settings.ocrTab': string;
+  'settings.ocrSection': string;
+  'settings.ocrEnabled': string;
+  'settings.ocrEnabledDesc': string;
+  'settings.ocrConfidence': string;
+  'settings.ocrConfidenceDesc': string;
+  'settings.ocrLlmFallback': string;
+  'settings.ocrLlmFallbackDesc': string;
+  'settings.ocrDetLimit': string;
+  'settings.ocrDetLimitDesc': string;
+  'settings.ocrUseCls': string;
+  'settings.ocrUseClsDesc': string;
+  'settings.ocrModels': string;
+  'settings.ocrModelsDownloaded': string;
+  'settings.ocrModelsNotDownloaded': string;
+  'settings.ocrDownload': string;
+  'settings.ocrDownloading': string;
+  'settings.ocrDownloadingFile': string;
+  'settings.ocrModelSize': string;
+  'settings.ocrDownloadFail': string;
+  'settings.ocrSaved': string;
+  'settings.ocrSaveError': string;
+  'settings.ocrLoadError': string;
 
   // Command Palette
   'cmd.placeholder': string;
@@ -351,6 +379,21 @@ export interface TranslationKeys {
   'chat.startNewChat': string;
   'chat.loadingMessages': string;
   'chat.dragDropHint': string;
+  'chat.compact': string;
+  'chat.thinkingTokens': string;
+  'chat.cached': string;
+  'chat.truncated': string;
+  'chat.contentFiltered': string;
+  'chat.contextOverflow': string;
+  'chat.contextOverflowHint': string;
+  'chat.rateLimited': string;
+  'chat.checkpoints': string;
+  'chat.restoreCheckpoint': string;
+  'chat.deleteCheckpoint': string;
+  'chat.noCheckpoints': string;
+  'chat.checkpointRestored': string;
+  'chat.autoCompacted': string;
+  'chat.confirmRestore': string;
 
   // Citations
   'citation.evidence': string;
@@ -439,6 +482,8 @@ export interface TranslationKeys {
   'common.collapse': string;
   'common.expand': string;
   'common.clear': string;
+  'common.selectAll': string;
+  'common.clearAll': string;
 }
 
 export type TranslationKey = keyof TranslationKeys;

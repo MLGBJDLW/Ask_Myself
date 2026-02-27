@@ -1076,6 +1076,117 @@ pub async fn cleanup_empty_conversations_cmd(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn compact_conversation_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<(), String> {
+    // 1. Load conversation and its messages.
+    let conv = state.db.get_conversation(&conversation_id).map_err(|e| e.to_string())?;
+    let messages = state.db.get_messages(&conversation_id).map_err(|e| e.to_string())?;
+    if messages.is_empty() {
+        return Ok(());
+    }
+
+    // 2. Load default agent config for provider / model.
+    let db_config = state
+        .db
+        .get_default_agent_config()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No default agent config set.".to_string())?;
+
+    let provider_config = db_config_to_provider_config(&db_config);
+    let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
+
+    let base_prompt = if conv.system_prompt.is_empty() {
+        ExecutorConfig::default().system_prompt
+    } else {
+        conv.system_prompt.clone()
+    };
+
+    let executor_config = ExecutorConfig {
+        max_iterations: 1,
+        system_prompt: base_prompt,
+        model: Some(db_config.model.clone()),
+        temperature: db_config.temperature.map(|t| t as f32),
+        max_tokens: db_config.max_tokens.map(|t| t as u32),
+        context_window: db_config.context_window.map(|w| w as u32),
+        reasoning_enabled: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+        provider_type: Some(parse_provider_type(&db_config.provider)),
+        summarization_model: db_config.summarization_model.clone(),
+    };
+
+    let summarization_provider: Option<Box<dyn ask_core::llm::LlmProvider>> =
+        if let Some(ref summ_provider_name) = db_config.summarization_provider {
+            let summ_config = ProviderConfig {
+                provider_type: parse_provider_type(summ_provider_name),
+                api_key: Some(db_config.api_key.clone()),
+                base_url: db_config.base_url.clone(),
+                org_id: None,
+            };
+            create_provider(summ_config).ok()
+        } else {
+            None
+        };
+
+    let tools = default_tool_registry();
+    let mut executor = AgentExecutor::new(provider, tools, executor_config);
+    if let Some(summ_provider) = summarization_provider {
+        executor = executor.with_summarization_provider(summ_provider);
+    }
+
+    // 3. Run compaction (creates a checkpoint before evicting).
+    let compacted = executor
+        .compact_conversation(&conversation_id, messages, Some(&state.db), "manual")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 4. Replace messages in DB: delete old, insert compacted.
+    state.db.delete_messages(&conversation_id).map_err(|e| e.to_string())?;
+    for msg in &compacted {
+        state.db.add_message(msg).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+// ── Checkpoint Commands ─────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn list_checkpoints_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Vec<ask_core::conversation::Checkpoint>, String> {
+    state
+        .db
+        .list_checkpoints(&conversation_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn restore_checkpoint_cmd(
+    state: tauri::State<'_, AppState>,
+    checkpoint_id: String,
+) -> Result<Vec<ConversationMessage>, String> {
+    state
+        .db
+        .restore_checkpoint(&checkpoint_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_checkpoint_cmd(
+    state: tauri::State<'_, AppState>,
+    checkpoint_id: String,
+) -> Result<(), String> {
+    state
+        .db
+        .delete_checkpoint(&checkpoint_id)
+        .map_err(|e| e.to_string())
+}
+
 // ── Agent Config Commands ───────────────────────────────────────────────
 
 #[tauri::command]
@@ -1382,4 +1493,36 @@ pub async fn agent_stop_cmd(
         task.abort();
     }
     Ok(())
+}
+
+// ── OCR ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_ocr_config_cmd(state: tauri::State<'_, AppState>) -> Result<ask_core::ocr::OcrConfig, String> {
+    state.db.load_ocr_config().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_ocr_config_cmd(state: tauri::State<'_, AppState>, config: ask_core::ocr::OcrConfig) -> Result<(), String> {
+    state.db.save_ocr_config(&config).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn check_ocr_models_cmd(config: ask_core::ocr::OcrConfig) -> bool {
+    ask_core::ocr::check_ocr_models_exist(&config)
+}
+
+#[tauri::command]
+pub async fn download_ocr_models_cmd(
+    app_handle: AppHandle,
+    config: ask_core::ocr::OcrConfig,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        ask_core::ocr::download_ocr_models(&config, |progress| {
+            let _ = app_handle.emit("ocr:download-progress", &progress);
+        })
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }

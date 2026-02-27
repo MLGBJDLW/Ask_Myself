@@ -857,7 +857,7 @@ fn classify_file(
     existing_docs: &HashMap<String, (String, String)>,
     privacy: &PrivacyConfig,
 ) -> Result<FileClassification, CoreError> {
-    let mut parsed = parse_file(path)?;
+    let mut parsed = parse_file(path, None, None)?;
 
     // Apply content redaction when privacy is enabled.
     if privacy.enabled {
@@ -979,7 +979,7 @@ pub fn ingest_single_file(
     // Load privacy config for redaction.
     let privacy_cfg = db.load_privacy_config()?;
 
-    let mut parsed = parse_file(path)?;
+    let mut parsed = parse_file(path, None, None)?;
 
     // Apply content redaction when privacy is enabled.
     if privacy_cfg.enabled {
@@ -1283,7 +1283,7 @@ mod tests {
         let sid = create_test_source(&db, tmp.path(), vec![], vec![]);
 
         // Parse and insert.
-        let parsed = parse_file(&file).unwrap();
+        let parsed = parse_file(&file, None, None).unwrap();
         let doc_id = db.insert_document(&sid, &parsed).unwrap();
         assert!(!doc_id.is_empty());
 
@@ -1305,7 +1305,7 @@ mod tests {
              produce a different blake3 content hash value now.",
         )
         .unwrap();
-        let parsed2 = parse_file(&file).unwrap();
+        let parsed2 = parse_file(&file, None, None).unwrap();
         db.update_document(&doc_id, &parsed2).unwrap();
 
         let (_, new_hash) = db
@@ -1500,7 +1500,7 @@ mod tests {
         for entry in fs::read_dir(tmp.path()).unwrap() {
             let path = entry.unwrap().path();
             if path.is_file() {
-                parsed_docs.push(parse_file(&path).unwrap());
+                parsed_docs.push(parse_file(&path, None, None).unwrap());
             }
         }
         assert_eq!(parsed_docs.len(), 100);
