@@ -108,8 +108,26 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLAnchorElement>) => {
+      if (!href) return;
+
+      // Keep in-page anchors (e.g. GFM footnotes) navigable.
+      if (href.startsWith('#')) {
+        e.preventDefault();
+        const rawId = decodeURIComponent(href.slice(1));
+        if (!rawId) return;
+        const candidateIds = [rawId, `user-content-${rawId.replace(/^user-content-/, '')}`];
+        for (const id of candidateIds) {
+          const target = document.getElementById(id);
+          if (target) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            return;
+          }
+        }
+        return;
+      }
+
       e.preventDefault();
-      if (href) open(href);
+      open(href);
     },
     [href],
   );

@@ -18,18 +18,29 @@ struct SseChunk {
 
 #[derive(serde::Deserialize)]
 struct SseChoice {
+    #[serde(default)]
     delta: SseDelta,
+    #[serde(default)]
+    message: Option<SseDelta>,
     finish_reason: Option<String>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 struct SseDelta {
     content: Option<String>,
     tool_calls: Option<Vec<SseToolCallDelta>>,
     #[serde(default, alias = "reasoningContent")]
     reasoning_content: Option<serde_json::Value>,
+    #[serde(
+        default,
+        alias = "reasoningContentDelta",
+        alias = "reasoning_content_delta"
+    )]
+    reasoning_content_delta: Option<serde_json::Value>,
     #[serde(default)]
     reasoning: Option<serde_json::Value>,
+    #[serde(default, alias = "reasoningDelta", alias = "reasoning_delta")]
+    reasoning_delta: Option<serde_json::Value>,
     #[serde(default, alias = "thinkingContent", alias = "thinking_content")]
     thinking: Option<serde_json::Value>,
     #[serde(default, alias = "reasoningText", alias = "reasoning_text")]
@@ -115,8 +126,16 @@ fn json_value_to_text(value: &serde_json::Value) -> Option<String> {
                 "thinkingContent",
                 "reasoning_text",
                 "reasoningText",
+                "reasoning_delta",
+                "reasoningDelta",
+                "reasoning_content_delta",
+                "reasoningContentDelta",
+                "delta",
+                "text_delta",
+                "textDelta",
                 "text",
                 "content",
+                "output_text",
                 "summary",
             ] {
                 if let Some(v) = map.get(key) {
@@ -136,7 +155,9 @@ fn json_value_to_text(value: &serde_json::Value) -> Option<String> {
 fn extract_reasoning_delta(delta: &SseDelta) -> Option<String> {
     for value in [
         delta.reasoning_content.as_ref(),
+        delta.reasoning_content_delta.as_ref(),
         delta.reasoning.as_ref(),
+        delta.reasoning_delta.as_ref(),
         delta.thinking.as_ref(),
         delta.reasoning_text.as_ref(),
     ] {
@@ -149,6 +170,78 @@ fn extract_reasoning_delta(delta: &SseDelta) -> Option<String> {
         }
     }
     None
+}
+
+fn extract_reasoning_from_choice(choice: &SseChoice) -> Option<String> {
+    extract_reasoning_delta(&choice.delta)
+        .or_else(|| choice.message.as_ref().and_then(extract_reasoning_delta))
+}
+
+fn extract_text_delta_from_choice(choice: &SseChoice) -> String {
+    choice
+        .delta
+        .content
+        .clone()
+        .or_else(|| choice.message.as_ref().and_then(|m| m.content.clone()))
+        .unwrap_or_default()
+}
+
+/// Split provider content into visible text and `<think>...</think>` reasoning text.
+///
+/// Keeps parser state so tags can be detected even when split across SSE chunks.
+fn split_think_tags(
+    raw_delta: &str,
+    in_think_block: &mut bool,
+    tag_buffer: &mut String,
+) -> (String, Option<String>) {
+    if raw_delta.is_empty() {
+        return (String::new(), None);
+    }
+
+    tag_buffer.push_str(raw_delta);
+
+    let mut visible = String::new();
+    let mut thinking = String::new();
+
+    loop {
+        if *in_think_block {
+            if let Some(end_pos) = tag_buffer.find("</think>") {
+                let think_part = &tag_buffer[..end_pos];
+                if !think_part.is_empty() {
+                    thinking.push_str(think_part);
+                }
+                *tag_buffer = tag_buffer[end_pos + 8..].to_string(); // "</think>"
+                *in_think_block = false;
+            } else {
+                if !tag_buffer.is_empty() {
+                    thinking.push_str(tag_buffer);
+                    tag_buffer.clear();
+                }
+                break;
+            }
+        } else if let Some(start_pos) = tag_buffer.find("<think>") {
+            let before = &tag_buffer[..start_pos];
+            if !before.is_empty() {
+                visible.push_str(before);
+            }
+            *tag_buffer = tag_buffer[start_pos + 7..].to_string(); // "<think>"
+            *in_think_block = true;
+        } else {
+            if !tag_buffer.is_empty() {
+                visible.push_str(tag_buffer);
+                tag_buffer.clear();
+            }
+            break;
+        }
+    }
+
+    let thinking = if thinking.is_empty() {
+        None
+    } else {
+        Some(thinking)
+    };
+
+    (visible, thinking)
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +258,8 @@ pub async fn parse_sse_stream(
 ) -> Result<(), CoreError> {
     let mut byte_stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut in_think_block = false;
+    let mut think_tag_buffer = String::new();
 
     while let Some(chunk_result) = byte_stream.next().await {
         let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
@@ -194,6 +289,19 @@ pub async fn parse_sse_stream(
 
             // Stream termination signal.
             if data == "[DONE]" {
+                // Flush trailing think content when provider did not close </think>.
+                if in_think_block && !think_tag_buffer.is_empty() {
+                    let tail = std::mem::take(&mut think_tag_buffer);
+                    let _ = tx
+                        .send(Ok(StreamChunk {
+                            delta: String::new(),
+                            tool_call_delta: None,
+                            finish_reason: None,
+                            usage: None,
+                            thinking_delta: Some(tail),
+                        }))
+                        .await;
+                }
                 return Ok(());
             }
 
@@ -201,9 +309,11 @@ pub async fn parse_sse_stream(
             match serde_json::from_str::<SseChunk>(data) {
                 Ok(sse) => {
                     let choice = sse.choices.as_ref().and_then(|c| c.first());
-                    let delta = choice
-                        .and_then(|c| c.delta.content.clone())
+                    let raw_delta = choice
+                        .map(extract_text_delta_from_choice)
                         .unwrap_or_default();
+                    let (delta, think_from_tags) =
+                        split_think_tags(&raw_delta, &mut in_think_block, &mut think_tag_buffer);
                     let finish_reason = choice
                         .and_then(|c| c.finish_reason.as_deref())
                         .map(parse_finish_reason);
@@ -217,9 +327,19 @@ pub async fn parse_sse_stream(
                     });
 
                     // Emit provider-specific reasoning/thinking deltas if present.
-                    let thinking_delta = choice
-                        .and_then(|c| extract_reasoning_delta(&c.delta))
+                    let mut thinking_delta = choice
+                        .and_then(extract_reasoning_from_choice)
                         .filter(|s| !s.is_empty());
+                    if let Some(tag_thinking) = think_from_tags {
+                        match &mut thinking_delta {
+                            Some(existing) => {
+                                if existing != &tag_thinking {
+                                    existing.push_str(&tag_thinking);
+                                }
+                            }
+                            None => thinking_delta = Some(tag_thinking),
+                        }
+                    }
 
                     // Emit text/finish/usage metadata as one chunk.
                     if !delta.is_empty()
@@ -244,7 +364,12 @@ pub async fn parse_sse_stream(
 
                     // Emit each tool call delta separately so multiple tool calls
                     // in one SSE frame are preserved.
-                    if let Some(tool_calls) = choice.and_then(|c| c.delta.tool_calls.as_ref()) {
+                    if let Some(tool_calls) = choice.and_then(|c| {
+                        c.delta
+                            .tool_calls
+                            .as_ref()
+                            .or_else(|| c.message.as_ref().and_then(|m| m.tool_calls.as_ref()))
+                    }) {
                         for tc in tool_calls {
                             if tx
                                 .send(Ok(StreamChunk {
@@ -273,5 +398,74 @@ pub async fn parse_sse_stream(
         }
     }
 
-    Ok(())
+    // Stream ended without [DONE] marker — server likely crashed or disconnected.
+    Err(CoreError::StreamIncomplete)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_reasoning_from_delta_reasoning_content() {
+        let choice: SseChoice = serde_json::from_value(serde_json::json!({
+            "delta": {
+                "reasoning_content": "thinking from delta"
+            },
+            "finish_reason": null
+        }))
+        .expect("deserialize choice");
+
+        assert_eq!(
+            extract_reasoning_from_choice(&choice).as_deref(),
+            Some("thinking from delta")
+        );
+    }
+
+    #[test]
+    fn extracts_reasoning_from_message_fallback() {
+        let choice: SseChoice = serde_json::from_value(serde_json::json!({
+            "delta": {},
+            "message": {
+                "reasoning_content": "thinking from message"
+            },
+            "finish_reason": "stop"
+        }))
+        .expect("deserialize choice");
+
+        assert_eq!(
+            extract_reasoning_from_choice(&choice).as_deref(),
+            Some("thinking from message")
+        );
+    }
+
+    #[test]
+    fn extracts_reasoning_from_nested_delta_key() {
+        let choice: SseChoice = serde_json::from_value(serde_json::json!({
+            "delta": {
+                "reasoning": {
+                    "delta": "partial reasoning"
+                }
+            }
+        }))
+        .expect("deserialize choice");
+
+        assert_eq!(
+            extract_reasoning_from_choice(&choice).as_deref(),
+            Some("partial reasoning")
+        );
+    }
+
+    #[test]
+    fn extracts_text_from_message_when_delta_content_missing() {
+        let choice: SseChoice = serde_json::from_value(serde_json::json!({
+            "delta": {},
+            "message": {
+                "content": "assistant output"
+            }
+        }))
+        .expect("deserialize choice");
+
+        assert_eq!(extract_text_delta_from_choice(&choice), "assistant output");
+    }
 }

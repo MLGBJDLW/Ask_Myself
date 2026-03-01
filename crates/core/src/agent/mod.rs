@@ -2,20 +2,22 @@
 
 use std::time::Duration;
 
-use futures::{StreamExt, future::join_all};
-use tracing::{debug, warn, info_span, Instrument};
+use futures::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tracing::{debug, error, info_span, warn, Instrument};
 use uuid::Uuid;
 
-use crate::conversation::ConversationMessage;
-use crate::conversation::memory::{estimate_message_tokens, estimate_tokens, model_context_window, trim_to_context_window};
+use crate::conversation::memory::{
+    estimate_message_tokens, estimate_tokens, model_context_window, trim_to_context_window,
+};
 use crate::conversation::summarizer;
+use crate::conversation::ConversationMessage;
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::{
-    CompletionRequest, LlmProvider, Message, ContentPart, ProviderType, ReasoningEffort, Role, ToolCallDelta,
-    ToolCallRequest, Usage,
+    CompletionRequest, ContentPart, LlmProvider, Message, ProviderType, ReasoningEffort, Role,
+    ToolCallDelta, ToolCallRequest, Usage,
 };
 use crate::privacy;
 use crate::tools::ToolRegistry;
@@ -248,6 +250,13 @@ pub enum AgentEvent {
         #[serde(rename = "finishReason", skip_serializing_if = "Option::is_none")]
         finish_reason: Option<String>,
     },
+    /// Intermediate token usage update emitted after each LLM iteration.
+    UsageUpdate {
+        #[serde(rename = "usageTotal")]
+        usage_total: Usage,
+        #[serde(rename = "lastPromptTokens")]
+        last_prompt_tokens: u32,
+    },
     /// An error occurred during execution.
     Error { message: String },
     /// The agent auto-compacted the conversation to free context space.
@@ -294,7 +303,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 6,
+            max_iterations: 10,
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
             model: None,
             temperature: Some(0.3),
@@ -395,13 +404,15 @@ impl AgentExecutor {
         // --- 0. Early cancellation check before any work ----------------------
         if self.cancel_token.is_cancelled() {
             let msg = Message::text(Role::Assistant, "Request cancelled by user.".to_string());
-            let _ = tx.send(AgentEvent::Done {
-                message: msg.clone(),
-                usage_total: Usage::default(),
-                last_prompt_tokens: 0,
-                cached: false,
-                finish_reason: Some("stop".to_string()),
-            }).await;
+            let _ = tx
+                .send(AgentEvent::Done {
+                    message: msg.clone(),
+                    usage_total: Usage::default(),
+                    last_prompt_tokens: 0,
+                    cached: false,
+                    finish_reason: Some("stop".to_string()),
+                })
+                .await;
             return Ok(msg);
         }
 
@@ -452,6 +463,7 @@ impl AgentExecutor {
         let mut last_prompt_tokens: u32 = 0;
         let mut sort_order = next_sort_order;
         let mut accumulated_content = String::new();
+        let mut last_iteration_content = String::new();
         let mut thinking_buffer = String::new();
         let mut last_finish_reason: Option<String> = None;
 
@@ -490,11 +502,9 @@ impl AgentExecutor {
 
         // --- 3d. Check answer cache before ReAct loop ------------------------
         if !user_query_text.is_empty() {
-            if let Ok(Some(cached)) = db.find_cached_answer(
-                &user_query_text,
-                cache_source_filter.as_deref(),
-                None,
-            ) {
+            if let Ok(Some(cached)) =
+                db.find_cached_answer(&user_query_text, cache_source_filter.as_deref(), None)
+            {
                 let _ = db.increment_cache_hit(&cached.id);
                 debug!("Cache hit for query: {}", user_query_text);
                 let _ = tx
@@ -518,7 +528,14 @@ impl AgentExecutor {
                         sort_order,
                         thinking: None,
                     };
-                    let _ = db.add_message(&conv_msg);
+                    if let Err(e) = db.add_message(&conv_msg) {
+                        error!("Failed to persist message: {e}");
+                        let _ = tx
+                            .send(AgentEvent::Error {
+                                message: format!("Warning: message was not saved to history: {e}"),
+                            })
+                            .await;
+                    }
                 }
 
                 let _ = tx
@@ -542,7 +559,11 @@ impl AgentExecutor {
                     warn!("Agent execution cancelled by user");
                     if !accumulated_content.is_empty() {
                         let note = "\n\n*[Request cancelled by user]*";
-                        let _ = tx.send(AgentEvent::TextDelta { delta: note.to_string() }).await;
+                        let _ = tx
+                            .send(AgentEvent::TextDelta {
+                                delta: note.to_string(),
+                            })
+                            .await;
                         accumulated_content.push_str(note);
                     }
                     let cancel_text = if accumulated_content.is_empty() {
@@ -562,17 +583,32 @@ impl AgentExecutor {
                             token_count: estimate_message_tokens(&final_msg),
                             created_at: String::new(),
                             sort_order,
-                            thinking: if thinking_buffer.is_empty() { None } else { Some(thinking_buffer.clone()) },
+                            thinking: if thinking_buffer.is_empty() {
+                                None
+                            } else {
+                                Some(thinking_buffer.clone())
+                            },
                         };
-                        let _ = db.add_message(&conv_msg);
+                        if let Err(e) = db.add_message(&conv_msg) {
+                            error!("Failed to persist message: {e}");
+                            let _ = tx
+                                .send(AgentEvent::Error {
+                                    message: format!(
+                                        "Warning: message was not saved to history: {e}"
+                                    ),
+                                })
+                                .await;
+                        }
                     }
-                    let _ = tx.send(AgentEvent::Done {
-                        message: final_msg.clone(),
-                        usage_total: total_usage.clone(),
-                        last_prompt_tokens,
-                        cached: false,
-                        finish_reason: last_finish_reason.clone(),
-                    }).await;
+                    let _ = tx
+                        .send(AgentEvent::Done {
+                            message: final_msg.clone(),
+                            usage_total: total_usage.clone(),
+                            last_prompt_tokens,
+                            cached: false,
+                            finish_reason: last_finish_reason.clone(),
+                        })
+                        .await;
                     return Ok(final_msg);
                 }
             };
@@ -587,6 +623,24 @@ impl AgentExecutor {
                 iteration + 1,
                 self.config.max_iterations
             );
+
+            // Inject iteration-budget hint to help the model plan tool usage.
+            let remaining = self.config.max_iterations - iteration;
+            if iteration > 0 {
+                let budget_hint = if remaining <= 1 {
+                    "[System: This is your FINAL tool-use round. You MUST provide your complete answer now. Do not make additional tool calls — synthesize all evidence gathered so far.]".to_string()
+                } else if iteration >= self.config.max_iterations / 2 {
+                    format!(
+                        "[System: You have {} tool-use round(s) remaining. Start synthesizing if you have sufficient evidence, or make your most critical remaining searches.]",
+                        remaining
+                    )
+                } else {
+                    String::new()
+                };
+                if !budget_hint.is_empty() {
+                    messages.push(Message::text(Role::System, budget_hint));
+                }
+            }
 
             let request = CompletionRequest {
                 model: model.to_string(),
@@ -644,6 +698,34 @@ impl AgentExecutor {
                             .await;
                         tokio::time::sleep(Duration::from_secs(wait)).await;
                     }
+                    Err(CoreError::TransientLlm(msg)) => {
+                        retry_count += 1;
+                        if retry_count > MAX_LLM_RETRIES {
+                            let _ = tx
+                                .send(AgentEvent::Error {
+                                    message: format!(
+                                        "Transient error after {} retries: {}",
+                                        MAX_LLM_RETRIES, msg
+                                    ),
+                                })
+                                .await;
+                            return Err(CoreError::Llm(format!(
+                                "Transient error after {} retries: {}",
+                                MAX_LLM_RETRIES, msg
+                            )));
+                        }
+                        let wait = 2u64.pow(retry_count - 1); // 1s, 2s, 4s
+                        warn!(
+                            "Transient error (retry {}/{}): {}. Retrying after {}s",
+                            retry_count, MAX_LLM_RETRIES, msg, wait
+                        );
+                        let _ = tx
+                            .send(AgentEvent::Thinking {
+                                content: format!("Connection error. Retrying in {}s…", wait),
+                            })
+                            .await;
+                        tokio::time::sleep(Duration::from_secs(wait)).await;
+                    }
                     Err(e) => {
                         let _ = tx
                             .send(AgentEvent::Error {
@@ -691,6 +773,17 @@ impl AgentExecutor {
                             chunk_usage = Some(u);
                         }
                     }
+                    Err(CoreError::StreamIncomplete) => {
+                        warn!("Stream ended without completion marker — response may be truncated");
+                        let _ = tx
+                            .send(AgentEvent::Error {
+                                message: "Response may be truncated (stream ended unexpectedly)"
+                                    .to_string(),
+                            })
+                            .await;
+                        // Don't abort — continue with whatever content was received.
+                        break;
+                    }
                     Err(e) => {
                         let _ = tx
                             .send(AgentEvent::Error {
@@ -712,8 +805,20 @@ impl AgentExecutor {
                     *total_usage.thinking_tokens.get_or_insert(0) += t;
                 }
 
+                // Emit intermediate usage update so the frontend can
+                // display token counts while the agent is still running.
+                let _ = tx
+                    .send(AgentEvent::UsageUpdate {
+                        usage_total: total_usage.clone(),
+                        last_prompt_tokens,
+                    })
+                    .await;
+
                 // -- 4b'. Auto-compact at 85% of context budget ----------------
-                let ctx_window = self.config.context_window.unwrap_or(128_000);
+                let ctx_window = self
+                    .config
+                    .context_window
+                    .unwrap_or_else(|| model_context_window(model));
                 let max_response = self.config.max_tokens.unwrap_or(4096);
                 let budget = ctx_window.saturating_sub(max_response);
                 if budget > 0 && u.prompt_tokens > (budget as f64 * 0.85) as u32 {
@@ -731,6 +836,10 @@ impl AgentExecutor {
                 thinking_buffer.push_str(&iteration_thinking);
             }
 
+            if !full_content.trim().is_empty() {
+                last_iteration_content = full_content.clone();
+            }
+
             // -- 4c. Build assistant message -----------------------------------
             let assistant_msg = Message {
                 role: Role::Assistant,
@@ -740,6 +849,11 @@ impl AgentExecutor {
                     None
                 } else {
                     Some(tool_calls.clone())
+                },
+                reasoning_content: if iteration_thinking.is_empty() {
+                    None
+                } else {
+                    Some(iteration_thinking.clone())
                 },
             };
             messages.push(assistant_msg.clone());
@@ -758,7 +872,11 @@ impl AgentExecutor {
                         token_count: estimate_message_tokens(&assistant_msg),
                         created_at: String::new(),
                         sort_order,
-                        thinking: if thinking_buffer.is_empty() { None } else { Some(thinking_buffer.clone()) },
+                        thinking: if thinking_buffer.is_empty() {
+                            None
+                        } else {
+                            Some(thinking_buffer.clone())
+                        },
                     };
                     if let Err(e) = db.add_message(&conv_msg) {
                         warn!("Failed to save final assistant message: {e}");
@@ -803,7 +921,11 @@ impl AgentExecutor {
                     token_count: estimate_message_tokens(&assistant_msg),
                     created_at: String::new(),
                     sort_order,
-                    thinking: if iteration_thinking.is_empty() { None } else { Some(iteration_thinking.clone()) },
+                    thinking: if iteration_thinking.is_empty() {
+                        None
+                    } else {
+                        Some(iteration_thinking.clone())
+                    },
                 };
                 if let Err(e) = db.add_message(&conv_msg) {
                     warn!("Failed to save intermediate assistant message: {e}");
@@ -827,22 +949,27 @@ impl AgentExecutor {
             }
 
             // Build futures for all tool calls and execute concurrently.
-            let tool_futures: Vec<_> = tool_calls.iter().map(|tc| {
-                let tool_timeout = match tc.name.as_str() {
-                    "retrieve_evidence" => Duration::from_secs(60),
-                    _ => Duration::from_secs(30),
-                };
-                let source_scope = &source_scope;
-                let tool_span = info_span!("tool_execution", tool = %tc.name);
-                async move {
-                    let result = tokio::time::timeout(
-                        tool_timeout,
-                        self.tools.execute(&tc.name, &tc.id, &tc.arguments, db, source_scope),
-                    )
-                    .await;
-                    (tc, tool_timeout, result)
-                }.instrument(tool_span)
-            }).collect();
+            let tool_futures: Vec<_> = tool_calls
+                .iter()
+                .map(|tc| {
+                    let tool_timeout = match tc.name.as_str() {
+                        "retrieve_evidence" => Duration::from_secs(60),
+                        _ => Duration::from_secs(30),
+                    };
+                    let source_scope = &source_scope;
+                    let tool_span = info_span!("tool_execution", tool = %tc.name);
+                    async move {
+                        let result = tokio::time::timeout(
+                            tool_timeout,
+                            self.tools
+                                .execute(&tc.name, &tc.id, &tc.arguments, db, source_scope),
+                        )
+                        .await;
+                        (tc, tool_timeout, result)
+                    }
+                    .instrument(tool_span)
+                })
+                .collect();
 
             let tool_results = join_all(tool_futures).await;
 
@@ -924,7 +1051,11 @@ impl AgentExecutor {
                 // crowding out conversation history.
                 let context_content = truncate_tool_result(&content, MAX_TOOL_RESULT_CHARS);
 
-                messages.push(Message::text_with_name(Role::Tool, context_content, tc.id.clone()));
+                messages.push(Message::text_with_name(
+                    Role::Tool,
+                    context_content,
+                    tc.id.clone(),
+                ));
             }
 
             // ── Cancellation checkpoint: after tool execution ─────────
@@ -932,7 +1063,10 @@ impl AgentExecutor {
 
             // Re-trim messages to fit context window after appending tool results.
             // This prevents unbounded growth across iterations.
-            let max_ctx = self.config.context_window.unwrap_or_else(|| model_context_window(model));
+            let max_ctx = self
+                .config
+                .context_window
+                .unwrap_or_else(|| model_context_window(model));
             messages = trim_to_context_window(&messages, max_ctx, max_response_tokens);
 
             // Loop back → next LLM call with tool results.
@@ -944,17 +1078,23 @@ impl AgentExecutor {
             self.config.max_iterations
         );
 
-        if !accumulated_content.is_empty() {
+        let mut final_content = if !last_iteration_content.trim().is_empty() {
+            last_iteration_content
+        } else {
+            accumulated_content
+        };
+
+        if !final_content.is_empty() {
             let note = "\n\n*[Note: I used all available tool calls. The answer above may be incomplete.]*";
             let _ = tx
                 .send(AgentEvent::TextDelta {
                     delta: note.to_string(),
                 })
                 .await;
-            accumulated_content.push_str(note);
+            final_content.push_str(note);
         }
 
-        let final_msg = Message::text(Role::Assistant, accumulated_content);
+        let final_msg = Message::text(Role::Assistant, final_content);
 
         if let Some(cid) = conversation_id {
             let conv_msg = ConversationMessage {
@@ -967,7 +1107,11 @@ impl AgentExecutor {
                 token_count: estimate_message_tokens(&final_msg),
                 created_at: String::new(),
                 sort_order,
-                thinking: if thinking_buffer.is_empty() { None } else { Some(thinking_buffer.clone()) },
+                thinking: if thinking_buffer.is_empty() {
+                    None
+                } else {
+                    Some(thinking_buffer.clone())
+                },
             };
             if let Err(e) = db.add_message(&conv_msg) {
                 warn!("Failed to save final assistant message: {e}");
@@ -1051,11 +1195,7 @@ impl AgentExecutor {
             .summarization_provider
             .as_deref()
             .unwrap_or(self.provider.as_ref());
-        let summ_model = self
-            .config
-            .summarization_model
-            .as_deref()
-            .unwrap_or(model);
+        let summ_model = self.config.summarization_model.as_deref().unwrap_or(model);
         let summary = summarizer::summarize_evicted_messages(
             summ_provider,
             summ_model,
@@ -1065,8 +1205,7 @@ impl AgentExecutor {
         .await;
 
         // Build a replacement history: summary message + surviving messages.
-        let mut new_history =
-            Vec::with_capacity(1 + history.len() - evict_count);
+        let mut new_history = Vec::with_capacity(1 + history.len() - evict_count);
         new_history.push(Message::text(
             Role::System,
             format!(
@@ -1112,11 +1251,7 @@ impl AgentExecutor {
             .summarization_provider
             .as_deref()
             .unwrap_or(self.provider.as_ref());
-        let summ_model = self
-            .config
-            .summarization_model
-            .as_deref()
-            .unwrap_or(model);
+        let summ_model = self.config.summarization_model.as_deref().unwrap_or(model);
         let summary = summarizer::summarize_evicted_messages(
             summ_provider,
             summ_model,
@@ -1138,15 +1273,14 @@ impl AgentExecutor {
             ),
         );
 
-        let mut new_messages = Vec::with_capacity(non_system_start + 1 + messages.len() - evict_end);
+        let mut new_messages =
+            Vec::with_capacity(non_system_start + 1 + messages.len() - evict_end);
         new_messages.extend_from_slice(&messages[..non_system_start]);
         new_messages.push(summary_msg);
         new_messages.extend_from_slice(&messages[evict_end..]);
         *messages = new_messages;
 
-        let _ = tx
-            .send(AgentEvent::AutoCompacted { evicted_count })
-            .await;
+        let _ = tx.send(AgentEvent::AutoCompacted { evicted_count }).await;
 
         Ok(())
     }
@@ -1171,11 +1305,7 @@ impl AgentExecutor {
         if messages.is_empty() {
             return Ok(messages);
         }
-        let model = self
-            .config
-            .model
-            .as_deref()
-            .unwrap_or("gpt-4o");
+        let model = self.config.model.as_deref().unwrap_or("gpt-4o");
         let max_response_tokens = self.config.max_tokens.unwrap_or(4096);
 
         // Convert to LLM Messages.
@@ -1231,11 +1361,7 @@ impl AgentExecutor {
             .summarization_provider
             .as_deref()
             .unwrap_or(self.provider.as_ref());
-        let summ_model = self
-            .config
-            .summarization_model
-            .as_deref()
-            .unwrap_or(model);
+        let summ_model = self.config.summarization_model.as_deref().unwrap_or(model);
         let summary = summarizer::summarize_evicted_messages(
             summ_provider,
             summ_model,
@@ -1247,14 +1373,11 @@ impl AgentExecutor {
         // Archive evicted messages as a checkpoint before replacing.
         if let Some(db) = db {
             let est_tokens: u32 = messages[..evict_count].iter().map(|m| m.token_count).sum();
-            match db.create_checkpoint(
-                conversation_id,
-                label,
-                evict_count as u32,
-                est_tokens,
-            ) {
+            match db.create_checkpoint(conversation_id, label, evict_count as u32, est_tokens) {
                 Ok(cp_id) => {
-                    if let Err(e) = db.archive_messages(&cp_id, conversation_id, &messages[..evict_count]) {
+                    if let Err(e) =
+                        db.archive_messages(&cp_id, conversation_id, &messages[..evict_count])
+                    {
                         warn!("Failed to archive messages for checkpoint: {e}");
                     }
                 }
@@ -1385,7 +1508,14 @@ impl AgentExecutor {
                         sort_order,
                         thinking: None,
                     };
-                    let _ = db.add_message(&conv_msg);
+                    if let Err(e) = db.add_message(&conv_msg) {
+                        error!("Failed to persist message: {e}");
+                        let _ = tx
+                            .send(AgentEvent::Error {
+                                message: format!("Warning: message was not saved to history: {e}"),
+                            })
+                            .await;
+                    }
                 }
 
                 let _ = tx
@@ -1433,11 +1563,11 @@ impl AgentExecutor {
             "show all sources",
             "what sources do i have",
             "what are my sources",
-            "\u{663E}\u{793A}\u{6570}\u{636E}\u{6E90}",     // 显示数据源
-            "\u{5217}\u{51FA}\u{6570}\u{636E}\u{6E90}",     // 列出数据源
-            "\u{67E5}\u{770B}\u{6570}\u{636E}\u{6E90}",     // 查看数据源
-            "\u{6570}\u{636E}\u{6E90}\u{5217}\u{8868}",     // 数据源列表
-            "\u{30BD}\u{30FC}\u{30B9}\u{4E00}\u{89A7}",     // ソース一覧
+            "\u{663E}\u{793A}\u{6570}\u{636E}\u{6E90}", // 显示数据源
+            "\u{5217}\u{51FA}\u{6570}\u{636E}\u{6E90}", // 列出数据源
+            "\u{67E5}\u{770B}\u{6570}\u{636E}\u{6E90}", // 查看数据源
+            "\u{6570}\u{636E}\u{6E90}\u{5217}\u{8868}", // 数据源列表
+            "\u{30BD}\u{30FC}\u{30B9}\u{4E00}\u{89A7}", // ソース一覧
             "\u{30BD}\u{30FC}\u{30B9}\u{3092}\u{8868}\u{793A}", // ソースを表示
         ];
         if LIST_SOURCES.iter().any(|p| q == *p) {
@@ -1455,10 +1585,10 @@ impl AgentExecutor {
             "show my playbooks",
             "what playbooks do i have",
             "what are my playbooks",
-            "\u{663E}\u{793A}\u{5267}\u{672C}",             // 显示剧本
-            "\u{5217}\u{51FA}\u{5267}\u{672C}",             // 列出剧本
-            "\u{67E5}\u{770B}\u{5267}\u{672C}",             // 查看剧本
-            "\u{5267}\u{672C}\u{5217}\u{8868}",             // 剧本列表
+            "\u{663E}\u{793A}\u{5267}\u{672C}", // 显示剧本
+            "\u{5217}\u{51FA}\u{5267}\u{672C}", // 列出剧本
+            "\u{67E5}\u{770B}\u{5267}\u{672C}", // 查看剧本
+            "\u{5267}\u{672C}\u{5217}\u{8868}", // 剧本列表
             "\u{30D7}\u{30EC}\u{30A4}\u{30D6}\u{30C3}\u{30AF}\u{4E00}\u{89A7}", // プレイブック一覧
         ];
         if LIST_PLAYBOOKS.iter().any(|p| q == *p) {
@@ -1479,8 +1609,8 @@ impl AgentExecutor {
         if let Some(raw_path) = path {
             let raw_path = raw_path.trim().trim_matches('"').trim_matches('\'');
             if !raw_path.is_empty() {
-                let escaped = serde_json::to_string(raw_path)
-                    .unwrap_or_else(|_| format!("\"{}\"", raw_path));
+                let escaped =
+                    serde_json::to_string(raw_path).unwrap_or_else(|_| format!("\"{}\"", raw_path));
                 return Some(DirectDispatch {
                     tool_name: "list_dir".into(),
                     arguments: format!(r#"{{"path":{}}}"#, escaped),
@@ -1513,8 +1643,7 @@ impl AgentExecutor {
                         .collect();
 
                     if matches.len() == 1 {
-                        let source_id =
-                            serde_json::to_string(&matches[0].id).unwrap_or_default();
+                        let source_id = serde_json::to_string(&matches[0].id).unwrap_or_default();
                         return Some(DirectDispatch {
                             tool_name: "list_documents".into(),
                             arguments: format!(r#"{{"source_id":{}}}"#, source_id),
@@ -1717,7 +1846,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let cfg = AgentConfig::default();
-        assert_eq!(cfg.max_iterations, 6);
+        assert_eq!(cfg.max_iterations, 10);
         assert!(cfg.system_prompt.contains("knowledge recall engine"));
         assert_eq!(cfg.temperature, Some(0.3));
         assert_eq!(cfg.max_tokens, Some(4096));
@@ -1840,7 +1969,16 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(32);
 
         let final_msg = executor
-            .run(vec![], vec![ContentPart::Text { text: "hello".to_string() }], &db, None, tx, 0)
+            .run(
+                vec![],
+                vec![ContentPart::Text {
+                    text: "hello".to_string(),
+                }],
+                &db,
+                None,
+                tx,
+                0,
+            )
             .await
             .expect("run should succeed");
 

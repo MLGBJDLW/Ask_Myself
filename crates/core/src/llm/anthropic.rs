@@ -19,7 +19,7 @@ use crate::error::CoreError;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 // ---------------------------------------------------------------------------
@@ -255,7 +255,9 @@ fn parse_finish_reason(s: &str) -> FinishReason {
 /// - System messages are extracted and returned separately (Anthropic puts them top-level).
 /// - Tool-result messages are wrapped in user messages with `tool_result` content blocks.
 /// - Assistant messages with tool_calls become content block arrays.
-fn convert_messages(messages: &[Message]) -> (Option<Vec<AnthropicSystemBlock>>, Vec<AnthropicMessage>) {
+fn convert_messages(
+    messages: &[Message],
+) -> (Option<Vec<AnthropicSystemBlock>>, Vec<AnthropicMessage>) {
     let mut system_text: Option<String> = None;
     let mut out: Vec<AnthropicMessage> = Vec::new();
 
@@ -309,9 +311,7 @@ fn convert_messages(messages: &[Message]) -> (Option<Vec<AnthropicSystemBlock>>,
                     let mut blocks = Vec::new();
                     let text = msg.text_content();
                     if !text.is_empty() {
-                        blocks.push(AnthropicContentBlock::Text {
-                            text,
-                        });
+                        blocks.push(AnthropicContentBlock::Text { text });
                     }
                     for tc in calls {
                         let input: serde_json::Value =
@@ -372,13 +372,15 @@ fn convert_messages(messages: &[Message]) -> (Option<Vec<AnthropicSystemBlock>>,
     // Wrap system text in content blocks with cache_control for prompt caching.
     // Anthropic caches everything up to a cache_control breakpoint, so placing
     // one on the system block ensures the system prompt is cached across turns.
-    let system = system_text.map(|text| vec![AnthropicSystemBlock {
-        r#type: "text".to_string(),
-        text,
-        cache_control: Some(CacheControl {
-            r#type: "ephemeral".to_string(),
-        }),
-    }]);
+    let system = system_text.map(|text| {
+        vec![AnthropicSystemBlock {
+            r#type: "text".to_string(),
+            text,
+            cache_control: Some(CacheControl {
+                r#type: "ephemeral".to_string(),
+            }),
+        }]
+    });
 
     (system, out)
 }
@@ -414,28 +416,27 @@ fn build_request_body(
 ) -> AnthropicRequest {
     // NOTE: Anthropic's API returns a clear error for models that don't support
     // thinking, so no model-gating is applied here (unlike Gemini).
-    let (thinking, temperature, effective_max_tokens) = if let Some(budget) =
-        request.thinking_budget
-    {
-        let budget = budget.max(1024); // Anthropic requires budget_tokens >= 1024
-        let base_max = request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
-        // Ensure max_tokens > budget_tokens, with headroom for the response
-        let effective_max = base_max.max(budget + 4096);
-        (
-            Some(AnthropicThinking {
-                r#type: "enabled".to_string(),
-                budget_tokens: budget,
-            }),
-            None, // Anthropic requires temperature unset when thinking is enabled
-            effective_max,
-        )
-    } else {
-        (
-            None,
-            request.temperature,
-            request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
-        )
-    };
+    let (thinking, temperature, effective_max_tokens) =
+        if let Some(budget) = request.thinking_budget {
+            let budget = budget.max(1024); // Anthropic requires budget_tokens >= 1024
+            let base_max = request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
+            // Ensure max_tokens > budget_tokens, with headroom for the response
+            let effective_max = base_max.max(budget + 4096);
+            (
+                Some(AnthropicThinking {
+                    r#type: "enabled".to_string(),
+                    budget_tokens: budget,
+                }),
+                None, // Anthropic requires temperature unset when thinking is enabled
+                effective_max,
+            )
+        } else {
+            (
+                None,
+                request.temperature,
+                request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+            )
+        };
 
     AnthropicRequest {
         model: request.model.clone(),
@@ -472,7 +473,6 @@ async fn parse_anthropic_stream(
     let mut current_tool_name: Option<String> = None;
     // Accumulate thinking content for token estimation.
     let mut thinking_text = String::new();
-
 
     while let Some(chunk_result) = byte_stream.next().await {
         let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
@@ -629,7 +629,8 @@ async fn parse_anthropic_stream(
         }
     }
 
-    Ok(())
+    // Stream ended without a `message_stop` event — server likely crashed or disconnected.
+    Err(CoreError::StreamIncomplete)
 }
 
 // ---------------------------------------------------------------------------
@@ -645,6 +646,7 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .build()
             .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
@@ -689,7 +691,11 @@ impl AnthropicProvider {
             .map(|e| e.error.message)
             .unwrap_or_else(|_| format!("HTTP {status}: {body}"));
 
-        Err(CoreError::Llm(message))
+        if status.is_server_error() {
+            Err(CoreError::TransientLlm(message))
+        } else {
+            Err(CoreError::Llm(message))
+        }
     }
 }
 
@@ -812,7 +818,13 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    CoreError::TransientLlm(format!("Request failed: {e}"))
+                } else {
+                    CoreError::Llm(format!("Request failed: {e}"))
+                }
+            })?;
 
         let response = self.check_response(response).await?;
 

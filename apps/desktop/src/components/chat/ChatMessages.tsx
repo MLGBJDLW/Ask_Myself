@@ -7,6 +7,7 @@ import { useTranslation } from '../../i18n';
 import { useTypewriter } from '../../lib/useTypewriter';
 import { hasTimeGap } from '../../lib/relativeTime';
 import { preprocessChunkCitations, buildCitationMap } from '../../lib/citationParser';
+import type { StreamRoundEvent, ToolCallEvent } from '../../lib/useAgentStream';
 import { ToolCallCard } from './ToolCallCard';
 import { ThinkingBlock } from './ThinkingBlock';
 import { markdownComponents, preprocessFilePaths, preprocessCitations, CitationContext } from './markdownComponents';
@@ -18,19 +19,10 @@ import type { ConversationMessage } from '../../types/conversation';
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-interface ToolCallEvent {
-  callId: string;
-  toolName: string;
-  arguments: string;
-  status: 'running' | 'done' | 'error';
-  content?: string;
-  isError?: boolean;
-  artifacts?: Record<string, unknown>;
-}
-
 interface ChatMessagesProps {
   messages: ConversationMessage[];
   streamText: string;
+  streamRounds: StreamRoundEvent[];
   thinkingText: string;
   isThinking: boolean;
   toolCalls: ToolCallEvent[];
@@ -48,7 +40,7 @@ interface ChatMessagesProps {
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function ChatMessages({ messages, streamText, thinkingText, isThinking, toolCalls, isStreaming, error, onRetry, onDismissError, onDeleteMessage, onEditAndResend, loadingMsgs, lastCached }: ChatMessagesProps) {
+export function ChatMessages({ messages, streamText, streamRounds, thinkingText, isThinking, toolCalls, isStreaming, error, onRetry, onDismissError, onDeleteMessage, onEditAndResend, loadingMsgs, lastCached }: ChatMessagesProps) {
   const { t } = useTranslation();
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -115,6 +107,10 @@ export function ChatMessages({ messages, streamText, thinkingText, isThinking, t
     () => preprocessFilePaths(preprocessCitations(preprocessChunkCitations(debouncedMarkdown))),
     [debouncedMarkdown],
   );
+  const preprocessStreamingMarkdown = useCallback(
+    (content: string) => preprocessFilePaths(preprocessCitations(preprocessChunkCitations(content))),
+    [],
+  );
 
   // Build citation lookup map from streaming tool call artifacts
   const streamingCitationLookup = useMemo(() => {
@@ -160,7 +156,7 @@ export function ChatMessages({ messages, streamText, thinkingText, isThinking, t
     if (isNearBottom) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, streamText, toolCalls, isNearBottom]);
+  }, [messages, streamText, streamRounds, toolCalls, isNearBottom]);
 
   const scrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -175,6 +171,12 @@ export function ChatMessages({ messages, streamText, thinkingText, isThinking, t
     }
     return -1;
   }, [messages]);
+
+  const shouldShowStreamingPreview = isStreaming
+    || (
+      streamText.trim().length > 0
+      && (messages.length === 0 || messages[messages.length - 1].role === 'user')
+    );
 
   // Empty state
   if (messages.length === 0 && !isStreaming && !loadingMsgs) {
@@ -306,25 +308,47 @@ export function ChatMessages({ messages, streamText, thinkingText, isThinking, t
         </motion.div>
       )}
 
-      {/* Streaming tool calls */}
-      {isStreaming && toolCalls.length > 0 && (
-        <div className="mb-3">
-          {toolCalls.map((tc, toolIdx) => (
-            <ToolCallCard
-              key={`${tc.callId || 'tool-call'}-${toolIdx}`}
-              toolName={tc.toolName}
-              arguments={tc.arguments}
-              status={tc.status}
-              content={tc.content}
-              isError={tc.isError}
-              artifacts={tc.artifacts}
-            />
-          ))}
+      {/* Streaming timeline: reply -> tools per round */}
+      {shouldShowStreamingPreview && streamRounds.map((round) => (
+        <div key={round.id}>
+          {round.reply && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex justify-start mb-3"
+            >
+              <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
+                <div className="prose-chat">
+                  <CitationContext.Provider value={streamingCitationLookup}>
+                    <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
+                      {preprocessStreamingMarkdown(round.reply)}
+                    </ReactMarkdown>
+                  </CitationContext.Provider>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {round.toolCalls.length > 0 && (
+            <div className="mb-3">
+              {round.toolCalls.map((tc, toolIdx) => (
+                <ToolCallCard
+                  key={`${round.id}-${tc.callId || 'tool-call'}-${toolIdx}`}
+                  toolName={tc.toolName}
+                  arguments={tc.arguments}
+                  status={tc.status}
+                  content={tc.content}
+                  isError={tc.isError}
+                  artifacts={tc.artifacts}
+                />
+              ))}
+            </div>
+          )}
         </div>
-      )}
+      ))}
 
       {/* Streaming text */}
-      {isStreaming && streamText && (
+      {shouldShowStreamingPreview && streamText && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -349,7 +373,7 @@ export function ChatMessages({ messages, streamText, thinkingText, isThinking, t
       )}
 
       {/* Thinking indicator */}
-      {isStreaming && !streamText && toolCalls.length === 0 && !thinkingText && !isThinking && (
+      {isStreaming && !streamText && streamRounds.length === 0 && toolCalls.length === 0 && !thinkingText && !isThinking && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}

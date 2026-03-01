@@ -231,6 +231,7 @@ export function ChatPage() {
             <ChatMessages
               messages={chat.messages}
               streamText={chat.streamText}
+              streamRounds={chat.streamRounds}
               thinkingText={chat.thinkingText}
               isThinking={chat.isThinking}
               toolCalls={chat.toolCalls}
@@ -243,8 +244,10 @@ export function ChatPage() {
               loadingMsgs={chat.loadingMsgs}
               lastCached={chat.lastCached}
             />
-            {chat.lastUsage && chat.contextWindow > 0 && (() => {
-              const pct = (chat.lastUsage.promptTokens / chat.contextWindow) * 100;
+            {chat.tokenUsage && chat.tokenUsage.contextWindow > 0 && (() => {
+              // Keep warning logic aligned with the token bar:
+              // use lastPromptTokens (already normalized in tokenUsage) as context occupancy.
+              const pct = (chat.tokenUsage.promptTokens / chat.tokenUsage.contextWindow) * 100;
               if (pct < 80) return null;
               const isRed = pct > 95;
               return (

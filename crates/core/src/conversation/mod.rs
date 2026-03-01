@@ -244,11 +244,7 @@ impl Database {
     }
 
     /// Update the title of a conversation (also bumps `updated_at`).
-    pub fn update_conversation_title(
-        &self,
-        id: &str,
-        title: &str,
-    ) -> Result<(), CoreError> {
+    pub fn update_conversation_title(&self, id: &str, title: &str) -> Result<(), CoreError> {
         let conn = self.conn();
         let affected = conn.execute(
             "UPDATE conversations SET title = ?2, updated_at = datetime('now') WHERE id = ?1",
@@ -300,24 +296,16 @@ impl Database {
     pub fn get_conversation_stats(&self) -> Result<ConversationStats, CoreError> {
         let conn = self.conn();
 
-        let total_conversations: usize = conn.query_row(
-            "SELECT COUNT(*) FROM conversations",
-            [],
-            |r| r.get(0),
-        )?;
+        let total_conversations: usize =
+            conn.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))?;
 
-        let total_messages: usize = conn.query_row(
-            "SELECT COUNT(*) FROM messages",
-            [],
-            |r| r.get(0),
-        )?;
+        let total_messages: usize =
+            conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))?;
 
-        let oldest_conversation: Option<String> = conn
-            .query_row(
-                "SELECT MIN(created_at) FROM conversations",
-                [],
-                |r| r.get(0),
-            )?;
+        let oldest_conversation: Option<String> =
+            conn.query_row("SELECT MIN(created_at) FROM conversations", [], |r| {
+                r.get(0)
+            })?;
 
         let db_size_bytes: u64 = match self.db_path() {
             Some(p) => std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
@@ -402,7 +390,18 @@ impl Database {
 
         let mut results = Vec::new();
         for row in rows {
-            let (id, conv_id, role_str, content, tool_call_id, tc_json, token_count, created_at, sort_order, thinking) = row?;
+            let (
+                id,
+                conv_id,
+                role_str,
+                content,
+                tool_call_id,
+                tc_json,
+                token_count,
+                created_at,
+                sort_order,
+                thinking,
+            ) = row?;
             let tool_calls: Vec<ToolCallRequest> = match tc_json {
                 Some(json) => serde_json::from_str(&json)?,
                 None => Vec::new(),
@@ -493,10 +492,7 @@ impl Database {
     }
 
     /// List checkpoints for a conversation, newest first.
-    pub fn list_checkpoints(
-        &self,
-        conversation_id: &str,
-    ) -> Result<Vec<Checkpoint>, CoreError> {
+    pub fn list_checkpoints(&self, conversation_id: &str) -> Result<Vec<Checkpoint>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, label, message_count, estimated_tokens, created_at
@@ -559,7 +555,17 @@ impl Database {
 
         let mut results = Vec::new();
         for row in rows {
-            let (id, conv_id, role_str, content, tool_call_id, tc_json, token_count, created_at, sort_order) = row?;
+            let (
+                id,
+                conv_id,
+                role_str,
+                content,
+                tool_call_id,
+                tc_json,
+                token_count,
+                created_at,
+                sort_order,
+            ) = row?;
             let tool_calls: Vec<ToolCallRequest> = match tc_json {
                 Some(json) => serde_json::from_str(&json)?,
                 None => Vec::new(),
@@ -821,11 +827,7 @@ impl Database {
     }
 
     /// Unlink a single source from a conversation.
-    pub fn unlink_source(
-        &self,
-        conversation_id: &str,
-        source_id: &str,
-    ) -> Result<(), CoreError> {
+    pub fn unlink_source(&self, conversation_id: &str, source_id: &str) -> Result<(), CoreError> {
         let conn = self.conn();
         conn.execute(
             "DELETE FROM conversation_sources
@@ -836,10 +838,7 @@ impl Database {
     }
 
     /// Get all source IDs linked to a conversation.
-    pub fn get_linked_sources(
-        &self,
-        conversation_id: &str,
-    ) -> Result<Vec<String>, CoreError> {
+    pub fn get_linked_sources(&self, conversation_id: &str) -> Result<Vec<String>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT source_id FROM conversation_sources
@@ -1145,7 +1144,11 @@ mod tests {
                 let msg = ConversationMessage {
                     id: new_id(),
                     conversation_id: conv.id.clone(),
-                    role: if i % 2 == 0 { Role::User } else { Role::Assistant },
+                    role: if i % 2 == 0 {
+                        Role::User
+                    } else {
+                        Role::Assistant
+                    },
                     content: format!("Message {i}"),
                     tool_call_id: None,
                     tool_calls: vec![],
@@ -1160,9 +1163,7 @@ mod tests {
             .collect();
 
         // Create checkpoint and archive first 3 messages.
-        let cp_id = db
-            .create_checkpoint(&conv.id, "auto", 3, 60)
-            .unwrap();
+        let cp_id = db.create_checkpoint(&conv.id, "auto", 3, 60).unwrap();
         db.archive_messages(&cp_id, &conv.id, &msgs[..3]).unwrap();
 
         // List checkpoints.

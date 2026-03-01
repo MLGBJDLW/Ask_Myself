@@ -128,6 +128,7 @@ export function SourcesPage() {
   const [formPath, setFormPath] = useState('');
   const [formInclude, setFormInclude] = useState('**/*.md');
   const [formExclude, setFormExclude] = useState('');
+  const [formWatch, setFormWatch] = useState(true);
   const [adding, setAdding] = useState(false);
 
   // Delete confirmation
@@ -288,6 +289,7 @@ export function SourcesPage() {
     setFormPath('');
     setFormInclude('**/*.md');
     setFormExclude('');
+    setFormWatch(true);
   };
 
   const handleAdd = async () => {
@@ -301,6 +303,15 @@ export function SourcesPage() {
       resetForm();
       setShowAddModal(false);
       await loadSources();
+
+      if (formWatch) {
+        try {
+          await api.startWatching(newSource.id);
+          toast.success(t('sources.watcherStart'));
+        } catch (e) {
+          toast.error(String(e));
+        }
+      }
 
       // Auto-index: scan + embed in background
       const sourceId = newSource.id;
@@ -777,6 +788,20 @@ export function SourcesPage() {
               showSelectAll
               placeholder="Add exclude pattern..."
             />
+          </div>
+
+          {/* Watch toggle */}
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="add-watch"
+              checked={formWatch}
+              onChange={(e) => setFormWatch(e.target.checked)}
+              className="h-4 w-4 rounded border-border text-accent focus:ring-accent/30"
+            />
+            <label htmlFor="add-watch" className="text-xs font-medium text-text-secondary">
+              {t('sources.editModal.watch')}
+            </label>
           </div>
         </div>
       </Modal>

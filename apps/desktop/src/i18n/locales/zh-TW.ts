@@ -326,6 +326,7 @@ export const zhTW: TranslationKeys = {
   'chat.deleteError': '刪除失敗',
   'chat.renameError': '重新命名失敗',
   'chat.createError': '建立對話失敗',
+  'chat.noConfigError': '未設定模型，請檢查設定（模型和 API 金鑰）。',
   'chat.newConversation': '新對話',
   'chat.askAboutPrompt': '深入了解：{title}',
   'chat.feedbackGood': '回答有幫助',

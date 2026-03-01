@@ -63,7 +63,9 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
     }
 
     // Query expansion from feedback history.
-    let extra_terms = db.get_related_feedback_terms(trimmed, 5).unwrap_or_default();
+    let extra_terms = db
+        .get_related_feedback_terms(trimmed, 5)
+        .unwrap_or_default();
     let fts_query = if extra_terms.is_empty() {
         base_fts
     } else {
@@ -468,7 +470,9 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
     let mut merged = rrf_merge(&fts_ranked, &vec_results, 60.0);
 
     // Query expansion: add feedback-derived terms as a third RRF signal.
-    let extra_terms = db.get_related_feedback_terms(trimmed, 5).unwrap_or_default();
+    let extra_terms = db
+        .get_related_feedback_terms(trimmed, 5)
+        .unwrap_or_default();
     if !extra_terms.is_empty() {
         let expansion_text = extra_terms.join(" ");
         let expansion_query = SearchQuery {
@@ -483,15 +487,10 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
                 let mut score_map: HashMap<String, f32> = merged.into_iter().collect();
                 for (rank, card) in exp_result.evidence_cards.iter().enumerate() {
                     let r = (rank + 1) as f32;
-                    *score_map
-                        .entry(card.chunk_id.to_string())
-                        .or_insert(0.0) += 1.0 / (k + r);
+                    *score_map.entry(card.chunk_id.to_string()).or_insert(0.0) += 1.0 / (k + r);
                 }
                 merged = score_map.into_iter().collect();
-                merged.sort_by(|a, b| {
-                    b.1.partial_cmp(&a.1)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+                merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             }
         }
     }
@@ -755,8 +754,7 @@ fn apply_feedback_reranking(
     let recency_boosts = get_document_recency_boosts(db, &doc_ids)?;
 
     // Layer 4: Source preference
-    let preferred_sources = personalization::get_preferred_source_paths(db, 5)
-        .unwrap_or_default();
+    let preferred_sources = personalization::get_preferred_source_paths(db, 5).unwrap_or_default();
     let preferred_names: Vec<String> = preferred_sources
         .iter()
         .map(|p| extract_source_name(p))
@@ -922,13 +920,19 @@ fn file_type_to_mimes(ft: &FileType) -> Vec<String> {
         FileType::Log => vec!["text/x-log".to_string()],
         FileType::Pdf => vec!["application/pdf".to_string()],
         FileType::Docx => {
-            vec!["application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()]
+            vec![
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    .to_string(),
+            ]
         }
         FileType::Excel => {
             vec!["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string()]
         }
         FileType::Pptx => {
-            vec!["application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string()]
+            vec![
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    .to_string(),
+            ]
         }
         FileType::Image => vec![
             "image/jpeg".to_string(),
@@ -1025,7 +1029,8 @@ mod tests {
         db.save_embedder_config(&crate::embed::EmbedderConfig {
             provider: "tfidf".into(),
             ..crate::embed::EmbedderConfig::default()
-        }).expect("set tfidf config for test");
+        })
+        .expect("set tfidf config for test");
         db
     }
 
@@ -1903,19 +1908,28 @@ mod tests {
 
     #[test]
     fn test_recency_boost_values() {
-        use chrono::{Utc, Duration};
+        use chrono::{Duration, Utc};
 
         // Less than 3 days old → +0.08
         let recent = (Utc::now() - Duration::hours(24)).to_rfc3339();
-        assert!((recency_boost(&recent) - 0.08).abs() < 1e-6, "1-day-old doc");
+        assert!(
+            (recency_boost(&recent) - 0.08).abs() < 1e-6,
+            "1-day-old doc"
+        );
 
         // 5 days old → +0.05
         let five_days = (Utc::now() - Duration::days(5)).to_rfc3339();
-        assert!((recency_boost(&five_days) - 0.05).abs() < 1e-6, "5-day-old doc");
+        assert!(
+            (recency_boost(&five_days) - 0.05).abs() < 1e-6,
+            "5-day-old doc"
+        );
 
         // 15 days old → +0.02
         let fifteen_days = (Utc::now() - Duration::days(15)).to_rfc3339();
-        assert!((recency_boost(&fifteen_days) - 0.02).abs() < 1e-6, "15-day-old doc");
+        assert!(
+            (recency_boost(&fifteen_days) - 0.02).abs() < 1e-6,
+            "15-day-old doc"
+        );
 
         // 60 days old → 0.0
         let old = (Utc::now() - Duration::days(60)).to_rfc3339();

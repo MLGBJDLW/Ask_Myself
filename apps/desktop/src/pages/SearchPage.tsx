@@ -151,8 +151,12 @@ export function SearchPage() {
 
   // 鈹€鈹€ Load sources for filters 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   useEffect(() => {
-    api.listSources().then(setSources).catch(() => {});
-    api.getIndexStats().then(setIndexStats).catch(() => {});
+    api.listSources().then(setSources).catch((e) => {
+      console.error('Failed to load sources for filters:', e);
+    });
+    api.getIndexStats().then(setIndexStats).catch((e) => {
+      console.error('Failed to load index stats:', e);
+    });
   }, []);
 
   // 鈹€鈹€ Reset page when query or filters change 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€

@@ -6,7 +6,9 @@ import { Layout } from "./components/Layout";
 import { SearchPage } from "./pages/SearchPage";
 import { SourcesPage } from "./pages/SourcesPage";
 import { PlaybooksPage } from "./pages/PlaybooksPage";
-import { SettingsPage } from "./pages/SettingsPage";import { ChatPage } from './pages/ChatPage';import { CommandPalette } from "./components/CommandPalette";
+import { SettingsPage } from "./pages/SettingsPage";
+import { ChatPage } from './pages/ChatPage';
+import { CommandPalette } from "./components/CommandPalette";
 
 /* ── Page transition wrapper ─────────────────────────────────────── */
 function PageTransition({ children }: { children: ReactNode }) {
@@ -15,6 +17,7 @@ function PageTransition({ children }: { children: ReactNode }) {
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+      className="h-full min-h-0"
     >
       {children}
     </motion.div>

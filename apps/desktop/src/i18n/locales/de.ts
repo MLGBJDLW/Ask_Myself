@@ -328,6 +328,7 @@ export const de: TranslationKeys = {
   'chat.deleteError': 'L\u00f6schen fehlgeschlagen',
   'chat.renameError': 'Umbenennung fehlgeschlagen',
   'chat.createError': 'Konversation konnte nicht erstellt werden',
+  'chat.noConfigError': 'Kein Modell konfiguriert. Bitte überprüfen Sie Ihre Einstellungen (Modell & API-Schlüssel).',
   'chat.newConversation': 'Neue Konversation',
   'chat.askAboutPrompt': 'Mehr erfahren \u00fcber: {title}',  'chat.feedbackGood': 'Gute Antwort',
   'chat.feedbackBad': 'Schlechte Antwort',

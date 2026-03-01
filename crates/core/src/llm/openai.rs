@@ -8,15 +8,15 @@ use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::error::CoreError;
 use super::{
     streaming::parse_sse_stream, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
-    LlmProvider, Message, ProviderConfig, Role, StreamChunk, ToolCallRequest, ToolDefinition,
-    Usage,
+    LlmProvider, Message, ProviderConfig, ProviderType, Role, StreamChunk, ToolCallRequest,
+    ToolDefinition, Usage,
 };
+use crate::error::CoreError;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
 // ---------------------------------------------------------------------------
 // OpenAI API wire types — request
@@ -35,6 +35,8 @@ struct OaiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<OaiThinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OaiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stop: Option<Vec<String>>,
@@ -50,6 +52,12 @@ struct OaiStreamOptions {
 }
 
 #[derive(Serialize)]
+struct OaiThinking {
+    #[serde(rename = "type")]
+    thinking_type: String,
+}
+
+#[derive(Serialize)]
 struct OaiMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,6 +66,8 @@ struct OaiMessage {
     tool_calls: Option<Vec<OaiToolCallOut>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
 }
 
 /// OpenAI content: either a plain string or an array of content parts.
@@ -73,12 +83,8 @@ enum OaiContent {
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum OaiContentPart {
-    Text {
-        text: String,
-    },
-    ImageUrl {
-        image_url: OaiImageUrl,
-    },
+    Text { text: String },
+    ImageUrl { image_url: OaiImageUrl },
 }
 
 #[derive(Serialize)]
@@ -223,7 +229,7 @@ fn parse_finish_reason(s: &str) -> FinishReason {
     }
 }
 
-fn convert_message(msg: &Message) -> OaiMessage {
+fn convert_message(msg: &Message, include_reasoning_content: bool) -> OaiMessage {
     let has_images = msg.has_images();
 
     // Build content: use array format when images are present, plain string otherwise.
@@ -232,9 +238,7 @@ fn convert_message(msg: &Message) -> OaiMessage {
             .parts
             .iter()
             .filter_map(|p| match p {
-                ContentPart::Text { text } => Some(OaiContentPart::Text {
-                    text: text.clone(),
-                }),
+                ContentPart::Text { text } => Some(OaiContentPart::Text { text: text.clone() }),
                 ContentPart::Image { media_type, data } => {
                     let url = format!("data:{media_type};base64,{data}");
                     Some(OaiContentPart::ImageUrl {
@@ -243,10 +247,18 @@ fn convert_message(msg: &Message) -> OaiMessage {
                 }
             })
             .collect();
-        if parts.is_empty() { None } else { Some(OaiContent::Parts(parts)) }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(OaiContent::Parts(parts))
+        }
     } else {
         let text = msg.text_content();
-        if text.is_empty() { None } else { Some(OaiContent::Text(text)) }
+        if text.is_empty() {
+            None
+        } else {
+            Some(OaiContent::Text(text))
+        }
     };
 
     let mut oai = OaiMessage {
@@ -254,6 +266,7 @@ fn convert_message(msg: &Message) -> OaiMessage {
         content,
         tool_calls: None,
         tool_call_id: None,
+        reasoning_content: None,
     };
 
     // Assistant messages may carry tool-call requests.
@@ -280,6 +293,10 @@ fn convert_message(msg: &Message) -> OaiMessage {
         oai.content = Some(OaiContent::Text(msg.text_content()));
     }
 
+    if include_reasoning_content && msg.role == Role::Assistant {
+        oai.reasoning_content = msg.reasoning_content.clone();
+    }
+
     oai
 }
 
@@ -300,15 +317,38 @@ fn convert_tools(tools: &[ToolDefinition]) -> Vec<OaiTool> {
 fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     let is_reasoning = is_reasoning_model(&request.model);
     let is_deepseek = is_deepseek_reasoner(&request.model);
+    let model_lower = request.model.to_lowercase();
+    let is_deepseek_provider = matches!(request.provider_type, Some(ProviderType::DeepSeek))
+        || model_lower.contains("deepseek");
+    let is_deepseek_chat = model_lower.contains("deepseek-chat");
+    let deepseek_thinking_enabled =
+        is_deepseek_provider && is_deepseek_chat && request.thinking_budget.is_some();
+    let include_reasoning_content = is_deepseek_provider;
     let needs_completion_tokens = is_reasoning || is_deepseek;
     let suppress_temperature = is_reasoning || is_deepseek;
 
     OaiRequest {
         model: request.model.clone(),
-        messages: request.messages.iter().map(convert_message).collect(),
-        temperature: if suppress_temperature { None } else { request.temperature },
-        max_tokens: if needs_completion_tokens { None } else { request.max_tokens },
-        max_completion_tokens: if needs_completion_tokens { request.max_tokens } else { None },
+        messages: request
+            .messages
+            .iter()
+            .map(|m| convert_message(m, include_reasoning_content))
+            .collect(),
+        temperature: if suppress_temperature {
+            None
+        } else {
+            request.temperature
+        },
+        max_tokens: if needs_completion_tokens {
+            None
+        } else {
+            request.max_tokens
+        },
+        max_completion_tokens: if needs_completion_tokens {
+            request.max_tokens
+        } else {
+            None
+        },
         reasoning_effort: if is_reasoning {
             Some(
                 request
@@ -317,6 +357,13 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
                     .map(|r| r.to_string())
                     .unwrap_or_else(|| "medium".to_string()),
             )
+        } else {
+            None
+        },
+        thinking: if deepseek_thinking_enabled {
+            Some(OaiThinking {
+                thinking_type: "enabled".to_string(),
+            })
         } else {
             None
         },
@@ -347,6 +394,7 @@ impl OpenAiProvider {
     /// Create a new provider with an async reqwest client.
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .build()
             .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
@@ -355,10 +403,7 @@ impl OpenAiProvider {
     }
 
     fn base_url(&self) -> &str {
-        self.config
-            .base_url
-            .as_deref()
-            .unwrap_or(DEFAULT_BASE_URL)
+        self.config.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)
     }
 
     fn api_key(&self) -> Result<&str, CoreError> {
@@ -397,7 +442,11 @@ impl OpenAiProvider {
             .map(|e| e.error.message)
             .unwrap_or_else(|_| format!("HTTP {status}: {body}"));
 
-        Err(CoreError::Llm(message))
+        if status.is_server_error() {
+            Err(CoreError::TransientLlm(message))
+        } else {
+            Err(CoreError::Llm(message))
+        }
     }
 }
 
@@ -429,10 +478,7 @@ impl LlmProvider for OpenAiProvider {
         Ok(models.data.into_iter().map(|m| m.id).collect())
     }
 
-    async fn complete(
-        &self,
-        request: &CompletionRequest,
-    ) -> Result<CompletionResponse, CoreError> {
+    async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let url = format!("{}/chat/completions", self.base_url());
         let api_key = self.api_key()?;
         let body = build_request_body(request, false);
@@ -482,9 +528,7 @@ impl LlmProvider for OpenAiProvider {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
-                thinking_tokens: u
-                    .completion_tokens_details
-                    .and_then(|d| d.reasoning_tokens),
+                thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
             })
             .unwrap_or_default();
 
@@ -513,7 +557,13 @@ impl LlmProvider for OpenAiProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    CoreError::TransientLlm(format!("Request failed: {e}"))
+                } else {
+                    CoreError::Llm(format!("Request failed: {e}"))
+                }
+            })?;
 
         let response = self.check_response(response).await?;
 
@@ -525,8 +575,9 @@ impl LlmProvider for OpenAiProvider {
             }
         });
 
-        let stream =
-            futures::stream::unfold(rx, |mut rx| async { rx.recv().await.map(|item| (item, rx)) });
+        let stream = futures::stream::unfold(rx, |mut rx| async {
+            rx.recv().await.map(|item| (item, rx))
+        });
 
         Ok(Box::pin(stream))
     }

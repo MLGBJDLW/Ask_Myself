@@ -42,4 +42,10 @@ pub enum CoreError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("LLM transient error (retriable): {0}")]
+    TransientLlm(String),
+
+    #[error("Stream ended without completion marker — response may be truncated")]
+    StreamIncomplete,
 }

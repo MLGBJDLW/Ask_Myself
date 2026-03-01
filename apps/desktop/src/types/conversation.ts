@@ -90,7 +90,7 @@ export type ProviderType =
   | 'custom';
 
 export interface AgentEvent {
-  type: 'textDelta' | 'toolCallStart' | 'toolCallResult' | 'thinking' | 'done' | 'error' | 'autoCompacted';
+  type: 'textDelta' | 'toolCallStart' | 'toolCallResult' | 'thinking' | 'done' | 'error' | 'autoCompacted' | 'usageUpdate';
   delta?: string;
   callId?: string;
   toolName?: string;

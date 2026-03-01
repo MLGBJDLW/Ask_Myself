@@ -42,7 +42,10 @@ export function CommandPalette() {
   /* ── Load recent queries on open ─────────────────────────────────── */
   useEffect(() => {
     if (!open) return;
-    api.getRecentQueries(5).then(setRecentQueries).catch(() => {});
+    // Recent queries are a non-critical UX hint; log but don't disrupt the palette
+    api.getRecentQueries(5).then(setRecentQueries).catch((e) => {
+      console.error('Failed to load recent queries:', e);
+    });
   }, [open]);
 
   /* ── Helpers ─────────────────────────────────────────────────────── */

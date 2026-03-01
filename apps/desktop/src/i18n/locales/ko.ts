@@ -328,6 +328,7 @@ export const ko: TranslationKeys = {
   'chat.deleteError': '삭제 실패',
   'chat.renameError': '이름 변경 실패',
   'chat.createError': '대화 생성 실패',
+  'chat.noConfigError': '모델이 구성되지 않았습니다. 설정을 확인하세요 (모델 및 API 키).',
   'chat.newConversation': '새 대화',
   'chat.askAboutPrompt': '자세히 알려주세요: {title}',
   'chat.feedbackGood': '좋은 응답',

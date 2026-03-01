@@ -31,10 +31,7 @@ pub struct CachedAnswer {
 /// Lowercases, trims whitespace, collapses internal whitespace,
 /// and removes trailing punctuation.
 pub fn normalize_query(query: &str) -> String {
-    let collapsed: String = query
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let collapsed: String = query.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed
         .to_lowercase()
         .trim_end_matches(|c: char| c.is_ascii_punctuation())
@@ -139,8 +136,7 @@ impl Database {
         }
         let qhash = hash_query(&normalized);
         let id = uuid::Uuid::new_v4().to_string();
-        let citations_json =
-            serde_json::to_string(citations).unwrap_or_else(|_| "[]".to_string());
+        let citations_json = serde_json::to_string(citations).unwrap_or_else(|_| "[]".to_string());
         let filter_str = source_filter.unwrap_or("");
 
         let conn = self.conn();

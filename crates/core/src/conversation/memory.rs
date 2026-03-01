@@ -178,12 +178,7 @@ fn prefix_model_context_window(m: &str) -> u32 {
         _ if m.starts_with("gpt-4o") => 128_000,
         _ if m.starts_with("gpt-4") => 128_000,
         _ if m.starts_with("gpt-3.5") => 16_385,
-        _ if m.starts_with("o1")
-            || m.starts_with("o3")
-            || m.starts_with("o4") =>
-        {
-            200_000
-        }
+        _ if m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") => 200_000,
         _ if m.starts_with("codex") => 200_000,
 
         // Anthropic
@@ -218,7 +213,13 @@ fn prefix_model_context_window(m: &str) -> u32 {
         _ if m.contains("starcoder") => 16_384,
 
         // Default for completely unknown models
-        _ => 32_000,
+        _ => {
+            tracing::warn!(
+                "Unknown model '{}', using default context window of 32000 tokens",
+                m
+            );
+            32_000
+        }
     }
 }
 
@@ -302,8 +303,7 @@ fn build_message_blocks(conversation: &[&Message]) -> Vec<MessageBlock> {
         let msg = conversation[i];
 
         // Check if this is an assistant message with tool calls
-        if msg.role == Role::Assistant
-            && msg.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
+        if msg.role == Role::Assistant && msg.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
         {
             let mut block_msgs = vec![msg.clone()];
             let mut cost = estimate_message_tokens(msg);
@@ -337,7 +337,7 @@ fn build_message_blocks(conversation: &[&Message]) -> Vec<MessageBlock> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{ToolCallRequest, ContentPart};
+    use crate::llm::{ContentPart, ToolCallRequest};
 
     fn msg(role: Role, content: &str) -> Message {
         Message::text(role, content)
@@ -357,7 +357,10 @@ mod tests {
         // "你好世界" = 4 CJK chars → ceil(4/1.5) + 4 = 3 + 4 = 7
         let tokens = estimate_tokens("你好世界");
         assert_eq!(tokens, 7);
-        assert!(tokens > 4, "CJK should produce more tokens than naive byte/4");
+        assert!(
+            tokens > 4,
+            "CJK should produce more tokens than naive byte/4"
+        );
     }
 
     #[test]
@@ -371,6 +374,7 @@ mod tests {
                 name: "search".to_string(),
                 arguments: r#"{"query": "test"}"#.to_string(),
             }]),
+            reasoning_content: None,
         };
         let tokens = estimate_message_tokens(&msg);
         assert!(tokens > 10, "Tool calls should contribute to token count");
@@ -492,13 +496,16 @@ mod tests {
             msg(Role::User, "first question"),
             Message {
                 role: Role::Assistant,
-                parts: vec![ContentPart::Text { text: "Let me search.".to_string() }],
+                parts: vec![ContentPart::Text {
+                    text: "Let me search.".to_string(),
+                }],
                 name: None,
                 tool_calls: Some(vec![ToolCallRequest {
                     id: "tc1".to_string(),
                     name: "search".to_string(),
                     arguments: "{}".to_string(),
                 }]),
+                reasoning_content: None,
             },
             Message::text_with_name(Role::Tool, "Result: found something", "tc1"),
             msg(Role::Assistant, "Based on the search, here is the answer."),
@@ -511,8 +518,7 @@ mod tests {
 
         // Verify that if the tool call assistant is present, the tool result is too
         let has_tool_call_assistant = result.iter().any(|m| {
-            m.role == Role::Assistant
-                && m.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
+            m.role == Role::Assistant && m.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
         });
         let has_tool_result = result.iter().any(|m| m.role == Role::Tool);
 

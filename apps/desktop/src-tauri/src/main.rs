@@ -19,12 +19,10 @@ fn main() {
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data directory");
-            std::fs::create_dir_all(&data_dir)
-                .expect("failed to create app data directory");
+            std::fs::create_dir_all(&data_dir).expect("failed to create app data directory");
 
             let db_path = data_dir.join("ask-myself.db");
-            let db =
-                Database::new(&db_path).expect("failed to initialize database");
+            let db = Database::new(&db_path).expect("failed to initialize database");
             let db = Arc::new(db);
 
             app.manage(AppState { db: db.clone() });

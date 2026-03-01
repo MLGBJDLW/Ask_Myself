@@ -328,6 +328,7 @@ export const es: TranslationKeys = {
   'chat.deleteError': 'Error al eliminar',
   'chat.renameError': 'Error al renombrar',
   'chat.createError': 'Error al crear conversaci\u00f3n',
+  'chat.noConfigError': 'Modelo no configurado. Revise su configuraci\u00f3n (modelo y clave API).',
   'chat.newConversation': 'Nueva conversaci\u00f3n',
   'chat.askAboutPrompt': 'Cu\u00e9ntame m\u00e1s sobre: {title}',
   'chat.feedbackGood': 'Buena respuesta',

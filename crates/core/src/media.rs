@@ -33,7 +33,10 @@ pub fn is_supported_image(mime: &str) -> bool {
 /// Returns `(base64_data, media_type)`.
 ///
 /// GIF images are kept as-is (they may be animated) — only base64-encoded.
-pub fn prepare_image_for_llm(data: &[u8], original_mime: &str) -> Result<(String, String), CoreError> {
+pub fn prepare_image_for_llm(
+    data: &[u8],
+    original_mime: &str,
+) -> Result<(String, String), CoreError> {
     if data.len() > MAX_IMAGE_SIZE {
         return Err(CoreError::Llm(format!(
             "Image too large: {} bytes (max {})",
@@ -54,7 +57,11 @@ pub fn prepare_image_for_llm(data: &[u8], original_mime: &str) -> Result<(String
 
     // Resize if needed, preserving aspect ratio.
     let img = if w > MAX_DIMENSION || h > MAX_DIMENSION {
-        img.resize(MAX_DIMENSION, MAX_DIMENSION, image::imageops::FilterType::Lanczos3)
+        img.resize(
+            MAX_DIMENSION,
+            MAX_DIMENSION,
+            image::imageops::FilterType::Lanczos3,
+        )
     } else {
         img
     };

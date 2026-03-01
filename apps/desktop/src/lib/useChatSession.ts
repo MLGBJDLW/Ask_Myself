@@ -40,6 +40,7 @@ export interface UseChatSessionReturn {
   setConversations: React.Dispatch<React.SetStateAction<Conversation[]>>;
   isStreaming: boolean;
   streamText: string;
+  streamRounds: ReturnType<typeof useAgentStream>['streamRounds'];
   thinkingText: string;
   isThinking: boolean;
   toolCalls: ReturnType<typeof useAgentStream>['toolCalls'];
@@ -105,6 +106,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     stop: streamStop,
     isStreaming,
     streamText,
+    streamRounds,
     thinkingText,
     isThinking,
     toolCalls,
@@ -185,28 +187,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   useEffect(() => {
     let cancelled = false;
     if (!isStreaming && activeId && messages.length > 0) {
-      // Immediately add an optimistic assistant message from streamText
-      // so content stays visible during the async re-fetch gap.
-      if (streamText.trim()) {
-        const optimisticAssistant: ConversationMessage = {
-          id: `temp-assistant-${Date.now()}`,
-          conversationId: activeId,
-          role: 'assistant',
-          content: streamText,
-          toolCallId: null,
-          toolCalls: [],
-          tokenCount: 0,
-          createdAt: new Date().toISOString(),
-          sortOrder: messages.length,
-          thinking: null,
-        };
-        setMessages(prev => [...prev, optimisticAssistant]);
-      }
-
-      // Re-fetch messages after agent is done (replaces optimistic message)
+      // Re-fetch messages after agent is done.
       api.getConversation(activeId).then(([, msgs]) => {
         if (!cancelled) setMessages(msgs);
-      }).catch(() => {});
+      }).catch((e) => {
+        console.error('Failed to refresh messages after streaming:', e);
+      });
       // Also refresh conversation list (updatedAt changes)
       loadConversations();
 
@@ -225,7 +211,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
                   );
                 }
               })
-              .catch(() => {});
+              .catch((e) => {
+                // Auto-title is cosmetic; log but don't interrupt user
+                console.error('Failed to auto-title conversation:', e);
+              });
           }
         }
       }
@@ -299,7 +288,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   const send = useCallback(
     async (content: string, attachments?: ImageAttachment[]) => {
-      if (!agentConfig) return;
+      if (!agentConfig) {
+        toast.error(t('chat.noConfigError'));
+        return;
+      }
 
       // Clear previous error
       setChatError(null);
@@ -451,6 +443,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     setConversations,
     isStreaming,
     streamText,
+    streamRounds,
     thinkingText,
     isThinking,
     toolCalls,

@@ -42,10 +42,7 @@ fn default_limit() -> u32 {
 }
 
 /// RRF merge across multiple ranked result lists.
-fn multi_query_rrf_merge(
-    ranked_lists: &[Vec<(String, f32)>],
-    k: f32,
-) -> Vec<(String, f32)> {
+fn multi_query_rrf_merge(ranked_lists: &[Vec<(String, f32)>], k: f32) -> Vec<(String, f32)> {
     let mut scores: HashMap<String, f32> = HashMap::new();
     for ranked in ranked_lists {
         for (rank, (chunk_id, _)) in ranked.iter().enumerate() {

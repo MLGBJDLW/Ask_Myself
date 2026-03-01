@@ -328,6 +328,7 @@ export interface TranslationKeys {
   'chat.deleteError': string;
   'chat.renameError': string;
   'chat.createError': string;
+  'chat.noConfigError': string;
   'chat.newConversation': string;
   'chat.askAboutPrompt': string;
   'chat.feedbackGood': string;

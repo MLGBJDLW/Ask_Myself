@@ -55,6 +55,10 @@ pub struct Message {
     /// Tool calls requested by the assistant.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallRequest>>,
+    /// Provider-specific assistant reasoning content to pass back in
+    /// multi-step tool loops (e.g. DeepSeek `reasoning_content`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl Message {
@@ -62,9 +66,12 @@ impl Message {
     pub fn text(role: Role, content: impl Into<String>) -> Self {
         Self {
             role,
-            parts: vec![ContentPart::Text { text: content.into() }],
+            parts: vec![ContentPart::Text {
+                text: content.into(),
+            }],
             name: None,
             tool_calls: None,
+            reasoning_content: None,
         }
     }
 
@@ -72,15 +79,19 @@ impl Message {
     pub fn text_with_name(role: Role, content: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             role,
-            parts: vec![ContentPart::Text { text: content.into() }],
+            parts: vec![ContentPart::Text {
+                text: content.into(),
+            }],
             name: Some(name.into()),
             tool_calls: None,
+            reasoning_content: None,
         }
     }
 
     /// Get the combined text content from all text parts.
     pub fn text_content(&self) -> String {
-        self.parts.iter()
+        self.parts
+            .iter()
             .filter_map(|p| match p {
                 ContentPart::Text { text } => Some(text.as_str()),
                 _ => None,
@@ -91,12 +102,17 @@ impl Message {
 
     /// Check if this message has any image parts.
     pub fn has_images(&self) -> bool {
-        self.parts.iter().any(|p| matches!(p, ContentPart::Image { .. }))
+        self.parts
+            .iter()
+            .any(|p| matches!(p, ContentPart::Image { .. }))
     }
 
     /// Get all image parts.
     pub fn image_parts(&self) -> Vec<&ContentPart> {
-        self.parts.iter().filter(|p| matches!(p, ContentPart::Image { .. })).collect()
+        self.parts
+            .iter()
+            .filter(|p| matches!(p, ContentPart::Image { .. }))
+            .collect()
     }
 }
 

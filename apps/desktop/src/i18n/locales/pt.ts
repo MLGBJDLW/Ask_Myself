@@ -328,6 +328,7 @@ export const pt: TranslationKeys = {
   'chat.deleteError': 'Falha ao excluir',
   'chat.renameError': 'Falha ao renomear',
   'chat.createError': 'Falha ao criar conversa',
+  'chat.noConfigError': 'Modelo não configurado. Verifique suas configurações (modelo e chave API).',
   'chat.newConversation': 'Nova conversa',
   'chat.askAboutPrompt': 'Saiba mais sobre: {title}',
   'chat.feedbackGood': 'Boa resposta',

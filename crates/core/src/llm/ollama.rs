@@ -157,7 +157,11 @@ fn convert_message(msg: &Message) -> OllamaMessage {
     let mut ollama_msg = OllamaMessage {
         role: role_str(&msg.role).to_string(),
         content: msg.text_content(),
-        images: if images.is_empty() { None } else { Some(images) },
+        images: if images.is_empty() {
+            None
+        } else {
+            Some(images)
+        },
         tool_calls: None,
     };
 
@@ -421,7 +425,8 @@ async fn parse_ollama_ndjson_stream(
         }
     }
 
-    Ok(())
+    // Stream ended without a `done: true` message — server likely crashed or disconnected.
+    Err(CoreError::StreamIncomplete)
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +442,7 @@ pub struct OllamaProvider {
 impl OllamaProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .build()
             .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
@@ -474,7 +480,11 @@ impl OllamaProvider {
             .map(|e| e.error)
             .unwrap_or_else(|_| format!("HTTP {status}: {body}"));
 
-        Err(CoreError::Llm(message))
+        if status.is_server_error() {
+            Err(CoreError::TransientLlm(message))
+        } else {
+            Err(CoreError::Llm(message))
+        }
     }
 }
 
@@ -587,7 +597,13 @@ impl LlmProvider for OllamaProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    CoreError::TransientLlm(format!("Request failed: {e}"))
+                } else {
+                    CoreError::Llm(format!("Request failed: {e}"))
+                }
+            })?;
 
         let response = self.check_response(response).await?;
 

@@ -328,6 +328,7 @@ export const zhCN: TranslationKeys = {
   'chat.deleteError': '删除失败',
   'chat.renameError': '重命名失败',
   'chat.createError': '创建对话失败',
+  'chat.noConfigError': '未配置模型，请检查设置（模型和 API 密钥）。',
   'chat.newConversation': '新对话',
   'chat.askAboutPrompt': '详细了解：{title}',
   'chat.feedbackGood': '回答有帮助',

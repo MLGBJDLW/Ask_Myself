@@ -130,7 +130,9 @@ static OCR_ENGINE: OnceLock<Result<Arc<OcrEngine>, String>> = OnceLock::new();
 /// or ONNX sessions fail to build.
 pub fn ocr_engine(config: &OcrConfig) -> Result<Arc<OcrEngine>, CoreError> {
     let result = OCR_ENGINE.get_or_init(|| {
-        OcrEngine::new(config).map(Arc::new).map_err(|e| e.to_string())
+        OcrEngine::new(config)
+            .map(Arc::new)
+            .map_err(|e| e.to_string())
     });
 
     match result {
@@ -210,8 +212,8 @@ fn ocr_model_dir(config: &OcrConfig) -> Result<PathBuf, CoreError> {
     if !config.model_path.is_empty() {
         return Ok(PathBuf::from(&config.model_path));
     }
-    let data_dir = dirs::data_dir()
-        .ok_or_else(|| CoreError::Ocr("cannot determine data directory".into()))?;
+    let data_dir =
+        dirs::data_dir().ok_or_else(|| CoreError::Ocr("cannot determine data directory".into()))?;
     Ok(data_dir.join("ask-myself").join("models").join("paddleocr"))
 }
 
@@ -318,12 +320,8 @@ impl OcrEngine {
         let pad_w = ((new_w + 31) / 32) * 32;
         let pad_h = ((new_h + 31) / 32) * 32;
 
-        let resized = image::imageops::resize(
-            rgb,
-            new_w,
-            new_h,
-            image::imageops::FilterType::Triangle,
-        );
+        let resized =
+            image::imageops::resize(rgb, new_w, new_h, image::imageops::FilterType::Triangle);
 
         let scale_x = w as f32 / new_w as f32;
         let scale_y = h as f32 / new_h as f32;
@@ -468,11 +466,7 @@ impl OcrEngine {
     ///
     /// For each box: crop, resize to `[48, 192]`, batch inference,
     /// flip box orientation if P(180°) > 0.9.
-    fn run_cls(
-        &self,
-        rgb: &image::RgbImage,
-        boxes: &[TextBox],
-    ) -> Result<Vec<TextBox>, CoreError> {
+    fn run_cls(&self, rgb: &image::RgbImage, boxes: &[TextBox]) -> Result<Vec<TextBox>, CoreError> {
         let mut session_guard = self
             .cls_session
             .as_ref()
@@ -547,7 +541,9 @@ impl OcrEngine {
 
             // Resize to height 48, proportional width (max 320).
             let aspect = crop.width() as f32 / crop.height() as f32;
-            let target_w = ((rec_h as f32 * aspect).round() as u32).min(max_rec_w).max(1);
+            let target_w = ((rec_h as f32 * aspect).round() as u32)
+                .min(max_rec_w)
+                .max(1);
 
             let resized = image::imageops::resize(
                 &crop,
@@ -557,8 +553,7 @@ impl OcrEngine {
             );
 
             // Build [1, 3, 48, W] tensor.
-            let mut tensor =
-                Array4::<f32>::zeros((1, 3, rec_h as usize, target_w as usize));
+            let mut tensor = Array4::<f32>::zeros((1, 3, rec_h as usize, target_w as usize));
             for y in 0..rec_h {
                 for x in 0..target_w {
                     let pixel = resized.get_pixel(x, y);
@@ -726,7 +721,9 @@ pub fn extract_text_from_image(
                     match tokio::runtime::Handle::try_current() {
                         Ok(handle) => {
                             match handle.block_on(extract_text_via_llm_vision(
-                                image_bytes, mime_type, provider,
+                                image_bytes,
+                                mime_type,
+                                provider,
                             )) {
                                 Ok(llm_result) => return Ok(llm_result),
                                 Err(e) => {
@@ -735,9 +732,7 @@ pub fn extract_text_from_image(
                             }
                         }
                         Err(_) => {
-                            tracing::warn!(
-                                "No tokio runtime available for LLM vision fallback"
-                            );
+                            tracing::warn!("No tokio runtime available for LLM vision fallback");
                         }
                     }
                 }
@@ -752,7 +747,9 @@ pub fn extract_text_from_image(
                 if let Some(provider) = llm_provider {
                     if let Ok(handle) = tokio::runtime::Handle::try_current() {
                         return handle.block_on(extract_text_via_llm_vision(
-                            image_bytes, mime_type, provider,
+                            image_bytes,
+                            mime_type,
+                            provider,
                         ));
                     }
                 }
@@ -795,6 +792,7 @@ pub async fn extract_text_via_llm_vision(
         ],
         name: None,
         tool_calls: None,
+        reasoning_content: None,
     }];
 
     let request = CompletionRequest {
@@ -857,12 +855,8 @@ pub fn ocr_pdf(
                     continue;
                 }
 
-                match extract_text_from_image(
-                    &buf.into_inner(),
-                    "image/png",
-                    config,
-                    llm_provider,
-                ) {
+                match extract_text_from_image(&buf.into_inner(), "image/png", config, llm_provider)
+                {
                     Ok(result) if !result.full_text.is_empty() => {
                         if !all_text.is_empty() {
                             all_text.push_str("\n\n--- Page Break ---\n\n");
@@ -930,10 +924,22 @@ pub fn download_ocr_models(
     std::fs::create_dir_all(&dir)?;
 
     let files = [
-        ("pp-ocrv4-det.onnx", "https://paddleocr.bj.bcebos.com/PP-OCRv4/pp-ocrv4-det.onnx"),
-        ("pp-ocrv4-cls.onnx", "https://paddleocr.bj.bcebos.com/PP-OCRv4/pp-ocrv4-cls.onnx"),
-        ("pp-ocrv4-rec.onnx", "https://paddleocr.bj.bcebos.com/PP-OCRv4/pp-ocrv4-rec.onnx"),
-        ("ppocr_keys_v1.txt", "https://paddleocr.bj.bcebos.com/PP-OCRv4/ppocr_keys_v1.txt"),
+        (
+            "pp-ocrv4-det.onnx",
+            "https://paddleocr.bj.bcebos.com/PP-OCRv4/pp-ocrv4-det.onnx",
+        ),
+        (
+            "pp-ocrv4-cls.onnx",
+            "https://paddleocr.bj.bcebos.com/PP-OCRv4/pp-ocrv4-cls.onnx",
+        ),
+        (
+            "pp-ocrv4-rec.onnx",
+            "https://paddleocr.bj.bcebos.com/PP-OCRv4/pp-ocrv4-rec.onnx",
+        ),
+        (
+            "ppocr_keys_v1.txt",
+            "https://paddleocr.bj.bcebos.com/PP-OCRv4/ppocr_keys_v1.txt",
+        ),
     ];
 
     for (idx, (filename, url)) in files.iter().enumerate() {
@@ -969,8 +975,8 @@ pub fn download_ocr_models(
 
 // ── Database Persistence ────────────────────────────────────────────
 
-use rusqlite::params;
 use crate::db::Database;
+use rusqlite::params;
 
 const OCR_CONFIG_KEY: &str = "ocr_config";
 

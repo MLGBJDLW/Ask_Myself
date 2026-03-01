@@ -62,7 +62,10 @@ impl Tool for SearchPlaybooksTool {
                 });
             }
 
-            let mut text = format!("Found {} playbook(s) matching \"{query}\":\n\n", results.len());
+            let mut text = format!(
+                "Found {} playbook(s) matching \"{query}\":\n\n",
+                results.len()
+            );
             for r in &results {
                 text.push_str(&format!(
                     "- **{}** (id: {}, {} citations, relevance: {:.0}%)\n",

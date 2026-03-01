@@ -3,7 +3,6 @@
 /// Uses a single consolidated schema for fresh installs, with support
 /// for future incremental migrations (v017+). Tracks applied migrations
 /// in a `_migrations` table.
-
 use rusqlite::Connection;
 
 use crate::error::CoreError;
@@ -33,14 +32,17 @@ const MIGRATION_NAMES: &[&str] = &[
 /// Future incremental migrations (v017+). Add new entries here.
 /// Each entry is `(name, sql)`.
 const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
-    ("v016_ocr_config",
-     "CREATE TABLE IF NOT EXISTS ocr_config (
+    (
+        "v016_ocr_config",
+        "CREATE TABLE IF NOT EXISTS ocr_config (
           key TEXT PRIMARY KEY NOT NULL,
           value TEXT NOT NULL,
           updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );"),
-    ("v017_conversation_checkpoints",
-     "CREATE TABLE IF NOT EXISTS conversation_checkpoints (
+      );",
+    ),
+    (
+        "v017_conversation_checkpoints",
+        "CREATE TABLE IF NOT EXISTS conversation_checkpoints (
           id TEXT PRIMARY KEY,
           conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
           label TEXT NOT NULL DEFAULT '',
@@ -59,7 +61,8 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
           token_count INTEGER NOT NULL DEFAULT 0,
           original_sort_order INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );"),
+      );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -84,21 +87,15 @@ fn ensure_migrations_table(conn: &Connection) -> Result<(), CoreError> {
 pub fn run_migrations(conn: &Connection) -> Result<(), CoreError> {
     ensure_migrations_table(conn)?;
 
-    let migration_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM _migrations",
-        [],
-        |row| row.get(0),
-    )?;
+    let migration_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM _migrations", [], |row| row.get(0))?;
 
     if migration_count == 0 {
         // Fresh install: apply consolidated schema.
         tracing::info!("Fresh install detected – applying consolidated schema…");
         conn.execute_batch(V_INITIAL_CONSOLIDATED)?;
         for name in MIGRATION_NAMES {
-            conn.execute(
-                "INSERT INTO _migrations (name) VALUES (?1)",
-                [name],
-            )?;
+            conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
         }
     } else {
         // Existing DB: ensure all consolidated names are recorded.
@@ -112,10 +109,7 @@ pub fn run_migrations(conn: &Connection) -> Result<(), CoreError> {
                 tracing::warn!(
                     "Migration '{name}' not in _migrations table but DB exists; marking as applied."
                 );
-                conn.execute(
-                    "INSERT INTO _migrations (name) VALUES (?1)",
-                    [name],
-                )?;
+                conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
             }
         }
     }
@@ -134,10 +128,7 @@ pub fn run_migrations(conn: &Connection) -> Result<(), CoreError> {
 
         if !already_applied {
             tracing::info!("Applying migration '{name}'…");
-            conn.execute(
-                "INSERT INTO _migrations (name) VALUES (?1)",
-                [name],
-            )?;
+            conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
         }
     }
 

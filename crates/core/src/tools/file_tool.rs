@@ -37,6 +37,55 @@ fn default_max_lines() -> usize {
     100
 }
 
+fn is_binary_file_error(err: &CoreError) -> bool {
+    matches!(err, CoreError::Parse(msg) if msg.starts_with("File appears to be binary:"))
+}
+
+fn supports_document_fallback(path: &Path) -> bool {
+    let mime = crate::parse::detect_mime_type(path);
+    matches!(
+        mime.as_str(),
+        "application/pdf"
+            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    ) || mime.starts_with("image/")
+}
+
+fn flatten_parsed_document_text(parsed: &crate::parse::ParsedDocument) -> String {
+    let mut out = String::new();
+    for chunk in &parsed.chunks {
+        let visible = chunk
+            .content
+            .get(chunk.overlap_start..)
+            .unwrap_or(chunk.content.as_str());
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(visible);
+    }
+
+    if out.trim().is_empty() {
+        format!(
+            "[No extractable text found in document: {}]",
+            parsed.file_name
+        )
+    } else {
+        out
+    }
+}
+
+fn read_file_content(path: &Path) -> Result<String, CoreError> {
+    match crate::parse::read_text_file(path) {
+        Ok(raw) => Ok(raw),
+        Err(err) if is_binary_file_error(&err) && supports_document_fallback(path) => {
+            let parsed = crate::parse::parse_file(path, None, None)?;
+            Ok(flatten_parsed_document_text(&parsed))
+        }
+        Err(err) => Err(err),
+    }
+}
+
 #[async_trait]
 impl Tool for FileTool {
     fn name(&self) -> &str {
@@ -93,8 +142,8 @@ impl Tool for FileTool {
                 });
             }
 
-            // Read the file.
-            let raw = std::fs::read_to_string(&canonical).map_err(|e| CoreError::Io(e))?;
+            // Read text files directly; for supported binary docs, parse and extract text.
+            let raw = read_file_content(&canonical)?;
 
             // Skip to start_line (1-based) and truncate to max_lines.
             let start = args.start_line.max(1);
@@ -131,5 +180,75 @@ impl Tool for FileTool {
         })
         .await
         .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sources::CreateSourceInput;
+
+    fn setup_db_with_source(root: &Path) -> Database {
+        let db = Database::open_memory().expect("open in-memory db");
+        db.add_source(CreateSourceInput {
+            root_path: root.to_string_lossy().to_string(),
+            include_globs: vec![],
+            exclude_globs: vec![],
+            watch_enabled: false,
+        })
+        .expect("register source root");
+        db
+    }
+
+    #[tokio::test]
+    async fn read_file_falls_back_to_document_parser_for_binary_images() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let image_path = dir.path().join("diagram.png");
+        std::fs::write(&image_path, [0_u8, 159, 1, 2, 3]).expect("write binary image bytes");
+
+        let db = setup_db_with_source(dir.path());
+        let tool = FileTool;
+        let args = serde_json::json!({
+            "path": image_path.to_string_lossy().to_string()
+        })
+        .to_string();
+
+        let result = tool
+            .execute("call-1", &args, &db, &[])
+            .await
+            .expect("read_file should fallback for image");
+
+        assert!(!result.is_error);
+        assert!(
+            result.content.contains("[Image: diagram.png]"),
+            "unexpected content: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_keeps_binary_error_for_unsupported_types() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let bin_path = dir.path().join("payload.bin");
+        std::fs::write(&bin_path, [0_u8, 1, 2, 3]).expect("write binary payload");
+
+        let db = setup_db_with_source(dir.path());
+        let tool = FileTool;
+        let args = serde_json::json!({
+            "path": bin_path.to_string_lossy().to_string()
+        })
+        .to_string();
+
+        let err = tool
+            .execute("call-2", &args, &db, &[])
+            .await
+            .expect_err("unsupported binary should still error");
+
+        match err {
+            CoreError::Parse(msg) => {
+                assert!(msg.contains("File appears to be binary"), "msg was: {msg}");
+            }
+            other => panic!("expected parse error, got: {other:?}"),
+        }
     }
 }

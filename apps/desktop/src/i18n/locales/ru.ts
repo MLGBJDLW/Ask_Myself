@@ -328,6 +328,7 @@ export const ru: TranslationKeys = {
   'chat.deleteError': 'Ошибка удаления',
   'chat.renameError': 'Ошибка переименования',
   'chat.createError': 'Не удалось создать разговор',
+  'chat.noConfigError': 'Модель не настроена. Проверьте настройки (модель и ключ API).',
   'chat.newConversation': 'Новый разговор',
   'chat.askAboutPrompt': 'Расскажите подробнее о: {title}',
   'chat.feedbackGood': 'Хороший ответ',

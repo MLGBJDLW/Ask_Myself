@@ -3,10 +3,10 @@
 //! Provides [`PrivacyConfig`] for controlling which files to skip during
 //! ingestion and how to redact sensitive content from chunks before storage.
 
-use tracing::debug;
 use regex::Regex;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::db::Database;
 use crate::error::CoreError;

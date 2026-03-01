@@ -224,7 +224,10 @@ export function SettingsPage() {
       if (cfg.provider === 'local') {
         api.checkLocalModel(cfg.localModel).then(setLocalModelReady).catch(() => setLocalModelReady(false));
       }
-    }).catch(() => {});
+    }).catch((e) => {
+      console.error('Failed to load embedder config:', e);
+      toast.error(t('settings.loadStatsError'));
+    });
   }, []);
 
   useEffect(() => {
@@ -406,7 +409,10 @@ export function SettingsPage() {
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   const loadAgentConfigs = useCallback(() => {
-    api.listAgentConfigs().then(setAgentConfigs).catch(() => {});
+    api.listAgentConfigs().then(setAgentConfigs).catch((e) => {
+      console.error('Failed to load AI provider configs:', e);
+      toast.error(t('settings.loadStatsError'));
+    });
   }, []);
 
   useEffect(() => {

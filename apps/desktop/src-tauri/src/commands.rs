@@ -4,19 +4,22 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ask_core::agent::{AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor, CancellationToken};
-use ask_core::conversation::{
-    AgentConfig as DbAgentConfig, Conversation, ConversationMessage, ConversationStats,
-    CreateConversationInput,
-    SaveAgentConfigInput,
+use ask_core::agent::{
+    AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor, CancellationToken,
 };
 use ask_core::conversation::memory::estimate_tokens;
+use ask_core::conversation::{
+    AgentConfig as DbAgentConfig, Conversation, ConversationMessage, ConversationStats,
+    CreateConversationInput, SaveAgentConfigInput,
+};
 use ask_core::db::Database;
 use ask_core::embed::{EmbedderConfig, LocalEmbeddingModel};
 use ask_core::feedback::{Feedback, FeedbackAction};
 use ask_core::index::IndexStats;
 use ask_core::ingest::{self, EmbedResult, IngestResult};
-use ask_core::llm::{create_provider, ContentPart, Message, ProviderConfig, ProviderType, ReasoningEffort, Role};
+use ask_core::llm::{
+    create_provider, ContentPart, Message, ProviderConfig, ProviderType, ReasoningEffort, Role,
+};
 use ask_core::models::{
     EvidenceCard, Playbook, PlaybookCitation, SearchFilters, SearchQuery, Source,
 };
@@ -136,7 +139,8 @@ pub fn init_watcher(app_handle: tauri::AppHandle, db: &Database) {
         // Debounce: collect events for 2 seconds before acting.
         let debounce = Duration::from_secs(2);
         // source_id → (last_event_time, changed_paths, removed_paths)
-        let mut pending: HashMap<String, (Instant, HashSet<PathBuf>, HashSet<PathBuf>)> = HashMap::new();
+        let mut pending: HashMap<String, (Instant, HashSet<PathBuf>, HashSet<PathBuf>)> =
+            HashMap::new();
 
         loop {
             match rx.recv_timeout(Duration::from_millis(500)) {
@@ -1082,8 +1086,14 @@ pub async fn compact_conversation_cmd(
     conversation_id: String,
 ) -> Result<(), String> {
     // 1. Load conversation and its messages.
-    let conv = state.db.get_conversation(&conversation_id).map_err(|e| e.to_string())?;
-    let messages = state.db.get_messages(&conversation_id).map_err(|e| e.to_string())?;
+    let conv = state
+        .db
+        .get_conversation(&conversation_id)
+        .map_err(|e| e.to_string())?;
+    let messages = state
+        .db
+        .get_messages(&conversation_id)
+        .map_err(|e| e.to_string())?;
     if messages.is_empty() {
         return Ok(());
     }
@@ -1144,7 +1154,10 @@ pub async fn compact_conversation_cmd(
         .map_err(|e| e.to_string())?;
 
     // 4. Replace messages in DB: delete old, insert compacted.
-    state.db.delete_messages(&conversation_id).map_err(|e| e.to_string())?;
+    state
+        .db
+        .delete_messages(&conversation_id)
+        .map_err(|e| e.to_string())?;
     for msg in &compacted {
         state.db.add_message(msg).map_err(|e| e.to_string())?;
     }
@@ -1324,8 +1337,8 @@ pub async fn agent_chat_cmd(
     } else {
         conv.system_prompt.clone()
     };
-    let preference_section = ask_core::personalization::build_preference_summary(&state.db)
-        .unwrap_or_default();
+    let preference_section =
+        ask_core::personalization::build_preference_summary(&state.db).unwrap_or_default();
     let system_prompt = if preference_section.is_empty() {
         base_prompt
     } else {
@@ -1334,7 +1347,7 @@ pub async fn agent_chat_cmd(
 
     // 6. Build executor config from DB config.
     let executor_config = ExecutorConfig {
-        max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(6),
+        max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(10),
         system_prompt,
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
@@ -1342,12 +1355,15 @@ pub async fn agent_chat_cmd(
         context_window: db_config.context_window.map(|w| w as u32),
         reasoning_enabled: db_config.reasoning_enabled,
         thinking_budget: db_config.thinking_budget.map(|v| v as u32),
-        reasoning_effort: db_config.reasoning_effort.as_ref().and_then(|s| match s.as_str() {
-            "low" => Some(ReasoningEffort::Low),
-            "medium" => Some(ReasoningEffort::Medium),
-            "high" => Some(ReasoningEffort::High),
-            _ => None,
-        }),
+        reasoning_effort: db_config
+            .reasoning_effort
+            .as_ref()
+            .and_then(|s| match s.as_str() {
+                "low" => Some(ReasoningEffort::Low),
+                "medium" => Some(ReasoningEffort::Medium),
+                "high" => Some(ReasoningEffort::High),
+                _ => None,
+            }),
         provider_type: Some(parse_provider_type(&db_config.provider)),
         summarization_model: db_config.summarization_model.clone(),
     };
@@ -1373,7 +1389,9 @@ pub async fn agent_chat_cmd(
     let tools = default_tool_registry();
 
     // 7b. Build user content parts (text + optional image attachments).
-    let mut user_parts = vec![ContentPart::Text { text: message.clone() }];
+    let mut user_parts = vec![ContentPart::Text {
+        text: message.clone(),
+    }];
     if let Some(atts) = &attachments {
         for att in atts {
             user_parts.push(ContentPart::Image {
@@ -1412,8 +1430,8 @@ pub async fn agent_chat_cmd(
         // Run the agent.  The executor now saves ALL messages (intermediate
         // tool-call assistants, tool results, and the final answer) to the DB
         // using incrementing sort_order starting at `assistant_sort_order`.
-        let mut executor = AgentExecutor::new(provider, tools, executor_config)
-            .with_cancel_token(cancel_token);
+        let mut executor =
+            AgentExecutor::new(provider, tools, executor_config).with_cancel_token(cancel_token);
         if let Some(summ_provider) = summarization_provider {
             executor = executor.with_summarization_provider(summ_provider);
         }
@@ -1498,12 +1516,17 @@ pub async fn agent_stop_cmd(
 // ── OCR ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_ocr_config_cmd(state: tauri::State<'_, AppState>) -> Result<ask_core::ocr::OcrConfig, String> {
+pub fn get_ocr_config_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<ask_core::ocr::OcrConfig, String> {
     state.db.load_ocr_config().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn save_ocr_config_cmd(state: tauri::State<'_, AppState>, config: ask_core::ocr::OcrConfig) -> Result<(), String> {
+pub fn save_ocr_config_cmd(
+    state: tauri::State<'_, AppState>,
+    config: ask_core::ocr::OcrConfig,
+) -> Result<(), String> {
     state.db.save_ocr_config(&config).map_err(|e| e.to_string())
 }
 

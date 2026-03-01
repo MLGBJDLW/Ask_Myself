@@ -32,6 +32,7 @@ calamine = "0.26"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 base64 = "0.22"
 imageproc = { version = "0.25", default-features = false }
+encoding_rs = "0.8"
 
 [features]
 default = ["ocr"]

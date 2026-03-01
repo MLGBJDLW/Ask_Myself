@@ -326,6 +326,7 @@ export const ja: TranslationKeys = {
   'chat.deleteError': '削除に失敗しました',
   'chat.renameError': '名前変更に失敗しました',
   'chat.createError': '会話の作成に失敗しました',
+  'chat.noConfigError': 'モデルが設定されていません。設定を確認してください（モデルとAPIキー）。',
   'chat.newConversation': '新しい会話',
   'chat.askAboutPrompt': '詳しく教えてください：{title}',
   'chat.feedbackGood': '良い回答',

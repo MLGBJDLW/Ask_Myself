@@ -27,10 +27,7 @@ impl Database {
     /// Equivalent to the FTS5 built-in `'rebuild'` command.
     pub fn rebuild_fts_index(&self) -> Result<(), CoreError> {
         let conn = self.conn();
-        conn.execute(
-            "INSERT INTO fts_chunks(fts_chunks) VALUES('rebuild')",
-            [],
-        )?;
+        conn.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('rebuild')", [])?;
         Ok(())
     }
 
@@ -42,10 +39,8 @@ impl Database {
             conn.query_row("SELECT COUNT(*) FROM sources", [], |r| r.get(0))?;
         let total_documents: i64 =
             conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))?;
-        let total_chunks: i64 =
-            conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
-        let fts_rows: i64 =
-            conn.query_row("SELECT COUNT(*) FROM fts_chunks", [], |r| r.get(0))?;
+        let total_chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+        let fts_rows: i64 = conn.query_row("SELECT COUNT(*) FROM fts_chunks", [], |r| r.get(0))?;
 
         Ok(IndexStats {
             total_sources,
@@ -59,10 +54,7 @@ impl Database {
     /// Run the FTS5 `'optimize'` command to merge internal b-tree segments.
     pub fn optimize_fts_index(&self) -> Result<(), CoreError> {
         let conn = self.conn();
-        conn.execute(
-            "INSERT INTO fts_chunks(fts_chunks) VALUES('optimize')",
-            [],
-        )?;
+        conn.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('optimize')", [])?;
         Ok(())
     }
 

@@ -328,6 +328,7 @@ export const fr: TranslationKeys = {
   'chat.deleteError': '\u00c9chec de la suppression',
   'chat.renameError': '\u00c9chec du renommage',
   'chat.createError': '\u00c9chec de la cr\u00e9ation de la conversation',
+  'chat.noConfigError': 'Mod\u00e8le non configur\u00e9. V\u00e9rifiez vos param\u00e8tres (mod\u00e8le et cl\u00e9 API).',
   'chat.newConversation': 'Nouvelle conversation',
   'chat.askAboutPrompt': 'En savoir plus sur : {title}',
   'chat.feedbackGood': 'Bonne réponse',

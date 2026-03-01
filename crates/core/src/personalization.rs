@@ -75,10 +75,15 @@ pub fn build_preference_summary(db: &Database) -> Result<String, CoreError> {
             .collect();
 
         // 5. Total feedback count for minimum threshold
-        let total: i64 =
-            conn.query_row("SELECT COUNT(*) FROM feedback", [], |row| row.get(0))?;
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM feedback", [], |row| row.get(0))?;
 
-        (preferred_sources, avoided_sources, preferred_types, top_queries, total)
+        (
+            preferred_sources,
+            avoided_sources,
+            preferred_types,
+            top_queries,
+            total,
+        )
     }; // conn and all statements dropped here
 
     // Need at least 3 feedback entries to generate a meaningful profile
@@ -111,10 +116,7 @@ pub fn build_preference_summary(db: &Database) -> Result<String, CoreError> {
 
     if !top_queries.is_empty() {
         let queries: Vec<&str> = top_queries.iter().map(|(q, _)| q.as_str()).collect();
-        sections.push(format!(
-            "Frequently engaged topics: {}",
-            queries.join(", ")
-        ));
+        sections.push(format!("Frequently engaged topics: {}", queries.join(", ")));
     }
 
     if sections.is_empty() {
@@ -209,14 +211,20 @@ mod tests {
 
         // 3 upvotes on source A, 1 on source B
         for cid in &chunks_a {
-            db.add_feedback(cid, "query", FeedbackAction::Upvote).unwrap();
+            db.add_feedback(cid, "query", FeedbackAction::Upvote)
+                .unwrap();
         }
-        db.add_feedback(&chunks_a[0], "query2", FeedbackAction::Pin).unwrap();
-        db.add_feedback(&chunks_b[0], "query", FeedbackAction::Upvote).unwrap();
+        db.add_feedback(&chunks_a[0], "query2", FeedbackAction::Pin)
+            .unwrap();
+        db.add_feedback(&chunks_b[0], "query", FeedbackAction::Upvote)
+            .unwrap();
 
         let paths = get_preferred_source_paths(&db, 5).unwrap();
         assert_eq!(paths.len(), 2);
-        assert_eq!(paths[0], "/home/user/notes", "source with most engagement should be first");
+        assert_eq!(
+            paths[0], "/home/user/notes",
+            "source with most engagement should be first"
+        );
         assert_eq!(paths[1], "/home/user/docs");
     }
 
@@ -233,7 +241,8 @@ mod tests {
         let chunks = setup_source_with_chunks(&db, "/home/user/bad");
 
         // Only downvotes — should NOT appear
-        db.add_feedback(&chunks[0], "query", FeedbackAction::Downvote).unwrap();
+        db.add_feedback(&chunks[0], "query", FeedbackAction::Downvote)
+            .unwrap();
 
         let paths = get_preferred_source_paths(&db, 5).unwrap();
         assert!(paths.is_empty());

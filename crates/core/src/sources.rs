@@ -30,10 +30,8 @@ fn source_from_row(row: &rusqlite::Row) -> Result<Source, rusqlite::Error> {
     let exclude_json: String = row.get(4)?;
     let watch_int: i32 = row.get(5)?;
 
-    let include_globs: Vec<String> =
-        serde_json::from_str(&include_json).unwrap_or_default();
-    let exclude_globs: Vec<String> =
-        serde_json::from_str(&exclude_json).unwrap_or_default();
+    let include_globs: Vec<String> = serde_json::from_str(&include_json).unwrap_or_default();
+    let exclude_globs: Vec<String> = serde_json::from_str(&exclude_json).unwrap_or_default();
 
     Ok(Source {
         id: row.get(0)?,
@@ -96,7 +94,13 @@ impl Database {
         conn.execute(
             "INSERT INTO sources (id, kind, root_path, include_globs, exclude_globs, watch_enabled)
              VALUES (?1, 'local_folder', ?2, ?3, ?4, ?5)",
-            params![&id, &input.root_path, &include_json, &exclude_json, watch_int],
+            params![
+                &id,
+                &input.root_path,
+                &include_json,
+                &exclude_json,
+                watch_int
+            ],
         )?;
         drop(conn);
 
@@ -134,11 +138,7 @@ impl Database {
     }
 
     /// Update source configuration.
-    pub fn update_source(
-        &self,
-        id: &str,
-        input: UpdateSourceInput,
-    ) -> Result<Source, CoreError> {
+    pub fn update_source(&self, id: &str, input: UpdateSourceInput) -> Result<Source, CoreError> {
         // Ensure the source exists first.
         let existing = self.get_source(id)?;
 
@@ -267,7 +267,8 @@ mod tests {
             watch_enabled: true,
         };
 
-        db.add_source(make_input()).expect("first add should succeed");
+        db.add_source(make_input())
+            .expect("first add should succeed");
         let err = db.add_source(make_input()).unwrap_err();
         assert!(
             matches!(err, CoreError::InvalidInput(_)),
@@ -399,7 +400,8 @@ mod tests {
             })
             .unwrap();
 
-        db.delete_source(&created.id).expect("delete should succeed");
+        db.delete_source(&created.id)
+            .expect("delete should succeed");
 
         let err = db.get_source(&created.id).unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));

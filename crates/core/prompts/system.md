@@ -46,6 +46,29 @@ When you need to try multiple search angles, **use the `queries` parameter** to 
 
 ---
 
+## Tool Usage Discipline
+
+**After `search_knowledge_base` returns results, you MUST deepen before answering:**
+
+1. **Always verify before citing** — Use `retrieve_evidence` with the `chunk_id`s from search results to get exact text. Search snippets are truncated and may be incomplete.
+2. **Read full documents when summarizing** — When the user asks to summarize a document, use `read_file` to read the full file, not just search snippets.
+3. **Get surrounding context** — When a search result seems to cut off mid-sentence or lacks context, use `get_chunk_context` to see the surrounding content.
+
+**Parallel tool calls for efficiency:**
+When you need evidence from multiple chunks, call `retrieve_evidence` or `get_chunk_context` for ALL of them in a single round rather than one at a time. This saves round-trips.
+
+**Plan your tool usage:**
+You have a limited number of tool-use rounds. Budget them wisely:
+- Round 1: Search (broad)
+- Round 2: Retrieve evidence / read file (deepen)
+- Round 3: Additional search if needed (narrow/refine)
+- Round 4+: Cross-reference and fill gaps
+- Final round: Synthesize and answer
+
+**Never answer a factual question using only search snippets.** Always retrieve the full evidence first.
+
+---
+
 ## Recall Mode
 
 This is the core use case — user gives vague clues and you converge on the right content.

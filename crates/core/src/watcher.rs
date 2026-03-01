@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use tracing::{info, warn};
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use tracing::{info, warn};
 
 use crate::error::CoreError;
 
@@ -56,7 +56,10 @@ impl FileWatcher {
                                 kind: kind.clone(),
                             };
                             if tx.send(evt).is_err() {
-                                warn!("Watcher channel closed, dropping event for {}", path.display());
+                                warn!(
+                                    "Watcher channel closed, dropping event for {}",
+                                    path.display()
+                                );
                             }
                         }
                     }
@@ -77,18 +80,16 @@ impl FileWatcher {
     pub fn watch(&mut self, path: &Path) -> Result<(), CoreError> {
         self.watcher
             .watch(path, RecursiveMode::Recursive)
-            .map_err(|e| {
-                CoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-            })?;
+            .map_err(|e| CoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
         info!("Started watching: {}", path.display());
         Ok(())
     }
 
     /// Stop watching a directory.
     pub fn unwatch(&mut self, path: &Path) -> Result<(), CoreError> {
-        self.watcher.unwatch(path).map_err(|e| {
-            CoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-        })?;
+        self.watcher
+            .unwatch(path)
+            .map_err(|e| CoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
         info!("Stopped watching: {}", path.display());
         Ok(())
     }

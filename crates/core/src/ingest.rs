@@ -8,9 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use tracing::{debug, info, warn};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 
 use crate::db::Database;
 use crate::embed::{create_embedder, Embedder, TfIdfEmbedder};
@@ -523,7 +523,10 @@ pub fn rebuild_embeddings_with_progress(
         db.batch_store_embeddings(&all_batch)?;
     }
 
-    info!("Rebuild complete: {} chunks embedded (provider={})", embedded, config.provider);
+    info!(
+        "Rebuild complete: {} chunks embedded (provider={})",
+        embedded, config.provider
+    );
 
     Ok(EmbedResult {
         source_id: "all".to_string(),
@@ -645,10 +648,7 @@ pub fn batch_update_documents(
     let mut count = 0usize;
     for (doc_id, parsed) in updates {
         // Delete old chunks — FTS triggers fire automatically.
-        tx.execute(
-            "DELETE FROM chunks WHERE document_id = ?1",
-            params![doc_id],
-        )?;
+        tx.execute("DELETE FROM chunks WHERE document_id = ?1", params![doc_id])?;
 
         // Update the document record.
         let metadata_json =
@@ -689,8 +689,7 @@ impl Database {
         file_path: &str,
     ) -> Result<Option<(String, String)>, CoreError> {
         let conn = self.conn();
-        let mut stmt =
-            conn.prepare("SELECT id, content_hash FROM documents WHERE path = ?1")?;
+        let mut stmt = conn.prepare("SELECT id, content_hash FROM documents WHERE path = ?1")?;
         let result = stmt.query_row(params![file_path], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         });
@@ -710,9 +709,8 @@ impl Database {
         source_id: &str,
     ) -> Result<HashMap<String, (String, String)>, CoreError> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, path, content_hash FROM documents WHERE source_id = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, path, content_hash FROM documents WHERE source_id = ?1")?;
         let rows = stmt.query_map(params![source_id], |row| {
             Ok((
                 row.get::<_, String>(1)?,
@@ -769,19 +767,12 @@ impl Database {
     ///
     /// Old chunks are deleted first (FTS triggers handle cleanup),
     /// then the document row is updated and new chunks are inserted.
-    pub fn update_document(
-        &self,
-        doc_id: &str,
-        parsed: &ParsedDocument,
-    ) -> Result<(), CoreError> {
+    pub fn update_document(&self, doc_id: &str, parsed: &ParsedDocument) -> Result<(), CoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
 
         // Delete old chunks — FTS triggers fire automatically.
-        tx.execute(
-            "DELETE FROM chunks WHERE document_id = ?1",
-            params![doc_id],
-        )?;
+        tx.execute("DELETE FROM chunks WHERE document_id = ?1", params![doc_id])?;
 
         // Update the document record.
         let metadata_json =
@@ -811,10 +802,7 @@ impl Database {
     /// Delete all documents (and their chunks via CASCADE) for a source.
     ///
     /// Returns the number of documents deleted.
-    pub fn delete_documents_for_source(
-        &self,
-        source_id: &str,
-    ) -> Result<usize, CoreError> {
+    pub fn delete_documents_for_source(&self, source_id: &str) -> Result<usize, CoreError> {
         let conn = self.conn();
         let count = conn.execute(
             "DELETE FROM documents WHERE source_id = ?1",
@@ -829,10 +817,7 @@ impl Database {
     /// document matched the given path.
     pub fn delete_document_by_path(&self, file_path: &str) -> Result<bool, CoreError> {
         let conn = self.conn();
-        let deleted = conn.execute(
-            "DELETE FROM documents WHERE path = ?1",
-            params![file_path],
-        )?;
+        let deleted = conn.execute("DELETE FROM documents WHERE path = ?1", params![file_path])?;
         Ok(deleted > 0)
     }
 }
@@ -891,9 +876,7 @@ fn insert_chunks(
 ) -> Result<(), CoreError> {
     for chunk in chunks {
         let chunk_id = uuid::Uuid::new_v4().to_string();
-        let chunk_hash = blake3::hash(chunk.content.as_bytes())
-            .to_hex()
-            .to_string();
+        let chunk_hash = blake3::hash(chunk.content.as_bytes()).to_hex().to_string();
         let line_end = chunk.content.lines().count().max(1) as i64;
         let metadata = {
             let mut meta = serde_json::Map::new();
@@ -1046,7 +1029,8 @@ mod tests {
         db.save_embedder_config(&crate::embed::EmbedderConfig {
             provider: "tfidf".into(),
             ..crate::embed::EmbedderConfig::default()
-        }).expect("set tfidf config for test");
+        })
+        .expect("set tfidf config for test");
         db
     }
 
@@ -1187,12 +1171,7 @@ mod tests {
         .unwrap();
 
         let db = test_db();
-        let sid = create_test_source(
-            &db,
-            tmp.path(),
-            vec!["**/*.md".to_string()],
-            vec![],
-        );
+        let sid = create_test_source(&db, tmp.path(), vec!["**/*.md".to_string()], vec![]);
 
         let result = scan_source(&db, &sid).unwrap();
         assert_eq!(result.files_scanned, 1, "only .md files should be scanned");
@@ -1223,12 +1202,7 @@ mod tests {
         .unwrap();
 
         let db = test_db();
-        let sid = create_test_source(
-            &db,
-            tmp.path(),
-            vec![],
-            vec!["**/*.log".to_string()],
-        );
+        let sid = create_test_source(&db, tmp.path(), vec![], vec!["**/*.log".to_string()]);
 
         let result = scan_source(&db, &sid).unwrap();
         assert_eq!(result.files_scanned, 2, "log files should be excluded");
@@ -1468,10 +1442,7 @@ mod tests {
 
         // Embed again — should only embed the new chunks.
         let e2 = embed_source(&db, &sid).unwrap();
-        assert!(
-            e2.chunks_embedded > 0,
-            "new chunks should be embedded"
-        );
+        assert!(e2.chunks_embedded > 0, "new chunks should be embedded");
 
         // No chunks should be missing.
         let missing = db.get_chunks_without_embeddings("tfidf-v1").unwrap();

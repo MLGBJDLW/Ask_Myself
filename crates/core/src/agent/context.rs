@@ -46,6 +46,7 @@ pub fn prepare_messages(
         parts: user_parts.to_vec(),
         name: None,
         tool_calls: None,
+        reasoning_content: None,
     });
 
     // Trim to fit context window.
@@ -158,7 +159,10 @@ fn cap_system_prompt(text: String) -> String {
         return text;
     }
     let truncated = &text[..MAX_SYSTEM_PROMPT_CHARS];
-    let cut = truncated.rfind('\n').or_else(|| truncated.rfind(' ')).unwrap_or(MAX_SYSTEM_PROMPT_CHARS);
+    let cut = truncated
+        .rfind('\n')
+        .or_else(|| truncated.rfind(' '))
+        .unwrap_or(MAX_SYSTEM_PROMPT_CHARS);
     format!("{}\n...[truncated]", &text[..cut])
 }
 
@@ -184,15 +188,23 @@ mod tests {
 
     #[test]
     fn test_prepare_messages_basic() {
-        let history = vec![
-            msg(Role::User, "Hi"),
-            msg(Role::Assistant, "Hello!"),
-        ];
-        let result = prepare_messages("System prompt", &history, &[ContentPart::Text { text: "What's up?".to_string() }], "gpt-4o", 4096, None);
+        let history = vec![msg(Role::User, "Hi"), msg(Role::Assistant, "Hello!")];
+        let result = prepare_messages(
+            "System prompt",
+            &history,
+            &[ContentPart::Text {
+                text: "What's up?".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            None,
+        );
 
         // System is first, with datetime appended.
         assert_eq!(result[0].role, Role::System);
-        assert!(result[0].text_content().starts_with("System prompt\n\nCurrent date and time:"));
+        assert!(result[0]
+            .text_content()
+            .starts_with("System prompt\n\nCurrent date and time:"));
 
         // Last message is the new user input.
         assert_eq!(result.last().unwrap().text_content(), "What's up?");
@@ -206,44 +218,80 @@ mod tests {
         // Each message: ~220 ASCII chars ≈ 59 tokens. 200 messages ≈ 11800 tokens.
         let history: Vec<Message> = (0..200)
             .map(|i| {
-                let role = if i % 2 == 0 { Role::User } else { Role::Assistant };
+                let role = if i % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                };
                 let padding = "x".repeat(200);
                 msg(role, &format!("Message number {i} {padding}"))
             })
             .collect();
         // Force a small context window (8192) so trimming is guaranteed.
-        let result = prepare_messages("Sys", &history, &[ContentPart::Text { text: "New".to_string() }], "some-model", 512, Some(8192));
+        let result = prepare_messages(
+            "Sys",
+            &history,
+            &[ContentPart::Text {
+                text: "New".to_string(),
+            }],
+            "some-model",
+            512,
+            Some(8192),
+        );
 
         // System message must survive.
         assert_eq!(result[0].role, Role::System);
         // Total input is 202 messages. With 7680 token budget and ~59 tok/msg, only ~130 fit.
-        assert!(result.len() < 202, "expected trimming, got {} messages", result.len());
+        assert!(
+            result.len() < 202,
+            "expected trimming, got {} messages",
+            result.len()
+        );
         assert!(result.len() > 2, "expected more than just sys+user");
         // Last message is the new user input.
         assert_eq!(result.last().unwrap().text_content(), "New");
 
         // System message should contain the evicted recap.
         assert!(
-            result[0].text_content().contains("Earlier conversation context"),
+            result[0]
+                .text_content()
+                .contains("Earlier conversation context"),
             "System message should contain evicted recap"
         );
     }
 
     #[test]
     fn test_no_recap_when_nothing_evicted() {
-        let history = vec![
-            msg(Role::User, "Hi"),
-            msg(Role::Assistant, "Hello!"),
-        ];
-        let result = prepare_messages("Sys", &history, &[ContentPart::Text { text: "What's up?".to_string() }], "gpt-4o", 4096, None);
+        let history = vec![msg(Role::User, "Hi"), msg(Role::Assistant, "Hello!")];
+        let result = prepare_messages(
+            "Sys",
+            &history,
+            &[ContentPart::Text {
+                text: "What's up?".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            None,
+        );
 
         // No trimming happened, so no recap.
-        assert!(!result[0].text_content().contains("Earlier conversation context"));
+        assert!(!result[0]
+            .text_content()
+            .contains("Earlier conversation context"));
     }
 
     #[test]
     fn test_prepare_messages_empty_history() {
-        let result = prepare_messages("Sys", &[], &[ContentPart::Text { text: "Hello".to_string() }], "gpt-4o", 4096, None);
+        let result = prepare_messages(
+            "Sys",
+            &[],
+            &[ContentPart::Text {
+                text: "Hello".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            None,
+        );
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].role, Role::System);
         assert_eq!(result[1].role, Role::User);

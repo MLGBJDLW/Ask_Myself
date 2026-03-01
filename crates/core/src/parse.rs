@@ -5,12 +5,88 @@
 //! paragraph-aware (plain text / log) chunks.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
 use crate::error::CoreError;
+
+// ---------------------------------------------------------------------------
+// Encoding-aware file reading
+// ---------------------------------------------------------------------------
+
+/// Read a file as text with encoding detection.
+///
+/// 1. Rejects binary files (null bytes in first 8 KB).
+/// 2. Strips and decodes BOM (UTF-8 / UTF-16 LE / UTF-16 BE).
+/// 3. Tries strict UTF-8.
+/// 4. Tries common legacy encodings via `encoding_rs`.
+/// 5. Falls back to lossy UTF-8.
+pub fn read_text_file(path: &std::path::Path) -> Result<String, CoreError> {
+    let raw = std::fs::read(path)?;
+
+    // Binary check — look for null bytes in first 8 KB.
+    let check_len = raw.len().min(8192);
+    if raw[..check_len].contains(&0) {
+        return Err(CoreError::Parse(format!(
+            "File appears to be binary: {}",
+            path.display()
+        )));
+    }
+
+    // BOM detection
+    if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        // UTF-8 BOM — strip and decode
+        return String::from_utf8(raw[3..].to_vec()).map_err(|e| {
+            CoreError::Parse(format!(
+                "File has UTF-8 BOM but contains invalid UTF-8: {}: {}",
+                path.display(),
+                e
+            ))
+        });
+    }
+    if raw.starts_with(&[0xFF, 0xFE]) {
+        let (result, _, had_errors) = encoding_rs::UTF_16LE.decode(&raw[2..]);
+        if had_errors {
+            tracing::warn!("UTF-16 LE decoding had errors for: {}", path.display());
+        }
+        return Ok(result.into_owned());
+    }
+    if raw.starts_with(&[0xFE, 0xFF]) {
+        let (result, _, had_errors) = encoding_rs::UTF_16BE.decode(&raw[2..]);
+        if had_errors {
+            tracing::warn!("UTF-16 BE decoding had errors for: {}", path.display());
+        }
+        return Ok(result.into_owned());
+    }
+
+    // Try strict UTF-8 (most common case)
+    if let Ok(s) = String::from_utf8(raw.clone()) {
+        return Ok(s);
+    }
+
+    // Try common legacy encodings
+    use encoding_rs::{EUC_KR, GBK, SHIFT_JIS, WINDOWS_1252};
+    for encoding in &[GBK, SHIFT_JIS, EUC_KR, WINDOWS_1252] {
+        let (result, _, had_errors) = encoding.decode(&raw);
+        if !had_errors {
+            tracing::info!(
+                "File {} decoded as {} (not UTF-8)",
+                path.display(),
+                encoding.name()
+            );
+            return Ok(result.into_owned());
+        }
+    }
+
+    // Last resort: lossy UTF-8
+    tracing::warn!(
+        "Could not detect encoding for {}, using lossy UTF-8",
+        path.display()
+    );
+    Ok(String::from_utf8_lossy(&raw).into_owned())
+}
 
 // ---------------------------------------------------------------------------
 // Public result types
@@ -101,7 +177,7 @@ pub fn parse_file(
         return parse_image(path, &mime_type, &ocr_cfg, llm_provider);
     }
 
-    let content = std::fs::read_to_string(path)?;
+    let content = read_text_file(path)?;
     let fs_meta = std::fs::metadata(path)?;
 
     let file_path = path.to_string_lossy().to_string();
@@ -168,8 +244,7 @@ pub fn parse_pdf(
         _ => {
             // Native extraction failed or returned empty — scanned PDF.
             tracing::info!("PDF has no text layer, attempting OCR: {}", path.display());
-            crate::ocr::ocr_pdf(&bytes, ocr_config, llm_provider)
-                .unwrap_or_default()
+            crate::ocr::ocr_pdf(&bytes, ocr_config, llm_provider).unwrap_or_default()
         }
     };
 
@@ -199,8 +274,7 @@ pub fn parse_pdf(
 /// Returns extracted text when at least one text chunk is decodable.
 fn extract_pdf_text_lopdf(bytes: &[u8]) -> Result<String, String> {
     panic::catch_unwind(AssertUnwindSafe(|| {
-        let doc = lopdf::Document::load_mem(bytes)
-            .map_err(|e| format!("load failed: {e}"))?;
+        let doc = lopdf::Document::load_mem(bytes).map_err(|e| format!("load failed: {e}"))?;
 
         let page_numbers: Vec<u32> = doc.get_pages().keys().copied().collect();
         let mut text = String::new();
@@ -288,8 +362,9 @@ pub fn parse_xlsx(path: &Path) -> Result<ParsedDocument, CoreError> {
     let file_size = bytes.len() as i64;
     let content_hash = blake3::hash(&bytes).to_hex().to_string();
 
-    let mut wb = open_workbook_auto(path)
-        .map_err(|e| CoreError::Parse(format!("Excel open failed for {}: {}", path.display(), e)))?;
+    let mut wb = open_workbook_auto(path).map_err(|e| {
+        CoreError::Parse(format!("Excel open failed for {}: {}", path.display(), e))
+    })?;
 
     let sheet_names = wb.sheet_names().to_vec();
     let mut all_text = String::new();
@@ -396,18 +471,20 @@ pub fn parse_image(
         .unwrap_or_default();
 
     // ── Try OCR ──
-    let (text_content, ocr_source) = match crate::ocr::extract_text_from_image(
-        &bytes, mime_type, ocr_config, llm_provider,
-    ) {
-        Ok(result) if !result.full_text.is_empty() => (result.full_text, result.source),
-        Ok(_) | Err(_) => {
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("unknown");
-            let stub = format!(
-                "[Image: {file_name}] type={ext} size={file_size} bytes path={file_path}"
-            );
-            (stub, crate::ocr::OcrSource::None)
-        }
-    };
+    let (text_content, ocr_source) =
+        match crate::ocr::extract_text_from_image(&bytes, mime_type, ocr_config, llm_provider) {
+            Ok(result) if !result.full_text.is_empty() => (result.full_text, result.source),
+            Ok(_) | Err(_) => {
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("unknown");
+                let stub = format!(
+                    "[Image: {file_name}] type={ext} size={file_size} bytes path={file_path}"
+                );
+                (stub, crate::ocr::OcrSource::None)
+            }
+        };
 
     let chunks = if ocr_source != crate::ocr::OcrSource::None {
         chunk_plaintext(&text_content)
@@ -449,14 +526,42 @@ pub fn detect_mime_type(path: &Path) -> String {
         Some("txt") => "text/plain".to_string(),
         Some("log") => "text/x-log".to_string(),
         Some("pdf") => "application/pdf".to_string(),
-        Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string(),
-        Some("xlsx" | "xls") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
-        Some("pptx") => "application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string(),
+        Some("docx") => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
+        }
+        Some("xlsx" | "xls") => {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string()
+        }
+        Some("pptx") => {
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string()
+        }
         Some("jpg" | "jpeg") => "image/jpeg".to_string(),
         Some("png") => "image/png".to_string(),
         Some("gif") => "image/gif".to_string(),
         Some("webp") => "image/webp".to_string(),
-        _ => "application/octet-stream".to_string(),
+        // Source code & config files
+        Some(
+            "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "json" | "yaml" | "yml" | "toml" | "html"
+            | "htm" | "css" | "scss" | "less" | "csv" | "xml" | "c" | "cpp" | "h" | "hpp" | "java"
+            | "go" | "sh" | "bash" | "zsh" | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "sql"
+            | "lua" | "vim" | "el" | "clj" | "ex" | "exs" | "erl" | "hs" | "ml" | "ini" | "cfg"
+            | "conf" | "env" | "gitignore" | "dockerignore" | "cmake",
+        ) => "text/plain".to_string(),
+        _ => {
+            // Check well-known filenames without extensions
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            match file_name.as_str() {
+                "makefile" | "dockerfile" | "license" | "licence" | "readme" | "changelog"
+                | "authors" | "contributors" | "todo" | "vagrantfile" | "gemfile" | "rakefile"
+                | "procfile" | ".gitignore" | ".dockerignore" | ".editorconfig" | ".env"
+                | ".env.local" | ".env.example" => "text/plain".to_string(),
+                _ => "application/octet-stream".to_string(),
+            }
+        }
     }
 }
 
@@ -801,9 +906,7 @@ fn byte_offset_of_line(content: &str, line: &str) -> usize {
 /// Split text at double-newline boundaries. If any resulting piece exceeds
 /// `max_chars`, it is kept as-is (the caller may sub-split further).
 fn split_by_paragraphs(text: &str, _max_chars: usize) -> Vec<String> {
-    text.split("\n\n")
-        .map(|s| s.to_string())
-        .collect()
+    text.split("\n\n").map(|s| s.to_string()).collect()
 }
 
 /// Split text at single-newline boundaries, grouping lines until the
@@ -1025,10 +1128,7 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
     fn test_plaintext_large_paragraph_split() {
         let big = "line of text that is reasonably long\n".repeat(100);
         let chunks = chunk_plaintext(&big);
-        assert!(
-            chunks.len() >= 1,
-            "Large paragraph should produce chunks"
-        );
+        assert!(chunks.len() >= 1, "Large paragraph should produce chunks");
         for c in &chunks {
             assert!(c.content.len() <= MAX_CHUNK_CHARS + 200);
         }
@@ -1045,7 +1145,10 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
 
         let doc = parse_file(f.path(), None, None).unwrap();
         assert_eq!(doc.mime_type, "text/markdown");
-        assert_eq!(doc.file_name, f.path().file_name().unwrap().to_str().unwrap());
+        assert_eq!(
+            doc.file_name,
+            f.path().file_name().unwrap().to_str().unwrap()
+        );
         assert_eq!(doc.file_size, body.len() as i64);
         assert!(!doc.content_hash.is_empty());
     }
@@ -1063,7 +1166,11 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
 
     #[test]
     fn test_parse_file_not_found() {
-        let result = parse_file(Path::new("/tmp/nonexistent_ask_core_test_file.txt"), None, None);
+        let result = parse_file(
+            Path::new("/tmp/nonexistent_ask_core_test_file.txt"),
+            None,
+            None,
+        );
         assert!(result.is_err());
     }
 
@@ -1085,6 +1192,9 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
 
         let result = parse_file(f.path(), None, None);
         // Graceful degradation: parse succeeds but produces empty chunks.
-        assert!(result.is_ok() || result.is_err(), "Should handle corrupt PDF gracefully");
+        assert!(
+            result.is_ok() || result.is_err(),
+            "Should handle corrupt PDF gracefully"
+        );
     }
 }

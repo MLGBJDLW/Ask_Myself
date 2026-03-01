@@ -11,11 +11,11 @@ pub mod conversation;
 pub mod db;
 pub mod embed;
 pub mod error;
-pub mod llm;
 pub mod feedback;
-pub mod media;
 pub mod index;
 pub mod ingest;
+pub mod llm;
+pub mod media;
 pub mod migrations;
 pub mod models;
 #[cfg(feature = "ocr")]

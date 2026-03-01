@@ -328,6 +328,7 @@ export const en: TranslationKeys = {
   'chat.deleteError': 'Delete failed',
   'chat.renameError': 'Rename failed',
   'chat.createError': 'Failed to create conversation',
+  'chat.noConfigError': 'No AI model configured. Please check Settings and add a provider with a valid API key.',
   'chat.newConversation': 'New Conversation',
   'chat.askAboutPrompt': 'Tell me more about: {title}',
   'chat.feedbackGood': 'Good response',

@@ -171,14 +171,14 @@ export function ToolCallCard({
     [isSearchDone, content],
   );
 
-  const [expanded, setExpanded] = useState(!!searchItems);
+  const [expanded, setExpanded] = useState(false);
 
-  // Auto-expand when search results arrive (streaming: status transitions to 'done')
+  // Auto-collapse when execution finishes; users can manually re-open if needed.
   useEffect(() => {
-    if (searchItems) {
-      setExpanded(true);
+    if (status !== 'running') {
+      setExpanded(false);
     }
-  }, [searchItems]);
+  }, [status]);
 
   const statusConfig = {
     running: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },

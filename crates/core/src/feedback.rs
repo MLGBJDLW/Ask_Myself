@@ -94,10 +94,7 @@ impl Database {
     }
 
     /// Get all feedback entries for a specific query text.
-    pub fn get_feedback_for_query(
-        &self,
-        query_text: &str,
-    ) -> Result<Vec<Feedback>, CoreError> {
+    pub fn get_feedback_for_query(&self, query_text: &str) -> Result<Vec<Feedback>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, chunk_id, query_text, action, created_at
@@ -115,10 +112,7 @@ impl Database {
 
     /// Get all feedback entries for a specific chunk.
     // TODO: integrate — per-chunk feedback query, not yet exposed in UI
-    pub fn get_feedback_for_chunk(
-        &self,
-        chunk_id: &str,
-    ) -> Result<Vec<Feedback>, CoreError> {
+    pub fn get_feedback_for_chunk(&self, chunk_id: &str) -> Result<Vec<Feedback>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, chunk_id, query_text, action, created_at
@@ -137,10 +131,7 @@ impl Database {
     /// Delete a feedback entry by id.
     pub fn delete_feedback(&self, feedback_id: &str) -> Result<(), CoreError> {
         let conn = self.conn();
-        let affected = conn.execute(
-            "DELETE FROM feedback WHERE id = ?1",
-            params![feedback_id],
-        )?;
+        let affected = conn.execute("DELETE FROM feedback WHERE id = ?1", params![feedback_id])?;
         if affected == 0 {
             return Err(CoreError::NotFound(format!(
                 "Feedback not found: {feedback_id}"
@@ -192,12 +183,15 @@ impl Database {
         let now = chrono::Utc::now();
         let mut adjustments: HashMap<String, f64> = HashMap::new();
 
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            chunk_ids.iter().map(|id| Box::new(id.clone()) as Box<dyn rusqlite::types::ToSql>).collect();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = chunk_ids
+            .iter()
+            .map(|id| Box::new(id.clone()) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
         if let Some(q) = exclude_query {
             params.push(Box::new(q.to_string()));
         }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
 
         let rows = stmt.query_map(&*param_refs, |row| {
             let chunk_id: String = row.get(0)?;
@@ -341,8 +335,14 @@ impl Database {
         }
 
         // Step 2: Collect unique doc IDs and count feedback per document
-        let unique_docs: Vec<String> = chunk_to_doc.values().cloned().collect::<std::collections::HashSet<_>>().into_iter().collect();
-        let doc_placeholders: Vec<String> = (1..=unique_docs.len()).map(|i| format!("?{i}")).collect();
+        let unique_docs: Vec<String> = chunk_to_doc
+            .values()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let doc_placeholders: Vec<String> =
+            (1..=unique_docs.len()).map(|i| format!("?{i}")).collect();
         let feedback_sql = format!(
             "SELECT c.document_id, f.action, COUNT(*) FROM feedback f \
              JOIN chunks c ON c.id = f.chunk_id \
@@ -430,8 +430,9 @@ impl Database {
 
 fn row_to_feedback(row: &rusqlite::Row<'_>) -> rusqlite::Result<Feedback> {
     let action_str: String = row.get(3)?;
-    let action = FeedbackAction::from_str(&action_str)
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e)))?;
+    let action = FeedbackAction::from_str(&action_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
+    })?;
     Ok(Feedback {
         id: row.get(0)?,
         chunk_id: row.get(1)?,
@@ -532,10 +533,7 @@ mod tests {
             .unwrap();
         assert!(adjustments.contains_key(&chunk_id));
         let adj = adjustments[&chunk_id];
-        assert!(
-            adj > 0.2,
-            "Expected ~0.3 (2 × 0.15), got {adj}"
-        );
+        assert!(adj > 0.2, "Expected ~0.3 (2 × 0.15), got {adj}");
 
         // get_feedback_adjustments with a third query should still pick up chunk feedback
         let adj2 = db
@@ -560,30 +558,55 @@ mod tests {
         let (db, chunk_id) = setup_db_with_chunk();
 
         // "deploy strategy" gets 2 upvotes → qualifies
-        db.add_feedback(&chunk_id, "deploy strategy", FeedbackAction::Upvote).unwrap();
-        db.add_feedback(&chunk_id, "deploy strategy", FeedbackAction::Pin).unwrap();
+        db.add_feedback(&chunk_id, "deploy strategy", FeedbackAction::Upvote)
+            .unwrap();
+        db.add_feedback(&chunk_id, "deploy strategy", FeedbackAction::Pin)
+            .unwrap();
 
         // "config setup" gets only 1 upvote → excluded
-        db.add_feedback(&chunk_id, "config setup", FeedbackAction::Upvote).unwrap();
+        db.add_feedback(&chunk_id, "config setup", FeedbackAction::Upvote)
+            .unwrap();
 
         // Query "deployment deploy plan" shares "deploy" with "deploy strategy"
         // but only 1 token overlap → not enough (need ≥2).
-        let terms = db.get_related_feedback_terms("deployment deploy plan", 5).unwrap();
+        let terms = db
+            .get_related_feedback_terms("deployment deploy plan", 5)
+            .unwrap();
         // "deploy" is shared, but only 1 token overlaps → 0 extra terms
         assert!(terms.is_empty(), "need ≥2 shared tokens; got {:?}", terms);
 
         // Query "deploy strategy review" shares "deploy" AND "strategy" → qualifies
         // But all candidate tokens ("deploy", "strategy") are in the input → no extras
-        let terms2 = db.get_related_feedback_terms("deploy strategy review", 5).unwrap();
-        assert!(terms2.is_empty(), "all candidate tokens already in input; got {:?}", terms2);
+        let terms2 = db
+            .get_related_feedback_terms("deploy strategy review", 5)
+            .unwrap();
+        assert!(
+            terms2.is_empty(),
+            "all candidate tokens already in input; got {:?}",
+            terms2
+        );
 
         // Add another qualifying feedback query that will yield new terms
-        db.add_feedback(&chunk_id, "deploy strategy rollback", FeedbackAction::Upvote).unwrap();
-        db.add_feedback(&chunk_id, "deploy strategy rollback", FeedbackAction::Upvote).unwrap();
+        db.add_feedback(
+            &chunk_id,
+            "deploy strategy rollback",
+            FeedbackAction::Upvote,
+        )
+        .unwrap();
+        db.add_feedback(
+            &chunk_id,
+            "deploy strategy rollback",
+            FeedbackAction::Upvote,
+        )
+        .unwrap();
 
         // Query "deploy strategy" shares 2 tokens → should get "rollback" from candidate
         let terms3 = db.get_related_feedback_terms("deploy strategy", 5).unwrap();
-        assert!(terms3.contains(&"rollback".to_string()), "expected 'rollback'; got {:?}", terms3);
+        assert!(
+            terms3.contains(&"rollback".to_string()),
+            "expected 'rollback'; got {:?}",
+            terms3
+        );
     }
 
     #[test]
@@ -605,7 +628,8 @@ mod tests {
             "INSERT INTO sources (id, kind, root_path, include_globs, exclude_globs, watch_enabled)
              VALUES (?1, 'local_folder', '/tmp/test', '[]', '[]', 0)",
             params![&source_id],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO documents (id, source_id, path, mime_type, file_size, modified_at, content_hash)
              VALUES (?1, ?2, '/tmp/test/a.md', 'text/plain', 100, datetime('now'), 'hash')",
@@ -627,11 +651,14 @@ mod tests {
 
         // Add 3 upvotes on first 3 chunks
         for cid in &chunk_ids[..3] {
-            db.add_feedback(cid, "some query", FeedbackAction::Upvote).unwrap();
+            db.add_feedback(cid, "some query", FeedbackAction::Upvote)
+                .unwrap();
         }
 
         // Query the 4th chunk (no direct feedback) → should get +0.09 (3 * 0.03)
-        let adjustments = db.get_document_feedback_adjustments(&[chunk_ids[3].clone()]).unwrap();
+        let adjustments = db
+            .get_document_feedback_adjustments(&[chunk_ids[3].clone()])
+            .unwrap();
         let adj = adjustments.get(&chunk_ids[3]).copied().unwrap_or(0.0);
         assert!(
             (adj - 0.09).abs() < 1e-6,
@@ -651,7 +678,8 @@ mod tests {
             "INSERT INTO sources (id, kind, root_path, include_globs, exclude_globs, watch_enabled)
              VALUES (?1, 'local_folder', '/tmp/test', '[]', '[]', 0)",
             params![&source_id],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO documents (id, source_id, path, mime_type, file_size, modified_at, content_hash)
              VALUES (?1, ?2, '/tmp/test/a.md', 'text/plain', 100, datetime('now'), 'hash')",
@@ -672,10 +700,13 @@ mod tests {
         drop(conn);
 
         for cid in &chunk_ids[..6] {
-            db.add_feedback(cid, "query", FeedbackAction::Upvote).unwrap();
+            db.add_feedback(cid, "query", FeedbackAction::Upvote)
+                .unwrap();
         }
 
-        let adjustments = db.get_document_feedback_adjustments(&[chunk_ids[6].clone()]).unwrap();
+        let adjustments = db
+            .get_document_feedback_adjustments(&[chunk_ids[6].clone()])
+            .unwrap();
         let adj = adjustments.get(&chunk_ids[6]).copied().unwrap_or(0.0);
         assert!(
             (adj - 0.15).abs() < 1e-6,
@@ -689,5 +720,4 @@ mod tests {
         let adjustments = db.get_document_feedback_adjustments(&[]).unwrap();
         assert!(adjustments.is_empty());
     }
-
 }

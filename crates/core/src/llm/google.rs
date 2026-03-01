@@ -19,7 +19,7 @@ use super::{
 use crate::error::CoreError;
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
 // ---------------------------------------------------------------------------
 // Gemini API wire types
@@ -222,14 +222,12 @@ fn convert_messages(
                         ContentPart::Text { text } => {
                             Some(GeminiPartV2::Text { text: text.clone() })
                         }
-                        ContentPart::Image { media_type, data } => {
-                            Some(GeminiPartV2::InlineData {
-                                inline_data: GeminiBlob {
-                                    mime_type: media_type.clone(),
-                                    data: data.clone(),
-                                },
-                            })
-                        }
+                        ContentPart::Image { media_type, data } => Some(GeminiPartV2::InlineData {
+                            inline_data: GeminiBlob {
+                                mime_type: media_type.clone(),
+                                data: data.clone(),
+                            },
+                        }),
                     })
                     .collect();
                 contents.push(GeminiContentV2 {
@@ -241,9 +239,7 @@ fn convert_messages(
                 let mut parts: Vec<GeminiPartV2> = Vec::new();
                 let text = msg.text_content();
                 if !text.is_empty() {
-                    parts.push(GeminiPartV2::Text {
-                        text,
-                    });
+                    parts.push(GeminiPartV2::Text { text });
                 }
                 if let Some(ref calls) = msg.tool_calls {
                     for tc in calls {
@@ -383,7 +379,11 @@ fn build_request_body(
     {
         Some(GeminiGenerationConfig {
             // Gemini requires temperature unset when thinking is enabled.
-            temperature: if has_thinking { None } else { request.temperature },
+            temperature: if has_thinking {
+                None
+            } else {
+                request.temperature
+            },
             max_output_tokens: request.max_tokens,
             stop_sequences: request.stop.clone(),
             thinking_config,
@@ -403,7 +403,13 @@ fn build_request_body(
 /// Extract text, tool calls, finish reason, and usage from a Gemini response.
 fn extract_response(
     resp: &GeminiResponse,
-) -> (String, Vec<ToolCallRequest>, FinishReason, Usage, Option<String>) {
+) -> (
+    String,
+    Vec<ToolCallRequest>,
+    FinishReason,
+    Usage,
+    Option<String>,
+) {
     let candidate = resp.candidates.as_ref().and_then(|c| c.first());
 
     let mut text_parts = Vec::new();
@@ -418,8 +424,7 @@ fn extract_response(
                         GeminiPartV2::Thought { text, thought } if *thought => {
                             thinking_parts.push(text.clone());
                         }
-                        GeminiPartV2::Thought { text, .. }
-                        | GeminiPartV2::Text { text } => {
+                        GeminiPartV2::Thought { text, .. } | GeminiPartV2::Text { text } => {
                             text_parts.push(text.clone());
                         }
                         GeminiPartV2::FunctionCall { function_call } => {
@@ -430,8 +435,8 @@ fn extract_response(
                                     .unwrap_or_default(),
                             });
                         }
-                        GeminiPartV2::FunctionResponse { .. }
-                        | GeminiPartV2::InlineData { .. } => {}
+                        GeminiPartV2::FunctionResponse { .. } | GeminiPartV2::InlineData { .. } => {
+                        }
                     }
                 }
             }
@@ -464,7 +469,13 @@ fn extract_response(
         Some(thinking_parts.join(""))
     };
 
-    (text_parts.join(""), tool_calls, finish_reason, usage, thinking)
+    (
+        text_parts.join(""),
+        tool_calls,
+        finish_reason,
+        usage,
+        thinking,
+    )
 }
 
 /// Convert provider chunk content to incremental deltas.
@@ -500,6 +511,7 @@ async fn parse_gemini_stream(
     let mut event_data_lines: Vec<String> = Vec::new();
     let mut emitted_text = String::new();
     let mut emitted_thinking = String::new();
+    let mut saw_finish_reason = false;
 
     while let Some(chunk_result) = byte_stream.next().await {
         let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
@@ -543,6 +555,9 @@ async fn parse_gemini_stream(
                     .map(|t| to_incremental_delta(&mut emitted_thinking, t))
                     .filter(|s| !s.is_empty());
                 let has_finish = finish_reason != FinishReason::Other;
+                if has_finish {
+                    saw_finish_reason = true;
+                }
 
                 if !text_delta.is_empty()
                     || has_finish
@@ -623,6 +638,9 @@ async fn parse_gemini_stream(
                 .map(|t| to_incremental_delta(&mut emitted_thinking, t))
                 .filter(|s| !s.is_empty());
             let has_finish = finish_reason != FinishReason::Other;
+            if has_finish {
+                saw_finish_reason = true;
+            }
 
             if !text_delta.is_empty()
                 || has_finish
@@ -672,7 +690,12 @@ async fn parse_gemini_stream(
         }
     }
 
-    Ok(())
+    if saw_finish_reason {
+        Ok(())
+    } else {
+        // Stream ended without a finishReason — server likely crashed or disconnected.
+        Err(CoreError::StreamIncomplete)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -688,6 +711,7 @@ pub struct GeminiProvider {
 impl GeminiProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .build()
             .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
@@ -732,7 +756,11 @@ impl GeminiProvider {
             .map(|e| e.error.message)
             .unwrap_or_else(|_| format!("HTTP {status}: {body}"));
 
-        Err(CoreError::Llm(message))
+        if status.is_server_error() {
+            Err(CoreError::TransientLlm(message))
+        } else {
+            Err(CoreError::Llm(message))
+        }
     }
 }
 
@@ -839,7 +867,13 @@ impl LlmProvider for GeminiProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    CoreError::TransientLlm(format!("Request failed: {e}"))
+                } else {
+                    CoreError::Llm(format!("Request failed: {e}"))
+                }
+            })?;
 
         let response = self.check_response(response).await?;
 
@@ -880,6 +914,7 @@ mod tests {
                     name: "search_knowledge_base".to_string(),
                     arguments: r#"{"query":"rust"}"#.to_string(),
                 }]),
+                reasoning_content: None,
             },
             Message::text_with_name(Role::Tool, r#"{"ok":true}"#, "call_0"),
         ];
@@ -908,6 +943,7 @@ mod tests {
                     name: "write_note".to_string(),
                     arguments: r#"{"filename":"a.md"}"#.to_string(),
                 }]),
+                reasoning_content: None,
             },
             Message::text_with_name(Role::Tool, "plain text result", "call_0"),
         ];
@@ -943,10 +979,7 @@ mod tests {
             " world"
         );
         // Already-delta chunk: preserve as-is.
-        assert_eq!(
-            to_incremental_delta(&mut previous, "!".to_string()),
-            "!"
-        );
+        assert_eq!(to_incremental_delta(&mut previous, "!".to_string()), "!");
     }
 
     #[test]

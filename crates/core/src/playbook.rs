@@ -37,22 +37,14 @@ fn parse_sqlite_datetime(s: &str) -> Result<DateTime<Utc>, rusqlite::Error> {
     NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .map(|ndt| ndt.and_utc())
         .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })
 }
 
 /// Parse a UUID text value.
 fn parse_uuid(s: &str) -> Result<Uuid, rusqlite::Error> {
     Uuid::parse_str(s).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            Box::new(e),
-        )
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
     })
 }
 
@@ -168,10 +160,7 @@ impl Database {
         }
 
         let conn = self.conn();
-        let like_pattern = format!(
-            "%{}%",
-            query.replace('%', "\\%").replace('_', "\\_")
-        );
+        let like_pattern = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
 
         let mut results: Vec<PlaybookSearchResult> = Vec::new();
         let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -212,8 +201,7 @@ impl Database {
                     0.6
                 };
 
-                let (citation_count, previews) =
-                    Self::citation_summary_static(&conn, &id)?;
+                let (citation_count, previews) = Self::citation_summary_static(&conn, &id)?;
 
                 results.push(PlaybookSearchResult {
                     id: parse_uuid(&id)?,
@@ -258,8 +246,7 @@ impl Database {
 
                 match pb_row {
                     Ok((id, title, description)) => {
-                        let (citation_count, previews) =
-                            Self::citation_summary_static(&conn, &id)?;
+                        let (citation_count, previews) = Self::citation_summary_static(&conn, &id)?;
 
                         results.push(PlaybookSearchResult {
                             id: parse_uuid(&id)?,
@@ -371,10 +358,7 @@ impl Database {
     }
 
     /// List citations for a playbook, ordered by `sort_order`.
-    pub fn list_citations(
-        &self,
-        playbook_id: &str,
-    ) -> Result<Vec<PlaybookCitation>, CoreError> {
+    pub fn list_citations(&self, playbook_id: &str) -> Result<Vec<PlaybookCitation>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, playbook_id, chunk_id, sort_order, annotation
@@ -404,11 +388,7 @@ impl Database {
     }
 
     /// Update the annotation text on a citation.
-    pub fn update_citation_note(
-        &self,
-        citation_id: &str,
-        note: &str,
-    ) -> Result<(), CoreError> {
+    pub fn update_citation_note(&self, citation_id: &str, note: &str) -> Result<(), CoreError> {
         let conn = self.conn();
         let affected = conn.execute(
             "UPDATE playbook_citations SET annotation = ?1 WHERE id = ?2",
@@ -706,9 +686,7 @@ mod tests {
     #[test]
     fn test_update_citation_note_not_found() {
         let db = test_db();
-        let err = db
-            .update_citation_note("nonexistent", "note")
-            .unwrap_err();
+        let err = db.update_citation_note("nonexistent", "note").unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -726,11 +704,7 @@ mod tests {
         let c3 = db.add_citation(&pb_id, &chunk3, "", 2).unwrap();
 
         // Reverse order: c3, c2, c1
-        let new_order = vec![
-            c3.id.to_string(),
-            c2.id.to_string(),
-            c1.id.to_string(),
-        ];
+        let new_order = vec![c3.id.to_string(), c2.id.to_string(), c1.id.to_string()];
         db.reorder_citations(&pb_id, &new_order).unwrap();
 
         let list = db.list_citations(&pb_id).unwrap();
