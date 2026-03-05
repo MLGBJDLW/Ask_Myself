@@ -85,8 +85,8 @@ The core loop is: **ingest → index → search → cite → save**. Findings ca
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/self-reply.git
-cd self-reply
+git clone https://github.com/MLGBJDLW/Ask_Myself.git
+cd Ask_Myself
 
 # Install frontend dependencies
 cd apps/desktop
