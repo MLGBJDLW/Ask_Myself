@@ -3,7 +3,6 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, FolderOpen, BookOpen, MessageCircle, Settings, ChevronLeft, ChevronRight, BotMessageSquare } from 'lucide-react';
 import { Logo } from './Logo';
-import { ThemeSwitcher } from './ui/ThemeSwitcher';
 import { Toaster } from 'sonner';
 import { useTranslation } from '../i18n';
 import { useTheme } from '../lib/ThemeProvider';
@@ -151,11 +150,6 @@ export function Layout() {
             );
           })}
         </nav>
-
-        {/* Theme switcher */}
-        <div className="px-2 pb-1">
-          <ThemeSwitcher showLabels={!collapsed} />
-        </div>
 
         {/* Footer: collapse toggle + version */}
         <div className="border-t border-border px-2 py-2">
