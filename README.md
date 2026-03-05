@@ -26,7 +26,7 @@ The core loop is: **ingest → index → search → cite → save**. Findings ca
 
 - **Evidence-first agent** — Every answer is grounded in your documents with `[cite:CHUNK_ID]` citations
 - **Multi-angle recall** — Vague queries trigger synonym expansion, cross-language search, and date-range inference
-- **Tool-using agent** — 12 built-in tools the AI can call autonomously (see [Tools](#-tools-ai-agent) below)
+- **Tool-using agent** — 20 built-in tools the AI can call autonomously (see [Tools](#-tools-ai-agent) below)
 - **Conversation history** — Persistent chat sessions with context carry-over
 - **Configurable LLM providers** — OpenAI, Anthropic, Google Gemini, Ollama (local)
 - **Custom system prompts** — Override agent behavior per conversation
@@ -149,22 +149,7 @@ self-reply/
 
 ## 🛠 Tools (AI Agent)
 
-The agent has access to 12 tools it calls autonomously during conversations:
-
-| Tool | Purpose |
-|------|---------|
-| `search_knowledge_base` | Hybrid FTS + vector search across all indexed content |
-| `retrieve_evidence` | Fetch exact chunk text by ID for citation |
-| `get_chunk_context` | Get surrounding chunks when a result seems incomplete |
-| `read_file` | Read full document content |
-| `list_sources` | List configured knowledge sources |
-| `list_documents` | List indexed documents with metadata |
-| `list_dir` | Browse directory contents |
-| `manage_playbook` | Create, update, and delete playbooks |
-| `search_playbooks` | Search across saved playbooks |
-| `write_note` | Save AI-generated summaries or syntheses |
-| `edit_file` | Modify existing files or create new ones within sources |
-| `fetch_url` | Fetch content from a URL shared by the user |
+The agent has access to 20 built-in tools for search, analysis, writing, and knowledge management that it calls autonomously during conversations. See [docs/TOOLS.md](docs/TOOLS.md) for the complete tool reference.
 
 ## 🌐 Supported Languages
 

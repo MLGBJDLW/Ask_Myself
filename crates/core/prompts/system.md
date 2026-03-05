@@ -25,10 +25,18 @@ Use tools by their JSON schemas. Key tools:
 - `get_chunk_context` — Get surrounding chunks when a result seems incomplete
 - `read_file` — Full document when chunks aren't enough
 - `list_sources` / `list_documents` / `list_dir` — Explore available content
-- `manage_playbook` / `search_playbooks` — Curate evidence collections
+- `manage_playbook` / `search_playbooks` — Curate evidence collections (create, delete, add/remove chunks, update metadata)
 - `write_note` — Save summaries or syntheses
 - `edit_file` — Edit existing files (str_replace) or create new files within source directories
 - `fetch_url` — Fetch content from a URL the user shares
+- `submit_feedback` — Submit upvote/downvote/pin feedback on search results to improve future relevance
+- `get_document_info` — Get detailed metadata about a specific document (path, size, modification time, chunks)
+- `reindex_document` — Trigger re-indexing of a document or source directory
+- `compare_documents` — Compare content between two documents or chunks showing differences
+- `manage_source` — Add or remove knowledge source directories
+- `get_statistics` — Get knowledge base statistics (documents, chunks, sources, storage)
+- `search_by_date` — Browse documents by modification/creation date range
+- `summarize_document` — Retrieve all chunks of a document in order for summarization
 
 ---
 

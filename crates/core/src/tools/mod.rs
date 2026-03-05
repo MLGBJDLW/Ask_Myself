@@ -37,15 +37,22 @@ impl ToolDef {
 }
 
 pub mod chunk_context_tool;
+pub mod compare_tool;
+pub mod date_search_tool;
+pub mod document_info_tool;
 pub mod edit_file_tool;
 pub mod fetch_url_tool;
 pub mod file_tool;
 pub mod list_dir_tool;
 pub mod list_documents_tool;
 pub mod list_sources_tool;
+pub mod manage_source_tool;
 pub mod playbook_tool;
+pub mod reindex_tool;
 pub mod search_playbooks_tool;
 pub mod search_tool;
+pub mod statistics_tool;
+pub mod submit_feedback_tool;
 pub mod summarize_tool;
 pub mod write_note_tool;
 
@@ -175,5 +182,13 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(write_note_tool::WriteNoteTool));
     registry.register(Box::new(search_playbooks_tool::SearchPlaybooksTool));
     registry.register(Box::new(edit_file_tool::EditFileTool));
+    registry.register(Box::new(submit_feedback_tool::SubmitFeedbackTool));
+    registry.register(Box::new(document_info_tool::GetDocumentInfoTool));
+    registry.register(Box::new(reindex_tool::ReindexTool));
+    registry.register(Box::new(compare_tool::CompareTool));
+    registry.register(Box::new(manage_source_tool::ManageSourceTool));
+    registry.register(Box::new(statistics_tool::GetStatisticsTool));
+    registry.register(Box::new(date_search_tool::DateSearchTool));
+    registry.register(Box::new(summarize_tool::SummarizeDocumentTool));
     registry
 }

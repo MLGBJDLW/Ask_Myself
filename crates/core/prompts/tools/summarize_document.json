@@ -1,0 +1,22 @@
+{
+  "name": "summarize_document",
+  "description": "Retrieve all indexed chunks of a document in order, suitable for full-document summarization. Returns the complete indexed content of a document organized by chunks with their positions. At least one of 'path' or 'document_id' must be provided.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "File path of the document to retrieve chunks for."
+      },
+      "document_id": {
+        "type": "string",
+        "description": "UUID of the document to retrieve chunks for."
+      },
+      "max_chunks": {
+        "type": "integer",
+        "description": "Maximum number of chunks to return. Defaults to 100.",
+        "default": 100
+      }
+    }
+  }
+}

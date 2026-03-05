@@ -1,0 +1,23 @@
+{
+  "name": "submit_feedback",
+  "description": "Submit feedback (upvote, downvote, or pin) on a search result chunk to improve future search relevance. The feedback trains the personalization system so similar content ranks higher/lower in future searches.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "chunk_id": {
+        "type": "string",
+        "description": "The chunk ID to give feedback on."
+      },
+      "kind": {
+        "type": "string",
+        "enum": ["upvote", "downvote", "pin"],
+        "description": "Type of feedback: 'upvote' boosts future ranking, 'downvote' lowers it, 'pin' strongly boosts it."
+      },
+      "query": {
+        "type": "string",
+        "description": "The search query context for this feedback. Helps the system learn which results are relevant for specific queries."
+      }
+    },
+    "required": ["chunk_id", "kind"]
+  }
+}

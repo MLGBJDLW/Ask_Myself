@@ -21,6 +21,7 @@ struct PlaybookArgs {
     action: String,
     title: Option<String>,
     description: Option<String>,
+    body_md: Option<String>,
     playbook_id: Option<String>,
     chunk_id: Option<String>,
     annotation: Option<String>,
@@ -56,13 +57,14 @@ impl Tool for PlaybookTool {
         tokio::task::spawn_blocking(move || {
             match args.action.as_str() {
                 "create" => execute_create(&call_id, &args, &db),
+                "update" => execute_update(&call_id, &args, &db),
                 "add_citation" => execute_add_citation(&call_id, &args, &db),
                 "list" => execute_list(&call_id, &db),
                 "get" => execute_get(&call_id, &args, &db),
                 "delete" => execute_delete(&call_id, &args, &db),
                 other => Ok(ToolResult {
                     call_id: call_id.to_string(),
-                    content: format!("Unknown action: {other}. Valid actions: create, add_citation, list, get, delete"),
+                    content: format!("Unknown action: {other}. Valid actions: create, update, add_citation, list, get, delete"),
                     is_error: true,
                     artifacts: None,
                 }),
@@ -87,6 +89,45 @@ fn execute_create(
         "Created playbook \"{}\" (id: {})",
         playbook.title, playbook.id
     );
+    let artifacts = serde_json::to_value(&playbook).ok();
+
+    Ok(ToolResult {
+        call_id: call_id.to_string(),
+        content,
+        is_error: false,
+        artifacts,
+    })
+}
+
+fn execute_update(
+    call_id: &str,
+    args: &PlaybookArgs,
+    db: &Database,
+) -> Result<ToolResult, CoreError> {
+    let playbook_id = args
+        .playbook_id
+        .as_deref()
+        .ok_or_else(|| CoreError::InvalidInput("playbook_id is required for update".into()))?;
+
+    let new_title = args.title.as_deref();
+    let new_desc = args.body_md.as_deref().or(args.description.as_deref());
+
+    if new_title.is_none() && new_desc.is_none() {
+        return Ok(ToolResult {
+            call_id: call_id.to_string(),
+            content: "Nothing to update — provide at least title, description, or body_md.".into(),
+            is_error: true,
+            artifacts: None,
+        });
+    }
+
+    let existing = db.get_playbook(playbook_id)?;
+    let title = new_title.unwrap_or(&existing.title);
+    let description = new_desc.unwrap_or(&existing.description);
+
+    let playbook = db.update_playbook(playbook_id, title, description)?;
+
+    let content = format!("Updated playbook \"{}\" (id: {})", playbook.title, playbook.id);
     let artifacts = serde_json::to_value(&playbook).ok();
 
     Ok(ToolResult {

@@ -1,0 +1,14 @@
+{
+  "name": "get_statistics",
+  "description": "Get knowledge base statistics including total sources, documents, chunks, storage size, and last indexed time. Use to understand the current state and health of the knowledge base.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "source_id": {
+        "type": "string",
+        "description": "Optional source ID to filter statistics to a specific source."
+      }
+    },
+    "required": []
+  }
+}

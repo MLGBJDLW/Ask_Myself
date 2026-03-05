@@ -1,0 +1,26 @@
+{
+  "name": "compare_documents",
+  "description": "Compare content between two documents or chunks, showing differences and similarities. Useful for cross-referencing information across sources.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path_a": {
+        "type": "string",
+        "description": "File path of the first document. Provide both path_a and path_b, or both chunk_id_a and chunk_id_b."
+      },
+      "path_b": {
+        "type": "string",
+        "description": "File path of the second document."
+      },
+      "chunk_id_a": {
+        "type": "string",
+        "description": "UUID of the first chunk. Use as alternative to path_a."
+      },
+      "chunk_id_b": {
+        "type": "string",
+        "description": "UUID of the second chunk. Use as alternative to path_b."
+      }
+    },
+    "required": []
+  }
+}

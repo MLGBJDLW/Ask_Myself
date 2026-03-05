@@ -1,0 +1,17 @@
+{
+  "name": "get_document_info",
+  "description": "Get detailed metadata about a specific document in the knowledge base by its path or document ID. Returns file path, size, modification time, chunk count, indexing status, and source information.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "File path of the document to look up. At least one of 'path' or 'document_id' must be provided."
+      },
+      "document_id": {
+        "type": "string",
+        "description": "UUID of the document to look up. At least one of 'path' or 'document_id' must be provided."
+      }
+    }
+  }
+}

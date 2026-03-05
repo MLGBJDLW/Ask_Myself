@@ -1,0 +1,23 @@
+{
+  "name": "manage_source",
+  "description": "Add or remove knowledge source directories. Adding a source will begin indexing all documents in that directory. Removing a source will stop tracking that directory (indexed data is preserved).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["add", "remove"],
+        "description": "Action to perform: 'add' to register a new source directory, 'remove' to unregister an existing one."
+      },
+      "path": {
+        "type": "string",
+        "description": "Directory path to add as a new source. Required when action is 'add'."
+      },
+      "source_id": {
+        "type": "string",
+        "description": "ID of the source to remove. Required when action is 'remove'. Use list_sources to find source IDs."
+      }
+    },
+    "required": ["action"]
+  }
+}

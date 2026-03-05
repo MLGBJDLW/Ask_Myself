@@ -14,6 +14,9 @@ use super::{Tool, ToolDef, ToolResult};
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/edit_file.json");
 
+/// Maximum file size we will read (10 MB). Prevents OOM on huge files.
+const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
 #[derive(Deserialize)]
 struct EditFileArgs {
     path: String,
@@ -27,6 +30,15 @@ pub struct EditFileTool;
 /// Try to read the file as UTF-8 text. Returns an error message if the file
 /// appears to be binary (contains null bytes in the first 8 KB).
 fn read_text_utf8(path: &Path) -> Result<String, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("Cannot read file: {e}"))?;
+    if meta.len() > MAX_FILE_SIZE {
+        return Err(format!(
+            "File too large ({:.1} MB, limit is {} MB): {}",
+            meta.len() as f64 / (1024.0 * 1024.0),
+            MAX_FILE_SIZE / (1024 * 1024),
+            path.display()
+        ));
+    }
     let bytes = std::fs::read(path).map_err(|e| format!("Cannot read file: {e}"))?;
 
     // Heuristic: check first 8 KB for null bytes to detect binary files.
@@ -64,22 +76,44 @@ fn resolve_and_validate(
         ));
     }
 
-    // For new files, canonicalize the parent directory and append the filename.
-    if let Some(parent) = requested.parent() {
-        if let Ok(canonical_parent) = std::fs::canonicalize(parent) {
-            let full = canonical_parent.join(
-                requested
+    // For new files, walk up the ancestor chain to find the nearest existing
+    // directory, canonicalize it, then reconstruct the full path with the
+    // remaining relative suffix. This supports creating files in nested
+    // subdirectories that don't exist yet (e.g. source_root/new_dir/file.txt).
+    let mut ancestor = requested.to_path_buf();
+    let mut suffix_parts: Vec<std::ffi::OsString> = Vec::new();
+
+    loop {
+        if let Some(parent) = ancestor.parent() {
+            suffix_parts.push(
+                ancestor
                     .file_name()
-                    .ok_or_else(|| "Invalid file path".to_string())?,
+                    .ok_or_else(|| "Invalid file path".to_string())?
+                    .to_os_string(),
             );
-            let allowed = sources.iter().any(|s| {
-                std::fs::canonicalize(Path::new(&s.root_path))
-                    .map(|root| full.starts_with(&root))
-                    .unwrap_or(false)
-            });
-            if allowed {
-                return Ok(full);
+            ancestor = parent.to_path_buf();
+            if ancestor.exists() {
+                break;
             }
+        } else {
+            // Reached filesystem root without finding an existing directory.
+            break;
+        }
+    }
+
+    if let Ok(canonical_ancestor) = std::fs::canonicalize(&ancestor) {
+        // Rebuild the full path: canonical ancestor + collected suffix parts (reversed).
+        let mut full = canonical_ancestor;
+        for part in suffix_parts.into_iter().rev() {
+            full = full.join(part);
+        }
+        let allowed = sources.iter().any(|s| {
+            std::fs::canonicalize(Path::new(&s.root_path))
+                .map(|root| full.starts_with(&root))
+                .unwrap_or(false)
+        });
+        if allowed {
+            return Ok(full);
         }
     }
 
@@ -257,7 +291,14 @@ impl Tool for EditFileTool {
                         &content[byte_offset + old_str.len()..]
                     );
 
-                    std::fs::write(&canonical, &new_content).map_err(CoreError::Io)?;
+                    if let Err(e) = std::fs::write(&canonical, &new_content) {
+                        return Ok(ToolResult {
+                            call_id,
+                            content: format!("Failed to write '{}': {e}", args.path),
+                            is_error: true,
+                            artifacts: None,
+                        });
+                    }
 
                     let snippet = snippet_around(&new_content, byte_offset, new_str.len());
                     Ok(ToolResult {
@@ -309,7 +350,14 @@ impl Tool for EditFileTool {
                         }
                     }
 
-                    std::fs::write(&canonical, file_content).map_err(CoreError::Io)?;
+                    if let Err(e) = std::fs::write(&canonical, file_content) {
+                        return Ok(ToolResult {
+                            call_id,
+                            content: format!("Failed to write '{}': {e}", args.path),
+                            is_error: true,
+                            artifacts: None,
+                        });
+                    }
 
                     let size = file_content.len();
                     Ok(ToolResult {
@@ -472,6 +520,135 @@ mod tests {
             .unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn test_create_nested_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sub").join("deep").join("file.txt");
+
+        let db = setup_db_with_source(dir.path());
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "action": "create",
+            "new_str": "nested content"
+        });
+
+        let result = tool
+            .execute("cn1", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert!(result.content.contains("Created file"));
+
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(content, "nested content");
+    }
+
+    #[tokio::test]
+    async fn test_empty_old_str() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "hello").unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "action": "str_replace",
+            "old_str": "",
+            "new_str": "world"
+        });
+
+        let result = tool
+            .execute("cn2", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(result.content.contains("non-empty"));
+    }
+
+    #[tokio::test]
+    async fn test_binary_file_rejection() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("binary.bin");
+        // Write bytes containing nulls to simulate a binary file.
+        std::fs::write(&file, b"hello\x00world").unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "action": "str_replace",
+            "old_str": "hello",
+            "new_str": "bye"
+        });
+
+        let result = tool
+            .execute("cn3", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(result.content.contains("binary"));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "hello").unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "action": "delete_file"
+        });
+
+        let result = tool
+            .execute("cn4", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(result.content.contains("Unknown action"));
+    }
+
+    #[tokio::test]
+    async fn test_file_too_large() {
+        // Verify the MAX_FILE_SIZE constant and the size check in read_text_utf8.
+        assert_eq!(MAX_FILE_SIZE, 10 * 1024 * 1024);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("small.txt");
+        std::fs::write(&file, "small").unwrap();
+        // A small file should pass the size check.
+        assert!(read_text_utf8(&file).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_str_replace_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "hello cruel world\n").unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "action": "str_replace",
+            "old_str": " cruel",
+            "new_str": ""
+        });
+
+        let result = tool
+            .execute("cn6", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(content, "hello world\n");
     }
 
     #[tokio::test]

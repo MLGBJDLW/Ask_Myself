@@ -1,0 +1,17 @@
+{
+  "name": "reindex_document",
+  "description": "Trigger re-indexing of a specific document by path or an entire source directory. Use when the user reports a file has been updated, or when search results seem stale.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Absolute file path to reindex. The file must be within a registered source directory."
+      },
+      "source_id": {
+        "type": "string",
+        "description": "Source ID to reindex all documents in. Triggers a full re-scan of the source directory."
+      }
+    }
+  }
+}

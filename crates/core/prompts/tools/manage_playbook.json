@@ -1,25 +1,29 @@
 {
   "name": "manage_playbook",
-  "description": "Create, list, get details of, add citations to, or delete a playbook. A playbook is a composable collection of evidence cards with annotations.",
+  "description": "Create, update, list, get details of, add citations to, or delete a playbook. A playbook is a composable collection of evidence cards with annotations.",
   "parameters": {
     "type": "object",
     "properties": {
       "action": {
         "type": "string",
-        "enum": ["create", "add_citation", "list", "get", "delete"],
+        "enum": ["create", "update", "add_citation", "list", "get", "delete"],
         "description": "The operation to perform"
       },
       "title": {
         "type": "string",
-        "description": "Title for creating a playbook"
+        "description": "Title for creating or updating a playbook"
       },
       "description": {
         "type": "string",
-        "description": "Description for creating a playbook"
+        "description": "Description for creating or updating a playbook"
+      },
+      "body_md": {
+        "type": "string",
+        "description": "Markdown body content for updating a playbook (alias for description)"
       },
       "playbook_id": {
         "type": "string",
-        "description": "Playbook ID for get, delete, or add_citation"
+        "description": "Playbook ID for get, update, delete, or add_citation"
       },
       "chunk_id": {
         "type": "string",
