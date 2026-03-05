@@ -1,6 +1,6 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Trash2, Pencil, MessageCircle, Check, X, Search, Star } from 'lucide-react';
+import { Plus, Trash2, Pencil, MessageCircle, Check, X, Search, Star, MoreVertical } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
 import { relativeTime } from '../../lib/relativeTime';
@@ -22,6 +22,8 @@ interface ChatSidebarProps {
   onNew: () => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
+  onDeleteBatch: (ids: string[]) => void;
+  onDeleteAll: () => void;
 }
 
 type TimeGroup = 'pinned' | 'today' | 'yesterday' | 'last7Days' | 'last30Days' | 'older';
@@ -122,21 +124,27 @@ function ConversationItem({
   conv,
   isActive,
   isPinned,
+  isSelectMode,
+  isSelected,
   index,
   onSelect,
   onDelete,
   onRename,
   onTogglePin,
+  onToggleSelect,
   t,
 }: {
   conv: Conversation;
   isActive: boolean;
   isPinned: boolean;
+  isSelectMode: boolean;
+  isSelected: boolean;
   index: number;
   onSelect: () => void;
   onDelete: () => void;
   onRename: (title: string) => void;
   onTogglePin: () => void;
+  onToggleSelect: () => void;
   t: (key: TranslationKey) => string;
 }) {
   const [hovered, setHovered] = useState(false);
@@ -167,8 +175,12 @@ function ConversationItem({
       tabIndex={0}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={() => !editing && onSelect()}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!editing) onSelect(); } }}
+      onClick={() => {
+        if (editing) return;
+        if (isSelectMode) { onToggleSelect(); return; }
+        onSelect();
+      }}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!editing) { isSelectMode ? onToggleSelect() : onSelect(); } } }}
       className={`group relative flex items-center gap-2 rounded-md px-2.5 py-2 cursor-pointer
         transition-colors duration-fast ease-out text-sm
         ${isActive
@@ -177,7 +189,7 @@ function ConversationItem({
         }`}
     >
       {/* Active indicator */}
-      {isActive && (
+      {isActive && !isSelectMode && (
         <motion.span
           className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] rounded-r-full bg-accent"
           layoutId="chat-active-indicator"
@@ -185,6 +197,18 @@ function ConversationItem({
           animate={{ height: 20, opacity: 1 }}
           transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
         />
+      )}
+
+      {/* Selection checkbox */}
+      {isSelectMode && (
+        <div className="shrink-0 flex items-center" onClick={(e) => e.stopPropagation()}>
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={onToggleSelect}
+            className="h-3.5 w-3.5 rounded border-border text-accent accent-accent cursor-pointer"
+          />
+        </div>
       )}
 
       <div className="flex-1 min-w-0">
@@ -226,7 +250,7 @@ function ConversationItem({
       </div>
 
       {/* Hover actions */}
-      {(hovered || isPinned) && !editing && (
+      {!isSelectMode && (hovered || isPinned) && !editing && (
         <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
           <button
             onClick={onTogglePin}
@@ -276,11 +300,55 @@ export function ChatSidebar({
   onNew,
   onDelete,
   onRename,
+  onDeleteBatch,
+  onDeleteAll,
 }: ChatSidebarProps) {
   const { t } = useTranslation();
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(getPinnedIds);
+
+  // Selection mode state
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showBatchConfirm, setShowBatchConfirm] = useState(false);
+  const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [menuOpen]);
+
+  const exitSelectMode = useCallback(() => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) =>
+      prev.size === conversations.length
+        ? new Set()
+        : new Set(conversations.map((c) => c.id)),
+    );
+  }, [conversations]);
 
   // Persist pinned state
   useEffect(() => {
@@ -323,9 +391,49 @@ export function ChatSidebar({
             <Badge className="!text-[10px] !px-1.5">{conversations.length}</Badge>
           )}
         </div>
-        <Button variant="ghost" size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={onNew}>
-          {t('chat.newChat')}
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={onNew}>
+            {t('chat.newChat')}
+          </Button>
+          {conversations.length > 0 && (
+            <div className="relative" ref={menuRef}>
+              <button
+                onClick={() => setMenuOpen((v) => !v)}
+                className="p-1.5 rounded-md text-text-tertiary hover:text-text-primary hover:bg-surface-2
+                  transition-colors cursor-pointer"
+                aria-label="More options"
+              >
+                <MoreVertical className="h-3.5 w-3.5" />
+              </button>
+              {menuOpen && (
+                <div className="absolute right-0 top-full mt-1 z-50 w-40 bg-surface-2 border border-border
+                  rounded-lg shadow-lg py-1 text-xs">
+                  <button
+                    className="w-full text-left px-3 py-1.5 hover:bg-surface-3 text-text-secondary
+                      hover:text-text-primary transition-colors cursor-pointer"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setSelectMode(true);
+                      setSelectedIds(new Set());
+                    }}
+                  >
+                    {t('chat.selectMode')}
+                  </button>
+                  <button
+                    className="w-full text-left px-3 py-1.5 hover:bg-danger/10 text-danger
+                      transition-colors cursor-pointer"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setShowDeleteAllConfirm(true);
+                    }}
+                  >
+                    {t('chat.deleteAll')}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Search bar */}
@@ -392,11 +500,14 @@ export function ChatSidebar({
                       conv={conv}
                       isActive={conv.id === activeId}
                       isPinned={pinnedIds.has(conv.id)}
+                      isSelectMode={selectMode}
+                      isSelected={selectedIds.has(conv.id)}
                       index={startIdx + idx}
                       onSelect={() => onSelect(conv.id)}
                       onDelete={() => setDeleteTarget(conv.id)}
                       onRename={(title) => onRename(conv.id, title)}
                       onTogglePin={() => togglePin(conv.id)}
+                      onToggleSelect={() => toggleSelect(conv.id)}
                       t={t}
                     />
                   ))}
@@ -407,7 +518,37 @@ export function ChatSidebar({
         )}
       </div>
 
-      {/* Delete confirm */}
+      {/* Selection mode bottom bar */}
+      {selectMode && (
+        <div className="shrink-0 border-t border-border px-3 py-2 bg-surface-1 flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={conversations.length > 0 && selectedIds.size === conversations.length}
+            onChange={toggleSelectAll}
+            className="h-3.5 w-3.5 rounded border-border text-accent accent-accent cursor-pointer"
+          />
+          <span className="flex-1 text-[10px] text-text-secondary truncate">
+            {t('chat.selectedCount', { count: selectedIds.size })}
+          </span>
+          <button
+            onClick={exitSelectMode}
+            className="px-2 py-1 text-[10px] rounded-md text-text-secondary hover:text-text-primary
+              hover:bg-surface-3 transition-colors cursor-pointer"
+          >
+            {t('chat.exitSelectMode')}
+          </button>
+          <button
+            disabled={selectedIds.size === 0}
+            onClick={() => setShowBatchConfirm(true)}
+            className="px-2 py-1 text-[10px] rounded-md bg-danger text-white hover:bg-danger/80
+              disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+          >
+            {t('chat.deleteSelected')}
+          </button>
+        </div>
+      )}
+
+      {/* Delete single confirm */}
       <ConfirmDialog
         open={deleteTarget !== null}
         onClose={() => setDeleteTarget(null)}
@@ -419,6 +560,32 @@ export function ChatSidebar({
         }}
         title={t('chat.deleteConfirm')}
         message={t('chat.deleteConfirmDesc')}
+      />
+
+      {/* Delete batch confirm */}
+      <ConfirmDialog
+        open={showBatchConfirm}
+        onClose={() => setShowBatchConfirm(false)}
+        onConfirm={() => {
+          onDeleteBatch([...selectedIds]);
+          setShowBatchConfirm(false);
+          exitSelectMode();
+        }}
+        title={t('chat.deleteBatchConfirm')}
+        message={t('chat.deleteBatchConfirmDesc', { count: selectedIds.size })}
+      />
+
+      {/* Delete all confirm */}
+      <ConfirmDialog
+        open={showDeleteAllConfirm}
+        onClose={() => setShowDeleteAllConfirm(false)}
+        onConfirm={() => {
+          onDeleteAll();
+          setShowDeleteAllConfirm(false);
+          exitSelectMode();
+        }}
+        title={t('chat.deleteAllConfirm')}
+        message={t('chat.deleteAllConfirmDesc', { count: conversations.length })}
       />
     </div>
   );

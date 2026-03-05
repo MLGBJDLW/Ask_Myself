@@ -58,6 +58,8 @@ export interface UseChatSessionReturn {
   send: (content: string, images?: ImageAttachment[]) => Promise<void>;
   stop: () => void;
   deleteConversation: (id: string) => Promise<void>;
+  deleteConversationsBatch: (ids: string[]) => Promise<void>;
+  deleteAllConversations: () => Promise<void>;
   renameConversation: (id: string, title: string) => Promise<void>;
   setActiveConversation: (id: string) => void;
   createNewConversation: () => void;
@@ -273,6 +275,34 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     [activeId, t],
   );
 
+  const deleteConversationsBatch = useCallback(
+    async (ids: string[]) => {
+      try {
+        await api.deleteConversationsBatch(ids);
+        const idSet = new Set(ids);
+        setConversations((prev) => prev.filter((c) => !idSet.has(c.id)));
+        if (activeId && idSet.has(activeId)) {
+          setInternalConversationId(null);
+          setMessages([]);
+        }
+      } catch (e) {
+        toast.error(`${t('chat.deleteError')}: ${String(e)}`);
+      }
+    },
+    [activeId, t],
+  );
+
+  const deleteAllConversations = useCallback(async () => {
+    try {
+      await api.deleteAllConversations();
+      setConversations([]);
+      setInternalConversationId(null);
+      setMessages([]);
+    } catch (e) {
+      toast.error(`${t('chat.deleteError')}: ${String(e)}`);
+    }
+  }, [t]);
+
   const renameConversation = useCallback(
     async (id: string, title: string) => {
       try {
@@ -461,6 +491,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     send,
     stop,
     deleteConversation,
+    deleteConversationsBatch,
+    deleteAllConversations,
     renameConversation,
     setActiveConversation,
     createNewConversation,

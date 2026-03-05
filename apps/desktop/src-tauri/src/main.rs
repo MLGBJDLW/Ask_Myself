@@ -103,6 +103,8 @@ fn main() {
             commands::list_conversations_cmd,
             commands::get_conversation_cmd,
             commands::delete_conversation_cmd,
+            commands::delete_conversations_batch_cmd,
+            commands::delete_all_conversations_cmd,
             commands::rename_conversation_cmd,
             commands::update_conversation_system_prompt_cmd,
             // Conversation maintenance

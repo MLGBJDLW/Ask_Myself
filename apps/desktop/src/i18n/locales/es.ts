@@ -429,6 +429,15 @@ export const es: TranslationKeys = {
   'chat.unknownError': 'Error desconocido',
   'chat.agentRequestFailed': 'La solicitud del agente falló.',
   'chat.stoppedByUser': 'Detenido por el usuario.',
+  'chat.selectMode': 'Seleccionar',
+  'chat.exitSelectMode': 'Cancelar',
+  'chat.deleteAll': 'Eliminar todo',
+  'chat.deleteSelected': 'Eliminar',
+  'chat.selectedCount': '{count} seleccionada(s)',
+  'chat.deleteAllConfirm': '¿Eliminar todas las conversaciones?',
+  'chat.deleteAllConfirmDesc': 'Esto eliminará permanentemente las {count} conversaciones y sus mensajes. Esta acción no se puede deshacer.',
+  'chat.deleteBatchConfirm': '¿Eliminar las conversaciones seleccionadas?',
+  'chat.deleteBatchConfirmDesc': 'Esto eliminará permanentemente {count} conversaciones y sus mensajes. Esta acción no se puede deshacer.',
 
   // Citations
   'citation.evidence': 'Evidencia',

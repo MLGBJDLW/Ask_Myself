@@ -144,6 +144,21 @@ export function ChatPage() {
     [chat.deleteConversation, chat.activeId, navigate],
   );
 
+  const handleDeleteBatch = useCallback(
+    async (ids: string[]) => {
+      await chat.deleteConversationsBatch(ids);
+      if (chat.activeId && ids.includes(chat.activeId)) {
+        navigate('/chat');
+      }
+    },
+    [chat.deleteConversationsBatch, chat.activeId, navigate],
+  );
+
+  const handleDeleteAll = useCallback(async () => {
+    await chat.deleteAllConversations();
+    navigate('/chat');
+  }, [chat.deleteAllConversations, navigate]);
+
   /* ── No provider configured ─────────────────────────────────────── */
   if (!chat.loadingConfig && !chat.agentConfig) {
     return (
@@ -179,6 +194,8 @@ export function ChatPage() {
             onNew={handleNewConversation}
             onDelete={handleDeleteConversation}
             onRename={chat.renameConversation}
+            onDeleteBatch={handleDeleteBatch}
+            onDeleteAll={handleDeleteAll}
           />
         </div>
       </motion.div>

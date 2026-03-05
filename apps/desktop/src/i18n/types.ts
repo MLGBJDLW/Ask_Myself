@@ -429,6 +429,15 @@ export interface TranslationKeys {
   'chat.autoCompacted': string;
   'chat.confirmRestore': string;
   'chat.messagesShort': string;
+  'chat.selectMode': string;
+  'chat.exitSelectMode': string;
+  'chat.deleteAll': string;
+  'chat.deleteSelected': string;
+  'chat.selectedCount': string;
+  'chat.deleteAllConfirm': string;
+  'chat.deleteAllConfirmDesc': string;
+  'chat.deleteBatchConfirm': string;
+  'chat.deleteBatchConfirmDesc': string;
 
   // Citations
   'citation.evidence': string;

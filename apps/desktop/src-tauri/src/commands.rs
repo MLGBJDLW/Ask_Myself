@@ -1037,6 +1037,27 @@ pub async fn delete_conversation_cmd(
 }
 
 #[tauri::command]
+pub async fn delete_conversations_batch_cmd(
+    state: tauri::State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<usize, String> {
+    state
+        .db
+        .delete_conversations_batch(&ids)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_all_conversations_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, String> {
+    state
+        .db
+        .delete_all_conversations()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn rename_conversation_cmd(
     state: tauri::State<'_, AppState>,
     id: String,

@@ -243,6 +243,32 @@ impl Database {
         Ok(())
     }
 
+    /// Delete multiple conversations by ID (messages are CASCADE-deleted).
+    /// Returns the number of deleted rows. Empty `ids` is a no-op.
+    pub fn delete_conversations_batch(&self, ids: &[String]) -> Result<usize, CoreError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn();
+        let placeholders: Vec<&str> = ids.iter().map(|_| "?").collect();
+        let sql = format!(
+            "DELETE FROM conversations WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let affected = conn.execute(&sql, params.as_slice())?;
+        Ok(affected)
+    }
+
+    /// Delete ALL conversations (messages are CASCADE-deleted).
+    /// Returns the number of deleted rows.
+    pub fn delete_all_conversations(&self) -> Result<usize, CoreError> {
+        let conn = self.conn();
+        let affected = conn.execute("DELETE FROM conversations", [])?;
+        Ok(affected)
+    }
+
     /// Update the title of a conversation (also bumps `updated_at`).
     pub fn update_conversation_title(&self, id: &str, title: &str) -> Result<(), CoreError> {
         let conn = self.conn();

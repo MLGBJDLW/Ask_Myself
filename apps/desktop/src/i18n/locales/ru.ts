@@ -429,6 +429,15 @@ export const ru: TranslationKeys = {
   'chat.unknownError': 'Неизвестная ошибка',
   'chat.agentRequestFailed': 'Запрос агента не выполнен.',
   'chat.stoppedByUser': 'Остановлено пользователем.',
+  'chat.selectMode': 'Выбрать',
+  'chat.exitSelectMode': 'Отмена',
+  'chat.deleteAll': 'Удалить все',
+  'chat.deleteSelected': 'Удалить',
+  'chat.selectedCount': '{count} выбрано',
+  'chat.deleteAllConfirm': 'Удалить все диалоги?',
+  'chat.deleteAllConfirmDesc': 'Это навсегда удалит все {count} диалогов и их сообщения. Это действие нельзя отменить.',
+  'chat.deleteBatchConfirm': 'Удалить выбранные диалоги?',
+  'chat.deleteBatchConfirmDesc': 'Это навсегда удалит {count} диалогов и их сообщения. Это действие нельзя отменить.',
 
   // Citations
   'citation.evidence': 'Доказательство',

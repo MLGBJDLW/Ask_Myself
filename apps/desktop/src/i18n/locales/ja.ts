@@ -427,6 +427,15 @@ export const ja: TranslationKeys = {
   'chat.unknownError': '不明なエラー',
   'chat.agentRequestFailed': 'エージェントリクエストが失敗しました。',
   'chat.stoppedByUser': 'ユーザーにより停止されました。',
+  'chat.selectMode': '選択',
+  'chat.exitSelectMode': 'キャンセル',
+  'chat.deleteAll': 'すべて削除',
+  'chat.deleteSelected': '削除',
+  'chat.selectedCount': '{count} 件選択中',
+  'chat.deleteAllConfirm': 'すべての会話を削除しますか？',
+  'chat.deleteAllConfirmDesc': 'すべての {count} 件の会話とメッセージが完全に削除されます。この操作は元に戻せません。',
+  'chat.deleteBatchConfirm': '選択した会話を削除しますか？',
+  'chat.deleteBatchConfirmDesc': '{count} 件の会話とメッセージが完全に削除されます。この操作は元に戻せません。',
 
   // Citations
   'citation.evidence': '証拠',

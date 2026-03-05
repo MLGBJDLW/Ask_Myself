@@ -427,6 +427,15 @@ export const zhTW: TranslationKeys = {
   'chat.unknownError': '未知錯誤',
   'chat.agentRequestFailed': '代理請求失敗。',
   'chat.stoppedByUser': '已被使用者停止。',
+  'chat.selectMode': '選擇',
+  'chat.exitSelectMode': '取消',
+  'chat.deleteAll': '全部刪除',
+  'chat.deleteSelected': '刪除',
+  'chat.selectedCount': '已選擇 {count} 項',
+  'chat.deleteAllConfirm': '刪除全部對話？',
+  'chat.deleteAllConfirmDesc': '這將永久刪除全部 {count} 個對話及其訊息，此操作不可撤銷。',
+  'chat.deleteBatchConfirm': '刪除選取的對話？',
+  'chat.deleteBatchConfirmDesc': '這將永久刪除 {count} 個對話及其訊息，此操作不可撤銷。',
 
   // Citations
   'citation.evidence': '證據',

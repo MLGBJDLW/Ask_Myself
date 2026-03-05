@@ -229,6 +229,12 @@ export const getConversation = (id: string) =>
 export const deleteConversation = (id: string) =>
   invoke<void>('delete_conversation_cmd', { id });
 
+export const deleteConversationsBatch = (ids: string[]) =>
+  invoke<number>('delete_conversations_batch_cmd', { ids });
+
+export const deleteAllConversations = () =>
+  invoke<number>('delete_all_conversations_cmd');
+
 export const renameConversation = (id: string, title: string) =>
   invoke<void>('rename_conversation_cmd', { id, title });
 

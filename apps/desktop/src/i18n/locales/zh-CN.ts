@@ -429,6 +429,15 @@ export const zhCN: TranslationKeys = {
   'chat.unknownError': '未知错误',
   'chat.agentRequestFailed': '代理请求失败。',
   'chat.stoppedByUser': '已被用户停止。',
+  'chat.selectMode': '选择',
+  'chat.exitSelectMode': '取消',
+  'chat.deleteAll': '删除全部',
+  'chat.deleteSelected': '删除',
+  'chat.selectedCount': '已选择 {count} 项',
+  'chat.deleteAllConfirm': '删除全部对话？',
+  'chat.deleteAllConfirmDesc': '这将永久删除全部 {count} 个对话及其消息，此操作不可撤销。',
+  'chat.deleteBatchConfirm': '删除选中的对话？',
+  'chat.deleteBatchConfirmDesc': '这将永久删除 {count} 个对话及其消息，此操作不可撤销。',
 
   // Citations
   'citation.evidence': '证据',

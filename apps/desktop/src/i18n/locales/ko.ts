@@ -429,6 +429,15 @@ export const ko: TranslationKeys = {
   'chat.unknownError': '알 수 없는 오류',
   'chat.agentRequestFailed': '에이전트 요청이 실패했습니다.',
   'chat.stoppedByUser': '사용자에 의해 중지되었습니다.',
+  'chat.selectMode': '선택',
+  'chat.exitSelectMode': '취소',
+  'chat.deleteAll': '모두 삭제',
+  'chat.deleteSelected': '삭제',
+  'chat.selectedCount': '{count}개 선택됨',
+  'chat.deleteAllConfirm': '모든 대화를 삭제하시겠습니까?',
+  'chat.deleteAllConfirmDesc': '모든 {count}개의 대화와 메시지가 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.',
+  'chat.deleteBatchConfirm': '선택한 대화를 삭제하시겠습니까?',
+  'chat.deleteBatchConfirmDesc': '{count}개의 대화와 메시지가 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.',
 
   // Citations
   'citation.evidence': '증거',
