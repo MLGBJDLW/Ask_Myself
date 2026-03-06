@@ -1,0 +1,38 @@
+{
+  "name": "record_verification",
+  "description": "Record what was verified before finishing a multi-step task. Use this after searches, edits, or other work so the user can see which checks passed, failed, or were skipped.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "summary": {
+        "type": "string",
+        "description": "Optional short overall verification summary."
+      },
+      "checks": {
+        "type": "array",
+        "description": "Ordered verification checks and their outcomes.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Short name of the verification check."
+            },
+            "status": {
+              "type": "string",
+              "enum": ["pending", "passed", "failed", "skipped"],
+              "description": "Outcome of the verification check."
+            },
+            "details": {
+              "type": "string",
+              "description": "Optional short evidence or rationale."
+            }
+          },
+          "required": ["name", "status"]
+        },
+        "minItems": 1
+      }
+    },
+    "required": ["checks"]
+  }
+}

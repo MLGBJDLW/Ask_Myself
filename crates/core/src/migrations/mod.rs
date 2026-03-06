@@ -4,6 +4,7 @@
 /// for future incremental migrations (v017+). Tracks applied migrations
 /// in a `_migrations` table.
 use rusqlite::Connection;
+use rusqlite::Error as SqlError;
 
 use crate::error::CoreError;
 
@@ -99,6 +100,11 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
           updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );",
     ),
+    (
+        "v021_message_artifacts",
+        "ALTER TABLE messages ADD COLUMN artifacts_json TEXT;
+      ALTER TABLE archived_messages ADD COLUMN artifacts_json TEXT;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -111,6 +117,14 @@ fn ensure_migrations_table(conn: &Connection) -> Result<(), CoreError> {
         );",
     )?;
     Ok(())
+}
+
+fn is_idempotent_schema_error(err: &SqlError) -> bool {
+    matches!(
+        err,
+        SqlError::SqliteFailure(_, Some(msg))
+            if msg.to_ascii_lowercase().contains("duplicate column name")
+    )
 }
 
 /// Runs all pending migrations against the given connection.
@@ -160,7 +174,11 @@ pub fn run_migrations(conn: &Connection) -> Result<(), CoreError> {
 
         // Always execute — uses IF NOT EXISTS, safe to re-run.
         // Self-heals databases where name was recorded without SQL running.
-        conn.execute_batch(sql)?;
+        if let Err(err) = conn.execute_batch(sql) {
+            if !is_idempotent_schema_error(&err) {
+                return Err(err.into());
+            }
+        }
 
         if !already_applied {
             tracing::info!("Applying migration '{name}'…");

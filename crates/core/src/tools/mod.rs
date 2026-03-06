@@ -49,12 +49,14 @@ pub mod list_sources_tool;
 pub mod manage_source_tool;
 pub mod mcp_tool;
 pub mod playbook_tool;
+pub mod record_verification_tool;
 pub mod reindex_tool;
 pub mod search_playbooks_tool;
 pub mod search_tool;
 pub mod statistics_tool;
 pub mod submit_feedback_tool;
 pub mod summarize_tool;
+pub mod update_plan_tool;
 pub mod write_note_tool;
 
 // ---------------------------------------------------------------------------
@@ -196,5 +198,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(statistics_tool::GetStatisticsTool));
     registry.register(Box::new(date_search_tool::DateSearchTool));
     registry.register(Box::new(summarize_tool::SummarizeDocumentTool));
+    registry.register(Box::new(update_plan_tool::UpdatePlanTool));
+    registry.register(Box::new(record_verification_tool::RecordVerificationTool));
     registry
 }

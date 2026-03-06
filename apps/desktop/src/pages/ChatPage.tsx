@@ -4,7 +4,7 @@ import { Settings, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
-import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput, ActiveExtensions } from '../components/chat';
+import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput, ActiveExtensions, ContextCockpit, TaskBoard } from '../components/chat';
 import { useTranslation } from '../i18n';
 import { EmptyState } from '../components/ui/EmptyState';
 import { useChatSession } from '../lib/useChatSession';
@@ -203,10 +203,21 @@ export function ChatPage() {
 
   const [prefillText, setPrefillText] = useState<string>('');
   const prefillKey = useRef(0);
+  const [sourceSummary, setSourceSummary] = useState({ selectedCount: 0, totalCount: 0, loading: true });
   const handleSuggestionClick = useCallback((text: string) => {
     prefillKey.current += 1;
     setPrefillText(text);
   }, []);
+
+  const handleCompactConversation = useCallback(async () => {
+    if (!chat.activeId) return;
+    try {
+      await api.compactConversation(chat.activeId);
+      await chat.reloadMessages();
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }, [chat.activeId, chat.reloadMessages]);
 
   /* ── No provider configured ─────────────────────────────────────── */
   if (!chat.loadingConfig && !chat.agentConfig) {
@@ -300,7 +311,7 @@ export function ChatPage() {
                     </span>
                   )}
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                    <SourceSelector conversationId={chat.activeId} />
+                    <SourceSelector conversationId={chat.activeId} onStateChange={setSourceSummary} />
                     <SystemPromptEditor
                       conversationId={chat.activeId}
                       systemPrompt={chat.customSystemPrompt}
@@ -310,6 +321,26 @@ export function ChatPage() {
                   </div>
                 </div>
               </div>
+            )}
+            {chat.activeId && (
+              <ContextCockpit
+                sourceSummary={sourceSummary}
+                tokenUsage={chat.tokenUsage}
+                finishReason={chat.finishReason}
+                contextOverflow={chat.contextOverflow}
+                rateLimited={chat.rateLimited}
+                lastCached={chat.lastCached}
+                isStreaming={chat.isStreaming}
+                onCompact={handleCompactConversation}
+                onStartNewChat={handleNewConversation}
+              />
+            )}
+            {chat.activeId && (
+              <TaskBoard
+                messages={chat.messages}
+                toolCalls={chat.toolCalls}
+                isStreaming={chat.isStreaming}
+              />
             )}
             <ChatMessages
               messages={chat.messages}
@@ -333,23 +364,10 @@ export function ChatPage() {
               onStop={chat.stop}
               isStreaming={chat.isStreaming}
               disabled={!chat.agentConfig || chat.loadingMsgs}
-              tokenUsage={chat.tokenUsage}
-              onStartNewChat={handleNewConversation}
-              finishReason={chat.finishReason}
-              contextOverflow={chat.contextOverflow}
-              rateLimited={chat.rateLimited}
               conversationId={chat.activeId ?? undefined}
               prefillText={prefillText}
               onRestoreCheckpoint={chat.activeId ? async () => {
                 await chat.reloadMessages();
-              } : undefined}
-              onCompact={chat.activeId ? async () => {
-                try {
-                  await api.compactConversation(chat.activeId!);
-                  await chat.reloadMessages();
-                } catch (e) {
-                  toast.error(String(e));
-                }
               } : undefined}
             />
           </>

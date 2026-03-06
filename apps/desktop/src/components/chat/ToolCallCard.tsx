@@ -15,9 +15,15 @@ import {
   Globe,
   Layers,
   PenLine,
+  ClipboardList,
+  ShieldCheck,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { FileBadge } from '../ui/FileBadge';
+import { extractPlanArtifact, extractVerificationArtifact } from '../../lib/taskArtifacts';
+import { PlanPanel, VerificationPanel } from './TaskPanels';
+import type { ArtifactPayload } from '../../types/conversation';
+import type { VerificationOverallStatus } from '../../lib/taskArtifacts';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -37,7 +43,7 @@ interface ToolCallCardProps {
   status: 'running' | 'done' | 'error';
   content?: string;
   isError?: boolean;
-  artifacts?: Record<string, unknown>;
+  artifacts?: ArtifactPayload;
 }
 
 /* ------------------------------------------------------------------ */
@@ -53,6 +59,8 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   fetch_url: Globe,
   chunk_context: Layers,
   write_note: PenLine,
+  update_plan: ClipboardList,
+  record_verification: ShieldCheck,
 };
 
 function getToolIcon(name?: string) {
@@ -95,6 +103,23 @@ function formatArgs(raw?: string): string {
       .join(', ');
   } catch {
     return raw;
+  }
+}
+
+function verificationStatusLabel(
+  status: VerificationOverallStatus,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  switch (status) {
+    case 'passed':
+      return t('chat.verificationPassed');
+    case 'failed':
+      return t('chat.verificationFailed');
+    case 'partial':
+      return t('chat.verificationPartial');
+    case 'pending':
+    default:
+      return t('chat.verificationPending');
   }
 }
 
@@ -163,6 +188,9 @@ export function ToolCallCard({
       : 'unknown_tool';
   const Icon = getToolIcon(safeToolName);
   const formattedArgs = formatArgs(args);
+  const planArtifact = useMemo(() => extractPlanArtifact(artifacts), [artifacts]);
+  const verificationArtifact = useMemo(() => extractVerificationArtifact(artifacts), [artifacts]);
+  const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact);
 
   const isSearchDone =
     safeToolName.toLowerCase().includes('search') && status === 'done' && !!content;
@@ -171,20 +199,40 @@ export function ToolCallCard({
     [isSearchDone, content],
   );
 
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(isStructuredTaskCard);
 
   // Auto-collapse when execution finishes; users can manually re-open if needed.
   useEffect(() => {
-    if (status !== 'running') {
+    if (status !== 'running' && !isStructuredTaskCard) {
       setExpanded(false);
     }
-  }, [status]);
+  }, [status, isStructuredTaskCard]);
+
+  useEffect(() => {
+    if (isStructuredTaskCard) {
+      setExpanded(true);
+    }
+  }, [isStructuredTaskCard]);
 
   const statusConfig = {
     running: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },
     done: { icon: CheckCircle2, text: t('chat.toolDone'), color: 'text-success', spin: false },
     error: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
   }[status];
+  const headerSummary = planArtifact
+    ? t('chat.planStepsCompleted', {
+      completed: String(planArtifact.steps.filter(step => step.status === 'completed').length),
+      total: String(planArtifact.steps.length),
+    })
+    : verificationArtifact
+      ? t('chat.verificationStatus', {
+        status: verificationStatusLabel(verificationArtifact.overallStatus ?? 'pending', t),
+      })
+      : searchItems
+        ? t('search.results', { count: String(searchItems.length) })
+        : status === 'done' && content
+          ? t('chat.traceOutputReady')
+          : statusConfig.text;
 
   const StatusIcon = statusConfig.icon;
 
@@ -206,7 +254,7 @@ export function ToolCallCard({
         <Icon className="h-4 w-4 shrink-0 text-text-tertiary" />
         <span className="text-xs font-medium text-text-primary truncate">{safeToolName}</span>
         <span className="text-[11px] text-text-tertiary truncate flex-1">
-          {formattedArgs || '-'}
+          {headerSummary}
         </span>
         <StatusIcon
           className={`h-3.5 w-3.5 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
@@ -231,7 +279,16 @@ export function ToolCallCard({
             className="overflow-hidden"
           >
             <div className="border-t border-border px-3 py-2">
-              {searchItems ? (
+              {formattedArgs && (
+                <div className="mb-2 rounded-md bg-surface-0/60 px-2 py-1 text-[11px] text-text-tertiary break-words">
+                  {formattedArgs}
+                </div>
+              )}
+              {planArtifact ? (
+                <PlanPanel plan={planArtifact} />
+              ) : verificationArtifact ? (
+                <VerificationPanel verification={verificationArtifact} />
+              ) : searchItems ? (
                 <SearchResultCards items={searchItems} />
               ) : (
                 <pre
@@ -241,7 +298,7 @@ export function ToolCallCard({
                   {content}
                 </pre>
               )}
-              {artifacts && (
+              {artifacts && !isStructuredTaskCard && (
                 <div className="mt-2 text-[11px] text-text-tertiary">
                   {JSON.stringify(artifacts, null, 2).slice(0, 500)}
                 </div>

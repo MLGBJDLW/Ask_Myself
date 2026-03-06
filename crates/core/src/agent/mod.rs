@@ -322,6 +322,37 @@ const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompts/system.md");
 
 const DEFAULT_MODEL: &str = "gpt-4o-mini";
 
+/// Build the effective system prompt for a request.
+///
+/// The core prompt is always preserved. Conversation-level custom prompt text
+/// is appended as lower-priority instructions, followed by any dynamic sections
+/// such as memory or preference summaries.
+pub fn build_system_prompt(conversation_prompt: Option<&str>, dynamic_sections: &[&str]) -> String {
+    let mut prompt = DEFAULT_SYSTEM_PROMPT.trim().to_string();
+
+    if let Some(custom) = conversation_prompt
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        prompt.push_str("\n\n## Conversation-Specific Instructions\n\n");
+        prompt.push_str(
+            "Apply these only when they do not conflict with the core evidence, safety, and citation rules above.\n\n",
+        );
+        prompt.push_str(custom);
+    }
+
+    for section in dynamic_sections {
+        let section = section.trim();
+        if section.is_empty() {
+            continue;
+        }
+        prompt.push_str("\n\n");
+        prompt.push_str(section);
+    }
+
+    prompt
+}
+
 /// Internal result of a direct-dispatch pattern match.
 struct DirectDispatch {
     tool_name: String,
@@ -526,6 +557,7 @@ impl AgentExecutor {
                         content: msg.text_content(),
                         tool_call_id: None,
                         tool_calls: vec![],
+                        artifacts: None,
                         token_count: estimate_message_tokens(&msg),
                         created_at: String::new(),
                         sort_order,
@@ -583,6 +615,7 @@ impl AgentExecutor {
                             content: final_msg.text_content(),
                             tool_call_id: None,
                             tool_calls: vec![],
+                            artifacts: None,
                             token_count: estimate_message_tokens(&final_msg),
                             created_at: String::new(),
                             sort_order,
@@ -872,6 +905,7 @@ impl AgentExecutor {
                         content: assistant_msg.text_content(),
                         tool_call_id: None,
                         tool_calls: assistant_msg.tool_calls.clone().unwrap_or_default(),
+                        artifacts: None,
                         token_count: estimate_message_tokens(&assistant_msg),
                         created_at: String::new(),
                         sort_order,
@@ -921,6 +955,7 @@ impl AgentExecutor {
                     content: assistant_msg.text_content(),
                     tool_call_id: None,
                     tool_calls: tool_calls.clone(),
+                    artifacts: None,
                     token_count: estimate_message_tokens(&assistant_msg),
                     created_at: String::new(),
                     sort_order,
@@ -978,7 +1013,7 @@ impl AgentExecutor {
 
             // Process results in original order (join_all preserves order).
             for (tc, tool_timeout, tool_result) in tool_results {
-                let tool_msg = match tool_result {
+                let (tool_msg, tool_artifacts) = match tool_result {
                     Ok(Ok(result)) => {
                         let _ = tx
                             .send(AgentEvent::ToolCallResult {
@@ -989,7 +1024,7 @@ impl AgentExecutor {
                                 artifacts: result.artifacts.clone(),
                             })
                             .await;
-                        result.content
+                        (result.content, result.artifacts)
                     }
                     Ok(Err(e)) => {
                         let err_content = format!("Error: {e}");
@@ -1002,7 +1037,7 @@ impl AgentExecutor {
                                 artifacts: None,
                             })
                             .await;
-                        err_content
+                        (err_content, None)
                     }
                     Err(_elapsed) => {
                         warn!("Tool '{}' timed out after {:?}", tc.name, tool_timeout);
@@ -1019,7 +1054,7 @@ impl AgentExecutor {
                                 artifacts: None,
                             })
                             .await;
-                        err_content
+                        (err_content, None)
                     }
                 };
 
@@ -1039,6 +1074,7 @@ impl AgentExecutor {
                         content: content.clone(),
                         tool_call_id: Some(tc.id.clone()),
                         tool_calls: vec![],
+                        artifacts: tool_artifacts.clone(),
                         token_count: estimate_tokens(&content),
                         created_at: String::new(),
                         sort_order,
@@ -1107,6 +1143,7 @@ impl AgentExecutor {
                 content: final_msg.text_content(),
                 tool_call_id: None,
                 tool_calls: vec![],
+                artifacts: None,
                 token_count: estimate_message_tokens(&final_msg),
                 created_at: String::new(),
                 sort_order,
@@ -1403,6 +1440,7 @@ impl AgentExecutor {
             ),
             tool_call_id: None,
             tool_calls: vec![],
+            artifacts: None,
             token_count: estimate_tokens(&summary),
             created_at: String::new(),
             sort_order: 0,
@@ -1506,6 +1544,7 @@ impl AgentExecutor {
                         content: msg.text_content(),
                         tool_call_id: None,
                         tool_calls: vec![],
+                        artifacts: None,
                         token_count: estimate_message_tokens(&msg),
                         created_at: String::new(),
                         sort_order,
@@ -1853,6 +1892,41 @@ mod tests {
         assert!(cfg.system_prompt.contains("knowledge recall engine"));
         assert_eq!(cfg.temperature, Some(0.3));
         assert_eq!(cfg.max_tokens, Some(4096));
+    }
+
+    #[test]
+    fn test_build_system_prompt_preserves_core_rules() {
+        let prompt = build_system_prompt(
+            Some("Prefer terse answers."),
+            &["## User Preferences\n\n- Prefer PDFs first"],
+        );
+
+        let core_idx = prompt
+            .find("You are **Ask Myself**")
+            .expect("core prompt should be present");
+        let custom_idx = prompt
+            .find("## Conversation-Specific Instructions")
+            .expect("custom section should be present");
+        let dynamic_idx = prompt
+            .find("## User Preferences")
+            .expect("dynamic section should be present");
+
+        assert_eq!(core_idx, 0, "core prompt should stay first");
+        assert!(
+            custom_idx > core_idx,
+            "custom instructions should be appended"
+        );
+        assert!(
+            dynamic_idx > custom_idx,
+            "dynamic sections should follow custom text"
+        );
+        assert!(prompt.contains("Prefer terse answers."));
+    }
+
+    #[test]
+    fn test_build_system_prompt_skips_blank_sections() {
+        let prompt = build_system_prompt(Some("   "), &["", "  ", "\n\n"]);
+        assert_eq!(prompt, DEFAULT_SYSTEM_PROMPT.trim());
     }
 
     struct MockProvider {

@@ -16,6 +16,11 @@
  */
 const CITE_REGEX = /\[cite:([^\]|]+?)(?:\|([^\]]*))?\]/g;
 
+export interface ParsedChunkCitation {
+  chunkId: string;
+  displayText?: string;
+}
+
 /**
  * Replace `[cite:...]` markers with markdown links that the custom `a`
  * component can intercept.
@@ -37,6 +42,20 @@ export function preprocessChunkCitations(content: string): string {
     // Superscript number: ¹ ² ³ etc.
     return `[${toSuperscript(counter)}](cite:${id})`;
   });
+}
+
+export function extractChunkCitations(content: string): ParsedChunkCitation[] {
+  const matches = content.matchAll(CITE_REGEX);
+  const citations: ParsedChunkCitation[] = [];
+
+  for (const match of matches) {
+    const chunkId = match[1]?.trim();
+    if (!chunkId) continue;
+    const displayText = match[2]?.trim();
+    citations.push({ chunkId, displayText: displayText || undefined });
+  }
+
+  return citations;
 }
 
 /** Convert a number to Unicode superscript characters. */
@@ -83,7 +102,7 @@ function extractCard(item: unknown): CitationCardData | null {
 }
 
 export interface ToolCallArtifacts {
-  artifacts?: Record<string, unknown> | unknown[] | null;
+  artifacts?: import('../types/conversation').MessageArtifacts;
 }
 
 /**

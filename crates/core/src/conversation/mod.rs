@@ -37,6 +37,7 @@ pub struct ConversationMessage {
     pub content: String,
     pub tool_call_id: Option<String>,
     pub tool_calls: Vec<ToolCallRequest>,
+    pub artifacts: Option<serde_json::Value>,
     pub token_count: u32,
     pub created_at: String,
     pub sort_order: i64,
@@ -362,11 +363,15 @@ impl Database {
         } else {
             Some(serde_json::to_string(&msg.tool_calls)?)
         };
+        let artifacts_json = match &msg.artifacts {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
 
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, tool_call_id, tool_calls_json, token_count, sort_order, thinking)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO messages (id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, sort_order, thinking)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 &msg.id,
                 &msg.conversation_id,
@@ -374,6 +379,7 @@ impl Database {
                 &msg.content,
                 &msg.tool_call_id,
                 &tool_calls_json,
+                &artifacts_json,
                 msg.token_count,
                 msg.sort_order,
                 &msg.thinking,
@@ -396,12 +402,13 @@ impl Database {
     ) -> Result<Vec<ConversationMessage>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, role, content, tool_call_id, tool_calls_json, token_count, created_at, sort_order, thinking
+            "SELECT id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, created_at, sort_order, thinking
              FROM messages WHERE conversation_id = ?1 ORDER BY sort_order ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
             let role_str: String = row.get(2)?;
             let tool_calls_json: Option<String> = row.get(5)?;
+            let artifacts_json: Option<String> = row.get(6)?;
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -409,10 +416,11 @@ impl Database {
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 tool_calls_json,
-                row.get::<_, u32>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, i64>(8)?,
-                row.get::<_, Option<String>>(9)?,
+                artifacts_json,
+                row.get::<_, u32>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, Option<String>>(10)?,
             ))
         })?;
 
@@ -425,6 +433,7 @@ impl Database {
                 content,
                 tool_call_id,
                 tc_json,
+                artifacts_json,
                 token_count,
                 created_at,
                 sort_order,
@@ -434,6 +443,10 @@ impl Database {
                 Some(json) => serde_json::from_str(&json)?,
                 None => Vec::new(),
             };
+            let artifacts = match artifacts_json {
+                Some(json) => Some(serde_json::from_str(&json)?),
+                None => None,
+            };
             results.push(ConversationMessage {
                 id,
                 conversation_id: conv_id,
@@ -441,6 +454,7 @@ impl Database {
                 content,
                 tool_call_id,
                 tool_calls,
+                artifacts,
                 token_count,
                 created_at,
                 sort_order,
@@ -494,8 +508,8 @@ impl Database {
     ) -> Result<(), CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "INSERT INTO archived_messages (id, checkpoint_id, conversation_id, role, content, tool_call_id, tool_calls_json, token_count, original_sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO archived_messages (id, checkpoint_id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, original_sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
         for msg in messages {
             let role_str = role_to_str(&msg.role);
@@ -503,6 +517,10 @@ impl Database {
                 None
             } else {
                 Some(serde_json::to_string(&msg.tool_calls)?)
+            };
+            let artifacts_json = match &msg.artifacts {
+                Some(value) => Some(serde_json::to_string(value)?),
+                None => None,
             };
             stmt.execute(rusqlite::params![
                 &Uuid::new_v4().to_string(),
@@ -512,6 +530,7 @@ impl Database {
                 &msg.content,
                 &msg.tool_call_id,
                 &tc_json,
+                &artifacts_json,
                 msg.token_count,
                 msg.sort_order,
             ])?;
@@ -560,7 +579,7 @@ impl Database {
         )?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, role, content, tool_call_id, tool_calls_json, token_count, created_at, original_sort_order
+            "SELECT id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, created_at, original_sort_order
              FROM archived_messages
              WHERE checkpoint_id = ?1
              ORDER BY original_sort_order ASC",
@@ -568,6 +587,7 @@ impl Database {
         let rows = stmt.query_map(rusqlite::params![checkpoint_id], |row| {
             let role_str: String = row.get(2)?;
             let tc_json: Option<String> = row.get(5)?;
+            let artifacts_json: Option<String> = row.get(6)?;
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -575,9 +595,10 @@ impl Database {
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 tc_json,
-                row.get::<_, u32>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, i64>(8)?,
+                artifacts_json,
+                row.get::<_, u32>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, i64>(9)?,
             ))
         })?;
 
@@ -590,6 +611,7 @@ impl Database {
                 content,
                 tool_call_id,
                 tc_json,
+                artifacts_json,
                 token_count,
                 created_at,
                 sort_order,
@@ -598,6 +620,10 @@ impl Database {
                 Some(json) => serde_json::from_str(&json)?,
                 None => Vec::new(),
             };
+            let artifacts = match artifacts_json {
+                Some(json) => Some(serde_json::from_str(&json)?),
+                None => None,
+            };
             results.push(ConversationMessage {
                 id,
                 conversation_id: conv_id,
@@ -605,6 +631,7 @@ impl Database {
                 content,
                 tool_call_id,
                 tool_calls,
+                artifacts,
                 token_count,
                 created_at,
                 sort_order,
@@ -966,6 +993,7 @@ mod tests {
             content: "Hello!".into(),
             tool_call_id: None,
             tool_calls: vec![],
+            artifacts: None,
             token_count: 2,
             created_at: String::new(),
             sort_order: 0,
@@ -986,6 +1014,7 @@ mod tests {
             content: String::new(),
             tool_call_id: None,
             tool_calls: vec![tc],
+            artifacts: Some(serde_json::json!({ "kind": "plan" })),
             token_count: 10,
             created_at: String::new(),
             sort_order: 1,
@@ -998,6 +1027,7 @@ mod tests {
         assert_eq!(messages[0].role, Role::User);
         assert_eq!(messages[1].tool_calls.len(), 1);
         assert_eq!(messages[1].tool_calls[0].name, "search");
+        assert_eq!(messages[1].artifacts.as_ref().unwrap()["kind"], "plan");
     }
 
     #[test]
@@ -1017,6 +1047,7 @@ mod tests {
             content: "test".into(),
             tool_call_id: None,
             tool_calls: vec![],
+            artifacts: None,
             token_count: 1,
             created_at: String::new(),
             sort_order: 0,
@@ -1180,6 +1211,11 @@ mod tests {
                     content: format!("Message {i}"),
                     tool_call_id: None,
                     tool_calls: vec![],
+                    artifacts: if i == 1 {
+                        Some(serde_json::json!({ "kind": "verification", "overallStatus": "passed" }))
+                    } else {
+                        None
+                    },
                     token_count: 20,
                     created_at: String::new(),
                     sort_order: i,
@@ -1209,6 +1245,10 @@ mod tests {
         assert_eq!(restored[2].content, "Message 2");
         assert_eq!(restored[0].role, Role::User);
         assert_eq!(restored[1].role, Role::Assistant);
+        assert_eq!(
+            restored[1].artifacts.as_ref().unwrap()["kind"],
+            "verification"
+        );
     }
 
     #[test]
@@ -1230,6 +1270,7 @@ mod tests {
             content: "Hello".into(),
             tool_call_id: None,
             tool_calls: vec![],
+            artifacts: None,
             token_count: 5,
             created_at: String::new(),
             sort_order: 0,

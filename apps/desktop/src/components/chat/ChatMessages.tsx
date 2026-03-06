@@ -7,6 +7,7 @@ import { useTranslation } from '../../i18n';
 import { useTypewriter } from '../../lib/useTypewriter';
 import { hasTimeGap } from '../../lib/relativeTime';
 import { preprocessChunkCitations, buildCitationMap } from '../../lib/citationParser';
+import type { CitationCardData } from '../../lib/citationParser';
 import type { StreamRoundEvent, ToolCallEvent } from '../../lib/useAgentStream';
 import { ToolCallCard } from './ToolCallCard';
 import { ThinkingBlock } from './ThinkingBlock';
@@ -152,6 +153,17 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
     return map;
   }, [messages]);
 
+  const messageCitationLookups = useMemo(() => {
+    const map = new Map<number, { getCard: (id: string) => CitationCardData | undefined }>();
+    for (const [idx, toolResults] of messageToolCalls.entries()) {
+      const citationMap = buildCitationMap(
+        toolResults.map(result => ({ artifacts: result.artifacts })),
+      );
+      map.set(idx, { getCard: (id: string) => citationMap.get(id) });
+    }
+    return map;
+  }, [messageToolCalls]);
+
   // ── Smart auto-scroll ─────────────────────────────────────────────
   const NEAR_BOTTOM_THRESHOLD = 100;
 
@@ -288,20 +300,12 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
 
           return (
             <div key={msg.id}>
-              {/* Persisted thinking block for assistant messages */}
-              {msg.role === 'assistant' && msg.thinking && (
-                <div className="flex justify-start mb-3">
-                  <div className="max-w-[80%]">
-                    <ThinkingBlock content={msg.thinking} isStreaming={false} />
-                  </div>
-                </div>
-              )}
-
               {hasRenderableAssistantContent && (
                 <MessageBubble
                   msg={msg}
                   chunkIds={chunkIds}
                   queryText={queryText}
+                  citationLookup={messageCitationLookups.get(idx)}
                   isLastAssistant={idx === lastAssistantIdx && !isStreaming}
                   lastCached={idx === lastAssistantIdx ? lastCached : undefined}
                   onRetry={onRetry}
@@ -320,6 +324,15 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
                 />
               )}
 
+              {/* Persisted thinking block for assistant messages */}
+              {msg.role === 'assistant' && msg.thinking && (
+                <div className="flex justify-start mb-3">
+                  <div className="max-w-[80%]">
+                    <ThinkingBlock content={msg.thinking} isStreaming={false} />
+                  </div>
+                </div>
+              )}
+
               {/* Show tool call cards after assistant messages with tool calls */}
               {msg.role === 'assistant' && msg.toolCalls.length > 0 && (
                 <div className="mb-3">
@@ -334,6 +347,7 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
                         arguments={tc.arguments || ''}
                         status={toolResult ? 'done' : 'running'}
                         content={toolResult?.content}
+                        artifacts={toolResult?.artifacts ?? undefined}
                       />
                     );
                   })}
@@ -344,22 +358,7 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
         })}
       </AnimatePresence>
 
-      {/* Streaming thinking block */}
-      {isStreaming && (thinkingText || isThinking) && (
-        <motion.div
-          initial={shouldReduceMotion ? false : { opacity: 0 }}
-          animate={{ opacity: 1 }}
-          layout={!shouldReduceMotion}
-          transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
-          className="flex justify-start mb-3"
-        >
-          <div className="max-w-[80%]">
-            <ThinkingBlock content={streamingThinkingContent} isStreaming={isThinking} />
-          </div>
-        </motion.div>
-      )}
-
-      {/* Streaming timeline: reply -> tools per round */}
+      {/* Streaming timeline: completed rounds stay above the live phase to avoid jumpy reordering. */}
       {shouldShowStreamingPreview && streamRounds.map((round) => (
         <div key={round.id} className="mb-4 space-y-2">
           {round.thinking && (
@@ -413,6 +412,21 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
           )}
         </div>
       ))}
+
+      {/* Live thinking stays mounted until an actual phase switch to reply/tool/done/error. */}
+      {isStreaming && (thinkingText || isThinking) && (
+        <motion.div
+          initial={shouldReduceMotion ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          layout={!shouldReduceMotion}
+          transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
+          className="flex justify-start mb-3"
+        >
+          <div className="max-w-[80%]">
+            <ThinkingBlock content={streamingThinkingContent} isStreaming={isThinking} />
+          </div>
+        </motion.div>
+      )}
 
       {/* Streaming text */}
       {shouldShowStreamingPreview && streamText && (

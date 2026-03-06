@@ -12,13 +12,14 @@ import type { Source } from '../../types';
 interface SourceSelectorProps {
   conversationId: string;
   onUpdate?: () => void;
+  onStateChange?: (state: { selectedCount: number; totalCount: number; loading: boolean }) => void;
 }
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function SourceSelector({ conversationId, onUpdate }: SourceSelectorProps) {
+export function SourceSelector({ conversationId, onUpdate, onStateChange }: SourceSelectorProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [sources, setSources] = useState<Source[]>([]);
@@ -49,6 +50,14 @@ export function SourceSelector({ conversationId, onUpdate }: SourceSelectorProps
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    onStateChange?.({
+      selectedCount: linkedIds.size,
+      totalCount: sources.length,
+      loading,
+    });
+  }, [linkedIds, loading, onStateChange, sources.length]);
 
   const closeSelector = useCallback((restoreFocus = true) => {
     setOpen(false);

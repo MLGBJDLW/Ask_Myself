@@ -5,7 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ask_core::agent::{
-    AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor, CancellationToken,
+    build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
+    CancellationToken,
 };
 use ask_core::conversation::memory::estimate_tokens;
 use ask_core::conversation::{
@@ -1144,15 +1145,9 @@ pub async fn compact_conversation_cmd(
     let provider_config = db_config_to_provider_config(&db_config);
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
-    let base_prompt = if conv.system_prompt.is_empty() {
-        ExecutorConfig::default().system_prompt
-    } else {
-        conv.system_prompt.clone()
-    };
-
     let executor_config = ExecutorConfig {
         max_iterations: 1,
-        system_prompt: base_prompt,
+        system_prompt: build_system_prompt(Some(&conv.system_prompt), &[]),
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
         max_tokens: db_config.max_tokens.map(|t| t as u32),
@@ -1397,6 +1392,7 @@ pub async fn agent_chat_cmd(
         content: message.clone(),
         tool_call_id: None,
         tool_calls: vec![],
+        artifacts: None,
         token_count: estimate_tokens(&message),
         created_at: String::new(),
         sort_order: next_sort_order,
@@ -1409,24 +1405,15 @@ pub async fn agent_chat_cmd(
         .db
         .get_conversation(&conversation_id)
         .map_err(|e| e.to_string())?;
-    let base_prompt = if conv.system_prompt.is_empty() {
-        ExecutorConfig::default().system_prompt
-    } else {
-        conv.system_prompt.clone()
-    };
     let memory_section =
         ask_core::personalization::build_memory_summary_for_query(&state.db, Some(&message))
             .unwrap_or_default();
     let preference_section =
         ask_core::personalization::build_preference_summary_for_query(&state.db, Some(&message))
             .unwrap_or_default();
-    let skills_section = {
-        let skills = state.db.get_enabled_skills().unwrap_or_default();
-        ask_core::skills::build_skills_section(&skills)
-    };
-    let system_prompt = format!(
-        "{}{}{}{}",
-        base_prompt, memory_section, preference_section, skills_section
+    let system_prompt = build_system_prompt(
+        Some(&conv.system_prompt),
+        &[&memory_section, &preference_section],
     );
 
     // 6. Build executor config from DB config.

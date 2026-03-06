@@ -8,6 +8,9 @@ export interface Conversation {
   updatedAt: string;
 }
 
+export type ArtifactPayload = Record<string, unknown> | unknown[];
+export type MessageArtifacts = ArtifactPayload | null;
+
 export interface ConversationMessage {
   id: string;
   conversationId: string;
@@ -15,6 +18,7 @@ export interface ConversationMessage {
   content: string;
   toolCallId: string | null;
   toolCalls: ToolCallRequest[];
+  artifacts: MessageArtifacts;
   tokenCount: number;
   createdAt: string;
   sortOrder: number;
@@ -97,7 +101,7 @@ export interface AgentEvent {
   arguments?: string;
   content?: string;
   isError?: boolean;
-  artifacts?: Record<string, unknown>;
+  artifacts?: ArtifactPayload;
   // `Done` events carry a full ConversationMessage; `Error` events carry a plain string.
   message?: ConversationMessage | string;
   usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number; lastPromptTokens?: number };
@@ -113,7 +117,7 @@ export interface AgentFrontendEvent {
   arguments?: string;
   content?: string;
   isError?: boolean;
-  artifacts?: Record<string, unknown>;
+  artifacts?: ArtifactPayload;
   message?: ConversationMessage | string;
   usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number; lastPromptTokens?: number };
 }

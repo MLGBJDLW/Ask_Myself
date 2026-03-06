@@ -3,7 +3,7 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import * as api from './api';
 import type { AgentFrontendEvent } from '../types';
 import { useTranslation } from '../i18n';
-import type { ImageAttachment } from '../types/conversation';
+import type { ArtifactPayload, ImageAttachment } from '../types/conversation';
 
 const STREAM_TIMEOUT_MS = 30_000; // 30-second inactivity watchdog
 
@@ -14,7 +14,7 @@ export interface ToolCallEvent {
   status: 'running' | 'done' | 'error';
   content?: string;
   isError?: boolean;
-  artifacts?: Record<string, unknown>;
+  artifacts?: ArtifactPayload;
 }
 
 export interface StreamRoundEvent {
@@ -62,7 +62,7 @@ function finalizeToolCall(
   tc: ToolCallEvent,
   isError: boolean | undefined,
   content: string | undefined,
-  artifacts: Record<string, unknown> | undefined,
+  artifacts: ArtifactPayload | undefined,
 ): ToolCallEvent {
   return {
     ...tc,
@@ -78,7 +78,7 @@ function resolveToolCallResult(
   resultCallId: string,
   resultIsError: boolean | undefined,
   resultContent: string | undefined,
-  resultArtifacts: Record<string, unknown> | undefined,
+  resultArtifacts: ArtifactPayload | undefined,
 ): { next: ToolCallEvent[]; matched: boolean } {
   let matched = false;
   const updated = prev.map(tc => {
@@ -158,7 +158,6 @@ export function useAgentStream(): UseAgentStreamReturn {
   const [autoCompacted, setAutoCompacted] = useState<AutoCompactedInfo>(null);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeConversationRef = useRef<string | null>(null);
   const toolCallSeqRef = useRef(0);
   const roundSeqRef = useRef(0);
@@ -173,21 +172,13 @@ export function useAgentStream(): UseAgentStreamReturn {
     }
   }, []);
 
-  const clearThinkingTimeout = useCallback(() => {
-    if (thinkingTimeoutRef.current) {
-      clearTimeout(thinkingTimeoutRef.current);
-      thinkingTimeoutRef.current = null;
-    }
-  }, []);
-
   const cleanup = useCallback(() => {
     clearStreamTimeout();
-    clearThinkingTimeout();
     if (unlistenRef.current) {
       unlistenRef.current();
       unlistenRef.current = null;
     }
-  }, [clearStreamTimeout, clearThinkingTimeout]);
+  }, [clearStreamTimeout]);
 
   const resetStreamTimeout = useCallback(() => {
     clearStreamTimeout();
@@ -231,8 +222,7 @@ export function useAgentStream(): UseAgentStreamReturn {
     setRateLimited(false);
     setAutoCompacted(null);
     activeRoundIdRef.current = null;
-    clearThinkingTimeout();
-  }, [clearThinkingTimeout]);
+  }, []);
 
   const consumeThinkingSegment = useCallback(() => {
     const captured = thinkingTextRef.current;
@@ -294,13 +284,8 @@ export function useAgentStream(): UseAgentStreamReturn {
             thinkingTextRef.current = next;
             return next;
           });
-          clearThinkingTimeout();
-          thinkingTimeoutRef.current = setTimeout(() => {
-            setIsThinking(false);
-          }, 900);
           break;
         case 'textDelta':
-          clearThinkingTimeout();
           setIsThinking(false);
           if (activeRoundIdRef.current) {
             // New assistant text after a tool round should start a fresh preview segment.
@@ -314,7 +299,6 @@ export function useAgentStream(): UseAgentStreamReturn {
           });
           break;
         case 'toolCallStart':
-          clearThinkingTimeout();
           setIsThinking(false);
           const roundThinking = consumeThinkingSegment();
           const incomingCallIdRaw = (typeof data.callId === 'string' && data.callId)
@@ -415,7 +399,7 @@ export function useAgentStream(): UseAgentStreamReturn {
             ?? (typeof raw.content === 'string' ? raw.content : undefined);
           const resultArtifacts = (data.artifacts && typeof data.artifacts === 'object')
             ? data.artifacts
-            : ((raw.artifacts && typeof raw.artifacts === 'object') ? raw.artifacts as Record<string, unknown> : undefined);
+            : ((raw.artifacts && typeof raw.artifacts === 'object') ? raw.artifacts as ArtifactPayload : undefined);
 
           setToolCalls(prev => {
             const { next } = resolveToolCallResult(
@@ -458,7 +442,6 @@ export function useAgentStream(): UseAgentStreamReturn {
           break;
         }
         case 'done': {
-          clearThinkingTimeout();
           setIsThinking(false);
           setThinkingText('');
           thinkingTextRef.current = '';
@@ -510,7 +493,6 @@ export function useAgentStream(): UseAgentStreamReturn {
           break;
         }
         case 'error': {
-          clearThinkingTimeout();
           setIsThinking(false);
           setThinkingText('');
           thinkingTextRef.current = '';
@@ -551,7 +533,6 @@ export function useAgentStream(): UseAgentStreamReturn {
     try {
       await api.agentChat(conversationId, message, attachments);
     } catch (err) {
-      clearThinkingTimeout();
       setIsThinking(false);
       setThinkingText('');
       thinkingTextRef.current = '';
@@ -573,7 +554,7 @@ export function useAgentStream(): UseAgentStreamReturn {
       activeRoundIdRef.current = null;
       cleanup();
     }
-  }, [cleanup, resetStreamTimeout, clearThinkingTimeout, consumeThinkingSegment, t]);
+  }, [cleanup, resetStreamTimeout, consumeThinkingSegment, t]);
 
   const stop = useCallback(async (conversationId: string) => {
     try {
@@ -581,7 +562,6 @@ export function useAgentStream(): UseAgentStreamReturn {
     } catch (err) {
       // Ignore errors on stop
     }
-    clearThinkingTimeout();
     setIsThinking(false);
     setThinkingText('');
     thinkingTextRef.current = '';
@@ -601,7 +581,7 @@ export function useAgentStream(): UseAgentStreamReturn {
     setIsStreaming(false);
     activeRoundIdRef.current = null;
     cleanup();
-  }, [cleanup, clearThinkingTimeout, t]);
+  }, [cleanup, t]);
 
   // Clean up listeners and timeouts on unmount to prevent memory leaks
   useEffect(() => {

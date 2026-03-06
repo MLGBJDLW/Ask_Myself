@@ -188,6 +188,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content         TEXT NOT NULL DEFAULT '',
     tool_call_id    TEXT,
     tool_calls_json TEXT,
+    artifacts_json  TEXT,
     token_count     INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     sort_order      INTEGER NOT NULL DEFAULT 0,
@@ -268,6 +269,7 @@ CREATE TABLE IF NOT EXISTS archived_messages (
     content TEXT NOT NULL DEFAULT '',
     tool_call_id TEXT,
     tool_calls_json TEXT,
+    artifacts_json TEXT,
     token_count INTEGER NOT NULL DEFAULT 0,
     original_sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))

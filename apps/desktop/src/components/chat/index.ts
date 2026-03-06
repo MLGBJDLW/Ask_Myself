@@ -6,3 +6,5 @@ export { ThinkingBlock } from './ThinkingBlock';
 export { SourceSelector } from './SourceSelector';
 export { SystemPromptEditor } from './SystemPromptEditor';
 export { ActiveExtensions } from './ActiveExtensions';
+export { ContextCockpit } from './ContextCockpit';
+export { TaskBoard } from './TaskBoard';

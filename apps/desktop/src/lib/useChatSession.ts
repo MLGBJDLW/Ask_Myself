@@ -128,6 +128,7 @@ export interface UseChatSessionReturn {
     completionTokens: number;
     thinkingTokens: number;
     isEstimated: boolean;
+    source: 'live' | 'cached' | 'estimated';
   } | null;
   lastCached: boolean;
   finishReason: string | null;
@@ -521,6 +522,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         content,
         toolCallId: null,
         toolCalls: [],
+        artifacts: null,
         tokenCount: 0,
         createdAt: new Date().toISOString(),
         sortOrder: messages.length,
@@ -562,6 +564,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       content,
       toolCallId: null,
       toolCalls: [],
+      artifacts: null,
       tokenCount: 0,
       createdAt: new Date().toISOString(),
       sortOrder: messages.length,
@@ -601,6 +604,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       content: newContent,
       toolCallId: null,
       toolCalls: [],
+      artifacts: null,
       tokenCount: 0,
       createdAt: new Date().toISOString(),
       sortOrder: msgIndex,
@@ -639,6 +643,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           completionTokens: usageForView.completionTokens,
           thinkingTokens: usageForView.thinkingTokens ?? 0,
           isEstimated: false,
+          source: (lastUsage ? 'live' : 'cached') as 'live' | 'cached',
         }
       : (estimatedPromptTokens > 0
         ? {
@@ -648,6 +653,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             completionTokens: 0,
             thinkingTokens: 0,
             isEstimated: true,
+            source: 'estimated' as const,
           }
         : null))
     : null;

@@ -1,15 +1,16 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Check, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { markdownComponents, preprocessFilePaths, preprocessCitations, CitationContext } from './markdownComponents';
-import { preprocessChunkCitations } from '../../lib/citationParser';
+import { extractChunkCitations, preprocessChunkCitations } from '../../lib/citationParser';
 import type { CitationCardData } from '../../lib/citationParser';
 import { MessageActions } from './MessageActions';
 import { messageTimestamp } from '../../lib/relativeTime';
 import type { ConversationMessage } from '../../types/conversation';
+import { CitationChip } from './EvidenceCard';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -86,6 +87,34 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
 
   if (msg.role === 'tool' || msg.role === 'system') return null;
 
+  const evidenceItems = useMemo(() => {
+    if (isUser) return [];
+
+    const parsed = extractChunkCitations(msg.content);
+    const items: Array<{ chunkId: string; displayText: string }> = [];
+    const seen = new Set<string>();
+
+    for (const entry of parsed) {
+      if (seen.has(entry.chunkId)) continue;
+      seen.add(entry.chunkId);
+      items.push({
+        chunkId: entry.chunkId,
+        displayText: entry.displayText || t('chat.evidenceSourceLabel', { index: String(items.length + 1) }),
+      });
+    }
+
+    for (const chunkId of chunkIds ?? []) {
+      if (seen.has(chunkId)) continue;
+      seen.add(chunkId);
+      items.push({
+        chunkId,
+        displayText: t('chat.evidenceSourceLabel', { index: String(items.length + 1) }),
+      });
+    }
+
+    return items;
+  }, [chunkIds, isUser, msg.content, t]);
+
   const timestamp = messageTimestamp(msg.createdAt, t);
   const ariaLabel = isUser ? t('chat.userMessage') : t('chat.assistantResponse');
 
@@ -128,8 +157,11 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
             </span>
           )}
           {isLastAssistant && lastCached && !isEditing && (
-            <span className="absolute top-1 right-2 text-[9px] text-accent/70 select-none" title={t('chat.cached')}>
-              ⚡ {t('chat.cached')}
+            <span
+              className="absolute top-1.5 right-2 rounded-full border border-border/50 bg-surface-1/70 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.1em] text-text-tertiary/70 select-none"
+              title={t('chat.cached')}
+            >
+              {t('chat.cached')}
             </span>
           )}
           {isEditing ? (
@@ -179,13 +211,47 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
               )}
             </>
           ) : (
-            <div className="prose-chat">
-              <CitationContext.Provider value={citationLookup ?? { getCard: () => undefined }}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                  {preprocessFilePaths(preprocessCitations(preprocessChunkCitations(msg.content)))}
-                </ReactMarkdown>
-              </CitationContext.Provider>
-            </div>
+            <>
+              <div className="mb-2 flex items-center gap-2">
+                <span className="rounded-full bg-surface-3 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-text-tertiary">
+                  {t('chat.conclusion')}
+                </span>
+                {evidenceItems.length > 0 && (
+                  <span className="text-[11px] text-text-tertiary">
+                    {t('chat.answerEvidenceSummary', { count: String(evidenceItems.length) })}
+                  </span>
+                )}
+              </div>
+
+              {evidenceItems.length > 0 && (
+                <div className="mb-3 rounded-xl border border-border/70 bg-surface-1/70 px-2.5 py-2">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-medium text-text-secondary">{t('chat.answerEvidence')}</span>
+                    <span className="text-[10px] text-text-tertiary">
+                      {t('chat.answerEvidenceSummary', { count: String(evidenceItems.length) })}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {evidenceItems.map((item) => (
+                      <CitationChip
+                        key={item.chunkId}
+                        chunkId={item.chunkId}
+                        displayText={item.displayText}
+                        card={citationLookup?.getCard(item.chunkId)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="prose-chat">
+                <CitationContext.Provider value={citationLookup ?? { getCard: () => undefined }}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {preprocessFilePaths(preprocessCitations(preprocessChunkCitations(msg.content)))}
+                  </ReactMarkdown>
+                </CitationContext.Provider>
+              </div>
+            </>
           )}
         </div>
         {/* Timestamp */}

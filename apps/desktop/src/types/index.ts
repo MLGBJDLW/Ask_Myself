@@ -15,6 +15,8 @@ export type { OcrConfig, OcrDownloadProgress } from "./ocr";
 export type {
   Conversation,
   ConversationMessage,
+  ArtifactPayload,
+  MessageArtifacts,
   ToolCallRequest,
   AgentConfig,
   SaveAgentConfigInput,

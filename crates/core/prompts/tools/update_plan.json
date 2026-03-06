@@ -1,0 +1,46 @@
+{
+  "name": "update_plan",
+  "description": "Create or update a short execution plan for the current task. Use this for multi-step work so the user can see progress with pending, in-progress, and completed steps.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Optional short plan title."
+      },
+      "explanation": {
+        "type": "string",
+        "description": "Optional one- or two-sentence explanation of the plan."
+      },
+      "steps": {
+        "type": "array",
+        "description": "Ordered checklist for the current task. Keep it concise.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Optional stable identifier for the step."
+            },
+            "title": {
+              "type": "string",
+              "description": "Short step label."
+            },
+            "status": {
+              "type": "string",
+              "enum": ["pending", "in_progress", "completed"],
+              "description": "Current status of the step."
+            },
+            "notes": {
+              "type": "string",
+              "description": "Optional short note about the step."
+            }
+          },
+          "required": ["title", "status"]
+        },
+        "minItems": 1
+      }
+    },
+    "required": ["steps"]
+  }
+}
