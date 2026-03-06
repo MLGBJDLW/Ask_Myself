@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Search, FolderOpen, BookOpen, MessageCircle, Settings, ChevronLeft, ChevronRight, BotMessageSquare } from 'lucide-react';
 import { Logo } from './Logo';
 import { Toaster } from 'sonner';
@@ -9,6 +9,7 @@ import { useTheme } from '../lib/ThemeProvider';
 import type { TranslationKey } from '../i18n';
 
 const STORAGE_KEY = 'sidebar-collapsed';
+const INSTANT_TRANSITION = { duration: 0 };
 
 const navItems: { to: string; labelKey: TranslationKey; icon: typeof Search }[] = [
   { to: '/', labelKey: 'nav.search', icon: Search },
@@ -21,6 +22,7 @@ const navItems: { to: string; labelKey: TranslationKey; icon: typeof Search }[] 
 /* ── Right-side tooltip for collapsed sidebar ─────────────────────── */
 function SidebarTooltip({ content, show, children }: { content: string; show: boolean; children: ReactNode }) {
   const [hovered, setHovered] = useState(false);
+  const shouldReduceMotion = useReducedMotion();
 
   if (!show) return <>{children}</>;
 
@@ -34,10 +36,10 @@ function SidebarTooltip({ content, show, children }: { content: string; show: bo
       <AnimatePresence>
         {hovered && (
           <motion.div
-            initial={{ opacity: 0, x: -4 }}
+            initial={shouldReduceMotion ? false : { opacity: 0, x: -4 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -4 }}
-            transition={{ duration: 0.15 }}
+            exit={shouldReduceMotion ? { opacity: 0, x: 0 } : { opacity: 0, x: -4 }}
+            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.15 }}
             className="absolute left-full top-1/2 -translate-y-1/2 ml-2 z-50
               px-2.5 py-1.5 text-xs font-medium
               bg-surface-4 text-text-primary rounded-md shadow-md
@@ -55,6 +57,7 @@ function SidebarTooltip({ content, show, children }: { content: string; show: bo
 export function Layout() {
   const { t } = useTranslation();
   const { theme } = useTheme();
+  const shouldReduceMotion = useReducedMotion();
   const location = useLocation();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(() => {
@@ -79,7 +82,7 @@ export function Layout() {
       <motion.aside
         className="flex shrink-0 flex-col border-r border-border bg-surface-1 overflow-hidden"
         animate={{ width: collapsed ? 56 : 208 }}
-        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+        transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
         aria-label={t('nav.mainNav')}
       >
         {/* Branding */}
@@ -88,10 +91,10 @@ export function Layout() {
           <AnimatePresence>
             {!collapsed && (
               <motion.div
-                initial={{ opacity: 0, width: 0 }}
+                initial={shouldReduceMotion ? false : { opacity: 0, width: 0 }}
                 animate={{ opacity: 1, width: 'auto' }}
                 exit={{ opacity: 0, width: 0 }}
-                transition={{ duration: 0.2 }}
+                transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.2 }}
                 className="overflow-hidden whitespace-nowrap"
               >
                 <h1 className="text-sm font-bold tracking-tight text-text-primary">{t('app.name')}</h1>
@@ -105,12 +108,17 @@ export function Layout() {
           {navItems.map((item) => {
             const Icon = item.icon;
             const label = t(item.labelKey);
+            const isCurrentPage = item.to === '/'
+              ? location.pathname === item.to
+              : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+
             return (
               <SidebarTooltip key={item.to} content={label} show={collapsed}>
                 <NavLink
                   to={item.to}
                   end={item.to === '/'}
                   aria-label={label}
+                  aria-current={isCurrentPage ? 'page' : undefined}
                   className={({ isActive }) =>
                     `relative flex items-center gap-2.5 rounded-md text-sm transition-colors duration-fast ease-out
                     ${collapsed ? 'justify-center px-0 py-2' : 'px-3 py-2'}
@@ -127,16 +135,16 @@ export function Layout() {
                         className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] rounded-r-full bg-accent"
                         initial={false}
                         animate={{ height: isActive ? 20 : 0, opacity: isActive ? 1 : 0 }}
-                        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                        transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
                       />
                       <Icon className="h-[18px] w-[18px] shrink-0" />
                       <AnimatePresence>
                         {!collapsed && (
                           <motion.span
-                            initial={{ opacity: 0, width: 0 }}
+                            initial={shouldReduceMotion ? false : { opacity: 0, width: 0 }}
                             animate={{ opacity: 1, width: 'auto' }}
                             exit={{ opacity: 0, width: 0 }}
-                            transition={{ duration: 0.2 }}
+                            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.2 }}
                             className="overflow-hidden whitespace-nowrap"
                           >
                             {label}
@@ -188,12 +196,12 @@ export function Layout() {
       {!location.pathname.startsWith('/chat') && (
         <motion.button
           onClick={() => navigate('/chat')}
+          aria-label={t('chat.askAi')}
           className="fixed bottom-6 right-6 z-40 p-3 rounded-full
             bg-accent text-white shadow-lg
-            hover:bg-accent-hover hover:scale-110
-            active:scale-95 transition-all duration-200 cursor-pointer"
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.95 }}
+            hover:bg-accent-hover transition-colors duration-200 cursor-pointer"
+          whileHover={shouldReduceMotion ? undefined : { scale: 1.1 }}
+          whileTap={shouldReduceMotion ? undefined : { scale: 0.95 }}
           title={t('chat.askAi')}
         >
           <BotMessageSquare size={22} />

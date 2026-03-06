@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useBlocker } from 'react-router-dom';
 import {
   Database,
   Shield,
@@ -23,6 +24,8 @@ import {
   ScanLine,
   Blocks,
   Plug,
+  ChevronLeft,
+  ChevronRight,
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
@@ -104,18 +107,44 @@ function estimateTokens(text: string): number {
 /* ── Settings page ────────────────────────────────────────────────── */
 type SettingsTab = 'appearance' | 'embedding' | 'index' | 'privacy' | 'providers' | 'ocr' | 'extensions';
 const MEMORY_CHAR_LIMIT = 240;
+const TAB_STRIP_EDGE_EPSILON = 4;
 
 export function SettingsPage() {
   const { t, locale, setLocale, availableLocales } = useTranslation();
-  const isChinese = locale.startsWith('zh');
+  const tabStripRef = useRef<HTMLDivElement | null>(null);
   const extensionCopy = {
-    toolCount: (count: number) => (isChinese ? `${count} 个工具` : `${count} ${count === 1 ? 'tool' : 'tools'}`),
-    connectionFailed: isChinese ? '连接失败' : 'Connection failed',
-    availableTools: isChinese ? '可用工具' : 'Available tools',
-    toggleTools: isChinese ? '展开或收起工具列表' : 'Toggle tool list',
+    toolCount: (count: number) => t('settings.extensions.toolCount', { count }),
+    connectionFailed: t('settings.extensions.connectionFailed'),
+    availableTools: t('settings.extensions.availableTools'),
+    toggleTools: t('settings.extensions.toggleTools'),
   };
   const [activeTab, setActiveTab] = useState<SettingsTab>('embedding');
   const [dirtyTabs, setDirtyTabs] = useState<Set<string>>(new Set());
+  const [pendingTab, setPendingTab] = useState<SettingsTab | null>(null);
+  const [discardingTabChanges, setDiscardingTabChanges] = useState(false);
+  const [showLeftTabIndicator, setShowLeftTabIndicator] = useState(false);
+  const [showRightTabIndicator, setShowRightTabIndicator] = useState(false);
+  const [providerFormDirty, setProviderFormDirty] = useState(false);
+  const [skillEditorDirty, setSkillEditorDirty] = useState(false);
+  const [mcpFormDirty, setMcpFormDirty] = useState(false);
+  const hasDirtyTabs = dirtyTabs.size > 0;
+
+  const updateTabStripIndicators = useCallback(() => {
+    const element = tabStripRef.current;
+    if (!element) return;
+
+    const hasOverflow = element.scrollWidth - element.clientWidth > TAB_STRIP_EDGE_EPSILON;
+    if (!hasOverflow) {
+      setShowLeftTabIndicator(false);
+      setShowRightTabIndicator(false);
+      return;
+    }
+
+    setShowLeftTabIndicator(element.scrollLeft > TAB_STRIP_EDGE_EPSILON);
+    setShowRightTabIndicator(
+      element.scrollLeft + element.clientWidth < element.scrollWidth - TAB_STRIP_EDGE_EPSILON
+    );
+  }, []);
 
   const markDirty = useCallback((tab: string) => {
     setDirtyTabs((prev) => {
@@ -134,6 +163,22 @@ export function SettingsPage() {
       return next;
     });
   }, []);
+
+  const settingsNavigationBlocker = useBlocker(
+    useCallback(({
+      currentLocation,
+      nextLocation,
+    }: {
+      currentLocation: { pathname: string };
+      nextLocation: { pathname: string };
+    }) => {
+      return (
+        dirtyTabs.size > 0
+        && currentLocation.pathname.startsWith('/settings')
+        && nextLocation.pathname !== currentLocation.pathname
+      );
+    }, [dirtyTabs])
+  );
 
   /* ── Index state ─────────────────────────────────────────────────── */
   const [stats, setStats] = useState<IndexStats | null>(null);
@@ -267,17 +312,26 @@ export function SettingsPage() {
     return () => { unlisten.then(fn => fn()); };
   }, [downloadLoading]);
 
-  useEffect(() => {
-    api.getEmbedderConfig().then((cfg) => {
+  const loadEmbedConfig = useCallback(async () => {
+    try {
+      const cfg = await api.getEmbedderConfig();
       setEmbedConfig(cfg);
       if (cfg.provider === 'local') {
         api.checkLocalModel(cfg.localModel).then(setLocalModelReady).catch(() => setLocalModelReady(false));
+      } else {
+        setLocalModelReady(null);
       }
-    }).catch((e) => {
+      return true;
+    } catch (e) {
       console.error('Failed to load embedder config:', e);
       toast.error(t('settings.loadStatsError'));
-    });
+      return false;
+    }
   }, []);
+
+  useEffect(() => {
+    void loadEmbedConfig();
+  }, [loadEmbedConfig]);
 
   useEffect(() => {
     if (embedConfig?.provider === 'local') {
@@ -343,14 +397,21 @@ export function SettingsPage() {
   };
 
   /* ── OCR effects & handlers ──────────────────────────────────────── */
-  useEffect(() => {
-    api.getOcrConfig().then((cfg) => {
+  const loadOcrConfig = useCallback(async () => {
+    try {
+      const cfg = await api.getOcrConfig();
       setOcrConfig(cfg);
       api.checkOcrModels(cfg).then(setOcrModelsExist).catch(() => setOcrModelsExist(false));
-    }).catch(() => {
+      return true;
+    } catch {
       toast.error(t('settings.ocrLoadError'));
-    });
+      return false;
+    }
   }, []);
+
+  useEffect(() => {
+    void loadOcrConfig();
+  }, [loadOcrConfig]);
 
   useEffect(() => {
     if (!ocrDownloading) {
@@ -391,11 +452,150 @@ export function SettingsPage() {
     }
   };
 
-  useEffect(() => {
-    api.getPrivacyConfig().then(setPrivacyConfig).catch(() => {
+  const loadPrivacyConfig = useCallback(async () => {
+    try {
+      const config = await api.getPrivacyConfig();
+      setPrivacyConfig(config);
+      return true;
+    } catch {
       toast.error(t('settings.loadPrivacyError'));
-    });
+      return false;
+    }
   }, []);
+
+  useEffect(() => {
+    void loadPrivacyConfig();
+  }, [loadPrivacyConfig]);
+
+  const discardActiveTabChanges = useCallback(async () => {
+    switch (activeTab) {
+      case 'embedding': {
+        const reloaded = await loadEmbedConfig();
+        if (!reloaded) return false;
+        break;
+      }
+      case 'privacy': {
+        const reloaded = await loadPrivacyConfig();
+        if (!reloaded) return false;
+        break;
+      }
+      case 'ocr': {
+        const reloaded = await loadOcrConfig();
+        if (!reloaded) return false;
+        break;
+      }
+      default:
+        break;
+    }
+
+    markClean(activeTab);
+    return true;
+  }, [activeTab, loadEmbedConfig, loadOcrConfig, loadPrivacyConfig, markClean]);
+
+  const handleTabChange = useCallback((nextTab: SettingsTab) => {
+    if (nextTab === activeTab) return;
+    if (dirtyTabs.has(activeTab)) {
+      setPendingTab(nextTab);
+      return;
+    }
+    setActiveTab(nextTab);
+  }, [activeTab, dirtyTabs]);
+
+  const handleCancelPendingTabChange = useCallback(() => {
+    if (discardingTabChanges) return;
+    setPendingTab(null);
+  }, [discardingTabChanges]);
+
+  const handleConfirmPendingTabChange = useCallback(async () => {
+    if (!pendingTab) return;
+
+    setDiscardingTabChanges(true);
+    const nextTab = pendingTab;
+    const discarded = await discardActiveTabChanges();
+    setDiscardingTabChanges(false);
+
+    if (!discarded) return;
+
+    setPendingTab(null);
+    setActiveTab(nextTab);
+  }, [discardActiveTabChanges, pendingTab]);
+
+  const handleCancelBlockedNavigation = useCallback(() => {
+    if (settingsNavigationBlocker.state === 'blocked') {
+      settingsNavigationBlocker.reset();
+    }
+  }, [settingsNavigationBlocker]);
+
+  const handleConfirmBlockedNavigation = useCallback(() => {
+    if (settingsNavigationBlocker.state === 'blocked') {
+      settingsNavigationBlocker.proceed();
+    }
+  }, [settingsNavigationBlocker]);
+
+  useEffect(() => {
+    if (pendingTab && !dirtyTabs.has(activeTab)) {
+      setActiveTab(pendingTab);
+      setPendingTab(null);
+    }
+  }, [activeTab, dirtyTabs, pendingTab]);
+
+  useEffect(() => {
+    if (settingsNavigationBlocker.state === 'blocked' && !hasDirtyTabs) {
+      settingsNavigationBlocker.proceed();
+    }
+  }, [hasDirtyTabs, settingsNavigationBlocker]);
+
+  useEffect(() => {
+    if (!hasDirtyTabs) return;
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+      return '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasDirtyTabs]);
+
+  useEffect(() => {
+    const element = tabStripRef.current;
+    if (!element) return;
+
+    updateTabStripIndicators();
+    element.addEventListener('scroll', updateTabStripIndicators, { passive: true });
+
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(() => updateTabStripIndicators())
+      : null;
+
+    resizeObserver?.observe(element);
+    window.addEventListener('resize', updateTabStripIndicators);
+
+    return () => {
+      element.removeEventListener('scroll', updateTabStripIndicators);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', updateTabStripIndicators);
+    };
+  }, [dirtyTabs, locale, updateTabStripIndicators]);
+
+  useEffect(() => {
+    if (providerFormDirty) {
+      markDirty('providers');
+      return;
+    }
+
+    markClean('providers');
+  }, [markClean, markDirty, providerFormDirty]);
+
+  useEffect(() => {
+    if (skillEditorDirty || mcpFormDirty) {
+      markDirty('extensions');
+      return;
+    }
+
+    markClean('extensions');
+  }, [markClean, markDirty, mcpFormDirty, skillEditorDirty]);
 
   const loadUserMemories = useCallback(async () => {
     try {
@@ -572,6 +772,7 @@ export function SettingsPage() {
     try {
       await api.saveSkill(input);
       toast.success(t('common.success'));
+      setSkillEditorDirty(false);
       setShowSkillForm(false);
       setEditingSkill(null);
       loadSkills();
@@ -605,6 +806,7 @@ export function SettingsPage() {
     try {
       const saved = await api.saveMcpServer(input);
       toast.success(t('common.success'));
+      setMcpFormDirty(false);
       setShowMcpForm(false);
       setEditingMcpServer(null);
       setMcpToolCounts((prev) => {
@@ -722,6 +924,7 @@ export function SettingsPage() {
     try {
       await api.saveAgentConfig(input);
       toast.success(t('settings.providerSaved'));
+      setProviderFormDirty(false);
       setProviderView('list');
       setEditingConfig(undefined);
       setSelectedPreset(null);
@@ -793,29 +996,63 @@ export function SettingsPage() {
       </motion.div>
 
       {/* Tab Navigation */}
-      <div className="flex gap-1 rounded-lg border border-border bg-surface-1 p-1 overflow-x-auto">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => {
-              if (dirtyTabs.has(activeTab)) {
-                toast.warning('You have unsaved changes', { duration: 3000 });
-              }
-              setActiveTab(tab.id);
-            }}
-            className={`flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-all duration-fast cursor-pointer whitespace-nowrap ${
-              activeTab === tab.id
-                ? 'bg-accent text-white shadow-sm'
-                : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-2'
-            }`}
-          >
-            {tab.icon}
-            {tab.label}
-            {dirtyTabs.has(tab.id) && (
-              <span className="w-1.5 h-1.5 rounded-full bg-warning" />
-            )}
-          </button>
-        ))}
+      <div className="relative">
+        <div
+          ref={tabStripRef}
+          className="flex gap-1 rounded-lg border border-border bg-surface-1 p-1 overflow-x-auto"
+        >
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => handleTabChange(tab.id)}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-all duration-fast cursor-pointer whitespace-nowrap ${
+                activeTab === tab.id
+                  ? 'bg-accent text-white shadow-sm'
+                  : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-2'
+              }`}
+            >
+              {tab.icon}
+              {tab.label}
+              {dirtyTabs.has(tab.id) && (
+                <span className="w-1.5 h-1.5 rounded-full bg-warning" />
+              )}
+            </button>
+          ))}
+        </div>
+
+        <AnimatePresence initial={false}>
+          {showLeftTabIndicator && (
+            <motion.div
+              key="settings-tab-strip-left-indicator"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18 }}
+              className="pointer-events-none absolute inset-y-1 left-px flex w-12 items-center justify-start rounded-l-lg pl-2"
+              style={{ background: 'linear-gradient(90deg, var(--color-surface-1) 45%, transparent 100%)' }}
+              aria-hidden="true"
+            >
+              <ChevronLeft size={14} className="text-text-secondary/80" />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence initial={false}>
+          {showRightTabIndicator && (
+            <motion.div
+              key="settings-tab-strip-right-indicator"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18 }}
+              className="pointer-events-none absolute inset-y-1 right-px flex w-12 items-center justify-end rounded-r-lg pr-2"
+              style={{ background: 'linear-gradient(270deg, var(--color-surface-1) 45%, transparent 100%)' }}
+              aria-hidden="true"
+            >
+              <ChevronRight size={14} className="text-text-secondary/80" />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* ── Tab: Appearance ─────────────────────────────────────── */}
@@ -1098,8 +1335,14 @@ export function SettingsPage() {
             config={editingConfig}
             preset={editingConfig ? undefined : selectedPreset}
             onSave={handleSaveAgent}
-            onCancel={() => { setProviderView('list'); setEditingConfig(undefined); setSelectedPreset(null); }}
+            onCancel={() => {
+              setProviderFormDirty(false);
+              setProviderView('list');
+              setEditingConfig(undefined);
+              setSelectedPreset(null);
+            }}
             isSaving={agentSaveLoading}
+            onDirtyChange={setProviderFormDirty}
           />
         ) : providerView === 'selector' ? (
           <div className="space-y-4">
@@ -1726,7 +1969,12 @@ export function SettingsPage() {
               <SkillEditor
                 skill={editingSkill ?? undefined}
                 onSave={handleSaveSkill}
-                onCancel={() => { setShowSkillForm(false); setEditingSkill(null); }}
+                onCancel={() => {
+                  setSkillEditorDirty(false);
+                  setShowSkillForm(false);
+                  setEditingSkill(null);
+                }}
+                onDirtyChange={setSkillEditorDirty}
               />
             ) : (
               <div className="space-y-4">
@@ -1801,7 +2049,12 @@ export function SettingsPage() {
               <McpServerForm
                 server={editingMcpServer ?? undefined}
                 onSave={handleSaveMcpServer}
-                onCancel={() => { setShowMcpForm(false); setEditingMcpServer(null); }}
+                onCancel={() => {
+                  setMcpFormDirty(false);
+                  setShowMcpForm(false);
+                  setEditingMcpServer(null);
+                }}
+                onDirtyChange={setMcpFormDirty}
               />
             ) : (
               <div className="space-y-4">
@@ -1954,6 +2207,27 @@ export function SettingsPage() {
         message={t('settings.deleteMcpServerConfirm')}
         confirmText={t('common.delete')}
         variant="danger"
+      />
+
+      <ConfirmDialog
+        open={pendingTab !== null}
+        onClose={handleCancelPendingTabChange}
+        onConfirm={() => { void handleConfirmPendingTabChange(); }}
+        title={t('settings.unsavedChangesTitle')}
+        message={t('settings.discardTabChangesMessage')}
+        confirmText={t('settings.discardChanges')}
+        variant="warning"
+        loading={discardingTabChanges}
+      />
+
+      <ConfirmDialog
+        open={settingsNavigationBlocker.state === 'blocked'}
+        onClose={handleCancelBlockedNavigation}
+        onConfirm={handleConfirmBlockedNavigation}
+        title={t('settings.unsavedChangesTitle')}
+        message={t('settings.discardPageChangesMessage')}
+        confirmText={t('settings.discardChanges')}
+        variant="warning"
       />
     </div>
   );

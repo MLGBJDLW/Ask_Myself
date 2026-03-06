@@ -134,7 +134,7 @@ export function TagInput({
               className="shrink-0 rounded-full p-0.5
                 text-text-tertiary hover:text-text-primary hover:bg-surface-4
                 transition-colors duration-fast cursor-pointer"
-              aria-label={`Remove ${tag}`}
+              aria-label={`${t('common.remove')} ${tag}`}
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"

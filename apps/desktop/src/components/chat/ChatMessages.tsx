@@ -1,5 +1,5 @@
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { MessageCircle, ChevronDown, AlertCircle, RotateCcw, X, Search, FileText, Link2, HelpCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -48,8 +48,11 @@ const SUGGESTIONS: { icon: typeof Search; labelKey: keyof import('../../i18n').T
   { icon: HelpCircle, labelKey: 'chat.suggestions.question', promptKey: 'chat.suggestions.question.prompt' },
 ];
 
+const INSTANT_TRANSITION = { duration: 0 };
+
 export function ChatMessages({ messages, streamText, streamRounds, thinkingText, isThinking, toolCalls, isStreaming, error, onRetry, onDismissError, onDeleteMessage, onEditAndResend, loadingMsgs, lastCached, onSuggestionClick }: ChatMessagesProps) {
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [isNearBottom, setIsNearBottom] = useState(true);
@@ -94,20 +97,21 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
   }, [messages]);
 
   // Typewriter: gradually reveal streamed text for a smooth typing feel
-  const displayedText = useTypewriter(streamText, isStreaming, { charsPerTick: 5, intervalMs: 30 });
-  const isRevealing = isStreaming || displayedText.length < streamText.length;
+  const typewriterText = useTypewriter(streamText, isStreaming, { charsPerTick: 5, intervalMs: 30 });
+  const displayedText = shouldReduceMotion ? streamText : typewriterText;
+  const isRevealing = !shouldReduceMotion && (isStreaming || displayedText.length < streamText.length);
   const streamingThinkingContent = thinkingText || t('chat.thinking');
 
   // Debounce displayed text for markdown rendering (~100ms) to avoid re-parsing on every tick
   const [debouncedMarkdown, setDebouncedMarkdown] = useState('');
   useEffect(() => {
-    if (!isStreaming) {
+    if (shouldReduceMotion || !isStreaming) {
       setDebouncedMarkdown(displayedText);
       return;
     }
     const timer = setTimeout(() => setDebouncedMarkdown(displayedText), 100);
     return () => clearTimeout(timer);
-  }, [displayedText, isStreaming]);
+  }, [displayedText, isStreaming, shouldReduceMotion]);
 
   // Memoize remark plugins array to avoid re-creating on each render
   const remarkPlugins = useMemo(() => [remarkGfm], []);
@@ -175,15 +179,15 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
   // Auto-scroll only when near bottom
   useEffect(() => {
     if (isNearBottom) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      bottomRef.current?.scrollIntoView({ behavior: shouldReduceMotion ? 'auto' : 'smooth' });
     }
-  }, [messages, streamText, streamRounds, toolCalls, isNearBottom]);
+  }, [messages, streamText, streamRounds, toolCalls, isNearBottom, shouldReduceMotion]);
 
   const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    bottomRef.current?.scrollIntoView({ behavior: shouldReduceMotion ? 'auto' : 'smooth' });
     setIsNearBottom(true);
     setUnreadCount(0);
-  }, []);
+  }, [shouldReduceMotion]);
 
   // Find the last assistant message index for retry button
   // NOTE: This useMemo MUST be before early returns to satisfy React's Rules of Hooks.
@@ -218,9 +222,9 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
                   <motion.button
                     key={s.labelKey}
                     type="button"
-                    initial={{ opacity: 0, y: 12 }}
+                    initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: i * 0.07, duration: 0.3, ease: 'easeOut' }}
+                    transition={shouldReduceMotion ? INSTANT_TRANSITION : { delay: i * 0.07, duration: 0.3, ease: 'easeOut' }}
                     onClick={() => onSuggestionClick(prompt)}
                     className="bg-surface-1 hover:bg-surface-2 border border-border rounded-lg p-4 cursor-pointer transition-colors text-left"
                   >
@@ -343,9 +347,10 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
       {/* Streaming thinking block */}
       {isStreaming && (thinkingText || isThinking) && (
         <motion.div
-          initial={{ opacity: 0 }}
+          initial={shouldReduceMotion ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
-          layout
+          layout={!shouldReduceMotion}
+          transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
           className="flex justify-start mb-3"
         >
           <div className="max-w-[80%]">
@@ -359,9 +364,10 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
         <div key={round.id} className="mb-4 space-y-2">
           {round.thinking && (
             <motion.div
-              initial={{ opacity: 0 }}
+              initial={shouldReduceMotion ? false : { opacity: 0 }}
               animate={{ opacity: 1 }}
-              layout
+              layout={!shouldReduceMotion}
+              transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
               className="flex justify-start"
             >
               <div className="max-w-[80%]">
@@ -372,9 +378,10 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
 
           {round.reply && (
             <motion.div
-              initial={{ opacity: 0 }}
+              initial={shouldReduceMotion ? false : { opacity: 0 }}
               animate={{ opacity: 1 }}
-              layout
+              layout={!shouldReduceMotion}
+              transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
               className="flex justify-start"
             >
               <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
@@ -410,8 +417,9 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
       {/* Streaming text */}
       {shouldShowStreamingPreview && streamText && (
         <motion.div
-          initial={{ opacity: 0 }}
+          initial={shouldReduceMotion ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
+          transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
           className="flex justify-start mb-3"
         >
           <div
@@ -425,7 +433,7 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
                 </ReactMarkdown>
               </CitationContext.Provider>
               {isRevealing && (
-                <span className="inline-block w-1.5 h-4 bg-accent animate-pulse ml-0.5 align-text-bottom rounded-sm" />
+                <span className={`inline-block w-1.5 h-4 bg-accent ml-0.5 align-text-bottom rounded-sm ${shouldReduceMotion ? '' : 'animate-pulse'}`} />
               )}
             </div>
           </div>
@@ -435,16 +443,17 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
       {/* Thinking indicator */}
       {isStreaming && !streamText && streamRounds.length === 0 && toolCalls.length === 0 && !thinkingText && !isThinking && (
         <motion.div
-          initial={{ opacity: 0 }}
+          initial={shouldReduceMotion ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
+          transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
           className="flex justify-start mb-3"
         >
           <div className="rounded-lg px-3.5 py-2.5 bg-surface-2" role="status" aria-label={t('chat.thinking')}>
             <div className="flex items-center gap-2 text-sm text-text-tertiary">
               <div className="flex gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1.5 h-1.5 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1.5 h-1.5 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '300ms' }} />
+                <span className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? '' : 'animate-bounce'}`} style={{ animationDelay: '0ms' }} />
+                <span className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? '' : 'animate-bounce'}`} style={{ animationDelay: '150ms' }} />
+                <span className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? '' : 'animate-bounce'}`} style={{ animationDelay: '300ms' }} />
               </div>
               {t('chat.thinking')}
             </div>
@@ -455,9 +464,10 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
       {/* Inline error state */}
       {error && !isStreaming && (
         <motion.div
-          initial={{ opacity: 0, y: 8 }}
+          initial={shouldReduceMotion ? false : { opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 8 }}
+          exit={shouldReduceMotion ? { opacity: 0, y: 0 } : { opacity: 0, y: 8 }}
+          transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
           className="flex justify-start mb-3"
         >
           <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 bg-red-500/10 border border-red-500/20 text-sm">
@@ -500,10 +510,10 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
       <AnimatePresence>
         {!isNearBottom && (
           <motion.button
-            initial={{ opacity: 0, y: 12 }}
+            initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 12 }}
-            transition={{ duration: 0.18, ease: 'easeOut' }}
+            exit={shouldReduceMotion ? { opacity: 0, y: 0 } : { opacity: 0, y: 12 }}
+            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.18, ease: 'easeOut' }}
             type="button"
             onClick={scrollToBottom}
             title={t('chat.scrollToBottom')}

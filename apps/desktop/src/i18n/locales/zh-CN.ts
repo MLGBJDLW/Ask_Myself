@@ -157,6 +157,12 @@ export const zhCN: TranslationKeys = {
   'sources.pathPlaceholder': 'C:\\Users\\you\\notes  /  /home/user/notes',
   'sources.addIncludePattern': '添加匹配模式...',
   'sources.addExcludePattern': '添加排除模式...',
+  'sources.batchConfirm.scanAll.title': '确认扫描全部数据源？',
+  'sources.batchConfirm.scanAll.message': '这会扫描所有数据源，并在更新内容后重建嵌入。数据量较大时可能需要较长时间。',
+  'sources.batchConfirm.scanAll.confirm': '全部扫描',
+  'sources.batchConfirm.rebuildEmbeddings.title': '确认重建全部嵌入？',
+  'sources.batchConfirm.rebuildEmbeddings.message': '这会为已索引内容重新计算嵌入，可能耗时较长，并占用较多 CPU 资源。',
+  'sources.batchConfirm.rebuildEmbeddings.confirm': '重建嵌入',
 
   // Collections
   'playbooks.title': '收藏集',
@@ -431,6 +437,8 @@ export const zhCN: TranslationKeys = {
   'chat.contentFiltered': '回复被内容策略过滤',
   'chat.contextOverflow': '上下文窗口已满 — 请考虑压缩对话',
   'chat.contextOverflowHint': '使用压缩按钮总结较早的消息',
+  'chat.contextOverflowActionsHint': '压缩较早消息以继续当前对话，或开始新对话以使用全新的上下文窗口。',
+  'chat.contextOverflowNewChatHint': '开始新对话，以使用全新的上下文窗口继续。',
   'chat.rateLimited': '被服务商限流 — 请稍候',
   'chat.checkpoints': '存档点',
   'chat.restoreCheckpoint': '恢复',
@@ -583,6 +591,47 @@ export const zhCN: TranslationKeys = {
   'settings.deleteSkillConfirm': '确定要删除此技能吗？',
   'settings.deleteMcpServerConfirm': '确定要删除此 MCP 服务器吗？',
 
+  // Settings - MCP Form
+  'settings.mcpTransportHelp': '前端只显示当前后端真正支持的 transport，避免保存后才发现无法使用。',
+  'settings.mcpStdioTitle': 'stdio',
+  'settings.mcpStdioHint': '本地子进程 MCP。适合 `npx`、`uvx`、`docker run` 等命令。',
+  'settings.mcpStreamableTitle': 'Streamable HTTP',
+  'settings.mcpStreamableHint': '推荐。单一 HTTP endpoint，支持会话恢复与 JSON/SSE 响应。',
+  'settings.mcpSseTitle': 'SSE (legacy)',
+  'settings.mcpSseHint': '兼容旧版远程 MCP：先连 SSE，再按 endpoint 事件回传的地址 POST 消息。',
+  'settings.mcpRecommended': '推荐',
+  'settings.mcpNameRequired': '请输入服务器名称。',
+  'settings.mcpCommandRequired': '请输入启动命令。',
+  'settings.mcpUrlRequired': '请输入 URL。',
+  'settings.mcpUrlInvalid': 'URL 必须是 http 或 https。',
+  'settings.mcpArgsHelp': '推荐直接填写 JSON 数组；也支持每行一个参数、逗号分隔或空格分隔。',
+  'settings.mcpEnvHelp': '使用 JSON 对象。若未显式设置 `PORT`，应用会自动注入 `PORT=0`，让系统分配空闲端口。',
+  'settings.mcpUrlHelp': '请输入完整 MCP endpoint。`streamable_http` 通常类似 `https://host/mcp`。',
+  'settings.mcpHeadersHelp': '使用 JSON 对象，例如 `{"Authorization":"Bearer ..."}`。',
+  'settings.mcpArgsInvalidJson': '参数 JSON 格式无效。',
+  'settings.mcpArgsInvalidArray': '参数 JSON 必须是字符串数组。',
+  'settings.mcpJsonMustBeObject': '必须是 JSON 对象。',
+  'settings.mcpJsonInvalidEntries': '的 key 不能为空，value 必须是字符串。',
+  'settings.mcpJsonInvalid': 'JSON 格式无效。',
+  'settings.mcpParsedArgs': '解析后的参数',
+  'settings.mcpDraftReady': '当前配置可以直接测试和保存。',
+  'settings.mcpDraftInvalid': '请先修复高亮字段。',
+  'settings.mcpFreePortManaged': '若目标命令需要端口，应用会自动使用空闲端口，避免默认端口被占用时直接失败。',
+  'settings.mcpExplicitPort': '你已经显式设置了 `PORT`，应用不会覆盖它。',
+  'settings.mcpRemoteSessionNote': '远程 transport 会保留 headers 并处理 session id；`streamable_http` 在会话过期时会尝试重新初始化。',
+  'settings.mcpUrlLabel': 'URL',
+  'settings.mcpHeadersLabel': 'HTTP Headers',
+
+  // Settings - Extensions (extra)
+  'settings.extensions.toolCount': '{count} 个工具',
+  'settings.extensions.connectionFailed': '连接失败',
+  'settings.extensions.availableTools': '可用工具',
+  'settings.extensions.toggleTools': '展开或收起工具列表',
+
+  // Chat - Extensions
+  'chat.extensions.unavailable': '不可用',
+  'chat.extensions.toolCount': '{count} 个工具',
+
   // Provider Model Tags
   'providers.tagLatest': '最新',
   'providers.tagCoding': '编程',
@@ -598,6 +647,23 @@ export const zhCN: TranslationKeys = {
   'providers.tagFlagship': '旗舰',
   'providers.tagCode': '代码',
   'providers.tagRecommended': '推荐',
+
+  // 404 Page
+  'app.pageNotFound': '页面不存在',
+  'app.goHome': '返回首页',
+
+  // Sources
+  'sources.browse': '浏览',
+
+  // Chat - Token IO
+  'chat.tokenIO': '输入 {input} 输出 {output}',
+
+  // Settings
+  'settings.unsavedChanges': '你有未保存的更改',
+  'settings.unsavedChangesTitle': '要放弃未保存的更改吗？',
+  'settings.discardTabChangesMessage': '当前设置标签页有未保存的更改。要放弃这些更改并切换标签页吗？',
+  'settings.discardPageChangesMessage': '设置页中有未保存的更改。要放弃这些更改并离开当前页面吗？',
+  'settings.discardChanges': '放弃更改',
 
   // Common
   'common.save': '保存',

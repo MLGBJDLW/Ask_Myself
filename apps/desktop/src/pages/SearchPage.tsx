@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   Search,
   AlertTriangle,
@@ -48,6 +48,7 @@ import { useDebounce } from '../lib/useDebounce';
 /* ------------------------------------------------------------------ */
 
 const PAGE_SIZE = 20;
+const INSTANT_TRANSITION = { duration: 0 };
 
 const FILE_TYPE_OPTIONS: { value: FileType; labelKey: 'search.markdown' | 'search.plaintext' | 'search.log' | 'search.pdf' | 'search.docx' | 'search.excel' | 'search.pptx' }[] = [
   { value: 'markdown', labelKey: 'search.markdown' },
@@ -67,6 +68,7 @@ export function SearchPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
+  const shouldReduceMotion = useReducedMotion();
   // 鈹€鈹€ Core search state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const [query, setQuery] = useState('');
   const [result, setResult] = useState<SearchResult | null>(null);
@@ -97,6 +99,7 @@ export function SearchPage() {
   // 鈹€鈹€ Refs 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const skipDebouncedSearchRef = useRef<string | null>(null);
 
   // ── Recent queries dropdown ────────────────────────────────────────
   const [inputFocused, setInputFocused] = useState(false);
@@ -161,8 +164,16 @@ export function SearchPage() {
 
   // ── Auto-trigger search on debounced value change ────────────────
   useEffect(() => {
-    if (debouncedQuery.trim().length >= 2) {
-      handleSearch(debouncedQuery);
+    const trimmedDebouncedQuery = debouncedQuery.trim();
+    if (!trimmedDebouncedQuery) return;
+
+    if (skipDebouncedSearchRef.current === trimmedDebouncedQuery) {
+      skipDebouncedSearchRef.current = null;
+      return;
+    }
+
+    if (trimmedDebouncedQuery.length >= 2) {
+      handleSearch(trimmedDebouncedQuery);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedQuery]);
@@ -356,7 +367,7 @@ export function SearchPage() {
   return (
     <div className="flex h-full">
       {/* 鈹€鈹€ Main search area 鈹€鈹€ */}
-      <div className="flex-1 transition-all duration-300">
+      <div className={`flex-1 ${shouldReduceMotion ? '' : 'transition-all duration-300'}`}>
         <div className="mx-auto max-w-3xl px-6 py-8">
       {/* 鈹€鈹€ Header 鈹€鈹€ */}
       <div className="mb-8">
@@ -382,16 +393,16 @@ export function SearchPage() {
             </div>
             <ChevronDown
               size={14}
-              className={`text-text-tertiary transition-transform duration-200 ${kbOpen ? '' : '-rotate-90'}`}
+              className={`text-text-tertiary ${shouldReduceMotion ? '' : 'transition-transform duration-200'} ${kbOpen ? '' : '-rotate-90'}`}
             />
           </button>
           <AnimatePresence>
             {kbOpen && (
               <motion.div
-                initial={{ height: 0, opacity: 0 }}
+                initial={shouldReduceMotion ? false : { height: 0, opacity: 0 }}
                 animate={{ height: 'auto', opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
                 className="overflow-hidden"
               >
                 <div className="px-4 pb-3 pt-1">
@@ -471,7 +482,16 @@ export function SearchPage() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') handleSearch();
+              if (e.key === 'Enter') {
+                const trimmedQuery = query.trim();
+                if (!trimmedQuery) return;
+
+                if (trimmedQuery !== debouncedQuery.trim()) {
+                  skipDebouncedSearchRef.current = trimmedQuery;
+                }
+
+                handleSearch(trimmedQuery);
+              }
             }}
             onFocus={() => setInputFocused(true)}
             onBlur={() => {
@@ -479,7 +499,7 @@ export function SearchPage() {
               setTimeout(() => setInputFocused(false), 150);
             }}
             placeholder={t('search.placeholder')}
-            className={`h-11 ${isDebouncing ? 'animate-pulse !border-accent/50' : ''}`}
+            className={`h-11 ${isDebouncing ? `${shouldReduceMotion ? '' : 'animate-pulse '}!border-accent/50` : ''}`}
           />
 
           {/* Recent queries dropdown */}
@@ -593,10 +613,10 @@ export function SearchPage() {
       <AnimatePresence>
         {filtersOpen && (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
+            initial={shouldReduceMotion ? false : { height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden"
           >
             <div className="mb-6 rounded-lg border border-border bg-surface-1 p-4">
@@ -776,8 +796,9 @@ export function SearchPage() {
           {/* Uncertainty banner */}
           {showUncertainty && (
             <motion.div
-              initial={{ opacity: 0, y: -8 }}
+              initial={shouldReduceMotion ? false : { opacity: 0, y: -8 }}
               animate={{ opacity: 1, y: 0 }}
+              transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
               className="mb-4 flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/8 px-4 py-3"
             >
               <AlertTriangle
@@ -809,21 +830,26 @@ export function SearchPage() {
             <>
             <motion.div
               className="space-y-3"
-              initial="hidden"
+              initial={shouldReduceMotion ? false : 'hidden'}
               animate="visible"
               variants={{
                 hidden: {},
-                visible: { transition: { staggerChildren: 0.06 } },
+                visible: shouldReduceMotion ? {} : { transition: { staggerChildren: 0.06 } },
               }}
             >
               {result.evidenceCards.map((card) => (
                 <motion.div
                   key={card.chunkId}
-                  variants={{
-                    hidden: { opacity: 0, y: 16 },
-                    visible: { opacity: 1, y: 0 },
-                  }}
-                  transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+                  variants={shouldReduceMotion
+                    ? {
+                        hidden: { opacity: 1, y: 0 },
+                        visible: { opacity: 1, y: 0 },
+                      }
+                    : {
+                        hidden: { opacity: 0, y: 16 },
+                        visible: { opacity: 1, y: 0 },
+                      }}
+                  transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
                 >
                   <EvidenceCardComponent
                     card={card}
@@ -892,8 +918,9 @@ export function SearchPage() {
             <>
               {/* Uncertainty banner for zero results */}
               <motion.div
-                initial={{ opacity: 0, y: -8 }}
+                initial={shouldReduceMotion ? false : { opacity: 0, y: -8 }}
                 animate={{ opacity: 1, y: 0 }}
+                transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
                 className="mb-4 flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/8 px-4 py-3"
               >
                 <AlertTriangle

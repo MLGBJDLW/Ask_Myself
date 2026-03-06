@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Eye,
   EyeOff,
@@ -24,6 +24,7 @@ interface AgentConfigFormProps {
   onSave: (input: SaveAgentConfigInput) => Promise<void>;
   onCancel: () => void;
   isSaving: boolean;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 const PROVIDER_LABEL_KEYS: { value: ProviderType; labelKey: string }[] = [
@@ -50,13 +51,15 @@ const BASE_URL_PLACEHOLDERS: Record<ProviderType, string> = {
 
 const LOCAL_PROVIDERS: ProviderType[] = ['ollama', 'lm_studio'];
 
-export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving }: AgentConfigFormProps) {
+export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving, onDirtyChange }: AgentConfigFormProps) {
   const { t } = useTranslation();
 
   const presetDefaultModel = preset?.models.find(m => m.recommended)?.id || preset?.models[0]?.id || '';
+  const initialProvider = (config?.provider as ProviderType) ?? (preset?.provider as ProviderType) ?? 'open_ai';
+  const initialIsLocal = LOCAL_PROVIDERS.includes(initialProvider) || (preset ? !preset.requiresApiKey : false);
 
   const [name, setName] = useState(config?.name ?? preset?.name ?? '');
-  const [provider, setProvider] = useState<ProviderType>((config?.provider as ProviderType) ?? (preset?.provider as ProviderType) ?? 'open_ai');
+  const [provider, setProvider] = useState<ProviderType>(initialProvider);
   const [apiKey, setApiKey] = useState(config?.apiKey ?? '');
   const [baseUrl, setBaseUrl] = useState(config?.baseUrl ?? preset?.baseUrl ?? '');
   const [model, setModel] = useState(config?.model ?? presetDefaultModel);
@@ -75,6 +78,24 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving }: 
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [useCustomModel, setUseCustomModel] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(!!config);
+  const initialDraftRef = useRef<SaveAgentConfigInput>({
+    id: config?.id ?? null,
+    name: config?.name ?? preset?.name ?? '',
+    provider: initialProvider,
+    apiKey: initialIsLocal ? '' : (config?.apiKey ?? ''),
+    baseUrl: config?.baseUrl ?? preset?.baseUrl ?? null,
+    model: config?.model ?? presetDefaultModel,
+    temperature: config?.temperature ?? 0.3,
+    maxTokens: config?.maxTokens ?? 4096,
+    contextWindow: config?.contextWindow ?? null,
+    isDefault: config?.isDefault ?? false,
+    reasoningEnabled: config?.reasoningEnabled ?? null,
+    thinkingBudget: config?.thinkingBudget ?? null,
+    reasoningEffort: config?.reasoningEffort ?? null,
+    maxIterations: config?.maxIterations ?? null,
+    summarizationModel: config?.summarizationModel ?? null,
+    summarizationProvider: config?.summarizationProvider ?? null,
+  });
 
   const isLocal = LOCAL_PROVIDERS.includes(provider) || (preset ? !preset.requiresApiKey : false);
 
@@ -101,6 +122,21 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving }: 
     summarizationModel: summarizationModel?.trim() || null,
     summarizationProvider: summarizationProvider || null,
   }), [config?.id, name, provider, apiKey, baseUrl, model, temperature, maxTokens, contextWindow, isDefault, reasoningEnabled, thinkingBudget, reasoningEffort, maxIterations, summarizationModel, summarizationProvider, isLocal]);
+
+  useEffect(() => {
+    if (!onDirtyChange) return;
+
+    const dirty = JSON.stringify(buildInput()) !== JSON.stringify(initialDraftRef.current);
+    onDirtyChange(dirty);
+  }, [buildInput, onDirtyChange]);
+
+  useEffect(() => {
+    if (!onDirtyChange) return;
+
+    return () => {
+      onDirtyChange(false);
+    };
+  }, [onDirtyChange]);
 
   const handleTest = async () => {
     setTestLoading(true);

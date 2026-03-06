@@ -1,5 +1,5 @@
 import { forwardRef } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 
 type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 type ButtonSize = 'sm' | 'md' | 'lg';
@@ -40,11 +40,12 @@ const iconOnlySizes: Record<ButtonSize, string> = {
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   ({ variant = 'primary', size = 'md', loading, icon, iconOnly, children, className = '', disabled, ...props }, ref) => {
+    const shouldReduceMotion = useReducedMotion();
     const sizeClass = iconOnly ? iconOnlySizes[size] : sizes[size];
     return (
       <motion.button
         ref={ref}
-        whileTap={{ scale: 0.97 }}
+        whileTap={shouldReduceMotion ? undefined : { scale: 0.97 }}
         className={`
           inline-flex items-center justify-center font-medium
           rounded-md transition-colors duration-fast ease-out

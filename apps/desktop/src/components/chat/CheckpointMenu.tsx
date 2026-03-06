@@ -43,6 +43,9 @@ export function CheckpointMenu({ conversationId, onRestore }: CheckpointMenuProp
   const [loading, setLoading] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const firstRestoreButtonRef = useRef<HTMLButtonElement>(null);
 
   /* ── Load checkpoints when dropdown opens ───────────────────────── */
   const load = useCallback(async () => {
@@ -65,29 +68,56 @@ export function CheckpointMenu({ conversationId, onRestore }: CheckpointMenuProp
     }
   }, [open, load]);
 
+  const closeMenu = useCallback((restoreFocus = true) => {
+    setOpen(false);
+    if (restoreFocus) {
+      requestAnimationFrame(() => triggerRef.current?.focus());
+    }
+  }, []);
+
   /* ── Close on outside click ─────────────────────────────────────── */
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
+        closeMenu(false);
       }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
+  }, [closeMenu, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMenu();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [closeMenu, open]);
+
+  useEffect(() => {
+    if (!open || loading) return;
+    const frame = requestAnimationFrame(() => {
+      firstRestoreButtonRef.current?.focus() ?? panelRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [checkpoints.length, loading, open]);
 
   /* ── Restore a checkpoint ───────────────────────────────────────── */
   const handleRestore = useCallback(async (checkpointId: string) => {
     try {
       await api.restoreCheckpoint(checkpointId);
       toast.success(t('chat.checkpointRestored'));
-      setOpen(false);
+      closeMenu();
       onRestore();
     } catch (e) {
       toast.error(String(e));
     }
-  }, [onRestore, t]);
+  }, [closeMenu, onRestore, t]);
 
   /* ── Delete a checkpoint ────────────────────────────────────────── */
   const handleDelete = useCallback(async (checkpointId: string) => {
@@ -104,10 +134,11 @@ export function CheckpointMenu({ conversationId, onRestore }: CheckpointMenuProp
     <div ref={ref} className="relative inline-block">
       {/* Trigger button */}
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
-        aria-haspopup="listbox"
+        aria-haspopup="dialog"
         className="
           p-0.5 rounded hover:bg-surface-3 text-muted/60 hover:text-text-secondary
           transition-colors cursor-pointer
@@ -121,16 +152,20 @@ export function CheckpointMenu({ conversationId, onRestore }: CheckpointMenuProp
       <AnimatePresence>
         {open && (
           <motion.div
+            ref={panelRef}
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
             transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+            role="dialog"
+            aria-modal="false"
+            aria-label={t('chat.checkpoints')}
+            tabIndex={-1}
             className="
               absolute right-0 bottom-full mb-1 z-50
               w-72 max-h-64 overflow-y-auto
               bg-surface-1 border border-border rounded-lg shadow-lg
             "
-            role="listbox"
           >
             {/* Header */}
             <div className="px-3 py-2 border-b border-border">
@@ -164,6 +199,7 @@ export function CheckpointMenu({ conversationId, onRestore }: CheckpointMenuProp
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <button
+                          ref={cp.id === checkpoints[0]?.id ? firstRestoreButtonRef : undefined}
                           type="button"
                           onClick={() => setConfirmingId(confirmingId === cp.id ? null : cp.id)}
                           className="p-1 rounded text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle,
@@ -21,6 +21,7 @@ interface McpServerFormProps {
   server?: McpServer;
   onSave: (input: SaveMcpServerInput) => void;
   onCancel: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 type TransportType = 'stdio' | 'sse' | 'streamable_http';
@@ -106,65 +107,8 @@ function normalizeHttpUrl(raw: string): string {
   return parsed.toString();
 }
 
-export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) {
-  const { t, locale } = useTranslation();
-  const isChinese = locale.startsWith('zh');
-  const copy = {
-    transportLabel: isChinese ? 'Transport' : 'Transport',
-    transportHelp: isChinese
-      ? '前端只显示当前后端真正支持的 transport，避免保存后才发现无法使用。'
-      : 'Only transports that are implemented end-to-end are shown here.',
-    stdioTitle: isChinese ? 'stdio' : 'stdio',
-    stdioHint: isChinese
-      ? '本地子进程 MCP。适合 `npx`、`uvx`、`docker run` 等命令。'
-      : 'Launch a local MCP process such as `npx`, `uvx`, or `docker run`.',
-    streamableTitle: isChinese ? 'Streamable HTTP' : 'Streamable HTTP',
-    streamableHint: isChinese
-      ? '推荐。单一 HTTP endpoint，支持会话恢复与 JSON/SSE 响应。'
-      : 'Recommended. Single HTTP endpoint with session-aware JSON or SSE responses.',
-    sseTitle: isChinese ? 'SSE (legacy)' : 'SSE (legacy)',
-    sseHint: isChinese
-      ? '兼容旧版远程 MCP：先连 SSE，再按 endpoint 事件回传的地址 POST 消息。'
-      : 'Compatibility mode for older remote MCP servers that expose an SSE stream plus a message endpoint.',
-    recommended: isChinese ? '推荐' : 'Recommended',
-    nameRequired: isChinese ? '请输入服务器名称。' : 'Enter a server name.',
-    commandRequired: isChinese ? '请输入启动命令。' : 'Enter a launch command.',
-    urlRequired: isChinese ? '请输入 URL。' : 'Enter a URL.',
-    urlInvalid: isChinese ? 'URL 必须是 http 或 https。' : 'URL must use http or https.',
-    argsHelp: isChinese
-      ? '推荐直接填写 JSON 数组；也支持每行一个参数、逗号分隔或空格分隔。'
-      : 'Recommended: use a JSON array. One-arg-per-line, comma-separated, and whitespace-separated input also work.',
-    envHelp: isChinese
-      ? '使用 JSON 对象。若未显式设置 `PORT`，应用会自动注入 `PORT=0`，让系统分配空闲端口。'
-      : 'Use a JSON object. If `PORT` is omitted, the app injects `PORT=0` so the OS can assign a free port.',
-    urlHelp: isChinese
-      ? '请输入完整 MCP endpoint。`streamable_http` 通常类似 `https://host/mcp`。'
-      : 'Enter the full MCP endpoint URL. `streamable_http` is typically something like `https://host/mcp`.',
-    headersHelp: isChinese
-      ? '使用 JSON 对象，例如 `{\"Authorization\":\"Bearer ...\"}`。'
-      : 'Use a JSON object, for example `{\"Authorization\":\"Bearer ...\"}`.',
-    argsInvalidJson: isChinese ? '参数 JSON 格式无效。' : 'Arguments JSON is invalid.',
-    argsInvalidArray: isChinese ? '参数 JSON 必须是字符串数组。' : 'Arguments JSON must be an array of strings.',
-    jsonMustBeObject: isChinese ? '必须是 JSON 对象。' : ' must be a JSON object.',
-    jsonInvalidEntries: isChinese
-      ? '的 key 不能为空，value 必须是字符串。'
-      : ' keys must be non-empty and values must be strings.',
-    jsonInvalid: isChinese ? 'JSON 格式无效。' : ' JSON is invalid.',
-    parsedArgs: isChinese ? '解析后的参数' : 'Parsed arguments',
-    draftReady: isChinese ? '当前配置可以直接测试和保存。' : 'This draft is ready to test and save.',
-    draftInvalid: isChinese ? '请先修复高亮字段。' : 'Fix the highlighted fields before testing or saving.',
-    freePortManaged: isChinese
-      ? '若目标命令需要端口，应用会自动使用空闲端口，避免默认端口被占用时直接失败。'
-      : 'If the command needs a port, the app can inject a free port automatically instead of failing on a busy default port.',
-    explicitPort: isChinese
-      ? '你已经显式设置了 `PORT`，应用不会覆盖它。'
-      : 'You already set `PORT` explicitly, so the app will not override it.',
-    remoteSessionNote: isChinese
-      ? '远程 transport 会保留 headers 并处理 session id；`streamable_http` 在会话过期时会尝试重新初始化。'
-      : 'Remote transports keep custom headers and handle session ids; `streamable_http` will attempt to reinitialize when a session expires.',
-    urlLabel: isChinese ? 'URL' : 'URL',
-    headersLabel: isChinese ? 'HTTP Headers' : 'HTTP Headers',
-  };
+export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpServerFormProps) {
+  const { t } = useTranslation();
 
   const initialTransport = (server?.transport ?? 'stdio') as TransportType;
   const [name, setName] = useState(server?.name ?? '');
@@ -179,23 +123,32 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
   const [testLoading, setTestLoading] = useState(false);
   const [discoveredTools, setDiscoveredTools] = useState<McpToolInfo[] | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
+  const initialDraftRef = useRef({
+    name: server?.name ?? '',
+    transport: (server?.transport ?? 'stdio') as TransportType,
+    command: server?.command ?? '',
+    args: server?.args ?? '',
+    envJson: server?.envJson ?? '',
+    url: server?.url ?? '',
+    headersJson: server?.headersJson ?? '',
+  });
 
   const isStdio = transport === 'stdio';
   const isRemote = !isStdio;
 
   const parsedArgs = parseArgsDraft(args, {
-    invalidJson: copy.argsInvalidJson,
-    invalidArray: copy.argsInvalidArray,
+    invalidJson: t('settings.mcpArgsInvalidJson'),
+    invalidArray: t('settings.mcpArgsInvalidArray'),
   });
   const parsedEnv = parseJsonObjectDraft(envJson, t('settings.mcpEnvVars'), {
-    mustBeObject: copy.jsonMustBeObject,
-    invalidEntries: copy.jsonInvalidEntries,
-    invalidJson: copy.jsonInvalid,
+    mustBeObject: t('settings.mcpJsonMustBeObject'),
+    invalidEntries: t('settings.mcpJsonInvalidEntries'),
+    invalidJson: t('settings.mcpJsonInvalid'),
   });
-  const parsedHeaders = parseJsonObjectDraft(headersJson, copy.headersLabel, {
-    mustBeObject: copy.jsonMustBeObject,
-    invalidEntries: copy.jsonInvalidEntries,
-    invalidJson: copy.jsonInvalid,
+  const parsedHeaders = parseJsonObjectDraft(headersJson, t('settings.mcpHeadersLabel'), {
+    mustBeObject: t('settings.mcpJsonMustBeObject'),
+    invalidEntries: t('settings.mcpJsonInvalidEntries'),
+    invalidJson: t('settings.mcpJsonInvalid'),
   });
 
   const normalizedName = name.trim();
@@ -206,18 +159,18 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
   let urlError: string | null = null;
   if (isRemote) {
     if (!normalizedUrl) {
-      urlError = copy.urlRequired;
+      urlError = t('settings.mcpUrlRequired');
     } else {
       try {
         normalizedRemoteUrl = normalizeHttpUrl(normalizedUrl);
       } catch {
-        urlError = copy.urlInvalid;
+        urlError = t('settings.mcpUrlInvalid');
       }
     }
   }
 
-  const nameError = normalizedName ? null : copy.nameRequired;
-  const commandError = isStdio && !normalizedCommand ? copy.commandRequired : null;
+  const nameError = normalizedName ? null : t('settings.mcpNameRequired');
+  const commandError = isStdio && !normalizedCommand ? t('settings.mcpCommandRequired') : null;
   const validationErrors = [
     nameError,
     commandError,
@@ -243,14 +196,14 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
     hint: string;
     badge?: string;
   }> = [
-    { value: 'stdio', title: copy.stdioTitle, hint: copy.stdioHint },
+    { value: 'stdio', title: t('settings.mcpStdioTitle'), hint: t('settings.mcpStdioHint') },
     {
       value: 'streamable_http',
-      title: copy.streamableTitle,
-      hint: copy.streamableHint,
-      badge: copy.recommended,
+      title: t('settings.mcpStreamableTitle'),
+      hint: t('settings.mcpStreamableHint'),
+      badge: t('settings.mcpRecommended'),
     },
-    { value: 'sse', title: copy.sseTitle, hint: copy.sseHint },
+    { value: 'sse', title: t('settings.mcpSseTitle'), hint: t('settings.mcpSseHint') },
   ];
 
   const buildInput = (): SaveMcpServerInput | null => {
@@ -284,6 +237,30 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
       enabled: server?.enabled ?? true,
     };
   };
+
+  useEffect(() => {
+    if (!onDirtyChange) return;
+
+    const dirty = (
+      name !== initialDraftRef.current.name
+      || transport !== initialDraftRef.current.transport
+      || command !== initialDraftRef.current.command
+      || args !== initialDraftRef.current.args
+      || envJson !== initialDraftRef.current.envJson
+      || url !== initialDraftRef.current.url
+      || headersJson !== initialDraftRef.current.headersJson
+    );
+
+    onDirtyChange(dirty);
+  }, [args, command, envJson, headersJson, name, onDirtyChange, transport, url]);
+
+  useEffect(() => {
+    if (!onDirtyChange) return;
+
+    return () => {
+      onDirtyChange(false);
+    };
+  }, [onDirtyChange]);
 
   const handleSubmit = () => {
     const input = buildInput();
@@ -330,8 +307,8 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
         <div className="flex items-start gap-2">
           <Info size={16} className="mt-0.5 shrink-0 text-accent" />
           <div className="space-y-1">
-            <p className="text-sm font-medium text-text-primary">{copy.transportLabel}</p>
-            <p className="text-xs text-text-tertiary">{copy.transportHelp}</p>
+            <p className="text-sm font-medium text-text-primary">{t('settings.mcpTransport')}</p>
+            <p className="text-xs text-text-tertiary">{t('settings.mcpTransportHelp')}</p>
           </div>
         </div>
         <div className="grid gap-2 md:grid-cols-3">
@@ -398,11 +375,11 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
                   : 'border-border focus:border-accent focus:ring-accent'
               }`}
             />
-            <p className="text-xs text-text-tertiary">{copy.argsHelp}</p>
+            <p className="text-xs text-text-tertiary">{t('settings.mcpArgsHelp')}</p>
             {parsedArgs.error && <p className="text-xs text-danger">{parsedArgs.error}</p>}
             {parsedArgs.values.length > 0 && (
               <div className="rounded-lg border border-border bg-surface-2 p-3 space-y-2">
-                <p className="text-[11px] uppercase tracking-wide text-text-tertiary">{copy.parsedArgs}</p>
+                <p className="text-[11px] uppercase tracking-wide text-text-tertiary">{t('settings.mcpParsedArgs')}</p>
                 <div className="flex flex-wrap gap-1.5">
                   {parsedArgs.values.map((value, index) => (
                     <Badge key={`${value}-${index}`} variant="default" className="max-w-full text-[10px]">
@@ -427,25 +404,25 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
                   : 'border-border focus:border-accent focus:ring-accent'
               }`}
             />
-            <p className="text-xs text-text-tertiary">{copy.envHelp}</p>
+            <p className="text-xs text-text-tertiary">{t('settings.mcpEnvHelp')}</p>
             {parsedEnv.error && <p className="text-xs text-danger">{parsedEnv.error}</p>}
           </div>
         </>
       ) : (
         <>
           <div className="space-y-2">
-            <label className="text-sm font-medium text-text-primary">{copy.urlLabel}</label>
+            <label className="text-sm font-medium text-text-primary">{t('settings.mcpUrlLabel')}</label>
             <Input
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               placeholder={transport === 'sse' ? 'https://example.com/sse' : 'https://example.com/mcp'}
               error={urlError ?? undefined}
             />
-            <p className="text-xs text-text-tertiary">{copy.urlHelp}</p>
+            <p className="text-xs text-text-tertiary">{t('settings.mcpUrlHelp')}</p>
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-text-primary">{copy.headersLabel}</label>
+            <label className="text-sm font-medium text-text-primary">{t('settings.mcpHeadersLabel')}</label>
             <textarea
               value={headersJson}
               onChange={(event) => setHeadersJson(event.target.value)}
@@ -457,7 +434,7 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
                   : 'border-border focus:border-accent focus:ring-accent'
               }`}
             />
-            <p className="text-xs text-text-tertiary">{copy.headersHelp}</p>
+            <p className="text-xs text-text-tertiary">{t('settings.mcpHeadersHelp')}</p>
             {parsedHeaders.error && <p className="text-xs text-danger">{parsedHeaders.error}</p>}
           </div>
         </>
@@ -476,14 +453,14 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
           )}
           <div className="space-y-1">
             <p className={`text-sm font-medium ${hasValidationError ? 'text-warning' : 'text-success'}`}>
-              {hasValidationError ? copy.draftInvalid : copy.draftReady}
+              {hasValidationError ? t('settings.mcpDraftInvalid') : t('settings.mcpDraftReady')}
             </p>
             <p className="text-xs text-text-tertiary">
               {isStdio
                 ? envPortState === 'managed'
-                  ? copy.freePortManaged
-                  : copy.explicitPort
-                : copy.remoteSessionNote}
+                  ? t('settings.mcpFreePortManaged')
+                  : t('settings.mcpExplicitPort')
+                : t('settings.mcpRemoteSessionNote')}
             </p>
           </div>
         </div>

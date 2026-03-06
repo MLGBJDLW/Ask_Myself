@@ -1,31 +1,68 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Command } from 'cmdk';
 import { useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Search, FolderOpen, BookOpen, MessageCircle, Settings, ScanSearch, Database, Clock, Keyboard } from 'lucide-react';
-import { toast } from 'sonner';
 import * as api from '../lib/api';
 import type { QueryLog } from '../types';
 import { useTranslation } from '../i18n';
 import { SHORTCUTS, formatKeys } from '../lib/shortcuts';
 
+const INSTANT_TRANSITION = { duration: 0 };
+
+type BatchAction = 'scanAll' | 'rebuildEmbeddings';
+
+type CloseReason = 'dismiss' | 'outside';
+
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(', ');
+
+function getFocusableElements(container: HTMLElement) {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (element) => !element.hasAttribute('disabled') && element.getAttribute('aria-hidden') !== 'true',
+  );
+}
+
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [recentQueries, setRecentQueries] = useState<QueryLog[]>([]);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const shouldRestoreFocusRef = useRef(false);
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
+
+  const closePalette = (reason: CloseReason = 'dismiss') => {
+    shouldRestoreFocusRef.current = reason !== 'outside';
+    setOpen(false);
+  };
 
   /* ── Ctrl/Cmd+K toggle ───────────────────────────────────────────── */
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        setOpen((prev) => !prev);
+        if (open) {
+          closePalette();
+          return;
+        }
+
+        const activeElement = document.activeElement;
+        restoreFocusRef.current = activeElement instanceof HTMLElement ? activeElement : null;
+        shouldRestoreFocusRef.current = true;
+        setOpen(true);
       }
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, []);
+  }, [open]);
 
   /* ── Escape to close ─────────────────────────────────────────────── */
   useEffect(() => {
@@ -33,11 +70,87 @@ export function CommandPalette() {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        setOpen(false);
+        closePalette();
       }
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
+  }, [open]);
+
+  /* ── Capture focus entry point and restore on close ──────────────── */
+  useEffect(() => {
+    if (!open) {
+      if (shouldRestoreFocusRef.current && restoreFocusRef.current?.isConnected) {
+        restoreFocusRef.current.focus();
+      }
+      shouldRestoreFocusRef.current = false;
+      restoreFocusRef.current = null;
+      return;
+    }
+
+    if (!restoreFocusRef.current) {
+      const activeElement = document.activeElement;
+      restoreFocusRef.current = activeElement instanceof HTMLElement ? activeElement : null;
+      shouldRestoreFocusRef.current = true;
+    }
+  }, [open]);
+
+  /* ── Trap focus while modal is open ──────────────────────────────── */
+  useEffect(() => {
+    if (!open) return;
+
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+
+      const container = dialogRef.current;
+      if (!container) return;
+
+      const focusableElements = getFocusableElements(container);
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        container.focus();
+        return;
+      }
+
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+      if (!activeElement || !container.contains(activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? lastElement : firstElement).focus();
+        return;
+      }
+
+      if (!event.shiftKey && activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
+
+      if (event.shiftKey && activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      }
+    };
+
+    const keepFocusInside = (event: FocusEvent) => {
+      const container = dialogRef.current;
+      const target = event.target;
+      if (!container || !(target instanceof Node) || container.contains(target)) {
+        return;
+      }
+
+      const focusableElements = getFocusableElements(container);
+      (focusableElements[0] ?? container).focus();
+    };
+
+    document.addEventListener('keydown', trapFocus);
+    document.addEventListener('focusin', keepFocusInside);
+
+    return () => {
+      document.removeEventListener('keydown', trapFocus);
+      document.removeEventListener('focusin', keepFocusInside);
+    };
   }, [open]);
 
   /* ── Load recent queries on open ─────────────────────────────────── */
@@ -51,27 +164,13 @@ export function CommandPalette() {
 
   /* ── Helpers ─────────────────────────────────────────────────────── */
   const select = (fn: () => void) => {
-    setOpen(false);
+    closePalette();
     fn();
   };
 
-  const handleScanAll = () => {
+  const openBatchActionConfirmation = (action: BatchAction) => {
     select(() => {
-      toast.promise(api.scanAllSources(), {
-        loading: t('cmd.scanningAll'),
-        success: t('cmd.scanComplete'),
-        error: t('cmd.scanError'),
-      });
-    });
-  };
-
-  const handleRebuildEmbeddings = () => {
-    select(() => {
-      toast.promise(api.rebuildEmbeddings(), {
-        loading: t('cmd.rebuildingEmbeddings'),
-        success: t('cmd.rebuildComplete'),
-        error: t('cmd.rebuildError'),
-      });
+      navigate('/sources', { state: { pendingBatchAction: action } });
     });
   };
 
@@ -83,20 +182,26 @@ export function CommandPalette() {
           {/* Backdrop */}
           <motion.div
             className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            initial={{ opacity: 0 }}
+            aria-hidden="true"
+            initial={shouldReduceMotion ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            onClick={() => setOpen(false)}
+            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.15 }}
+            onClick={() => closePalette('outside')}
           />
 
           {/* Dialog */}
           <motion.div
+            ref={dialogRef}
             className="absolute left-1/2 top-[20%] w-full max-w-lg -translate-x-1/2 px-4"
-            initial={{ opacity: 0, scale: 0.96, y: -8 }}
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('nav.commandPalette')}
+            tabIndex={-1}
+            initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.96, y: -8 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: -8 }}
-            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            exit={shouldReduceMotion ? { opacity: 0, scale: 1, y: 0 } : { opacity: 0, scale: 0.96, y: -8 }}
+            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
           >
             <Command
               className="overflow-hidden rounded-xl border border-border bg-surface-1 shadow-lg"
@@ -104,6 +209,7 @@ export function CommandPalette() {
             >
               <Command.Input
                 placeholder={t('cmd.placeholder')}
+                aria-label={t('cmd.placeholder')}
                 className="w-full border-b border-border bg-transparent px-4 py-3 text-sm
                   text-text-primary placeholder:text-text-tertiary outline-none"
                 autoFocus
@@ -145,11 +251,11 @@ export function CommandPalette() {
 
                 {/* Actions */}
                 <Command.Group heading={t('cmd.actions')}>
-                  <Command.Item onSelect={handleScanAll}>
+                  <Command.Item onSelect={() => openBatchActionConfirmation('scanAll')}>
                     <ScanSearch className="h-4 w-4 shrink-0 text-text-tertiary" />
                     {t('cmd.scanAll')}
                   </Command.Item>
-                  <Command.Item onSelect={handleRebuildEmbeddings}>
+                  <Command.Item onSelect={() => openBatchActionConfirmation('rebuildEmbeddings')}>
                     <Database className="h-4 w-4 shrink-0 text-text-tertiary" />
                     {t('cmd.rebuildEmbeddings')}
                   </Command.Item>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Save, X } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -9,6 +9,7 @@ interface SkillEditorProps {
   skill?: Skill;
   onSave: (input: SaveSkillInput) => void;
   onCancel: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 function estimateTokens(text: string): number {
@@ -20,10 +21,29 @@ function estimateTokens(text: string): number {
   return Math.ceil(tokens);
 }
 
-export function SkillEditor({ skill, onSave, onCancel }: SkillEditorProps) {
+export function SkillEditor({ skill, onSave, onCancel, onDirtyChange }: SkillEditorProps) {
   const { t } = useTranslation();
   const [name, setName] = useState(skill?.name ?? '');
   const [content, setContent] = useState(skill?.content ?? '');
+  const initialDraftRef = useRef({
+    name: skill?.name ?? '',
+    content: skill?.content ?? '',
+  });
+
+  useEffect(() => {
+    if (!onDirtyChange) return;
+
+    const dirty = name !== initialDraftRef.current.name || content !== initialDraftRef.current.content;
+    onDirtyChange(dirty);
+  }, [content, name, onDirtyChange]);
+
+  useEffect(() => {
+    if (!onDirtyChange) return;
+
+    return () => {
+      onDirtyChange(false);
+    };
+  }, [onDirtyChange]);
 
   const handleSubmit = () => {
     if (!name.trim() || !content.trim()) return;

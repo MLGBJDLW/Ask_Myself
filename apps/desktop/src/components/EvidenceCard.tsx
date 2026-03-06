@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
+import { toast } from 'sonner';
 import {
   ThumbsUp,
   ThumbsDown,
@@ -155,7 +156,7 @@ export function EvidenceCardComponent({
           <button
             onClick={() => {
               openFileInDefaultApp(card.documentPath).catch(() =>
-                alert(t('card.fileNotFound')),
+                toast.error(t('card.fileNotFound')),
               );
             }}
             className="cursor-pointer truncate text-sm font-medium text-text-primary transition-colors hover:text-accent hover:underline"
@@ -238,7 +239,7 @@ export function EvidenceCardComponent({
           <button
             onClick={() => {
               showInFileExplorer(card.documentPath).catch(() =>
-                alert(t('card.fileNotFound')),
+                toast.error(t('card.fileNotFound')),
               );
             }}
             className="flex cursor-pointer items-center gap-1 text-[11px] transition-colors hover:text-accent"
@@ -265,7 +266,7 @@ export function EvidenceCardComponent({
             <button
               onClick={() => {
                 openFileInDefaultApp(card.documentPath).catch(() =>
-                  alert(t('card.fileNotFound')),
+                  toast.error(t('card.fileNotFound')),
                 );
               }}
               className="cursor-pointer rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-secondary"
@@ -278,7 +279,7 @@ export function EvidenceCardComponent({
             <button
               onClick={() => {
                 showInFileExplorer(card.documentPath).catch(() =>
-                  alert(t('card.fileNotFound')),
+                  toast.error(t('card.fileNotFound')),
                 );
               }}
               className="cursor-pointer rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-secondary"

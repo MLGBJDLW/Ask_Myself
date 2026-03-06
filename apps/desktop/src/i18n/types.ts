@@ -157,6 +157,12 @@ export interface TranslationKeys {
   'sources.pathPlaceholder': string;
   'sources.addIncludePattern': string;
   'sources.addExcludePattern': string;
+  'sources.batchConfirm.scanAll.title': string;
+  'sources.batchConfirm.scanAll.message': string;
+  'sources.batchConfirm.scanAll.confirm': string;
+  'sources.batchConfirm.rebuildEmbeddings.title': string;
+  'sources.batchConfirm.rebuildEmbeddings.message': string;
+  'sources.batchConfirm.rebuildEmbeddings.confirm': string;
 
   // Playbooks
   'playbooks.title': string;
@@ -431,6 +437,8 @@ export interface TranslationKeys {
   'chat.contentFiltered': string;
   'chat.contextOverflow': string;
   'chat.contextOverflowHint': string;
+  'chat.contextOverflowActionsHint': string;
+  'chat.contextOverflowNewChatHint': string;
   'chat.rateLimited': string;
   'chat.toolTimeout': string;
   'chat.connectionLost': string;
@@ -583,6 +591,47 @@ export interface TranslationKeys {
   'settings.deleteSkillConfirm': string;
   'settings.deleteMcpServerConfirm': string;
 
+  // Settings - MCP Form
+  'settings.mcpTransportHelp': string;
+  'settings.mcpStdioTitle': string;
+  'settings.mcpStdioHint': string;
+  'settings.mcpStreamableTitle': string;
+  'settings.mcpStreamableHint': string;
+  'settings.mcpSseTitle': string;
+  'settings.mcpSseHint': string;
+  'settings.mcpRecommended': string;
+  'settings.mcpNameRequired': string;
+  'settings.mcpCommandRequired': string;
+  'settings.mcpUrlRequired': string;
+  'settings.mcpUrlInvalid': string;
+  'settings.mcpArgsHelp': string;
+  'settings.mcpEnvHelp': string;
+  'settings.mcpUrlHelp': string;
+  'settings.mcpHeadersHelp': string;
+  'settings.mcpArgsInvalidJson': string;
+  'settings.mcpArgsInvalidArray': string;
+  'settings.mcpJsonMustBeObject': string;
+  'settings.mcpJsonInvalidEntries': string;
+  'settings.mcpJsonInvalid': string;
+  'settings.mcpParsedArgs': string;
+  'settings.mcpDraftReady': string;
+  'settings.mcpDraftInvalid': string;
+  'settings.mcpFreePortManaged': string;
+  'settings.mcpExplicitPort': string;
+  'settings.mcpRemoteSessionNote': string;
+  'settings.mcpUrlLabel': string;
+  'settings.mcpHeadersLabel': string;
+
+  // Settings - Extensions (extra)
+  'settings.extensions.toolCount': string;
+  'settings.extensions.connectionFailed': string;
+  'settings.extensions.availableTools': string;
+  'settings.extensions.toggleTools': string;
+
+  // Chat - Extensions
+  'chat.extensions.unavailable': string;
+  'chat.extensions.toolCount': string;
+
   // Provider Model Tags
   'providers.tagLatest': string;
   'providers.tagCoding': string;
@@ -598,6 +647,23 @@ export interface TranslationKeys {
   'providers.tagFlagship': string;
   'providers.tagCode': string;
   'providers.tagRecommended': string;
+
+  // 404 Page
+  'app.pageNotFound': string;
+  'app.goHome': string;
+
+  // Sources
+  'sources.browse': string;
+
+  // Chat - Token IO
+  'chat.tokenIO': string;
+
+  // Settings
+  'settings.unsavedChanges': string;
+  'settings.unsavedChangesTitle': string;
+  'settings.discardTabChangesMessage': string;
+  'settings.discardPageChangesMessage': string;
+  'settings.discardChanges': string;
 
   // Common
   'common.save': string;

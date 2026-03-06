@@ -25,6 +25,9 @@ export function SourceSelector({ conversationId, onUpdate }: SourceSelectorProps
   const [linkedIds, setLinkedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const firstSourceButtonRef = useRef<HTMLButtonElement>(null);
 
   /* ── Load sources + linked ids ──────────────────────────────────── */
   const load = useCallback(async () => {
@@ -47,17 +50,44 @@ export function SourceSelector({ conversationId, onUpdate }: SourceSelectorProps
     load();
   }, [load]);
 
+  const closeSelector = useCallback((restoreFocus = true) => {
+    setOpen(false);
+    if (restoreFocus) {
+      requestAnimationFrame(() => triggerRef.current?.focus());
+    }
+  }, []);
+
   /* ── Close on outside click ─────────────────────────────────────── */
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
+        closeSelector(false);
       }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
+  }, [closeSelector, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeSelector();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [closeSelector, open]);
+
+  useEffect(() => {
+    if (!open || loading) return;
+    const frame = requestAnimationFrame(() => {
+      firstSourceButtonRef.current?.focus() ?? panelRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [loading, open, sources.length]);
 
   /* ── Toggle a source ────────────────────────────────────────────── */
   const toggle = useCallback(
@@ -92,10 +122,11 @@ export function SourceSelector({ conversationId, onUpdate }: SourceSelectorProps
     <div ref={ref} className="relative inline-block">
       {/* Trigger button */}
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        aria-haspopup="listbox"
+        aria-haspopup="dialog"
         className="
           inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs
           text-text-secondary hover:text-text-primary
@@ -120,16 +151,20 @@ export function SourceSelector({ conversationId, onUpdate }: SourceSelectorProps
       <AnimatePresence>
         {open && (
           <motion.div
+            ref={panelRef}
             initial={{ opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+            role="dialog"
+            aria-modal="false"
+            aria-label={t('chat.selectSources')}
+            tabIndex={-1}
             className="
               absolute left-0 top-full mt-1 z-50
               w-72 max-h-64 overflow-y-auto
               bg-surface-1 border border-border rounded-lg shadow-lg
             "
-            role="listbox"
           >
             {/* Header */}
             <div className="px-3 py-2 border-b border-border">
@@ -152,10 +187,12 @@ export function SourceSelector({ conversationId, onUpdate }: SourceSelectorProps
                 {sources.map((source) => {
                   const checked = linkedIds.has(source.id);
                   return (
-                    <li key={source.id} role="option" aria-selected={checked}>
+                    <li key={source.id}>
                       <button
+                        ref={source.id === sources[0]?.id ? firstSourceButtonRef : undefined}
                         type="button"
                         onClick={() => toggle(source.id)}
+                        aria-pressed={checked}
                         className="
                           w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs
                           hover:bg-surface-2 transition-colors duration-fast

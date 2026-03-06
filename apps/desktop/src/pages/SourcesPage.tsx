@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   FolderOpen,
@@ -25,6 +25,7 @@ import type { BatchProgress } from '../types/ingest';
 import { useTranslation } from '../i18n';
 import type { TranslationKeys } from '../i18n/types';
 import { Button } from '../components/ui/Button';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { Input } from '../components/ui/Input';
 import { TagInput, parseTags } from '../components/ui/TagInput';
 import { Badge } from '../components/ui/Badge';
@@ -42,6 +43,8 @@ const KIND_OPTIONS = [
 ] as const;
 
 type TFunc = (key: keyof TranslationKeys, params?: Record<string, string | number>) => string;
+
+type BatchAction = 'scanAll' | 'rebuildEmbeddings';
 
 function kindIcon(_kind: string) {
   return <FolderOpen size={18} />;
@@ -115,6 +118,7 @@ const EXCLUDE_PRESETS = [
 export function SourcesPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const includePresets = useMemo(
     () => INCLUDE_PRESET_KEYS.map(p => ({ label: t(p.labelKey as any), value: p.value })),
@@ -149,6 +153,7 @@ export function SourcesPage() {
   // Scan/embed progress
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
+  const [pendingBatchAction, setPendingBatchAction] = useState<BatchAction | null>(null);
 
   /* 鈹€鈹€ Load 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
@@ -263,6 +268,16 @@ export function SourcesPage() {
       setBatchProgress(null);
     }
   }, [scanningAll, rebuildingEmbeddings]);
+
+  useEffect(() => {
+    const incomingBatchAction = (location.state as { pendingBatchAction?: BatchAction } | null)?.pendingBatchAction;
+    if (!incomingBatchAction) {
+      return;
+    }
+
+    setPendingBatchAction(incomingBatchAction);
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.pathname, location.state, navigate]);
 
   /* 鈹€鈹€ Watch toggle 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
@@ -455,6 +470,18 @@ export function SourcesPage() {
     }
   };
 
+  const handleConfirmBatchAction = async () => {
+    if (pendingBatchAction === 'scanAll') {
+      await handleScanAll();
+    } else if (pendingBatchAction === 'rebuildEmbeddings') {
+      await handleRebuildEmbeddings();
+    }
+    setPendingBatchAction(null);
+  };
+
+  const pendingBatchActionKey = pendingBatchAction ?? 'scanAll';
+  const pendingBatchActionLoading = pendingBatchAction === 'scanAll' ? scanningAll : rebuildingEmbeddings;
+
   /* 鈹€鈹€ Ask AI handler 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const handleAskAI = (context: string) => {
@@ -493,7 +520,7 @@ export function SourcesPage() {
             variant="secondary"
             size="sm"
             icon={<ScanSearch size={14} />}
-            onClick={handleScanAll}
+            onClick={() => setPendingBatchAction('scanAll')}
             loading={scanningAll}
             disabled={sources.length === 0}
           >
@@ -503,7 +530,7 @@ export function SourcesPage() {
             variant="secondary"
             size="sm"
             icon={<RefreshCw size={14} />}
-            onClick={handleRebuildEmbeddings}
+            onClick={() => setPendingBatchAction('rebuildEmbeddings')}
             loading={rebuildingEmbeddings}
             disabled={sources.length === 0}
           >
@@ -769,7 +796,7 @@ export function SourcesPage() {
                 }}
               >
                 <FolderSearch size={15} className="mr-1" />
-                Browse
+                {t('sources.browse')}
               </Button>
             </div>
           </div>
@@ -881,6 +908,21 @@ export function SourcesPage() {
           </div>
         </div>
       </Modal>
+
+      <ConfirmDialog
+        open={pendingBatchAction !== null}
+        onClose={() => {
+          if (!pendingBatchActionLoading) {
+            setPendingBatchAction(null);
+          }
+        }}
+        onConfirm={handleConfirmBatchAction}
+        title={t(`sources.batchConfirm.${pendingBatchActionKey}.title`)}
+        message={t(`sources.batchConfirm.${pendingBatchActionKey}.message`)}
+        confirmText={t(`sources.batchConfirm.${pendingBatchActionKey}.confirm`)}
+        variant="warning"
+        loading={pendingBatchActionLoading}
+      />
 
 
     </div>

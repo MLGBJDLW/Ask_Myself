@@ -85,11 +85,10 @@ function ChipDropdown({
 /* ------------------------------------------------------------------ */
 
 export function ActiveExtensions({ conversationId }: { conversationId?: string }) {
-  const { t, locale } = useTranslation();
-  const isChinese = locale.startsWith('zh');
+  const { t } = useTranslation();
   const copy = {
-    unavailable: isChinese ? '不可用' : 'Unavailable',
-    toolCount: (count: number) => (isChinese ? `${count} 个工具` : `${count} ${count === 1 ? 'tool' : 'tools'}`),
+    unavailable: t('chat.extensions.unavailable'),
+    toolCount: (count: number) => t('settings.extensions.toolCount', { count }),
   };
   const [serversWithTools, setServersWithTools] = useState<ServerWithTools[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);

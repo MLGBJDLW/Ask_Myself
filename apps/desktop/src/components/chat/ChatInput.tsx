@@ -72,6 +72,15 @@ export function ChatInput({
   const usagePercentRounded = Math.round(usagePercent);
   const usageNearLimit = usagePercent >= 80;
   const usageCritical = contextOverflow || usagePercent >= 95;
+  const canCompactOverflow = Boolean(onCompact);
+  const canStartNewChatFromOverflow = Boolean(onStartNewChat);
+  const contextOverflowHintKey = canCompactOverflow && canStartNewChatFromOverflow
+    ? 'chat.contextOverflowActionsHint'
+    : canCompactOverflow
+      ? 'chat.contextOverflowHint'
+      : canStartNewChatFromOverflow
+        ? 'chat.contextOverflowNewChatHint'
+        : null;
   const usageHint = usageNearLimit
     ? (usageCritical
       ? t('chat.contextNearlyFull', { percent: usagePercentRounded })
@@ -233,17 +242,44 @@ export function ChatInput({
         </div>
       )}
       {contextOverflow && !isStreaming && (
-        <div className="mb-2 flex items-center gap-2 rounded-lg border border-orange-500/25 bg-orange-500/10 px-2.5 py-1.5 text-xs text-orange-400">
-          <AlertTriangle className="h-3.5 w-3.5" />
-          <span className="flex-1">{t('chat.contextOverflow')}</span>
-          {onCompact && (
-            <button
-              onClick={onCompact}
-              className="rounded-md bg-orange-500/20 px-2 py-0.5 text-[11px] font-medium hover:bg-orange-500/30 transition-colors cursor-pointer"
-            >
-              {t('chat.compact')}
-            </button>
-          )}
+        <div className="mb-2 rounded-lg border border-orange-500/25 bg-orange-500/10 px-2.5 py-1.5 text-xs text-orange-400">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="min-w-0 flex-1">{t('chat.contextOverflow')}</span>
+                {(canCompactOverflow || canStartNewChatFromOverflow) && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {canCompactOverflow && (
+                      <button
+                        type="button"
+                        onClick={onCompact}
+                        className="inline-flex items-center gap-1 rounded-md bg-orange-500/20 px-2 py-0.5 text-[11px] font-medium text-orange-200 transition-colors cursor-pointer hover:bg-orange-500/30"
+                      >
+                        <Scissors size={12} />
+                        <span>{t('chat.compact')}</span>
+                      </button>
+                    )}
+                    {canStartNewChatFromOverflow && (
+                      <button
+                        type="button"
+                        onClick={onStartNewChat}
+                        className="inline-flex items-center gap-1 rounded-md bg-orange-500/20 px-2 py-0.5 text-[11px] font-medium text-orange-200 transition-colors cursor-pointer hover:bg-orange-500/30"
+                      >
+                        <Plus size={12} />
+                        <span>{t('chat.startNewChat')}</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+              {contextOverflowHintKey && (
+                <p className="mt-1 text-[11px] text-orange-300">
+                  {t(contextOverflowHintKey)}
+                </p>
+              )}
+            </div>
+          </div>
         </div>
       )}
       {rateLimited && !isStreaming && (
@@ -290,7 +326,10 @@ export function ChatInput({
               })}
             </span>
             <span className="tabular-nums text-text-tertiary">
-              in {formatTokens(usage.promptTokens)} out {formatTokens(usage.completionTokens)}
+              {t('chat.tokenIO', {
+                input: formatTokens(usage.promptTokens),
+                output: formatTokens(usage.completionTokens),
+              })}
             </span>
             {usage.thinkingTokens > 0 && (
               <span

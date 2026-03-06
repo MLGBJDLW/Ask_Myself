@@ -23,6 +23,8 @@ export function SystemPromptEditor({
   const [draft, setDraft] = useState(systemPrompt);
   const [saving, setSaving] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Sync draft when prop changes (e.g. switching conversations)
   useEffect(() => {
@@ -30,18 +32,48 @@ export function SystemPromptEditor({
     setOpen(false);
   }, [systemPrompt, conversationId]);
 
+  const closeEditor = useCallback(
+    ({ resetDraft = false, restoreFocus = true }: { resetDraft?: boolean; restoreFocus?: boolean } = {}) => {
+      setOpen(false);
+      if (resetDraft) {
+        setDraft(systemPrompt);
+      }
+      if (restoreFocus) {
+        requestAnimationFrame(() => triggerRef.current?.focus());
+      }
+    },
+    [systemPrompt],
+  );
+
   // Close on outside click
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-        setDraft(systemPrompt); // revert unsaved changes
+        closeEditor({ resetDraft: true, restoreFocus: false });
       }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [open, systemPrompt]);
+  }, [closeEditor, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeEditor({ resetDraft: true });
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [closeEditor, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => textareaRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
 
   const hasCustomPrompt = systemPrompt.trim().length > 0;
   const isDirty = draft !== systemPrompt;
@@ -51,13 +83,13 @@ export function SystemPromptEditor({
     try {
       await api.updateConversationSystemPrompt(conversationId, draft.trim());
       onSaved?.(draft.trim());
-      setOpen(false);
+      closeEditor();
     } catch (e) {
       toast.error(String(e));
     } finally {
       setSaving(false);
     }
-  }, [conversationId, draft, onSaved]);
+  }, [closeEditor, conversationId, draft, onSaved]);
 
   const handleClear = useCallback(async () => {
     setSaving(true);
@@ -65,18 +97,19 @@ export function SystemPromptEditor({
       await api.updateConversationSystemPrompt(conversationId, '');
       setDraft('');
       onSaved?.('');
-      setOpen(false);
+      closeEditor();
     } catch (e) {
       toast.error(String(e));
     } finally {
       setSaving(false);
     }
-  }, [conversationId, onSaved]);
+  }, [closeEditor, conversationId, onSaved]);
 
   return (
     <div ref={ref} className="relative inline-block">
       {/* Trigger button */}
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
@@ -108,6 +141,9 @@ export function SystemPromptEditor({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -4, scale: 0.97 }}
             transition={{ duration: 0.15 }}
+            role="dialog"
+            aria-modal="false"
+            aria-label={t('chat.editSystemPrompt')}
             className="
               absolute left-0 top-full mt-1 z-50
               w-80 rounded-lg border border-border bg-surface-1 shadow-lg
@@ -121,6 +157,7 @@ export function SystemPromptEditor({
 
             <div className="p-3">
               <textarea
+                ref={textareaRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder={t('chat.defaultPrompt')}
