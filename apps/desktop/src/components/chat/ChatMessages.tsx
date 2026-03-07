@@ -497,7 +497,7 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
           className="flex justify-start mb-3"
         >
           <div
-            className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary"
+            className="relative max-w-[80%] rounded-lg px-3.5 py-2.5 pr-6 text-sm leading-relaxed bg-surface-2 text-text-primary"
             style={streamText.length > 2000 ? { willChange: 'contents' } : undefined}
           >
             <div className="prose-chat">
@@ -507,6 +507,7 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
                 </ReactMarkdown>
               </CitationContext.Provider>
             </div>
+            <span className={`streaming-caret-overlay ${shouldReduceMotion ? '' : 'animate-pulse'}`} />
           </div>
         </motion.div>
       )}

@@ -157,12 +157,15 @@ export function ThinkingBlock({ content, isStreaming = false }: ThinkingBlockPro
               data-trace-soft="true"
               data-trace-active={traceActive ? 'true' : 'false'}
             >
-              <div className="max-h-[300px] overflow-y-auto rounded-r-md py-2 pl-3 pr-3 text-xs leading-relaxed text-text-secondary">
+              <div className="relative max-h-[300px] overflow-y-auto rounded-r-md py-2 pl-3 pr-6 text-xs leading-relaxed text-text-secondary">
                 <div className="border-l-2 border-accent/18 pl-3">
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={thinkingMarkdownComponents}>
                     {content}
                   </ReactMarkdown>
                 </div>
+                {isStreaming && (
+                  <span className={`streaming-caret-overlay ${shouldReduceMotion ? '' : 'animate-pulse'}`} />
+                )}
               </div>
             </div>
           </motion.div>
