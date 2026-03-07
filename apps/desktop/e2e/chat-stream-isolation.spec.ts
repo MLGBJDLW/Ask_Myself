@@ -358,4 +358,6 @@ test('keeps stream content isolated to the conversation that started it', async 
 
   await page.getByRole('button', { name: /Stream A/ }).click();
   await expect(page.getByText('Investigating retries only for chat A.')).toBeVisible();
+  await expect(page.getByText('This is the other chat.')).toHaveCount(0);
+  await expect(page.getByText('search_knowledge_base')).toBeVisible();
 });
