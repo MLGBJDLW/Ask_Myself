@@ -306,7 +306,6 @@ export function useAgentStream(): UseAgentStreamReturn {
       if (!data || !eventType || eventConversationId !== activeConversationRef.current) {
         return;
       }
-
       // Reset timeout on every received event
       resetStreamTimeout();
 
@@ -372,44 +371,44 @@ export function useAgentStream(): UseAgentStreamReturn {
             setStreamText('');
             streamTextRef.current = '';
           } else {
-            setStreamRounds(prev => {
-              if (activeRoundIdRef.current && activeRoundAcceptingStartsRef.current) {
-                return prev.map(round => round.id === activeRoundIdRef.current
-                  ? (() => {
-                    const existingIdx = round.toolCalls.findIndex(tc => tc.callId === nextCall.callId);
-                    if (existingIdx >= 0) {
-                      const nextToolCalls = [...round.toolCalls];
-                      nextToolCalls[existingIdx] = {
-                        ...nextToolCalls[existingIdx],
-                        toolName: nextCall.toolName,
-                        arguments: nextCall.arguments,
-                        status: 'running',
-                      };
-                      return {
-                        ...round,
-                        thinking: round.thinking || roundThinking || undefined,
-                        toolCalls: nextToolCalls,
-                      };
-                    }
+            if (activeRoundIdRef.current && activeRoundAcceptingStartsRef.current) {
+              const mergeRoundId = activeRoundIdRef.current;
+              setStreamRounds(prev => prev.map(round => round.id === mergeRoundId
+                ? (() => {
+                  const existingIdx = round.toolCalls.findIndex(tc => tc.callId === nextCall.callId);
+                  if (existingIdx >= 0) {
+                    const nextToolCalls = [...round.toolCalls];
+                    nextToolCalls[existingIdx] = {
+                      ...nextToolCalls[existingIdx],
+                      toolName: nextCall.toolName,
+                      arguments: nextCall.arguments,
+                      status: 'running',
+                    };
                     return {
                       ...round,
                       thinking: round.thinking || roundThinking || undefined,
-                      toolCalls: [...round.toolCalls, nextCall],
+                      toolCalls: nextToolCalls,
                     };
-                  })()
-                  : round,
-                );
-              }
+                  }
+                  return {
+                    ...round,
+                    thinking: round.thinking || roundThinking || undefined,
+                    toolCalls: [...round.toolCalls, nextCall],
+                  };
+                })()
+                : round,
+              ));
+            } else {
               const roundId = `stream-round-${Date.now()}-${roundSeqRef.current++}`;
               activeRoundIdRef.current = roundId;
               activeRoundAcceptingStartsRef.current = true;
-              return [...prev, {
+              setStreamRounds(prev => [...prev, {
                 id: roundId,
                 thinking: roundThinking || undefined,
                 reply: '',
                 toolCalls: [nextCall],
-              }];
-            });
+              }]);
+            }
           }
 
           setToolCalls(prev => {
@@ -482,14 +481,31 @@ export function useAgentStream(): UseAgentStreamReturn {
           break;
         }
         case 'done': {
+          // Capture final round before clearing thinking/streaming state
+          const finalThinking = thinkingTextRef.current;
+          const finalReply = streamTextRef.current;
+          const capturedFinalRound = finalThinking.trim() || finalReply.trim();
+          if (capturedFinalRound) {
+            const roundId = `stream-round-${Date.now()}-${roundSeqRef.current++}`;
+            setStreamRounds(prev => [...prev, {
+              id: roundId,
+              thinking: finalThinking || undefined,
+              reply: finalReply,
+              toolCalls: [],
+            }]);
+            setStreamText('');
+            streamTextRef.current = '';
+          }
           setIsThinking(false);
           setThinkingText('');
           thinkingTextRef.current = '';
-          const doneMessage = data.message ?? raw.message;
-          const doneText = extractMessageText(doneMessage);
-          if (doneText) {
-            setStreamText(doneText);
-            streamTextRef.current = doneText;
+          if (!capturedFinalRound) {
+            const doneMessage = data.message ?? raw.message;
+            const doneText = extractMessageText(doneMessage);
+            if (doneText) {
+              setStreamText(doneText);
+              streamTextRef.current = doneText;
+            }
           }
           setToolCalls(prev => prev.map(tc =>
             tc.status === 'running'

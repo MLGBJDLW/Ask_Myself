@@ -12,6 +12,7 @@ import { useTranslation } from '../../i18n';
 interface ThinkingBlockProps {
   content: string;
   isStreaming?: boolean;
+  defaultExpanded?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -62,10 +63,10 @@ const thinkingMarkdownComponents: Record<string, React.ComponentType<ComponentPr
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function ThinkingBlock({ content, isStreaming = false }: ThinkingBlockProps) {
+export function ThinkingBlock({ content, isStreaming = false, defaultExpanded }: ThinkingBlockProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
-  const [expanded, setExpanded] = useState(isStreaming);
+  const [expanded, setExpanded] = useState(defaultExpanded ?? isStreaming);
   const startTimeRef = useRef<number>(Date.now());
   const autoOpenedRef = useRef(false);
   const [elapsed, setElapsed] = useState(0);

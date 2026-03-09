@@ -287,7 +287,6 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
       streamText.trim().length > 0
       && (lastRenderableMessageRole == null || lastRenderableMessageRole === 'user')
     );
-
   // Empty state
   if (messages.length === 0 && !isStreaming && !loadingMsgs) {
     return (
@@ -409,9 +408,9 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
               )}
 
               {/* Show tool call cards after assistant messages with tool calls */}
-              {msg.role === 'assistant' && msg.toolCalls.length > 0 && (
+              {msg.role === 'assistant' && msg.toolCalls.filter(tc => tc.name !== 'update_plan').length > 0 && (
                 <div className="mb-3">
-                  {msg.toolCalls.map((tc, toolIdx) => {
+                  {msg.toolCalls.filter(tc => tc.name !== 'update_plan').map((tc, toolIdx) => {
                     const toolResult = messageToolCalls.get(idx)?.find(
                       (tr) => tr.toolCallId === tc.id,
                     );
@@ -438,21 +437,21 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
         <div key={round.id} className="mb-4 space-y-2">
           {round.thinking && (
             <motion.div
-              initial={shouldReduceMotion ? false : { opacity: 0 }}
+              initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
               animate={{ opacity: 1 }}
               layout={!shouldReduceMotion}
               transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
               className="flex justify-start"
             >
               <div className="max-w-[80%]">
-                <ThinkingBlock content={round.thinking} isStreaming={false} />
+                <ThinkingBlock content={round.thinking} isStreaming={false} defaultExpanded={isStreaming} />
               </div>
             </motion.div>
           )}
 
           {round.reply && (
             <motion.div
-              initial={shouldReduceMotion ? false : { opacity: 0 }}
+              initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
               animate={{ opacity: 1 }}
               layout={!shouldReduceMotion}
               transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
@@ -470,9 +469,9 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
             </motion.div>
           )}
 
-          {round.toolCalls.length > 0 && (
+          {round.toolCalls.filter(tc => tc.toolName !== 'update_plan').length > 0 && (
             <div className="space-y-2">
-              {round.toolCalls.map((tc, toolIdx) => (
+              {round.toolCalls.filter(tc => tc.toolName !== 'update_plan').map((tc, toolIdx) => (
                 <ToolCallCard
                   key={`${round.id}-${tc.callId || 'tool-call'}-${toolIdx}`}
                   toolName={tc.toolName}
@@ -491,7 +490,7 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
       {/* Live thinking stays mounted until an actual phase switch to reply/tool/done/error. */}
       {isStreaming && (thinkingText || isThinking) && (
         <motion.div
-          initial={shouldReduceMotion ? false : { opacity: 0 }}
+          initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
           layout={!shouldReduceMotion}
           transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
@@ -506,7 +505,7 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
       {/* Streaming text */}
       {shouldShowStreamingText && streamText && (
         <motion.div
-          initial={shouldReduceMotion ? false : { opacity: 0 }}
+          initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
           className="flex justify-start mb-3"
@@ -530,7 +529,7 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
       {/* Thinking indicator */}
       {isStreaming && !streamText && streamRounds.length === 0 && toolCalls.length === 0 && !thinkingText && !isThinking && (
         <motion.div
-          initial={shouldReduceMotion ? false : { opacity: 0 }}
+          initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
           className="flex justify-start mb-3"

@@ -190,6 +190,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const streamingConversationRef = useRef<string | null>(null);
   const systemPromptCacheRef = useRef<Record<string, string>>({});
   const contextWindowCacheRef = useRef<Record<string, number>>({});
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+  const messageCacheRef = useRef(messageCache);
+  messageCacheRef.current = messageCache;
 
   const messages = activeId ? (messageCache[activeId] ?? []) : [];
 
@@ -319,7 +323,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     const isPendingStreamConversation = pendingStreamConversationRef.current === activeId;
     const isActiveStreamingConversation =
       streamingConversationRef.current === activeId && isStreaming;
-    if (isPendingStreamConversation || isActiveStreamingConversation) {
+    const justFinishedStreaming =
+      streamingConversationRef.current === activeId && !isStreaming;
+    if (isPendingStreamConversation || isActiveStreamingConversation || justFinishedStreaming) {
       setLoadingMsgs(false);
       return;
     }
@@ -387,7 +393,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             setCustomSystemPrompt(conv.systemPrompt ?? '');
           }
           if (msgs.some(msg => msg.role === 'assistant' || msg.role === 'tool')) {
-            clearPreview();
+            requestAnimationFrame(() => clearPreview());
           }
         }
       }).catch((e) => {
@@ -397,9 +403,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       loadConversations();
 
       // Auto-title: generate title from first user message if untitled
-      const conv = conversations.find((c) => c.id === completedConversationId);
+      const conv = conversationsRef.current.find((c) => c.id === completedConversationId);
       if (conv && !conv.title) {
-        const firstUserMsg = (messageCache[completedConversationId] ?? []).find((m) => m.role === 'user');
+        const firstUserMsg = (messageCacheRef.current[completedConversationId] ?? []).find((m) => m.role === 'user');
         if (firstUserMsg) {
           const title = generateTitle(firstUserMsg.content);
           if (title) {
@@ -420,7 +426,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       }
     }
     return () => { cancelled = true; };
-  }, [activeId, clearPreview, conversations, isStreaming, loadConversations, messageCache, setMessagesForConversation]);
+  }, [activeId, clearPreview, isStreaming, loadConversations, setMessagesForConversation]);
 
   /* ── Sync stream errors to chatError ────────────────────────────── */
   useEffect(() => {

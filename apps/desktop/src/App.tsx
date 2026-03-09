@@ -69,8 +69,7 @@ const router = createBrowserRouter(
         <Route path="/" element={<PageTransition><SearchPage /></PageTransition>} />
         <Route path="/sources" element={<PageTransition><SourcesPage /></PageTransition>} />
         <Route path="/playbooks" element={<PageTransition><PlaybooksPage /></PageTransition>} />
-        <Route path="/chat" element={<PageTransition><ChatPage /></PageTransition>} />
-        <Route path="/chat/:conversationId" element={<PageTransition><ChatPage /></PageTransition>} />
+        <Route path="/chat/:conversationId?" element={<PageTransition><ChatPage /></PageTransition>} />
         <Route path="/settings" element={<PageTransition><SettingsPage /></PageTransition>} />
         <Route path="*" element={<PageTransition><NotFoundPage /></PageTransition>} />
       </Route>
