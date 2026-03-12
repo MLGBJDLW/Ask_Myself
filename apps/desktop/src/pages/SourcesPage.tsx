@@ -15,6 +15,7 @@ import {
   EyeOff,
   Info,
   BotMessageSquare,
+  AlertTriangle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { listen } from '@tauri-apps/api/event';
@@ -32,6 +33,8 @@ import { Badge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
 import { CardSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
+import { VideoProcessingProgress } from '../components/media/VideoProcessingProgress';
+import type { ProcessingPhase } from '../components/media/VideoProcessingProgress';
 import { undoableAction } from '../lib/undoToast';
 
 /* ------------------------------------------------------------------ */
@@ -96,6 +99,8 @@ const INCLUDE_PRESET_KEYS = [
   { labelKey: 'sources.presetPowerpoint', value: '**/*.pptx' },
   { labelKey: 'sources.presetPdf', value: '**/*.pdf' },
   { labelKey: 'sources.presetImage', value: '**/*.{jpg,jpeg,png,gif,webp}' },
+  { labelKey: 'sources.presetVideo', value: '**/*.{mp4,mkv,webm,avi,mov,flv,mpeg,mpg,wmv,m4v}' },
+  { labelKey: 'sources.presetAudio', value: '**/*.{mp3,wav,flac,ogg,aac,m4a,wma,opus}' },
   { labelKey: 'sources.presetJson', value: '**/*.json' },
   { labelKey: 'sources.presetYaml', value: '**/*.{yml,yaml}' },
   { labelKey: 'sources.presetCode', value: '**/*.{ts,js,py,rs}' },
@@ -155,6 +160,16 @@ export function SourcesPage() {
   const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
   const [pendingBatchAction, setPendingBatchAction] = useState<BatchAction | null>(null);
 
+  // Video processing progress
+  const [videoProcessing, setVideoProcessing] = useState<{
+    phase: ProcessingPhase;
+    progress: number;
+    fileName: string;
+  } | null>(null);
+
+  // Whisper model check
+  const [whisperModelMissing, setWhisperModelMissing] = useState(false);
+
   /* 鈹€鈹€ Load 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const loadSources = useCallback(async () => {
@@ -171,6 +186,13 @@ export function SourcesPage() {
   useEffect(() => {
     loadSources();
   }, [loadSources]);
+
+  useEffect(() => {
+    api.getVideoConfig()
+      .then(config => config && api.checkWhisperModel(config))
+      .then(exists => setWhisperModelMissing(exists === false))
+      .catch(() => {}); // Video feature may not be compiled
+  }, []);
 
   /* 鈹€鈹€ File-change event listener 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
@@ -268,6 +290,33 @@ export function SourcesPage() {
       setBatchProgress(null);
     }
   }, [scanningAll, rebuildingEmbeddings]);
+
+  /* ── Video processing progress listener ──────────────────────────── */
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    listen<{ phase: ProcessingPhase; progress: number; fileName: string }>(
+      'video:processing-progress',
+      (event) => {
+        if (cancelled) return;
+        const p = event.payload;
+        if (p.phase === 'complete') {
+          setVideoProcessing(null);
+        } else {
+          setVideoProcessing(p);
+        }
+      },
+    ).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     const incomingBatchAction = (location.state as { pendingBatchAction?: BatchAction } | null)?.pendingBatchAction;
@@ -585,6 +634,21 @@ export function SourcesPage() {
         </div>
       )}
 
+      {whisperModelMissing && (
+        <div className="flex items-center gap-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-sm mb-4">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span>{t('sources.whisperModelMissing')}</span>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="ml-auto shrink-0"
+            onClick={() => navigate('/settings?tab=models')}
+          >
+            {t('sources.goToSettings')}
+          </Button>
+        </div>
+      )}
+
       {sources.length === 0 ? (
         <EmptyState
           icon={<FolderPlus size={32} />}
@@ -653,6 +717,16 @@ export function SourcesPage() {
                             />
                           </div>
                         </div>
+                      )}
+
+                      {/* Video processing progress */}
+                      {videoProcessing && (
+                        <VideoProcessingProgress
+                          phase={videoProcessing.phase}
+                          progress={videoProcessing.progress}
+                          fileName={videoProcessing.fileName}
+                          className="mb-2 mt-1"
+                        />
                       )}
 
                       {/* Globs */}

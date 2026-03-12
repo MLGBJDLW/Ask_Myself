@@ -115,6 +115,13 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
       ALTER TABLE agent_configs ADD COLUMN subagent_max_calls_per_turn INTEGER;
       ALTER TABLE agent_configs ADD COLUMN subagent_token_budget INTEGER;",
     ),
+    (
+        "v024_video_config",
+        "CREATE TABLE IF NOT EXISTS video_config (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+      );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

@@ -30,6 +30,8 @@ pub enum FileType {
     Excel,
     Pptx,
     Image,
+    Video,
+    Audio,
 }
 
 /// An evidence card surfaced by a search query.

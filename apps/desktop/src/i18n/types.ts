@@ -61,6 +61,8 @@ export interface TranslationKeys {
   'search.docx': string;
   'search.excel': string;
   'search.pptx': string;
+  'search.video': string;
+  'search.audio': string;
   'search.optional': string;
   'search.ms': string;
   'search.page': string;
@@ -150,6 +152,8 @@ export interface TranslationKeys {
   'sources.presetPowerpoint': string;
   'sources.presetPdf': string;
   'sources.presetImage': string;
+  'sources.presetVideo': string;
+  'sources.presetAudio': string;
   'sources.presetJson': string;
   'sources.presetYaml': string;
   'sources.presetCode': string;
@@ -163,6 +167,8 @@ export interface TranslationKeys {
   'sources.batchConfirm.rebuildEmbeddings.title': string;
   'sources.batchConfirm.rebuildEmbeddings.message': string;
   'sources.batchConfirm.rebuildEmbeddings.confirm': string;
+  'sources.whisperModelMissing': string;
+  'sources.goToSettings': string;
 
   // Playbooks
   'playbooks.title': string;
@@ -278,6 +284,20 @@ export interface TranslationKeys {
   'settings.embeddingRebuild': string;
   'settings.embeddingRebuilding': string;
 
+  // Settings - Models
+  'settings.models': string;
+  'settings.modelsDesc': string;
+  'settings.modelsEmbedding': string;
+  'settings.modelsEmbeddingDesc': string;
+  'settings.modelsOcr': string;
+  'settings.modelsOcrDesc': string;
+  'settings.modelsWhisper': string;
+  'settings.modelsWhisperDesc': string;
+  'settings.modelReady': string;
+  'settings.modelNotDownloaded': string;
+  'settings.modelDownloading': string;
+  'settings.modelDiskUsage': string;
+
   // Settings - OCR
   'settings.ocrTab': string;
   'settings.ocrSection': string;
@@ -302,6 +322,57 @@ export interface TranslationKeys {
   'settings.ocrSaved': string;
   'settings.ocrSaveError': string;
   'settings.ocrLoadError': string;
+
+  // Settings - Video
+  'settings.videoTab': string;
+  'settings.videoSection': string;
+  'settings.videoEnabled': string;
+  'settings.videoEnabledDesc': string;
+  'settings.videoFfmpegStatus': string;
+  'settings.videoFfmpegAvailable': string;
+  'settings.videoFfmpegNotFound': string;
+  'settings.videoFfmpegHint': string;
+  'settings.videoWhisperModel': string;
+  'settings.videoModelTiny': string;
+  'settings.videoModelTinyDesc': string;
+  'settings.videoModelBase': string;
+  'settings.videoModelBaseDesc': string;
+  'settings.videoModelSmall': string;
+  'settings.videoModelSmallDesc': string;
+  'settings.videoModelMedium': string;
+  'settings.videoModelMediumDesc': string;
+  'settings.videoModelLarge': string;
+  'settings.videoModelLargeDesc': string;
+  'settings.videoModelLargeTurbo': string;
+  'settings.videoModelLargeTurboDesc': string;
+  'settings.videoModelStatus': string;
+  'settings.videoModelDownloaded': string;
+  'settings.videoModelNotDownloaded': string;
+  'settings.videoDownload': string;
+  'settings.videoDownloading': string;
+  'settings.videoDownloadFail': string;
+  'settings.videoLanguage': string;
+  'settings.videoLanguageDesc': string;
+  'settings.videoTranslate': string;
+  'settings.videoTranslateDesc': string;
+  'settings.videoFrameExtraction': string;
+  'settings.videoFrameExtractionDesc': string;
+  'settings.videoFrameInterval': string;
+  'settings.videoFrameIntervalDesc': string;
+  'settings.videoSave': string;
+  'settings.videoModelChangeWarning': string;
+  'settings.videoAdvanced': string;
+  'settings.videoGpu': string;
+  'settings.videoGpuDesc': string;
+  'settings.videoPreferSubtitles': string;
+  'settings.videoPreferSubtitlesDesc': string;
+  'settings.videoSceneThreshold': string;
+  'settings.videoSceneThresholdDesc': string;
+  'settings.videoBeamSize': string;
+  'settings.videoBeamSizeDesc': string;
+  'settings.videoDeleteModel': string;
+  'settings.videoDeleteConfirm': string;
+  'settings.videoDeleteSuccess': string;
 
   // Settings - Memory
   'settings.memorySection': string;
@@ -523,6 +594,13 @@ export interface TranslationKeys {
   'chat.suggestions.question': string;
   'chat.suggestions.question.prompt': string;
 
+  // Evidence - Video/Audio
+  'evidence.videoTranscript': string;
+  'evidence.frameOcr': string;
+  'evidence.jumpToTimestamp': string;
+  'evidence.duration': string;
+  'evidence.audioTranscript': string;
+
   // Citations
   'citation.evidence': string;
   'citation.openFile': string;
@@ -708,6 +786,25 @@ export interface TranslationKeys {
   'settings.discardTabChangesMessage': string;
   'settings.discardPageChangesMessage': string;
   'settings.discardChanges': string;
+
+  // Media
+  'media.play': string;
+  'media.pause': string;
+  'media.transcript': string;
+  'media.noTranscript': string;
+  'media.processing': string;
+  'media.extractingAudio': string;
+  'media.extractingSubtitles': string;
+  'media.transcribing': string;
+  'media.extractingFrames': string;
+  'media.runningOcr': string;
+  'media.processingComplete': string;
+  'media.clickToSeek': string;
+  'media.videoDetails': string;
+  'media.resolution': string;
+  'media.codec': string;
+  'media.framerate': string;
+  'media.transcriptHint': string;
 
   // Common
   'common.save': string;

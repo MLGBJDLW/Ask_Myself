@@ -5,6 +5,8 @@
 //! paragraph-aware (plain text / log) chunks.
 
 use std::collections::HashMap;
+#[cfg(feature = "video")]
+use std::io::BufReader;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 
@@ -152,7 +154,9 @@ const CHUNK_OVERLAP_CHARS: usize = 80;
 pub fn parse_file(
     path: &Path,
     ocr_config: Option<&crate::ocr::OcrConfig>,
+    #[cfg(feature = "video")] video_config: Option<&crate::video::VideoConfig>,
     llm_provider: Option<&dyn crate::llm::LlmProvider>,
+    #[allow(unused_variables)] progress_callback: Option<&dyn Fn(f32)>,
 ) -> Result<ParsedDocument, CoreError> {
     let mime_type = detect_mime_type(path);
 
@@ -175,6 +179,60 @@ pub fn parse_file(
     if mime_type.starts_with("image/") {
         let ocr_cfg = ocr_config.cloned().unwrap_or_default();
         return parse_image(path, &mime_type, &ocr_cfg, llm_provider);
+    }
+
+    // Audio files — transcribe via Whisper (no frame extraction).
+    #[cfg(feature = "video")]
+    if mime_type.starts_with("audio/") {
+        let cfg = video_config.cloned().unwrap_or_default();
+        return parse_audio(path, &mime_type, &cfg, progress_callback);
+    }
+    #[cfg(not(feature = "video"))]
+    if mime_type.starts_with("audio/") {
+        tracing::debug!("Skipping audio file (video feature not enabled): {}", path.display());
+        let raw_bytes = std::fs::read(path)?;
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let content_hash = blake3::hash(&raw_bytes).to_hex().to_string();
+        return Ok(ParsedDocument {
+            file_path: path.to_string_lossy().to_string(),
+            file_name: file_name.clone(),
+            title: file_name,
+            mime_type,
+            file_size: raw_bytes.len() as i64,
+            content_hash,
+            chunks: vec![],
+            metadata: HashMap::new(),
+        });
+    }
+
+    // Video files — transcribe via Whisper + optional frame OCR.
+    #[cfg(feature = "video")]
+    if mime_type.starts_with("video/") {
+        let cfg = video_config.cloned().unwrap_or_default();
+        return parse_video(path, &mime_type, &cfg, progress_callback);
+    }
+    #[cfg(not(feature = "video"))]
+    if mime_type.starts_with("video/") {
+        tracing::debug!("Skipping video file (video feature not enabled): {}", path.display());
+        let raw_bytes = std::fs::read(path)?;
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let content_hash = blake3::hash(&raw_bytes).to_hex().to_string();
+        return Ok(ParsedDocument {
+            file_path: path.to_string_lossy().to_string(),
+            file_name: file_name.clone(),
+            title: file_name,
+            mime_type,
+            file_size: raw_bytes.len() as i64,
+            content_hash,
+            chunks: vec![],
+            metadata: HashMap::new(),
+        });
     }
 
     let content = read_text_file(path)?;
@@ -514,6 +572,255 @@ pub fn parse_image(
     })
 }
 
+#[cfg(feature = "video")]
+fn parse_audio(
+    path: &Path,
+    mime_type: &str,
+    config: &crate::video::VideoConfig,
+    progress_callback: Option<&dyn Fn(f32)>,
+) -> Result<ParsedDocument, CoreError> {
+    let metadata = std::fs::metadata(path)?;
+    let file_size = metadata.len() as i64;
+    let file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(&mut BufReader::new(file))
+        .map_err(|e| CoreError::Parse(format!("Hash error: {e}")))?;
+    let content_hash = hasher.finalize().to_hex().to_string();
+
+    let file_path = path.to_string_lossy().to_string();
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let result = crate::video::analyze_audio(path, config, |progress| {
+        if let Some(cb) = &progress_callback {
+            cb(progress.progress_pct);
+        }
+    })?;
+
+    let chunks: Vec<ParsedChunk> = result
+        .transcript_segments
+        .iter()
+        .enumerate()
+        .map(|(i, seg)| {
+            let start_secs = seg.start_ms / 1000;
+            let end_secs = seg.end_ms / 1000;
+            let timestamp = format!(
+                "{:02}:{:02}:{:02} - {:02}:{:02}:{:02}",
+                start_secs / 3600,
+                (start_secs % 3600) / 60,
+                start_secs % 60,
+                end_secs / 3600,
+                (end_secs % 3600) / 60,
+                end_secs % 60,
+            );
+            ParsedChunk {
+                content: seg.text.clone(),
+                chunk_index: i as i32,
+                start_offset: seg.start_ms,
+                end_offset: seg.end_ms,
+                heading_context: Some(timestamp),
+                overlap_start: 0,
+            }
+        })
+        .collect();
+
+    let mut doc_metadata = extract_fs_metadata(path);
+    if let Some(dur) = result.duration_secs {
+        doc_metadata.insert("duration_secs".into(), format!("{dur:.1}"));
+    }
+
+    Ok(ParsedDocument {
+        file_path,
+        title: file_name.clone(),
+        file_name,
+        mime_type: mime_type.to_string(),
+        file_size,
+        content_hash,
+        chunks,
+        metadata: doc_metadata,
+    })
+}
+
+/// Normalize whitespace and case for frame OCR text comparison.
+#[cfg(feature = "video")]
+fn normalize_for_comparison(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Remove consecutive duplicate OCR texts (common for slides/titles held on screen).
+#[cfg(feature = "video")]
+fn deduplicate_frame_texts(frame_texts: &[String]) -> Vec<(usize, String)> {
+    let mut deduped: Vec<(usize, String)> = Vec::new();
+    for (idx, text) in frame_texts.iter().enumerate() {
+        if text.trim().is_empty() {
+            continue;
+        }
+        if let Some((_, prev)) = deduped.last() {
+            if normalize_for_comparison(text) == normalize_for_comparison(prev) {
+                continue;
+            }
+        }
+        deduped.push((idx, text.clone()));
+    }
+    deduped
+}
+
+/// Return the text after the last period (the trailing sentence fragment).
+#[cfg(feature = "video")]
+fn get_last_sentence(text: &str) -> Option<&str> {
+    text.rsplit('.')
+        .next()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+}
+
+/// Return the text before the first period (the leading sentence fragment).
+#[cfg(feature = "video")]
+fn get_first_sentence(text: &str) -> Option<&str> {
+    text.split('.')
+        .next()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(feature = "video")]
+fn parse_video(
+    path: &Path,
+    mime_type: &str,
+    config: &crate::video::VideoConfig,
+    progress_callback: Option<&dyn Fn(f32)>,
+) -> Result<ParsedDocument, CoreError> {
+    let metadata = std::fs::metadata(path)?;
+    let file_size = metadata.len() as i64;
+    let file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(&mut BufReader::new(file))
+        .map_err(|e| CoreError::Parse(format!("Hash error: {e}")))?;
+    let content_hash = hasher.finalize().to_hex().to_string();
+
+    let file_path = path.to_string_lossy().to_string();
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let result = crate::video::analyze_video(path, config, |progress| {
+        if let Some(cb) = &progress_callback {
+            cb(progress.progress_pct);
+        }
+    })?;
+
+    let segments = &result.transcript_segments;
+    let mut chunks: Vec<ParsedChunk> = segments
+        .iter()
+        .enumerate()
+        .map(|(i, seg)| {
+            let start_secs = seg.start_ms / 1000;
+            let end_secs = seg.end_ms / 1000;
+            let timestamp = format!(
+                "{:02}:{:02}:{:02} - {:02}:{:02}:{:02}",
+                start_secs / 3600,
+                (start_secs % 3600) / 60,
+                start_secs % 60,
+                end_secs / 3600,
+                (end_secs % 3600) / 60,
+                end_secs % 60,
+            );
+
+            // Build chunk text with overlap from adjacent segments
+            let mut chunk_text = String::new();
+            let mut overlap_len = 0usize;
+            if i > 0 {
+                if let Some(tail) = get_last_sentence(&segments[i - 1].text) {
+                    chunk_text.push_str(tail);
+                    chunk_text.push(' ');
+                    overlap_len = chunk_text.len();
+                }
+            }
+            chunk_text.push_str(&seg.text);
+            if i + 1 < segments.len() {
+                if let Some(head) = get_first_sentence(&segments[i + 1].text) {
+                    chunk_text.push(' ');
+                    chunk_text.push_str(head);
+                }
+            }
+
+            ParsedChunk {
+                content: chunk_text,
+                chunk_index: i as i32,
+                start_offset: seg.start_ms,
+                end_offset: seg.end_ms,
+                heading_context: Some(timestamp),
+                overlap_start: overlap_len,
+            }
+        })
+        .collect();
+
+    // Add frame OCR text as additional chunks with timestamp correlation.
+    let base_index = chunks.len() as i32;
+    let frame_interval_secs = config.frame_interval_secs as i64;
+    let deduped_frames = deduplicate_frame_texts(&result.frame_texts);
+    for (i, (orig_idx, frame_text)) in deduped_frames.iter().enumerate() {
+        let ts_secs = *orig_idx as i64 * frame_interval_secs;
+        let ts_end = ts_secs + frame_interval_secs;
+        let ts_h = ts_secs / 3600;
+        let ts_m = (ts_secs % 3600) / 60;
+        let ts_s = ts_secs % 60;
+        chunks.push(ParsedChunk {
+            content: frame_text.clone(),
+            chunk_index: base_index + i as i32,
+            start_offset: ts_secs * 1000, // store as ms like transcript chunks
+            end_offset: ts_end * 1000,
+            heading_context: Some(format!(
+                "[Frame OCR @ {:02}:{:02}:{:02}]",
+                ts_h, ts_m, ts_s
+            )),
+            overlap_start: 0,
+        });
+    }
+
+    let mut doc_metadata = extract_fs_metadata(path);
+    if let Some(dur) = result.duration_secs {
+        doc_metadata.insert("duration_secs".into(), format!("{dur:.1}"));
+    }
+    if let Some(ref thumb) = result.thumbnail_path {
+        doc_metadata.insert("thumbnail_path".into(), thumb.to_string_lossy().to_string());
+    }
+    if let Some(ref meta) = result.metadata {
+        if let Some(w) = meta.width {
+            doc_metadata.insert("video_width".into(), w.to_string());
+        }
+        if let Some(h) = meta.height {
+            doc_metadata.insert("video_height".into(), h.to_string());
+        }
+        if let Some(ref codec) = meta.codec {
+            doc_metadata.insert("video_codec".into(), codec.clone());
+        }
+        if let Some(br) = meta.bitrate {
+            doc_metadata.insert("video_bitrate".into(), br.to_string());
+        }
+        if let Some(fps) = meta.framerate {
+            doc_metadata.insert("video_framerate".into(), format!("{fps:.2}"));
+        }
+        if let Some(ref ct) = meta.creation_time {
+            doc_metadata.insert("video_creation_time".into(), ct.clone());
+        }
+    }
+
+    Ok(ParsedDocument {
+        file_path,
+        title: file_name.clone(),
+        file_name,
+        mime_type: mime_type.to_string(),
+        file_size,
+        content_hash,
+        chunks,
+        metadata: doc_metadata,
+    })
+}
+
 /// Detect MIME type from file extension.
 pub fn detect_mime_type(path: &Path) -> String {
     match path
@@ -539,6 +846,27 @@ pub fn detect_mime_type(path: &Path) -> String {
         Some("png") => "image/png".to_string(),
         Some("gif") => "image/gif".to_string(),
         Some("webp") => "image/webp".to_string(),
+        // Video files
+        Some("mp4") => "video/mp4".to_string(),
+        Some("mkv") => "video/x-matroska".to_string(),
+        Some("webm") => "video/webm".to_string(),
+        Some("avi") => "video/x-msvideo".to_string(),
+        Some("mov") => "video/quicktime".to_string(),
+        Some("flv") => "video/x-flv".to_string(),
+        Some("mpeg" | "mpg") => "video/mpeg".to_string(),
+        Some("wmv") => "video/x-ms-wmv".to_string(),
+        Some("m4v") => "video/x-m4v".to_string(),
+        Some("3gp") => "video/3gpp".to_string(),
+        Some("mts" | "m2ts") => "video/mp2t".to_string(),
+        // Audio files
+        Some("mp3") => "audio/mpeg".to_string(),
+        Some("wav") => "audio/wav".to_string(),
+        Some("flac") => "audio/flac".to_string(),
+        Some("ogg") => "audio/ogg".to_string(),
+        Some("aac") => "audio/aac".to_string(),
+        Some("m4a") => "audio/mp4".to_string(),
+        Some("wma") => "audio/x-ms-wma".to_string(),
+        Some("opus") => "audio/opus".to_string(),
         // Source code & config files
         Some(
             "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "json" | "yaml" | "yml" | "toml" | "html"
@@ -1024,8 +1352,8 @@ mod tests {
         writeln!(f, "Hello, world!").unwrap();
         f.flush().unwrap();
 
-        let doc1 = parse_file(f.path(), None, None).unwrap();
-        let doc2 = parse_file(f.path(), None, None).unwrap();
+        let doc1 = parse_file(f.path(), None, #[cfg(feature = "video")] None, None, None).unwrap();
+        let doc2 = parse_file(f.path(), None, #[cfg(feature = "video")] None, None, None).unwrap();
         assert_eq!(doc1.content_hash, doc2.content_hash);
         assert!(!doc1.content_hash.is_empty());
     }
@@ -1040,8 +1368,8 @@ mod tests {
         writeln!(f2, "bbb").unwrap();
         f2.flush().unwrap();
 
-        let d1 = parse_file(f1.path(), None, None).unwrap();
-        let d2 = parse_file(f2.path(), None, None).unwrap();
+        let d1 = parse_file(f1.path(), None, #[cfg(feature = "video")] None, None, None).unwrap();
+        let d2 = parse_file(f2.path(), None, #[cfg(feature = "video")] None, None, None).unwrap();
         assert_ne!(d1.content_hash, d2.content_hash);
     }
 
@@ -1143,7 +1471,7 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
         write!(f, "{}", body).unwrap();
         f.flush().unwrap();
 
-        let doc = parse_file(f.path(), None, None).unwrap();
+        let doc = parse_file(f.path(), None, #[cfg(feature = "video")] None, None, None).unwrap();
         assert_eq!(doc.mime_type, "text/markdown");
         assert_eq!(
             doc.file_name,
@@ -1160,7 +1488,7 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
         write!(f, "{}", body).unwrap();
         f.flush().unwrap();
 
-        let doc = parse_file(f.path(), None, None).unwrap();
+        let doc = parse_file(f.path(), None, #[cfg(feature = "video")] None, None, None).unwrap();
         assert_eq!(doc.mime_type, "text/plain");
     }
 
@@ -1168,6 +1496,9 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
     fn test_parse_file_not_found() {
         let result = parse_file(
             Path::new("/tmp/nonexistent_ask_core_test_file.txt"),
+            None,
+            #[cfg(feature = "video")]
+            None,
             None,
             None,
         );
@@ -1190,7 +1521,7 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
         f.write_all(b"this is not a real pdf").unwrap();
         f.flush().unwrap();
 
-        let result = parse_file(f.path(), None, None);
+        let result = parse_file(f.path(), None, #[cfg(feature = "video")] None, None, None);
         // Graceful degradation: parse succeeds but produces empty chunks.
         assert!(
             result.is_ok() || result.is_err(),

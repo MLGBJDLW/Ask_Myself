@@ -40,6 +40,9 @@ pub enum CoreError {
     #[error("OCR error: {0}")]
     Ocr(String),
 
+    #[error("Video error: {0}")]
+    Video(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 

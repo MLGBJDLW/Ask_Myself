@@ -20,7 +20,9 @@ tokio = { version = "1", features = ["sync", "rt"] }
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 ask-core = { path = "../../../crates/core" }
+rusqlite = { version = "0.32" }
 
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+video = ["ask-core/video"]

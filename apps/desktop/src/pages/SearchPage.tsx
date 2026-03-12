@@ -50,7 +50,7 @@ import { useDebounce } from '../lib/useDebounce';
 const PAGE_SIZE = 20;
 const INSTANT_TRANSITION = { duration: 0 };
 
-const FILE_TYPE_OPTIONS: { value: FileType; labelKey: 'search.markdown' | 'search.plaintext' | 'search.log' | 'search.pdf' | 'search.docx' | 'search.excel' | 'search.pptx' }[] = [
+const FILE_TYPE_OPTIONS: { value: FileType; labelKey: 'search.markdown' | 'search.plaintext' | 'search.log' | 'search.pdf' | 'search.docx' | 'search.excel' | 'search.pptx' | 'search.video' | 'search.audio' }[] = [
   { value: 'markdown', labelKey: 'search.markdown' },
   { value: 'plaintext', labelKey: 'search.plaintext' },
   { value: 'log', labelKey: 'search.log' },
@@ -58,6 +58,8 @@ const FILE_TYPE_OPTIONS: { value: FileType; labelKey: 'search.markdown' | 'searc
   { value: 'docx', labelKey: 'search.docx' },
   { value: 'excel', labelKey: 'search.excel' },
   { value: 'pptx', labelKey: 'search.pptx' },
+  { value: 'video', labelKey: 'search.video' },
+  { value: 'audio', labelKey: 'search.audio' },
 ];
 
 /* ------------------------------------------------------------------ */

@@ -112,6 +112,42 @@ npm run tauri build
 
 Produces a platform-specific installer in `target/release/bundle/`.
 
+### Feature Flags
+
+The `ask-core` crate uses Cargo features to gate heavy dependencies:
+
+| Feature | Default | Requires |
+|---------|---------|----------|
+| `ocr` | Yes | — |
+| `video` | No | LLVM / libclang |
+
+```bash
+# Default build (OCR only, no external deps)
+cargo build -p ask-core
+
+# With video transcription support
+cargo build -p ask-core --features video
+```
+
+To enable the `video` feature you need libclang installed:
+
+- **macOS** — `brew install llvm`
+- **Ubuntu** — `apt install libclang-dev`
+- **Windows** — Install LLVM from [llvm-project releases](https://github.com/llvm/llvm-project/releases) and set `LIBCLANG_PATH=C:\Program Files\LLVM\bin`
+
+The desktop app builds and runs without LLVM by default (`npm run tauri dev` just works).
+To enable video transcription during development:
+
+```bash
+cd apps/desktop
+# macOS/Linux
+LIBCLANG_PATH="..." npm run tauri dev -- -- --features video
+# Windows (PowerShell)
+$env:LIBCLANG_PATH="C:\Program Files\LLVM\bin"; npm run tauri dev -- -- --features video
+```
+
+Prebuilt releases include all features.
+
 ## Architecture
 
 ```

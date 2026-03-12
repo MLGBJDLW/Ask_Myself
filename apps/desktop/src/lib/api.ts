@@ -15,6 +15,7 @@ import type {
 import type { PrivacyConfig } from "../types/privacy";
 import type { EmbedderConfig } from "../types/embedder";
 import type { OcrConfig } from "../types/ocr";
+import type { VideoConfig, TranscriptChunk, VideoMetadata } from "../types/video";
 import type {
   AgentConfig,
   SaveAgentConfigInput,
@@ -322,6 +323,26 @@ export const checkOcrModels = (config: OcrConfig) =>
 export const downloadOcrModels = (config: OcrConfig) =>
   invoke<void>('download_ocr_models_cmd', { config });
 
+// ── Video ───────────────────────────────────────────────────────────
+
+export const getVideoConfig = () =>
+  invoke<VideoConfig>('get_video_config_cmd');
+
+export const saveVideoConfig = (config: VideoConfig) =>
+  invoke<void>('save_video_config_cmd', { config });
+
+export const checkWhisperModel = (config: VideoConfig) =>
+  invoke<boolean>('check_whisper_model_cmd', { config });
+
+export const downloadWhisperModel = (config: VideoConfig) =>
+  invoke<void>('download_whisper_model_cmd', { config });
+
+export const deleteWhisperModel = () =>
+  invoke<void>('delete_whisper_model_cmd');
+
+export const checkFfmpeg = (config: VideoConfig) =>
+  invoke<boolean>('check_ffmpeg_cmd', { config });
+
 export const clearAnswerCache = () =>
   invoke<number>('clear_answer_cache');
 
@@ -369,3 +390,21 @@ export const testMcpServerDirect = (input: {
 
 export const listMcpTools = (serverId: string) =>
   invoke<McpToolInfo[]>('list_mcp_tools_cmd', { serverId });
+
+// ── Video Analysis ──────────────────────────────────────────────────
+
+export const analyzeVideo = (path: string) =>
+  invoke<{
+    transcript: string;
+    segmentCount: number;
+    durationSecs: number | null;
+    frameTextsCount: number;
+    thumbnailPath: string | null;
+    metadata: VideoMetadata | null;
+  }>('analyze_video_cmd', { path });
+
+export const getVideoTranscript = (filePath: string) =>
+  invoke<TranscriptChunk[]>('get_video_transcript_cmd', { filePath });
+
+export const getVideoMetadata = (filePath: string) =>
+  invoke<VideoMetadata>('get_video_metadata_cmd', { filePath });

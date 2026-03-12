@@ -6,6 +6,9 @@ import {
   ThumbsDown,
   Pin,
   FileText,
+  Film,
+  Music,
+  Clock,
   Hash,
   FolderOpen,
   ChevronDown,
@@ -18,6 +21,7 @@ import { Badge } from './ui/Badge';
 import { Tooltip } from './ui/Tooltip';
 import { useTranslation } from '../i18n';
 import { openFileInDefaultApp, showInFileExplorer } from '../lib/api';
+import { VideoPreviewModal } from './media/VideoPreviewModal';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -43,6 +47,23 @@ interface Props {
 /* ------------------------------------------------------------------ */
 
 const TRUNCATE_LENGTH = 200;
+
+const VIDEO_EXTS = ['.mp4', '.mkv', '.webm', '.mov', '.avi', '.flv', '.wmv', '.m4v', '.mpeg', '.mpg'];
+const AUDIO_EXTS = ['.mp3', '.wav', '.flac', '.ogg', '.aac', '.m4a', '.wma', '.opus'];
+
+function isVideoFile(path: string): boolean {
+  return VIDEO_EXTS.some(ext => path.toLowerCase().endsWith(ext));
+}
+
+function isAudioFile(path: string): boolean {
+  return AUDIO_EXTS.some(ext => path.toLowerCase().endsWith(ext));
+}
+
+function extractTimestamp(headingContext: string | undefined): string | null {
+  if (!headingContext) return null;
+  const match = headingContext.match(/(\d{2}:\d{2}:\d{2})/);
+  return match ? match[1] : null;
+}
 
 function fileExtension(path: string): string {
   const m = path.match(/\.(\w+)$/);
@@ -119,6 +140,7 @@ export function EvidenceCardComponent({
   onAskAbout,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const [videoPreviewPath, setVideoPreviewPath] = useState<string | null>(null);
   const { t } = useTranslation();
 
   const needsTruncation = card.content.length > TRUNCATE_LENGTH;
@@ -135,8 +157,16 @@ export function EvidenceCardComponent({
   const ext = fileExtension(card.documentPath);
   const dir = directoryPath(card.documentPath);
   const pct = Math.min(Math.max(card.score, 0), 1) * 100;
+  const isVideo = isVideoFile(card.documentPath);
+  const isAudio = isAudioFile(card.documentPath);
+  const headingCtx = card.headingPath.length > 0 ? card.headingPath.join(' › ') : undefined;
+  const timestamp = extractTimestamp(headingCtx);
+
+  const FileIcon = isVideo ? Film : isAudio ? Music : FileText;
+  const iconColor = isVideo ? 'text-violet-500' : isAudio ? 'text-amber-500' : 'text-text-tertiary';
 
   return (
+    <>
     <motion.div
       variants={cardVariants}
       initial="hidden"
@@ -152,12 +182,16 @@ export function EvidenceCardComponent({
       {/* ── Header: filename + score ── */}
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
-          <FileText size={14} className="shrink-0 text-text-tertiary" />
+          <FileIcon size={14} className={`shrink-0 ${iconColor}`} />
           <button
             onClick={() => {
-              openFileInDefaultApp(card.documentPath).catch(() =>
-                toast.error(t('card.fileNotFound')),
-              );
+              if (isVideo) {
+                setVideoPreviewPath(card.documentPath);
+              } else {
+                openFileInDefaultApp(card.documentPath).catch(() =>
+                  toast.error(t('card.fileNotFound')),
+                );
+              }
             }}
             className="cursor-pointer truncate text-sm font-medium text-text-primary transition-colors hover:text-accent hover:underline"
             title={card.documentPath}
@@ -165,6 +199,12 @@ export function EvidenceCardComponent({
             {card.documentTitle ||
               card.documentPath.split(/[/\\]/).pop()}
           </button>
+          {timestamp && (isVideo || isAudio) && (
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
+              <Clock className="h-3 w-3 mr-1" />
+              {timestamp}
+            </span>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
@@ -372,5 +412,14 @@ export function EvidenceCardComponent({
         )}
       </div>
     </motion.div>
+
+    {videoPreviewPath && (
+      <VideoPreviewModal
+        open
+        onClose={() => setVideoPreviewPath(null)}
+        filePath={videoPreviewPath}
+      />
+    )}
+    </>
   );
 }

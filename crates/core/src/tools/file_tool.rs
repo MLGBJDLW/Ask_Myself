@@ -79,7 +79,7 @@ fn read_file_content(path: &Path) -> Result<String, CoreError> {
     match crate::parse::read_text_file(path) {
         Ok(raw) => Ok(raw),
         Err(err) if is_binary_file_error(&err) && supports_document_fallback(path) => {
-            let parsed = crate::parse::parse_file(path, None, None)?;
+            let parsed = crate::parse::parse_file(path, None, #[cfg(feature = "video")] None, None, None)?;
             Ok(flatten_parsed_document_text(&parsed))
         }
         Err(err) => Err(err),

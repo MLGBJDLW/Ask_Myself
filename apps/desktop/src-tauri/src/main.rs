@@ -4,6 +4,8 @@ mod commands;
 mod subagent_tool;
 
 use std::collections::HashMap;
+#[cfg(feature = "video")]
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use ask_core::db::Database;
@@ -26,7 +28,12 @@ fn main() {
             let db = Database::new(&db_path).expect("failed to initialize database");
             let db = Arc::new(db);
 
-            app.manage(AppState { db: db.clone() });
+            app.manage(AppState {
+                db: db.clone(),
+                #[cfg(feature = "video")]
+                whisper_busy: Arc::new(AtomicBool::new(false)),
+                scan_lock: Arc::new(std::sync::Mutex::new(())),
+            });
             app.manage(AgentState {
                 running: TokioMutex::new(HashMap::new()),
             });
@@ -145,6 +152,25 @@ fn main() {
             commands::save_ocr_config_cmd,
             commands::check_ocr_models_cmd,
             commands::download_ocr_models_cmd,
+            // Video
+            #[cfg(feature = "video")]
+            commands::get_video_config_cmd,
+            #[cfg(feature = "video")]
+            commands::save_video_config_cmd,
+            #[cfg(feature = "video")]
+            commands::check_whisper_model_cmd,
+            #[cfg(feature = "video")]
+            commands::download_whisper_model_cmd,
+            #[cfg(feature = "video")]
+            commands::delete_whisper_model_cmd,
+            #[cfg(feature = "video")]
+            commands::check_ffmpeg_cmd,
+            #[cfg(feature = "video")]
+            commands::analyze_video_cmd,
+            #[cfg(feature = "video")]
+            commands::get_video_transcript_cmd,
+            #[cfg(feature = "video")]
+            commands::get_video_metadata_cmd,
             // Skills
             commands::list_skills_cmd,
             commands::save_skill_cmd,

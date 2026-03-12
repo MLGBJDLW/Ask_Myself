@@ -4,6 +4,8 @@ import {
   FileSpreadsheet,
   FolderOpen,
   Presentation,
+  Film,
+  Music,
   type LucideProps,
 } from 'lucide-react';
 import { Tooltip } from './Tooltip';
@@ -26,6 +28,7 @@ const colors = {
   amber:  { bg: 'bg-amber-500/10',  text: 'text-amber-400',  border: 'border-amber-500/20' },
   purple: { bg: 'bg-purple-500/10', text: 'text-purple-400', border: 'border-purple-500/20' },
   pink:   { bg: 'bg-pink-500/10',   text: 'text-pink-400',   border: 'border-pink-500/20' },
+  violet: { bg: 'bg-violet-500/10', text: 'text-violet-400', border: 'border-violet-500/20' },
   gray:   { bg: 'bg-surface-3',     text: 'text-text-secondary', border: 'border-border' },
 } satisfies Record<string, ColorScheme>;
 
@@ -62,6 +65,26 @@ const extStyles: Record<string, FileStyle> = {
   '.scss':     { color: colors.pink,   icon: FileText },
   '.sass':     { color: colors.pink,   icon: FileText },
   '.less':     { color: colors.pink,   icon: FileText },
+  // Video
+  '.mp4':      { color: colors.violet, icon: Film },
+  '.mkv':      { color: colors.violet, icon: Film },
+  '.webm':     { color: colors.violet, icon: Film },
+  '.mov':      { color: colors.violet, icon: Film },
+  '.avi':      { color: colors.violet, icon: Film },
+  '.flv':      { color: colors.violet, icon: Film },
+  '.wmv':      { color: colors.violet, icon: Film },
+  '.m4v':      { color: colors.violet, icon: Film },
+  '.mpeg':     { color: colors.violet, icon: Film },
+  '.mpg':      { color: colors.violet, icon: Film },
+  // Audio
+  '.mp3':      { color: colors.pink,   icon: Music },
+  '.wav':      { color: colors.pink,   icon: Music },
+  '.flac':     { color: colors.pink,   icon: Music },
+  '.ogg':      { color: colors.pink,   icon: Music },
+  '.aac':      { color: colors.pink,   icon: Music },
+  '.m4a':      { color: colors.pink,   icon: Music },
+  '.wma':      { color: colors.pink,   icon: Music },
+  '.opus':     { color: colors.pink,   icon: Music },
 };
 
 const defaultStyle: FileStyle = { color: colors.gray, icon: FileText };

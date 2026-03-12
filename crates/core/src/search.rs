@@ -940,6 +940,40 @@ fn file_type_to_mimes(ft: &FileType) -> Vec<String> {
             "image/gif".to_string(),
             "image/webp".to_string(),
         ],
+        FileType::Video => {
+            #[cfg(feature = "video")]
+            {
+                crate::video::VIDEO_MIME_TYPES.iter().map(|s| s.to_string()).collect()
+            }
+            #[cfg(not(feature = "video"))]
+            {
+                vec![
+                    "video/mp4".to_string(),
+                    "video/webm".to_string(),
+                    "video/quicktime".to_string(),
+                    "video/x-matroska".to_string(),
+                ]
+            }
+        }
+        FileType::Audio => {
+            #[cfg(feature = "video")]
+            {
+                crate::video::AUDIO_MIME_TYPES.iter().map(|s| s.to_string()).collect()
+            }
+            #[cfg(not(feature = "video"))]
+            {
+                vec![
+                    "audio/mpeg".to_string(),
+                    "audio/wav".to_string(),
+                    "audio/flac".to_string(),
+                    "audio/ogg".to_string(),
+                    "audio/aac".to_string(),
+                    "audio/mp4".to_string(),
+                    "audio/x-ms-wma".to_string(),
+                    "audio/opus".to_string(),
+                ]
+            }
+        }
     }
 }
 

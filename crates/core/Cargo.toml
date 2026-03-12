@@ -33,10 +33,13 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 base64 = "0.22"
 imageproc = { version = "0.25", default-features = false }
 encoding_rs = "0.8"
+whisper-rs = { version = "0.13", optional = true }
+hound = { version = "3.5", optional = true }
 
 [features]
 default = ["ocr"]
 ocr = []
+video = ["whisper-rs", "hound"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -10,7 +10,6 @@ import {
   Trash2,
   Save,
   Brain,
-  Download,
   CheckCircle,
   XCircle,
   Loader2,
@@ -22,12 +21,15 @@ import {
   Settings2,
   X,
   ScanLine,
+  Film,
   Blocks,
   Plug,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
   ChevronUp,
+  Mic,
+  HardDrive,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { listen } from '@tauri-apps/api/event';
@@ -38,6 +40,7 @@ import type { EmbedderConfig } from '../types/embedder';
 import type { AgentConfig, SaveAgentConfigInput, UserMemory } from '../types/conversation';
 import type { ScanProgress, FtsProgress, DownloadProgress } from '../types/ingest';
 import type { OcrConfig, OcrDownloadProgress } from '../types/ocr';
+import type { VideoConfig, VideoDownloadProgress } from '../types/video';
 import type { Skill, McpServer, McpToolInfo, SaveSkillInput, SaveMcpServerInput } from '../types/extensions';
 import { useTranslation } from '../i18n';
 import { ThemeSwitcher } from '../components/ui/ThemeSwitcher';
@@ -50,6 +53,7 @@ import { SkillEditor } from '../components/settings/SkillEditor';
 import { McpServerForm } from '../components/settings/McpServerForm';
 import { PROVIDER_PRESETS, type ProviderPreset } from '../lib/providerPresets';
 import { DEFAULT_SUBAGENT_TOOL_NAMES } from '../lib/subagentTools';
+import { ModelCard } from '../components/settings/ModelCard';
 
 /* ── Section wrapper ──────────────────────────────────────────────── */
 function Section({
@@ -90,12 +94,6 @@ function StatCard({ label, value }: { label: string; value: number | string }) {
 }
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function estimateTokens(text: string): number {
   if (!text) return 0;
   let tokens = 0;
@@ -106,7 +104,7 @@ function estimateTokens(text: string): number {
 }
 
 /* ── Settings page ────────────────────────────────────────────────── */
-type SettingsTab = 'appearance' | 'embedding' | 'index' | 'privacy' | 'providers' | 'ocr' | 'extensions';
+type SettingsTab = 'appearance' | 'models' | 'embedding' | 'index' | 'privacy' | 'providers' | 'ocr' | 'video' | 'extensions';
 const MEMORY_CHAR_LIMIT = 240;
 const TAB_STRIP_EDGE_EPSILON = 4;
 
@@ -296,6 +294,16 @@ export function SettingsPage() {
   const [ocrProgress, setOcrProgress] = useState<OcrDownloadProgress | null>(null);
   const [ocrSaveLoading, setOcrSaveLoading] = useState(false);
 
+  /* ── Video state ──────────────────────────────────────────────────── */
+  const [videoConfig, setVideoConfig] = useState<VideoConfig | null>(null);
+  const [whisperModelExists, setWhisperModelExists] = useState<boolean | null>(null);
+  const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
+  const [videoDownloading, setVideoDownloading] = useState(false);
+  const [videoProgress, setVideoProgress] = useState<VideoDownloadProgress | null>(null);
+  const [videoSaveLoading, setVideoSaveLoading] = useState(false);
+  const [showAdvancedVideo, setShowAdvancedVideo] = useState(false);
+  const [deleteModelConfirmOpen, setDeleteModelConfirmOpen] = useState(false);
+
   useEffect(() => {
     if (!rebuildEmbedLoading) {
       setEmbedRebuildProgress(null);
@@ -453,6 +461,85 @@ export function SettingsPage() {
     }
   };
 
+  /* ── Video effects & handlers ────────────────────────────────────── */
+  const loadVideoConfig = useCallback(async () => {
+    try {
+      const cfg = await api.getVideoConfig();
+      setVideoConfig(cfg);
+      api.checkWhisperModel(cfg).then(setWhisperModelExists).catch(() => setWhisperModelExists(false));
+      api.checkFfmpeg(cfg).then(setFfmpegAvailable).catch(() => setFfmpegAvailable(false));
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadVideoConfig();
+  }, [loadVideoConfig]);
+
+  useEffect(() => {
+    if (!videoDownloading) { setVideoProgress(null); return; }
+    let cancelled = false;
+    let unlistenFn: (() => void) | undefined;
+    const setupListener = async () => {
+      const fn = await listen<VideoDownloadProgress>('video:download-progress', (event) => {
+        if (!cancelled) setVideoProgress(event.payload);
+      });
+      if (cancelled) {
+        fn();
+      } else {
+        unlistenFn = fn;
+      }
+    };
+    setupListener();
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, [videoDownloading]);
+
+  const handleWhisperDownload = async () => {
+    if (!videoConfig) return;
+    setVideoDownloading(true);
+    try {
+      await api.downloadWhisperModel(videoConfig);
+      setWhisperModelExists(true);
+    } catch (e) {
+      toast.error(t('settings.videoDownloadFail') + ': ' + String(e));
+    } finally {
+      setVideoDownloading(false);
+    }
+  };
+
+  const handleWhisperDelete = async () => {
+    try {
+      await api.deleteWhisperModel();
+      setWhisperModelExists(false);
+      toast.success(t('settings.videoDeleteSuccess'));
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setDeleteModelConfirmOpen(false);
+    }
+  };
+
+  const handleVideoSave = async () => {
+    if (!videoConfig) return;
+    setVideoSaveLoading(true);
+    try {
+      await api.saveVideoConfig(videoConfig);
+      markClean('video');
+      const exists = await api.checkWhisperModel(videoConfig);
+      setWhisperModelExists(exists);
+      toast.success(t('settings.ocrSaved'));
+    } catch {
+      toast.error(t('settings.ocrSaveError'));
+    } finally {
+      setVideoSaveLoading(false);
+    }
+  };
+
   const loadPrivacyConfig = useCallback(async () => {
     try {
       const config = await api.getPrivacyConfig();
@@ -485,13 +572,18 @@ export function SettingsPage() {
         if (!reloaded) return false;
         break;
       }
+      case 'video': {
+        const reloaded = await loadVideoConfig();
+        if (!reloaded) return false;
+        break;
+      }
       default:
         break;
     }
 
     markClean(activeTab);
     return true;
-  }, [activeTab, loadEmbedConfig, loadOcrConfig, loadPrivacyConfig, markClean]);
+  }, [activeTab, loadEmbedConfig, loadOcrConfig, loadVideoConfig, loadPrivacyConfig, markClean]);
 
   const handleTabChange = useCallback((nextTab: SettingsTab) => {
     if (nextTab === activeTab) return;
@@ -975,9 +1067,11 @@ export function SettingsPage() {
 
   const tabs: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
     { id: 'appearance', label: t('settings.appearance'), icon: <Star size={16} /> },
+    { id: 'models', label: t('settings.models'), icon: <HardDrive size={16} /> },
     { id: 'embedding', label: t('settings.embeddingSection'), icon: <Brain size={16} /> },
     { id: 'providers', label: t('settings.aiProviders'), icon: <Bot size={16} /> },
     { id: 'ocr', label: t('settings.ocrTab'), icon: <ScanLine size={16} /> },
+    { id: 'video', label: t('settings.videoTab'), icon: <Film size={16} /> },
     { id: 'index', label: t('settings.indexSection'), icon: <Database size={16} /> },
     { id: 'privacy', label: t('settings.privacySection'), icon: <Shield size={16} /> },
     { id: 'extensions', label: t('settings.extensionsTab'), icon: <Blocks size={16} /> },
@@ -1094,6 +1188,190 @@ export function SettingsPage() {
         </Section>
       )}
 
+      {/* ── Tab: Models ─────────────────────────────────────────── */}
+      {activeTab === 'models' && (
+        <Section icon={<HardDrive size={20} />} title={t('settings.models')} delay={0.03}>
+          <p className="mb-5 text-xs text-text-tertiary">{t('settings.modelsDesc')}</p>
+          <div className="space-y-4">
+            {/* Embedding Model */}
+            <ModelCard
+              title={t('settings.modelsEmbedding')}
+              icon={<Brain size={18} />}
+              description={t('settings.modelsEmbeddingDesc')}
+              status={
+                downloadLoading ? 'downloading'
+                : localModelReady === null ? 'checking'
+                : localModelReady ? 'downloaded'
+                : embedConfig?.provider !== 'local' ? 'downloaded'
+                : 'not-downloaded'
+              }
+              size={embedConfig?.localModel === 'MultilingualE5Base' ? '~470 MB' : '~46 MB'}
+              onDownload={handleDownloadModel}
+              downloadProgress={downloadProgress}
+            >
+              {embedConfig?.provider === 'local' && (
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-text-primary">{t('settings.embeddingLocalModelSelect')}</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {([
+                      {
+                        id: 'MultilingualMiniLM' as const,
+                        label: t('settings.embeddingModelLight'),
+                        desc: t('settings.embeddingModelLightDesc'),
+                      },
+                      {
+                        id: 'MultilingualE5Base' as const,
+                        label: t('settings.embeddingModelQuality'),
+                        desc: t('settings.embeddingModelQualityDesc'),
+                      },
+                    ]).map((opt) => (
+                      <button
+                        key={opt.id}
+                        onClick={() => {
+                          if (embedConfig) {
+                            setEmbedConfig({ ...embedConfig, localModel: opt.id });
+                            setLocalModelReady(null);
+                            markDirty('embedding');
+                          }
+                        }}
+                        className={`rounded-lg border p-3 text-left transition-all duration-fast cursor-pointer ${
+                          embedConfig?.localModel === opt.id
+                            ? 'border-accent bg-accent-subtle ring-1 ring-accent/20'
+                            : 'border-border bg-surface-1 hover:border-border-hover hover:bg-surface-3/50'
+                        }`}
+                      >
+                        <div className="text-sm font-medium text-text-primary">{opt.label}</div>
+                        <div className="mt-1 text-xs text-text-tertiary">{opt.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-start gap-2 rounded-lg border border-info/30 bg-info/5 p-2">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0 text-info" />
+                    <p className="text-xs text-info">{t('settings.embeddingModelChangeWarning')}</p>
+                  </div>
+                </div>
+              )}
+            </ModelCard>
+
+            {/* OCR Model */}
+            <ModelCard
+              title={t('settings.modelsOcr')}
+              icon={<ScanLine size={18} />}
+              description={t('settings.modelsOcrDesc')}
+              status={
+                ocrDownloading ? 'downloading'
+                : ocrModelsExist === null ? 'checking'
+                : ocrModelsExist ? 'downloaded'
+                : 'not-downloaded'
+              }
+              size={t('settings.ocrModelSize')}
+              onDownload={handleDownloadOcrModels}
+              downloadProgress={ocrProgress ? {
+                filename: ocrProgress.filename,
+                bytesDownloaded: ocrProgress.bytesDownloaded,
+                totalBytes: ocrProgress.totalBytes ?? null,
+                fileIndex: ocrProgress.fileIndex,
+                totalFiles: ocrProgress.totalFiles,
+              } : null}
+            />
+
+            {/* Whisper Model */}
+            <ModelCard
+              title={t('settings.modelsWhisper')}
+              icon={<Mic size={18} />}
+              description={t('settings.modelsWhisperDesc')}
+              status={
+                videoDownloading ? 'downloading'
+                : whisperModelExists === null ? 'checking'
+                : whisperModelExists ? 'downloaded'
+                : 'not-downloaded'
+              }
+              size={
+                videoConfig?.whisperModel === 'tiny' ? '~39 MB'
+                : videoConfig?.whisperModel === 'base' ? '~142 MB'
+                : videoConfig?.whisperModel === 'small' ? '~466 MB'
+                : videoConfig?.whisperModel === 'medium' ? '~1.5 GB'
+                : videoConfig?.whisperModel === 'large' ? '~3.1 GB'
+                : videoConfig?.whisperModel === 'large_turbo' ? '~1.6 GB'
+                : undefined
+              }
+              onDownload={handleWhisperDownload}
+              downloadProgress={videoProgress ? {
+                filename: videoProgress.filename,
+                bytesDownloaded: videoProgress.bytesDownloaded,
+                totalBytes: videoProgress.totalBytes ?? null,
+                fileIndex: 0,
+                totalFiles: 1,
+              } : null}
+            >
+              {videoConfig && (
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-text-primary">{t('settings.videoWhisperModel')}</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {([
+                      { id: 'tiny' as const, label: t('settings.videoModelTiny'), desc: t('settings.videoModelTinyDesc') },
+                      { id: 'base' as const, label: t('settings.videoModelBase'), desc: t('settings.videoModelBaseDesc') },
+                      { id: 'small' as const, label: t('settings.videoModelSmall'), desc: t('settings.videoModelSmallDesc') },
+                      { id: 'medium' as const, label: t('settings.videoModelMedium'), desc: t('settings.videoModelMediumDesc') },
+                      { id: 'large' as const, label: t('settings.videoModelLarge'), desc: t('settings.videoModelLargeDesc') },
+                      { id: 'large_turbo' as const, label: t('settings.videoModelLargeTurbo'), desc: t('settings.videoModelLargeTurboDesc') },
+                    ]).map((opt) => (
+                      <button
+                        key={opt.id}
+                        onClick={() => {
+                          setVideoConfig({ ...videoConfig, whisperModel: opt.id });
+                          setWhisperModelExists(null);
+                          markDirty('video');
+                        }}
+                        className={`rounded-lg border p-3 text-left transition-all duration-fast cursor-pointer ${
+                          videoConfig.whisperModel === opt.id
+                            ? 'border-accent bg-accent-subtle ring-1 ring-accent/20'
+                            : 'border-border bg-surface-1 hover:border-border-hover hover:bg-surface-3/50'
+                        }`}
+                      >
+                        <div className="text-sm font-medium text-text-primary">{opt.label}</div>
+                        <div className="mt-1 text-xs text-text-tertiary">{opt.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-start gap-2 rounded-lg border border-info/30 bg-info/5 p-2">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0 text-info" />
+                    <p className="text-xs text-info">{t('settings.videoModelChangeWarning')}</p>
+                  </div>
+                </div>
+              )}
+            </ModelCard>
+
+            {/* Disk Usage Summary */}
+            <div className="rounded-lg border border-border p-4 bg-surface-1">
+              <h4 className="text-sm font-medium text-text-primary mb-2">{t('settings.modelDiskUsage')}</h4>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-tertiary">
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-accent" />
+                  {t('settings.modelsEmbedding')}: {embedConfig?.localModel === 'MultilingualE5Base' ? '~470 MB' : '~46 MB'}
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-success" />
+                  {t('settings.modelsOcr')}: ~16 MB
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-warning" />
+                  {t('settings.modelsWhisper')}: {
+                    videoConfig?.whisperModel === 'tiny' ? '~39 MB'
+                    : videoConfig?.whisperModel === 'base' ? '~142 MB'
+                    : videoConfig?.whisperModel === 'small' ? '~466 MB'
+                    : videoConfig?.whisperModel === 'medium' ? '~1.5 GB'
+                    : videoConfig?.whisperModel === 'large' ? '~3.1 GB'
+                    : videoConfig?.whisperModel === 'large_turbo' ? '~1.6 GB'
+                    : '—'
+                  }
+                </span>
+              </div>
+            </div>
+          </div>
+        </Section>
+      )}
+
       {/* ── Tab: Embedding ──────────────────────────────────────── */}
       {activeTab === 'embedding' && (
       <Section icon={<Brain size={20} />} title={t('settings.embeddingSection')} delay={0.03}>
@@ -1119,111 +1397,30 @@ export function SettingsPage() {
               </div>
             </div>
 
-            {/* Local model panel */}
+            {/* Local model status */}
             {embedConfig.provider === 'local' && (
-              <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-4">
-                {/* Model selector */}
-                <div>
-                  <p className="mb-2 text-sm font-medium text-text-primary">
-                    {t('settings.embeddingLocalModelSelect')}
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {([
-                      {
-                        id: 'MultilingualMiniLM' as const,
-                        label: t('settings.embeddingModelLight'),
-                        desc: t('settings.embeddingModelLightDesc'),
-                      },
-                      {
-                        id: 'MultilingualE5Base' as const,
-                        label: t('settings.embeddingModelQuality'),
-                        desc: t('settings.embeddingModelQualityDesc'),
-                      },
-                    ]).map((opt) => (
-                      <button
-                        key={opt.id}
-                        onClick={() => {
-                          setEmbedConfig({ ...embedConfig, localModel: opt.id });
-                          setLocalModelReady(null);
-                          markDirty('embedding');
-                        }}
-                        className={`rounded-lg border p-3 text-left transition-all duration-fast cursor-pointer ${
-                          embedConfig.localModel === opt.id
-                            ? 'border-accent bg-accent-subtle ring-1 ring-accent/20'
-                            : 'border-border bg-surface-1 hover:border-border-hover hover:bg-surface-3/50'
-                        }`}
-                      >
-                        <div className="text-sm font-medium text-text-primary">{opt.label}</div>
-                        <div className="mt-1 text-xs text-text-tertiary">{opt.desc}</div>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="mt-2 flex items-start gap-2 rounded-lg border border-info/30 bg-info/5 p-2">
-                    <AlertTriangle size={14} className="mt-0.5 shrink-0 text-info" />
-                    <p className="text-xs text-info">{t('settings.embeddingModelChangeWarning')}</p>
-                  </div>
-                </div>
-
-                {/* Download status */}
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-text-secondary">{t('settings.embeddingLocalStatus')}:</span>
-                  {localModelReady === null ? (
-                    <Loader2 size={14} className="animate-spin text-text-tertiary" />
-                  ) : localModelReady ? (
-                    <Badge variant="default" className="gap-1">
-                      <CheckCircle size={12} className="text-success" />
-                      {t('settings.embeddingDownloaded')}
-                    </Badge>
-                  ) : (
-                    <Badge variant="default" className="gap-1">
-                      <XCircle size={12} className="text-danger" />
-                      {t('settings.embeddingNotDownloaded')}
-                    </Badge>
-                  )}
-                </div>
-                {localModelReady === false && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    icon={downloadLoading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                    loading={downloadLoading}
-                    onClick={handleDownloadModel}
-                  >
-                    {downloadLoading ? t('settings.embeddingDownloading') : t('settings.embeddingDownload')}
-                  </Button>
-                )}
-                {downloadLoading && downloadProgress && (
-                  <div className="mt-2">
-                    <div className="flex items-center gap-2 text-xs text-text-tertiary mb-1">
-                      <Loader2 size={12} className="animate-spin" />
-                      <span>
-                        {t('settings.downloadingFile', {
-                          filename: downloadProgress.filename,
-                          current: String(downloadProgress.fileIndex + 1),
-                          total: String(downloadProgress.totalFiles),
-                        })}
-                      </span>
-                    </div>
-                    {downloadProgress.totalBytes ? (
-                      <>
-                        <div className="flex justify-between text-[10px] text-text-tertiary/70 mb-0.5">
-                          <span>{formatBytes(downloadProgress.bytesDownloaded)} / {formatBytes(downloadProgress.totalBytes)}</span>
-                          <span>{Math.round((downloadProgress.bytesDownloaded / downloadProgress.totalBytes) * 100)}%</span>
-                        </div>
-                        <div className="w-full bg-surface-3 rounded h-1.5">
-                          <div
-                            className="bg-accent h-1.5 rounded transition-all duration-300"
-                            style={{ width: `${Math.min(100, (downloadProgress.bytesDownloaded / downloadProgress.totalBytes) * 100)}%` }}
-                          />
-                        </div>
-                      </>
+              <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-text-primary">{t('settings.embeddingLocalModel')}</p>
+                  <div className="flex items-center gap-2 text-sm">
+                    {localModelReady === null ? (
+                      <Loader2 size={14} className="animate-spin text-text-tertiary" />
+                    ) : localModelReady ? (
+                      <Badge variant="default" className="gap-1">
+                        <CheckCircle size={12} className="text-success" />
+                        {t('settings.embeddingDownloaded')}
+                      </Badge>
                     ) : (
-                      <div className="w-full bg-surface-3 rounded h-1.5 overflow-hidden">
-                        <div className="bg-accent h-1.5 rounded animate-pulse w-full" />
-                      </div>
+                      <Badge variant="default" className="gap-1">
+                        <XCircle size={12} className="text-danger" />
+                        {t('settings.embeddingNotDownloaded')}
+                      </Badge>
                     )}
                   </div>
-                )}
+                </div>
+                <p className="text-xs text-text-tertiary">
+                  {embedConfig.localModel === 'MultilingualE5Base' ? t('settings.embeddingModelQuality') : t('settings.embeddingModelLight')}
+                </p>
               </div>
             )}
 
@@ -1806,76 +2003,6 @@ export function SettingsPage() {
               </button>
             </div>
 
-            {/* Model download section */}
-            <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-4">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium text-text-primary">{t('settings.ocrModels')}</p>
-                <span className="text-xs text-text-tertiary">{t('settings.ocrModelSize')}</span>
-              </div>
-
-              {/* Download status */}
-              <div className="flex items-center gap-2 text-sm">
-                {ocrModelsExist === null ? (
-                  <Loader2 size={14} className="animate-spin text-text-tertiary" />
-                ) : ocrModelsExist ? (
-                  <Badge variant="default" className="gap-1">
-                    <CheckCircle size={12} className="text-success" />
-                    {t('settings.ocrModelsDownloaded')}
-                  </Badge>
-                ) : (
-                  <Badge variant="default" className="gap-1">
-                    <XCircle size={12} className="text-danger" />
-                    {t('settings.ocrModelsNotDownloaded')}
-                  </Badge>
-                )}
-              </div>
-
-              {ocrModelsExist === false && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  icon={ocrDownloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                  loading={ocrDownloading}
-                  onClick={handleDownloadOcrModels}
-                >
-                  {ocrDownloading ? t('settings.ocrDownloading') : t('settings.ocrDownload')}
-                </Button>
-              )}
-
-              {ocrDownloading && ocrProgress && (
-                <div className="mt-2">
-                  <div className="flex items-center gap-2 text-xs text-text-tertiary mb-1">
-                    <Loader2 size={12} className="animate-spin" />
-                    <span>
-                      {t('settings.ocrDownloadingFile', {
-                        filename: ocrProgress.filename,
-                        current: String(ocrProgress.fileIndex + 1),
-                        total: String(ocrProgress.totalFiles),
-                      })}
-                    </span>
-                  </div>
-                  {ocrProgress.totalBytes ? (
-                    <>
-                      <div className="flex justify-between text-[10px] text-text-tertiary/70 mb-0.5">
-                        <span>{formatBytes(ocrProgress.bytesDownloaded)} / {formatBytes(ocrProgress.totalBytes)}</span>
-                        <span>{Math.round((ocrProgress.bytesDownloaded / ocrProgress.totalBytes) * 100)}%</span>
-                      </div>
-                      <div className="w-full bg-surface-3 rounded h-1.5">
-                        <div
-                          className="bg-accent h-1.5 rounded transition-all duration-300"
-                          style={{ width: `${Math.min(100, (ocrProgress.bytesDownloaded / ocrProgress.totalBytes) * 100)}%` }}
-                        />
-                      </div>
-                    </>
-                  ) : (
-                    <div className="w-full bg-surface-3 rounded h-1.5 overflow-hidden">
-                      <div className="bg-accent h-1.5 rounded animate-pulse w-full" />
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
             {/* Confidence threshold */}
             <div>
               <div className="flex items-center justify-between mb-1">
@@ -1958,6 +2085,258 @@ export function SettingsPage() {
                 {t('settings.saveConfig')}
               </Button>
             </div>
+          </div>
+        )}
+      </Section>
+      )}
+
+      {/* ── Tab: Video ─────────────────────────────────────────── */}
+      {activeTab === 'video' && (
+      <Section icon={<Film size={20} />} title={t('settings.videoSection')} delay={0.03}>
+        {videoConfig && (
+          <div className="space-y-5">
+            {/* Enable toggle */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-text-primary">{t('settings.videoEnabled')}</p>
+                <p className="text-xs text-text-tertiary">{t('settings.videoEnabledDesc')}</p>
+              </div>
+              <button
+                onClick={() => { setVideoConfig({ ...videoConfig, enabled: !videoConfig.enabled }); markDirty('video'); }}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+                  videoConfig.enabled ? 'bg-accent' : 'bg-surface-3'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+                    videoConfig.enabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* FFmpeg Status */}
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-text-secondary">{t('settings.videoFfmpegStatus')}:</span>
+              {ffmpegAvailable === null ? (
+                <Loader2 size={14} className="animate-spin text-text-tertiary" />
+              ) : ffmpegAvailable ? (
+                <Badge variant="default" className="gap-1">
+                  <CheckCircle size={12} className="text-success" />
+                  {t('settings.videoFfmpegAvailable')}
+                </Badge>
+              ) : (
+                <Badge variant="default" className="gap-1">
+                  <XCircle size={12} className="text-danger" />
+                  {t('settings.videoFfmpegNotFound')}
+                </Badge>
+              )}
+            </div>
+            {ffmpegAvailable === false && (
+              <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/5 p-2">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />
+                <p className="text-xs text-warning">{t('settings.videoFfmpegHint')}</p>
+              </div>
+            )}
+
+            {/* Language */}
+            <div>
+              <p className="text-sm font-medium text-text-primary mb-1">{t('settings.videoLanguage')}</p>
+              <p className="text-xs text-text-tertiary mb-2">{t('settings.videoLanguageDesc')}</p>
+              <Input
+                type="text"
+                value={videoConfig.language ?? ''}
+                onChange={(e) => { setVideoConfig({ ...videoConfig, language: e.target.value || null }); markDirty('video'); }}
+                placeholder="en, zh, ja..."
+                className="w-40"
+              />
+            </div>
+
+            {/* Translate to English */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-text-primary">{t('settings.videoTranslate')}</p>
+                <p className="text-xs text-text-tertiary">{t('settings.videoTranslateDesc')}</p>
+              </div>
+              <button
+                onClick={() => { setVideoConfig({ ...videoConfig, translateToEnglish: !videoConfig.translateToEnglish }); markDirty('video'); }}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+                  videoConfig.translateToEnglish ? 'bg-accent' : 'bg-surface-3'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+                    videoConfig.translateToEnglish ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Frame Extraction */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-text-primary">{t('settings.videoFrameExtraction')}</p>
+                <p className="text-xs text-text-tertiary">{t('settings.videoFrameExtractionDesc')}</p>
+              </div>
+              <button
+                onClick={() => { setVideoConfig({ ...videoConfig, frameExtractionEnabled: !videoConfig.frameExtractionEnabled }); markDirty('video'); }}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+                  videoConfig.frameExtractionEnabled ? 'bg-accent' : 'bg-surface-3'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+                    videoConfig.frameExtractionEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Frame Interval */}
+            {videoConfig.frameExtractionEnabled && (
+              <div>
+                <p className="text-sm font-medium text-text-primary mb-1">{t('settings.videoFrameInterval')}</p>
+                <p className="text-xs text-text-tertiary mb-2">{t('settings.videoFrameIntervalDesc')}</p>
+                <Input
+                  type="number"
+                  value={videoConfig.frameIntervalSecs}
+                  onChange={(e) => { setVideoConfig({ ...videoConfig, frameIntervalSecs: parseInt(e.target.value) || 30 }); markDirty('video'); }}
+                  className="w-32"
+                />
+              </div>
+            )}
+
+            {/* Advanced Settings - collapsible */}
+            <div className="space-y-4 border-t border-border pt-4 mt-4">
+              <button
+                type="button"
+                onClick={() => setShowAdvancedVideo(!showAdvancedVideo)}
+                className="flex items-center gap-2 text-sm font-medium text-text-primary cursor-pointer w-full"
+              >
+                <Settings2 size={16} />
+                {t('settings.videoAdvanced')}
+                <ChevronDown
+                  size={16}
+                  className={`transition-transform duration-fast ${showAdvancedVideo ? 'rotate-180' : ''}`}
+                />
+              </button>
+
+              {showAdvancedVideo && (
+                <div className="space-y-4 pl-4">
+                  {/* GPU Acceleration */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-text-primary">{t('settings.videoGpu')}</p>
+                      <p className="text-xs text-text-tertiary">{t('settings.videoGpuDesc')}</p>
+                    </div>
+                    <button
+                      onClick={() => { setVideoConfig({ ...videoConfig, useGpu: !videoConfig.useGpu }); markDirty('video'); }}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+                        videoConfig.useGpu ? 'bg-accent' : 'bg-surface-3'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+                          videoConfig.useGpu ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {/* Prefer Embedded Subtitles */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-text-primary">{t('settings.videoPreferSubtitles')}</p>
+                      <p className="text-xs text-text-tertiary">{t('settings.videoPreferSubtitlesDesc')}</p>
+                    </div>
+                    <button
+                      onClick={() => { setVideoConfig({ ...videoConfig, preferEmbeddedSubtitles: !videoConfig.preferEmbeddedSubtitles }); markDirty('video'); }}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+                        videoConfig.preferEmbeddedSubtitles ? 'bg-accent' : 'bg-surface-3'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+                          videoConfig.preferEmbeddedSubtitles ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {/* Scene Detection Threshold */}
+                  <div>
+                    <p className="text-sm font-medium text-text-primary mb-1">{t('settings.videoSceneThreshold')}</p>
+                    <p className="text-xs text-text-tertiary mb-2">{t('settings.videoSceneThresholdDesc')}</p>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={10}
+                        max={90}
+                        step={5}
+                        value={Math.round(videoConfig.sceneThreshold * 100)}
+                        onChange={(e) => { setVideoConfig({ ...videoConfig, sceneThreshold: parseInt(e.target.value) / 100 }); markDirty('video'); }}
+                        className="flex-1 accent-accent"
+                      />
+                      <span className="text-xs text-text-secondary w-10 text-right">{videoConfig.sceneThreshold.toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  {/* Beam Size */}
+                  <div>
+                    <p className="text-sm font-medium text-text-primary mb-1">{t('settings.videoBeamSize')}</p>
+                    <p className="text-xs text-text-tertiary mb-2">{t('settings.videoBeamSizeDesc')}</p>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={1}
+                        max={10}
+                        step={1}
+                        value={videoConfig.beamSize}
+                        onChange={(e) => { setVideoConfig({ ...videoConfig, beamSize: parseInt(e.target.value) }); markDirty('video'); }}
+                        className="flex-1 accent-accent"
+                      />
+                      <span className="text-xs text-text-secondary w-6 text-right">{videoConfig.beamSize}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Save button */}
+            <div className="flex items-center justify-between pt-2">
+              {whisperModelExists && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<Trash2 size={14} />}
+                  onClick={() => setDeleteModelConfirmOpen(true)}
+                  className="text-danger hover:bg-danger/10"
+                >
+                  {t('settings.videoDeleteModel')}
+                </Button>
+              )}
+              <div className="flex-1" />
+              <Button
+                variant="primary"
+                size="md"
+                icon={<Save size={16} />}
+                loading={videoSaveLoading}
+                onClick={handleVideoSave}
+              >
+                {t('settings.videoSave')}
+              </Button>
+            </div>
+
+            {/* Delete model confirmation */}
+            <ConfirmDialog
+              open={deleteModelConfirmOpen}
+              onClose={() => setDeleteModelConfirmOpen(false)}
+              onConfirm={handleWhisperDelete}
+              title={t('settings.videoDeleteModel')}
+              message={t('settings.videoDeleteConfirm')}
+              confirmText={t('common.delete')}
+              variant="danger"
+            />
           </div>
         )}
       </Section>

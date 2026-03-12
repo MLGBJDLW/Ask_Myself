@@ -1,8 +1,9 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, ExternalLink, Copy, Check, X } from 'lucide-react';
+import { FileText, Film, Music, Clock, ExternalLink, Copy, Check, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { openFileInDefaultApp, showInFileExplorer, getEvidenceCard } from '../../lib/api';
+import { VideoPreviewModal } from '../media/VideoPreviewModal';
 import type { CitationCardData } from '../../lib/citationParser';
 
 /* ------------------------------------------------------------------ */
@@ -19,6 +20,23 @@ interface EvidenceCardPopupProps {
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+const VIDEO_EXTS = ['.mp4', '.mkv', '.webm', '.mov', '.avi', '.flv', '.wmv', '.m4v', '.mpeg', '.mpg'];
+const AUDIO_EXTS = ['.mp3', '.wav', '.flac', '.ogg', '.aac', '.m4a', '.wma', '.opus'];
+
+function isVideoFile(path: string): boolean {
+  return VIDEO_EXTS.some(ext => path.toLowerCase().endsWith(ext));
+}
+
+function isAudioFile(path: string): boolean {
+  return AUDIO_EXTS.some(ext => path.toLowerCase().endsWith(ext));
+}
+
+function extractTimestamp(headingContext: string | undefined): string | null {
+  if (!headingContext) return null;
+  const match = headingContext.match(/(\d{2}:\d{2}:\d{2})/);
+  return match ? match[1] : null;
+}
 
 function basename(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
@@ -44,6 +62,7 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
   const { t } = useTranslation();
   const popupRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
+  const [videoPreviewPath, setVideoPreviewPath] = useState<string | null>(null);
 
   // Close on click outside
   useEffect(() => {
@@ -94,8 +113,16 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
 
   const title = card.documentTitle || basename(card.documentPath) || t('citation.evidence');
   const scoreLabel = formatScore(card.score);
+  const isVideo = card.documentPath ? isVideoFile(card.documentPath) : false;
+  const isAudio = card.documentPath ? isAudioFile(card.documentPath) : false;
+  const headingCtx = card.headingPath.length > 0 ? card.headingPath.join(' › ') : undefined;
+  const timestamp = extractTimestamp(headingCtx);
+
+  const FileIcon = isVideo ? Film : isAudio ? Music : FileText;
+  const iconColor = isVideo ? 'text-violet-500' : isAudio ? 'text-amber-500' : 'text-accent';
 
   return (
+    <>
     <AnimatePresence>
       <motion.div
         ref={popupRef}
@@ -110,13 +137,19 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
       >
         {/* Header */}
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-2">
-          <FileText className="h-3.5 w-3.5 text-accent shrink-0" />
+          <FileIcon className={`h-3.5 w-3.5 ${iconColor} shrink-0`} />
           <span className="text-xs font-medium text-text-primary truncate flex-1" title={title}>
             {title}
           </span>
           {scoreLabel && (
             <span className="text-[10px] font-medium text-accent bg-accent/10 px-1.5 py-0.5 rounded-full shrink-0">
               {scoreLabel}
+            </span>
+          )}
+          {timestamp && (isVideo || isAudio) && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300 shrink-0">
+              <Clock className="h-2.5 w-2.5 mr-0.5" />
+              {timestamp}
             </span>
           )}
           <button
@@ -161,12 +194,12 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
             <>
               <button
                 type="button"
-                onClick={handleOpenFile}
+                onClick={isVideo ? () => setVideoPreviewPath(card.documentPath) : handleOpenFile}
                 className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md
                   bg-accent/10 text-accent hover:bg-accent/20 transition-colors cursor-pointer"
               >
                 <ExternalLink className="h-3 w-3" />
-                {t('citation.openFile')}
+                {isVideo ? t('media.videoDetails') : t('citation.openFile')}
               </button>
               <button
                 type="button"
@@ -200,6 +233,15 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
         </div>
       </motion.div>
     </AnimatePresence>
+
+    {videoPreviewPath && (
+      <VideoPreviewModal
+        open
+        onClose={() => setVideoPreviewPath(null)}
+        filePath={videoPreviewPath}
+      />
+    )}
+    </>
   );
 }
 
@@ -274,7 +316,7 @@ export function CitationChip({ chunkId, displayText, card }: CitationChipProps) 
           active:scale-95 align-baseline leading-[1.4]
           mx-0.5"
       >
-        <FileText className="h-2.5 w-2.5 shrink-0" />
+        {isVideoFile(resolvedCard?.documentPath ?? '') ? <Film className="h-2.5 w-2.5 shrink-0" /> : isAudioFile(resolvedCard?.documentPath ?? '') ? <Music className="h-2.5 w-2.5 shrink-0" /> : <FileText className="h-2.5 w-2.5 shrink-0" />}
         <span className="truncate max-w-[120px]">{displayText || title}</span>
       </button>
       {popupOpen && resolvedCard && (
