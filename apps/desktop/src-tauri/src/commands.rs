@@ -1040,6 +1040,172 @@ fn conv_message_to_llm(msg: &ConversationMessage) -> Message {
     m
 }
 
+/// Sanitize conversation history to ensure every assistant message with
+/// `tool_calls` is followed by matching tool response messages.
+///
+/// If an assistant message has orphaned tool_calls (no matching tool responses),
+/// the tool_calls field is stripped to prevent API errors like:
+/// "An assistant message with 'tool_calls' must be followed by tool messages
+/// responding to each 'tool_call_id'."
+fn sanitize_tool_call_history(mut messages: Vec<Message>) -> Vec<Message> {
+    let mut indices_to_remove: HashSet<usize> = HashSet::new();
+
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].role == Role::Assistant {
+            if let Some(ref tool_calls) = messages[i].tool_calls {
+                if !tool_calls.is_empty() {
+                    // Collect expected tool_call_ids
+                    let expected_ids: HashSet<&str> =
+                        tool_calls.iter().map(|tc| tc.id.as_str()).collect();
+
+                    // Check following messages for matching tool responses
+                    let mut found_ids = HashSet::new();
+                    let mut j = i + 1;
+                    while j < messages.len() && messages[j].role == Role::Tool {
+                        if let Some(ref name) = messages[j].name {
+                            found_ids.insert(name.as_str());
+                        }
+                        j += 1;
+                    }
+
+                    // If any tool_call_id is missing a response, strip everything
+                    if !expected_ids.is_subset(&found_ids) {
+                        warn!(
+                            "Sanitizing orphaned tool_calls in conversation history: \
+                             expected {:?}, found {:?}",
+                            expected_ids, found_ids
+                        );
+                        messages[i].tool_calls = None;
+
+                        // Add placeholder if content is empty
+                        if messages[i].text_content().trim().is_empty() {
+                            messages[i].parts = vec![ContentPart::Text {
+                                text: "[Tool calls interrupted before completion]".to_string(),
+                            }];
+                        }
+
+                        // Mark ALL following Tool messages for removal
+                        // (they're orphaned since we stripped the tool_calls)
+                        let mut k = i + 1;
+                        while k < messages.len() && messages[k].role == Role::Tool {
+                            indices_to_remove.insert(k);
+                            k += 1;
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Additional pass: find any Tool messages whose tool_call_id doesn't
+    // match any preceding assistant's tool_calls
+    for i in 0..messages.len() {
+        if messages[i].role == Role::Tool && !indices_to_remove.contains(&i) {
+            let tool_id = messages[i].name.as_deref().unwrap_or("");
+            let has_match = messages[..i].iter().any(|m| {
+                m.role == Role::Assistant
+                    && m.tool_calls
+                        .as_ref()
+                        .map_or(false, |tcs| tcs.iter().any(|tc| tc.id == tool_id))
+            });
+            if !has_match {
+                indices_to_remove.insert(i);
+            }
+        }
+    }
+
+    // Remove orphaned tool messages
+    if !indices_to_remove.is_empty() {
+        messages = messages
+            .into_iter()
+            .enumerate()
+            .filter(|(idx, _)| !indices_to_remove.contains(idx))
+            .map(|(_, msg)| msg)
+            .collect();
+    }
+
+    // Final pass: fix any assistant messages with neither content nor tool_calls
+    for msg in &mut messages {
+        if msg.role == Role::Assistant
+            && msg.tool_calls.as_ref().map_or(true, |tc| tc.is_empty())
+            && msg.text_content().trim().is_empty()
+        {
+            msg.parts = vec![ContentPart::Text {
+                text: "[Empty assistant message]".to_string(),
+            }];
+        }
+    }
+
+    messages
+}
+
+/// After an interrupted agent execution, check for assistant messages with
+/// `tool_calls` that lack corresponding tool response messages, and insert
+/// synthetic error responses so the conversation history remains valid.
+fn repair_orphaned_tool_calls(db: &Database, conversation_id: &str) {
+    let msgs = match db.get_messages(conversation_id) {
+        Ok(m) => m,
+        Err(e) => {
+            warn!("Failed to load messages for orphan repair: {e}");
+            return;
+        }
+    };
+
+    let mut i = 0;
+    while i < msgs.len() {
+        if msgs[i].role == Role::Assistant && !msgs[i].tool_calls.is_empty() {
+            let mut found_ids = HashSet::new();
+            let mut j = i + 1;
+            while j < msgs.len() && msgs[j].role == Role::Tool {
+                if let Some(ref tc_id) = msgs[j].tool_call_id {
+                    found_ids.insert(tc_id.as_str());
+                }
+                j += 1;
+            }
+
+            // Find the max sort_order among existing tool responses (or the assistant msg)
+            let base_sort = if j > i + 1 {
+                msgs[j - 1].sort_order
+            } else {
+                msgs[i].sort_order
+            };
+
+            let mut extra_sort = 1;
+            for tc in &msgs[i].tool_calls {
+                if !found_ids.contains(tc.id.as_str()) {
+                    warn!(
+                        "Inserting synthetic error response for orphaned tool_call {}",
+                        tc.id
+                    );
+                    let synthetic = ConversationMessage {
+                        id: Uuid::new_v4().to_string(),
+                        conversation_id: conversation_id.to_string(),
+                        role: Role::Tool,
+                        content: format!(
+                            "Error: tool '{}' was interrupted before completing (agent timeout or cancellation).",
+                            tc.name
+                        ),
+                        tool_call_id: Some(tc.id.clone()),
+                        tool_calls: vec![],
+                        artifacts: None,
+                        token_count: 20,
+                        created_at: String::new(),
+                        sort_order: base_sort + extra_sort,
+                        thinking: None,
+                    };
+                    if let Err(e) = db.add_message(&synthetic) {
+                        warn!("Failed to insert synthetic tool response: {e}");
+                    }
+                    extra_sort += 1;
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
 // ── Conversation Commands ───────────────────────────────────────────────
 
 #[tauri::command]
@@ -1418,6 +1584,7 @@ pub async fn agent_chat_cmd(
         .get_messages(&conversation_id)
         .map_err(|e| e.to_string())?;
     let history: Vec<Message> = existing_msgs.iter().map(conv_message_to_llm).collect();
+    let history = sanitize_tool_call_history(history);
     let next_sort_order = existing_msgs.len() as i64;
 
     // 4. Save user message to DB.
@@ -1600,7 +1767,7 @@ pub async fn agent_chat_cmd(
 
         match result {
             Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
+            Ok(Err(ref e)) => {
                 warn!("Agent execution failed for conversation {conv_id}: {e}");
                 let payload = AgentFrontendEvent {
                     conversation_id: conv_id.clone(),
@@ -1610,7 +1777,7 @@ pub async fn agent_chat_cmd(
                 };
                 let _ = handle.emit("agent:event", payload);
             }
-            Err(_elapsed) => {
+            Err(ref _elapsed) => {
                 warn!("Agent execution timed out for conversation {conv_id}");
                 let payload = AgentFrontendEvent {
                     conversation_id: conv_id.clone(),
@@ -1620,6 +1787,11 @@ pub async fn agent_chat_cmd(
                 };
                 let _ = handle.emit("agent:event", payload);
             }
+        }
+
+        // Repair orphaned tool_calls in DB after timeout or error.
+        if !matches!(result, Ok(Ok(_))) {
+            repair_orphaned_tool_calls(&db, &conv_id);
         }
     });
 
@@ -1656,7 +1828,13 @@ pub async fn agent_stop_cmd(
         // Signal cooperative cancellation first so the agent can save
         // partial work, then abort the task as a fallback.
         token.cancel();
-        task.abort();
+        // Give cooperative cancellation 2 seconds to save partial state
+        // before forcibly aborting the task.
+        let abort_task = task;
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            abort_task.abort();
+        });
     }
     Ok(())
 }

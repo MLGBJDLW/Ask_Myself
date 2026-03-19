@@ -625,9 +625,38 @@ impl AgentExecutor {
         // Macro for cancellation checkpoints — saves partial conversation and
         // returns gracefully when the token is cancelled.
         macro_rules! check_cancelled {
-            () => {
+            ($last_tool_calls:expr) => {
                 if self.cancel_token.is_cancelled() {
                     warn!("Agent execution cancelled by user");
+                    // Repair: if the previous iteration saved an assistant message
+                    // with tool_calls, insert synthetic error responses so the
+                    // conversation history stays valid.
+                    if let Some(cid) = conversation_id {
+                        if let Some(ref pending) = $last_tool_calls {
+                            for tc in pending {
+                                let synthetic = ConversationMessage {
+                                    id: Uuid::new_v4().to_string(),
+                                    conversation_id: cid.to_string(),
+                                    role: Role::Tool,
+                                    content: format!(
+                                        "Error: tool '{}' was interrupted (cancelled by user).",
+                                        tc.name
+                                    ),
+                                    tool_call_id: Some(tc.id.clone()),
+                                    tool_calls: vec![],
+                                    artifacts: None,
+                                    token_count: 15,
+                                    created_at: String::new(),
+                                    sort_order,
+                                    thinking: None,
+                                };
+                                if let Err(e) = db.add_message(&synthetic) {
+                                    warn!("Failed to insert synthetic tool response on cancel: {e}");
+                                }
+                                sort_order += 1;
+                            }
+                        }
+                    }
                     if !accumulated_content.is_empty() {
                         let note = "\n\n*[Request cancelled by user]*";
                         let _ = tx
@@ -683,9 +712,10 @@ impl AgentExecutor {
         }
 
         // --- 4. ReAct loop ----------------------------------------------------
+        let mut last_tool_calls: Option<Vec<ToolCallRequest>> = None;
         for iteration in 0..self.config.max_iterations {
             // ── Cancellation checkpoint: before LLM call ─────────────────
-            check_cancelled!();
+            check_cancelled!(last_tool_calls);
             debug!(
                 "Agent iteration {}/{}",
                 iteration + 1,
@@ -995,8 +1025,10 @@ impl AgentExecutor {
                 sort_order += 1;
             }
 
+            last_tool_calls = Some(tool_calls.clone());
+
             // ── Cancellation checkpoint: before tool execution ────────
-            check_cancelled!();
+            check_cancelled!(last_tool_calls);
 
             // -- 4e. Execute tool calls in parallel ------------------------------
             // Emit ToolCallStart events for all tools before launching.
@@ -1122,8 +1154,10 @@ impl AgentExecutor {
                 ));
             }
 
+            last_tool_calls = None;
+
             // ── Cancellation checkpoint: after tool execution ─────────
-            check_cancelled!();
+            check_cancelled!(last_tool_calls);
 
             // Re-trim messages to fit context window after appending tool results.
             // This prevents unbounded growth across iterations.
@@ -1302,8 +1336,25 @@ impl AgentExecutor {
             return Ok(()); // Too few to compact
         }
 
-        // Evict the first half of non-system messages.
-        let evict_end = non_system_start + non_system_count / 2;
+        // Evict approximately the first half of non-system messages,
+        // but adjust the boundary to avoid splitting tool-call blocks.
+        let mut evict_end = non_system_start + non_system_count / 2;
+
+        // If boundary lands on a Tool message, extend to include all
+        // consecutive Tool messages (don't split mid-block).
+        while evict_end < messages.len() && messages[evict_end].role == Role::Tool {
+            evict_end += 1;
+        }
+        // If boundary lands right after an assistant with tool_calls,
+        // pull back to before that assistant message.
+        if evict_end > non_system_start && evict_end < messages.len() {
+            if let Some(ref tc) = messages[evict_end - 1].tool_calls {
+                if !tc.is_empty() && messages.get(evict_end).map_or(false, |m| m.role == Role::Tool) {
+                    evict_end -= 1;
+                }
+            }
+        }
+
         let evicted = &messages[non_system_start..evict_end];
 
         let extractive_fallback = context::build_evicted_recap_from_messages(evicted);
