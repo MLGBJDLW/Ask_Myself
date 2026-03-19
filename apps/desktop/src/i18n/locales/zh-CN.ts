@@ -724,6 +724,7 @@ export const zhCN: TranslationKeys = {
   'settings.mcpRemoteSessionNote': '远程 transport 会保留 headers 并处理 session id；`streamable_http` 在会话过期时会尝试重新初始化。',
   'settings.mcpUrlLabel': 'URL',
   'settings.mcpHeadersLabel': 'HTTP Headers',
+  'settings.mcpBuiltIn': '内置',
 
   // Settings - Extensions (extra)
   'settings.extensions.toolCount': '{count} 个工具',

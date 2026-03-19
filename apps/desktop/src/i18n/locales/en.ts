@@ -724,6 +724,7 @@ export const en: TranslationKeys = {
   'settings.mcpRemoteSessionNote': 'Remote transports keep custom headers and handle session ids; `streamable_http` will attempt to reinitialize when a session expires.',
   'settings.mcpUrlLabel': 'URL',
   'settings.mcpHeadersLabel': 'HTTP Headers',
+  'settings.mcpBuiltIn': 'Built-in',
 
   // Settings - Extensions (extra)
   'settings.extensions.toolCount': '{count} tools',

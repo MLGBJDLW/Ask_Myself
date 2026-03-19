@@ -720,6 +720,7 @@ export const zhTW: TranslationKeys = {
   'settings.mcpRemoteSessionNote': '遠端 transport 會保留 headers 並處理 session id；`streamable_http` 在會話過期時會嘗試重新初始化。',
   'settings.mcpUrlLabel': 'URL',
   'settings.mcpHeadersLabel': 'HTTP Headers',
+  'settings.mcpBuiltIn': '內建',
   'settings.extensions.toolCount': '{count} 個工具',
   'settings.extensions.connectionFailed': '連線失敗',
   'settings.extensions.availableTools': '可用工具',

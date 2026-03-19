@@ -2242,6 +2242,11 @@ pub async fn test_mcp_server_cmd(
         .connect_server(&server)
         .await
         .map_err(|e| e.to_string())?;
+    // For built-in managed servers that aren't enabled, disconnect after
+    // testing to stop the managed process.
+    if server.builtin_id.is_some() && !server.enabled {
+        let _ = manager.disconnect_server(&server.id).await;
+    }
     Ok(tools)
 }
 

@@ -541,7 +541,21 @@ impl McpManager {
             .unwrap_or_default();
         env_vars.insert("PORT".to_string(), port.to_string());
 
-        let mut cmd = StdCommand::new(command);
+        // On Windows, Node.js CLI tools are batch scripts (.cmd) — Command::new
+        // won't find them without the extension since it doesn't use PATHEXT.
+        #[cfg(windows)]
+        let effective_command = {
+            let lower = command.to_ascii_lowercase();
+            if ["npx", "node", "npm", "yarn", "pnpm", "bunx"].contains(&lower.as_str()) {
+                format!("{command}.cmd")
+            } else {
+                command.to_string()
+            }
+        };
+        #[cfg(not(windows))]
+        let effective_command = command.to_string();
+
+        let mut cmd = StdCommand::new(&effective_command);
         cmd.args(&args);
         cmd.envs(&env_vars);
         // Prevent the child from inheriting stdin (important on Windows)

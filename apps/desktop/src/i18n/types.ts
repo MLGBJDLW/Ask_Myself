@@ -743,6 +743,7 @@ export interface TranslationKeys {
   'settings.mcpRemoteSessionNote': string;
   'settings.mcpUrlLabel': string;
   'settings.mcpHeadersLabel': string;
+  'settings.mcpBuiltIn': string;
 
   // Settings - Extensions (extra)
   'settings.extensions.toolCount': string;

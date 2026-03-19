@@ -2465,7 +2465,7 @@ export function SettingsPage() {
                             <div className="flex items-center gap-2">
                               <p className="text-sm font-medium text-text-primary truncate">{server.name}</p>
                               {server.builtinId && (
-                                <Badge variant="default" className="ml-1 text-xs">Built-in</Badge>
+                                <Badge variant="default" className="ml-1 text-xs">{t('settings.mcpBuiltIn')}</Badge>
                               )}
                               <Badge variant="default" className="text-[10px] shrink-0">{server.transport}</Badge>
                               {server.enabled && mcpToolCounts[server.id] && !mcpToolCounts[server.id].loading && !mcpToolCounts[server.id].error && (
