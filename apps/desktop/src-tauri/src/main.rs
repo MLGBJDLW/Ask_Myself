@@ -14,7 +14,7 @@ use tauri::Manager;
 use tokio::sync::Mutex as TokioMutex;
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -185,6 +185,18 @@ fn main() {
             commands::test_mcp_server_direct_cmd,
             commands::list_mcp_tools_cmd,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            // Shutdown MCP manager: kill all managed processes
+            if let Some(mcp_state) = app_handle.try_state::<McpManagerState>() {
+                tauri::async_runtime::block_on(async {
+                    let mut manager = mcp_state.manager.lock().await;
+                    manager.shutdown().await;
+                });
+            }
+        }
+    });
 }

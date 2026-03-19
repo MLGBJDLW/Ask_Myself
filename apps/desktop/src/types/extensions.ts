@@ -12,6 +12,7 @@ export interface McpServer {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  builtinId: string | null;
 }
 
 export interface SaveMcpServerInput {

@@ -2464,6 +2464,9 @@ export function SettingsPage() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
                               <p className="text-sm font-medium text-text-primary truncate">{server.name}</p>
+                              {server.builtinId && (
+                                <Badge variant="default" className="ml-1 text-xs">Built-in</Badge>
+                              )}
                               <Badge variant="default" className="text-[10px] shrink-0">{server.transport}</Badge>
                               {server.enabled && mcpToolCounts[server.id] && !mcpToolCounts[server.id].loading && !mcpToolCounts[server.id].error && (
                                 <Badge variant="default" className="text-[10px] shrink-0 bg-accent/10 text-accent border-accent/20">
@@ -2523,13 +2526,15 @@ export function SettingsPage() {
                             >
                               <Pencil size={14} />
                             </button>
-                            <button
-                              onClick={() => setDeleteMcpTarget(server)}
-                              className="rounded p-1.5 text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
-                              aria-label={t('common.delete')}
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                            {!server.builtinId && (
+                              <button
+                                onClick={() => setDeleteMcpTarget(server)}
+                                className="rounded p-1.5 text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                                aria-label={t('common.delete')}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
                           </div>
                         </div>
                         {/* Expandable tool list */}

@@ -7,6 +7,8 @@ use crate::error::CoreError;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::TcpListener;
+use std::process::{Child, Command as StdCommand};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -38,6 +40,9 @@ pub struct McpServer {
     pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// Non-`None` for built-in servers managed by the app (e.g. "open-websearch").
+    /// Built-in servers cannot be deleted and have their process lifecycle managed.
+    pub builtin_id: Option<String>,
 }
 
 /// Input for creating or updating an MCP server configuration.
@@ -257,6 +262,18 @@ fn normalize_save_input(input: &SaveMcpServerInput) -> Result<SaveMcpServerInput
     }
 }
 
+/// Find an available TCP port by binding to port 0.
+fn find_free_port() -> Result<u16, CoreError> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| CoreError::Mcp(format!("Failed to find free port: {e}")))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| CoreError::Mcp(format!("Failed to get port: {e}")))?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
 fn runtime_config_changed(current: &McpServer, desired: &McpServer) -> bool {
     current.name != desired.name
         || current.transport != desired.transport
@@ -277,7 +294,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, transport, command, args, url, env_json, headers_json,
-                    enabled, created_at, updated_at
+                    enabled, created_at, updated_at, builtin_id
              FROM mcp_servers
              ORDER BY created_at DESC",
         )?;
@@ -294,6 +311,7 @@ impl Database {
                 enabled: row.get::<_, i32>(8)? != 0,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
+                builtin_id: row.get(11)?,
             })
         })?;
         let mut out = Vec::new();
@@ -309,24 +327,50 @@ impl Database {
         let conn = self.conn();
         let id = match &input.id {
             Some(existing_id) => {
-                conn.execute(
-                    "UPDATE mcp_servers
-                     SET name = ?2, transport = ?3, command = ?4, args = ?5,
-                         url = ?6, env_json = ?7, headers_json = ?8,
-                         enabled = ?9, updated_at = datetime('now')
-                     WHERE id = ?1",
-                    rusqlite::params![
-                        existing_id,
-                        &input.name,
-                        &input.transport,
-                        &input.command,
-                        &input.args,
-                        &input.url,
-                        &input.env_json,
-                        &input.headers_json,
-                        input.enabled as i32,
-                    ],
-                )?;
+                // Check if the existing server is built-in; if so, block transport/command/args changes.
+                let existing_builtin_id: Option<String> = conn
+                    .query_row(
+                        "SELECT builtin_id FROM mcp_servers WHERE id = ?1",
+                        rusqlite::params![existing_id],
+                        |row| row.get(0),
+                    )
+                    .ok();
+
+                if existing_builtin_id.is_some() {
+                    // For built-in servers, only allow toggling name/enabled/url/headers — not transport/command/args.
+                    conn.execute(
+                        "UPDATE mcp_servers
+                         SET name = ?2, url = ?3, headers_json = ?4,
+                             enabled = ?5, updated_at = datetime('now')
+                         WHERE id = ?1",
+                        rusqlite::params![
+                            existing_id,
+                            &input.name,
+                            &input.url,
+                            &input.headers_json,
+                            input.enabled as i32,
+                        ],
+                    )?;
+                } else {
+                    conn.execute(
+                        "UPDATE mcp_servers
+                         SET name = ?2, transport = ?3, command = ?4, args = ?5,
+                             url = ?6, env_json = ?7, headers_json = ?8,
+                             enabled = ?9, updated_at = datetime('now')
+                         WHERE id = ?1",
+                        rusqlite::params![
+                            existing_id,
+                            &input.name,
+                            &input.transport,
+                            &input.command,
+                            &input.args,
+                            &input.url,
+                            &input.env_json,
+                            &input.headers_json,
+                            input.enabled as i32,
+                        ],
+                    )?;
+                }
                 existing_id.clone()
             }
             None => {
@@ -356,6 +400,19 @@ impl Database {
     /// Delete an MCP server by ID.
     pub fn delete_mcp_server(&self, id: &str) -> Result<(), CoreError> {
         let conn = self.conn();
+        // Prevent deletion of built-in servers.
+        let builtin: Option<String> = conn
+            .query_row(
+                "SELECT builtin_id FROM mcp_servers WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .map_err(|_| CoreError::NotFound(format!("MCP server {id}")))?;
+        if builtin.is_some() {
+            return Err(CoreError::InvalidInput(
+                "Cannot delete built-in MCP server".into(),
+            ));
+        }
         let affected = conn.execute(
             "DELETE FROM mcp_servers WHERE id = ?1",
             rusqlite::params![id],
@@ -384,7 +441,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, transport, command, args, url, env_json, headers_json,
-                    enabled, created_at, updated_at
+                    enabled, created_at, updated_at, builtin_id
              FROM mcp_servers
              WHERE enabled = 1
              ORDER BY created_at ASC",
@@ -402,6 +459,7 @@ impl Database {
                 enabled: true,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
+                builtin_id: row.get(11)?,
             })
         })?;
         let mut out = Vec::new();
@@ -415,7 +473,7 @@ impl Database {
         let conn = self.conn();
         conn.query_row(
             "SELECT id, name, transport, command, args, url, env_json, headers_json,
-                    enabled, created_at, updated_at
+                    enabled, created_at, updated_at, builtin_id
              FROM mcp_servers
              WHERE id = ?1",
             rusqlite::params![id],
@@ -432,6 +490,7 @@ impl Database {
                     enabled: row.get::<_, i32>(8)? != 0,
                     created_at: row.get(9)?,
                     updated_at: row.get(10)?,
+                    builtin_id: row.get(11)?,
                 })
             },
         )
@@ -447,6 +506,7 @@ impl Database {
 pub struct McpManager {
     clients: HashMap<String, Arc<Mutex<McpClient>>>,
     connected_servers: HashMap<String, McpServer>,
+    managed_processes: HashMap<String, Child>,
 }
 
 impl McpManager {
@@ -454,7 +514,116 @@ impl McpManager {
         Self {
             clients: HashMap::new(),
             connected_servers: HashMap::new(),
+            managed_processes: HashMap::new(),
         }
+    }
+
+    /// Start a managed process for a built-in MCP server.
+    /// Returns the port the process is listening on.
+    async fn start_managed_process(&mut self, server: &McpServer) -> Result<u16, CoreError> {
+        let command = server
+            .command
+            .as_deref()
+            .ok_or_else(|| CoreError::Mcp("Built-in server missing command".into()))?;
+
+        let port = find_free_port()?;
+
+        let args: Vec<String> = match &server.args {
+            Some(a) => parse_mcp_args(a)?,
+            None => Vec::new(),
+        };
+
+        // Merge environment variables, adding PORT
+        let mut env_vars: HashMap<String, String> = server
+            .env_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        env_vars.insert("PORT".to_string(), port.to_string());
+
+        let mut cmd = StdCommand::new(command);
+        cmd.args(&args);
+        cmd.envs(&env_vars);
+        // Prevent the child from inheriting stdin (important on Windows)
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+
+        // On Windows, create process in a new process group and hide the console window
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+        }
+
+        let child = cmd.spawn().map_err(|e| {
+            CoreError::Mcp(format!(
+                "Failed to start managed server '{}': {e}. Is Node.js/npx installed?",
+                server.name
+            ))
+        })?;
+
+        tracing::info!(
+            "Started managed MCP server '{}' (PID {}) on port {}",
+            server.name,
+            child.id(),
+            port
+        );
+
+        self.managed_processes.insert(server.id.clone(), child);
+
+        // Wait for the server to accept connections
+        let addr = format!("127.0.0.1:{}", port);
+        let timeout = std::time::Duration::from_secs(30);
+        let start = std::time::Instant::now();
+        loop {
+            if start.elapsed() > timeout {
+                // Kill the process on timeout
+                if let Some(mut child) = self.managed_processes.remove(&server.id) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                return Err(CoreError::Mcp(format!(
+                    "Managed server '{}' failed to start within {}s on port {}",
+                    server.name,
+                    timeout.as_secs(),
+                    port
+                )));
+            }
+            match tokio::net::TcpStream::connect(&addr).await {
+                Ok(_) => {
+                    tracing::info!(
+                        "Managed server '{}' is ready on port {}",
+                        server.name,
+                        port
+                    );
+                    break;
+                }
+                Err(_) => {
+                    // Check if process is still alive
+                    if let Some(child) = self.managed_processes.get_mut(&server.id) {
+                        match child.try_wait() {
+                            Ok(Some(status)) => {
+                                self.managed_processes.remove(&server.id);
+                                return Err(CoreError::Mcp(format!(
+                                    "Managed server '{}' exited with {status}",
+                                    server.name
+                                )));
+                            }
+                            Ok(None) => {} // Still running
+                            Err(e) => {
+                                tracing::warn!("Error checking process status: {e}");
+                            }
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
+            }
+        }
+
+        Ok(port)
     }
 
     /// Connect to an MCP server and return the tools it offers.
@@ -464,6 +633,14 @@ impl McpManager {
     ) -> Result<Vec<McpToolInfo>, CoreError> {
         // Disconnect existing connection if any.
         self.disconnect_server(&server.id).await.ok();
+
+        // For built-in servers with a command, start managed process first
+        let effective_url = if server.builtin_id.is_some() && server.command.is_some() {
+            let port = self.start_managed_process(server).await?;
+            Some(format!("http://localhost:{}/mcp", port))
+        } else {
+            None
+        };
 
         match server.transport.as_str() {
             "stdio" => {
@@ -494,12 +671,15 @@ impl McpManager {
                 Ok(tools)
             }
             "sse" | "streamable_http" => {
-                let url = server.url.as_deref().ok_or_else(|| {
-                    CoreError::InvalidInput(format!(
-                        "{} transport requires a URL",
-                        server.transport
-                    ))
-                })?;
+                let url = effective_url
+                    .as_deref()
+                    .or(server.url.as_deref())
+                    .ok_or_else(|| {
+                        CoreError::InvalidInput(format!(
+                            "{} transport requires a URL",
+                            server.transport
+                        ))
+                    })?;
 
                 let headers: Option<HashMap<String, String>> = match &server.headers_json {
                     Some(headers_json) => {
@@ -571,6 +751,12 @@ impl McpManager {
             let mut guard = client.lock().await;
             guard.shutdown().await.ok();
         }
+        // Kill managed process if present
+        if let Some(mut child) = self.managed_processes.remove(server_id) {
+            tracing::info!("Killing managed process for server {}", server_id);
+            let _ = child.kill();
+            let _ = child.wait();
+        }
         Ok(())
     }
 
@@ -580,6 +766,18 @@ impl McpManager {
         for id in ids {
             self.disconnect_server(&id).await.ok();
         }
+        // Kill all remaining managed processes
+        for (id, mut child) in self.managed_processes.drain() {
+            tracing::info!("Killing managed process for server {}", id);
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    /// Shutdown all connections and kill all managed processes.
+    /// Call this when the app is closing.
+    pub async fn shutdown(&mut self) {
+        self.disconnect_all().await;
     }
 
     /// Get a client reference for tool execution.

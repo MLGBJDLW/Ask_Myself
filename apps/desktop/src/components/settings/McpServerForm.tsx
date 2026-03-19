@@ -318,8 +318,9 @@ export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpSe
               <button
                 key={item.value}
                 type="button"
+                disabled={!!server?.builtinId}
                 onClick={() => setTransport(item.value)}
-                className={`rounded-xl border p-3 text-left transition-colors ${
+                className={`rounded-xl border p-3 text-left transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                   active
                     ? 'border-accent bg-accent/10'
                     : 'border-border bg-surface-1 hover:bg-surface-2'
@@ -347,6 +348,7 @@ export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpSe
           onChange={(event) => setName(event.target.value)}
           placeholder={t('settings.mcpServerName')}
           error={nameError ?? undefined}
+          disabled={!!server?.builtinId}
         />
       </div>
 
@@ -359,6 +361,7 @@ export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpSe
               onChange={(event) => setCommand(event.target.value)}
               placeholder="npx"
               error={commandError ?? undefined}
+              disabled={!!server?.builtinId}
             />
           </div>
 
@@ -369,7 +372,8 @@ export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpSe
               onChange={(event) => setArgs(event.target.value)}
               placeholder='["-y", "@modelcontextprotocol/server-filesystem", "D:/vault"]'
               rows={4}
-              className={`w-full rounded-md border bg-surface-2 px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 resize-y ${
+              disabled={!!server?.builtinId}
+              className={`w-full rounded-md border bg-surface-2 px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 resize-y disabled:opacity-50 disabled:cursor-not-allowed ${
                 parsedArgs.error
                   ? 'border-danger focus:border-danger focus:ring-danger/30'
                   : 'border-border focus:border-accent focus:ring-accent'
@@ -417,6 +421,7 @@ export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpSe
               onChange={(event) => setUrl(event.target.value)}
               placeholder={transport === 'sse' ? 'https://example.com/sse' : 'https://example.com/mcp'}
               error={urlError ?? undefined}
+              disabled={!!server?.builtinId}
             />
             <p className="text-xs text-text-tertiary">{t('settings.mcpUrlHelp')}</p>
           </div>
@@ -428,7 +433,8 @@ export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpSe
               onChange={(event) => setHeadersJson(event.target.value)}
               placeholder='{"Authorization": "Bearer ..."}'
               rows={4}
-              className={`w-full rounded-md border bg-surface-2 px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 resize-y ${
+              disabled={!!server?.builtinId}
+              className={`w-full rounded-md border bg-surface-2 px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 resize-y disabled:opacity-50 disabled:cursor-not-allowed ${
                 parsedHeaders.error
                   ? 'border-danger focus:border-danger focus:ring-danger/30'
                   : 'border-border focus:border-accent focus:ring-accent'

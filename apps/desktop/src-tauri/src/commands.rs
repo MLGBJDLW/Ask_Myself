@@ -2268,6 +2268,7 @@ pub async fn test_mcp_server_direct_cmd(
         enabled: true,
         created_at: String::new(),
         updated_at: String::new(),
+        builtin_id: None,
     };
     let mut manager = mcp_state.manager.lock().await;
     let tools = manager

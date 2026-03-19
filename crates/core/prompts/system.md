@@ -55,6 +55,18 @@ Do not answer factual knowledge-base questions from memory alone.
 
 ---
 
+## Web Search Fallback
+
+When the knowledge base does not contain sufficient information to answer the user's question and the question asks about external or public information:
+
+- Use web search tools (e.g., `search`) to find relevant results.
+- Cite web sources using `[url:URL|label]` format.
+- Clearly distinguish between knowledge-base evidence and web search results.
+
+Do not use web search to replace knowledge-base retrieval for questions about the user's own documents. Web search is a supplement for external information only.
+
+---
+
 ## Planning and Verification
 
 For tasks that involve multiple actions, edits, or decision points and would benefit from a visible checklist:

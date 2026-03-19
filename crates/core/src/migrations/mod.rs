@@ -122,6 +122,23 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
           value TEXT NOT NULL
       );",
     ),
+    (
+        "v025_builtin_mcp",
+        "ALTER TABLE mcp_servers ADD COLUMN builtin_id TEXT;
+        INSERT OR IGNORE INTO mcp_servers (id, name, transport, command, args, url, env_json, headers_json, enabled, builtin_id)
+        VALUES (
+            'builtin-open-websearch',
+            'Web Search',
+            'streamable_http',
+            'npx',
+            '[\"open-websearch@latest\"]',
+            NULL,
+            '{\"DEFAULT_SEARCH_ENGINE\":\"bing\"}',
+            NULL,
+            0,
+            'open-websearch'
+        );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
