@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useState, type ComponentPropsWithoutRef } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, FileText, Paperclip, ExternalLink } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
 import { useTranslation } from '../../i18n';
+import { openFileInDefaultApp } from '../../lib/api';
 import { FileBadge } from '../ui/FileBadge';
 import { CitationChip } from './EvidenceCard';
 import type { CitationCardData } from '../../lib/citationParser';
@@ -104,6 +105,67 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
         : String(children ?? '');
     const card = citationCtx.getCard(chunkId);
     return <CitationChip chunkId={chunkId} displayText={displayText} card={card} />;
+  }
+
+  // Document reference badge
+  if (href && href.startsWith('doc:')) {
+    const docId = href.slice(4);
+    return (
+      <span
+        className="inline-flex items-center gap-0.5 px-1.5 py-0 text-[11px] font-medium
+          rounded-full border cursor-default transition-all duration-150
+          bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20
+          align-baseline leading-[1.4] mx-0.5"
+        title={docId}
+      >
+        <FileText className="h-2.5 w-2.5 shrink-0" />
+        <span className="truncate max-w-[150px]">{children}</span>
+      </span>
+    );
+  }
+
+  // File reference: open in default app
+  if (href && href.startsWith('file:')) {
+    const filePath = href.slice(5);
+    return (
+      <button
+        type="button"
+        onClick={() => openFileInDefaultApp(filePath)}
+        className="inline-flex items-center gap-0.5 px-1.5 py-0 text-[11px] font-medium
+          rounded-full border cursor-pointer transition-all duration-150
+          bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20
+          hover:bg-emerald-500/20 hover:border-emerald-500/30
+          active:scale-95 align-baseline leading-[1.4] mx-0.5"
+        title={filePath}
+      >
+        <Paperclip className="h-2.5 w-2.5 shrink-0" />
+        <span className="truncate max-w-[150px]">{children}</span>
+      </button>
+    );
+  }
+
+  // URL reference: open in system browser
+  if (href && href.startsWith('url:')) {
+    const rawUrl = href.slice(4);
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          if (/^https?:\/\//i.test(rawUrl)) {
+            open(rawUrl);
+          }
+        }}
+        className="inline-flex items-center gap-0.5 px-1.5 py-0 text-[11px] font-medium
+          rounded-full border cursor-pointer transition-all duration-150
+          bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20
+          hover:bg-orange-500/20 hover:border-orange-500/30
+          active:scale-95 align-baseline leading-[1.4] mx-0.5"
+        title={rawUrl}
+      >
+        <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+        <span className="truncate max-w-[150px]">{children}</span>
+      </button>
+    );
   }
 
   const handleClick = useCallback(

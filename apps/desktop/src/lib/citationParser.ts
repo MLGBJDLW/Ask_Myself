@@ -125,3 +125,43 @@ export function buildCitationMap(
   }
   return map;
 }
+
+/* ------------------------------------------------------------------ */
+/*  Inline citation preprocessing: [doc:], [file:], [url:]             */
+/* ------------------------------------------------------------------ */
+
+const DOC_REGEX = /\[doc:([^\]|]+?)(?:\|([^\]]*))?\]/g;
+const FILE_REGEX_CITE = /\[file:([^\]|]+?)(?:\|([^\]]*))?\]/g;
+const URL_REGEX = /\[url:([^\]|]+?)(?:\|([^\]]*))?\]/g;
+
+/**
+ * Convert `[doc:ID|label]`, `[file:PATH|label]`, `[url:URL|label]` markers
+ * into markdown links with custom URI schemes so the MarkdownLink component
+ * can render them as clickable inline badges.
+ */
+export function preprocessInlineCitations(content: string): string {
+  return content
+    .replace(DOC_REGEX, (_m, id: string, label?: string) => {
+      const trimId = id.trim();
+      const display = label?.trim() || trimId.split('/').pop() || trimId;
+      return `[${display}](doc:${trimId})`;
+    })
+    .replace(FILE_REGEX_CITE, (_m, path: string, label?: string) => {
+      const trimPath = path.trim();
+      const filename = trimPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || trimPath;
+      const display = label?.trim() || filename;
+      return `[${display}](file:${trimPath})`;
+    })
+    .replace(URL_REGEX, (_m, url: string, label?: string) => {
+      const trimUrl = url.trim();
+      let display = label?.trim();
+      if (!display) {
+        try {
+          display = new URL(trimUrl).hostname.replace(/^www\./, '');
+        } catch {
+          display = trimUrl;
+        }
+      }
+      return `[${display}](url:${trimUrl})`;
+    });
+}

@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { Check, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { markdownComponents, preprocessFilePaths, preprocessCitations, CitationContext } from './markdownComponents';
-import { extractChunkCitations, preprocessChunkCitations } from '../../lib/citationParser';
+import { extractChunkCitations, preprocessChunkCitations, preprocessInlineCitations } from '../../lib/citationParser';
 import type { CitationCardData } from '../../lib/citationParser';
 import { MessageActions } from './MessageActions';
 import { messageTimestamp } from '../../lib/relativeTime';
@@ -247,7 +247,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
               <div className="prose-chat">
                 <CitationContext.Provider value={citationLookup ?? { getCard: () => undefined }}>
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                    {preprocessFilePaths(preprocessCitations(preprocessChunkCitations(msg.content)))}
+                    {preprocessFilePaths(preprocessCitations(preprocessInlineCitations(preprocessChunkCitations(msg.content))))}
                   </ReactMarkdown>
                 </CitationContext.Provider>
               </div>
