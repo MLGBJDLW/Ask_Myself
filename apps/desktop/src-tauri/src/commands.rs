@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, SubagentBatchTool, SubagentTool,
 };
+use ask_core::app_settings::AppConfig;
 use ask_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
     CancellationToken,
@@ -1347,6 +1348,7 @@ pub async fn compact_conversation_cmd(
     let provider_config = db_config_to_provider_config(&db_config);
     let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
 
+    let app_cfg = state.db.load_app_config().unwrap_or_default();
     let executor_config = ExecutorConfig {
         max_iterations: 1,
         system_prompt: build_system_prompt(Some(&conv.system_prompt), &[]),
@@ -1362,8 +1364,8 @@ pub async fn compact_conversation_cmd(
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
-        tool_timeout_secs: db_config.tool_timeout_secs.map(|v| v as u32),
-        agent_timeout_secs: db_config.agent_timeout_secs.map(|v| v as u32),
+        tool_timeout_secs: Some(db_config.tool_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.tool_timeout_secs as u32)),
+        agent_timeout_secs: Some(db_config.agent_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.agent_timeout_secs as u32)),
     };
 
     let summarization_provider: Option<Box<dyn ask_core::llm::LlmProvider>> =
@@ -1632,6 +1634,7 @@ pub async fn agent_chat_cmd(
     );
 
     // 6. Build executor config from DB config.
+    let app_cfg = state.db.load_app_config().unwrap_or_default();
     let executor_config = ExecutorConfig {
         max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(10),
         system_prompt,
@@ -1655,8 +1658,8 @@ pub async fn agent_chat_cmd(
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
-        tool_timeout_secs: db_config.tool_timeout_secs.map(|v| v as u32),
-        agent_timeout_secs: db_config.agent_timeout_secs.map(|v| v as u32),
+        tool_timeout_secs: Some(db_config.tool_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.tool_timeout_secs as u32)),
+        agent_timeout_secs: Some(db_config.agent_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.agent_timeout_secs as u32)),
     };
 
     // 6b. Create a separate summarization provider if configured.
@@ -1883,6 +1886,23 @@ pub async fn agent_stop_cmd(
         });
     }
     Ok(())
+}
+
+// ── App Config ──────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_app_config_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<AppConfig, String> {
+    state.db.load_app_config().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_app_config_cmd(
+    state: tauri::State<'_, AppState>,
+    config: AppConfig,
+) -> Result<(), String> {
+    state.db.save_app_config(&config).map_err(|e| e.to_string())
 }
 
 // ── OCR ─────────────────────────────────────────────────────────────

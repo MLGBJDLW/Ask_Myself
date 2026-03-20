@@ -147,6 +147,9 @@ fn main() {
             commands::get_model_context_window,
             // Image attachment
             commands::prepare_image_attachment,
+            // App Config
+            commands::get_app_config_cmd,
+            commands::save_app_config_cmd,
             // OCR
             commands::get_ocr_config_cmd,
             commands::save_ocr_config_cmd,

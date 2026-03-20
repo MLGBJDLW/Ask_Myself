@@ -18,6 +18,7 @@ import type { OcrConfig } from "../types/ocr";
 import type { VideoConfig, TranscriptChunk, VideoMetadata } from "../types/video";
 import type {
   AgentConfig,
+  AppConfig,
   SaveAgentConfigInput,
   Conversation,
   ConversationMessage,
@@ -322,6 +323,14 @@ export const checkOcrModels = (config: OcrConfig) =>
 
 export const downloadOcrModels = (config: OcrConfig) =>
   invoke<void>('download_ocr_models_cmd', { config });
+
+// ── App Config ──────────────────────────────────────────────────────
+
+export const getAppConfig = () =>
+  invoke<AppConfig>('get_app_config_cmd');
+
+export const saveAppConfig = (config: AppConfig) =>
+  invoke<void>('save_app_config_cmd', { config });
 
 // ── Video ───────────────────────────────────────────────────────────
 

@@ -6,6 +6,7 @@
 //! text from images and scanned PDFs.
 
 pub mod agent;
+pub mod app_settings;
 pub mod cache;
 pub mod conversation;
 pub mod db;

@@ -99,8 +99,11 @@ export interface SaveAgentConfigInput {
   subagentMaxCallsPerTurn?: number | null;
   /** Soft token budget for delegated workers and judges per turn. */
   subagentTokenBudget?: number | null;
-  toolTimeoutSecs?: number | null;
-  agentTimeoutSecs?: number | null;
+}
+
+export interface AppConfig {
+  toolTimeoutSecs: number;
+  agentTimeoutSecs: number;
 }
 
 export type ProviderType =

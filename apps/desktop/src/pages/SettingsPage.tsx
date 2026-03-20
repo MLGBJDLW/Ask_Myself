@@ -30,6 +30,7 @@ import {
   ChevronUp,
   Mic,
   HardDrive,
+  Clock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { listen } from '@tauri-apps/api/event';
@@ -37,7 +38,7 @@ import * as api from '../lib/api';
 import type { IndexStats } from '../types/index-stats';
 import type { PrivacyConfig, RedactRule } from '../types/privacy';
 import type { EmbedderConfig } from '../types/embedder';
-import type { AgentConfig, SaveAgentConfigInput, UserMemory } from '../types/conversation';
+import type { AgentConfig, AppConfig, SaveAgentConfigInput, UserMemory } from '../types/conversation';
 import type { ScanProgress, FtsProgress, DownloadProgress } from '../types/ingest';
 import type { OcrConfig, OcrDownloadProgress } from '../types/ocr';
 import type { VideoConfig, VideoDownloadProgress } from '../types/video';
@@ -287,6 +288,10 @@ export function SettingsPage() {
   const [embedSaveLoading, setEmbedSaveLoading] = useState(false);
   const [rebuildEmbedLoading, setRebuildEmbedLoading] = useState(false);
 
+  /* ── App Config state ─────────────────────────────────────────────── */
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [appConfigLoading, setAppConfigLoading] = useState(false);
+
   /* ── OCR state ────────────────────────────────────────────────────── */
   const [ocrConfig, setOcrConfig] = useState<OcrConfig | null>(null);
   const [ocrModelsExist, setOcrModelsExist] = useState<boolean | null>(null);
@@ -402,6 +407,33 @@ export function SettingsPage() {
       toast.error(t('cmd.rebuildError'));
     } finally {
       setRebuildEmbedLoading(false);
+    }
+  };
+
+  /* ── App Config effects & handlers ─────────────────────────────── */
+  const loadAppConfig = useCallback(async () => {
+    try {
+      const cfg = await api.getAppConfig();
+      setAppConfig(cfg);
+    } catch {
+      setAppConfig({ toolTimeoutSecs: 30, agentTimeoutSecs: 180 });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAppConfig();
+  }, [loadAppConfig]);
+
+  const handleAppConfigSave = async () => {
+    if (!appConfig) return;
+    setAppConfigLoading(true);
+    try {
+      await api.saveAppConfig(appConfig);
+      toast.success(t('common.success'));
+    } catch {
+      toast.error(t('common.error'));
+    } finally {
+      setAppConfigLoading(false);
     }
   };
 
@@ -1183,6 +1215,59 @@ export function SettingsPage() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            {/* Timeout Settings */}
+            <div className="space-y-4 border-t border-border pt-4 mt-4">
+              <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
+                <Clock size={16} />
+                Timeout
+              </h3>
+              {appConfig && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-text-primary">Tool Timeout (seconds)</label>
+                      <Input
+                        type="number"
+                        value={appConfig.toolTimeoutSecs}
+                        onChange={(e) => setAppConfig({ ...appConfig, toolTimeoutSecs: parseInt(e.target.value) || 30 })}
+                        min={5}
+                        max={300}
+                        step={5}
+                      />
+                      <p className="text-xs text-text-tertiary">
+                        Timeout per tool call. Heavy tools use 2–3× this value. Default: 30
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-text-primary">Agent Turn Timeout (seconds)</label>
+                      <Input
+                        type="number"
+                        value={appConfig.agentTimeoutSecs}
+                        onChange={(e) => setAppConfig({ ...appConfig, agentTimeoutSecs: parseInt(e.target.value) || 180 })}
+                        min={30}
+                        max={600}
+                        step={30}
+                      />
+                      <p className="text-xs text-text-tertiary">
+                        Maximum time for an entire agent response. Default: 180
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      icon={<Save size={14} />}
+                      loading={appConfigLoading}
+                      onClick={handleAppConfigSave}
+                    >
+                      {t('common.save')}
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </Section>
@@ -2093,7 +2178,7 @@ export function SettingsPage() {
       {/* ── Tab: Video ─────────────────────────────────────────── */}
       {activeTab === 'video' && (
       <Section icon={<Film size={20} />} title={t('settings.videoSection')} delay={0.03}>
-        {videoConfig && (
+        {videoConfig ? (
           <div className="space-y-5">
             {/* Enable toggle */}
             <div className="flex items-center justify-between">
@@ -2337,6 +2422,15 @@ export function SettingsPage() {
               confirmText={t('common.delete')}
               variant="danger"
             />
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center py-12 text-text-tertiary">
+            <Film size={32} className="mb-3 opacity-50" />
+            <p className="text-sm font-medium text-text-primary mb-1">Video analysis not available</p>
+            <p className="text-xs text-center max-w-md">
+              Video analysis requires the <code className="px-1 py-0.5 bg-surface-3 rounded text-xs">video</code> feature to be enabled at build time.
+              Rebuild with <code className="px-1 py-0.5 bg-surface-3 rounded text-xs">cargo build --features video</code> to enable this feature.
+            </p>
           </div>
         )}
       </Section>
