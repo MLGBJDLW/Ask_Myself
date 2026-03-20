@@ -99,6 +99,7 @@ fn map_tool_call_delta(tc: &SseToolCallDelta) -> ToolCallDelta {
             .and_then(|f| f.arguments.clone())
             .unwrap_or_default(),
         index: tc.index,
+        thought_signature: None,
     }
 }
 

@@ -10,6 +10,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { useChatSession } from '../lib/useChatSession';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
+import type { AgentConfig } from '../types/conversation';
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -30,6 +31,11 @@ export function ChatPage() {
     conversationId,
     onConversationCreated,
   });
+
+  const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>([]);
+  useEffect(() => {
+    api.listAgentConfigs().then(setAgentConfigs);
+  }, []);
 
   const sentInitialRef = useRef<string | null>(null);
   const initialMessage = (
@@ -305,10 +311,25 @@ export function ChatPage() {
                   >
                     {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
                   </button>
-                  {chat.agentConfig && (
-                    <span className="text-[10px] text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded-md truncate max-w-[160px]" title={`${chat.agentConfig.provider} / ${chat.agentConfig.model}`}>
-                      {chat.agentConfig.model}
-                    </span>
+                  {chat.agentConfig && agentConfigs.length > 0 && (
+                    <div className="relative">
+                      <select
+                        className="text-[10px] text-text-tertiary bg-surface-3 pl-1.5 pr-4 py-0.5 rounded-md cursor-pointer border-none outline-none max-w-[200px] truncate appearance-none"
+                        value={chat.agentConfig.id}
+                        onChange={async (e) => {
+                          const selected = agentConfigs.find(c => c.id === e.target.value);
+                          if (selected) await chat.switchAgentConfig(selected);
+                        }}
+                        title={`${chat.agentConfig.provider} / ${chat.agentConfig.model}`}
+                      >
+                        {agentConfigs.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.name || `${c.provider}/${c.model}`}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[8px] text-text-tertiary">▾</span>
+                    </div>
                   )}
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                     <SourceSelector conversationId={chat.activeId} onStateChange={setSourceSummary} />

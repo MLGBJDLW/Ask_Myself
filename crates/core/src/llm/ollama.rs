@@ -408,6 +408,7 @@ async fn parse_ollama_ndjson_stream(
                             arguments_delta: serde_json::to_string(&tc.function.arguments)
                                 .unwrap_or_default(),
                             index: Some(index as u32),
+                            thought_signature: None,
                         }),
                         finish_reason: None,
                         usage: None,
@@ -559,6 +560,7 @@ impl LlmProvider for OllamaProvider {
                         name: tc.function.name.clone(),
                         arguments: serde_json::to_string(&tc.function.arguments)
                             .unwrap_or_default(),
+                        thought_signature: None,
                     })
                     .collect()
             });

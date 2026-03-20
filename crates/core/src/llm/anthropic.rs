@@ -540,6 +540,7 @@ async fn parse_anthropic_stream(
                                     name: Some(name),
                                     arguments_delta: String::new(),
                                     index: None,
+                                    thought_signature: None,
                                 }),
                                 finish_reason: None,
                                 usage: None,
@@ -585,6 +586,7 @@ async fn parse_anthropic_stream(
                                 name: current_tool_name.clone(),
                                 arguments_delta: partial_json,
                                 index: None,
+                                thought_signature: None,
                             }),
                             finish_reason: None,
                             usage: None,
@@ -754,6 +756,7 @@ impl LlmProvider for AnthropicProvider {
                         id,
                         name,
                         arguments: serde_json::to_string(&input).unwrap_or_default(),
+                        thought_signature: None,
                     });
                 }
             }

@@ -152,6 +152,7 @@ export interface UseChatSessionReturn {
   reloadMessages: () => Promise<void>;
   deleteMessage: (messageId: string) => void;
   editAndResend: (messageId: string, newContent: string) => Promise<void>;
+  switchAgentConfig: (config: AgentConfig) => Promise<void>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -278,6 +279,15 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       setLoadingConvos(false);
     }
   }, [t]);
+
+  /* ── Switch agent config (called from UI model selector) ─────── */
+  const switchAgentConfig = useCallback(async (config: AgentConfig) => {
+    await api.setDefaultAgentConfig(config.id);
+    setAgentConfig(config);
+    const cw = config.contextWindow ?? await api.getModelContextWindow(config.model).catch(() => 0);
+    setDefaultContextWindow(cw);
+    setContextWindow(cw);
+  }, []);
 
   /* ── Load default agent config ──────────────────────────────────── */
   const loadDefaultConfig = useCallback(async () => {
@@ -827,5 +837,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     reloadMessages,
     deleteMessage,
     editAndResend,
+    switchAgentConfig,
   };
 }

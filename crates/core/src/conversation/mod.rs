@@ -76,6 +76,8 @@ pub struct AgentConfig {
     pub subagent_max_calls_per_turn: Option<i64>,
     /// Soft total token budget for subagent and adjudication work per turn.
     pub subagent_token_budget: Option<i64>,
+    pub tool_timeout_secs: Option<i64>,
+    pub agent_timeout_secs: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -146,6 +148,8 @@ pub struct SaveAgentConfigInput {
     pub subagent_max_calls_per_turn: Option<i64>,
     /// Soft total token budget for subagent and adjudication work per turn.
     pub subagent_token_budget: Option<i64>,
+    pub tool_timeout_secs: Option<i64>,
+    pub agent_timeout_secs: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -703,8 +707,8 @@ impl Database {
             serialize_optional_string_list(input.subagent_allowed_tools.as_deref())?;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 provider = excluded.provider,
@@ -725,6 +729,8 @@ impl Database {
                 subagent_max_parallel = excluded.subagent_max_parallel,
                 subagent_max_calls_per_turn = excluded.subagent_max_calls_per_turn,
                 subagent_token_budget = excluded.subagent_token_budget,
+                tool_timeout_secs = excluded.tool_timeout_secs,
+                agent_timeout_secs = excluded.agent_timeout_secs,
                 updated_at = datetime('now')",
             rusqlite::params![
                 &id,
@@ -747,6 +753,8 @@ impl Database {
                 input.subagent_max_parallel,
                 input.subagent_max_calls_per_turn,
                 input.subagent_token_budget,
+                input.tool_timeout_secs,
+                input.agent_timeout_secs,
             ],
         )?;
         drop(conn);
@@ -757,7 +765,7 @@ impl Database {
     pub fn list_agent_configs(&self) -> Result<Vec<AgentConfig>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
              FROM agent_configs ORDER BY name ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -785,6 +793,8 @@ impl Database {
                 subagent_max_parallel: row.get(19)?,
                 subagent_max_calls_per_turn: row.get(20)?,
                 subagent_token_budget: row.get(21)?,
+                tool_timeout_secs: row.get(22)?,
+                agent_timeout_secs: row.get(23)?,
             })
         })?;
         let mut results = Vec::new();
@@ -798,7 +808,7 @@ impl Database {
     pub fn get_agent_config(&self, id: &str) -> Result<AgentConfig, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
              FROM agent_configs WHERE id = ?1",
             rusqlite::params![id],
             |row| {
@@ -826,6 +836,8 @@ impl Database {
                     subagent_max_parallel: row.get(19)?,
                     subagent_max_calls_per_turn: row.get(20)?,
                     subagent_token_budget: row.get(21)?,
+                    tool_timeout_secs: row.get(22)?,
+                    agent_timeout_secs: row.get(23)?,
                 })
             },
         )
@@ -874,7 +886,7 @@ impl Database {
     pub fn get_default_agent_config(&self) -> Result<Option<AgentConfig>, CoreError> {
         let conn = self.conn();
         let result = conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
              FROM agent_configs WHERE is_default = 1 LIMIT 1",
             [],
             |row| {
@@ -902,6 +914,8 @@ impl Database {
                     subagent_max_parallel: row.get(19)?,
                     subagent_max_calls_per_turn: row.get(20)?,
                     subagent_token_budget: row.get(21)?,
+                    tool_timeout_secs: row.get(22)?,
+                    agent_timeout_secs: row.get(23)?,
                 })
             },
         );
@@ -1093,6 +1107,7 @@ mod tests {
             id: "call_1".into(),
             name: "search".into(),
             arguments: r#"{"q":"rust"}"#.into(),
+            thought_signature: None,
         };
         let msg2 = ConversationMessage {
             id: new_id(),
@@ -1204,6 +1219,8 @@ mod tests {
                 subagent_max_parallel: None,
                 subagent_max_calls_per_turn: None,
                 subagent_token_budget: None,
+                tool_timeout_secs: None,
+                agent_timeout_secs: None,
             })
             .unwrap();
         assert_eq!(config.name, "My GPT-4");
@@ -1235,6 +1252,8 @@ mod tests {
                 subagent_max_parallel: None,
                 subagent_max_calls_per_turn: None,
                 subagent_token_budget: None,
+                tool_timeout_secs: None,
+                agent_timeout_secs: None,
             })
             .unwrap();
         assert_eq!(updated.name, "Renamed");
@@ -1274,6 +1293,8 @@ mod tests {
                 subagent_max_parallel: None,
                 subagent_max_calls_per_turn: None,
                 subagent_token_budget: None,
+                tool_timeout_secs: None,
+                agent_timeout_secs: None,
             })
             .unwrap();
 
@@ -1299,6 +1320,8 @@ mod tests {
                 subagent_max_parallel: None,
                 subagent_max_calls_per_turn: None,
                 subagent_token_budget: None,
+                tool_timeout_secs: None,
+                agent_timeout_secs: None,
             })
             .unwrap();
 

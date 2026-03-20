@@ -391,6 +391,7 @@ mod tests {
                 id: "call_123".to_string(),
                 name: "search".to_string(),
                 arguments: r#"{"query": "test"}"#.to_string(),
+                thought_signature: None,
             }]),
             reasoning_content: None,
         };
@@ -537,6 +538,7 @@ mod tests {
                     id: "tc1".to_string(),
                     name: "search".to_string(),
                     arguments: "{}".to_string(),
+                    thought_signature: None,
                 }]),
                 reasoning_content: None,
             },

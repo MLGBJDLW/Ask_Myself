@@ -512,6 +512,7 @@ impl LlmProvider for OpenAiProvider {
                     id: tc.id,
                     name: tc.function.name,
                     arguments: tc.function.arguments,
+                    thought_signature: None,
                 })
                 .collect()
         });

@@ -139,6 +139,11 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
             'open-websearch'
         );",
     ),
+    (
+        "v026_timeout_settings",
+        "ALTER TABLE agent_configs ADD COLUMN tool_timeout_secs INTEGER DEFAULT NULL;
+        ALTER TABLE agent_configs ADD COLUMN agent_timeout_secs INTEGER DEFAULT NULL;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

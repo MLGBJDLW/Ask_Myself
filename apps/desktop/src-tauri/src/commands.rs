@@ -24,8 +24,11 @@ use ask_core::feedback::{Feedback, FeedbackAction};
 use ask_core::index::IndexStats;
 use ask_core::ingest::{self, EmbedResult, IngestResult};
 use ask_core::llm::{
-    create_provider, ContentPart, Message, ProviderConfig, ProviderType, ReasoningEffort, Role,
+    create_provider, model_supports_vision, ContentPart, Message, ProviderConfig, ProviderType,
+    ReasoningEffort, Role,
 };
+use ask_core::ocr::extract_text_from_image;
+use base64::Engine;
 use ask_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 use ask_core::models::{
     EvidenceCard, Playbook, PlaybookCitation, SearchFilters, SearchQuery, Source,
@@ -1359,6 +1362,8 @@ pub async fn compact_conversation_cmd(
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
+        tool_timeout_secs: db_config.tool_timeout_secs.map(|v| v as u32),
+        agent_timeout_secs: db_config.agent_timeout_secs.map(|v| v as u32),
     };
 
     let summarization_provider: Option<Box<dyn ask_core::llm::LlmProvider>> =
@@ -1650,6 +1655,8 @@ pub async fn agent_chat_cmd(
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
+        tool_timeout_secs: db_config.tool_timeout_secs.map(|v| v as u32),
+        agent_timeout_secs: db_config.agent_timeout_secs.map(|v| v as u32),
     };
 
     // 6b. Create a separate summarization provider if configured.
@@ -1704,15 +1711,53 @@ pub async fn agent_chat_cmd(
     )));
 
     // 7b. Build user content parts (text + optional image attachments).
+    let vision_supported =
+        model_supports_vision(&provider_config.provider_type, &db_config.model);
+    info!(
+        "Image attachment vision check: provider={}, model={}, provider_type={:?}, vision_supported={}, has_attachments={}",
+        db_config.provider, db_config.model, provider_config.provider_type, vision_supported, attachments.is_some()
+    );
     let mut user_parts = vec![ContentPart::Text {
         text: message.clone(),
     }];
     if let Some(atts) = &attachments {
         for att in atts {
-            user_parts.push(ContentPart::Image {
-                media_type: att.media_type.clone(),
-                data: att.base64_data.clone(),
-            });
+            if vision_supported {
+                user_parts.push(ContentPart::Image {
+                    media_type: att.media_type.clone(),
+                    data: att.base64_data.clone(),
+                });
+            } else {
+                // Model doesn't support vision — OCR fallback
+                let ocr_config = state.db.load_ocr_config().unwrap_or_default();
+                let image_bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&att.base64_data)
+                    .map_err(|e| format!("Failed to decode image: {}", e))?;
+                let ocr_result =
+                    extract_text_from_image(&image_bytes, &att.media_type, &ocr_config, None);
+                info!(
+                    "OCR fallback result for non-vision model: success={}, text_len={}",
+                    ocr_result.is_ok(), ocr_result.as_ref().map(|r| r.full_text.len()).unwrap_or(0)
+                );
+                match ocr_result {
+                    Ok(result) if !result.full_text.is_empty() => {
+                        user_parts.push(ContentPart::Text {
+                            text: format!(
+                                "[Image OCR - {}]:\n{}",
+                                att.original_name, result.full_text
+                            ),
+                        });
+                    }
+                    _ => {
+                        user_parts.push(ContentPart::Text {
+                            text: format!(
+                                "[Image \"{}\" attached but could not be processed — this model does not support image inputs]",
+                                att.original_name
+                            ),
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -1724,6 +1769,7 @@ pub async fn agent_chat_cmd(
 
     let cancel_token = CancellationToken::new();
     let cancel_token_clone = cancel_token.clone();
+    let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(180) as u64;
 
     let task = tokio::spawn(async move {
         let cancel_token = cancel_token_clone;
@@ -1760,7 +1806,7 @@ pub async fn agent_chat_cmd(
         );
 
         // Hard cap: ensure one chat turn cannot run forever.
-        let result = tokio::time::timeout(Duration::from_secs(180), run_future).await;
+        let result = tokio::time::timeout(Duration::from_secs(turn_timeout_secs), run_future).await;
 
         // Wait for event forwarder to finish.
         let _ = event_forwarder.await;

@@ -124,6 +124,8 @@ pub struct ToolCallRequest {
     pub name: String,
     /// JSON-encoded arguments.
     pub arguments: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 
 /// Reasoning effort level for OpenAI o-series models.
@@ -253,6 +255,8 @@ pub struct ToolCallDelta {
     /// Optional tool-call index from providers that stream multiple calls.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -330,5 +334,36 @@ pub fn create_provider(config: ProviderConfig) -> Result<Box<dyn LlmProvider>, C
         ProviderType::Anthropic => Ok(Box::new(anthropic::AnthropicProvider::new(config)?)),
         ProviderType::Google => Ok(Box::new(google::GeminiProvider::new(config)?)),
         ProviderType::Ollama => Ok(Box::new(ollama::OllamaProvider::new(config)?)),
+    }
+}
+
+/// Determines whether a model is known to support vision/image inputs.
+/// Conservative: returns `false` for unknown models.
+pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool {
+    let m = model.to_lowercase();
+    match provider_type {
+        ProviderType::OpenAi | ProviderType::AzureOpenAi => {
+            m.contains("gpt-4o")
+                || m.contains("gpt-4-turbo")
+                || m.contains("gpt-4-vision")
+                || m.contains("gpt-4.1")
+                || m.starts_with("o1")
+                || m.starts_with("o3")
+                || m.starts_with("o4")
+        }
+        ProviderType::Anthropic => m.contains("claude-3") || m.contains("claude-4"),
+        ProviderType::Google => true,
+        ProviderType::DeepSeek => false,
+        ProviderType::Ollama | ProviderType::LmStudio => {
+            m.contains("vision")
+                || m.contains("llava")
+                || m.contains("bakllava")
+                || m.contains("moondream")
+                || m.contains("cogvlm")
+                || m.contains("minicpm")
+        }
+        ProviderType::Custom => {
+            m.contains("vision") || m.contains("gpt-4o") || m.contains("claude-3")
+        }
     }
 }

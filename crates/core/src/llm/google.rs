@@ -41,6 +41,8 @@ enum GeminiPartV2 {
     FunctionCall {
         #[serde(rename = "functionCall")]
         function_call: GeminiFunctionCall,
+        #[serde(rename = "thoughtSignature", default, skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
     },
     FunctionResponse {
         #[serde(rename = "functionResponse")]
@@ -251,6 +253,7 @@ fn convert_messages(
                                 name: tc.name.clone(),
                                 args,
                             },
+                            thought_signature: tc.thought_signature.clone(),
                         });
                     }
                 }
@@ -312,6 +315,26 @@ fn convert_messages(
     (system_instruction, contents)
 }
 
+/// Recursively removes JSON Schema fields that Google Gemini API does not accept.
+fn clean_schema_for_gemini(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let cleaned: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .filter(|(key, _)| {
+                    key.as_str() != "$schema" && key.as_str() != "additionalProperties"
+                })
+                .map(|(key, val)| (key.clone(), clean_schema_for_gemini(val)))
+                .collect();
+            serde_json::Value::Object(cleaned)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(clean_schema_for_gemini).collect())
+        }
+        other => other.clone(),
+    }
+}
+
 fn convert_tools(tools: &[ToolDefinition]) -> Vec<GeminiToolSet> {
     vec![GeminiToolSet {
         function_declarations: tools
@@ -319,7 +342,7 @@ fn convert_tools(tools: &[ToolDefinition]) -> Vec<GeminiToolSet> {
             .map(|t| GeminiFunctionDeclaration {
                 name: t.name.clone(),
                 description: t.description.clone(),
-                parameters: t.parameters.clone(),
+                parameters: clean_schema_for_gemini(&t.parameters),
             })
             .collect(),
     }]
@@ -427,12 +450,13 @@ fn extract_response(
                         GeminiPartV2::Thought { text, .. } | GeminiPartV2::Text { text } => {
                             text_parts.push(text.clone());
                         }
-                        GeminiPartV2::FunctionCall { function_call } => {
+                        GeminiPartV2::FunctionCall { function_call, thought_signature } => {
                             tool_calls.push(ToolCallRequest {
                                 id: format!("call_{idx}"),
                                 name: function_call.name.clone(),
                                 arguments: serde_json::to_string(&function_call.args)
                                     .unwrap_or_default(),
+                                thought_signature: thought_signature.clone(),
                             });
                         }
                         GeminiPartV2::FunctionResponse { .. } | GeminiPartV2::InlineData { .. } => {
@@ -596,6 +620,7 @@ async fn parse_gemini_stream(
                                 .id
                                 .strip_prefix("call_")
                                 .and_then(|s| s.parse::<u32>().ok()),
+                            thought_signature: tc.thought_signature.clone(),
                         }),
                         finish_reason: None,
                         usage: None,
@@ -678,6 +703,7 @@ async fn parse_gemini_stream(
                             .id
                             .strip_prefix("call_")
                             .and_then(|s| s.parse::<u32>().ok()),
+                        thought_signature: tc.thought_signature.clone(),
                     }),
                     finish_reason: None,
                     usage: None,
@@ -913,6 +939,7 @@ mod tests {
                     id: "call_0".to_string(),
                     name: "search_knowledge_base".to_string(),
                     arguments: r#"{"query":"rust"}"#.to_string(),
+                    thought_signature: None,
                 }]),
                 reasoning_content: None,
             },
@@ -942,6 +969,7 @@ mod tests {
                     id: "call_0".to_string(),
                     name: "write_note".to_string(),
                     arguments: r#"{"filename":"a.md"}"#.to_string(),
+                    thought_signature: None,
                 }]),
                 reasoning_content: None,
             },

@@ -116,10 +116,25 @@ export function ContextCockpit({
     <div className="shrink-0 border-b border-border/60 bg-surface-1/70 px-3 py-2 backdrop-blur">
       <details className="group rounded-xl border border-border/60 bg-surface-0/75">
         <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm text-text-secondary [&::-webkit-details-marker]:hidden">
-          <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-primary">
-            <Gauge className="h-3 w-3 text-text-tertiary" />
-            <span className="tabular-nums">{usageSummaryLabel}</span>
-          </span>
+          {(() => {
+            const pct = usage && usage.contextWindow > 0
+              ? usage.promptTokens / usage.contextWindow
+              : 0;
+            const colorClass = (pct >= 0.95 || contextOverflow)
+              ? 'text-red-500 bg-red-500/10'
+              : pct >= 0.8
+              ? 'text-amber-400 bg-amber-400/10'
+              : usage
+              ? 'text-cyan-400 bg-cyan-400/10'
+              : 'text-text-tertiary bg-surface-3';
+
+            return (
+              <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md ${colorClass}`}>
+                <Gauge className="w-3 h-3" />
+                {usageSummaryLabel}
+              </span>
+            );
+          })()}
 
           {(usage || lastCached) && (
             <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">

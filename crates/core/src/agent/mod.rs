@@ -304,6 +304,8 @@ pub struct AgentConfig {
     pub subagent_max_calls_per_turn: Option<u32>,
     /// Soft token budget for delegated workers and adjudication per turn.
     pub subagent_token_budget: Option<u32>,
+    pub tool_timeout_secs: Option<u32>,
+    pub agent_timeout_secs: Option<u32>,
 }
 
 impl Default for AgentConfig {
@@ -323,6 +325,8 @@ impl Default for AgentConfig {
             subagent_max_parallel: None,
             subagent_max_calls_per_turn: None,
             subagent_token_budget: None,
+            tool_timeout_secs: None,
+            agent_timeout_secs: None,
         }
     }
 }
@@ -1046,10 +1050,11 @@ impl AgentExecutor {
             let tool_futures: Vec<_> = tool_calls
                 .iter()
                 .map(|tc| {
+                    let base_timeout = self.config.tool_timeout_secs.unwrap_or(30) as u64;
                     let tool_timeout = match tc.name.as_str() {
-                        "retrieve_evidence" => Duration::from_secs(60),
-                        "spawn_subagent" => Duration::from_secs(90),
-                        _ => Duration::from_secs(30),
+                        "retrieve_evidence" => Duration::from_secs(base_timeout * 2),
+                        "spawn_subagent" => Duration::from_secs(base_timeout * 3),
+                        _ => Duration::from_secs(base_timeout),
                     };
                     let source_scope = &source_scope;
                     let tool_span = info_span!("tool_execution", tool = %tc.name);
@@ -1792,11 +1797,15 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
                 existing.name.clone_from(name);
             }
             existing.arguments.push_str(&delta.arguments_delta);
+            if delta.thought_signature.is_some() {
+                existing.thought_signature = delta.thought_signature.clone();
+            }
         } else {
             calls.push(ToolCallRequest {
                 id: delta.id.clone(),
                 name: delta.name.clone().unwrap_or_default(),
                 arguments: delta.arguments_delta.clone(),
+                thought_signature: delta.thought_signature.clone(),
             });
         }
     } else if let Some(index) = delta.index {
@@ -1807,17 +1816,24 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
                 existing.name.clone_from(name);
             }
             existing.arguments.push_str(&delta.arguments_delta);
+            if delta.thought_signature.is_some() {
+                existing.thought_signature = delta.thought_signature.clone();
+            }
         } else if index == calls.len() {
             calls.push(ToolCallRequest {
                 id: format!("call_{index}"),
                 name: delta.name.clone().unwrap_or_default(),
                 arguments: delta.arguments_delta.clone(),
+                thought_signature: delta.thought_signature.clone(),
             });
         } else if let Some(last) = calls.last_mut() {
             if let Some(ref name) = delta.name {
                 last.name.clone_from(name);
             }
             last.arguments.push_str(&delta.arguments_delta);
+            if delta.thought_signature.is_some() {
+                last.thought_signature = delta.thought_signature.clone();
+            }
         }
     } else if let Some(last) = calls.last_mut() {
         // No id provided — append to the most recent tool call.
@@ -1825,6 +1841,9 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
             last.name.clone_from(name);
         }
         last.arguments.push_str(&delta.arguments_delta);
+        if delta.thought_signature.is_some() {
+            last.thought_signature = delta.thought_signature.clone();
+        }
     }
 }
 
@@ -1850,6 +1869,7 @@ mod tests {
             name: Some("search".into()),
             arguments_delta: r#"{"qu"#.into(),
             index: None,
+            thought_signature: None,
         };
         accumulate_tool_call(&mut calls, &delta);
         assert_eq!(calls.len(), 1);
@@ -1864,12 +1884,14 @@ mod tests {
             id: "call_1".into(),
             name: "search".into(),
             arguments: r#"{"qu"#.into(),
+            thought_signature: None,
         }];
         let delta = ToolCallDelta {
             id: "call_1".into(),
             name: None,
             arguments_delta: r#"ery":"test"}"#.into(),
             index: None,
+            thought_signature: None,
         };
         accumulate_tool_call(&mut calls, &delta);
         assert_eq!(calls.len(), 1);
@@ -1882,12 +1904,14 @@ mod tests {
             id: "call_1".into(),
             name: "search".into(),
             arguments: r#"{"q"#.into(),
+            thought_signature: None,
         }];
         let delta = ToolCallDelta {
             id: String::new(),
             name: None,
             arguments_delta: r#"":"v"}"#.into(),
             index: None,
+            thought_signature: None,
         };
         accumulate_tool_call(&mut calls, &delta);
         assert_eq!(calls[0].arguments, r#"{"q":"v"}"#);
@@ -1903,6 +1927,7 @@ mod tests {
                 name: Some("search".into()),
                 arguments_delta: "{}".into(),
                 index: None,
+                thought_signature: None,
             },
         );
         accumulate_tool_call(
@@ -1912,6 +1937,7 @@ mod tests {
                 name: Some("file".into()),
                 arguments_delta: "{}".into(),
                 index: None,
+                thought_signature: None,
             },
         );
         assert_eq!(calls.len(), 2);
@@ -1926,11 +1952,13 @@ mod tests {
                 id: "call_0".into(),
                 name: "search".into(),
                 arguments: r#"{"q":"hel"#.into(),
+                thought_signature: None,
             },
             ToolCallRequest {
                 id: "call_1".into(),
                 name: "read_file".into(),
                 arguments: r#"{"path":"C"#.into(),
+                thought_signature: None,
             },
         ];
 
@@ -1941,6 +1969,7 @@ mod tests {
                 name: None,
                 arguments_delta: r#"lo"}"#.into(),
                 index: Some(0),
+                thought_signature: None,
             },
         );
         accumulate_tool_call(
@@ -1950,6 +1979,7 @@ mod tests {
                 name: None,
                 arguments_delta: r#":\a.md"}"#.into(),
                 index: Some(1),
+                thought_signature: None,
             },
         );
 
@@ -2035,6 +2065,7 @@ mod tests {
                         name: Some("mock_tool".to_string()),
                         arguments_delta: r#"{"value":"ok"}"#.to_string(),
                         index: Some(0),
+                        thought_signature: None,
                     }),
                     // Some providers return `stop` even when tool calls are present.
                     finish_reason: Some(crate::llm::FinishReason::Stop),
@@ -2100,6 +2131,7 @@ mod tests {
                             name: Some("mock_tool".to_string()),
                             arguments_delta: r#"{"value":"ok"}"#.to_string(),
                             index: Some(0),
+                            thought_signature: None,
                         }),
                         finish_reason: Some(crate::llm::FinishReason::Stop),
                         usage: None,

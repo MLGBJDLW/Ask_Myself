@@ -89,6 +89,8 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving, on
   const [subagentMaxParallel, setSubagentMaxParallel] = useState<number | null>(config?.subagentMaxParallel ?? 3);
   const [subagentMaxCallsPerTurn, setSubagentMaxCallsPerTurn] = useState<number | null>(config?.subagentMaxCallsPerTurn ?? 6);
   const [subagentTokenBudget, setSubagentTokenBudget] = useState<number | null>(config?.subagentTokenBudget ?? 12000);
+  const [toolTimeoutSecs, setToolTimeoutSecs] = useState<number | null>(config?.toolTimeoutSecs ?? null);
+  const [agentTimeoutSecs, setAgentTimeoutSecs] = useState<number | null>(config?.agentTimeoutSecs ?? null);
   const [showKey, setShowKey] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -117,6 +119,8 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving, on
     subagentMaxParallel: config?.subagentMaxParallel ?? 3,
     subagentMaxCallsPerTurn: config?.subagentMaxCallsPerTurn ?? 6,
     subagentTokenBudget: config?.subagentTokenBudget ?? 12000,
+    toolTimeoutSecs: config?.toolTimeoutSecs ?? null,
+    agentTimeoutSecs: config?.agentTimeoutSecs ?? null,
   });
 
   const isLocal = LOCAL_PROVIDERS.includes(provider) || (preset ? !preset.requiresApiKey : false);
@@ -160,7 +164,9 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving, on
     subagentMaxParallel,
     subagentMaxCallsPerTurn,
     subagentTokenBudget,
-  }), [config?.id, name, provider, apiKey, baseUrl, model, temperature, maxTokens, contextWindow, isDefault, reasoningEnabled, thinkingBudget, reasoningEffort, maxIterations, summarizationModel, summarizationProvider, subagentAllowedTools, subagentMaxParallel, subagentMaxCallsPerTurn, subagentTokenBudget, isLocal]);
+    toolTimeoutSecs,
+    agentTimeoutSecs,
+  }), [config?.id, name, provider, apiKey, baseUrl, model, temperature, maxTokens, contextWindow, isDefault, reasoningEnabled, thinkingBudget, reasoningEffort, maxIterations, summarizationModel, summarizationProvider, subagentAllowedTools, subagentMaxParallel, subagentMaxCallsPerTurn, subagentTokenBudget, toolTimeoutSecs, agentTimeoutSecs, isLocal]);
 
   useEffect(() => {
     if (!onDirtyChange) return;
@@ -450,6 +456,48 @@ export function AgentConfigForm({ config, preset, onSave, onCancel, isSaving, on
         <p className="text-xs text-text-tertiary">
           {t('settings.maxIterationsHelp')}
         </p>
+      </div>
+      )}
+
+      {/* Timeout Settings */}
+      {showAdvanced && (
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-text-primary">Tool Timeout (seconds)</label>
+          <Input
+            type="number"
+            value={toolTimeoutSecs ?? ''}
+            onChange={(e) => {
+              const val = e.target.value.trim();
+              setToolTimeoutSecs(val ? parseInt(val) || null : null);
+            }}
+            placeholder="30"
+            min={5}
+            max={300}
+            step={5}
+          />
+          <p className="text-xs text-text-tertiary">
+            Timeout per tool call in seconds. Heavy tools use 2–3× this value. Default: 30
+          </p>
+        </div>
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-text-primary">Agent Turn Timeout (seconds)</label>
+          <Input
+            type="number"
+            value={agentTimeoutSecs ?? ''}
+            onChange={(e) => {
+              const val = e.target.value.trim();
+              setAgentTimeoutSecs(val ? parseInt(val) || null : null);
+            }}
+            placeholder="180"
+            min={30}
+            max={600}
+            step={30}
+          />
+          <p className="text-xs text-text-tertiary">
+            Maximum time for an entire agent response. Default: 180
+          </p>
+        </div>
       </div>
       )}
 
