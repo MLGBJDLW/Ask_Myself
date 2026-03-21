@@ -23,6 +23,7 @@ import type {
   Conversation,
   ConversationMessage,
   ConversationStats,
+  ConversationSearchResult,
   ImageAttachment,
   Checkpoint,
   UserMemory,
@@ -34,6 +35,7 @@ import type {
   Skill,
   SaveSkillInput,
 } from "../types/extensions";
+import type { TraceSummary, AgentTrace } from "../types/trace";
 
 // ── Sources ─────────────────────────────────────────────────────────────
 
@@ -285,6 +287,9 @@ export const cleanupEmptyConversations = (daysOld: number) =>
 export const compactConversation = (conversationId: string) =>
   invoke<void>('compact_conversation_cmd', { conversationId });
 
+export const searchConversations = (query: string, limit?: number) =>
+  invoke<ConversationSearchResult[]>('search_conversations_cmd', { query, limit });
+
 // ── Checkpoints ─────────────────────────────────────────────────────
 
 export const listCheckpoints = (conversationId: string) =>
@@ -352,6 +357,12 @@ export const deleteWhisperModel = () =>
 export const checkFfmpeg = (config: VideoConfig) =>
   invoke<boolean>('check_ffmpeg_cmd', { config });
 
+export const downloadFfmpeg = () =>
+  invoke<string>('download_ffmpeg_cmd');
+
+export const transcribeAudioBuffer = (audioData: number[]) =>
+  invoke<string>('transcribe_audio_buffer_cmd', { audioData });
+
 export const clearAnswerCache = () =>
   invoke<number>('clear_answer_cache');
 
@@ -417,3 +428,11 @@ export const getVideoTranscript = (filePath: string) =>
 
 export const getVideoMetadata = (filePath: string) =>
   invoke<VideoMetadata>('get_video_metadata_cmd', { filePath });
+
+// ── Trace Analytics ─────────────────────────────────────────────────
+
+export const getTraceSummary = () =>
+  invoke<TraceSummary>('get_trace_summary');
+
+export const getRecentTraces = (limit?: number) =>
+  invoke<AgentTrace[]>('get_recent_traces', { limit });

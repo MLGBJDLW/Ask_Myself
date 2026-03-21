@@ -33,13 +33,19 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 base64 = "0.22"
 imageproc = { version = "0.25", default-features = false }
 encoding_rs = "0.8"
-whisper-rs = { version = "0.13", optional = true }
+candle-core = { version = "0.9", optional = true }
+candle-nn = { version = "0.9", optional = true }
+candle-transformers = { version = "0.9", optional = true }
 hound = { version = "3.5", optional = true }
+tempfile = { version = "3", optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+xz2 = { version = "0.1", optional = true }
+tar = { version = "0.4", optional = true }
 
 [features]
 default = ["ocr"]
 ocr = []
-video = ["whisper-rs", "hound"]
+video = ["candle-core", "candle-nn", "candle-transformers", "hound", "tempfile", "zip", "xz2", "tar"]
 
 [dev-dependencies]
 tempfile = "3"

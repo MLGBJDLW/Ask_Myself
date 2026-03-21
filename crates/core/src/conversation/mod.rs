@@ -92,6 +92,18 @@ pub struct ConversationStats {
     pub db_size_bytes: u64,
 }
 
+/// A search result from cross-conversation message search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSearchResult {
+    pub conversation_id: String,
+    pub conversation_title: Option<String>,
+    pub message_preview: String,
+    pub message_role: String,
+    pub timestamp: String,
+    pub relevance_score: f64,
+}
+
 /// A snapshot of conversation state before compaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -188,6 +200,18 @@ fn serialize_optional_string_list(value: Option<&[String]>) -> Result<Option<Str
 
 fn parse_optional_string_list(value: Option<String>) -> Option<Vec<String>> {
     value.and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
+}
+
+/// Truncate a string to `max_chars`, appending "…" if truncated.
+fn truncate_preview(s: &str, max_chars: usize) -> String {
+    if s.len() <= max_chars {
+        return s.to_string();
+    }
+    let mut end = max_chars;
+    while !s.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +404,102 @@ impl Database {
             oldest_conversation,
             db_size_bytes,
         })
+    }
+
+    /// Search across all conversations for messages matching a query.
+    /// Uses FTS5 on message content with BM25 ranking.
+    pub fn search_conversations(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<ConversationSearchResult>, CoreError> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.conn();
+
+        // Check if FTS table exists
+        let fts_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='fts_messages')",
+            [],
+            |r| r.get(0),
+        )?;
+
+        if fts_exists {
+            // Tokenize: wrap each word in double-quotes for exact prefix matching
+            let fts_query: String = trimmed
+                .split_whitespace()
+                .map(|w| format!("\"{}\"", w.replace('"', "")))
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            if fts_query.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let mut stmt = conn.prepare(
+                "SELECT f.conversation_id, c.title, f.content, f.role,
+                        m.created_at, bm25(fts_messages) AS rank
+                 FROM fts_messages f
+                 JOIN conversations c ON c.id = f.conversation_id
+                 JOIN messages m ON m.id = f.message_id
+                 WHERE fts_messages MATCH ?1
+                 ORDER BY rank
+                 LIMIT ?2",
+            )?;
+
+            let rows = stmt.query_map(rusqlite::params![&fts_query, limit as i64], |row| {
+                let content: String = row.get(2)?;
+                let title: Option<String> = row.get(1)?;
+                Ok(ConversationSearchResult {
+                    conversation_id: row.get(0)?,
+                    conversation_title: title.filter(|t| !t.is_empty()),
+                    message_preview: truncate_preview(&content, 200),
+                    message_role: row.get(3)?,
+                    timestamp: row.get(4)?,
+                    relevance_score: row.get::<_, f64>(5)?.abs(),
+                })
+            })?;
+
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row?);
+            }
+            Ok(results)
+        } else {
+            // Fallback: LIKE search
+            let pattern = format!("%{}%", trimmed.replace('%', "\\%").replace('_', "\\_"));
+            let mut stmt = conn.prepare(
+                "SELECT m.conversation_id, c.title, m.content, m.role, m.created_at
+                 FROM messages m
+                 JOIN conversations c ON c.id = m.conversation_id
+                 WHERE m.role IN ('user', 'assistant')
+                   AND m.content LIKE ?1 ESCAPE '\\'
+                 ORDER BY m.created_at DESC
+                 LIMIT ?2",
+            )?;
+
+            let rows = stmt.query_map(rusqlite::params![&pattern, limit as i64], |row| {
+                let content: String = row.get(2)?;
+                let title: Option<String> = row.get(1)?;
+                Ok(ConversationSearchResult {
+                    conversation_id: row.get(0)?,
+                    conversation_title: title.filter(|t| !t.is_empty()),
+                    message_preview: truncate_preview(&content, 200),
+                    message_role: row.get(3)?,
+                    timestamp: row.get(4)?,
+                    relevance_score: 1.0,
+                })
+            })?;
+
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row?);
+            }
+            Ok(results)
+        }
     }
 }
 

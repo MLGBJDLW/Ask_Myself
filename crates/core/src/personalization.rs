@@ -3,9 +3,35 @@
 use crate::conversation::memory::estimate_tokens;
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::llm::{CompletionRequest, LlmProvider, Message, Role};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use tracing::warn;
 use uuid::Uuid;
+
+/// How a memory was created.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemorySource {
+    Manual,
+    AutoExtracted,
+}
+
+impl std::fmt::Display for MemorySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemorySource::Manual => write!(f, "manual"),
+            MemorySource::AutoExtracted => write!(f, "auto_extracted"),
+        }
+    }
+}
+
+fn parse_memory_source(s: &str) -> MemorySource {
+    match s {
+        "auto_extracted" => MemorySource::AutoExtracted,
+        _ => MemorySource::Manual,
+    }
+}
 
 /// A user-authored persistent memory note.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +39,7 @@ use uuid::Uuid;
 pub struct UserMemory {
     pub id: String,
     pub content: String,
+    pub source: MemorySource,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -309,16 +336,18 @@ impl Database {
     pub fn list_user_memories(&self) -> Result<Vec<UserMemory>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, content, created_at, updated_at
+            "SELECT id, content, COALESCE(source, 'manual'), created_at, updated_at
              FROM user_memories
              ORDER BY updated_at DESC, created_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
+            let source_str: String = row.get(2)?;
             Ok(UserMemory {
                 id: row.get(0)?,
                 content: row.get(1)?,
-                created_at: row.get(2)?,
-                updated_at: row.get(3)?,
+                source: parse_memory_source(&source_str),
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
             })
         })?;
 
@@ -329,8 +358,17 @@ impl Database {
         Ok(out)
     }
 
-    /// Create a new user memory note.
+    /// Create a new user memory note (manual source).
     pub fn create_user_memory(&self, content: &str) -> Result<UserMemory, CoreError> {
+        self.create_user_memory_with_source(content, MemorySource::Manual)
+    }
+
+    /// Create a new user memory note with explicit source.
+    pub fn create_user_memory_with_source(
+        &self,
+        content: &str,
+        source: MemorySource,
+    ) -> Result<UserMemory, CoreError> {
         let normalized = validate_user_memory_content(content)?;
 
         let id = Uuid::new_v4().to_string();
@@ -345,9 +383,9 @@ impl Database {
         }
 
         conn.execute(
-            "INSERT INTO user_memories (id, content)
-             VALUES (?1, ?2)",
-            rusqlite::params![&id, &normalized],
+            "INSERT INTO user_memories (id, content, source)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![&id, &normalized, source.to_string()],
         )?;
         drop(conn);
         self.get_user_memory(&id)
@@ -387,16 +425,18 @@ impl Database {
     fn get_user_memory(&self, id: &str) -> Result<UserMemory, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, content, created_at, updated_at
+            "SELECT id, content, COALESCE(source, 'manual'), created_at, updated_at
              FROM user_memories
              WHERE id = ?1",
             rusqlite::params![id],
             |row| {
+                let source_str: String = row.get(2)?;
                 Ok(UserMemory {
                     id: row.get(0)?,
                     content: row.get(1)?,
-                    created_at: row.get(2)?,
-                    updated_at: row.get(3)?,
+                    source: parse_memory_source(&source_str),
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
                 })
             },
         )
@@ -577,6 +617,201 @@ fn is_cjk_char(ch: char) -> bool {
             | '\u{30A0}'..='\u{30FF}' // Katakana
             | '\u{AC00}'..='\u{D7AF}' // Hangul Syllables
     )
+}
+
+// ---------------------------------------------------------------------------
+// Auto memory extraction
+// ---------------------------------------------------------------------------
+
+/// Maximum tokens the memory extraction LLM call may produce.
+const EXTRACT_MAX_TOKENS: u32 = 400;
+
+/// Maximum input characters sent to the extraction prompt.
+const EXTRACT_MAX_INPUT: usize = 6_000;
+
+/// Maximum characters per individual message included in the extraction input.
+const EXTRACT_MSG_CAP: usize = 500;
+
+/// Minimum number of user+assistant messages before extraction is worthwhile.
+const EXTRACT_MIN_MESSAGES: usize = 5;
+
+/// Minimum turns since the last extraction before we extract again.
+/// Stored as a conversation-level key in the DB app_config table.
+const EXTRACT_MIN_TURN_INTERVAL: usize = 5;
+
+const EXTRACT_SYSTEM_PROMPT: &str = r#"You are a memory extraction assistant. Analyze the conversation and extract key personal facts, preferences, or decisions the user has shared that would be useful to remember in future conversations.
+
+Rules:
+- Only extract information explicitly stated by the user, not inferred.
+- Each memory should be a single concise sentence (max 200 chars).
+- Do NOT duplicate any existing memories listed below.
+- Be highly selective — only truly important, reusable facts.
+- Return a JSON array of strings. Return [] if nothing worth remembering.
+- Output ONLY the JSON array, no other text."#;
+
+/// Extract potential memories from conversation messages using an LLM.
+///
+/// Returns a list of memory strings ready to be saved. An empty list means
+/// nothing worth remembering was found (or the conversation is too short).
+pub async fn extract_memories_from_conversation(
+    messages: &[crate::conversation::ConversationMessage],
+    existing_memories: &[UserMemory],
+    llm: &dyn LlmProvider,
+    model: &str,
+) -> Result<Vec<String>, CoreError> {
+    // Only consider user + assistant messages.
+    let relevant: Vec<_> = messages
+        .iter()
+        .filter(|m| matches!(m.role, Role::User | Role::Assistant))
+        .collect();
+
+    if relevant.len() < EXTRACT_MIN_MESSAGES {
+        return Ok(vec![]);
+    }
+
+    // Check if user provided substantial content (not just "yes"/"ok").
+    let user_content_len: usize = relevant
+        .iter()
+        .filter(|m| matches!(m.role, Role::User))
+        .map(|m| m.content.trim().len())
+        .sum();
+    if user_content_len < 100 {
+        return Ok(vec![]);
+    }
+
+    // Build existing-memories block.
+    let existing_block = if existing_memories.is_empty() {
+        "(none)".to_string()
+    } else {
+        existing_memories
+            .iter()
+            .map(|m| format!("- {}", &m.content))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // Build conversation transcript.
+    let mut transcript_parts = Vec::new();
+    for msg in &relevant {
+        let role_label = match msg.role {
+            Role::User => "User",
+            Role::Assistant => "Assistant",
+            _ => continue,
+        };
+        let text = if msg.content.len() > EXTRACT_MSG_CAP {
+            &msg.content[..EXTRACT_MSG_CAP]
+        } else {
+            &msg.content
+        };
+        transcript_parts.push(format!("{role_label}: {text}"));
+    }
+    let mut transcript = transcript_parts.join("\n");
+    if transcript.len() > EXTRACT_MAX_INPUT {
+        transcript.truncate(EXTRACT_MAX_INPUT);
+    }
+
+    let user_prompt = format!(
+        "Existing memories (do not duplicate):\n{existing_block}\n\nConversation:\n{transcript}"
+    );
+
+    let request = CompletionRequest {
+        model: model.to_string(),
+        messages: vec![
+            Message::text(Role::System, EXTRACT_SYSTEM_PROMPT),
+            Message::text(Role::User, user_prompt),
+        ],
+        max_tokens: Some(EXTRACT_MAX_TOKENS),
+        temperature: Some(0.2),
+        tools: None,
+        stop: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+        provider_type: None,
+    };
+
+    let response = llm.complete(&request).await?;
+    let text = response.content.trim();
+
+    parse_memory_json(text)
+}
+
+/// Parse the LLM response as a JSON array of strings.
+fn parse_memory_json(text: &str) -> Result<Vec<String>, CoreError> {
+    // Try to find a JSON array in the response (the LLM may wrap it in markdown).
+    let json_text = if let Some(start) = text.find('[') {
+        if let Some(end) = text.rfind(']') {
+            &text[start..=end]
+        } else {
+            text
+        }
+    } else {
+        text
+    };
+
+    let parsed: Vec<String> = serde_json::from_str(json_text).unwrap_or_default();
+
+    // Filter out empty/too-long entries.
+    Ok(parsed
+        .into_iter()
+        .filter(|s| {
+            let trimmed = s.trim();
+            !trimmed.is_empty() && trimmed.len() <= USER_MEMORY_MAX_CHARS
+        })
+        .collect())
+}
+
+/// Run auto memory extraction for a conversation, saving results to DB.
+///
+/// This is designed to be called from a background task after a successful
+/// agent turn. It checks rate-limiting internally.
+pub async fn auto_extract_and_save(
+    db: &Database,
+    conversation_id: &str,
+    llm: &dyn LlmProvider,
+    model: &str,
+) -> Result<usize, CoreError> {
+    // Load conversation messages.
+    let messages = db.get_messages(conversation_id)?;
+
+    // Rate-limit: count user messages since we don't track extraction per-conversation.
+    let user_msg_count = messages
+        .iter()
+        .filter(|m| matches!(m.role, Role::User))
+        .count();
+    if user_msg_count < EXTRACT_MIN_TURN_INTERVAL {
+        return Ok(0);
+    }
+
+    // Only extract every EXTRACT_MIN_TURN_INTERVAL user messages.
+    // Use modular arithmetic: extract when user_msg_count is a multiple.
+    if user_msg_count % EXTRACT_MIN_TURN_INTERVAL != 0 {
+        return Ok(0);
+    }
+
+    let existing = db.list_user_memories()?;
+    let extracted = extract_memories_from_conversation(&messages, &existing, llm, model).await?;
+
+    let mut saved = 0usize;
+    for memory_text in extracted {
+        // Double-check deduplication: skip if any existing memory contains the same text.
+        let dominated = existing.iter().any(|m| {
+            m.content.to_lowercase().contains(&memory_text.to_lowercase())
+                || memory_text.to_lowercase().contains(&m.content.to_lowercase())
+        });
+        if dominated {
+            continue;
+        }
+
+        match db.create_user_memory_with_source(&memory_text, MemorySource::AutoExtracted) {
+            Ok(_) => saved += 1,
+            Err(e) => {
+                warn!("Failed to save auto-extracted memory: {e}");
+                break; // Likely hit the limit.
+            }
+        }
+    }
+
+    Ok(saved)
 }
 
 #[cfg(test)]

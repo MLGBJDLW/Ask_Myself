@@ -31,6 +31,7 @@ import {
   Mic,
   HardDrive,
   Clock,
+  BarChart3,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { listen } from '@tauri-apps/api/event';
@@ -41,8 +42,9 @@ import type { EmbedderConfig } from '../types/embedder';
 import type { AgentConfig, AppConfig, SaveAgentConfigInput, UserMemory } from '../types/conversation';
 import type { ScanProgress, FtsProgress, DownloadProgress } from '../types/ingest';
 import type { OcrConfig, OcrDownloadProgress } from '../types/ocr';
-import type { VideoConfig, VideoDownloadProgress } from '../types/video';
+import type { VideoConfig, VideoDownloadProgress, FfmpegDownloadProgress } from '../types/video';
 import type { Skill, McpServer, McpToolInfo, SaveSkillInput, SaveMcpServerInput } from '../types/extensions';
+import type { TraceSummary, AgentTrace } from '../types/trace';
 import { useTranslation } from '../i18n';
 import { ThemeSwitcher } from '../components/ui/ThemeSwitcher';
 import { Button } from '../components/ui/Button';
@@ -104,8 +106,14 @@ function estimateTokens(text: string): number {
   return Math.ceil(tokens);
 }
 
+function formatCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
 /* ── Settings page ────────────────────────────────────────────────── */
-type SettingsTab = 'appearance' | 'models' | 'embedding' | 'index' | 'privacy' | 'providers' | 'ocr' | 'video' | 'extensions';
+type SettingsTab = 'appearance' | 'models_embedding' | 'providers' | 'media' | 'data_privacy' | 'extensions';
 const MEMORY_CHAR_LIMIT = 240;
 const TAB_STRIP_EDGE_EPSILON = 4;
 
@@ -118,7 +126,7 @@ export function SettingsPage() {
     availableTools: t('settings.extensions.availableTools'),
     toggleTools: t('settings.extensions.toggleTools'),
   };
-  const [activeTab, setActiveTab] = useState<SettingsTab>('embedding');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('models_embedding');
   const [dirtyTabs, setDirtyTabs] = useState<Set<string>>(new Set());
   const [pendingTab, setPendingTab] = useState<SettingsTab | null>(null);
   const [discardingTabChanges, setDiscardingTabChanges] = useState(false);
@@ -128,6 +136,11 @@ export function SettingsPage() {
   const [skillEditorDirty, setSkillEditorDirty] = useState(false);
   const [mcpFormDirty, setMcpFormDirty] = useState(false);
   const hasDirtyTabs = dirtyTabs.size > 0;
+
+  const isTabDirty = useCallback((tabId: SettingsTab) => {
+    if (tabId === 'media') return dirtyTabs.has('ocr') || dirtyTabs.has('video');
+    return dirtyTabs.has(tabId);
+  }, [dirtyTabs]);
 
   const updateTabStripIndicators = useCallback(() => {
     const element = tabStripRef.current;
@@ -279,6 +292,11 @@ export function SettingsPage() {
   const [editingMemoryDraft, setEditingMemoryDraft] = useState('');
   const [memoryLoading, setMemoryLoading] = useState(false);
 
+  /* ── Analytics state ────────────────────────────────────────────── */
+  const [traceSummary, setTraceSummary] = useState<TraceSummary | null>(null);
+  const [recentTraces, setRecentTraces] = useState<AgentTrace[]>([]);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
   /* ── Embedding state ─────────────────────────────────────────────── */
   const [embedConfig, setEmbedConfig] = useState<EmbedderConfig | null>(null);
   const [localModelReady, setLocalModelReady] = useState<boolean | null>(null);
@@ -308,6 +326,8 @@ export function SettingsPage() {
   const [videoSaveLoading, setVideoSaveLoading] = useState(false);
   const [showAdvancedVideo, setShowAdvancedVideo] = useState(false);
   const [deleteModelConfirmOpen, setDeleteModelConfirmOpen] = useState(false);
+  const [ffmpegDownloading, setFfmpegDownloading] = useState(false);
+  const [ffmpegProgress, setFfmpegProgress] = useState<FfmpegDownloadProgress | null>(null);
 
   useEffect(() => {
     if (!rebuildEmbedLoading) {
@@ -389,7 +409,7 @@ export function SettingsPage() {
     setEmbedSaveLoading(true);
     try {
       await api.saveEmbedderConfig(embedConfig);
-      markClean('embedding');
+      markClean('models_embedding');
       toast.success(t('settings.privacySaved'));
     } catch {
       toast.error(t('settings.privacySaveError'));
@@ -416,7 +436,18 @@ export function SettingsPage() {
       const cfg = await api.getAppConfig();
       setAppConfig(cfg);
     } catch {
-      setAppConfig({ toolTimeoutSecs: 30, agentTimeoutSecs: 180 });
+      setAppConfig({
+        toolTimeoutSecs: 30,
+        agentTimeoutSecs: 180,
+        cacheTtlHours: 24,
+        defaultSearchLimit: 20,
+        minSearchSimilarity: 0.2,
+        maxTextFileSize: 104857600,
+        maxVideoFileSize: 2147483648,
+        maxAudioFileSize: 536870912,
+        llmTimeoutSecs: 300,
+        mcpCallTimeoutSecs: 60,
+      });
     }
   }, []);
 
@@ -556,6 +587,37 @@ export function SettingsPage() {
     }
   };
 
+  // FFmpeg download
+  useEffect(() => {
+    if (!ffmpegDownloading) { setFfmpegProgress(null); return; }
+    let cancelled = false;
+    let unlistenFn: (() => void) | undefined;
+    const setup = async () => {
+      const fn = await listen<FfmpegDownloadProgress>('ffmpeg:download-progress', (event) => {
+        if (!cancelled) setFfmpegProgress(event.payload);
+      });
+      if (cancelled) { fn(); } else { unlistenFn = fn; }
+    };
+    setup();
+    return () => { cancelled = true; unlistenFn?.(); };
+  }, [ffmpegDownloading]);
+
+  const handleFfmpegDownload = async () => {
+    setFfmpegDownloading(true);
+    try {
+      const path = await api.downloadFfmpeg();
+      setFfmpegAvailable(true);
+      toast.success(t('settings.videoFfmpegDownloadComplete'));
+      // Refresh config to pick up the saved ffmpeg path
+      await loadVideoConfig();
+      void path; // path is auto-saved by backend
+    } catch (e) {
+      toast.error(t('settings.videoFfmpegDownloadFailed') + ': ' + String(e));
+    } finally {
+      setFfmpegDownloading(false);
+    }
+  };
+
   const handleVideoSave = async () => {
     if (!videoConfig) return;
     setVideoSaveLoading(true);
@@ -587,27 +649,46 @@ export function SettingsPage() {
     void loadPrivacyConfig();
   }, [loadPrivacyConfig]);
 
+  const loadAnalytics = useCallback(async () => {
+    setAnalyticsLoading(true);
+    try {
+      const [summary, traces] = await Promise.all([
+        api.getTraceSummary(),
+        api.getRecentTraces(20),
+      ]);
+      setTraceSummary(summary);
+      setRecentTraces(traces);
+    } catch {
+      // Silently fail — analytics are non-critical
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'data_privacy') {
+      void loadAnalytics();
+    }
+  }, [activeTab, loadAnalytics]);
+
   const discardActiveTabChanges = useCallback(async () => {
     switch (activeTab) {
-      case 'embedding': {
+      case 'models_embedding': {
         const reloaded = await loadEmbedConfig();
         if (!reloaded) return false;
         break;
       }
-      case 'privacy': {
+      case 'data_privacy': {
         const reloaded = await loadPrivacyConfig();
         if (!reloaded) return false;
         break;
       }
-      case 'ocr': {
-        const reloaded = await loadOcrConfig();
-        if (!reloaded) return false;
-        break;
-      }
-      case 'video': {
-        const reloaded = await loadVideoConfig();
-        if (!reloaded) return false;
-        break;
+      case 'media': {
+        const [ocrReloaded, videoReloaded] = await Promise.all([loadOcrConfig(), loadVideoConfig()]);
+        if (!ocrReloaded || !videoReloaded) return false;
+        markClean('ocr');
+        markClean('video');
+        return true;
       }
       default:
         break;
@@ -619,12 +700,12 @@ export function SettingsPage() {
 
   const handleTabChange = useCallback((nextTab: SettingsTab) => {
     if (nextTab === activeTab) return;
-    if (dirtyTabs.has(activeTab)) {
+    if (isTabDirty(activeTab)) {
       setPendingTab(nextTab);
       return;
     }
     setActiveTab(nextTab);
-  }, [activeTab, dirtyTabs]);
+  }, [activeTab, isTabDirty]);
 
   const handleCancelPendingTabChange = useCallback(() => {
     if (discardingTabChanges) return;
@@ -658,11 +739,11 @@ export function SettingsPage() {
   }, [settingsNavigationBlocker]);
 
   useEffect(() => {
-    if (pendingTab && !dirtyTabs.has(activeTab)) {
+    if (pendingTab && !isTabDirty(activeTab)) {
       setActiveTab(pendingTab);
       setPendingTab(null);
     }
-  }, [activeTab, dirtyTabs, pendingTab]);
+  }, [activeTab, dirtyTabs, isTabDirty, pendingTab]);
 
   useEffect(() => {
     if (settingsNavigationBlocker.state === 'blocked' && !hasDirtyTabs) {
@@ -815,7 +896,7 @@ export function SettingsPage() {
       ...privacyConfig,
       excludePatterns: [...privacyConfig.excludePatterns, trimmed],
     });
-    markDirty('privacy');
+    markDirty('data_privacy');
     setNewPattern('');
   };
 
@@ -825,7 +906,7 @@ export function SettingsPage() {
       ...privacyConfig,
       excludePatterns: privacyConfig.excludePatterns.filter((_, i) => i !== idx),
     });
-    markDirty('privacy');
+    markDirty('data_privacy');
   };
 
   const addRule = () => {
@@ -834,7 +915,7 @@ export function SettingsPage() {
       ...privacyConfig,
       redactPatterns: [...privacyConfig.redactPatterns, { ...newRule }],
     });
-    markDirty('privacy');
+    markDirty('data_privacy');
     setNewRule({ name: '', pattern: '', replacement: '' });
   };
 
@@ -844,7 +925,7 @@ export function SettingsPage() {
       ...privacyConfig,
       redactPatterns: privacyConfig.redactPatterns.filter((_, i) => i !== idx),
     });
-    markDirty('privacy');
+    markDirty('data_privacy');
   };
 
   const handleSavePrivacy = async () => {
@@ -852,7 +933,7 @@ export function SettingsPage() {
     setSaveLoading(true);
     try {
       await api.savePrivacyConfig(privacyConfig);
-      markClean('privacy');
+      markClean('data_privacy');
       toast.success(t('settings.privacySaved'));
     } catch {
       toast.error(t('settings.privacySaveError'));
@@ -1099,13 +1180,10 @@ export function SettingsPage() {
 
   const tabs: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
     { id: 'appearance', label: t('settings.appearance'), icon: <Star size={16} /> },
-    { id: 'models', label: t('settings.models'), icon: <HardDrive size={16} /> },
-    { id: 'embedding', label: t('settings.embeddingSection'), icon: <Brain size={16} /> },
+    { id: 'models_embedding', label: t('settings.tabModelsEmbedding'), icon: <Brain size={16} /> },
     { id: 'providers', label: t('settings.aiProviders'), icon: <Bot size={16} /> },
-    { id: 'ocr', label: t('settings.ocrTab'), icon: <ScanLine size={16} /> },
-    { id: 'video', label: t('settings.videoTab'), icon: <Film size={16} /> },
-    { id: 'index', label: t('settings.indexSection'), icon: <Database size={16} /> },
-    { id: 'privacy', label: t('settings.privacySection'), icon: <Shield size={16} /> },
+    { id: 'media', label: t('settings.tabMedia'), icon: <Film size={16} /> },
+    { id: 'data_privacy', label: t('settings.tabDataPrivacy'), icon: <Database size={16} /> },
     { id: 'extensions', label: t('settings.extensionsTab'), icon: <Blocks size={16} /> },
   ];
 
@@ -1140,7 +1218,7 @@ export function SettingsPage() {
             >
               {tab.icon}
               {tab.label}
-              {dirtyTabs.has(tab.id) && (
+              {isTabDirty(tab.id) && (
                 <span className="w-1.5 h-1.5 rounded-full bg-warning" />
               )}
             </button>
@@ -1221,13 +1299,13 @@ export function SettingsPage() {
             <div className="space-y-4 border-t border-border pt-4 mt-4">
               <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
                 <Clock size={16} />
-                Timeout
+                {t('settings.timeout')}
               </h3>
               {appConfig && (
                 <div className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-text-primary">Tool Timeout (seconds)</label>
+                      <label className="text-sm font-medium text-text-primary">{t('settings.toolTimeout')}</label>
                       <Input
                         type="number"
                         value={appConfig.toolTimeoutSecs}
@@ -1237,11 +1315,11 @@ export function SettingsPage() {
                         step={5}
                       />
                       <p className="text-xs text-text-tertiary">
-                        Timeout per tool call. Heavy tools use 2–3× this value. Default: 30
+                        {t('settings.toolTimeoutDesc')}
                       </p>
                     </div>
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-text-primary">Agent Turn Timeout (seconds)</label>
+                      <label className="text-sm font-medium text-text-primary">{t('settings.agentTimeout')}</label>
                       <Input
                         type="number"
                         value={appConfig.agentTimeoutSecs}
@@ -1251,10 +1329,173 @@ export function SettingsPage() {
                         step={30}
                       />
                       <p className="text-xs text-text-tertiary">
-                        Maximum time for an entire agent response. Default: 180
+                        {t('settings.agentTimeoutDesc')}
                       </p>
                     </div>
                   </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-text-primary">{t('settings.llmTimeout')}</label>
+                      <Input
+                        type="number"
+                        value={appConfig.llmTimeoutSecs}
+                        onChange={(e) => setAppConfig({ ...appConfig, llmTimeoutSecs: parseInt(e.target.value) || 300 })}
+                        min={10}
+                        max={600}
+                        step={10}
+                      />
+                      <p className="text-xs text-text-tertiary">
+                        {t('settings.llmTimeoutDesc')}
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-text-primary">{t('settings.mcpTimeout')}</label>
+                      <Input
+                        type="number"
+                        value={appConfig.mcpCallTimeoutSecs}
+                        onChange={(e) => setAppConfig({ ...appConfig, mcpCallTimeoutSecs: parseInt(e.target.value) || 60 })}
+                        min={5}
+                        max={300}
+                        step={5}
+                      />
+                      <p className="text-xs text-text-tertiary">
+                        {t('settings.mcpTimeoutDesc')}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      icon={<Save size={14} />}
+                      loading={appConfigLoading}
+                      onClick={handleAppConfigSave}
+                    >
+                      {t('common.save')}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Advanced Settings */}
+            <div className="space-y-4 border-t border-border pt-4 mt-4">
+              <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
+                <Settings2 size={16} />
+                {t('settings.advanced')}
+              </h3>
+              {appConfig && (
+                <div className="space-y-4">
+                  {/* Cache & Search */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-text-primary">{t('settings.cacheTtl')}</label>
+                      <Input
+                        type="number"
+                        value={appConfig.cacheTtlHours}
+                        onChange={(e) => setAppConfig({ ...appConfig, cacheTtlHours: Math.max(0, Math.min(168, parseInt(e.target.value) || 0)) })}
+                        min={0}
+                        max={168}
+                      />
+                      <p className="text-xs text-text-tertiary">{t('settings.cacheTtlDesc')}</p>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-text-primary">{t('settings.searchLimit')}</label>
+                      <Input
+                        type="number"
+                        value={appConfig.defaultSearchLimit}
+                        onChange={(e) => setAppConfig({ ...appConfig, defaultSearchLimit: Math.max(1, Math.min(100, parseInt(e.target.value) || 20)) })}
+                        min={1}
+                        max={100}
+                      />
+                      <p className="text-xs text-text-tertiary">{t('settings.searchLimitDesc')}</p>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-text-primary">{t('settings.searchSimilarity')}</label>
+                    <Input
+                      type="number"
+                      value={appConfig.minSearchSimilarity}
+                      onChange={(e) => setAppConfig({ ...appConfig, minSearchSimilarity: Math.max(0, Math.min(1, parseFloat(e.target.value) || 0.2)) })}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                    />
+                    <p className="text-xs text-text-tertiary">{t('settings.searchSimilarityDesc')}</p>
+                  </div>
+
+                  {/* File Size Limits */}
+                  <h4 className="text-xs font-medium text-text-secondary mt-2">{t('settings.fileSizeLimits')}</h4>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-text-primary">{t('settings.maxTextFileSize')}</label>
+                      <Input
+                        type="number"
+                        value={Math.round(appConfig.maxTextFileSize / (1024 * 1024))}
+                        onChange={(e) => setAppConfig({ ...appConfig, maxTextFileSize: Math.max(1, parseInt(e.target.value) || 100) * 1024 * 1024 })}
+                        min={1}
+                        max={1024}
+                      />
+                      <p className="text-xs text-text-tertiary">{t('settings.maxTextFileSizeDesc')}</p>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-text-primary">{t('settings.maxVideoFileSize')}</label>
+                      <Input
+                        type="number"
+                        value={Math.round(appConfig.maxVideoFileSize / (1024 * 1024 * 1024))}
+                        onChange={(e) => setAppConfig({ ...appConfig, maxVideoFileSize: Math.max(1, parseInt(e.target.value) || 2) * 1024 * 1024 * 1024 })}
+                        min={1}
+                        max={10}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-text-primary">{t('settings.maxAudioFileSize')}</label>
+                      <Input
+                        type="number"
+                        value={Math.round(appConfig.maxAudioFileSize / (1024 * 1024))}
+                        onChange={(e) => setAppConfig({ ...appConfig, maxAudioFileSize: Math.max(1, parseInt(e.target.value) || 500) * 1024 * 1024 })}
+                        min={1}
+                        max={2048}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Agent Behavior */}
+                  <div className="space-y-3 mt-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={appConfig.dynamicToolVisibility ?? true}
+                        onChange={(e) => setAppConfig({ ...appConfig, dynamicToolVisibility: e.target.checked })}
+                        className="rounded border-border"
+                      />
+                      <span className="text-sm font-medium text-text-primary">{t('settings.dynamicTools')}</span>
+                    </label>
+                    <p className="text-xs text-text-tertiary ml-6">{t('settings.dynamicToolsDesc')}</p>
+
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={appConfig.traceEnabled ?? true}
+                        onChange={(e) => setAppConfig({ ...appConfig, traceEnabled: e.target.checked })}
+                        className="rounded border-border"
+                      />
+                      <span className="text-sm font-medium text-text-primary">{t('settings.traceEnabled')}</span>
+                    </label>
+                    <p className="text-xs text-text-tertiary ml-6">{t('settings.traceEnabledDesc')}</p>
+
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={appConfig.confirmDestructive ?? false}
+                        onChange={(e) => setAppConfig({ ...appConfig, confirmDestructive: e.target.checked })}
+                        className="rounded border-border"
+                      />
+                      <span className="text-sm font-medium text-text-primary">{t('settings.confirmDestructive')}</span>
+                    </label>
+                    <p className="text-xs text-text-tertiary ml-6">{t('settings.confirmDestructiveDesc')}</p>
+                  </div>
+
                   <div className="flex justify-end">
                     <Button
                       variant="primary"
@@ -1273,8 +1514,10 @@ export function SettingsPage() {
         </Section>
       )}
 
-      {/* ── Tab: Models ─────────────────────────────────────────── */}
-      {activeTab === 'models' && (
+      {/* ── Tab: Models & Embedding ──────────────────────────────── */}
+      {activeTab === 'models_embedding' && (
+        <>
+        {/* Models section */}
         <Section icon={<HardDrive size={20} />} title={t('settings.models')} delay={0.03}>
           <p className="mb-5 text-xs text-text-tertiary">{t('settings.modelsDesc')}</p>
           <div className="space-y-4">
@@ -1316,7 +1559,7 @@ export function SettingsPage() {
                           if (embedConfig) {
                             setEmbedConfig({ ...embedConfig, localModel: opt.id });
                             setLocalModelReady(null);
-                            markDirty('embedding');
+                            markDirty('models_embedding');
                           }
                         }}
                         className={`rounded-lg border p-3 text-left transition-all duration-fast cursor-pointer ${
@@ -1404,9 +1647,13 @@ export function SettingsPage() {
                       <button
                         key={opt.id}
                         onClick={() => {
-                          setVideoConfig({ ...videoConfig, whisperModel: opt.id });
+                          const updated = { ...videoConfig, whisperModel: opt.id };
+                          setVideoConfig(updated);
                           setWhisperModelExists(null);
                           markDirty('video');
+                          api.checkWhisperModel(updated)
+                            .then(setWhisperModelExists)
+                            .catch(() => setWhisperModelExists(false));
                         }}
                         className={`rounded-lg border p-3 text-left transition-all duration-fast cursor-pointer ${
                           videoConfig.whisperModel === opt.id
@@ -1455,11 +1702,9 @@ export function SettingsPage() {
             </div>
           </div>
         </Section>
-      )}
 
-      {/* ── Tab: Embedding ──────────────────────────────────────── */}
-      {activeTab === 'embedding' && (
-      <Section icon={<Brain size={20} />} title={t('settings.embeddingSection')} delay={0.03}>
+        {/* Embedding Configuration section */}
+        <Section icon={<Brain size={20} />} title={t('settings.embeddingSection')} delay={0.06}>
         {embedConfig && (
           <div className="space-y-5">
             {/* Provider pills */}
@@ -1469,7 +1714,7 @@ export function SettingsPage() {
                 {(['local', 'api', 'tfidf'] as const).map((p) => (
                   <button
                     key={p}
-                    onClick={() => { setEmbedConfig({ ...embedConfig, provider: p }); markDirty('embedding'); }}
+                    onClick={() => { setEmbedConfig({ ...embedConfig, provider: p }); markDirty('models_embedding'); }}
                     className={`rounded-full px-4 py-1.5 text-xs font-medium transition-all duration-fast cursor-pointer ${
                       embedConfig.provider === p
                         ? 'bg-accent text-white shadow-sm'
@@ -1519,7 +1764,7 @@ export function SettingsPage() {
                     <Input
                       type="password"
                       value={embedConfig.apiKey}
-                      onChange={(e) => { setEmbedConfig({ ...embedConfig, apiKey: e.target.value }); markDirty('embedding'); }}
+                      onChange={(e) => { setEmbedConfig({ ...embedConfig, apiKey: e.target.value }); markDirty('models_embedding'); }}
                       className="pl-9"
                       placeholder="sk-..."
                     />
@@ -1529,7 +1774,7 @@ export function SettingsPage() {
                   <label className="text-sm font-medium text-text-primary">{t('settings.embeddingBaseUrl')}</label>
                   <Input
                     value={embedConfig.apiBaseUrl}
-                    onChange={(e) => { setEmbedConfig({ ...embedConfig, apiBaseUrl: e.target.value }); markDirty('embedding'); }}
+                    onChange={(e) => { setEmbedConfig({ ...embedConfig, apiBaseUrl: e.target.value }); markDirty('models_embedding'); }}
                     placeholder="https://api.openai.com/v1"
                   />
                 </div>
@@ -1537,7 +1782,7 @@ export function SettingsPage() {
                   <label className="text-sm font-medium text-text-primary">{t('settings.embeddingModel')}</label>
                   <Input
                     value={embedConfig.apiModel}
-                    onChange={(e) => { setEmbedConfig({ ...embedConfig, apiModel: e.target.value }); markDirty('embedding'); }}
+                    onChange={(e) => { setEmbedConfig({ ...embedConfig, apiModel: e.target.value }); markDirty('models_embedding'); }}
                     placeholder="text-embedding-3-small"
                   />
                 </div>
@@ -1608,6 +1853,7 @@ export function SettingsPage() {
           </div>
         )}
       </Section>
+      </>
       )}
 
       {/* ── Tab: AI Providers ──────────────────────────────────────── */}
@@ -1763,8 +2009,97 @@ export function SettingsPage() {
         loading={deleteLoading}
       />
 
-      {/* ── Tab: Index ─────────────────────────────────────────────── */}
-      {activeTab === 'index' && (
+      {/* ── Tab: Data & Privacy ─────────────────────────────────── */}
+      {activeTab === 'data_privacy' && (
+      <>
+
+      {/* Analytics section */}
+      <Section icon={<BarChart3 size={20} />} title={t('analytics.title')} delay={0.02}>
+        {analyticsLoading && !traceSummary ? (
+          <div className="flex items-center gap-2 text-sm text-text-tertiary">
+            <Loader2 size={14} className="animate-spin" />
+            <span>{t('common.loading')}</span>
+          </div>
+        ) : traceSummary && traceSummary.totalSessions > 0 ? (
+          <div className="space-y-5">
+            {/* Summary cards */}
+            <div className="grid grid-cols-3 gap-3">
+              <StatCard label={t('analytics.totalSessions')} value={formatCompact(traceSummary.totalSessions)} />
+              <StatCard label={t('analytics.successRate')} value={`${(traceSummary.successRate * 100).toFixed(1)}%`} />
+              <StatCard label={t('analytics.cacheHitRate')} value={`${(traceSummary.cacheHitRate * 100).toFixed(1)}%`} />
+              <StatCard label={t('analytics.totalTokens')} value={formatCompact(traceSummary.totalInputTokens + traceSummary.totalOutputTokens)} />
+              <StatCard label={t('analytics.avgIterations')} value={traceSummary.avgIterationsPerSession.toFixed(1)} />
+              <StatCard label={t('analytics.avgContextUsage')} value={`${(traceSummary.avgContextUsagePct * 100).toFixed(1)}%`} />
+              <StatCard label={t('analytics.sessionsLast7Days')} value={formatCompact(traceSummary.sessionsLast7Days)} />
+              <StatCard label={t('analytics.tokensLast7Days')} value={formatCompact(traceSummary.tokensLast7Days)} />
+            </div>
+
+            {/* Top tools */}
+            {traceSummary.topTools.length > 0 && (
+              <div>
+                <h3 className="mb-2 text-sm font-medium text-text-primary">{t('analytics.topTools')}</h3>
+                <div className="overflow-hidden rounded-lg border border-border">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-surface-2">
+                        <th className="px-3 py-2 text-left text-xs font-medium text-text-tertiary">{t('analytics.toolName')}</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-text-tertiary">{t('analytics.count')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {traceSummary.topTools.map(([name, count]) => (
+                        <tr key={name} className="border-b border-border last:border-0 hover:bg-surface-2/50 transition-colors">
+                          <td className="px-3 py-1.5 font-mono text-xs text-text-primary">{name}</td>
+                          <td className="px-3 py-1.5 text-right text-text-secondary">{formatCompact(count)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Recent sessions */}
+            {recentTraces.length > 0 && (
+              <div>
+                <h3 className="mb-2 text-sm font-medium text-text-primary">{t('analytics.recentSessions')}</h3>
+                <div className="overflow-hidden rounded-lg border border-border">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-surface-2">
+                        <th className="px-3 py-2 text-left text-xs font-medium text-text-tertiary">{t('analytics.message')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-text-tertiary">{t('analytics.outcome')}</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-text-tertiary">{t('analytics.iterations')}</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-text-tertiary">{t('analytics.tools')}</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-text-tertiary">{t('analytics.tokens')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recentTraces.map((trace) => (
+                        <tr key={trace.id} className="border-b border-border last:border-0 hover:bg-surface-2/50 transition-colors">
+                          <td className="px-3 py-1.5 text-text-primary max-w-[200px] truncate" title={trace.userMessagePreview}>{trace.userMessagePreview || '—'}</td>
+                          <td className="px-3 py-1.5">
+                            <Badge variant={trace.outcome === 'success' ? 'success' : trace.outcome === 'error' ? 'danger' : 'default'}>
+                              {trace.outcome}
+                            </Badge>
+                          </td>
+                          <td className="px-3 py-1.5 text-right text-text-secondary">{trace.totalIterations}</td>
+                          <td className="px-3 py-1.5 text-right text-text-secondary">{trace.totalToolCalls}</td>
+                          <td className="px-3 py-1.5 text-right text-text-secondary">{formatCompact(trace.totalInputTokens + trace.totalOutputTokens)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-sm text-text-tertiary">{t('analytics.noData')}</p>
+        )}
+      </Section>
+
+      {/* Index section */}
       <Section icon={<Database size={20} />} title={t('settings.indexSection')} delay={0.05}>
         {/* Stats grid */}
         <div className="mb-5 grid grid-cols-3 gap-3">
@@ -1815,10 +2150,8 @@ export function SettingsPage() {
           </div>
         )}
       </Section>
-      )}
 
-      {/* ── Tab: Privacy ───────────────────────────────────────────── */}
-      {activeTab === 'privacy' && (
+      {/* Privacy section */}
       <Section icon={<Shield size={20} />} title={t('settings.privacySection')} delay={0.1}>
         {privacyConfig && (
           <div className="space-y-6">
@@ -2061,10 +2394,13 @@ export function SettingsPage() {
           </div>
         )}
       </Section>
+      </>
       )}
 
-      {/* ── Tab: OCR ──────────────────────────────────────────────── */}
-      {activeTab === 'ocr' && (
+      {/* ── Tab: Media Processing ─────────────────────────────────── */}
+      {activeTab === 'media' && (
+      <>
+      {/* OCR section */}
       <Section icon={<ScanLine size={20} />} title={t('settings.ocrSection')} delay={0.03}>
         {ocrConfig && (
           <div className="space-y-5">
@@ -2173,11 +2509,9 @@ export function SettingsPage() {
           </div>
         )}
       </Section>
-      )}
 
-      {/* ── Tab: Video ─────────────────────────────────────────── */}
-      {activeTab === 'video' && (
-      <Section icon={<Film size={20} />} title={t('settings.videoSection')} delay={0.03}>
+      {/* Video section */}
+      <Section icon={<Film size={20} />} title={t('settings.videoSection')} delay={0.06}>
         {videoConfig ? (
           <div className="space-y-5">
             {/* Enable toggle */}
@@ -2210,6 +2544,11 @@ export function SettingsPage() {
                   <CheckCircle size={12} className="text-success" />
                   {t('settings.videoFfmpegAvailable')}
                 </Badge>
+              ) : ffmpegDownloading ? (
+                <Badge variant="default" className="gap-1">
+                  <Loader2 size={12} className="animate-spin" />
+                  {t('settings.videoFfmpegDownloading')}
+                </Badge>
               ) : (
                 <Badge variant="default" className="gap-1">
                   <XCircle size={12} className="text-danger" />
@@ -2217,10 +2556,30 @@ export function SettingsPage() {
                 </Badge>
               )}
             </div>
-            {ffmpegAvailable === false && (
+            {ffmpegDownloading && ffmpegProgress && (
+              <div className="space-y-1">
+                <div className="h-2 w-full overflow-hidden rounded-full bg-surface-3">
+                  <div
+                    className="h-full rounded-full bg-accent transition-all duration-300"
+                    style={{ width: `${Math.min(ffmpegProgress.progressPct, 100)}%` }}
+                  />
+                </div>
+                <p className="text-xs text-text-tertiary">{ffmpegProgress.status}</p>
+              </div>
+            )}
+            {ffmpegAvailable === false && !ffmpegDownloading && (
               <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/5 p-2">
                 <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />
-                <p className="text-xs text-warning">{t('settings.videoFfmpegHint')}</p>
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs text-warning">{t('settings.videoFfmpegHint')}</p>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={handleFfmpegDownload}
+                  >
+                    {t('settings.videoFfmpegDownload')}
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -2434,6 +2793,7 @@ export function SettingsPage() {
           </div>
         )}
       </Section>
+      </>
       )}
 
       {/* ── Tab: Extensions ────────────────────────────────────────── */}

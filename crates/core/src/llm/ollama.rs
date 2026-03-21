@@ -442,9 +442,10 @@ pub struct OllamaProvider {
 
 impl OllamaProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
+        let timeout = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .timeout(std::time::Duration::from_secs(timeout))
             .build()
             .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
 

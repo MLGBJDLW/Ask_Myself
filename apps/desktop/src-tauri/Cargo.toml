@@ -24,6 +24,6 @@ base64 = "0.22"
 rusqlite = { version = "0.32" }
 
 [features]
-default = ["custom-protocol"]
+default = ["custom-protocol", "video"]
 custom-protocol = ["tauri/custom-protocol"]
 video = ["ask-core/video"]

@@ -10,7 +10,7 @@ use crate::db::Database;
 use crate::error::CoreError;
 use crate::ingest;
 
-use super::{Tool, ToolDef, ToolResult};
+use super::{Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/reindex_document.json");
@@ -53,6 +53,10 @@ impl Tool for ReindexTool {
 
     fn parameters_schema(&self) -> serde_json::Value {
         ToolDef::from_json(&DEF, DEF_JSON).parameters.clone()
+    }
+
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::SourceManagement]
     }
 
     async fn execute(

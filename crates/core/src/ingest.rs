@@ -26,8 +26,26 @@ const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100 MB (text/docs)
 const MAX_VIDEO_FILE_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2 GB
 const MAX_AUDIO_FILE_SIZE: u64 = 500 * 1024 * 1024; // 500 MB
 
+/// Configurable file-size limits for ingestion.
+#[derive(Debug, Clone, Copy)]
+pub struct FileSizeLimits {
+    pub max_text: u64,
+    pub max_video: u64,
+    pub max_audio: u64,
+}
+
+impl Default for FileSizeLimits {
+    fn default() -> Self {
+        Self {
+            max_text: MAX_FILE_SIZE,
+            max_video: MAX_VIDEO_FILE_SIZE,
+            max_audio: MAX_AUDIO_FILE_SIZE,
+        }
+    }
+}
+
 /// Returns the appropriate file-size limit based on file extension.
-fn max_file_size_for_path(path: &Path) -> u64 {
+fn max_file_size_for_path(path: &Path, limits: &FileSizeLimits) -> u64 {
     match path
         .extension()
         .and_then(|e| e.to_str())
@@ -35,12 +53,12 @@ fn max_file_size_for_path(path: &Path) -> u64 {
         .as_deref()
     {
         Some("mp4" | "mkv" | "webm" | "avi" | "mov" | "flv" | "mpeg" | "mpg" | "wmv" | "m4v") => {
-            MAX_VIDEO_FILE_SIZE
+            limits.max_video
         }
         Some("mp3" | "wav" | "flac" | "aac" | "ogg" | "wma" | "m4a" | "opus") => {
-            MAX_AUDIO_FILE_SIZE
+            limits.max_audio
         }
-        _ => MAX_FILE_SIZE,
+        _ => limits.max_text,
     }
 }
 
@@ -140,6 +158,14 @@ fn scan_source_inner(
     on_progress: Option<&dyn Fn(ScanProgress)>,
 ) -> Result<IngestResult, CoreError> {
     let source = db.get_source(source_id)?;
+
+    // Load file size limits from app config.
+    let app_cfg = db.load_app_config().unwrap_or_default();
+    let file_limits = FileSizeLimits {
+        max_text: app_cfg.max_text_file_size,
+        max_video: app_cfg.max_video_file_size,
+        max_audio: app_cfg.max_audio_file_size,
+    };
 
     // Resolve privacy config: explicit > stored > default.
     let default_config;
@@ -252,7 +278,7 @@ fn scan_source_inner(
 
         // Skip files exceeding the size limit to avoid excessive memory usage.
         match std::fs::metadata(file_path) {
-            Ok(meta) if meta.len() > max_file_size_for_path(file_path) => {
+            Ok(meta) if meta.len() > max_file_size_for_path(file_path, &file_limits) => {
                 warn!(
                     "Skipping large file ({}MB): {}",
                     meta.len() / 1024 / 1024,
@@ -998,9 +1024,17 @@ pub fn ingest_single_file(
         )));
     }
 
+    // Load file size limits from app config.
+    let app_cfg = db.load_app_config().unwrap_or_default();
+    let file_limits = FileSizeLimits {
+        max_text: app_cfg.max_text_file_size,
+        max_video: app_cfg.max_video_file_size,
+        max_audio: app_cfg.max_audio_file_size,
+    };
+
     // Skip files exceeding the size limit.
     if let Ok(meta) = std::fs::metadata(path) {
-        if meta.len() > max_file_size_for_path(path) {
+        if meta.len() > max_file_size_for_path(path, &file_limits) {
             warn!(
                 "Skipping large file ({}MB): {}",
                 meta.len() / 1024 / 1024,

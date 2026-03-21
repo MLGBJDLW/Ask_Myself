@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::db::Database;
 use crate::error::CoreError;
 
-use super::{Tool, ToolDef, ToolResult};
+use super::{Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/edit_file.json");
@@ -172,6 +172,19 @@ impl Tool for EditFileTool {
 
     fn parameters_schema(&self) -> serde_json::Value {
         ToolDef::from_json(&DEF, DEF_JSON).parameters.clone()
+    }
+
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::FileSystem]
+    }
+
+    fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
+        true
+    }
+
+    fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("<unknown>");
+        Some(format!("Edit file: {path}"))
     }
 
     async fn execute(

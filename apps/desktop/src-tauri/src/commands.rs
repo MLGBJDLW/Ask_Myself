@@ -12,8 +12,9 @@ use crate::subagent_tool::{
 use ask_core::app_settings::AppConfig;
 use ask_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
-    CancellationToken,
+    CancellationToken, ConfirmationCallback,
 };
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use ask_core::conversation::memory::estimate_tokens;
 use ask_core::conversation::{
     AgentConfig as DbAgentConfig, Conversation, ConversationMessage, ConversationStats,
@@ -73,7 +74,8 @@ async fn sync_enabled_mcp_servers(
     manager: &mut ask_core::mcp::McpManager,
 ) -> Result<HashMap<String, String>, String> {
     let enabled_servers = db.get_enabled_mcp_servers().map_err(|e| e.to_string())?;
-    Ok(manager.sync_servers(&enabled_servers).await)
+    let app_cfg = db.load_app_config().unwrap_or_default();
+    Ok(manager.sync_servers(&enabled_servers, Some(app_cfg.mcp_call_timeout_secs)).await)
 }
 
 /// State for the file watcher.
@@ -1023,12 +1025,13 @@ fn parse_provider_type(s: &str) -> ProviderType {
 
 /// Convert a DB [`DbAgentConfig`] to a [`ProviderConfig`] suitable for
 /// [`create_provider`].
-fn db_config_to_provider_config(config: &DbAgentConfig) -> ProviderConfig {
+fn db_config_to_provider_config(config: &DbAgentConfig, timeout_secs: Option<u64>) -> ProviderConfig {
     ProviderConfig {
         provider_type: parse_provider_type(&config.provider),
         api_key: Some(config.api_key.clone()),
         base_url: config.base_url.clone(),
         org_id: None,
+        timeout_secs,
     }
 }
 
@@ -1345,10 +1348,10 @@ pub async fn compact_conversation_cmd(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No default agent config set.".to_string())?;
 
-    let provider_config = db_config_to_provider_config(&db_config);
+    let app_cfg = state.db.load_app_config().unwrap_or_default();
+    let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
     let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
 
-    let app_cfg = state.db.load_app_config().unwrap_or_default();
     let executor_config = ExecutorConfig {
         max_iterations: 1,
         system_prompt: build_system_prompt(Some(&conv.system_prompt), &[]),
@@ -1366,6 +1369,10 @@ pub async fn compact_conversation_cmd(
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
         tool_timeout_secs: Some(db_config.tool_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.tool_timeout_secs as u32)),
         agent_timeout_secs: Some(db_config.agent_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.agent_timeout_secs as u32)),
+        cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
+        dynamic_tool_visibility: true,
+        trace_enabled: true,
+        require_tool_confirmation: false,
     };
 
     let summarization_provider: Option<Box<dyn ask_core::llm::LlmProvider>> =
@@ -1375,6 +1382,7 @@ pub async fn compact_conversation_cmd(
                 api_key: Some(db_config.api_key.clone()),
                 base_url: db_config.base_url.clone(),
                 org_id: None,
+                timeout_secs: Some(app_cfg.llm_timeout_secs),
             };
             create_provider(summ_config).ok()
         } else {
@@ -1403,6 +1411,18 @@ pub async fn compact_conversation_cmd(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn search_conversations_cmd(
+    state: tauri::State<'_, AppState>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<ask_core::conversation::ConversationSearchResult>, String> {
+    state
+        .db
+        .search_conversations(&query, limit.unwrap_or(20))
+        .map_err(|e| e.to_string())
 }
 
 // ── Checkpoint Commands ─────────────────────────────────────────────────
@@ -1553,6 +1573,7 @@ pub async fn test_agent_connection_cmd(
         api_key: Some(config.api_key.clone()),
         base_url: config.base_url.clone(),
         org_id: None,
+        timeout_secs: None,
     };
     let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
     provider.health_check().await.map_err(|e| e.to_string())?;
@@ -1582,7 +1603,8 @@ pub async fn agent_chat_cmd(
         })?;
 
     // 2. Create LLM provider.
-    let provider_config = db_config_to_provider_config(&db_config);
+    let app_cfg = state.db.load_app_config().unwrap_or_default();
+    let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
     let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
 
     // 3. Load conversation history and convert to LLM messages.
@@ -1634,7 +1656,6 @@ pub async fn agent_chat_cmd(
     );
 
     // 6. Build executor config from DB config.
-    let app_cfg = state.db.load_app_config().unwrap_or_default();
     let executor_config = ExecutorConfig {
         max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(10),
         system_prompt,
@@ -1660,9 +1681,39 @@ pub async fn agent_chat_cmd(
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
         tool_timeout_secs: Some(db_config.tool_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.tool_timeout_secs as u32)),
         agent_timeout_secs: Some(db_config.agent_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.agent_timeout_secs as u32)),
+        cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
+        dynamic_tool_visibility: true,
+        trace_enabled: true,
+        require_tool_confirmation: app_cfg.confirm_destructive,
     };
 
-    // 6b. Create a separate summarization provider if configured.
+    // 6b. Build confirmation callback if enabled.
+    let confirmation_cb: Option<ConfirmationCallback> = if app_cfg.confirm_destructive {
+        let dialog_handle = app_handle.clone();
+        Some(Arc::new(move |message: String| {
+            let handle = dialog_handle.clone();
+            Box::pin(async move {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                handle
+                    .dialog()
+                    .message(&message)
+                    .title("Confirm Tool Execution")
+                    .kind(MessageDialogKind::Warning)
+                    .buttons(MessageDialogButtons::OkCancelCustom("Allow".into(), "Deny".into()))
+                    .show(move |confirmed| {
+                        let _ = tx.send(confirmed);
+                    });
+                match tokio::time::timeout(Duration::from_secs(30), rx).await {
+                    Ok(Ok(confirmed)) => confirmed,
+                    _ => true, // auto-approve on timeout / channel error
+                }
+            })
+        }))
+    } else {
+        None
+    };
+
+    // 6c. Create a separate summarization provider if configured.
     let summarization_provider: Option<Box<dyn ask_core::llm::LlmProvider>> =
         if let Some(ref summ_provider_name) = db_config.summarization_provider {
             let summ_config = ProviderConfig {
@@ -1670,6 +1721,7 @@ pub async fn agent_chat_cmd(
                 api_key: Some(db_config.api_key.clone()),
                 base_url: db_config.base_url.clone(),
                 org_id: None,
+                timeout_secs: Some(app_cfg.llm_timeout_secs),
             };
             create_provider(summ_config).ok()
         } else if db_config.summarization_model.is_some() {
@@ -1769,6 +1821,7 @@ pub async fn agent_chat_cmd(
     let conv_id = conversation_id.clone();
     let handle = app_handle.clone();
     let assistant_sort_order = next_sort_order + 1;
+    let db_config_for_extraction = db_config.clone();
 
     let cancel_token = CancellationToken::new();
     let cancel_token_clone = cancel_token.clone();
@@ -1796,6 +1849,9 @@ pub async fn agent_chat_cmd(
         // using incrementing sort_order starting at `assistant_sort_order`.
         let mut executor =
             AgentExecutor::new(provider, tools, executor_config).with_cancel_token(cancel_token);
+        if let Some(cb) = confirmation_cb {
+            executor = executor.with_confirmation_callback(cb);
+        }
         if let Some(summ_provider) = summarization_provider {
             executor = executor.with_summarization_provider(summ_provider);
         }
@@ -1841,6 +1897,48 @@ pub async fn agent_chat_cmd(
         // Repair orphaned tool_calls in DB after timeout or error.
         if !matches!(result, Ok(Ok(_))) {
             repair_orphaned_tool_calls(&db, &conv_id);
+        }
+
+        // Auto memory extraction (background, best-effort).
+        if matches!(result, Ok(Ok(_))) {
+            let app_cfg = db.load_app_config().unwrap_or_default();
+            if app_cfg.auto_memory_extraction {
+                // Determine the model: prefer summarization model, fall back to main.
+                let extract_model = db_config_for_extraction.summarization_model
+                    .as_deref()
+                    .unwrap_or(&db_config_for_extraction.model);
+                // Build a provider for extraction (reuse summarization provider config or main).
+                let extract_provider_config = if let Some(ref sp) = db_config_for_extraction.summarization_provider {
+                    ProviderConfig {
+                        provider_type: parse_provider_type(sp),
+                        api_key: Some(db_config_for_extraction.api_key.clone()),
+                        base_url: db_config_for_extraction.base_url.clone(),
+                        org_id: None,
+                        timeout_secs: Some(app_cfg.llm_timeout_secs),
+                    }
+                } else {
+                    ProviderConfig {
+                        provider_type: parse_provider_type(&db_config_for_extraction.provider),
+                        api_key: Some(db_config_for_extraction.api_key.clone()),
+                        base_url: db_config_for_extraction.base_url.clone(),
+                        org_id: None,
+                        timeout_secs: Some(app_cfg.llm_timeout_secs),
+                    }
+                };
+                if let Ok(extract_llm) = create_provider(extract_provider_config) {
+                    match ask_core::personalization::auto_extract_and_save(
+                        &db, &conv_id, extract_llm.as_ref(), extract_model,
+                    ).await {
+                        Ok(n) if n > 0 => {
+                            info!("Auto-extracted {n} memories from conversation {conv_id}");
+                        }
+                        Err(e) => {
+                            warn!("Auto memory extraction failed for {conv_id}: {e}");
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
     });
 
@@ -1994,16 +2092,88 @@ pub fn check_ffmpeg_cmd(config: ask_core::video::VideoConfig) -> Result<bool, St
 
 #[cfg(feature = "video")]
 #[tauri::command]
+pub async fn download_ffmpeg_cmd(
+    app_handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let data_dir = app_handle
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("Failed to get data dir: {e}"))?;
+    let db = state.db.clone();
+
+    let path = tokio::task::spawn_blocking(move || {
+        ask_core::video::download_ffmpeg(&data_dir, |progress| {
+            let _ = app_handle.emit("ffmpeg:download-progress", &progress);
+        })
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))??;
+
+    let path_str = path.to_string_lossy().to_string();
+
+    // Auto-save ffmpeg path to config
+    let mut config = db.load_video_config().map_err(|e| e.to_string())?;
+    config.ffmpeg_path = Some(path_str.clone());
+    db.save_video_config(&config).map_err(|e| e.to_string())?;
+
+    Ok(path_str)
+}
+
+#[cfg(feature = "video")]
+#[tauri::command]
 pub fn delete_whisper_model_cmd(state: tauri::State<'_, AppState>) -> Result<(), String> {
     if state.whisper_busy.load(Ordering::SeqCst) {
         return Err("Cannot delete model while transcription is in progress".into());
     }
     let config = state.db.load_video_config().map_err(|e| e.to_string())?;
-    let model_path = std::path::Path::new(&config.model_path).join(config.whisper_model.filename());
-    if model_path.exists() {
-        std::fs::remove_file(&model_path).map_err(|e| format!("Failed to delete model: {e}"))?;
-    }
-    Ok(())
+    ask_core::video::delete_whisper_model(&config).map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "video")]
+#[tauri::command]
+pub async fn transcribe_audio_buffer_cmd(
+    audio_data: Vec<u8>,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let db = state.db.clone();
+    let whisper_busy = state.whisper_busy.clone();
+
+    tokio::task::spawn_blocking(move || {
+        if whisper_busy.load(Ordering::SeqCst) {
+            return Err("Transcription already in progress".into());
+        }
+
+        let config = db.load_video_config().map_err(|e| e.to_string())?;
+
+        let temp_dir = std::env::temp_dir().join("ask-myself-voice");
+        std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+        let wav_path = temp_dir.join(format!("voice-{}.wav", Uuid::new_v4()));
+        std::fs::write(&wav_path, &audio_data).map_err(|e| e.to_string())?;
+
+        whisper_busy.store(true, Ordering::SeqCst);
+        struct Guard(Arc<AtomicBool>, PathBuf);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+                let _ = std::fs::remove_file(&self.1);
+            }
+        }
+        let _guard = Guard(whisper_busy, wav_path.clone());
+
+        let segments = ask_core::video::transcribe_audio(&wav_path, &config)
+            .map_err(|e| e.to_string())?;
+
+        let text = segments
+            .iter()
+            .map(|s| s.text.trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        Ok(text)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 #[cfg(feature = "video")]
@@ -2304,8 +2474,9 @@ pub async fn test_mcp_server_cmd(
         .ok_or_else(|| format!("MCP server {id} not found"))?;
     let mut manager = mcp_state.manager.lock().await;
     // connect_server stores the client so list_mcp_tools_cmd can reuse it.
+    let app_cfg = state.db.load_app_config().unwrap_or_default();
     let tools = manager
-        .connect_server(&server)
+        .connect_server(&server, Some(app_cfg.mcp_call_timeout_secs))
         .await
         .map_err(|e| e.to_string())?;
     // For built-in managed servers that aren't enabled, disconnect after
@@ -2343,7 +2514,7 @@ pub async fn test_mcp_server_direct_cmd(
     };
     let mut manager = mcp_state.manager.lock().await;
     let tools = manager
-        .connect_server(&server)
+        .connect_server(&server, None)
         .await
         .map_err(|e| e.to_string())?;
     manager.disconnect_server("__test__").await.ok();
@@ -2368,8 +2539,29 @@ pub async fn list_mcp_tools_cmd(
         .into_iter()
         .find(|s| s.id == server_id)
         .ok_or_else(|| format!("MCP server {server_id} not found"))?;
+    let app_cfg = state.db.load_app_config().unwrap_or_default();
     manager
-        .connect_server(&server)
+        .connect_server(&server, Some(app_cfg.mcp_call_timeout_secs))
         .await
+        .map_err(|e| e.to_string())
+}
+
+// ── Agent Trace Analytics ──────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_trace_summary(
+    state: tauri::State<'_, AppState>,
+) -> Result<ask_core::trace::TraceSummary, String> {
+    state.db.get_trace_summary().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_recent_traces(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<ask_core::trace::AgentTrace>, String> {
+    state
+        .db
+        .get_recent_traces(limit.unwrap_or(20))
         .map_err(|e| e.to_string())
 }

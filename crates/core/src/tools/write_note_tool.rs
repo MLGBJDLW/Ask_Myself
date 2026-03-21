@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::db::Database;
 use crate::error::CoreError;
 
-use super::{Tool, ToolDef, ToolResult};
+use super::{Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/write_note.json");
@@ -77,6 +77,10 @@ impl Tool for WriteNoteTool {
 
     fn parameters_schema(&self) -> serde_json::Value {
         ToolDef::from_json(&DEF, DEF_JSON).parameters.clone()
+    }
+
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::FileSystem]
     }
 
     async fn execute(

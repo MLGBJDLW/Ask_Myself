@@ -9,7 +9,7 @@ use crate::db::Database;
 use crate::error::CoreError;
 use crate::sources::CreateSourceInput;
 
-use super::{Tool, ToolDef, ToolResult};
+use super::{Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/manage_source.json");
@@ -35,6 +35,23 @@ impl Tool for ManageSourceTool {
 
     fn parameters_schema(&self) -> serde_json::Value {
         ToolDef::from_json(&DEF, DEF_JSON).parameters.clone()
+    }
+
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::SourceManagement]
+    }
+
+    fn requires_confirmation(&self, args: &serde_json::Value) -> bool {
+        args.get("action").and_then(|v| v.as_str()) == Some("remove")
+    }
+
+    fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
+        if args.get("action").and_then(|v| v.as_str()) == Some("remove") {
+            let id = args.get("source_id").and_then(|v| v.as_str()).unwrap_or("<unknown>");
+            Some(format!("Remove source: {id}"))
+        } else {
+            None
+        }
     }
 
     async fn execute(

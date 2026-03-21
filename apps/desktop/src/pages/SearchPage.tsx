@@ -18,6 +18,7 @@ import {
   Layers,
   FolderOpen,
   ExternalLink,
+  MessageSquare,
 } from 'lucide-react';
 import { Logo } from '../components/Logo';
 import { toast } from 'sonner';
@@ -31,6 +32,7 @@ import type {
   SearchFilters,
   IndexStats,
 } from '../types';
+import type { ConversationSearchResult } from '../types/conversation';
 import type { FileType } from '../types/document';
 import { EvidenceCardComponent } from '../components/EvidenceCard';
 import { Input } from '../components/ui/Input';
@@ -97,6 +99,12 @@ export function SearchPage() {
   const [newPlaybookTitle, setNewPlaybookTitle] = useState('');
   const [citationNote, setCitationNote] = useState('');
   const [saveLoading, setSaveLoading] = useState(false);
+
+  // ── Search tab ────────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<'kb' | 'conversations'>('kb');
+  const [convResults, setConvResults] = useState<ConversationSearchResult[]>([]);
+  const [convLoading, setConvLoading] = useState(false);
+  const [convQuery, setConvQuery] = useState('');
 
   // 鈹€鈹€ Refs 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const inputRef = useRef<HTMLInputElement>(null);
@@ -257,6 +265,21 @@ export function SearchPage() {
       setLoading(false);
     }
   };
+
+  // ── Conversation search handler ───────────────────────────────────
+  const handleConvSearch = useCallback(async (text?: string) => {
+    const q = (text ?? convQuery).trim();
+    if (!q) return;
+    setConvLoading(true);
+    try {
+      const results = await api.searchConversations(q, 20);
+      setConvResults(results);
+    } catch (e) {
+      toast.error(`${t('search.searchError')}: ${String(e)}`);
+    } finally {
+      setConvLoading(false);
+    }
+  }, [convQuery, t]);
 
   // 鈹€鈹€ Feedback handler 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const handleFeedback = async (
@@ -566,6 +589,117 @@ export function SearchPage() {
           </Tooltip>
         </div>
       </div>
+
+      {/* ── Tab bar: Knowledge Base / Conversations ── */}
+      <div className="mb-4 flex items-center gap-1 border-b border-border">
+        <button
+          onClick={() => setActiveTab('kb')}
+          className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors duration-fast ${
+            activeTab === 'kb'
+              ? 'border-accent text-accent'
+              : 'border-transparent text-text-tertiary hover:text-text-secondary'
+          }`}
+        >
+          <Database size={13} />
+          {t('search.knowledgeBase')}
+        </button>
+        <button
+          onClick={() => setActiveTab('conversations')}
+          className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors duration-fast ${
+            activeTab === 'conversations'
+              ? 'border-accent text-accent'
+              : 'border-transparent text-text-tertiary hover:text-text-secondary'
+          }`}
+        >
+          <MessageSquare size={13} />
+          {t('search.conversationsTab')}
+        </button>
+      </div>
+
+      {activeTab === 'conversations' ? (
+      /* ── Conversations search tab ── */
+      <div>
+        <div className="mb-4 flex gap-2">
+          <Input
+            icon={<Search size={16} />}
+            value={convQuery}
+            onChange={(e) => setConvQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleConvSearch();
+            }}
+            placeholder={t('search.conversationsPlaceholder')}
+            className="h-11"
+          />
+          <Button
+            onClick={() => handleConvSearch()}
+            loading={convLoading}
+            icon={<Search size={14} />}
+            size="lg"
+          >
+            {t('nav.search')}
+          </Button>
+        </div>
+
+        {convLoading && (
+          <div className="space-y-3">
+            <CardSkeleton />
+            <CardSkeleton />
+          </div>
+        )}
+
+        {!convLoading && convResults.length > 0 && (
+          <>
+            <div className="mb-3 text-xs text-text-tertiary">
+              {t('search.conversationsResultCount', { count: convResults.length })}
+            </div>
+            <div className="space-y-2">
+              {convResults.map((r, i) => (
+                <button
+                  key={`${r.conversationId}-${i}`}
+                  onClick={() => navigate('/chat', { state: { conversationId: r.conversationId } })}
+                  className="w-full text-left rounded-lg border border-border bg-surface-1 p-3 hover:bg-surface-2 transition-colors duration-fast"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold text-text-primary truncate">
+                      {r.conversationTitle || r.conversationId.slice(0, 8)}
+                    </span>
+                    <span className="text-[10px] text-text-tertiary shrink-0 ml-2">
+                      {new Date(r.timestamp).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <Badge variant="default" className="shrink-0 text-[10px] mt-0.5">
+                      {r.messageRole}
+                    </Badge>
+                    <p className="text-xs text-text-secondary line-clamp-2">
+                      {r.messagePreview}
+                    </p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {!convLoading && convQuery.trim() && convResults.length === 0 && (
+          <EmptyState
+            icon={<MessageSquare size={32} />}
+            title={t('search.conversationsNoResults')}
+            description={t('search.conversationsPlaceholder')}
+          />
+        )}
+
+        {!convLoading && !convQuery.trim() && convResults.length === 0 && (
+          <EmptyState
+            icon={<MessageSquare size={32} />}
+            title={t('search.conversationsTab')}
+            description={t('search.conversationsPlaceholder')}
+          />
+        )}
+      </div>
+      ) : (
+      /* ── Knowledge Base search tab ── */
+      <>
 
       {/* 鈹€鈹€ Mode toggle + filters row 鈹€鈹€ */}
       <div className="mb-6 flex items-center justify-between gap-3">
@@ -953,6 +1087,9 @@ export function SearchPage() {
           title={t('search.initialTitle')}
           description={t('search.initialDesc')}
         />
+      )}
+
+      </>
       )}
 
       {/* 鈹€鈹€ Save to Playbook modal 鈹€鈹€ */}

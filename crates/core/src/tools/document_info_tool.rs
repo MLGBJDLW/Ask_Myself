@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::db::Database;
 use crate::error::CoreError;
 
-use super::{ensure_source_in_scope, Tool, ToolDef, ToolResult};
+use super::{ensure_source_in_scope, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/get_document_info.json");
@@ -35,6 +35,10 @@ impl Tool for GetDocumentInfoTool {
 
     fn parameters_schema(&self) -> serde_json::Value {
         ToolDef::from_json(&DEF, DEF_JSON).parameters.clone()
+    }
+
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::DocumentAnalysis]
     }
 
     async fn execute(

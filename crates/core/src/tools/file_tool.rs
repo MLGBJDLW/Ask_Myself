@@ -10,7 +10,7 @@ use crate::db::Database;
 use crate::error::CoreError;
 use crate::privacy;
 
-use super::{scoped_sources, Tool, ToolDef, ToolResult};
+use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/read_file.json");
@@ -106,6 +106,10 @@ impl Tool for FileTool {
 
     fn parameters_schema(&self) -> serde_json::Value {
         ToolDef::from_json(&DEF, DEF_JSON).parameters.clone()
+    }
+
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::FileSystem]
     }
 
     async fn execute(

@@ -21,6 +21,11 @@ export interface VideoDownloadProgress {
   totalBytes: number | null;
 }
 
+export interface FfmpegDownloadProgress {
+  progressPct: number;
+  status: string;
+}
+
 export interface TranscriptChunk {
   text: string;
   startMs: number | null;

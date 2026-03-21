@@ -255,6 +255,26 @@ body {
   opacity: 0.82;
 }
 
+/* ── Voice recording animation ───────────────────────────────────── */
+.voice-btn-recording {
+  animation: voice-pulse 1.5s ease-in-out infinite;
+}
+@keyframes voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+}
+.recording-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  animation: voice-blink 1s ease-in-out infinite;
+}
+@keyframes voice-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 [cmdk-group-heading] {
   padding: 0.375rem 0.5rem;
   font-size: 0.75rem;

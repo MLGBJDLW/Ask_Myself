@@ -68,6 +68,9 @@ export interface AgentConfig {
   subagentTokenBudget?: number | null;
   toolTimeoutSecs?: number | null;
   agentTimeoutSecs?: number | null;
+  dynamicToolVisibility?: boolean | null;
+  traceEnabled?: boolean | null;
+  requireToolConfirmation?: boolean | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -99,11 +102,25 @@ export interface SaveAgentConfigInput {
   subagentMaxCallsPerTurn?: number | null;
   /** Soft token budget for delegated workers and judges per turn. */
   subagentTokenBudget?: number | null;
+  dynamicToolVisibility?: boolean | null;
+  traceEnabled?: boolean | null;
+  requireToolConfirmation?: boolean | null;
 }
 
 export interface AppConfig {
   toolTimeoutSecs: number;
   agentTimeoutSecs: number;
+  cacheTtlHours: number;
+  defaultSearchLimit: number;
+  minSearchSimilarity: number;
+  maxTextFileSize: number;
+  maxVideoFileSize: number;
+  maxAudioFileSize: number;
+  llmTimeoutSecs: number;
+  mcpCallTimeoutSecs: number;
+  dynamicToolVisibility?: boolean;
+  traceEnabled?: boolean;
+  confirmDestructive?: boolean;
 }
 
 export type ProviderType =
@@ -150,6 +167,15 @@ export interface ConversationStats {
   totalMessages: number;
   oldestConversation: string | null;
   dbSizeBytes: number;
+}
+
+export interface ConversationSearchResult {
+  conversationId: string;
+  conversationTitle: string | null;
+  messagePreview: string;
+  messageRole: string;
+  timestamp: string;
+  relevanceScore: number;
 }
 
 export interface Checkpoint {

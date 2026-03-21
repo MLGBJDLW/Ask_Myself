@@ -31,6 +31,7 @@ impl Default for WhisperModel {
 }
 
 impl WhisperModel {
+    /// Legacy GGML filename (kept for backward compatibility).
     pub fn filename(&self) -> &'static str {
         match self {
             Self::Tiny => "ggml-tiny.bin",
@@ -42,46 +43,73 @@ impl WhisperModel {
         }
     }
 
-    pub fn download_url(&self) -> &'static str {
+    /// HuggingFace repo ID for downloading model files.
+    pub fn repo_id(&self) -> &'static str {
         match self {
-            Self::Tiny => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
-            Self::Base => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
-            Self::Small => {
-                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
-            }
-            Self::Medium => {
-                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin"
-            }
+            Self::Tiny => "openai/whisper-tiny",
+            Self::Base => "openai/whisper-base",
+            Self::Small => "openai/whisper-small",
+            Self::Medium => "openai/whisper-medium",
+            Self::Large => "openai/whisper-large-v3",
+            Self::LargeTurbo => "openai/whisper-large-v3-turbo",
+        }
+    }
+
+    /// Local directory name for storing model files.
+    pub fn dir_name(&self) -> &'static str {
+        match self {
+            Self::Tiny => "whisper-tiny",
+            Self::Base => "whisper-base",
+            Self::Small => "whisper-small",
+            Self::Medium => "whisper-medium",
+            Self::Large => "whisper-large-v3",
+            Self::LargeTurbo => "whisper-large-v3-turbo",
+        }
+    }
+
+    /// Files needed to run this model (config, tokenizer, and weights).
+    pub fn required_files(&self) -> Vec<&'static str> {
+        let mut files = vec!["config.json", "tokenizer.json"];
+        match self {
             Self::Large => {
-                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin"
+                files.push("model-00001-of-00002.safetensors");
+                files.push("model-00002-of-00002.safetensors");
             }
-            Self::LargeTurbo => {
-                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
+            _ => {
+                files.push("model.safetensors");
             }
         }
+        files
+    }
+
+    /// Weight file(s) only (safetensors).
+    pub fn weight_files(&self) -> Vec<&'static str> {
+        match self {
+            Self::Large => vec![
+                "model-00001-of-00002.safetensors",
+                "model-00002-of-00002.safetensors",
+            ],
+            _ => vec!["model.safetensors"],
+        }
+    }
+
+    /// HuggingFace download URLs for all required files.
+    pub fn download_urls(&self) -> Vec<(&'static str, String)> {
+        let repo_id = self.repo_id();
+        self.required_files()
+            .iter()
+            .map(|f| (*f, format!("https://huggingface.co/{repo_id}/resolve/main/{f}")))
+            .collect()
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Tiny => "Tiny (~39 MB)",
-            Self::Base => "Base (~142 MB)",
-            Self::Small => "Small (~466 MB)",
-            Self::Medium => "Medium (~1.5 GB)",
-            Self::Large => "Large v3 (~3.1 GB)",
-            Self::LargeTurbo => "Large v3 Turbo (~1.6 GB)",
-        }
-    }
-
-    /// Expected file size in bytes for basic download integrity verification.
-    /// Returns `None` for unknown models (download proceeds but logs a warning).
-    pub fn expected_file_size(&self) -> Option<u64> {
-        match self {
-            Self::Tiny => Some(39_055_616),
-            Self::Base => Some(147_951_465),
-            Self::Small => Some(487_601_967),
-            Self::Medium => Some(1_533_774_081),
-            Self::Large => Some(3_095_033_483),
-            Self::LargeTurbo => Some(1_624_938_331),
+            Self::Tiny => "Tiny (~151 MB)",
+            Self::Base => "Base (~290 MB)",
+            Self::Small => "Small (~967 MB)",
+            Self::Medium => "Medium (~3.1 GB)",
+            Self::Large => "Large v3 (~6.2 GB)",
+            Self::LargeTurbo => "Large v3 Turbo (~3.1 GB)",
         }
     }
 }
@@ -448,7 +476,7 @@ pub fn extract_keyframes(
     );
 
     if let Err(e) = result {
-        log::warn!("Scene detection failed, will fall back to fixed-interval: {e}");
+        tracing::warn!("Scene detection failed, will fall back to fixed-interval: {e}");
         return Ok(Vec::new());
     }
 
@@ -682,85 +710,487 @@ fn parse_srt_time(s: &str) -> Option<i64> {
 }
 
 // ═══════════════════════════════════════════
-// Whisper Transcription
+// Whisper Transcription (candle-transformers)
 // ═══════════════════════════════════════════
 
-/// Transcribe a WAV file using whisper-rs.
+/// Compute mel filterbank coefficients (matches librosa/whisper convention).
+#[cfg(feature = "video")]
+fn compute_mel_filters(sample_rate: f64, n_fft: usize, n_mels: usize) -> Vec<f32> {
+    let f_min = 0.0f64;
+    let f_max = sample_rate / 2.0;
+    let n_freqs = n_fft / 2 + 1;
+
+    let hz_to_mel = |hz: f64| -> f64 { 2595.0 * (1.0 + hz / 700.0).log10() };
+    let mel_to_hz = |mel: f64| -> f64 { 700.0 * (10.0f64.powf(mel / 2595.0) - 1.0) };
+
+    let min_mel = hz_to_mel(f_min);
+    let max_mel = hz_to_mel(f_max);
+
+    // n_mels + 2 equally spaced points in mel-frequency domain
+    let n_points = n_mels + 2;
+    let mel_points: Vec<f64> = (0..n_points)
+        .map(|i| min_mel + (max_mel - min_mel) * i as f64 / (n_points - 1) as f64)
+        .collect();
+    let hz_points: Vec<f64> = mel_points.iter().map(|&m| mel_to_hz(m)).collect();
+
+    // Linear frequency bins
+    let fft_freqs: Vec<f64> = (0..n_freqs)
+        .map(|i| f_min + (f_max - f_min) * i as f64 / (n_freqs - 1) as f64)
+        .collect();
+
+    let mut filters = vec![0.0f32; n_mels * n_freqs];
+    for i in 0..n_mels {
+        let f_left = hz_points[i];
+        let f_center = hz_points[i + 1];
+        let f_right = hz_points[i + 2];
+        // Slaney-style mel normalization
+        let enorm = 2.0 / (f_right - f_left);
+        for j in 0..n_freqs {
+            let freq = fft_freqs[j];
+            let lower = (freq - f_left) / (f_center - f_left);
+            let upper = (f_right - freq) / (f_right - f_center);
+            let val = f64::max(0.0, f64::min(lower, upper));
+            filters[i * n_freqs + j] = (val * enorm) as f32;
+        }
+    }
+    filters
+}
+
+/// Look up a special token id by its string representation.
+#[cfg(feature = "video")]
+fn whisper_token_id(tokenizer: &tokenizers::Tokenizer, token: &str) -> Result<u32, CoreError> {
+    tokenizer
+        .token_to_id(token)
+        .ok_or_else(|| CoreError::Video(format!("Whisper token not found: {token}")))
+}
+
+/// Apply whisper timestamp constraint rules during autoregressive decoding.
+///
+/// Ensures timestamp tokens appear in non-decreasing pairs and that the first
+/// generated token is always a timestamp.
+#[cfg(feature = "video")]
+fn apply_timestamp_rules(
+    logits: &candle_core::Tensor,
+    tokens: &[u32],
+    no_timestamps_token: u32,
+    eot_token: u32,
+    vocab_size: u32,
+    sample_begin: usize,
+) -> Result<candle_core::Tensor, CoreError> {
+    let device = logits.device().clone();
+    let timestamp_begin = no_timestamps_token + 1;
+
+    let sampled_tokens = if tokens.len() > sample_begin {
+        &tokens[sample_begin..]
+    } else {
+        &[]
+    };
+
+    let mut masks: Vec<candle_core::Tensor> = Vec::new();
+    let mut mask_buf = vec![0.0f32; vocab_size as usize];
+
+    if !sampled_tokens.is_empty() {
+        let last_was_ts = sampled_tokens
+            .last()
+            .map(|&t| t >= timestamp_begin)
+            .unwrap_or(false);
+        let pen_was_ts = sampled_tokens.len() >= 2
+            && sampled_tokens[sampled_tokens.len() - 2] >= timestamp_begin;
+
+        if last_was_ts {
+            if pen_was_ts {
+                // Two timestamps in a row → force non-timestamp
+                for i in 0..vocab_size {
+                    mask_buf[i as usize] = if i >= timestamp_begin {
+                        f32::NEG_INFINITY
+                    } else {
+                        0.0
+                    };
+                }
+            } else {
+                // Single timestamp → force another timestamp or EOT
+                for i in 0..vocab_size {
+                    mask_buf[i as usize] = if i < eot_token {
+                        f32::NEG_INFINITY
+                    } else {
+                        0.0
+                    };
+                }
+            }
+            masks.push(
+                candle_core::Tensor::new(mask_buf.as_slice(), &device)
+                    .map_err(|e| CoreError::Video(format!("Mask tensor: {e}")))?,
+            );
+        }
+
+        // Non-decreasing timestamp constraint
+        let ts_tokens: Vec<u32> = sampled_tokens
+            .iter()
+            .filter(|&&t| t >= timestamp_begin)
+            .cloned()
+            .collect();
+        if !ts_tokens.is_empty() {
+            let ts_last = if last_was_ts && !pen_was_ts {
+                *ts_tokens.last().unwrap()
+            } else {
+                ts_tokens.last().unwrap() + 1
+            };
+            for i in 0..vocab_size {
+                mask_buf[i as usize] = if i >= timestamp_begin && i < ts_last {
+                    f32::NEG_INFINITY
+                } else {
+                    0.0
+                };
+            }
+            masks.push(
+                candle_core::Tensor::new(mask_buf.as_slice(), &device)
+                    .map_err(|e| CoreError::Video(format!("Mask tensor: {e}")))?,
+            );
+        }
+    }
+
+    // Force initial timestamp at the start of decoding
+    if tokens.len() == sample_begin {
+        for i in 0..vocab_size {
+            mask_buf[i as usize] = if i < timestamp_begin {
+                f32::NEG_INFINITY
+            } else {
+                0.0
+            };
+        }
+        masks.push(
+            candle_core::Tensor::new(mask_buf.as_slice(), &device)
+                .map_err(|e| CoreError::Video(format!("Mask tensor: {e}")))?,
+        );
+    }
+
+    let mut result = logits.clone();
+    for mask in masks {
+        result = result
+            .broadcast_add(&mask)
+            .map_err(|e| CoreError::Video(format!("Apply mask: {e}")))?;
+    }
+
+    // Prefer timestamps when their combined probability exceeds any text token
+    let log_probs = candle_nn::ops::log_softmax(&result, 0)
+        .map_err(|e| CoreError::Video(format!("log_softmax: {e}")))?;
+    let ts_log_probs = log_probs
+        .narrow(
+            0,
+            timestamp_begin as usize,
+            vocab_size as usize - timestamp_begin as usize,
+        )
+        .map_err(|e| CoreError::Video(format!("narrow ts: {e}")))?;
+    let text_log_probs = log_probs
+        .narrow(0, 0, timestamp_begin as usize)
+        .map_err(|e| CoreError::Video(format!("narrow text: {e}")))?;
+
+    let ts_logprob = {
+        let max_val = ts_log_probs
+            .max(0)
+            .map_err(|e| CoreError::Video(format!("max ts: {e}")))?;
+        let shifted = ts_log_probs
+            .broadcast_sub(&max_val)
+            .map_err(|e| CoreError::Video(format!("sub: {e}")))?;
+        let sum_exp = shifted
+            .exp()
+            .map_err(|e| CoreError::Video(format!("exp: {e}")))?
+            .sum(0)
+            .map_err(|e| CoreError::Video(format!("sum: {e}")))?;
+        let log_sum = sum_exp
+            .log()
+            .map_err(|e| CoreError::Video(format!("log: {e}")))?;
+        max_val
+            .broadcast_add(&log_sum)
+            .map_err(|e| CoreError::Video(format!("add: {e}")))?
+            .to_scalar::<f32>()
+            .map_err(|e| CoreError::Video(format!("scalar: {e}")))?
+    };
+    let max_text_logprob: f32 = text_log_probs
+        .max(0)
+        .map_err(|e| CoreError::Video(format!("max text: {e}")))?
+        .to_scalar::<f32>()
+        .map_err(|e| CoreError::Video(format!("scalar: {e}")))?;
+
+    if ts_logprob > max_text_logprob {
+        for i in 0..vocab_size {
+            mask_buf[i as usize] = if i < timestamp_begin {
+                f32::NEG_INFINITY
+            } else {
+                0.0
+            };
+        }
+        let mask = candle_core::Tensor::new(mask_buf.as_slice(), &device)
+            .map_err(|e| CoreError::Video(format!("Mask tensor: {e}")))?;
+        result = result
+            .broadcast_add(&mask)
+            .map_err(|e| CoreError::Video(format!("Apply mask: {e}")))?;
+    }
+
+    Ok(result)
+}
+
+/// Transcribe a WAV file using candle-transformers Whisper.
 #[cfg(feature = "video")]
 pub fn transcribe_audio(
     wav_path: &Path,
     config: &VideoConfig,
 ) -> Result<Vec<TranscriptSegment>, CoreError> {
-    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+    use candle_core::{IndexOp, Tensor};
+    use candle_transformers::models::whisper::{self as m, audio, Config as WhisperConfig};
 
-    let model_path = Path::new(&config.model_path).join(config.whisper_model.filename());
-    if !model_path.exists() {
-        return Err(CoreError::Video(format!(
-            "Whisper model not found: {}. Please download it first.",
-            model_path.display()
-        )));
+    // Device — GPU requires candle "cuda" or "metal" features at compile time.
+    let device = candle_core::Device::Cpu;
+
+    // ── load model files ──────────────────────────────────────────────
+    let model_dir = Path::new(&config.model_path).join(config.whisper_model.dir_name());
+
+    let config_path = model_dir.join("config.json");
+    let whisper_config: WhisperConfig = serde_json::from_str(
+        &std::fs::read_to_string(&config_path)
+            .map_err(|e| CoreError::Video(format!("Failed to read whisper config: {e}")))?,
+    )
+    .map_err(|e| CoreError::Video(format!("Failed to parse whisper config: {e}")))?;
+
+    let tokenizer_path = model_dir.join("tokenizer.json");
+    let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
+        .map_err(|e| CoreError::Video(format!("Failed to load tokenizer: {e}")))?;
+
+    let weight_paths: Vec<PathBuf> = config
+        .whisper_model
+        .weight_files()
+        .iter()
+        .map(|f| model_dir.join(f))
+        .collect();
+
+    // SAFETY: model files are read-only after download and not modified while mapped.
+    let vb = unsafe {
+        candle_nn::VarBuilder::from_mmaped_safetensors(&weight_paths, m::DTYPE, &device)
     }
+    .map_err(|e| CoreError::Video(format!("Failed to load model weights: {e}")))?;
 
-    // Initialize Whisper context with GPU acceleration
-    let mut ctx_params = WhisperContextParameters::default();
-    ctx_params.use_gpu(config.use_gpu);
-    let ctx = WhisperContext::new_with_params(&model_path.to_string_lossy(), ctx_params)
-        .map_err(|e| CoreError::Video(format!("Failed to load Whisper model: {e}")))?;
+    let num_mel_bins = whisper_config.num_mel_bins;
+    let vocab_size = whisper_config.vocab_size;
+    let max_target_positions = whisper_config.max_target_positions;
+    let suppress_token_ids = whisper_config.suppress_tokens.clone();
 
-    // Read WAV audio data
+    let mut model = m::model::Whisper::load(&vb, whisper_config)
+        .map_err(|e| CoreError::Video(format!("Failed to build whisper model: {e}")))?;
+
+    // ── special tokens ────────────────────────────────────────────────
+    let sot_token = whisper_token_id(&tokenizer, m::SOT_TOKEN)?;
+    let eot_token = whisper_token_id(&tokenizer, m::EOT_TOKEN)?;
+    let transcribe_token = whisper_token_id(&tokenizer, m::TRANSCRIBE_TOKEN)?;
+    let translate_token = whisper_token_id(&tokenizer, m::TRANSLATE_TOKEN)?;
+    let no_timestamps_token = whisper_token_id(&tokenizer, m::NO_TIMESTAMPS_TOKEN)?;
+    let no_speech_token = m::NO_SPEECH_TOKENS
+        .iter()
+        .find_map(|t| whisper_token_id(&tokenizer, t).ok())
+        .ok_or_else(|| CoreError::Video("No-speech token not found in tokenizer".into()))?;
+
+    let language_token = if let Some(ref lang) = config.language {
+        Some(
+            whisper_token_id(&tokenizer, &format!("<|{lang}|>"))
+                .map_err(|_| CoreError::Video(format!("Unsupported language: {lang}")))?,
+        )
+    } else {
+        // Default to English when language is unset
+        whisper_token_id(&tokenizer, "<|en|>").ok()
+    };
+
+    let task_token = if config.translate_to_english {
+        translate_token
+    } else {
+        transcribe_token
+    };
+
+    // Number of preamble tokens before decoded content begins
+    let sample_begin = if language_token.is_some() { 3 } else { 2 };
+
+    // Suppress tokens mask (also suppress <|notimestamps|> since we want timestamps)
+    let suppress_mask: Vec<f32> = (0..vocab_size as u32)
+        .map(|i| {
+            if suppress_token_ids.contains(&i) || i == no_timestamps_token {
+                f32::NEG_INFINITY
+            } else {
+                0f32
+            }
+        })
+        .collect();
+    let suppress_mask = Tensor::new(suppress_mask.as_slice(), &device)
+        .map_err(|e| CoreError::Video(format!("Suppress mask tensor: {e}")))?;
+
+    // ── audio → mel spectrogram ───────────────────────────────────────
     let audio_data = read_wav_pcm(wav_path)?;
+    let mel_filters = compute_mel_filters(m::SAMPLE_RATE as f64, m::N_FFT, num_mel_bins);
+    let mel = audio::pcm_to_mel(&model.config, &audio_data, &mel_filters);
+    let mel_len = mel.len();
+    let mel = Tensor::from_vec(
+        mel,
+        (1, num_mel_bins, mel_len / num_mel_bins),
+        &device,
+    )
+    .map_err(|e| CoreError::Video(format!("Mel tensor: {e}")))?;
 
-    // Configure transcription parameters
-    let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-        beam_size: config.beam_size.max(1).min(16) as i32,
-        patience: 1.0,
-    });
-    if let Some(ref lang) = config.language {
-        params.set_language(Some(lang));
-    }
-    params.set_translate(config.translate_to_english);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-    params.set_token_timestamps(true);
+    // ── decode in 30-second chunks ────────────────────────────────────
+    let (_, _, content_frames) = mel
+        .dims3()
+        .map_err(|e| CoreError::Video(format!("Mel dims: {e}")))?;
 
-    // Run transcription
-    let mut state = ctx
-        .create_state()
-        .map_err(|e| CoreError::Video(format!("Failed to create Whisper state: {e}")))?;
-    state
-        .full(params, &audio_data)
-        .map_err(|e| CoreError::Video(format!("Whisper transcription failed: {e}")))?;
-
-    // Extract segments
-    let num_segments = state
-        .full_n_segments()
-        .map_err(|e| CoreError::Video(format!("Failed to get segment count: {e}")))?;
+    let sample_len = max_target_positions / 2;
+    let timestamp_begin = no_timestamps_token + 1;
+    let mut seek = 0;
     let mut segments = Vec::new();
 
-    for i in 0..num_segments {
-        let start_ms = state
-            .full_get_segment_t0(i)
-            .map_err(|e| CoreError::Video(format!("Failed to get segment start: {e}")))?
-            as i64
-            * 10;
-        let end_ms = state
-            .full_get_segment_t1(i)
-            .map_err(|e| CoreError::Video(format!("Failed to get segment end: {e}")))?
-            as i64
-            * 10;
-        let text = state
-            .full_get_segment_text(i)
-            .map_err(|e| CoreError::Video(format!("Failed to get segment text: {e}")))?;
+    while seek < content_frames {
+        let time_offset = (seek * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
+        let segment_size = usize::min(content_frames - seek, m::N_FRAMES);
+        let segment_duration = (segment_size * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
+        let mel_segment = mel
+            .narrow(2, seek, segment_size)
+            .map_err(|e| CoreError::Video(format!("Mel narrow: {e}")))?;
 
-        let text = text.trim().to_string();
-        if !text.is_empty() {
-            segments.push(TranscriptSegment {
-                start_ms,
-                end_ms,
-                text,
-            });
+        // Encode
+        let audio_features = model
+            .encoder
+            .forward(&mel_segment, true)
+            .map_err(|e| CoreError::Video(format!("Encoder forward: {e}")))?;
+
+        // Build initial token sequence: SOT [lang] task
+        let mut tokens = vec![sot_token];
+        if let Some(lt) = language_token {
+            tokens.push(lt);
         }
+        tokens.push(task_token);
+
+        // Autoregressive decoding with greedy search
+        for i in 0..sample_len {
+            let tokens_t = Tensor::new(tokens.as_slice(), &device)
+                .map_err(|e| CoreError::Video(format!("Token tensor: {e}")))?
+                .unsqueeze(0)
+                .map_err(|e| CoreError::Video(format!("Unsqueeze: {e}")))?;
+
+            let ys = model
+                .decoder
+                .forward(&tokens_t, &audio_features, i == 0)
+                .map_err(|e| CoreError::Video(format!("Decoder forward: {e}")))?;
+
+            // Check no-speech probability on first iteration
+            if i == 0 {
+                let first_logits = model
+                    .decoder
+                    .final_linear(&ys.i(..1).map_err(|e| CoreError::Video(format!("i: {e}")))?)
+                    .map_err(|e| CoreError::Video(format!("final_linear: {e}")))?
+                    .i(0)
+                    .map_err(|e| CoreError::Video(format!("i: {e}")))?
+                    .i(0)
+                    .map_err(|e| CoreError::Video(format!("i: {e}")))?;
+                let probs = candle_nn::ops::softmax(&first_logits, 0)
+                    .map_err(|e| CoreError::Video(format!("softmax: {e}")))?;
+                let no_speech_prob = probs
+                    .i(no_speech_token as usize)
+                    .map_err(|e| CoreError::Video(format!("i: {e}")))?
+                    .to_scalar::<f32>()
+                    .map_err(|e| CoreError::Video(format!("scalar: {e}")))?;
+                if no_speech_prob > m::NO_SPEECH_THRESHOLD as f32 {
+                    break; // skip silent segment
+                }
+            }
+
+            let (_, seq_len, _) = ys
+                .dims3()
+                .map_err(|e| CoreError::Video(format!("Decoder dims: {e}")))?;
+            let logits = model
+                .decoder
+                .final_linear(
+                    &ys.i((..1, seq_len - 1..))
+                        .map_err(|e| CoreError::Video(format!("Slice: {e}")))?,
+                )
+                .map_err(|e| CoreError::Video(format!("Final linear: {e}")))?
+                .i(0)
+                .map_err(|e| CoreError::Video(format!("i: {e}")))?
+                .i(0)
+                .map_err(|e| CoreError::Video(format!("i: {e}")))?;
+
+            // Apply timestamp rules + suppress tokens
+            let logits = apply_timestamp_rules(
+                &logits,
+                &tokens,
+                no_timestamps_token,
+                eot_token,
+                vocab_size as u32,
+                sample_begin,
+            )?;
+            let logits = logits
+                .broadcast_add(&suppress_mask)
+                .map_err(|e| CoreError::Video(format!("Suppress: {e}")))?;
+
+            // Greedy argmax
+            let logits_v: Vec<f32> = logits
+                .to_vec1()
+                .map_err(|e| CoreError::Video(format!("to_vec1: {e}")))?;
+            let next_token = logits_v
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.total_cmp(b))
+                .map(|(idx, _)| idx as u32)
+                .unwrap();
+
+            tokens.push(next_token);
+            if next_token == eot_token || tokens.len() > max_target_positions {
+                break;
+            }
+        }
+
+        // ── extract timestamped segments from token stream ────────────
+        let mut text_tokens: Vec<u32> = Vec::new();
+        let mut prev_ts_s = 0.0f64;
+
+        for &token in &tokens {
+            if token == sot_token || token == eot_token {
+                continue;
+            }
+            // Skip language / task preamble tokens
+            if Some(token) == language_token || token == task_token {
+                continue;
+            }
+            if token >= timestamp_begin {
+                let ts_s = (token - timestamp_begin) as f64 * 0.02;
+                if !text_tokens.is_empty() {
+                    let text = tokenizer
+                        .decode(&text_tokens, true)
+                        .map_err(|e| CoreError::Video(format!("Decode tokens: {e}")))?;
+                    let text = text.trim().to_string();
+                    if !text.is_empty() {
+                        segments.push(TranscriptSegment {
+                            start_ms: ((time_offset + prev_ts_s) * 1000.0) as i64,
+                            end_ms: ((time_offset + ts_s) * 1000.0) as i64,
+                            text,
+                        });
+                    }
+                    text_tokens.clear();
+                }
+                prev_ts_s = ts_s;
+            } else {
+                text_tokens.push(token);
+            }
+        }
+        // Trailing text without a closing timestamp
+        if !text_tokens.is_empty() {
+            let text = tokenizer
+                .decode(&text_tokens, true)
+                .map_err(|e| CoreError::Video(format!("Decode tokens: {e}")))?;
+            let text = text.trim().to_string();
+            if !text.is_empty() {
+                segments.push(TranscriptSegment {
+                    start_ms: ((time_offset + prev_ts_s) * 1000.0) as i64,
+                    end_ms: ((time_offset + segment_duration) * 1000.0) as i64,
+                    text,
+                });
+            }
+        }
+
+        seek += segment_size;
     }
 
     Ok(segments)
@@ -813,82 +1243,402 @@ fn read_wav_pcm(wav_path: &Path) -> Result<Vec<f32>, CoreError> {
 // Model Management
 // ═══════════════════════════════════════════
 
-/// Check if the selected Whisper model exists on disk.
+/// Check if all required Whisper model files exist on disk.
 pub fn check_whisper_model_exists(config: &VideoConfig) -> bool {
-    let model_path = Path::new(&config.model_path).join(config.whisper_model.filename());
-    model_path.exists()
+    let model_dir = Path::new(&config.model_path).join(config.whisper_model.dir_name());
+    config
+        .whisper_model
+        .required_files()
+        .iter()
+        .all(|f| model_dir.join(f).exists())
 }
 
-/// Download the selected Whisper model with progress reporting.
+/// Download the selected Whisper model (safetensors format) with progress reporting.
 pub fn download_whisper_model(
     config: &VideoConfig,
     on_progress: impl Fn(VideoDownloadProgress),
 ) -> Result<(), CoreError> {
-    let model_dir = Path::new(&config.model_path);
-    std::fs::create_dir_all(model_dir)
+    let model_dir = Path::new(&config.model_path).join(config.whisper_model.dir_name());
+    std::fs::create_dir_all(&model_dir)
         .map_err(|e| CoreError::Video(format!("Failed to create model directory: {e}")))?;
 
-    let url = config.whisper_model.download_url();
-    let filename = config.whisper_model.filename();
-    let dest = model_dir.join(filename);
-    let tmp_dest = dest.with_extension("bin.partial");
-
-    // Download with progress
     let client = reqwest::blocking::Client::new();
+
+    for (filename, url) in config.whisper_model.download_urls() {
+        let dest = model_dir.join(filename);
+        if dest.exists() {
+            tracing::info!("Model file already exists, skipping: {filename}");
+            continue;
+        }
+        let tmp_dest = dest.with_extension("partial");
+
+        let resp = client
+            .get(&url)
+            .send()
+            .map_err(|e| CoreError::Video(format!("Failed to download {filename}: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(CoreError::Video(format!(
+                "HTTP {} downloading {filename} from {url}",
+                resp.status()
+            )));
+        }
+
+        let total_bytes = resp.content_length();
+        let mut bytes_downloaded: u64 = 0;
+
+        let mut file = std::fs::File::create(&tmp_dest)
+            .map_err(|e| CoreError::Video(format!("Failed to create {filename}: {e}")))?;
+
+        let mut reader = std::io::BufReader::new(resp);
+        let mut buffer = [0u8; 8192];
+        loop {
+            use std::io::Read;
+            let n = reader
+                .read(&mut buffer)
+                .map_err(|e| CoreError::Video(format!("Download read error: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            use std::io::Write;
+            file.write_all(&buffer[..n])
+                .map_err(|e| CoreError::Video(format!("Failed to write {filename}: {e}")))?;
+            bytes_downloaded += n as u64;
+            on_progress(VideoDownloadProgress {
+                filename: filename.to_string(),
+                bytes_downloaded,
+                total_bytes,
+            });
+        }
+        drop(file);
+
+        // Atomic rename: partial → final
+        std::fs::rename(&tmp_dest, &dest).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp_dest);
+            CoreError::Video(format!("Failed to finalize {filename}: {e}"))
+        })?;
+
+        tracing::info!("Downloaded {filename}: size={bytes_downloaded}");
+    }
+
+    Ok(())
+}
+
+/// Delete all model files for the configured whisper model.
+pub fn delete_whisper_model(config: &VideoConfig) -> Result<(), CoreError> {
+    let model_dir = Path::new(&config.model_path).join(config.whisper_model.dir_name());
+    if model_dir.exists() {
+        std::fs::remove_dir_all(&model_dir)
+            .map_err(|e| CoreError::Video(format!("Failed to delete model directory: {e}")))?;
+    }
+    Ok(())
+}
+
+// ═══════════════════════════════════════════
+// FFmpeg Download
+// ═══════════════════════════════════════════
+
+/// Progress info for FFmpeg download.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FfmpegDownloadProgress {
+    pub progress_pct: f32,
+    pub status: String,
+}
+
+/// Download FFmpeg + ffprobe static binaries for the current platform.
+/// Returns the path to the downloaded ffmpeg binary.
+pub fn download_ffmpeg(
+    data_dir: &Path,
+    on_progress: impl Fn(FfmpegDownloadProgress),
+) -> Result<PathBuf, CoreError> {
+    let bin_dir = data_dir.join("bin");
+    std::fs::create_dir_all(&bin_dir)
+        .map_err(|e| CoreError::Video(format!("Failed to create bin directory: {e}")))?;
+
+    let (ffmpeg_name, ffprobe_name) = if cfg!(windows) {
+        ("ffmpeg.exe", "ffprobe.exe")
+    } else {
+        ("ffmpeg", "ffprobe")
+    };
+
+    // Already downloaded?
+    let ffmpeg_dest = bin_dir.join(ffmpeg_name);
+    let ffprobe_dest = bin_dir.join(ffprobe_name);
+    if ffmpeg_dest.exists() && ffprobe_dest.exists() {
+        tracing::info!("FFmpeg already exists at {}", ffmpeg_dest.display());
+        return Ok(ffmpeg_dest);
+    }
+
+    let (url, archive_ext) = ffmpeg_download_url()?;
+
+    on_progress(FfmpegDownloadProgress {
+        progress_pct: 0.0,
+        status: "Downloading FFmpeg...".into(),
+    });
+
+    // Stream download
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| CoreError::Video(format!("HTTP client error: {e}")))?;
+
     let resp = client
-        .get(url)
+        .get(&url)
         .send()
-        .map_err(|e| CoreError::Video(format!("Failed to download model: {e}")))?;
+        .map_err(|e| CoreError::Video(format!("Failed to download FFmpeg: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Err(CoreError::Video(format!(
+            "HTTP {} downloading FFmpeg from {url}",
+            resp.status()
+        )));
+    }
 
     let total_bytes = resp.content_length();
     let mut bytes_downloaded: u64 = 0;
 
-    let mut file = std::fs::File::create(&tmp_dest)
-        .map_err(|e| CoreError::Video(format!("Failed to create model file: {e}")))?;
+    let tmp_archive = bin_dir.join(format!("ffmpeg-download.{archive_ext}"));
+    {
+        let mut file = std::fs::File::create(&tmp_archive)
+            .map_err(|e| CoreError::Video(format!("Failed to create temp archive: {e}")))?;
+        let mut reader = std::io::BufReader::new(resp);
+        let mut buffer = [0u8; 65536];
+        loop {
+            use std::io::Read;
+            let n = reader
+                .read(&mut buffer)
+                .map_err(|e| CoreError::Video(format!("Download read error: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            use std::io::Write;
+            file.write_all(&buffer[..n])
+                .map_err(|e| CoreError::Video(format!("Failed to write archive: {e}")))?;
+            bytes_downloaded += n as u64;
+            let pct = total_bytes
+                .map(|t| (bytes_downloaded as f32 / t as f32) * 80.0) // 0-80% for download
+                .unwrap_or(0.0);
+            on_progress(FfmpegDownloadProgress {
+                progress_pct: pct,
+                status: format!(
+                    "Downloading... {:.1} MB",
+                    bytes_downloaded as f64 / 1_048_576.0
+                ),
+            });
+        }
+    }
 
-    let mut hasher = blake3::Hasher::new();
-    let mut reader = std::io::BufReader::new(resp);
-    let mut buffer = [0u8; 8192];
-    loop {
-        use std::io::Read;
-        let n = reader
-            .read(&mut buffer)
-            .map_err(|e| CoreError::Video(format!("Download read error: {e}")))?;
-        if n == 0 {
+    on_progress(FfmpegDownloadProgress {
+        progress_pct: 80.0,
+        status: "Extracting FFmpeg...".into(),
+    });
+
+    // Extract binaries
+    if archive_ext == "zip" {
+        extract_ffmpeg_from_zip(&tmp_archive, &bin_dir, ffmpeg_name, ffprobe_name)?;
+    } else {
+        extract_ffmpeg_from_tar_xz(&tmp_archive, &bin_dir, ffmpeg_name, ffprobe_name)?;
+    }
+
+    // Cleanup archive
+    let _ = std::fs::remove_file(&tmp_archive);
+
+    // Set executable permission on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        let _ = std::fs::set_permissions(&ffmpeg_dest, perms.clone());
+        let _ = std::fs::set_permissions(&ffprobe_dest, perms);
+    }
+
+    on_progress(FfmpegDownloadProgress {
+        progress_pct: 100.0,
+        status: "FFmpeg ready".into(),
+    });
+
+    tracing::info!("FFmpeg downloaded to {}", ffmpeg_dest.display());
+    Ok(ffmpeg_dest)
+}
+
+/// Returns (download_url, archive_extension) for the current platform.
+fn ffmpeg_download_url() -> Result<(String, &'static str), CoreError> {
+    let base = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest";
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        Ok((
+            format!("{base}/ffmpeg-master-latest-win64-lgpl.zip"),
+            "zip",
+        ))
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        Ok((
+            format!("{base}/ffmpeg-master-latest-linux64-lgpl.tar.xz"),
+            "tar.xz",
+        ))
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        Ok((
+            format!("{base}/ffmpeg-master-latest-linuxarm64-lgpl.tar.xz"),
+            "tar.xz",
+        ))
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        // evermeet.cx provides macOS static builds
+        Ok((
+            "https://evermeet.cx/ffmpeg/getrelease/zip".to_string(),
+            "zip",
+        ))
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        Ok((
+            "https://evermeet.cx/ffmpeg/getrelease/zip".to_string(),
+            "zip",
+        ))
+    }
+
+    #[cfg(not(any(
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+    )))]
+    {
+        Err(CoreError::Video(
+            "FFmpeg auto-download is not supported on this platform".into(),
+        ))
+    }
+}
+
+/// Extract ffmpeg and ffprobe from a .zip archive (Windows / macOS).
+fn extract_ffmpeg_from_zip(
+    archive_path: &Path,
+    dest_dir: &Path,
+    ffmpeg_name: &str,
+    ffprobe_name: &str,
+) -> Result<(), CoreError> {
+    let file = std::fs::File::open(archive_path)
+        .map_err(|e| CoreError::Video(format!("Failed to open zip archive: {e}")))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| CoreError::Video(format!("Failed to read zip archive: {e}")))?;
+
+    let mut found_ffmpeg = false;
+    let mut found_ffprobe = false;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| CoreError::Video(format!("Failed to read zip entry: {e}")))?;
+        let entry_name = entry.name().replace('\\', "/");
+        let file_name = entry_name.rsplit('/').next().unwrap_or("");
+
+        if file_name.eq_ignore_ascii_case(ffmpeg_name) {
+            extract_zip_entry_to(&mut entry, &dest_dir.join(ffmpeg_name))?;
+            found_ffmpeg = true;
+        } else if file_name.eq_ignore_ascii_case(ffprobe_name) {
+            extract_zip_entry_to(&mut entry, &dest_dir.join(ffprobe_name))?;
+            found_ffprobe = true;
+        }
+
+        if found_ffmpeg && found_ffprobe {
             break;
         }
-        use std::io::Write;
-        file.write_all(&buffer[..n])
-            .map_err(|e| CoreError::Video(format!("Failed to write model file: {e}")))?;
-        hasher.update(&buffer[..n]);
-        bytes_downloaded += n as u64;
-        on_progress(VideoDownloadProgress {
-            filename: filename.to_string(),
-            bytes_downloaded,
-            total_bytes,
-        });
     }
-    drop(file);
 
-    // Verify file size as a basic integrity check
-    if let Some(expected_size) = config.whisper_model.expected_file_size() {
-        if bytes_downloaded != expected_size {
-            let _ = std::fs::remove_file(&tmp_dest);
-            return Err(CoreError::Video(format!(
-                "Download size mismatch for {filename}: expected {expected_size} bytes, got {bytes_downloaded}"
-            )));
+    if !found_ffmpeg {
+        return Err(CoreError::Video(
+            "ffmpeg binary not found in zip archive".into(),
+        ));
+    }
+    // ffprobe may not be in macOS evermeet builds — not fatal
+    if !found_ffprobe {
+        tracing::warn!("ffprobe not found in zip archive; only ffmpeg was extracted");
+    }
+
+    Ok(())
+}
+
+/// Extract a single zip entry to a destination file.
+fn extract_zip_entry_to(
+    entry: &mut zip::read::ZipFile<'_>,
+    dest: &Path,
+) -> Result<(), CoreError> {
+    let mut out =
+        std::fs::File::create(dest).map_err(|e| CoreError::Video(format!("create {}: {e}", dest.display())))?;
+    std::io::copy(entry, &mut out)
+        .map_err(|e| CoreError::Video(format!("extract to {}: {e}", dest.display())))?;
+    Ok(())
+}
+
+/// Extract ffmpeg and ffprobe from a .tar.xz archive (Linux).
+fn extract_ffmpeg_from_tar_xz(
+    archive_path: &Path,
+    dest_dir: &Path,
+    ffmpeg_name: &str,
+    ffprobe_name: &str,
+) -> Result<(), CoreError> {
+    let file = std::fs::File::open(archive_path)
+        .map_err(|e| CoreError::Video(format!("Failed to open tar.xz archive: {e}")))?;
+    let decompressor = xz2::read::XzDecoder::new(file);
+    let mut archive = tar::Archive::new(decompressor);
+
+    let mut found_ffmpeg = false;
+    let mut found_ffprobe = false;
+
+    for entry_result in archive
+        .entries()
+        .map_err(|e| CoreError::Video(format!("Failed to read tar entries: {e}")))?
+    {
+        let mut entry =
+            entry_result.map_err(|e| CoreError::Video(format!("Failed to read tar entry: {e}")))?;
+        let path = entry
+            .path()
+            .map_err(|e| CoreError::Video(format!("Invalid tar entry path: {e}")))?;
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        if file_name == ffmpeg_name {
+            let dest = dest_dir.join(ffmpeg_name);
+            let mut out = std::fs::File::create(&dest)
+                .map_err(|e| CoreError::Video(format!("create {}: {e}", dest.display())))?;
+            std::io::copy(&mut entry, &mut out)
+                .map_err(|e| CoreError::Video(format!("extract {}: {e}", dest.display())))?;
+            found_ffmpeg = true;
+        } else if file_name == ffprobe_name {
+            let dest = dest_dir.join(ffprobe_name);
+            let mut out = std::fs::File::create(&dest)
+                .map_err(|e| CoreError::Video(format!("create {}: {e}", dest.display())))?;
+            std::io::copy(&mut entry, &mut out)
+                .map_err(|e| CoreError::Video(format!("extract {}: {e}", dest.display())))?;
+            found_ffprobe = true;
+        }
+
+        if found_ffmpeg && found_ffprobe {
+            break;
         }
     }
 
-    // Atomic rename: partial -> final
-    std::fs::rename(&tmp_dest, &dest).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_dest);
-        CoreError::Video(format!("Failed to finalize model file: {e}"))
-    })?;
-
-    // Compute and log blake3 hash for audit / future pinning
-    let hash = hasher.finalize();
-    tracing::info!("Downloaded {filename}: blake3={hash}, size={bytes_downloaded}");
+    if !found_ffmpeg {
+        return Err(CoreError::Video(
+            "ffmpeg binary not found in tar.xz archive".into(),
+        ));
+    }
+    if !found_ffprobe {
+        tracing::warn!("ffprobe not found in tar.xz archive; only ffmpeg was extracted");
+    }
 
     Ok(())
 }
@@ -1377,8 +2127,19 @@ mod tests {
 
     #[test]
     fn test_whisper_model_filename() {
+        // Legacy filenames preserved for backward compat
         assert_eq!(WhisperModel::Tiny.filename(), "ggml-tiny.bin");
         assert_eq!(WhisperModel::Base.filename(), "ggml-base.bin");
+        // New dir names for safetensors
+        assert_eq!(WhisperModel::Tiny.dir_name(), "whisper-tiny");
+        assert_eq!(WhisperModel::Base.dir_name(), "whisper-base");
+        assert_eq!(WhisperModel::Large.dir_name(), "whisper-large-v3");
+        // Repo IDs
+        assert_eq!(WhisperModel::Tiny.repo_id(), "openai/whisper-tiny");
+        assert_eq!(WhisperModel::Large.repo_id(), "openai/whisper-large-v3");
+        // Required files
+        assert_eq!(WhisperModel::Tiny.required_files().len(), 3); // config, tokenizer, model
+        assert_eq!(WhisperModel::Large.required_files().len(), 4); // config, tokenizer, 2 shards
     }
 
     #[test]

@@ -277,6 +277,10 @@ pub struct ProviderConfig {
     /// Organisation / project header (OpenAI, Azure).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub org_id: Option<String>,
+    /// HTTP request timeout in seconds. When `None`, the provider's built-in
+    /// default (usually 300 s) is used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }
 
 /// Supported LLM provider backends.

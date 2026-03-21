@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS privacy_config (
 CREATE TABLE IF NOT EXISTS user_memories (
     id TEXT PRIMARY KEY NOT NULL,
     content TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -11,7 +11,7 @@ use crate::error::CoreError;
 use crate::mcp::client::McpClient;
 use crate::mcp::McpToolInfo;
 
-use super::{Tool, ToolResult};
+use super::{Tool, ToolCategory, ToolResult};
 
 /// Wraps an MCP tool so it implements the local `Tool` trait.
 pub struct McpTool {
@@ -55,6 +55,10 @@ impl Tool for McpTool {
 
     fn description(&self) -> &str {
         &self.description
+    }
+
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::Mcp]
     }
 
     fn parameters_schema(&self) -> Value {

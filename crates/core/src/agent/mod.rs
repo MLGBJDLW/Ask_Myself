@@ -1,5 +1,8 @@
 //! Agent executor — ReAct-style reasoning loop with streaming and tool dispatch.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{future::join_all, StreamExt};
@@ -21,6 +24,7 @@ use crate::llm::{
 };
 use crate::privacy;
 use crate::tools::ToolRegistry;
+use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
 pub mod context;
 
@@ -306,6 +310,28 @@ pub struct AgentConfig {
     pub subagent_token_budget: Option<u32>,
     pub tool_timeout_secs: Option<u32>,
     pub agent_timeout_secs: Option<u32>,
+    /// Answer cache TTL in hours. When `None`, the cache module default is used.
+    pub cache_ttl_hours: Option<u32>,
+    /// Whether to filter tools based on context (query keywords).
+    /// When `false`, all tools are sent every turn (original behaviour).
+    /// Default: `true`.
+    #[serde(default = "default_dynamic_tool_visibility")]
+    pub dynamic_tool_visibility: bool,
+    /// Whether to collect agent traces. Default: `true`.
+    #[serde(default = "default_trace_enabled")]
+    pub trace_enabled: bool,
+    /// Whether destructive tools require user confirmation before execution.
+    /// Default: `false` (preserves existing behaviour).
+    #[serde(default)]
+    pub require_tool_confirmation: bool,
+}
+
+fn default_trace_enabled() -> bool {
+    true
+}
+
+fn default_dynamic_tool_visibility() -> bool {
+    true
 }
 
 impl Default for AgentConfig {
@@ -327,6 +353,10 @@ impl Default for AgentConfig {
             subagent_token_budget: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            cache_ttl_hours: None,
+            dynamic_tool_visibility: true,
+            trace_enabled: true,
+            require_tool_confirmation: false,
         }
     }
 }
@@ -381,6 +411,13 @@ struct DirectDispatch {
 /// Each call to [`run`](AgentExecutor::run) performs up to `max_iterations`
 /// LLM round-trips, dispatching tool calls between each round until the model
 /// produces a final text answer (or the iteration cap is hit).
+/// Async callback invoked when a destructive tool needs user confirmation.
+/// Receives a human-readable message describing the action and returns
+/// `true` to proceed or `false` to cancel.
+pub type ConfirmationCallback = Arc<
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync,
+>;
+
 pub struct AgentExecutor {
     provider: Box<dyn LlmProvider>,
     /// Optional separate provider for summarization (cheaper model).
@@ -388,6 +425,7 @@ pub struct AgentExecutor {
     tools: ToolRegistry,
     config: AgentConfig,
     cancel_token: CancellationToken,
+    confirmation_callback: Option<ConfirmationCallback>,
 }
 
 impl AgentExecutor {
@@ -399,6 +437,7 @@ impl AgentExecutor {
             tools,
             config,
             cancel_token: CancellationToken::new(),
+            confirmation_callback: None,
         }
     }
 
@@ -408,6 +447,15 @@ impl AgentExecutor {
     /// checkpoint, save any partial conversation, and return gracefully.
     pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
         self.cancel_token = token;
+        self
+    }
+
+    /// Attach a confirmation callback for destructive tool operations.
+    ///
+    /// Only invoked when [`AgentConfig::require_tool_confirmation`] is `true`
+    /// and a tool returns `requires_confirmation() == true`.
+    pub fn with_confirmation_callback(mut self, cb: ConfirmationCallback) -> Self {
+        self.confirmation_callback = Some(cb);
         self
     }
 
@@ -494,7 +542,49 @@ impl AgentExecutor {
 
         // --- 1. Build initial messages with context-window trimming -----------
         let skills = db.get_enabled_skills().unwrap_or_default();
-        let tool_defs = self.tools.definitions();
+
+        // Extract user query text early for tool selection.
+        let user_query_text_for_tools: String = user_parts
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // --- Trace: initialize ------------------------------------------------
+        let ctx_window_for_trace = self
+            .config
+            .context_window
+            .unwrap_or_else(|| model_context_window(model)) as usize;
+        let mut trace = if self.config.trace_enabled {
+            Some(AgentTrace::begin(
+                conversation_id.unwrap_or(""),
+                &user_query_text_for_tools,
+                model,
+                ctx_window_for_trace,
+            ))
+        } else {
+            None
+        };
+
+        // Resolve source scope early so we can pass `has_sources` into tool selection.
+        let source_scope: Vec<String> =
+            source_scope_override.unwrap_or_else(|| match conversation_id {
+                Some(cid) => db.get_linked_sources(cid).unwrap_or_default(),
+                None => Vec::new(),
+            });
+        let has_sources = !source_scope.is_empty();
+
+        let tool_defs = if self.config.dynamic_tool_visibility {
+            self.tools.select_tools(&user_query_text_for_tools, has_sources)
+        } else {
+            self.tools.definitions()
+        };
+        if let Some(ref mut t) = trace {
+            t.tools_offered = tool_defs.len() as u32;
+        }
         let mut messages = context::prepare_messages(
             &self.config.system_prompt,
             &history,
@@ -527,13 +617,6 @@ impl AgentExecutor {
             Some(tool_defs)
         };
 
-        // --- 3b. Resolve source scope for this conversation ------------------
-        let source_scope: Vec<String> =
-            source_scope_override.unwrap_or_else(|| match conversation_id {
-                Some(cid) => db.get_linked_sources(cid).unwrap_or_default(),
-                None => Vec::new(),
-            });
-
         let mut total_usage = Usage::default();
         let mut last_prompt_tokens: u32 = 0;
         let mut sort_order = next_sort_order;
@@ -542,14 +625,7 @@ impl AgentExecutor {
         let mut last_finish_reason: Option<String> = None;
 
         // --- 3c. Extract user query text and build cache key -----------------
-        let user_query_text: String = user_parts
-            .iter()
-            .filter_map(|p| match p {
-                ContentPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        let user_query_text = &user_query_text_for_tools;
 
         let cache_source_filter: Option<String> = if source_scope.is_empty() {
             None
@@ -577,7 +653,7 @@ impl AgentExecutor {
         // --- 3d. Check answer cache before ReAct loop ------------------------
         if !user_query_text.is_empty() {
             if let Ok(Some(cached)) =
-                db.find_cached_answer(&user_query_text, cache_source_filter.as_deref(), None)
+                db.find_cached_answer(&user_query_text, cache_source_filter.as_deref(), self.config.cache_ttl_hours.map(|h| h as i64))
             {
                 let _ = db.increment_cache_hit(&cached.id);
                 debug!("Cache hit for query: {}", user_query_text);
@@ -622,6 +698,16 @@ impl AgentExecutor {
                         finish_reason: Some("stop".to_string()),
                     })
                     .await;
+
+                // Trace: cache hit
+                if let Some(ref mut t) = trace {
+                    t.cache_hit = true;
+                    t.finish(TraceOutcome::Success, None);
+                    if let Err(e) = db.save_agent_trace(t) {
+                        warn!("Failed to save agent trace: {e}");
+                    }
+                }
+
                 return Ok(msg);
             }
         }
@@ -710,6 +796,15 @@ impl AgentExecutor {
                             finish_reason: last_finish_reason.clone(),
                         })
                         .await;
+
+                    // Trace: cancelled
+                    if let Some(ref mut t) = trace {
+                        t.finish(TraceOutcome::Cancelled, None);
+                        if let Err(e) = db.save_agent_trace(t) {
+                            warn!("Failed to save agent trace: {e}");
+                        }
+                    }
+
                     return Ok(final_msg);
                 }
             };
@@ -781,6 +876,12 @@ impl AgentExecutor {
                                     ),
                                 })
                                 .await;
+                            if let Some(ref mut t) = trace {
+                                t.finish(TraceOutcome::Error, Some("rate limited".to_string()));
+                                if let Err(te) = db.save_agent_trace(t) {
+                                    warn!("Failed to save agent trace: {te}");
+                                }
+                            }
                             return Err(CoreError::RateLimited { retry_after_secs });
                         }
                         // Use server's Retry-After, falling back to exponential backoff.
@@ -811,10 +912,17 @@ impl AgentExecutor {
                                     ),
                                 })
                                 .await;
-                            return Err(CoreError::Llm(format!(
+                            let err_msg = format!(
                                 "Transient error after {} retries: {}",
                                 MAX_LLM_RETRIES, msg
-                            )));
+                            );
+                            if let Some(ref mut t) = trace {
+                                t.finish(TraceOutcome::Error, Some(err_msg.clone()));
+                                if let Err(te) = db.save_agent_trace(t) {
+                                    warn!("Failed to save agent trace: {te}");
+                                }
+                            }
+                            return Err(CoreError::Llm(err_msg));
                         }
                         let wait = 2u64.pow(retry_count - 1); // 1s, 2s, 4s
                         warn!(
@@ -834,6 +942,13 @@ impl AgentExecutor {
                                 message: e.to_string(),
                             })
                             .await;
+                        // Trace: error
+                        if let Some(ref mut t) = trace {
+                            t.finish(TraceOutcome::Error, Some(e.to_string()));
+                            if let Err(te) = db.save_agent_trace(t) {
+                                warn!("Failed to save agent trace: {te}");
+                            }
+                        }
                         return Err(e);
                     }
                 }
@@ -892,12 +1007,21 @@ impl AgentExecutor {
                                 message: e.to_string(),
                             })
                             .await;
+                        // Trace: error
+                        if let Some(ref mut t) = trace {
+                            t.finish(TraceOutcome::Error, Some(e.to_string()));
+                            if let Err(te) = db.save_agent_trace(t) {
+                                warn!("Failed to save agent trace: {te}");
+                            }
+                        }
                         return Err(e);
                     }
                 }
             }
 
             // -- 4b. Accumulate usage ------------------------------------------
+            let mut iteration_compacted = false;
+            let mut iteration_context_pct: f32 = 0.0;
             if let Some(u) = chunk_usage {
                 last_prompt_tokens = u.prompt_tokens; // Always overwrite — we want the LAST iteration
                 total_usage.prompt_tokens += u.prompt_tokens;
@@ -923,10 +1047,29 @@ impl AgentExecutor {
                     .unwrap_or_else(|| model_context_window(model));
                 let max_response = self.config.max_tokens.unwrap_or(4096);
                 let budget = ctx_window.saturating_sub(max_response);
-                if budget > 0 && u.prompt_tokens > (budget as f64 * 0.85) as u32 {
-                    if let Err(e) = self.aggressive_compact(&mut messages, model, &tx).await {
-                        warn!("Auto-compact failed: {e}");
+                if budget > 0 {
+                    iteration_context_pct =
+                        (u.prompt_tokens as f32 / budget as f32) * 100.0;
+                    if u.prompt_tokens > (budget as f64 * 0.85) as u32 {
+                        if let Err(e) = self.aggressive_compact(&mut messages, model, &tx).await {
+                            warn!("Auto-compact failed: {e}");
+                        } else {
+                            iteration_compacted = true;
+                        }
                     }
+                }
+
+                // Trace: record step for this LLM iteration
+                if let Some(ref mut t) = trace {
+                    t.add_step(TraceStep {
+                        iteration,
+                        tool_name: None,
+                        tool_duration_ms: None,
+                        input_tokens: u.prompt_tokens as u64,
+                        output_tokens: u.completion_tokens as u64,
+                        context_usage_pct: iteration_context_pct,
+                        was_compacted: iteration_compacted,
+                    });
                 }
             }
 
@@ -1001,6 +1144,15 @@ impl AgentExecutor {
                         finish_reason: last_finish_reason,
                     })
                     .await;
+
+                // Trace: success
+                if let Some(ref mut t) = trace {
+                    t.finish(TraceOutcome::Success, None);
+                    if let Err(e) = db.save_agent_trace(t) {
+                        warn!("Failed to save agent trace: {e}");
+                    }
+                }
+
                 return Ok(assistant_msg);
             }
 
@@ -1059,13 +1211,45 @@ impl AgentExecutor {
                     let source_scope = &source_scope;
                     let tool_span = info_span!("tool_execution", tool = %tc.name);
                     async move {
+                        // -- Confirmation gate for destructive tools --------
+                        if self.config.require_tool_confirmation {
+                            let parsed_args: serde_json::Value =
+                                serde_json::from_str(&tc.arguments).unwrap_or_default();
+                            if self.tools.requires_confirmation(&tc.name, &parsed_args) {
+                                if let Some(ref cb) = self.confirmation_callback {
+                                    let message = self
+                                        .tools
+                                        .confirmation_message(&tc.name, &parsed_args)
+                                        .unwrap_or_else(|| {
+                                            format!("Execute tool: {}", tc.name)
+                                        });
+                                    if !cb(message).await {
+                                        let declined = crate::tools::ToolResult {
+                                            call_id: tc.id.clone(),
+                                            content: "Operation cancelled by user.".to_string(),
+                                            is_error: true,
+                                            artifacts: None,
+                                        };
+                                        return (
+                                            tc,
+                                            tool_timeout,
+                                            Ok(Ok(declined)),
+                                            Duration::ZERO,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        let tool_start = std::time::Instant::now();
                         let result = tokio::time::timeout(
                             tool_timeout,
                             self.tools
                                 .execute(&tc.name, &tc.id, &tc.arguments, db, source_scope),
                         )
                         .await;
-                        (tc, tool_timeout, result)
+                        let tool_elapsed = tool_start.elapsed();
+                        (tc, tool_timeout, result, tool_elapsed)
                     }
                     .instrument(tool_span)
                 })
@@ -1074,7 +1258,7 @@ impl AgentExecutor {
             let tool_results = join_all(tool_futures).await;
 
             // Process results in original order (join_all preserves order).
-            for (tc, tool_timeout, tool_result) in tool_results {
+            for (tc, tool_timeout, tool_result, tool_elapsed) in tool_results {
                 let (tool_msg, tool_artifacts) = match tool_result {
                     Ok(Ok(result)) => {
                         let _ = tx
@@ -1157,6 +1341,19 @@ impl AgentExecutor {
                     context_content,
                     tc.id.clone(),
                 ));
+
+                // Trace: record tool execution step
+                if let Some(ref mut t) = trace {
+                    t.add_step(TraceStep {
+                        iteration,
+                        tool_name: Some(tc.name.clone()),
+                        tool_duration_ms: Some(tool_elapsed.as_millis() as u64),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        context_usage_pct: 0.0,
+                        was_compacted: false,
+                    });
+                }
             }
 
             last_tool_calls = None;
@@ -1227,6 +1424,15 @@ impl AgentExecutor {
                 finish_reason: last_finish_reason,
             })
             .await;
+
+        // Trace: max iterations
+        if let Some(ref mut t) = trace {
+            t.finish(TraceOutcome::MaxIterations, None);
+            if let Err(e) = db.save_agent_trace(t) {
+                warn!("Failed to save agent trace: {e}");
+            }
+        }
+
         Ok(final_msg)
     }
 

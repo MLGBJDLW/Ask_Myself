@@ -14,6 +14,16 @@ use crate::models::{EvidenceCard, FileType, Highlight, SearchQuery};
 use crate::personalization;
 
 // ---------------------------------------------------------------------------
+// Defaults (also exposed as AppConfig fields for configurability)
+// ---------------------------------------------------------------------------
+
+/// Default search result limit when the caller doesn't specify one.
+const DEFAULT_SEARCH_LIMIT: u32 = 20;
+
+/// Minimum cosine similarity to include a vector search result.
+const DEFAULT_MIN_SEARCH_SIMILARITY: f32 = 0.2;
+
+// ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
@@ -77,7 +87,7 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
         format!("({}) OR ({})", base_fts, extras)
     };
 
-    let limit = if query.limit == 0 { 20 } else { query.limit };
+    let limit = if query.limit == 0 { DEFAULT_SEARCH_LIMIT } else { query.limit };
     // Over-fetch so feedback reranking can surface high-value results
     // that BM25 alone might rank outside the requested limit.
     let internal_limit = std::cmp::min(limit * 3, limit + 30);
@@ -352,7 +362,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
         });
     }
 
-    let user_limit = if query.limit == 0 { 20 } else { query.limit } as usize;
+    let user_limit = if query.limit == 0 { DEFAULT_SEARCH_LIMIT } else { query.limit } as usize;
     // Over-fetch so reranking has more candidates to work with.
     let internal_limit: usize = std::cmp::min(user_limit * 3, user_limit + 30);
     let terms = extract_terms(trimmed);
@@ -403,6 +413,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
                                                 &query_vec,
                                                 &model_name,
                                                 internal_limit,
+                                                None,
                                             )
                                             .unwrap_or_else(|e| {
                                                 tracing::warn!(
@@ -544,7 +555,7 @@ fn tfidf_vector_search(db: &Database, query_text: &str, limit: usize) -> Vec<(St
                     if query_vec.iter().all(|&v| v == 0.0) {
                         return Vec::new();
                     }
-                    vector_search_top_k(db, &query_vec, "tfidf-v1", limit).unwrap_or_else(|e| {
+                    vector_search_top_k(db, &query_vec, "tfidf-v1", limit, None).unwrap_or_else(|e| {
                         tracing::warn!("TF-IDF vector search failed: {e}");
                         Vec::new()
                     })
@@ -575,16 +586,16 @@ pub fn vector_search_top_k(
     query_vec: &[f32],
     model: &str,
     k: usize,
+    min_sim: Option<f32>,
 ) -> Result<Vec<(String, f32)>, CoreError> {
     if k == 0 || query_vec.iter().all(|&v| v == 0.0) {
         return Ok(Vec::new());
     }
 
     const BATCH_SIZE: usize = 10_000;
-    /// Minimum cosine similarity to include a result — filters pure noise.
-    const MIN_SIMILARITY: f32 = 0.2;
+    let min_similarity = min_sim.unwrap_or(DEFAULT_MIN_SEARCH_SIMILARITY);
     let mut top_k: Vec<(String, f32)> = Vec::with_capacity(k + 1);
-    let mut threshold: f32 = MIN_SIMILARITY;
+    let mut threshold: f32 = min_similarity;
 
     let mut offset = 0usize;
     loop {
@@ -596,7 +607,7 @@ pub fn vector_search_top_k(
 
         for (chunk_id, vec) in batch {
             let sim = cosine_similarity(query_vec, &vec);
-            if sim <= MIN_SIMILARITY {
+            if sim <= min_similarity {
                 continue;
             }
 
@@ -1704,7 +1715,7 @@ mod tests {
         }
 
         let query_vec = embedder.embed("rust systems programming").unwrap();
-        let results = vector_search_top_k(&db, &query_vec, "tfidf-v1", 3).unwrap();
+        let results = vector_search_top_k(&db, &query_vec, "tfidf-v1", 3, None).unwrap();
         assert!(!results.is_empty());
         assert!(results.len() <= 3);
 
@@ -1721,7 +1732,7 @@ mod tests {
     fn test_vector_search_top_k_empty() {
         let db = test_db();
         let zero_vec = vec![0.0; 10];
-        let results = vector_search_top_k(&db, &zero_vec, "tfidf-v1", 5).unwrap();
+        let results = vector_search_top_k(&db, &zero_vec, "tfidf-v1", 5, None).unwrap();
         assert!(results.is_empty());
     }
 
@@ -1729,7 +1740,7 @@ mod tests {
     fn test_vector_search_top_k_zero_k() {
         let db = test_db();
         let query = vec![1.0, 0.0];
-        let results = vector_search_top_k(&db, &query, "tfidf-v1", 0).unwrap();
+        let results = vector_search_top_k(&db, &query, "tfidf-v1", 0, None).unwrap();
         assert!(results.is_empty());
     }
 

@@ -585,3 +585,184 @@ mod tests {
         assert_eq!(duration, 42);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Agent trace persistence
+// ---------------------------------------------------------------------------
+
+impl Database {
+    /// Persist a completed agent trace.
+    pub fn save_agent_trace(&self, trace: &crate::trace::AgentTrace) -> Result<(), CoreError> {
+        let trace_json = serde_json::to_string(trace)
+            .map_err(|e| CoreError::Internal(format!("serialize agent trace: {e}")))?;
+        let conn = self.conn();
+        conn.execute(
+            "INSERT OR REPLACE INTO agent_traces
+             (id, conversation_id, started_at, finished_at, model_id,
+              total_iterations, total_tool_calls, total_input_tokens, total_output_tokens,
+              peak_context_usage_pct, tools_offered, cache_hit, outcome, error_message, trace_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            rusqlite::params![
+                trace.id,
+                trace.conversation_id,
+                trace.started_at.to_rfc3339(),
+                trace.finished_at.map(|t| t.to_rfc3339()),
+                trace.model_id,
+                trace.total_iterations,
+                trace.total_tool_calls,
+                trace.total_input_tokens as i64,
+                trace.total_output_tokens as i64,
+                trace.peak_context_usage_pct,
+                trace.tools_offered,
+                trace.cache_hit as i32,
+                trace.outcome.to_string(),
+                trace.error_message,
+                trace_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Retrieve all traces for a conversation.
+    pub fn get_agent_traces(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<crate::trace::AgentTrace>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT trace_json FROM agent_traces WHERE conversation_id = ?1 ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut traces = Vec::new();
+        for row in rows {
+            let json = row?;
+            let trace: crate::trace::AgentTrace = serde_json::from_str(&json)
+                .map_err(|e| CoreError::Internal(format!("deserialize agent trace: {e}")))?;
+            traces.push(trace);
+        }
+        Ok(traces)
+    }
+
+    /// Retrieve the most recent traces across all conversations.
+    pub fn get_recent_traces(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::trace::AgentTrace>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT trace_json FROM agent_traces ORDER BY created_at DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut traces = Vec::new();
+        for row in rows {
+            let json = row?;
+            let trace: crate::trace::AgentTrace = serde_json::from_str(&json)
+                .map_err(|e| CoreError::Internal(format!("deserialize agent trace: {e}")))?;
+            traces.push(trace);
+        }
+        Ok(traces)
+    }
+
+    /// Compute aggregated analytics across all agent traces.
+    pub fn get_trace_summary(&self) -> Result<crate::trace::TraceSummary, CoreError> {
+        let conn = self.conn();
+
+        // Aggregate numeric stats in one query.
+        let mut stmt = conn.prepare(
+            "SELECT
+                COUNT(*) AS total_sessions,
+                COALESCE(SUM(total_tool_calls), 0) AS total_tool_calls,
+                COALESCE(SUM(total_input_tokens), 0) AS total_input_tokens,
+                COALESCE(SUM(total_output_tokens), 0) AS total_output_tokens,
+                COALESCE(AVG(total_iterations), 0) AS avg_iterations,
+                COALESCE(AVG(total_tool_calls), 0) AS avg_tools,
+                COALESCE(AVG(peak_context_usage_pct), 0) AS avg_context,
+                COALESCE(SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
+                COALESCE(SUM(CASE WHEN cache_hit = 1 THEN 1 ELSE 0 END), 0) AS cache_hit_count,
+                COALESCE(SUM(CASE WHEN started_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END), 0) AS sessions_7d,
+                COALESCE(SUM(CASE WHEN started_at >= datetime('now', '-7 days') THEN total_input_tokens + total_output_tokens ELSE 0 END), 0) AS tokens_7d
+             FROM agent_traces",
+        )?;
+
+        let (
+            total_sessions,
+            total_tool_calls,
+            total_input_tokens,
+            total_output_tokens,
+            avg_iterations,
+            avg_tools,
+            avg_context,
+            success_count,
+            cache_hit_count,
+            sessions_7d,
+            tokens_7d,
+        ) = stmt.query_row([], |row| {
+            Ok((
+                row.get::<_, i64>(0)? as u64,
+                row.get::<_, i64>(1)? as u64,
+                row.get::<_, i64>(2)? as u64,
+                row.get::<_, i64>(3)? as u64,
+                row.get::<_, f64>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, f64>(6)?,
+                row.get::<_, i64>(7)? as u64,
+                row.get::<_, i64>(8)? as u64,
+                row.get::<_, i64>(9)? as u64,
+                row.get::<_, i64>(10)? as u64,
+            ))
+        })?;
+
+        let success_rate = if total_sessions > 0 {
+            success_count as f64 / total_sessions as f64
+        } else {
+            0.0
+        };
+        let cache_hit_rate = if total_sessions > 0 {
+            cache_hit_count as f64 / total_sessions as f64
+        } else {
+            0.0
+        };
+
+        // Top tools: extract from trace_json steps (limit scan to 200 most recent).
+        let mut tool_counts: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        let mut stmt2 = conn.prepare(
+            "SELECT trace_json FROM agent_traces ORDER BY created_at DESC LIMIT 200",
+        )?;
+        let rows2 = stmt2.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows2 {
+            let json = row?;
+            if let Ok(trace) =
+                serde_json::from_str::<crate::trace::AgentTrace>(&json)
+            {
+                for step in &trace.steps {
+                    if let Some(ref name) = step.tool_name {
+                        *tool_counts.entry(name.clone()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        let mut top_tools: Vec<(String, u64)> = tool_counts.into_iter().collect();
+        top_tools.sort_by(|a, b| b.1.cmp(&a.1));
+        top_tools.truncate(10);
+
+        Ok(crate::trace::TraceSummary {
+            total_sessions,
+            total_tool_calls,
+            total_input_tokens,
+            total_output_tokens,
+            avg_iterations_per_session: avg_iterations,
+            avg_tools_per_session: avg_tools,
+            avg_context_usage_pct: avg_context,
+            success_rate,
+            cache_hit_rate,
+            top_tools,
+            sessions_last_7_days: sessions_7d,
+            tokens_last_7_days: tokens_7d,
+        })
+    }
+}

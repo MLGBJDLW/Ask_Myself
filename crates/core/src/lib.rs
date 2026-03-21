@@ -30,6 +30,7 @@ pub mod search;
 pub mod skills;
 pub mod sources;
 pub mod tools;
+pub mod trace;
 #[cfg(feature = "video")]
 pub mod video;
 pub mod watcher;

@@ -144,6 +144,60 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
         "ALTER TABLE agent_configs ADD COLUMN tool_timeout_secs INTEGER DEFAULT NULL;
         ALTER TABLE agent_configs ADD COLUMN agent_timeout_secs INTEGER DEFAULT NULL;",
     ),
+    (
+        "v027_agent_traces",
+        "CREATE TABLE IF NOT EXISTS agent_traces (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            model_id TEXT NOT NULL,
+            total_iterations INTEGER NOT NULL DEFAULT 0,
+            total_tool_calls INTEGER NOT NULL DEFAULT 0,
+            total_input_tokens INTEGER NOT NULL DEFAULT 0,
+            total_output_tokens INTEGER NOT NULL DEFAULT 0,
+            peak_context_usage_pct REAL NOT NULL DEFAULT 0.0,
+            tools_offered INTEGER NOT NULL DEFAULT 0,
+            cache_hit INTEGER NOT NULL DEFAULT 0,
+            outcome TEXT NOT NULL DEFAULT 'success',
+            error_message TEXT,
+            trace_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_traces_conversation ON agent_traces(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_agent_traces_created ON agent_traces(created_at);",
+    ),
+    (
+        "v028_conversation_messages_fts",
+        "CREATE VIRTUAL TABLE IF NOT EXISTS fts_messages USING fts5(
+            content,
+            conversation_id UNINDEXED,
+            message_id UNINDEXED,
+            role UNINDEXED,
+            tokenize='unicode61 remove_diacritics 2'
+        );
+        INSERT OR IGNORE INTO fts_messages(content, conversation_id, message_id, role)
+            SELECT content, conversation_id, id, role FROM messages
+            WHERE role IN ('user', 'assistant') AND content != '';
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages
+        WHEN new.role IN ('user', 'assistant') AND new.content != ''
+        BEGIN
+            INSERT INTO fts_messages(content, conversation_id, message_id, role)
+            VALUES (new.content, new.conversation_id, new.id, new.role);
+        END;
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+            DELETE FROM fts_messages WHERE message_id = old.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages BEGIN
+            DELETE FROM fts_messages WHERE message_id = old.id;
+            INSERT INTO fts_messages(content, conversation_id, message_id, role)
+            VALUES (new.content, new.conversation_id, new.id, new.role);
+        END;",
+    ),
+    (
+        "v029_user_memories_source",
+        "ALTER TABLE user_memories ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

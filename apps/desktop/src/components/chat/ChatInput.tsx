@@ -4,6 +4,7 @@ import { Send, Square, Paperclip, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { ImageAttachment } from '../../types/conversation';
 import { CheckpointMenu } from './CheckpointMenu';
+import { VoiceInputButton } from './VoiceInputButton';
 
 interface ChatInputProps {
   onSend: (message: string, attachments?: ImageAttachment[]) => void;
@@ -242,6 +243,11 @@ export function ChatInput({
           disabled={disabled}
           rows={1}
           className="flex-1 resize-none rounded-lg border border-border bg-surface-0 px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-tertiary outline-none transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 disabled:pointer-events-none disabled:opacity-40"
+        />
+
+        <VoiceInputButton
+          onTranscript={(text) => setValue((prev) => prev + (prev ? ' ' : '') + text)}
+          disabled={disabled || isStreaming}
         />
 
         {isStreaming ? (

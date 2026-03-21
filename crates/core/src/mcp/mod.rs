@@ -644,6 +644,7 @@ impl McpManager {
     pub async fn connect_server(
         &mut self,
         server: &McpServer,
+        call_timeout_secs: Option<u64>,
     ) -> Result<Vec<McpToolInfo>, CoreError> {
         // Disconnect existing connection if any.
         self.disconnect_server(&server.id).await.ok();
@@ -677,6 +678,9 @@ impl McpManager {
 
                 let mut client =
                     McpClient::connect_stdio(&command, &args, env.as_ref(), &server.name).await?;
+                if let Some(secs) = call_timeout_secs {
+                    client.set_call_timeout(std::time::Duration::from_secs(secs));
+                }
                 let tools = client.list_tools().await?;
                 self.clients
                     .insert(server.id.clone(), Arc::new(Mutex::new(client)));
@@ -709,6 +713,9 @@ impl McpManager {
                 } else {
                     McpClient::connect_streamable_http(url, headers.as_ref(), &server.name).await?
                 };
+                if let Some(secs) = call_timeout_secs {
+                    client.set_call_timeout(std::time::Duration::from_secs(secs));
+                }
                 let tools = client.list_tools().await?;
                 self.clients
                     .insert(server.id.clone(), Arc::new(Mutex::new(client)));
@@ -724,7 +731,7 @@ impl McpManager {
 
     /// Ensure the active connections match the currently enabled server set.
     /// Returns per-server connection failures without aborting healthy servers.
-    pub async fn sync_servers(&mut self, servers: &[McpServer]) -> HashMap<String, String> {
+    pub async fn sync_servers(&mut self, servers: &[McpServer], call_timeout_secs: Option<u64>) -> HashMap<String, String> {
         let desired: HashMap<&str, &McpServer> = servers
             .iter()
             .map(|server| (server.id.as_str(), server))
@@ -749,7 +756,7 @@ impl McpManager {
                 continue;
             }
 
-            if let Err(err) = self.connect_server(server).await {
+            if let Err(err) = self.connect_server(server, call_timeout_secs).await {
                 errors.insert(server.id.clone(), err.to_string());
                 self.disconnect_server(&server.id).await.ok();
             }

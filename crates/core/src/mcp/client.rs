@@ -68,6 +68,8 @@ pub struct McpClient {
     request_id: AtomicI64,
     server_name: String,
     protocol_version: String,
+    /// Timeout for individual JSON-RPC requests. Defaults to [`DEFAULT_TIMEOUT`].
+    call_timeout: Duration,
 }
 
 enum StreamablePostOutcome {
@@ -101,6 +103,7 @@ impl McpClient {
             request_id: AtomicI64::new(1),
             server_name: server_name.to_string(),
             protocol_version: SUPPORTED_PROTOCOL_VERSIONS[0].to_string(),
+            call_timeout: DEFAULT_TIMEOUT,
         };
         client.initialize_handshake().await?;
         Ok(client)
@@ -118,6 +121,7 @@ impl McpClient {
             request_id: AtomicI64::new(1),
             server_name: server_name.to_string(),
             protocol_version: SUPPORTED_PROTOCOL_VERSIONS[0].to_string(),
+            call_timeout: DEFAULT_TIMEOUT,
         };
         client.initialize_handshake().await?;
         Ok(client)
@@ -135,9 +139,15 @@ impl McpClient {
             request_id: AtomicI64::new(1),
             server_name: server_name.to_string(),
             protocol_version: SUPPORTED_PROTOCOL_VERSIONS[0].to_string(),
+            call_timeout: DEFAULT_TIMEOUT,
         };
         client.initialize_handshake().await?;
         Ok(client)
+    }
+
+    /// Override the call timeout for this client.
+    pub fn set_call_timeout(&mut self, timeout: Duration) {
+        self.call_timeout = timeout;
     }
 
     /// List tools available on the connected MCP server.
@@ -335,7 +345,7 @@ impl McpClient {
     }
 
     async fn wait_for_response(&mut self, id: i64, method: &str) -> Result<Value, CoreError> {
-        let result = tokio::time::timeout(DEFAULT_TIMEOUT, async {
+        let result = tokio::time::timeout(self.call_timeout, async {
             loop {
                 let next = match &mut self.transport {
                     Transport::Stdio(transport) => transport.stdout_rx.recv().await,
@@ -470,7 +480,7 @@ impl McpClient {
         let mut stream = response.bytes_stream();
         let mut buffer = Vec::new();
         let idle_timeout = if expected_id.is_some() {
-            DEFAULT_TIMEOUT
+            self.call_timeout
         } else {
             Duration::from_secs(2)
         };
@@ -910,7 +920,7 @@ impl McpClient {
         }
 
         let response = tokio::time::timeout(
-            DEFAULT_TIMEOUT,
+            self.call_timeout,
             client.get(endpoint_url.clone()).headers(headers).send(),
         )
         .await
@@ -984,7 +994,7 @@ impl McpClient {
         );
 
         let response = tokio::time::timeout(
-            DEFAULT_TIMEOUT,
+            self.call_timeout,
             client
                 .post(message_url.clone())
                 .headers(headers)
@@ -1061,7 +1071,7 @@ impl McpClient {
         }
 
         let response = tokio::time::timeout(
-            DEFAULT_TIMEOUT,
+            self.call_timeout,
             client
                 .post(endpoint_url.clone())
                 .headers(headers)
@@ -1158,7 +1168,7 @@ impl McpClient {
             );
 
             if let Ok(Ok(response)) = tokio::time::timeout(
-                DEFAULT_TIMEOUT,
+                self.call_timeout,
                 client.delete(endpoint_url).headers(headers).send(),
             )
             .await

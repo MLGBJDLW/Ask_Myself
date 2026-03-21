@@ -12,16 +12,75 @@ pub struct AppConfig {
     pub tool_timeout_secs: i64,
     #[serde(default = "default_agent_timeout")]
     pub agent_timeout_secs: i64,
+
+    /// Answer cache TTL in hours. 0 = disabled. Default: 24
+    #[serde(default = "default_cache_ttl_hours")]
+    pub cache_ttl_hours: u32,
+
+    /// Default search result limit. Default: 20
+    #[serde(default = "default_search_limit")]
+    pub default_search_limit: usize,
+
+    /// Minimum vector similarity threshold for search. Default: 0.2
+    #[serde(default = "default_min_search_similarity")]
+    pub min_search_similarity: f32,
+
+    /// Maximum file size for text ingestion in bytes. Default: 100 MB
+    #[serde(default = "default_max_text_file_size")]
+    pub max_text_file_size: u64,
+
+    /// Maximum file size for video ingestion in bytes. Default: 2 GB
+    #[serde(default = "default_max_video_file_size")]
+    pub max_video_file_size: u64,
+
+    /// Maximum file size for audio ingestion in bytes. Default: 500 MB
+    #[serde(default = "default_max_audio_file_size")]
+    pub max_audio_file_size: u64,
+
+    /// LLM HTTP request timeout in seconds. Default: 300
+    #[serde(default = "default_llm_timeout_secs")]
+    pub llm_timeout_secs: u64,
+
+    /// MCP tool call timeout in seconds. Default: 60
+    #[serde(default = "default_mcp_call_timeout_secs")]
+    pub mcp_call_timeout_secs: u64,
+
+    /// Whether destructive tool calls require user confirmation. Default: false
+    #[serde(default)]
+    pub confirm_destructive: bool,
+
+    /// Whether to automatically extract memories from conversations. Default: true
+    #[serde(default = "default_auto_memory_extraction")]
+    pub auto_memory_extraction: bool,
 }
 
 fn default_tool_timeout() -> i64 { 30 }
 fn default_agent_timeout() -> i64 { 180 }
+fn default_cache_ttl_hours() -> u32 { 24 }
+fn default_search_limit() -> usize { 20 }
+fn default_min_search_similarity() -> f32 { 0.2 }
+fn default_max_text_file_size() -> u64 { 100 * 1024 * 1024 }
+fn default_max_video_file_size() -> u64 { 2 * 1024 * 1024 * 1024 }
+fn default_max_audio_file_size() -> u64 { 500 * 1024 * 1024 }
+fn default_llm_timeout_secs() -> u64 { 300 }
+fn default_mcp_call_timeout_secs() -> u64 { 60 }
+fn default_auto_memory_extraction() -> bool { true }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             tool_timeout_secs: default_tool_timeout(),
             agent_timeout_secs: default_agent_timeout(),
+            cache_ttl_hours: default_cache_ttl_hours(),
+            default_search_limit: default_search_limit(),
+            min_search_similarity: default_min_search_similarity(),
+            max_text_file_size: default_max_text_file_size(),
+            max_video_file_size: default_max_video_file_size(),
+            max_audio_file_size: default_max_audio_file_size(),
+            llm_timeout_secs: default_llm_timeout_secs(),
+            mcp_call_timeout_secs: default_mcp_call_timeout_secs(),
+            confirm_destructive: false,
+            auto_memory_extraction: true,
         }
     }
 }

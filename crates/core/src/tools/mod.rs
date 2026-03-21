@@ -6,6 +6,32 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+// ---------------------------------------------------------------------------
+// Tool categories for dynamic visibility
+// ---------------------------------------------------------------------------
+
+/// Logical category for grouping tools. Used by [`ToolRegistry::select_tools`]
+/// to decide which tool definitions are sent to the LLM on a given turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToolCategory {
+    /// Always available: search, done, list_sources, etc.
+    Core,
+    /// File operations: read_file, edit_file, list_dir, write_note
+    FileSystem,
+    /// Source management: manage_source, reindex_document
+    SourceManagement,
+    /// Knowledge / playbook / memory tools
+    Knowledge,
+    /// URL fetching
+Web,
+    /// Detailed document inspection & comparison
+    DocumentAnalysis,
+    /// Subagent / multi-agent tools
+    SubAgent,
+    /// MCP: dynamically added MCP tools
+    Mcp,
+}
+
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::ToolDefinition;
@@ -137,6 +163,26 @@ pub trait Tool: Send + Sync {
         }
     }
 
+    /// Categories this tool belongs to. Used for dynamic tool visibility.
+    /// Defaults to [`ToolCategory::Core`] so newly added tools are always visible.
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::Core]
+    }
+
+    /// Whether this tool requires user confirmation before execution.
+    /// Override for destructive tools. Receives parsed arguments so
+    /// confirmation can be conditional (e.g. only on "remove" actions).
+    fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
+        false
+    }
+
+    /// Human-readable description of what this tool will do, for the
+    /// confirmation dialog. Called with the tool's parsed arguments so it
+    /// can describe the specific action.
+    fn confirmation_message(&self, _args: &serde_json::Value) -> Option<String> {
+        None
+    }
+
     /// Execute the tool with the given JSON-encoded arguments.
     ///
     /// `source_scope` restricts results to the given source IDs when non-empty
@@ -186,6 +232,117 @@ impl ToolRegistry {
     /// Check whether a tool name is already registered.
     pub fn contains(&self, name: &str) -> bool {
         self.tools.iter().any(|tool| tool.name() == name)
+    }
+
+    /// Check if a tool requires confirmation for the given arguments.
+    pub fn requires_confirmation(&self, name: &str, args: &serde_json::Value) -> bool {
+        self.get(name).map_or(false, |t| t.requires_confirmation(args))
+    }
+
+    /// Get the confirmation message for a tool with the given arguments.
+    pub fn confirmation_message(&self, name: &str, args: &serde_json::Value) -> Option<String> {
+        self.get(name).and_then(|t| t.confirmation_message(args))
+    }
+
+    /// Return definitions for tools whose categories overlap with `active`.
+    pub fn definitions_for_categories(&self, active: &HashSet<ToolCategory>) -> Vec<ToolDefinition> {
+        self.tools
+            .iter()
+            .filter(|t| t.categories().iter().any(|c| active.contains(c)))
+            .map(|t| t.definition())
+            .collect()
+    }
+
+    /// Select tool definitions relevant to the current user message.
+    ///
+    /// Core and MCP tools are always included. Other categories are activated
+    /// when keywords in the user message suggest they may be needed.
+    ///
+    /// Even when a tool is not advertised, it remains callable via
+    /// [`execute`](Self::execute) — this is an optimisation, not a restriction.
+    pub fn select_tools(&self, user_message: &str, has_sources: bool) -> Vec<ToolDefinition> {
+        let mut categories: HashSet<ToolCategory> = HashSet::new();
+
+        // Always-on categories
+        categories.insert(ToolCategory::Core);
+        categories.insert(ToolCategory::Mcp);
+
+        let msg = user_message.to_lowercase();
+
+        // File operations
+        if msg.contains("file")
+            || msg.contains("read")
+            || msg.contains("edit")
+            || msg.contains("write")
+            || msg.contains("create")
+            || msg.contains("directory")
+            || msg.contains("folder")
+            || msg.contains("note")
+            || msg.contains("文件")
+            || msg.contains("读取")
+            || msg.contains("编辑")
+            || msg.contains("目录")
+            || msg.contains("笔记")
+        {
+            categories.insert(ToolCategory::FileSystem);
+        }
+
+        // Source management
+        if msg.contains("source")
+            || msg.contains("index")
+            || msg.contains("reindex")
+            || msg.contains("数据源")
+            || msg.contains("索引")
+        {
+            categories.insert(ToolCategory::SourceManagement);
+        }
+
+        // Knowledge / playbook
+        if msg.contains("remember")
+            || msg.contains("memory")
+            || msg.contains("playbook")
+            || msg.contains("skill")
+            || msg.contains("workflow")
+            || msg.contains("记住")
+            || msg.contains("记忆")
+        {
+            categories.insert(ToolCategory::Knowledge);
+        }
+
+        // Web / URL
+        if msg.contains("url")
+            || msg.contains("http")
+            || msg.contains("website")
+            || msg.contains("web")
+            || msg.contains("fetch")
+            || msg.contains("link")
+            || msg.contains("网页")
+            || msg.contains("链接")
+        {
+            categories.insert(ToolCategory::Web);
+        }
+
+        // Document analysis / comparison
+        if msg.contains("compare")
+            || msg.contains("document")
+            || msg.contains("summarize")
+            || msg.contains("summary")
+            || msg.contains("statistics")
+            || msg.contains("stats")
+            || msg.contains("info")
+            || msg.contains("文档")
+            || msg.contains("比较")
+            || msg.contains("统计")
+        {
+            categories.insert(ToolCategory::DocumentAnalysis);
+        }
+
+        // If the conversation has linked sources, source management is likely useful
+        if has_sources {
+            categories.insert(ToolCategory::SourceManagement);
+        }
+
+        self.definitions_for_categories(&categories)
     }
 
     /// Execute a tool by name, returning an error if the tool is not found.

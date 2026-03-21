@@ -78,6 +78,10 @@ export interface TranslationKeys {
   'search.viewSources': string;
   'search.kbEmpty': string;
   'search.kbEmptyDesc': string;
+  'search.conversationsTab': string;
+  'search.conversationsPlaceholder': string;
+  'search.conversationsNoResults': string;
+  'search.conversationsResultCount': string;
 
   // Evidence Card
   'card.relevance': string;
@@ -332,6 +336,11 @@ export interface TranslationKeys {
   'settings.videoFfmpegAvailable': string;
   'settings.videoFfmpegNotFound': string;
   'settings.videoFfmpegHint': string;
+  'settings.videoFfmpegDownload': string;
+  'settings.videoFfmpegDownloading': string;
+  'settings.videoFfmpegDownloadComplete': string;
+  'settings.videoFfmpegDownloadFailed': string;
+  'settings.videoFfmpegExtracting': string;
   'settings.videoWhisperModel': string;
   'settings.videoModelTiny': string;
   'settings.videoModelTinyDesc': string;
@@ -395,6 +404,42 @@ export interface TranslationKeys {
   'settings.appearance.theme.midnight': string;
   'settings.appearance.language': string;
   'settings.appearance.language.description': string;
+
+  // Settings - Tab labels (merged)
+  'settings.tabModelsEmbedding': string;
+  'settings.tabMedia': string;
+  'settings.tabDataPrivacy': string;
+
+  // Settings - Advanced
+  'settings.advanced': string;
+  'settings.cacheTtl': string;
+  'settings.cacheTtlDesc': string;
+  'settings.searchLimit': string;
+  'settings.searchLimitDesc': string;
+  'settings.searchSimilarity': string;
+  'settings.searchSimilarityDesc': string;
+  'settings.maxTextFileSize': string;
+  'settings.maxTextFileSizeDesc': string;
+  'settings.maxVideoFileSize': string;
+  'settings.maxAudioFileSize': string;
+  'settings.fileSizeLimits': string;
+  'settings.llmTimeout': string;
+  'settings.llmTimeoutDesc': string;
+  'settings.mcpTimeout': string;
+  'settings.mcpTimeoutDesc': string;
+  'settings.toolTimeout': string;
+  'settings.toolTimeoutDesc': string;
+  'settings.agentTimeout': string;
+  'settings.agentTimeoutDesc': string;
+  'settings.timeout': string;
+
+  // Settings - Agent Behavior
+  'settings.dynamicTools': string;
+  'settings.dynamicToolsDesc': string;
+  'settings.traceEnabled': string;
+  'settings.traceEnabledDesc': string;
+  'settings.confirmDestructive': string;
+  'settings.confirmDestructiveDesc': string;
 
   // Command Palette
   'cmd.placeholder': string;
@@ -593,6 +638,14 @@ export interface TranslationKeys {
   'chat.suggestions.connections.prompt': string;
   'chat.suggestions.question': string;
   'chat.suggestions.question.prompt': string;
+
+  // Voice Input
+  'voice.startRecording': string;
+  'voice.stopRecording': string;
+  'voice.processing': string;
+  'voice.error': string;
+  'voice.permissionDenied': string;
+  'voice.noModel': string;
 
   // Evidence - Video/Audio
   'evidence.videoTranscript': string;
@@ -806,6 +859,28 @@ export interface TranslationKeys {
   'media.codec': string;
   'media.framerate': string;
   'media.transcriptHint': string;
+
+  // Analytics
+  'analytics.title': string;
+  'analytics.totalSessions': string;
+  'analytics.successRate': string;
+  'analytics.cacheHitRate': string;
+  'analytics.totalTokens': string;
+  'analytics.avgIterations': string;
+  'analytics.avgContextUsage': string;
+  'analytics.topTools': string;
+  'analytics.recentSessions': string;
+  'analytics.noData': string;
+  'analytics.outcome': string;
+  'analytics.iterations': string;
+  'analytics.tools': string;
+  'analytics.tokens': string;
+  'analytics.last7Days': string;
+  'analytics.sessionsLast7Days': string;
+  'analytics.tokensLast7Days': string;
+  'analytics.toolName': string;
+  'analytics.count': string;
+  'analytics.message': string;
 
   // Common
   'common.save': string;
