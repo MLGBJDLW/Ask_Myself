@@ -12,6 +12,7 @@ import { useTranslation } from '../../i18n';
 export interface ThinkingSection {
   text: string;
   toolCallCards?: React.ReactNode;
+  node?: React.ReactNode;
 }
 
 interface ThinkingBlockProps {
@@ -91,7 +92,7 @@ export function ThinkingBlock({
   const combinedContent = effectiveSections
     ? effectiveSections.map(s => s.text).filter(Boolean).join('\n')
     : content;
-  const hasSectionCards = Boolean(effectiveSections?.some(section => section.toolCallCards));
+  const hasSectionCards = Boolean(effectiveSections?.some(section => section.toolCallCards || section.node));
 
   // Keep the live trace open while it is streaming, then collapse it once that phase ends.
   useEffect(() => {
@@ -198,6 +199,7 @@ export function ThinkingBlock({
                             {sec.text}
                           </ReactMarkdown>
                         )}
+                        {sec.node}
                         {sec.toolCallCards}
                       </div>
                     ))

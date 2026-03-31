@@ -53,6 +53,7 @@ interface ToolCallCardProps {
   artifacts?: ArtifactPayload;
   compact?: boolean;
   inline?: boolean;
+  trace?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -261,6 +262,7 @@ export function ToolCallCard({
   artifacts,
   compact,
   inline,
+  trace,
 }: ToolCallCardProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -338,6 +340,53 @@ export function ToolCallCard({
   const StatusIcon = statusConfig.icon;
   const traceActive = status === 'running' && !shouldReduceMotion;
   const traceSoft = status !== 'error';
+
+  if (trace) {
+    const canExpand = Boolean(formattedArgs || content || searchItems || planArtifact || verificationArtifact);
+    return (
+      <div className="rounded-lg border border-border/45 bg-surface-0/35">
+        <button
+          type="button"
+          onClick={() => canExpand && setExpanded((prev) => !prev)}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-surface-0/45 cursor-pointer disabled:cursor-default"
+          disabled={!canExpand}
+        >
+          <Icon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[12px] font-medium text-text-primary">{safeToolName}</span>
+            {formattedArgs && (
+              <span className="block truncate text-[11px] text-text-tertiary">{formattedArgs}</span>
+            )}
+          </span>
+          <span className={`inline-flex items-center gap-1 text-[11px] ${statusConfig.color}`}>
+            <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`} />
+            <span>{headerSummary}</span>
+          </span>
+          {canExpand && (
+            expanded
+              ? <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+              : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+          )}
+        </button>
+
+        {expanded && canExpand && (
+          <div className="border-t border-border/35 px-3 py-2">
+            {searchItems ? (
+              <SearchResultCards items={searchItems} />
+            ) : planArtifact ? (
+              <PlanPanel plan={planArtifact} />
+            ) : verificationArtifact ? (
+              <VerificationPanel verification={verificationArtifact} />
+            ) : content ? (
+              <pre className={`whitespace-pre-wrap break-words text-[11px] leading-relaxed ${isError ? 'text-danger' : 'text-text-secondary'}`}>
+                {content}
+              </pre>
+            ) : null}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (compact) {
     return (

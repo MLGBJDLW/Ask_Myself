@@ -25,6 +25,27 @@ export interface StreamRoundEvent {
   toolCalls: ToolCallEvent[];
 }
 
+export interface TraceThinkingEvent {
+  id: string;
+  kind: 'thinking';
+  text: string;
+}
+
+export interface TraceToolEvent {
+  id: string;
+  kind: 'tool';
+  toolCall: ToolCallEvent;
+}
+
+export interface TraceStatusEvent {
+  id: string;
+  kind: 'status';
+  text: string;
+  tone?: 'muted' | 'success' | 'error';
+}
+
+export type TraceEvent = TraceThinkingEvent | TraceToolEvent | TraceStatusEvent;
+
 export interface UsageTotal {
   promptTokens: number;
   completionTokens: number;
@@ -37,6 +58,7 @@ export interface StreamState {
   isStreaming: boolean;
   streamText: string;
   streamRounds: StreamRoundEvent[];
+  traceEvents: TraceEvent[];
   thinkingText: string;
   isThinking: boolean;
   toolCalls: ToolCallEvent[];
@@ -54,6 +76,7 @@ export interface StreamState {
 interface InternalStreamState extends StreamState {
   _toolCallSeq: number;
   _roundSeq: number;
+  _traceSeq: number;
   _activeRoundId: string | null;
   _activeRoundAcceptingStarts: boolean;
   _timeoutId: ReturnType<typeof setTimeout> | null;
@@ -170,6 +193,7 @@ function createDefaultState(): InternalStreamState {
     isStreaming: false,
     streamText: '',
     streamRounds: [],
+    traceEvents: [],
     thinkingText: '',
     isThinking: false,
     toolCalls: [],
@@ -182,6 +206,7 @@ function createDefaultState(): InternalStreamState {
     autoCompacted: null,
     _toolCallSeq: 0,
     _roundSeq: 0,
+    _traceSeq: 0,
     _activeRoundId: null,
     _activeRoundAcceptingStarts: false,
     _timeoutId: null,
@@ -211,6 +236,63 @@ function markRoundsToolCallsFinished(
   }));
 }
 
+function appendStatusTraceEvent(
+  state: InternalStreamState,
+  text: string,
+  tone: TraceStatusEvent['tone'] = 'muted',
+): void {
+  if (!text.trim()) return;
+  state.traceEvents = [...state.traceEvents, {
+    id: `trace-status-${Date.now()}-${state._traceSeq++}`,
+    kind: 'status',
+    text,
+    tone,
+  }];
+}
+
+function appendThinkingTraceEvent(state: InternalStreamState, delta: string): void {
+  if (!delta) return;
+  const last = state.traceEvents[state.traceEvents.length - 1];
+  if (last?.kind === 'thinking') {
+    state.traceEvents = [
+      ...state.traceEvents.slice(0, -1),
+      { ...last, text: last.text + delta },
+    ];
+    return;
+  }
+
+  state.traceEvents = [...state.traceEvents, {
+    id: `trace-thinking-${Date.now()}-${state._traceSeq++}`,
+    kind: 'thinking',
+    text: delta,
+  }];
+}
+
+function upsertToolTraceEvent(state: InternalStreamState, toolCall: ToolCallEvent): void {
+  const idx = state.traceEvents.findIndex(event =>
+    event.kind === 'tool' && event.toolCall.callId === toolCall.callId);
+  if (idx >= 0) {
+    const next = [...state.traceEvents];
+    next[idx] = { ...next[idx], toolCall } as TraceToolEvent;
+    state.traceEvents = next;
+    return;
+  }
+
+  state.traceEvents = [...state.traceEvents, {
+    id: `trace-tool-${Date.now()}-${state._traceSeq++}`,
+    kind: 'tool',
+    toolCall,
+  }];
+}
+
+function syncTraceToolEvents(state: InternalStreamState): void {
+  state.traceEvents = state.traceEvents.map(event => {
+    if (event.kind !== 'tool') return event;
+    const latest = state.toolCalls.find(tc => tc.callId === event.toolCall.callId);
+    return latest ? { ...event, toolCall: latest } : event;
+  });
+}
+
 /* ── Store implementation ───────────────────────────────────────── */
 
 type StoreListener = (conversationId: string) => void;
@@ -237,6 +319,7 @@ class StreamStoreImpl {
       isStreaming: s.isStreaming,
       streamText: s.streamText,
       streamRounds: s.streamRounds,
+      traceEvents: s.traceEvents,
       thinkingText: s.thinkingText,
       isThinking: s.isThinking,
       toolCalls: s.toolCalls,
@@ -285,6 +368,7 @@ class StreamStoreImpl {
     if (!s) return;
     s.streamText = '';
     s.streamRounds = [];
+    s.traceEvents = [];
     s.thinkingText = '';
     s.isThinking = false;
     s.toolCalls = [];
@@ -302,6 +386,8 @@ class StreamStoreImpl {
     s.thinkingText = '';
     s.toolCalls = markToolCallsFinished(s.toolCalls, 'error', 'Stopped by user');
     s.streamRounds = markRoundsToolCallsFinished(s.streamRounds, 'error', 'Stopped by user');
+    syncTraceToolEvents(s);
+    appendStatusTraceEvent(s, 'Stopped by user', 'error');
     s.isStreaming = false;
     s._activeRoundId = null;
     s._activeRoundAcceptingStarts = false;
@@ -318,6 +404,8 @@ class StreamStoreImpl {
     s.thinkingText = '';
     s.toolCalls = markToolCallsFinished(s.toolCalls, 'error', 'Request failed');
     s.streamRounds = markRoundsToolCallsFinished(s.streamRounds, 'error', 'Request failed');
+    syncTraceToolEvents(s);
+    appendStatusTraceEvent(s, errorMessage || 'Request failed', 'error');
     s.error = errorMessage;
     s.isStreaming = false;
     s._activeRoundId = null;
@@ -335,6 +423,8 @@ class StreamStoreImpl {
       if (!state) return;
       state.toolCalls = markToolCallsFinished(state.toolCalls, 'error', 'Connection lost');
       state.streamRounds = markRoundsToolCallsFinished(state.streamRounds, 'error', 'Connection lost');
+      syncTraceToolEvents(state);
+      appendStatusTraceEvent(state, 'Connection lost', 'error');
       state.thinkingText = '';
       state.isThinking = false;
       state.error = 'Connection lost';
@@ -368,6 +458,7 @@ class StreamStoreImpl {
         if (!delta) break;
         s.isThinking = true;
         s.thinkingText += delta;
+        appendThinkingTraceEvent(s, delta);
         } catch (err) {
           console.error('[streamStore] thinking error:', err);
         }
@@ -488,8 +579,10 @@ class StreamStoreImpl {
         if (existing >= 0) {
           s.toolCalls = [...s.toolCalls];
           s.toolCalls[existing] = { ...s.toolCalls[existing], toolName, arguments: argumentsText, status: 'running' };
+          upsertToolTraceEvent(s, s.toolCalls[existing]);
         } else {
           s.toolCalls = [...s.toolCalls, nextCall];
+          upsertToolTraceEvent(s, nextCall);
         }
         } catch (err) {
           console.error('[streamStore] toolCallStart error, creating fallback round:', err);
@@ -505,6 +598,7 @@ class StreamStoreImpl {
             id: roundId, reply: '', toolCalls: [fallbackCall],
           }];
           s.toolCalls = [...s.toolCalls, fallbackCall];
+          upsertToolTraceEvent(s, fallbackCall);
           s.isThinking = false;
           s.thinkingText = '';
         }
@@ -527,6 +621,7 @@ class StreamStoreImpl {
           s.toolCalls, resultCallId, resultIsError, resultContent, resultArtifacts,
         );
         s.toolCalls = nextToolCalls;
+        syncTraceToolEvents(s);
 
         // Update rounds
         const roundsCopy = [...s.streamRounds];
@@ -584,6 +679,7 @@ class StreamStoreImpl {
 
         s.toolCalls = markToolCallsFinished(s.toolCalls, 'done', 'No output');
         s.streamRounds = markRoundsToolCallsFinished(s.streamRounds, 'done', 'No output');
+        syncTraceToolEvents(s);
 
         const usage = event.usageTotal ?? (raw.usage_total as UsageTotal | undefined);
         if (usage) {
@@ -613,6 +709,7 @@ class StreamStoreImpl {
         s.thinkingText = '';
         s.toolCalls = markToolCallsFinished(s.toolCalls, 'error', 'Interrupted');
         s.streamRounds = markRoundsToolCallsFinished(s.streamRounds, 'error', 'Interrupted');
+        syncTraceToolEvents(s);
 
         const errMsg = (typeof event.message === 'string' ? event.message
           : (typeof raw.message === 'string' ? raw.message : 'Unknown error'));
@@ -622,8 +719,10 @@ class StreamStoreImpl {
         if (/rate.?limit/i.test(errMsg)) {
           s.rateLimited = true;
           s.error = 'Rate limited';
+          appendStatusTraceEvent(s, 'Rate limited', 'error');
         } else {
           s.error = errMsg;
+          appendStatusTraceEvent(s, errMsg, 'error');
         }
         s.isStreaming = false;
         s._activeRoundId = null;

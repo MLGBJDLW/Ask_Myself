@@ -8,19 +8,20 @@ import { useTypewriter } from '../../lib/useTypewriter';
 import { hasTimeGap } from '../../lib/relativeTime';
 import { preprocessChunkCitations, buildCitationMap } from '../../lib/citationParser';
 import type { CitationCardData } from '../../lib/citationParser';
-import type { StreamRoundEvent, ToolCallEvent } from '../../lib/useAgentStream';
+import type { StreamRoundEvent, ToolCallEvent, TraceEvent } from '../../lib/useAgentStream';
 import { ToolCallCard } from './ToolCallCard';
 import { ThinkingBlock } from './ThinkingBlock';
 import type { ThinkingSection } from './ThinkingBlock';
 import { markdownComponents, preprocessFilePaths, preprocessCitations, CitationContext } from './markdownComponents';
 import { MessageBubble } from './MessageBubble';
 import { Skeleton } from '../ui/Skeleton';
-import type { ConversationMessage } from '../../types/conversation';
+import type { ArtifactPayload, ConversationMessage } from '../../types/conversation';
 
 interface ChatMessagesProps {
   messages: ConversationMessage[];
   streamText: string;
   streamRounds: StreamRoundEvent[];
+  traceEvents: TraceEvent[];
   thinkingText: string;
   isThinking: boolean;
   toolCalls: ToolCallEvent[];
@@ -54,10 +55,84 @@ function hasTraceToolCalls<T extends { toolName?: string; name?: string }>(toolC
   return toolCalls.some(tc => (tc.toolName ?? tc.name) !== 'update_plan');
 }
 
+interface PersistedTraceToolCall {
+  callId: string;
+  toolName: string;
+  arguments: string;
+  status: 'running' | 'done' | 'error';
+  content?: string;
+  isError?: boolean;
+  artifacts?: ArtifactPayload;
+}
+
+type PersistedTraceItem =
+  | { kind: 'thinking'; text: string }
+  | { kind: 'tool'; toolCall: PersistedTraceToolCall }
+  | { kind: 'status'; text: string; tone?: 'muted' | 'success' | 'error' };
+
+function extractPersistedTraceItems(artifacts: ConversationMessage['artifacts']): PersistedTraceItem[] | null {
+  if (!artifacts || Array.isArray(artifacts) || typeof artifacts !== 'object') return null;
+  const record = artifacts as Record<string, unknown>;
+  if (record.kind !== 'traceTimeline' || !Array.isArray(record.items)) return null;
+
+  const items: PersistedTraceItem[] = [];
+  for (const rawItem of record.items) {
+    if (!rawItem || typeof rawItem !== 'object') continue;
+    const item = rawItem as Record<string, unknown>;
+    if (item.kind === 'thinking' && typeof item.text === 'string') {
+      items.push({ kind: 'thinking', text: item.text });
+      continue;
+    }
+    if (item.kind === 'status' && typeof item.text === 'string') {
+      items.push({
+        kind: 'status',
+        text: item.text,
+        tone: item.tone === 'success' || item.tone === 'error' ? item.tone : 'muted',
+      });
+      continue;
+    }
+    if (item.kind === 'tool' && item.toolCall && typeof item.toolCall === 'object') {
+      const toolCall = item.toolCall as Record<string, unknown>;
+      if (typeof toolCall.callId !== 'string' || typeof toolCall.toolName !== 'string') continue;
+      items.push({
+        kind: 'tool',
+        toolCall: {
+          callId: toolCall.callId,
+          toolName: toolCall.toolName,
+          arguments: typeof toolCall.arguments === 'string' ? toolCall.arguments : '',
+          status: toolCall.status === 'error' ? 'error' : toolCall.status === 'running' ? 'running' : 'done',
+          content: typeof toolCall.content === 'string' ? toolCall.content : undefined,
+          isError: typeof toolCall.isError === 'boolean' ? toolCall.isError : undefined,
+          artifacts: toolCall.artifacts && typeof toolCall.artifacts === 'object'
+            ? toolCall.artifacts as ArtifactPayload
+            : undefined,
+        },
+      });
+    }
+  }
+
+  return items.length > 0 ? items : null;
+}
+
+function TraceStatusRow({ text, tone = 'muted' }: { text: string; tone?: 'muted' | 'success' | 'error' }) {
+  const toneClass = tone === 'error'
+    ? 'border-danger/25 bg-danger/8 text-danger'
+    : tone === 'success'
+      ? 'border-success/25 bg-success/8 text-success'
+      : 'border-border/45 bg-surface-0/25 text-text-tertiary';
+
+  return (
+    <div className={`rounded-md border px-3 py-2 text-[11px] leading-relaxed ${toneClass}`}>
+      {text}
+    </div>
+  );
+}
+
 export function ChatMessages({
   messages,
   streamText,
   streamRounds,
+  traceEvents,
   thinkingText,
   isThinking,
   toolCalls,
@@ -215,11 +290,59 @@ export function ChatMessages({
     const flushGroup = () => {
       if (currentGroup.length === 0) return;
 
+      const persistedTraceCarrierIdx = [...currentGroup].reverse().find((idx) =>
+        Boolean(extractPersistedTraceItems(messages[idx].artifacts)));
+
       const tracedIndexes = currentGroup.filter((idx) => {
         const msg = messages[idx];
         return messageThinkingText.has(idx) || hasTraceToolCalls(msg.toolCalls);
       });
-      if (tracedIndexes.length === 0) {
+      if (tracedIndexes.length === 0 && persistedTraceCarrierIdx == null) {
+        currentGroup = [];
+        return;
+      }
+
+      if (persistedTraceCarrierIdx != null) {
+        const persistedItems = extractPersistedTraceItems(messages[persistedTraceCarrierIdx].artifacts) ?? [];
+        const sections: ThinkingSection[] = persistedItems.map((item, itemIdx) => {
+          if (item.kind === 'thinking') {
+            return { text: item.text };
+          }
+          if (item.kind === 'status') {
+            return {
+              text: '',
+              node: (
+                <TraceStatusRow
+                  key={`persisted-status-${messages[persistedTraceCarrierIdx].id}-${itemIdx}`}
+                  text={item.text}
+                  tone={item.tone}
+                />
+              ),
+            };
+          }
+          return {
+            text: '',
+            node: (
+              <ToolCallCard
+                key={`persisted-tool-${messages[persistedTraceCarrierIdx].id}-${item.toolCall.callId}-${itemIdx}`}
+                toolName={item.toolCall.toolName}
+                arguments={item.toolCall.arguments}
+                status={item.toolCall.status}
+                content={item.toolCall.content}
+                isError={item.toolCall.isError}
+                artifacts={item.toolCall.artifacts}
+                trace
+              />
+            ),
+          };
+        });
+
+        map.set(persistedTraceCarrierIdx, { type: 'anchor', sections });
+        for (const idx of tracedIndexes) {
+          if (idx !== persistedTraceCarrierIdx) {
+            map.set(idx, { type: 'member' });
+          }
+        }
         currentGroup = [];
         return;
       }
@@ -241,14 +364,14 @@ export function ChatMessages({
                 status={toolResult ? 'done' : 'running'}
                 content={toolResult?.content}
                 artifacts={toolResult?.artifacts ?? undefined}
-                compact
+                trace
               />
             );
           });
 
         return {
           text: thinking,
-          toolCallCards: renderedToolCalls.length > 0 ? (
+          node: renderedToolCalls.length > 0 ? (
             <div className="mt-1 space-y-1">
               {renderedToolCalls}
             </div>
@@ -280,46 +403,40 @@ export function ChatMessages({
   }, [messageThinkingText, messageToolCalls, messages]);
 
   const streamTraceSections = useMemo<ThinkingSection[]>(() => {
-    const sections: ThinkingSection[] = [];
-
-    for (const round of streamRounds) {
-      const traceToolCalls = round.toolCalls.filter(tc => tc.toolName !== 'update_plan');
-      if (!round.thinking && traceToolCalls.length === 0) continue;
-
-      sections.push({
-        text: round.thinking || '',
-        toolCallCards: traceToolCalls.length > 0 ? (
-          <div className="mt-1 space-y-1">
-            {traceToolCalls.map((tc, toolIdx) => (
-              <ToolCallCard
-                key={`stream-trace-${round.id}-${tc.callId || 'tool-call'}-${toolIdx}`}
-                toolName={tc.toolName}
-                arguments={tc.arguments}
-                status={tc.status}
-                content={tc.content}
-                isError={tc.isError}
-                artifacts={tc.artifacts}
-                compact
-              />
-            ))}
-          </div>
-        ) : undefined,
-      });
-    }
-
-    if (thinkingText.trim().length > 0) {
-      sections.push({ text: thinkingText });
-    }
-
-    return sections;
-  }, [streamRounds, thinkingText]);
+    return traceEvents.flatMap((event) => {
+      if (event.kind === 'thinking') {
+        return event.text.trim().length > 0 ? [{ text: event.text }] : [];
+      }
+      if (event.kind === 'tool') {
+        return [{
+          text: '',
+          node: (
+            <ToolCallCard
+              key={`stream-trace-${event.id}`}
+              toolName={event.toolCall.toolName}
+              arguments={event.toolCall.arguments}
+              status={event.toolCall.status}
+              content={event.toolCall.content}
+              isError={event.toolCall.isError}
+              artifacts={event.toolCall.artifacts}
+              trace
+            />
+          ),
+        }];
+      }
+      return [{
+        text: '',
+        node: <TraceStatusRow key={`stream-status-${event.id}`} text={event.text} tone={event.tone} />,
+      }];
+    });
+  }, [traceEvents]);
 
   const streamTraceActive = useMemo(() => {
     if (!isStreaming) return false;
     if (isThinking || thinkingText.trim().length > 0) return true;
-    return streamRounds.some(round =>
-      round.toolCalls.some(tc => tc.toolName !== 'update_plan' && tc.status === 'running'));
-  }, [isStreaming, isThinking, streamRounds, thinkingText]);
+    return traceEvents.some(event =>
+      event.kind === 'tool' && event.toolCall.status === 'running');
+  }, [isStreaming, isThinking, thinkingText, traceEvents]);
 
   const getScrollMetrics = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -397,7 +514,7 @@ export function ChatMessages({
     }
 
     scrollToContainerBottom('auto');
-  }, [messages, streamText, streamRounds, toolCalls, getScrollMetrics, scrollToContainerBottom]);
+  }, [messages, streamText, streamRounds, traceEvents, toolCalls, getScrollMetrics, scrollToContainerBottom]);
 
   const scrollToBottom = useCallback(() => {
     shouldAutoFollowRef.current = true;
@@ -427,6 +544,7 @@ export function ChatMessages({
       streamText.trim().length > 0
       && (lastRenderableMessageRole == null || lastRenderableMessageRole === 'user')
     );
+  const shouldRenderInlineError = Boolean(error && !isStreaming && traceEvents.length === 0);
 
   if (messages.length === 0 && !isStreaming && !loadingMsgs) {
     return (
@@ -619,7 +737,7 @@ export function ChatMessages({
         </motion.div>
       )}
 
-      {isStreaming && !streamText && streamRounds.length === 0 && toolCalls.length === 0 && !thinkingText && !isThinking && (
+      {isStreaming && !streamText && streamRounds.length === 0 && traceEvents.length === 0 && toolCalls.length === 0 && !thinkingText && !isThinking && (
         <motion.div
           initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -639,7 +757,7 @@ export function ChatMessages({
         </motion.div>
       )}
 
-      {error && !isStreaming && (
+      {shouldRenderInlineError && (
         <motion.div
           initial={shouldReduceMotion ? false : { opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}

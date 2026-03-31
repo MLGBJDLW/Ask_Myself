@@ -272,6 +272,87 @@ pub enum AgentEvent {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedTraceToolCall {
+    call_id: String,
+    tool_name: String,
+    arguments: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_error: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artifacts: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum PersistedTraceItem {
+    Thinking { text: String },
+    Tool { tool_call: PersistedTraceToolCall },
+    Status { text: String, tone: String },
+}
+
+fn append_persisted_trace_thinking(items: &mut Vec<PersistedTraceItem>, text: &str) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    items.push(PersistedTraceItem::Thinking {
+        text: trimmed.to_string(),
+    });
+}
+
+fn append_persisted_trace_tool(
+    items: &mut Vec<PersistedTraceItem>,
+    tool_name: &str,
+    arguments: &str,
+    call_id: &str,
+    status: &str,
+    content: Option<String>,
+    is_error: Option<bool>,
+    artifacts: Option<serde_json::Value>,
+) {
+    items.push(PersistedTraceItem::Tool {
+        tool_call: PersistedTraceToolCall {
+            call_id: call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            arguments: arguments.to_string(),
+            status: status.to_string(),
+            content,
+            is_error,
+            artifacts,
+        },
+    });
+}
+
+fn append_persisted_trace_status(items: &mut Vec<PersistedTraceItem>, text: &str, tone: &str) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    items.push(PersistedTraceItem::Status {
+        text: trimmed.to_string(),
+        tone: tone.to_string(),
+    });
+}
+
+fn build_trace_artifacts(items: &[PersistedTraceItem]) -> Option<serde_json::Value> {
+    if items.is_empty() {
+        return None;
+    }
+
+    Some(serde_json::json!({
+        "kind": "traceTimeline",
+        "version": 1,
+        "items": items,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -637,6 +718,7 @@ impl AgentExecutor {
         let mut accumulated_content = String::new();
         let mut last_iteration_content = String::new();
         let mut last_finish_reason: Option<String> = None;
+        let mut persisted_trace_items: Vec<PersistedTraceItem> = Vec::new();
 
         // --- 3c. Extract user query text and build cache key -----------------
         let user_query_text = &user_query_text_for_tools;
@@ -780,6 +862,11 @@ impl AgentExecutor {
                         accumulated_content.clone()
                     };
                     let final_msg = Message::text(Role::Assistant, cancel_text);
+                    append_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        "Request cancelled by user.",
+                        "error",
+                    );
                     if let Some(cid) = conversation_id {
                         let conv_msg = ConversationMessage {
                             id: Uuid::new_v4().to_string(),
@@ -788,7 +875,7 @@ impl AgentExecutor {
                             content: final_msg.text_content(),
                             tool_call_id: None,
                             tool_calls: vec![],
-                            artifacts: None,
+                            artifacts: build_trace_artifacts(&persisted_trace_items),
                             token_count: estimate_message_tokens(&final_msg),
                             created_at: String::new(),
                             sort_order,
@@ -1135,6 +1222,7 @@ impl AgentExecutor {
 
             // -- 4d. Check termination -----------------------------------------
             if tool_calls.is_empty() {
+                append_persisted_trace_thinking(&mut persisted_trace_items, &iteration_thinking);
                 // Save final assistant message to DB.
                 if let Some(cid) = conversation_id {
                     let conv_msg = ConversationMessage {
@@ -1144,7 +1232,7 @@ impl AgentExecutor {
                         content: assistant_msg.text_content(),
                         tool_call_id: None,
                         tool_calls: assistant_msg.tool_calls.clone().unwrap_or_default(),
-                        artifacts: None,
+                        artifacts: build_trace_artifacts(&persisted_trace_items),
                         token_count: estimate_message_tokens(&assistant_msg),
                         created_at: String::new(),
                         sort_order,
@@ -1195,6 +1283,7 @@ impl AgentExecutor {
             }
 
             // -- 4d'. Save intermediate assistant message (with tool_calls) ----
+            append_persisted_trace_thinking(&mut persisted_trace_items, &iteration_thinking);
             if let Some(cid) = conversation_id {
                 let conv_msg = ConversationMessage {
                     id: Uuid::new_v4().to_string(),
@@ -1295,7 +1384,7 @@ impl AgentExecutor {
 
             // Process results in original order (join_all preserves order).
             for (tc, tool_timeout, tool_result, tool_elapsed) in tool_results {
-                let (tool_msg, tool_artifacts) = match tool_result {
+                let (tool_msg, tool_artifacts, tool_is_error) = match tool_result {
                     Ok(Ok(result)) => {
                         let _ = tx
                             .send(AgentEvent::ToolCallResult {
@@ -1306,7 +1395,7 @@ impl AgentExecutor {
                                 artifacts: result.artifacts.clone(),
                             })
                             .await;
-                        (result.content, result.artifacts)
+                        (result.content, result.artifacts, result.is_error)
                     }
                     Ok(Err(e)) => {
                         let err_content = format!("Error: {e}");
@@ -1319,7 +1408,7 @@ impl AgentExecutor {
                                 artifacts: None,
                             })
                             .await;
-                        (err_content, None)
+                        (err_content, None, true)
                     }
                     Err(_elapsed) => {
                         warn!("Tool '{}' timed out after {:?}", tc.name, tool_timeout);
@@ -1336,7 +1425,7 @@ impl AgentExecutor {
                                 artifacts: None,
                             })
                             .await;
-                        (err_content, None)
+                        (err_content, None, true)
                     }
                 };
 
@@ -1346,6 +1435,17 @@ impl AgentExecutor {
                 } else {
                     tool_msg
                 };
+
+                append_persisted_trace_tool(
+                    &mut persisted_trace_items,
+                    &tc.name,
+                    &tc.arguments,
+                    &tc.id,
+                    if tool_is_error { "error" } else { "done" },
+                    Some(content.clone()),
+                    Some(tool_is_error),
+                    tool_artifacts.clone(),
+                );
 
                 // Save tool result message to DB.
                 if let Some(cid) = conversation_id {
@@ -1431,6 +1531,11 @@ impl AgentExecutor {
         }
 
         let final_msg = Message::text(Role::Assistant, final_content);
+        append_persisted_trace_status(
+            &mut persisted_trace_items,
+            "Reached maximum iterations before producing a final answer.",
+            "error",
+        );
 
         if let Some(cid) = conversation_id {
             let conv_msg = ConversationMessage {
@@ -1440,7 +1545,7 @@ impl AgentExecutor {
                 content: final_msg.text_content(),
                 tool_call_id: None,
                 tool_calls: vec![],
-                artifacts: None,
+                artifacts: build_trace_artifacts(&persisted_trace_items),
                 token_count: estimate_message_tokens(&final_msg),
                 created_at: String::new(),
                 sort_order,
@@ -2563,6 +2668,29 @@ mod tests {
         assert_eq!(
             messages[2].thinking.as_deref(),
             Some("second round reasoning")
+        );
+        let artifacts = messages[2]
+            .artifacts
+            .as_ref()
+            .and_then(|value| value.as_object())
+            .expect("final assistant message should persist trace artifacts");
+        assert_eq!(
+            artifacts.get("kind").and_then(|v| v.as_str()),
+            Some("traceTimeline")
+        );
+        let items = artifacts
+            .get("items")
+            .and_then(|v| v.as_array())
+            .expect("trace timeline should include items");
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items[0].get("kind").and_then(|v| v.as_str()),
+            Some("thinking")
+        );
+        assert_eq!(items[1].get("kind").and_then(|v| v.as_str()), Some("tool"));
+        assert_eq!(
+            items[2].get("kind").and_then(|v| v.as_str()),
+            Some("thinking")
         );
     }
 }

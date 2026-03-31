@@ -366,6 +366,7 @@ export function ChatPage() {
               messages={chat.messages}
               streamText={chat.streamText}
               streamRounds={chat.streamRounds}
+              traceEvents={chat.traceEvents}
               thinkingText={chat.thinkingText}
               isThinking={chat.isThinking}
               toolCalls={chat.toolCalls}

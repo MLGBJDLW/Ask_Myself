@@ -114,6 +114,7 @@ export interface UseChatSessionReturn {
   isStreaming: boolean;
   streamText: string;
   streamRounds: ReturnType<typeof useAgentStream>['streamRounds'];
+  traceEvents: ReturnType<typeof useAgentStream>['traceEvents'];
   thinkingText: string;
   isThinking: boolean;
   toolCalls: ReturnType<typeof useAgentStream>['toolCalls'];
@@ -221,6 +222,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     isStreaming,
     streamText,
     streamRounds,
+    traceEvents,
     thinkingText,
     isThinking,
     toolCalls,
@@ -239,7 +241,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   // (runs during render so scoping computed values below see the correct ref)
   if (activeId && !streamingConversationRef.current) {
     const storeStream = streamStore.getStream(activeId);
-    if (storeStream && (storeStream.isStreaming || storeStream.streamRounds.length > 0 || storeStream.streamText.length > 0)) {
+    if (storeStream && (
+      storeStream.isStreaming
+      || storeStream.streamRounds.length > 0
+      || storeStream.traceEvents.length > 0
+      || storeStream.streamText.length > 0
+    )) {
       streamingConversationRef.current = activeId;
       usageConversationRef.current = activeId;
     }
@@ -477,12 +484,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     }
     if (streamText.trim().length > 0) return;
     if (streamRounds.length > 0) return;
+    if (traceEvents.length > 0) return;
     if (thinkingText.trim().length > 0) return;
     if (isThinking) return;
     if (toolCalls.length > 0) return;
     pendingStreamConversationRef.current = null;
     streamingConversationRef.current = null;
-  }, [isStreaming, isThinking, streamRounds.length, streamText, thinkingText, toolCalls.length]);
+  }, [isStreaming, isThinking, streamRounds.length, streamText, thinkingText, toolCalls.length, traceEvents.length]);
 
   useEffect(() => {
     if (!activeId || !lastUsage) return;
@@ -783,6 +791,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const activeIsStreaming = isViewingStreamingConversation && isStreaming;
   const activeStreamText = isViewingStreamingConversation ? streamText : '';
   const activeStreamRounds = isViewingStreamingConversation ? streamRounds : [];
+  const activeTraceEvents = isViewingStreamingConversation ? traceEvents : [];
   const activeThinkingText = isViewingStreamingConversation ? thinkingText : '';
   const activeIsThinking = isViewingStreamingConversation ? isThinking : false;
   const activeToolCalls = isViewingStreamingConversation ? toolCalls : [];
@@ -830,6 +839,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     isStreaming: activeIsStreaming,
     streamText: activeStreamText,
     streamRounds: activeStreamRounds,
+    traceEvents: activeTraceEvents,
     thinkingText: activeThinkingText,
     isThinking: activeIsThinking,
     toolCalls: activeToolCalls,
