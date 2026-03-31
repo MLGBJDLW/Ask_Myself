@@ -402,4 +402,14 @@ test('preserves multiple thinking and tool rounds during a single streamed respo
   await expect(
     page.locator('button[aria-expanded="false"]').filter({ hasText: 'Thinking completed' }),
   ).toHaveCount(2);
+
+  const chatLogText = await page.getByLabel('Chat messages').textContent();
+  expect(chatLogText).toBeTruthy();
+
+  const text = chatLogText ?? '';
+  expect(text.indexOf('Need to search the knowledge base first.')).toBeGreaterThanOrEqual(0);
+  expect(text.indexOf('search_knowledge_base')).toBeGreaterThan(text.indexOf('Need to search the knowledge base first.'));
+  expect(text.indexOf('Now compare the two candidate files.')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
+  expect(text.indexOf('compare_documents')).toBeGreaterThan(text.indexOf('Now compare the two candidate files.'));
+  expect(text.indexOf('Final answer: add the timeout guard from the second file.')).toBeGreaterThan(text.indexOf('compare_documents'));
 });

@@ -42,7 +42,15 @@ impl Database {
 
     /// Get a reference to the connection (locked).
     pub fn conn(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().expect("Database mutex poisoned")
+        match self.conn.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::error!(
+                    "Database mutex was poisoned by an earlier panic; recovering inner connection"
+                );
+                poisoned.into_inner()
+            }
+        }
     }
 
     /// Return the file path of the database, if file-backed.
@@ -222,6 +230,28 @@ mod tests {
     fn test_database_migrations_idempotent() {
         let _db1 = Database::open_memory().expect("first open_memory should succeed");
         let _db2 = Database::open_memory().expect("second open_memory should succeed");
+    }
+
+    #[test]
+    fn test_conn_recovers_from_poisoned_mutex() {
+        let db = Database::open_memory().expect("open_memory should succeed");
+        let db_clone = db.clone();
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = db_clone.conn.lock().expect("lock should succeed");
+            panic!("poison the mutex");
+        }));
+
+        let conn = db.conn();
+        let table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query after poison recovery should succeed");
+
+        assert!(table_count > 0);
     }
 
     #[test]
@@ -651,9 +681,8 @@ impl Database {
         limit: usize,
     ) -> Result<Vec<crate::trace::AgentTrace>, CoreError> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT trace_json FROM agent_traces ORDER BY created_at DESC LIMIT ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT trace_json FROM agent_traces ORDER BY created_at DESC LIMIT ?1")?;
         let rows = stmt.query_map(rusqlite::params![limit as i64], |row| {
             row.get::<_, String>(0)
         })?;
@@ -730,15 +759,12 @@ impl Database {
         // Top tools: extract from trace_json steps (limit scan to 200 most recent).
         let mut tool_counts: std::collections::HashMap<String, u64> =
             std::collections::HashMap::new();
-        let mut stmt2 = conn.prepare(
-            "SELECT trace_json FROM agent_traces ORDER BY created_at DESC LIMIT 200",
-        )?;
+        let mut stmt2 =
+            conn.prepare("SELECT trace_json FROM agent_traces ORDER BY created_at DESC LIMIT 200")?;
         let rows2 = stmt2.query_map([], |row| row.get::<_, String>(0))?;
         for row in rows2 {
             let json = row?;
-            if let Ok(trace) =
-                serde_json::from_str::<crate::trace::AgentTrace>(&json)
-            {
+            if let Ok(trace) = serde_json::from_str::<crate::trace::AgentTrace>(&json) {
                 for step in &trace.steps {
                     if let Some(ref name) = step.tool_name {
                         *tool_counts.entry(name.clone()).or_insert(0) += 1;

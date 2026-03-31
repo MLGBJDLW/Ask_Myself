@@ -23,6 +23,18 @@ const DEFAULT_SEARCH_LIMIT: u32 = 20;
 /// Maximum length for the snippet preview field.
 const SNIPPET_MAX_LEN: usize = 150;
 
+fn truncate_to_char_boundary(content: &str, max_len: usize) -> &str {
+    if content.len() <= max_len {
+        return content;
+    }
+
+    let mut end = max_len;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    &content[..end]
+}
+
 /// Generate a short snippet from full content for preview display.
 fn make_snippet(content: &str) -> Option<String> {
     let trimmed = content.trim();
@@ -33,9 +45,10 @@ fn make_snippet(content: &str) -> Option<String> {
         Some(trimmed.to_string())
     } else {
         // Break at a word boundary if possible.
-        let slice = &trimmed[..SNIPPET_MAX_LEN];
-        let end = slice.rfind(' ').unwrap_or(SNIPPET_MAX_LEN);
-        Some(format!("{}…", &trimmed[..end]))
+        let slice = truncate_to_char_boundary(trimmed, SNIPPET_MAX_LEN);
+        let end = slice.rfind(' ').unwrap_or(slice.len());
+        let snippet = if end == 0 { slice } else { &slice[..end] };
+        Some(format!("{}…", snippet))
     }
 }
 
@@ -53,7 +66,11 @@ fn deduplicate_by_document(cards: Vec<EvidenceCard>) -> Vec<EvidenceCard> {
             .or_insert(card);
     }
     let mut result: Vec<EvidenceCard> = best.into_values().collect();
-    result.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    result.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     result
 }
 
@@ -124,7 +141,11 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
         format!("({}) OR ({})", base_fts, extras)
     };
 
-    let limit = if query.limit == 0 { DEFAULT_SEARCH_LIMIT } else { query.limit };
+    let limit = if query.limit == 0 {
+        DEFAULT_SEARCH_LIMIT
+    } else {
+        query.limit
+    };
     // Over-fetch so feedback reranking can surface high-value results
     // that BM25 alone might rank outside the requested limit.
     let internal_limit = std::cmp::min(limit * 3, limit + 30);
@@ -413,7 +434,11 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
         });
     }
 
-    let user_limit = if query.limit == 0 { DEFAULT_SEARCH_LIMIT } else { query.limit } as usize;
+    let user_limit = if query.limit == 0 {
+        DEFAULT_SEARCH_LIMIT
+    } else {
+        query.limit
+    } as usize;
     // Over-fetch so reranking has more candidates to work with.
     let internal_limit: usize = std::cmp::min(user_limit * 3, user_limit + 30);
     let terms = extract_terms(trimmed);
@@ -611,10 +636,12 @@ fn tfidf_vector_search(db: &Database, query_text: &str, limit: usize) -> Vec<(St
                     if query_vec.iter().all(|&v| v == 0.0) {
                         return Vec::new();
                     }
-                    vector_search_top_k(db, &query_vec, "tfidf-v1", limit, None).unwrap_or_else(|e| {
-                        tracing::warn!("TF-IDF vector search failed: {e}");
-                        Vec::new()
-                    })
+                    vector_search_top_k(db, &query_vec, "tfidf-v1", limit, None).unwrap_or_else(
+                        |e| {
+                            tracing::warn!("TF-IDF vector search failed: {e}");
+                            Vec::new()
+                        },
+                    )
                 }
                 Err(e) => {
                     tracing::warn!("TF-IDF query embedding failed: {e}");
@@ -827,9 +854,7 @@ fn compute_credibility(document_path: &str) -> f64 {
             return 0.85;
         }
         // Known general sources
-        if path_lower.contains("wikipedia.org")
-            || path_lower.contains(".org")
-        {
+        if path_lower.contains("wikipedia.org") || path_lower.contains(".org") {
             return 0.7;
         }
         // General web
@@ -1427,6 +1452,17 @@ mod tests {
 
         let result = search(&db, &default_query("   ")).unwrap();
         assert_eq!(result.total_matches, 0);
+    }
+
+    #[test]
+    fn test_make_snippet_preserves_utf8_boundaries() {
+        let content = "测试条目甲乙丙丁戊己庚辛壬癸".repeat(20);
+
+        let snippet = make_snippet(&content).expect("snippet should be generated");
+
+        assert!(snippet.ends_with('…'));
+        assert!(snippet.is_char_boundary(snippet.len() - '…'.len_utf8()));
+        assert!(!snippet.contains('\u{fffd}'));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { Fragment, useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback } from 'react';
+import { useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { MessageCircle, ChevronDown, AlertCircle, RotateCcw, X, Search, FileText, Link2, HelpCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -15,11 +15,6 @@ import { markdownComponents, preprocessFilePaths, preprocessCitations, CitationC
 import { MessageBubble } from './MessageBubble';
 import { Skeleton } from '../ui/Skeleton';
 import type { ConversationMessage } from '../../types/conversation';
-import type { ArtifactPayload } from '../../types/conversation';
-
-/* ------------------------------------------------------------------ */
-/*  Types                                                              */
-/* ------------------------------------------------------------------ */
 
 interface ChatMessagesProps {
   messages: ConversationMessage[];
@@ -39,10 +34,6 @@ interface ChatMessagesProps {
   onSuggestionClick?: (text: string) => void;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Component                                                          */
-/* ------------------------------------------------------------------ */
-
 const SUGGESTIONS: { icon: typeof Search; labelKey: keyof import('../../i18n').TranslationKeys; promptKey: keyof import('../../i18n').TranslationKeys }[] = [
   { icon: Search, labelKey: 'chat.suggestions.search', promptKey: 'chat.suggestions.search.prompt' },
   { icon: FileText, labelKey: 'chat.suggestions.summarize', promptKey: 'chat.suggestions.summarize.prompt' },
@@ -58,7 +49,23 @@ function normalizeThinking(content: string): string {
   return content.replace(/\r\n/g, '\n').trim();
 }
 
-export function ChatMessages({ messages, streamText, streamRounds, thinkingText, isThinking, toolCalls, isStreaming, error, onRetry, onDismissError, onDeleteMessage, onEditAndResend, loadingMsgs, lastCached, onSuggestionClick }: ChatMessagesProps) {
+export function ChatMessages({
+  messages,
+  streamText,
+  streamRounds,
+  thinkingText,
+  isThinking,
+  toolCalls,
+  isStreaming,
+  error,
+  onRetry,
+  onDismissError,
+  onDeleteMessage,
+  onEditAndResend,
+  loadingMsgs,
+  lastCached,
+  onSuggestionClick,
+}: ChatMessagesProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -69,20 +76,17 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
   const [unreadCount, setUnreadCount] = useState(0);
   const prevMsgCountRef = useRef(messages.length);
 
-  // ── Feedback: chunk-ID tracking ───────────────────────────────────────
   const chunkIdCacheRef = useRef<Map<string, string[]>>(new Map());
   const pendingChunkIdsRef = useRef<string[]>([]);
 
-  // Collect chunk IDs from streaming tool-call artifacts
   useEffect(() => {
     const ids: string[] = [];
     for (const tc of toolCalls) {
-      if (tc.status === 'done' && tc.artifacts) {
-        const arr = Array.isArray(tc.artifacts) ? tc.artifacts : Object.values(tc.artifacts);
-        for (const item of arr) {
-          if (item && typeof item === 'object' && 'chunkId' in (item as Record<string, unknown>)) {
-            ids.push((item as Record<string, unknown>).chunkId as string);
-          }
+      if (tc.status !== 'done' || !tc.artifacts) continue;
+      const arr = Array.isArray(tc.artifacts) ? tc.artifacts : Object.values(tc.artifacts);
+      for (const item of arr) {
+        if (item && typeof item === 'object' && 'chunkId' in (item as Record<string, unknown>)) {
+          ids.push((item as Record<string, unknown>).chunkId as string);
         }
       }
     }
@@ -91,11 +95,10 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
     }
   }, [toolCalls]);
 
-  // When streaming ends and a new assistant message appears, persist chunk IDs
   const prevMessagesLenRef = useRef(messages.length);
   useEffect(() => {
     if (messages.length > prevMessagesLenRef.current && pendingChunkIdsRef.current.length > 0) {
-      for (let i = messages.length - 1; i >= 0; i--) {
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
         if (messages[i].role === 'assistant') {
           chunkIdCacheRef.current.set(messages[i].id, [...pendingChunkIdsRef.current]);
           pendingChunkIdsRef.current = [];
@@ -106,12 +109,10 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
     prevMessagesLenRef.current = messages.length;
   }, [messages]);
 
-  // Typewriter: gradually reveal streamed text for a smooth typing feel
   const typewriterText = useTypewriter(streamText, isStreaming, { charsPerTick: 5, intervalMs: 30 });
   const displayedText = shouldReduceMotion ? streamText : typewriterText;
   const streamingThinkingContent = thinkingText || t('chat.thinking');
 
-  // Debounce displayed text for markdown rendering (~100ms) to avoid re-parsing on every tick
   const [debouncedMarkdown, setDebouncedMarkdown] = useState('');
   useEffect(() => {
     if (shouldReduceMotion || !isStreaming) {
@@ -122,41 +123,34 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
     return () => clearTimeout(timer);
   }, [displayedText, isStreaming, shouldReduceMotion]);
 
-  // Memoize remark plugins array to avoid re-creating on each render
   const remarkPlugins = useMemo(() => [remarkGfm], []);
 
-  // Pre-process markdown content (memoized on debounced text)
   const processedMarkdown = useMemo(
     () => preprocessFilePaths(preprocessCitations(preprocessChunkCitations(debouncedMarkdown))),
     [debouncedMarkdown],
   );
+
   const preprocessStreamingMarkdown = useCallback(
     (content: string) => preprocessFilePaths(preprocessCitations(preprocessChunkCitations(content))),
     [],
   );
 
-  // Build citation lookup map from streaming tool call artifacts
   const streamingCitationLookup = useMemo(() => {
     const map = buildCitationMap(toolCalls);
     return { getCard: (id: string) => map.get(id) };
   }, [toolCalls]);
 
-  // Build tool call map from messages for completed tool calls
   const messageToolCalls = useMemo(() => {
     const map = new Map<number, ConversationMessage[]>();
-    for (let i = 0; i < messages.length; i++) {
+    for (let i = 0; i < messages.length; i += 1) {
       const msg = messages[i];
-      if (msg.role === 'assistant' && msg.toolCalls.length > 0) {
-        const toolResults: ConversationMessage[] = [];
-        for (let j = i + 1; j < messages.length; j++) {
-          if (messages[j].role === 'tool') {
-            toolResults.push(messages[j]);
-          } else {
-            break;
-          }
-        }
-        map.set(i, toolResults);
+      if (msg.role !== 'assistant' || msg.toolCalls.length === 0) continue;
+      const toolResults: ConversationMessage[] = [];
+      for (let j = i + 1; j < messages.length; j += 1) {
+        if (messages[j].role !== 'tool') break;
+        toolResults.push(messages[j]);
       }
+      map.set(i, toolResults);
     }
     return map;
   }, [messages]);
@@ -182,18 +176,14 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
         lastUserIdx = i;
         continue;
       }
-      if (msg.role !== 'assistant' || !msg.thinking) {
-        continue;
-      }
+      if (msg.role !== 'assistant' || !msg.thinking) continue;
 
       let renderableThinking = normalizeThinking(msg.thinking);
       if (msg.toolCalls.length === 0) {
         const priorToolRoundThinking: string[] = [];
         for (let j = lastUserIdx + 1; j < i; j += 1) {
           const prev = messages[j];
-          if (prev.role !== 'assistant' || !prev.thinking || prev.toolCalls.length === 0) {
-            continue;
-          }
+          if (prev.role !== 'assistant' || !prev.thinking || prev.toolCalls.length === 0) continue;
           const segment = normalizeThinking(prev.thinking);
           if (segment) {
             priorToolRoundThinking.push(segment);
@@ -213,69 +203,6 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
 
     return map;
   }, [messages]);
-
-  // Consolidate assistant messages that belong to the same response group
-  // (consecutive assistant messages between user messages) into one block
-  const consolidatedAssistantData = useMemo(() => {
-    const map = new Map<number,
-      | { type: 'anchor'; entries: Array<{ thinking?: string; toolCalls: Array<{ id: string; toolName: string; arguments: string; status: 'running' | 'done' | 'error'; content?: string; artifacts?: ArtifactPayload }> }>; allToolCalls: Array<{ id: string; toolName: string; arguments: string; status: 'running' | 'done' | 'error'; content?: string; artifacts?: ArtifactPayload }> }
-      | { type: 'member' }
-    >();
-
-    const groups: number[][] = [];
-    let currentGroup: number[] = [];
-
-    for (let i = 0; i < messages.length; i++) {
-      if (messages[i].role === 'user') {
-        if (currentGroup.length > 0) { groups.push(currentGroup); currentGroup = []; }
-      } else if (messages[i].role === 'assistant') {
-        currentGroup.push(i);
-      }
-    }
-    if (currentGroup.length > 0) groups.push(currentGroup);
-
-    for (const group of groups) {
-      const withThinkingOrTools = group.filter(idx => {
-        const msg = messages[idx];
-        return messageThinkingText.has(idx) || msg.toolCalls.some(tc => tc.name !== 'update_plan');
-      });
-      if (withThinkingOrTools.length < 2) continue;
-
-      const entries: Array<{ thinking?: string; toolCalls: Array<{ id: string; toolName: string; arguments: string; status: 'running' | 'done' | 'error'; content?: string; artifacts?: ArtifactPayload }> }> = [];
-      const allToolCalls: Array<{ id: string; toolName: string; arguments: string; status: 'running' | 'done' | 'error'; content?: string; artifacts?: ArtifactPayload }> = [];
-
-      for (const idx of group) {
-        const msg = messages[idx];
-        const thinking = messageThinkingText.get(idx);
-        const tcs = msg.toolCalls
-          .filter(tc => tc.name !== 'update_plan')
-          .map(tc => {
-            const result = messageToolCalls.get(idx)?.find(tr => tr.toolCallId === tc.id);
-            return {
-              id: tc.id,
-              toolName: tc.name || 'unknown_tool',
-              arguments: tc.arguments || '',
-              status: (result ? 'done' : 'running') as 'running' | 'done' | 'error',
-              content: result?.content,
-              artifacts: result?.artifacts ?? undefined,
-            };
-          });
-        if (thinking || tcs.length > 0) {
-          entries.push({ thinking, toolCalls: tcs });
-          allToolCalls.push(...tcs);
-        }
-      }
-
-      if (entries.length > 0) {
-        map.set(withThinkingOrTools[0], { type: 'anchor', entries, allToolCalls });
-        for (const idx of withThinkingOrTools.slice(1)) {
-          map.set(idx, { type: 'member' });
-        }
-      }
-    }
-
-    return map;
-  }, [messages, messageThinkingText, messageToolCalls]);
 
   const getScrollMetrics = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -329,16 +256,14 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
     }
   }, [getScrollMetrics]);
 
-  // Track new messages while scrolled up
   useEffect(() => {
     const newCount = messages.length - prevMsgCountRef.current;
     if (newCount > 0 && hasOverflow && !shouldAutoFollowRef.current) {
-      setUnreadCount((c) => c + newCount);
+      setUnreadCount((count) => count + newCount);
     }
     prevMsgCountRef.current = messages.length;
   }, [messages.length, hasOverflow]);
 
-  // Follow streamed output unless the user intentionally parked away from the bottom.
   useLayoutEffect(() => {
     const { nearBottom, overflow } = getScrollMetrics();
     setHasOverflow(overflow);
@@ -362,10 +287,8 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
     scrollToContainerBottom(shouldReduceMotion ? 'auto' : 'smooth');
   }, [scrollToContainerBottom, shouldReduceMotion]);
 
-  // Find the last assistant message index for retry button
-  // NOTE: This useMemo MUST be before early returns to satisfy React's Rules of Hooks.
   const lastAssistantIdx = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
       if (messages[i].role === 'assistant') return i;
     }
     return -1;
@@ -382,17 +305,12 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
   }, [messages]);
 
   const shouldRenderStreamRounds = streamRounds.length > 0;
-
-  // Consolidate stream rounds when 2+ rounds have thinking or tool calls
-  const consolidateStreamRounds = streamRounds.length >= 2 &&
-    streamRounds.filter(r => r.thinking || r.toolCalls.some(tc => tc.toolName !== 'update_plan')).length >= 2;
-
   const shouldShowStreamingText = isStreaming
     || (
       streamText.trim().length > 0
       && (lastRenderableMessageRole == null || lastRenderableMessageRole === 'user')
     );
-  // Empty state
+
   if (messages.length === 0 && !isStreaming && !loadingMsgs) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -429,17 +347,14 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
     );
   }
 
-  // Loading skeleton
   if (loadingMsgs) {
     return (
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-        {/* User skeleton */}
         <div className="flex justify-end">
           <div className="max-w-[60%] rounded-lg bg-accent-subtle px-3.5 py-2.5">
             <Skeleton className="h-4 w-48" />
           </div>
         </div>
-        {/* Assistant skeleton */}
         <div className="flex justify-start">
           <div className="max-w-[80%] rounded-lg bg-surface-2 px-3.5 py-2.5 space-y-2">
             <Skeleton className="h-4 w-64" />
@@ -447,7 +362,6 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
             <Skeleton className="h-4 w-40" />
           </div>
         </div>
-        {/* User skeleton 2 */}
         <div className="flex justify-end">
           <div className="max-w-[60%] rounded-lg bg-accent-subtle px-3.5 py-2.5">
             <Skeleton className="h-4 w-36" />
@@ -469,10 +383,8 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
     >
       <AnimatePresence initial={false}>
         {messages.map((msg, idx) => {
-          // Skip tool result messages (rendered inline with tool calls)
           if (msg.role === 'tool' || msg.role === 'system') return null;
 
-          // Resolve feedback context for assistant messages
           const queryText = msg.role === 'assistant'
             ? (messages.slice(0, idx).reverse().find((m) => m.role === 'user')?.content ?? '')
             : '';
@@ -480,119 +392,48 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
           const renderableThinking = msg.role === 'assistant'
             ? messageThinkingText.get(idx) ?? null
             : null;
-          const consolidated = msg.role === 'assistant' ? consolidatedAssistantData.get(idx) : undefined;
-          // Show text bubble for assistant messages whenever they have content.
+          const renderedToolCalls = msg.role === 'assistant'
+            ? msg.toolCalls
+              .filter(tc => tc.name !== 'update_plan')
+              .map((tc) => {
+                const toolResult = messageToolCalls.get(idx)?.find(
+                  (tr) => tr.toolCallId === tc.id,
+                );
+                return {
+                  id: tc.id,
+                  toolName: tc.name || 'unknown_tool',
+                  arguments: tc.arguments || '',
+                  status: (toolResult ? 'done' : 'running') as 'running' | 'done',
+                  content: toolResult?.content,
+                  artifacts: toolResult?.artifacts ?? undefined,
+                };
+              })
+            : [];
           const hasRenderableAssistantContent =
-            msg.role !== 'assistant' ||
-            msg.content.trim().length > 0 ||
-            (msg.thinking && msg.thinking.trim().length > 0);
+            msg.role !== 'assistant' || msg.content.trim().length > 0;
 
           return (
             <div key={msg.id}>
-              {/* Consolidated thinking block (renders at anchor index) */}
-              {consolidated?.type === 'anchor' && (
+              {msg.role === 'assistant' && renderableThinking && (
                 <div className="flex justify-start mb-1">
                   <div className="max-w-[80%]">
-                    <ThinkingBlock
-                      content=""
-                      sections={consolidated.entries.map(e => ({
-                        text: e.thinking || '',
-                        toolCallCards: e.toolCalls.length > 0 ? (
-                          <div className="mt-1 space-y-0.5">
-                            {e.toolCalls.map((tc, i) => (
-                              <ToolCallCard
-                                key={`consolidated-${tc.id || i}`}
-                                toolName={tc.toolName}
-                                arguments={tc.arguments}
-                                status={tc.status}
-                                content={tc.content}
-                                artifacts={tc.artifacts}
-                                compact
-                              />
-                            ))}
-                          </div>
-                        ) : undefined,
-                      }))}
-                      isStreaming={false}
+                    <ThinkingBlock content={renderableThinking} isStreaming={false} />
+                  </div>
+                </div>
+              )}
+
+              {msg.role === 'assistant' && renderedToolCalls.length > 0 && (
+                <div className="mb-3 space-y-2">
+                  {renderedToolCalls.map((tc, toolIdx) => (
+                    <ToolCallCard
+                      key={`${msg.id}-tool-${tc.id || tc.toolName || toolIdx}`}
+                      toolName={tc.toolName}
+                      arguments={tc.arguments}
+                      status={tc.status}
+                      content={tc.content}
+                      artifacts={tc.artifacts}
                     />
-                  </div>
-                </div>
-              )}
-
-              {/* Tool activity bar — always visible outside ThinkingBlock */}
-              {consolidated?.type === 'anchor' && consolidated.allToolCalls.length > 0 && (
-                <div className="flex justify-start mb-2">
-                  <div className="max-w-[80%]">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 ml-5 px-2 py-1 text-[11px] text-text-tertiary">
-                      {consolidated.allToolCalls.map((tc, i) => (
-                        <Fragment key={`activity-${tc.id || i}`}>
-                          {i > 0 && <span className="text-border">·</span>}
-                          <ToolCallCard
-                            inline
-                            toolName={tc.toolName}
-                            arguments={tc.arguments}
-                            status={tc.status}
-                            content={tc.content}
-                            artifacts={tc.artifacts}
-                          />
-                        </Fragment>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Individual (non-consolidated) thinking block */}
-              {!consolidated && msg.role === 'assistant' && renderableThinking && (
-                <div className="flex justify-start mb-1">
-                  <div className="max-w-[80%]">
-                    <ThinkingBlock content={renderableThinking} isStreaming={false}>
-                      {msg.toolCalls.filter(tc => tc.name !== 'update_plan').map((tc, toolIdx) => {
-                        const toolResult = messageToolCalls.get(idx)?.find(
-                          (tr) => tr.toolCallId === tc.id,
-                        );
-                        return (
-                          <ToolCallCard
-                            key={`${msg.id}-tool-${tc.id || tc.name || toolIdx}`}
-                            toolName={tc.name || 'unknown_tool'}
-                            arguments={tc.arguments || ''}
-                            status={toolResult ? 'done' : 'running'}
-                            content={toolResult?.content}
-                            artifacts={toolResult?.artifacts ?? undefined}
-                            compact
-                          />
-                        );
-                      })}
-                    </ThinkingBlock>
-                  </div>
-                </div>
-              )}
-
-              {/* Individual tool activity bar */}
-              {!consolidated && msg.role === 'assistant' && renderableThinking && msg.toolCalls.filter(tc => tc.name !== 'update_plan').length > 0 && (
-                <div className="flex justify-start mb-2">
-                  <div className="max-w-[80%]">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 ml-5 px-2 py-1 text-[11px] text-text-tertiary">
-                      {msg.toolCalls.filter(tc => tc.name !== 'update_plan').map((tc, i) => {
-                        const toolResult = messageToolCalls.get(idx)?.find(
-                          (tr) => tr.toolCallId === tc.id,
-                        );
-                        return (
-                          <Fragment key={`activity-individual-${tc.id || i}`}>
-                            {i > 0 && <span className="text-border">·</span>}
-                            <ToolCallCard
-                              inline
-                              toolName={tc.name || 'unknown_tool'}
-                              arguments={tc.arguments || ''}
-                              status={toolResult ? 'done' : 'running'}
-                              content={toolResult?.content}
-                              artifacts={toolResult?.artifacts ?? undefined}
-                            />
-                          </Fragment>
-                        );
-                      })}
-                    </div>
-                  </div>
+                  ))}
                 </div>
               )}
 
@@ -606,8 +447,7 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
                   lastCached={idx === lastAssistantIdx ? lastCached : undefined}
                   onRetry={onRetry}
                   alwaysShowTimestamp={(() => {
-                    // Find previous visible message
-                    for (let p = idx - 1; p >= 0; p--) {
+                    for (let p = idx - 1; p >= 0; p -= 1) {
                       const prev = messages[p];
                       if (prev.role !== 'tool' && prev.role !== 'system') {
                         return hasTimeGap(prev.createdAt, msg.createdAt);
@@ -619,166 +459,67 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
                   onEditAndResend={onEditAndResend}
                 />
               )}
-
-              {/* Standalone tool calls (no thinking, not consolidated) */}
-              {!consolidated && msg.role === 'assistant' && !renderableThinking && msg.toolCalls.filter(tc => tc.name !== 'update_plan').length > 0 && (
-                <div className="mb-3">
-                  {msg.toolCalls.filter(tc => tc.name !== 'update_plan').map((tc, toolIdx) => {
-                    const toolResult = messageToolCalls.get(idx)?.find(
-                      (tr) => tr.toolCallId === tc.id,
-                    );
-                    return (
-                      <ToolCallCard
-                        key={`${msg.id}-tool-${tc.id || tc.name || toolIdx}`}
-                        toolName={tc.name || 'unknown_tool'}
-                        arguments={tc.arguments || ''}
-                        status={toolResult ? 'done' : 'running'}
-                        content={toolResult?.content}
-                        artifacts={toolResult?.artifacts ?? undefined}
-                      />
-                    );
-                  })}
-                </div>
-              )}
             </div>
           );
         })}
       </AnimatePresence>
 
-      {/* Streaming timeline: completed rounds stay above the live phase to avoid jumpy reordering. */}
-      {shouldRenderStreamRounds && consolidateStreamRounds && (
-        <div className="mb-4 space-y-2">
-          {/* Consolidated thinking block for all completed rounds */}
-          <motion.div
-            initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            layout={!shouldReduceMotion}
-            transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
-            className="flex justify-start"
-          >
-            <div className="max-w-[80%]">
-              <ThinkingBlock
-                content=""
-                sections={streamRounds
-                  .filter(r => r.thinking || r.toolCalls.some(tc => tc.toolName !== 'update_plan'))
-                  .map(round => ({
-                    text: round.thinking || '',
-                    toolCallCards: round.toolCalls.filter(tc => tc.toolName !== 'update_plan').length > 0 ? (
-                      <div className="mt-1 space-y-0.5">
-                        {round.toolCalls.filter(tc => tc.toolName !== 'update_plan').map((tc, toolIdx) => (
-                          <ToolCallCard
-                            key={`${round.id}-${tc.callId || 'tool-call'}-${toolIdx}`}
-                            toolName={tc.toolName}
-                            arguments={tc.arguments}
-                            status={tc.status}
-                            content={tc.content}
-                            isError={tc.isError}
-                            artifacts={tc.artifacts}
-                            compact
-                          />
-                        ))}
-                      </div>
-                    ) : undefined,
-                  }))}
-                isStreaming={false}
-              />
-            </div>
-          </motion.div>
-
-          {/* Reply bubbles from completed rounds */}
-          {streamRounds.filter(r => r.reply).map(round => (
-            <motion.div
-              key={`reply-${round.id}`}
-              initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              layout={!shouldReduceMotion}
-              transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
-              className="flex justify-start"
-            >
-              <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
-                <div className="prose-chat">
-                  <CitationContext.Provider value={streamingCitationLookup}>
-                    <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
-                      {preprocessStreamingMarkdown(round.reply)}
-                    </ReactMarkdown>
-                  </CitationContext.Provider>
+      {shouldRenderStreamRounds && streamRounds
+        .filter(round => round.thinking || round.reply.trim() || round.toolCalls.some(tc => tc.toolName !== 'update_plan'))
+        .map((round) => (
+          <div key={round.id} className="mb-4 space-y-2">
+            {round.thinking && (
+              <motion.div
+                initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                layout={!shouldReduceMotion}
+                transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
+                className="flex justify-start"
+              >
+                <div className="max-w-[80%]">
+                  <ThinkingBlock content={round.thinking} isStreaming={false} />
                 </div>
-              </div>
-            </motion.div>
-          ))}
-        </div>
-      )}
+              </motion.div>
+            )}
 
-      {/* Non-consolidated stream rounds (0-1 rounds) */}
-      {shouldRenderStreamRounds && !consolidateStreamRounds && streamRounds.filter(r => r.thinking || r.reply.trim() || r.toolCalls.some(tc => tc.toolName !== 'update_plan')).map((round) => (
-        <div key={round.id} className="mb-4 space-y-2">
-          {round.thinking && (
-            <motion.div
-              initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              layout={!shouldReduceMotion}
-              transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
-              className="flex justify-start"
-            >
-              <div className="max-w-[80%]">
-                <ThinkingBlock content={round.thinking} isStreaming={false}>
-                  {round.toolCalls.filter(tc => tc.toolName !== 'update_plan').map((tc, toolIdx) => (
-                    <ToolCallCard
-                      key={`${round.id}-${tc.callId || 'tool-call'}-${toolIdx}`}
-                      toolName={tc.toolName}
-                      arguments={tc.arguments}
-                      status={tc.status}
-                      content={tc.content}
-                      isError={tc.isError}
-                      artifacts={tc.artifacts}
-                      compact
-                    />
-                  ))}
-                </ThinkingBlock>
+            {round.toolCalls.filter(tc => tc.toolName !== 'update_plan').length > 0 && (
+              <div className="space-y-2">
+                {round.toolCalls.filter(tc => tc.toolName !== 'update_plan').map((tc, toolIdx) => (
+                  <ToolCallCard
+                    key={`${round.id}-${tc.callId || 'tool-call'}-${toolIdx}`}
+                    toolName={tc.toolName}
+                    arguments={tc.arguments}
+                    status={tc.status}
+                    content={tc.content}
+                    isError={tc.isError}
+                    artifacts={tc.artifacts}
+                  />
+                ))}
               </div>
-            </motion.div>
-          )}
+            )}
 
-          {round.reply && (
-            <motion.div
-              initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              layout={!shouldReduceMotion}
-              transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
-              className="flex justify-start"
-            >
-              <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
-                <div className="prose-chat">
-                  <CitationContext.Provider value={streamingCitationLookup}>
-                    <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
-                      {preprocessStreamingMarkdown(round.reply)}
-                    </ReactMarkdown>
-                  </CitationContext.Provider>
+            {round.reply.trim().length > 0 && (
+              <motion.div
+                initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                layout={!shouldReduceMotion}
+                transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
+                className="flex justify-start"
+              >
+                <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
+                  <div className="prose-chat">
+                    <CitationContext.Provider value={streamingCitationLookup}>
+                      <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
+                        {preprocessStreamingMarkdown(round.reply)}
+                      </ReactMarkdown>
+                    </CitationContext.Provider>
+                  </div>
                 </div>
-              </div>
-            </motion.div>
-          )}
+              </motion.div>
+            )}
+          </div>
+        ))}
 
-          {/* Standalone tool calls only when no thinking to nest them in */}
-          {!round.thinking && round.toolCalls.filter(tc => tc.toolName !== 'update_plan').length > 0 && (
-            <div className="space-y-2">
-              {round.toolCalls.filter(tc => tc.toolName !== 'update_plan').map((tc, toolIdx) => (
-                <ToolCallCard
-                  key={`${round.id}-${tc.callId || 'tool-call'}-${toolIdx}`}
-                  toolName={tc.toolName}
-                  arguments={tc.arguments}
-                  status={tc.status}
-                  content={tc.content}
-                  isError={tc.isError}
-                  artifacts={tc.artifacts}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
-
-      {/* Live thinking stays mounted until an actual phase switch to reply/tool/done/error. */}
       {isStreaming && (thinkingText || isThinking) && (
         <motion.div
           initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
@@ -793,8 +534,7 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
         </motion.div>
       )}
 
-      {/* Streaming text */}
-      {shouldShowStreamingText && streamText && (
+      {shouldShowStreamingText && streamText.trim().length > 0 && (
         <motion.div
           initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -817,7 +557,6 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
         </motion.div>
       )}
 
-      {/* Thinking indicator */}
       {isStreaming && !streamText && streamRounds.length === 0 && toolCalls.length === 0 && !thinkingText && !isThinking && (
         <motion.div
           initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
@@ -838,7 +577,6 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
         </motion.div>
       )}
 
-      {/* Inline error state */}
       {error && !isStreaming && (
         <motion.div
           initial={shouldReduceMotion ? false : { opacity: 0, y: 8 }}
@@ -881,7 +619,6 @@ export function ChatMessages({ messages, streamText, streamRounds, thinkingText,
         </motion.div>
       )}
 
-      {/* Scroll-to-bottom floating button */}
       <AnimatePresence>
         {hasOverflow && !isNearBottom && (
           <motion.button

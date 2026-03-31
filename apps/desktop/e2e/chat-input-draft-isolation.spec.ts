@@ -33,9 +33,18 @@ test.beforeEach(async ({ page }) => {
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
     const conversations: Record<string, Conversation> = {
-      'conv-persisted-order': {
-        id: 'conv-persisted-order',
-        title: 'Persisted Order',
+      'conv-draft-a': {
+        id: 'conv-draft-a',
+        title: 'Draft A',
+        provider: 'open_ai',
+        model: 'gpt-4.1',
+        systemPrompt: '',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      },
+      'conv-draft-b': {
+        id: 'conv-draft-b',
+        title: 'Draft B',
         provider: 'open_ai',
         model: 'gpt-4.1',
         systemPrompt: '',
@@ -44,67 +53,9 @@ test.beforeEach(async ({ page }) => {
       },
     };
 
-    const toolCallId = 'tool-order-1';
-
     const messagesByConversation: Record<string, Message[]> = {
-      'conv-persisted-order': [
-        {
-          id: 'm-user-1',
-          conversationId: 'conv-persisted-order',
-          role: 'user',
-          content: 'Walk through the persisted order.',
-          toolCallId: null,
-          toolCalls: [],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 0,
-          thinking: null,
-          imageAttachments: null,
-        },
-        {
-          id: 'm-assistant-tools-1',
-          conversationId: 'conv-persisted-order',
-          role: 'assistant',
-          content: '',
-          toolCallId: null,
-          toolCalls: [{ id: toolCallId, name: 'search_knowledge_base', arguments: '{"query":"order"}' }],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 1,
-          thinking: 'phase one thinking',
-          imageAttachments: null,
-        },
-        {
-          id: 'm-tool-1',
-          conversationId: 'conv-persisted-order',
-          role: 'tool',
-          content: 'Found the order note.',
-          toolCallId,
-          toolCalls: [],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 2,
-          thinking: null,
-          imageAttachments: null,
-        },
-        {
-          id: 'm-assistant-final',
-          conversationId: 'conv-persisted-order',
-          role: 'assistant',
-          content: 'final-reply-segment',
-          toolCallId: null,
-          toolCalls: [],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 3,
-          thinking: 'phase one thinking\nphase two thinking',
-          imageAttachments: null,
-        },
-      ],
+      'conv-draft-a': [],
+      'conv-draft-b': [],
     };
 
     const callbackMap = new Map<number, (event: unknown) => void>();
@@ -112,8 +63,8 @@ test.beforeEach(async ({ page }) => {
     let listenerSeq = 1;
 
     const defaultAgentConfig = {
-      id: 'cfg-persisted-order',
-      name: 'Persisted Order Config',
+      id: 'cfg-draft-isolation',
+      name: 'Draft Isolation Config',
       provider: 'open_ai',
       apiKey: '',
       baseUrl: null,
@@ -221,17 +172,20 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('renders persisted multi-step traces in chronological order', async ({ page }) => {
-  await page.goto('/chat/conv-persisted-order');
+test('keeps input drafts scoped to each conversation', async ({ page }) => {
+  await page.goto('/chat/conv-draft-a');
 
-  const chatLogText = await page.getByLabel('Chat messages').textContent();
-  expect(chatLogText).toBeTruthy();
+  const input = page.getByTestId('chat-input-textarea');
+  await input.fill('draft for A');
 
-  const text = chatLogText ?? '';
-  expect(text.indexOf('phase one thinking')).toBeGreaterThanOrEqual(0);
-  expect(text.indexOf('search_knowledge_base')).toBeGreaterThan(text.indexOf('phase one thinking'));
-  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
-  expect(text.indexOf('final-reply-segment')).toBeGreaterThan(text.indexOf('phase two thinking'));
+  await page.getByRole('button', { name: /Draft B/ }).click();
+  await expect(input).toHaveValue('');
 
-  await expect(page.getByText('Conclusion')).toHaveCount(1);
+  await input.fill('draft for B');
+
+  await page.getByRole('button', { name: /Draft A/ }).click();
+  await expect(input).toHaveValue('draft for A');
+
+  await page.getByRole('button', { name: /Draft B/ }).click();
+  await expect(input).toHaveValue('draft for B');
 });

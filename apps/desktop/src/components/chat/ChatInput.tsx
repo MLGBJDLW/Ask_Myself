@@ -29,6 +29,11 @@ interface ChatInputProps {
   prefillText?: string;
 }
 
+interface ChatDraftState {
+  value: string;
+  attachments: ImageAttachment[];
+}
+
 export function ChatInput({
   onSend,
   onStop,
@@ -39,20 +44,38 @@ export function ChatInput({
   prefillText,
 }: ChatInputProps) {
   const { t } = useTranslation();
+  const draftKey = conversationId ?? '__new__';
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
+  const draftsRef = useRef<Record<string, ChatDraftState>>({});
+
+  useEffect(() => {
+    const draft = draftsRef.current[draftKey];
+    setValue(draft?.value ?? '');
+    setAttachments(draft?.attachments ?? []);
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
+    }, 0);
+  }, [draftKey]);
+
+  useEffect(() => {
+    draftsRef.current[draftKey] = { value, attachments };
+  }, [attachments, draftKey, value]);
 
   // Accept prefilled text from outside (e.g. suggestion cards)
   useEffect(() => {
     if (prefillText != null && prefillText !== '') {
       setValue(prefillText);
+      draftsRef.current[draftKey] = { value: prefillText, attachments };
       setTimeout(() => textareaRef.current?.focus(), 0);
     }
-  }, [prefillText]);
+  }, [attachments, draftKey, prefillText]);
 
   // Auto-resize textarea
   const adjustHeight = useCallback(() => {
@@ -72,6 +95,7 @@ export function ChatInput({
     const trimmed = value.trim();
     if (!trimmed && attachments.length === 0) return;
     onSend(trimmed || t('chat.imageMessage'), attachments.length > 0 ? attachments : undefined);
+    draftsRef.current[draftKey] = { value: '', attachments: [] };
     setValue('');
     setAttachments([]);
     setTimeout(() => {
@@ -79,7 +103,7 @@ export function ChatInput({
         textareaRef.current.style.height = 'auto';
       }
     }, 0);
-  }, [value, attachments, onSend, t]);
+  }, [attachments, draftKey, onSend, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
