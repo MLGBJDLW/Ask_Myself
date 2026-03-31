@@ -97,6 +97,8 @@ pub struct Playbook {
     pub id: Uuid,
     pub title: String,
     pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_text: Option<String>,
     pub citations: Vec<PlaybookCitation>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

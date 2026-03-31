@@ -346,7 +346,8 @@ export function SearchPage() {
         return;
       }
 
-      await api.addCitation(targetId, savingChunkId, citationNote, 0);
+      const existingCitations = await api.listCitations(targetId).catch(() => []);
+      await api.addCitation(targetId, savingChunkId, citationNote, existingCitations.length);
       toast.success(t('search.savedToPlaybook'));
       setSavingChunkId(null);
       setCitationNote('');

@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { BookOpen, Plus, Trash2, X, Pencil, FileText, Calendar, ChevronUp, ChevronDown, Check, BotMessageSquare } from 'lucide-react';
+import { BookOpen, Plus, Trash2, X, Pencil, FileText, Calendar, ChevronUp, ChevronDown, Check, BotMessageSquare, FolderOpen, ExternalLink, Hash } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../lib/api';
-import type { Playbook, PlaybookCitation } from '../types';
+import type { EvidenceCard, Playbook, PlaybookCitation } from '../types';
 import { useTranslation } from '../i18n';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -25,6 +25,17 @@ function formatDate(iso: string, locale: string): string {
     month: 'short',
     day: 'numeric',
   });
+}
+
+function basename(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, '');
+  const lastSep = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+  return lastSep === -1 ? normalized : normalized.slice(lastSep + 1);
+}
+
+function truncate(text: string, max = 220): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max).trimEnd()}...`;
 }
 
 const listItemVariants = {
@@ -64,6 +75,7 @@ export function PlaybooksPage() {
   /* 鈹€鈹€ Detail view 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
   const [selectedPlaybook, setSelectedPlaybook] = useState<Playbook | null>(null);
   const [citations, setCitations] = useState<PlaybookCitation[]>([]);
+  const [citationEvidence, setCitationEvidence] = useState<Record<string, EvidenceCard | null>>({});
   const [loadingCitations, setLoadingCitations] = useState(false);
 
   /* 鈹€鈹€ Delete confirmation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
@@ -91,11 +103,48 @@ export function PlaybooksPage() {
     try {
       const list = await api.listPlaybooks();
       setPlaybooks(list);
+      setSelectedPlaybook((prev) => {
+        if (!prev) return prev;
+        const refreshed = list.find((pb) => pb.id === prev.id) ?? null;
+        if (!refreshed) {
+          setCitations([]);
+          setCitationEvidence({});
+          return null;
+        }
+        return { ...prev, ...refreshed };
+      });
     } catch (e) {
       toast.error(`${t('playbooks.loadError')}: ${String(e)}`);
     } finally {
       setLoading(false);
     }
+  }, [t]);
+
+  const loadCitationEvidence = useCallback(async (items: PlaybookCitation[]) => {
+    if (items.length === 0) {
+      setCitationEvidence({});
+      return;
+    }
+
+    const results = await Promise.allSettled(
+      items.map(async (citation) => [citation.id, await api.getEvidenceCard(citation.chunkId)] as const),
+    );
+
+    const next: Record<string, EvidenceCard | null> = {};
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        const [citationId, evidence] = result.value;
+        next[citationId] = evidence;
+      }
+    }
+
+    for (const citation of items) {
+      if (!(citation.id in next)) {
+        next[citation.id] = null;
+      }
+    }
+
+    setCitationEvidence(next);
   }, []);
 
   useEffect(() => {
@@ -110,13 +159,14 @@ export function PlaybooksPage() {
     if (!formTitle.trim()) return;
     setCreating(true);
     try {
-      await api.createPlaybook(formTitle.trim(), formDesc.trim(), formQuery.trim());
+      const created = await api.createPlaybook(formTitle.trim(), formDesc.trim(), formQuery.trim());
       setFormTitle('');
       setFormDesc('');
       setFormQuery('');
       setShowCreateModal(false);
       toast.success(t('playbooks.created'));
       await loadPlaybooks();
+      await handleSelect(created);
     } catch (e) {
       toast.error(`${t('playbooks.createError')}: ${String(e)}`);
     } finally {
@@ -145,14 +195,17 @@ export function PlaybooksPage() {
   };
 
   const handleSelect = async (playbook: Playbook) => {
-    setSelectedPlaybook(playbook);
     setEditMode(false);
     setLoadingCitations(true);
     try {
-      const cits = await api.listCitations(playbook.id);
-      setCitations(cits);
+      const fullPlaybook = await api.getPlaybook(playbook.id);
+      const orderedCitations = [...fullPlaybook.citations].sort((a, b) => a.order - b.order);
+      setSelectedPlaybook(fullPlaybook);
+      setCitations(orderedCitations);
+      await loadCitationEvidence(orderedCitations);
     } catch (e) {
       toast.error(`${t('playbooks.loadCitationsError')}: ${String(e)}`);
+      setCitationEvidence({});
     } finally {
       setLoadingCitations(false);
     }
@@ -163,6 +216,18 @@ export function PlaybooksPage() {
     try {
       await api.removeCitation(removeCitTarget);
       setCitations((prev) => prev.filter((c) => c.id !== removeCitTarget));
+      setCitationEvidence((prev) => {
+        const next = { ...prev };
+        delete next[removeCitTarget];
+        return next;
+      });
+      setSelectedPlaybook((prev) => prev ? {
+        ...prev,
+        citations: prev.citations.filter((c) => c.id !== removeCitTarget),
+      } : prev);
+      setPlaybooks((prev) => prev.map((pb) => pb.id === selectedPlaybook?.id
+        ? { ...pb, citations: pb.citations.filter((c) => c.id !== removeCitTarget) }
+        : pb));
       toast.success(t('playbooks.citationRemoved'));
     } catch (e) {
       toast.error(`${t('playbooks.removeCitationError')}: ${String(e)}`);
@@ -415,6 +480,12 @@ export function PlaybooksPage() {
                             {selectedPlaybook.description}
                           </p>
                         )}
+                        {selectedPlaybook.queryText && (
+                          <div className="mt-2 inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2.5 py-1 text-[11px] text-text-tertiary">
+                            <Hash size={11} className="shrink-0" />
+                            <span className="truncate">{selectedPlaybook.queryText}</span>
+                          </div>
+                        )}
                         <p className="mt-2 text-xs text-text-tertiary flex items-center gap-1">
                           <Calendar size={12} />
                           {t('playbooks.createdAt', { date: formatDate(selectedPlaybook.createdAt, locale) })}
@@ -426,11 +497,20 @@ export function PlaybooksPage() {
                             const citationContext = citations.length > 0
                               ? '\n\nSaved citations:\n' + citations
                                   .sort((a, b) => a.order - b.order)
-                                  .map((c, i) => `${i + 1}. ${c.annotation || '(no note)'}`)
+                                  .map((c, i) => {
+                                    const evidence = citationEvidence[c.id];
+                                    const title = evidence?.documentTitle || (evidence?.documentPath ? basename(evidence.documentPath) : c.chunkId.slice(0, 12));
+                                    const snippet = evidence?.snippet || evidence?.content || '';
+                                    const note = c.annotation ? `Note: ${c.annotation}` : 'Note: (none)';
+                                    return `${i + 1}. ${title}\n${note}${snippet ? `\nExcerpt: ${truncate(snippet, 320)}` : ''}`;
+                                  })
                                   .join('\n')
                               : '';
                             handleAskAI(
-                              `Tell me about the playbook "${selectedPlaybook.title}": ${selectedPlaybook.description || ''}${citationContext}`
+                              `Tell me about the collection "${selectedPlaybook.title}".`
+                              + `${selectedPlaybook.description ? `\nDescription: ${selectedPlaybook.description}` : ''}`
+                              + `${selectedPlaybook.queryText ? `\nBase query: ${selectedPlaybook.queryText}` : ''}`
+                              + `${citationContext}`
                             );
                           }}
                           className="rounded-md px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/10 transition-colors cursor-pointer flex items-center gap-1.5"
@@ -483,99 +563,172 @@ export function PlaybooksPage() {
                   ) : (
                     <AnimatePresence mode="popLayout">
                       <div className="space-y-2">
-                        {citations.map((cit, i) => (
-                          <motion.div
-                            key={cit.id}
-                            custom={i}
-                            variants={listItemVariants}
-                            initial="hidden"
-                            animate="visible"
-                            exit="exit"
-                            layout
-                            className="group rounded-md border border-border bg-surface-2 p-3 transition-colors hover:border-border-hover"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0 flex-1">
-                                <p className="text-xs font-mono text-text-tertiary">
-                                  {t('playbooks.chunkId')}: {cit.chunkId.slice(0, 12)}...
-                                </p>
-                                {editingCitId === cit.id ? (
-                                  <div className="mt-1.5 space-y-2">
-                                    <textarea
-                                      value={editNoteText}
-                                      onChange={(e) => setEditNoteText(e.target.value)}
-                                      className="w-full rounded-md border border-border bg-surface-1 px-2.5 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30 resize-y min-h-[60px]"
-                                      placeholder={t('playbooks.editNote')}
-                                      autoFocus
-                                    />
-                                    <div className="flex items-center gap-1.5">
-                                      <Button
-                                        variant="primary"
-                                        size="sm"
-                                        icon={<Check size={13} />}
-                                        onClick={handleSaveNote}
-                                        loading={savingNote}
-                                      >
-                                        {t('playbooks.saveNote')}
-                                      </Button>
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        onClick={cancelEditNote}
-                                        disabled={savingNote}
-                                      >
-                                        {t('playbooks.cancelEdit')}
-                                      </Button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  cit.annotation && (
-                                    <p className="mt-1.5 text-sm text-text-secondary leading-relaxed">
-                                      {cit.annotation}
+                        {citations.map((cit, i) => {
+                          const evidence = citationEvidence[cit.id];
+                          const title = evidence?.documentTitle || (evidence?.documentPath ? basename(evidence.documentPath) : `${t('playbooks.chunkId')}: ${cit.chunkId.slice(0, 12)}...`);
+                          const snippet = evidence?.snippet || evidence?.content || '';
+                          const heading = evidence?.headingPath?.length ? evidence.headingPath.join(' > ') : '';
+
+                          return (
+                            <motion.div
+                              key={cit.id}
+                              custom={i}
+                              variants={listItemVariants}
+                              initial="hidden"
+                              animate="visible"
+                              exit="exit"
+                              layout
+                              className="group rounded-md border border-border bg-surface-2 p-3 transition-colors hover:border-border-hover"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-medium text-text-primary truncate">
+                                      {title}
                                     </p>
-                                  )
-                                )}
-                              </div>
-                              <div className="flex items-center gap-0.5 shrink-0">
-                                {editingCitId !== cit.id && (
+                                    {evidence?.sourceName && (
+                                      <Badge variant="info">{evidence.sourceName}</Badge>
+                                    )}
+                                  </div>
+
+                                  <p className="mt-1 text-[11px] font-mono text-text-tertiary">
+                                    {t('playbooks.chunkId')}: {cit.chunkId}
+                                  </p>
+
+                                  {heading && (
+                                    <p className="mt-1 text-xs text-text-tertiary truncate">
+                                      {heading}
+                                    </p>
+                                  )}
+
+                                  {snippet && (
+                                    <p className="mt-2 text-sm text-text-secondary leading-relaxed">
+                                      {truncate(snippet)}
+                                    </p>
+                                  )}
+
+                                  {editingCitId === cit.id ? (
+                                    <div className="mt-2 space-y-2">
+                                      <textarea
+                                        value={editNoteText}
+                                        onChange={(e) => setEditNoteText(e.target.value)}
+                                        className="w-full rounded-md border border-border bg-surface-1 px-2.5 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30 resize-y min-h-[60px]"
+                                        placeholder={t('playbooks.editNote')}
+                                        autoFocus
+                                      />
+                                      <div className="flex items-center gap-1.5">
+                                        <Button
+                                          variant="primary"
+                                          size="sm"
+                                          icon={<Check size={13} />}
+                                          onClick={handleSaveNote}
+                                          loading={savingNote}
+                                        >
+                                          {t('playbooks.saveNote')}
+                                        </Button>
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={cancelEditNote}
+                                          disabled={savingNote}
+                                        >
+                                          {t('playbooks.cancelEdit')}
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="mt-2 flex flex-wrap items-start gap-2">
+                                      {cit.annotation ? (
+                                        <div className="rounded-md border border-border bg-surface-1 px-2.5 py-2 text-sm text-text-secondary leading-relaxed">
+                                          {cit.annotation}
+                                        </div>
+                                      ) : (
+                                        <div className="rounded-md border border-dashed border-border px-2.5 py-2 text-xs text-text-tertiary">
+                                          {t('playbooks.editNote')}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {evidence?.documentPath && (
+                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-text-tertiary">
+                                      <button
+                                        type="button"
+                                        onClick={() => api.openFileInDefaultApp(evidence.documentPath)}
+                                        className="inline-flex items-center gap-1 hover:text-accent transition-colors cursor-pointer"
+                                      >
+                                        <ExternalLink size={12} />
+                                        <span>{basename(evidence.documentPath)}</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => api.showInFileExplorer(evidence.documentPath)}
+                                        className="inline-flex items-center gap-1 hover:text-accent transition-colors cursor-pointer"
+                                      >
+                                        <FolderOpen size={12} />
+                                        <span>{evidence.documentPath}</span>
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-0.5 shrink-0">
+                                  {evidence && editingCitId !== cit.id && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      icon={<BotMessageSquare size={13} />}
+                                      className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                      onClick={() => handleAskAI(
+                                        `Tell me about this saved citation.\n`
+                                        + `Title: ${title}\n`
+                                        + `${heading ? `Section: ${heading}\n` : ''}`
+                                        + `${cit.annotation ? `Note: ${cit.annotation}\n` : ''}`
+                                        + `Excerpt: ${truncate(evidence.content, 1200)}`
+                                      )}
+                                      title={t('chat.askAboutThis')}
+                                    />
+                                  )}
+                                  {editingCitId !== cit.id && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      icon={<Pencil size={13} />}
+                                      className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                      onClick={() => startEditNote(cit)}
+                                      title={t('playbooks.editNote')}
+                                    />
+                                  )}
                                   <Button
                                     variant="ghost"
                                     size="sm"
-                                    icon={<Pencil size={13} />}
+                                    icon={<ChevronUp size={14} />}
                                     className="opacity-0 group-hover:opacity-100 transition-opacity"
-                                    onClick={() => startEditNote(cit)}
-                                    title={t('playbooks.editNote')}
+                                    onClick={() => handleMoveCitation(i, 'up')}
+                                    disabled={i === 0}
+                                    title={t('playbooks.moveUp')}
                                   />
-                                )}
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  icon={<ChevronUp size={14} />}
-                                  className="opacity-0 group-hover:opacity-100 transition-opacity"
-                                  onClick={() => handleMoveCitation(i, 'up')}
-                                  disabled={i === 0}
-                                  title={t('playbooks.moveUp')}
-                                />
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  icon={<ChevronDown size={14} />}
-                                  className="opacity-0 group-hover:opacity-100 transition-opacity"
-                                  onClick={() => handleMoveCitation(i, 'down')}
-                                  disabled={i === citations.length - 1}
-                                  title={t('playbooks.moveDown')}
-                                />
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  icon={<X size={14} />}
-                                  className="opacity-0 group-hover:opacity-100 transition-opacity"
-                                  onClick={() => setRemoveCitTarget(cit.id)}
-                                />
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    icon={<ChevronDown size={14} />}
+                                    className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                    onClick={() => handleMoveCitation(i, 'down')}
+                                    disabled={i === citations.length - 1}
+                                    title={t('playbooks.moveDown')}
+                                  />
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    icon={<X size={14} />}
+                                    className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                    onClick={() => setRemoveCitTarget(cit.id)}
+                                  />
+                                </div>
                               </div>
-                            </div>
-                          </motion.div>
-                        ))}
+                            </motion.div>
+                          );
+                        })}
                       </div>
                     </AnimatePresence>
                   )}
