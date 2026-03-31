@@ -11,6 +11,7 @@ import type { CitationCardData } from '../../lib/citationParser';
 import type { StreamRoundEvent, ToolCallEvent } from '../../lib/useAgentStream';
 import { ToolCallCard } from './ToolCallCard';
 import { ThinkingBlock } from './ThinkingBlock';
+import type { ThinkingSection } from './ThinkingBlock';
 import { markdownComponents, preprocessFilePaths, preprocessCitations, CitationContext } from './markdownComponents';
 import { MessageBubble } from './MessageBubble';
 import { Skeleton } from '../ui/Skeleton';
@@ -47,6 +48,10 @@ const FOLLOW_RELEASE_THRESHOLD = 160;
 
 function normalizeThinking(content: string): string {
   return content.replace(/\r\n/g, '\n').trim();
+}
+
+function hasTraceToolCalls<T extends { toolName?: string; name?: string }>(toolCalls: T[]): boolean {
+  return toolCalls.some(tc => (tc.toolName ?? tc.name) !== 'update_plan');
 }
 
 export function ChatMessages({
@@ -111,7 +116,6 @@ export function ChatMessages({
 
   const typewriterText = useTypewriter(streamText, isStreaming, { charsPerTick: 5, intervalMs: 30 });
   const displayedText = shouldReduceMotion ? streamText : typewriterText;
-  const streamingThinkingContent = thinkingText || t('chat.thinking');
 
   const [debouncedMarkdown, setDebouncedMarkdown] = useState('');
   useEffect(() => {
@@ -203,6 +207,119 @@ export function ChatMessages({
 
     return map;
   }, [messages]);
+
+  const messageTraceGroups = useMemo(() => {
+    const map = new Map<number, { type: 'anchor'; sections: ThinkingSection[] } | { type: 'member' }>();
+    let currentGroup: number[] = [];
+
+    const flushGroup = () => {
+      if (currentGroup.length === 0) return;
+
+      const tracedIndexes = currentGroup.filter((idx) => {
+        const msg = messages[idx];
+        return messageThinkingText.has(idx) || hasTraceToolCalls(msg.toolCalls);
+      });
+      if (tracedIndexes.length === 0) {
+        currentGroup = [];
+        return;
+      }
+
+      const sections: ThinkingSection[] = tracedIndexes.map((idx) => {
+        const msg = messages[idx];
+        const thinking = messageThinkingText.get(idx) ?? '';
+        const renderedToolCalls = msg.toolCalls
+          .filter(tc => tc.name !== 'update_plan')
+          .map((tc, toolIdx) => {
+            const toolResult = messageToolCalls.get(idx)?.find(
+              (tr) => tr.toolCallId === tc.id,
+            );
+            return (
+              <ToolCallCard
+                key={`persisted-trace-${msg.id}-${tc.id || tc.name || toolIdx}`}
+                toolName={tc.name || 'unknown_tool'}
+                arguments={tc.arguments || ''}
+                status={toolResult ? 'done' : 'running'}
+                content={toolResult?.content}
+                artifacts={toolResult?.artifacts ?? undefined}
+                compact
+              />
+            );
+          });
+
+        return {
+          text: thinking,
+          toolCallCards: renderedToolCalls.length > 0 ? (
+            <div className="mt-1 space-y-1">
+              {renderedToolCalls}
+            </div>
+          ) : undefined,
+        };
+      });
+
+      const anchorIdx = tracedIndexes[0];
+      map.set(anchorIdx, { type: 'anchor', sections });
+      for (const idx of tracedIndexes.slice(1)) {
+        map.set(idx, { type: 'member' });
+      }
+      currentGroup = [];
+    };
+
+    for (let i = 0; i < messages.length; i += 1) {
+      const msg = messages[i];
+      if (msg.role === 'user') {
+        flushGroup();
+        continue;
+      }
+      if (msg.role === 'assistant') {
+        currentGroup.push(i);
+      }
+    }
+    flushGroup();
+
+    return map;
+  }, [messageThinkingText, messageToolCalls, messages]);
+
+  const streamTraceSections = useMemo<ThinkingSection[]>(() => {
+    const sections: ThinkingSection[] = [];
+
+    for (const round of streamRounds) {
+      const traceToolCalls = round.toolCalls.filter(tc => tc.toolName !== 'update_plan');
+      if (!round.thinking && traceToolCalls.length === 0) continue;
+
+      sections.push({
+        text: round.thinking || '',
+        toolCallCards: traceToolCalls.length > 0 ? (
+          <div className="mt-1 space-y-1">
+            {traceToolCalls.map((tc, toolIdx) => (
+              <ToolCallCard
+                key={`stream-trace-${round.id}-${tc.callId || 'tool-call'}-${toolIdx}`}
+                toolName={tc.toolName}
+                arguments={tc.arguments}
+                status={tc.status}
+                content={tc.content}
+                isError={tc.isError}
+                artifacts={tc.artifacts}
+                compact
+              />
+            ))}
+          </div>
+        ) : undefined,
+      });
+    }
+
+    if (thinkingText.trim().length > 0) {
+      sections.push({ text: thinkingText });
+    }
+
+    return sections;
+  }, [streamRounds, thinkingText]);
+
+  const streamTraceActive = useMemo(() => {
+    if (!isStreaming) return false;
+    if (isThinking || thinkingText.trim().length > 0) return true;
+    return streamRounds.some(round =>
+      round.toolCalls.some(tc => tc.toolName !== 'update_plan' && tc.status === 'running'));
+  }, [isStreaming, isThinking, streamRounds, thinkingText]);
 
   const getScrollMetrics = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -389,51 +506,23 @@ export function ChatMessages({
             ? (messages.slice(0, idx).reverse().find((m) => m.role === 'user')?.content ?? '')
             : '';
           const chunkIds = chunkIdCacheRef.current.get(msg.id) ?? [];
-          const renderableThinking = msg.role === 'assistant'
-            ? messageThinkingText.get(idx) ?? null
-            : null;
-          const renderedToolCalls = msg.role === 'assistant'
-            ? msg.toolCalls
-              .filter(tc => tc.name !== 'update_plan')
-              .map((tc) => {
-                const toolResult = messageToolCalls.get(idx)?.find(
-                  (tr) => tr.toolCallId === tc.id,
-                );
-                return {
-                  id: tc.id,
-                  toolName: tc.name || 'unknown_tool',
-                  arguments: tc.arguments || '',
-                  status: (toolResult ? 'done' : 'running') as 'running' | 'done',
-                  content: toolResult?.content,
-                  artifacts: toolResult?.artifacts ?? undefined,
-                };
-              })
-            : [];
+          const traceGroup = msg.role === 'assistant' ? messageTraceGroups.get(idx) : undefined;
           const hasRenderableAssistantContent =
             msg.role !== 'assistant' || msg.content.trim().length > 0;
 
           return (
             <div key={msg.id}>
-              {msg.role === 'assistant' && renderableThinking && (
+              {traceGroup?.type === 'anchor' && (
                 <div className="flex justify-start mb-1">
                   <div className="max-w-[80%]">
-                    <ThinkingBlock content={renderableThinking} isStreaming={false} />
-                  </div>
-                </div>
-              )}
-
-              {msg.role === 'assistant' && renderedToolCalls.length > 0 && (
-                <div className="mb-3 space-y-2">
-                  {renderedToolCalls.map((tc, toolIdx) => (
-                    <ToolCallCard
-                      key={`${msg.id}-tool-${tc.id || tc.toolName || toolIdx}`}
-                      toolName={tc.toolName}
-                      arguments={tc.arguments}
-                      status={tc.status}
-                      content={tc.content}
-                      artifacts={tc.artifacts}
+                    <ThinkingBlock
+                      content=""
+                      sections={traceGroup.sections}
+                      isStreaming={false}
+                      defaultExpanded
+                      collapseOnFinish={false}
                     />
-                  ))}
+                  </div>
                 </div>
               )}
 
@@ -464,63 +553,7 @@ export function ChatMessages({
         })}
       </AnimatePresence>
 
-      {shouldRenderStreamRounds && streamRounds
-        .filter(round => round.thinking || round.reply.trim() || round.toolCalls.some(tc => tc.toolName !== 'update_plan'))
-        .map((round) => (
-          <div key={round.id} className="mb-4 space-y-2">
-            {round.thinking && (
-              <motion.div
-                initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
-                animate={{ opacity: 1 }}
-                layout={!shouldReduceMotion}
-                transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
-                className="flex justify-start"
-              >
-                <div className="max-w-[80%]">
-                  <ThinkingBlock content={round.thinking} isStreaming={false} />
-                </div>
-              </motion.div>
-            )}
-
-            {round.toolCalls.filter(tc => tc.toolName !== 'update_plan').length > 0 && (
-              <div className="space-y-2">
-                {round.toolCalls.filter(tc => tc.toolName !== 'update_plan').map((tc, toolIdx) => (
-                  <ToolCallCard
-                    key={`${round.id}-${tc.callId || 'tool-call'}-${toolIdx}`}
-                    toolName={tc.toolName}
-                    arguments={tc.arguments}
-                    status={tc.status}
-                    content={tc.content}
-                    isError={tc.isError}
-                    artifacts={tc.artifacts}
-                  />
-                ))}
-              </div>
-            )}
-
-            {round.reply.trim().length > 0 && (
-              <motion.div
-                initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
-                animate={{ opacity: 1 }}
-                layout={!shouldReduceMotion}
-                transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
-                className="flex justify-start"
-              >
-                <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
-                  <div className="prose-chat">
-                    <CitationContext.Provider value={streamingCitationLookup}>
-                      <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
-                        {preprocessStreamingMarkdown(round.reply)}
-                      </ReactMarkdown>
-                    </CitationContext.Provider>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-          </div>
-        ))}
-
-      {isStreaming && (thinkingText || isThinking) && (
+      {streamTraceSections.length > 0 && (
         <motion.div
           initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -529,10 +562,39 @@ export function ChatMessages({
           className="flex justify-start mb-3"
         >
           <div className="max-w-[80%]">
-            <ThinkingBlock content={streamingThinkingContent} isStreaming={isThinking} />
+            <ThinkingBlock
+              content=""
+              sections={streamTraceSections}
+              isStreaming={streamTraceActive}
+              defaultExpanded
+              collapseOnFinish={false}
+            />
           </div>
         </motion.div>
       )}
+
+      {shouldRenderStreamRounds && streamRounds
+        .filter(round => round.reply.trim().length > 0)
+        .map((round) => (
+          <motion.div
+            key={`reply-${round.id}`}
+            initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            layout={!shouldReduceMotion}
+            transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
+            className="flex justify-start mb-4"
+          >
+            <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
+              <div className="prose-chat">
+                <CitationContext.Provider value={streamingCitationLookup}>
+                  <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
+                    {preprocessStreamingMarkdown(round.reply)}
+                  </ReactMarkdown>
+                </CitationContext.Provider>
+              </div>
+            </div>
+          </motion.div>
+        ))}
 
       {shouldShowStreamingText && streamText.trim().length > 0 && (
         <motion.div

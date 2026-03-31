@@ -233,5 +233,8 @@ test('renders persisted multi-step traces in chronological order', async ({ page
   expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
   expect(text.indexOf('final-reply-segment')).toBeGreaterThan(text.indexOf('phase two thinking'));
 
+  await expect(
+    page.locator('button[aria-expanded="true"]').filter({ hasText: 'Thinking completed' }),
+  ).toHaveCount(1);
   await expect(page.getByText('Conclusion')).toHaveCount(1);
 });

@@ -400,8 +400,8 @@ test('preserves multiple thinking and tool rounds during a single streamed respo
   await page.waitForTimeout(250);
   await expect(page.getByText('Final answer: add the timeout guard from the second file.')).toBeVisible();
   await expect(
-    page.locator('button[aria-expanded="false"]').filter({ hasText: 'Thinking completed' }),
-  ).toHaveCount(2);
+    page.locator('button[aria-expanded="true"]').filter({ hasText: 'Thinking completed' }),
+  ).toHaveCount(1);
 
   const chatLogText = await page.getByLabel('Chat messages').textContent();
   expect(chatLogText).toBeTruthy();
