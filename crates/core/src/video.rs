@@ -98,7 +98,12 @@ impl WhisperModel {
         let repo_id = self.repo_id();
         self.required_files()
             .iter()
-            .map(|f| (*f, format!("https://huggingface.co/{repo_id}/resolve/main/{f}")))
+            .map(|f| {
+                (
+                    *f,
+                    format!("https://huggingface.co/{repo_id}/resolve/main/{f}"),
+                )
+            })
             .collect()
     }
 
@@ -964,10 +969,9 @@ pub fn transcribe_audio(
         .collect();
 
     // SAFETY: model files are read-only after download and not modified while mapped.
-    let vb = unsafe {
-        candle_nn::VarBuilder::from_mmaped_safetensors(&weight_paths, m::DTYPE, &device)
-    }
-    .map_err(|e| CoreError::Video(format!("Failed to load model weights: {e}")))?;
+    let vb =
+        unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&weight_paths, m::DTYPE, &device) }
+            .map_err(|e| CoreError::Video(format!("Failed to load model weights: {e}")))?;
 
     let num_mel_bins = whisper_config.num_mel_bins;
     let vocab_size = whisper_config.vocab_size;
@@ -1025,12 +1029,8 @@ pub fn transcribe_audio(
     let mel_filters = compute_mel_filters(m::SAMPLE_RATE as f64, m::N_FFT, num_mel_bins);
     let mel = audio::pcm_to_mel(&model.config, &audio_data, &mel_filters);
     let mel_len = mel.len();
-    let mel = Tensor::from_vec(
-        mel,
-        (1, num_mel_bins, mel_len / num_mel_bins),
-        &device,
-    )
-    .map_err(|e| CoreError::Video(format!("Mel tensor: {e}")))?;
+    let mel = Tensor::from_vec(mel, (1, num_mel_bins, mel_len / num_mel_bins), &device)
+        .map_err(|e| CoreError::Video(format!("Mel tensor: {e}")))?;
 
     // ── decode in 30-second chunks ────────────────────────────────────
     let (_, _, content_frames) = mel
@@ -1468,10 +1468,7 @@ fn ffmpeg_download_url() -> Result<(String, &'static str), CoreError> {
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-        Ok((
-            format!("{base}/ffmpeg-master-latest-win64-lgpl.zip"),
-            "zip",
-        ))
+        Ok((format!("{base}/ffmpeg-master-latest-win64-lgpl.zip"), "zip"))
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -1570,12 +1567,9 @@ fn extract_ffmpeg_from_zip(
 }
 
 /// Extract a single zip entry to a destination file.
-fn extract_zip_entry_to(
-    entry: &mut zip::read::ZipFile<'_>,
-    dest: &Path,
-) -> Result<(), CoreError> {
-    let mut out =
-        std::fs::File::create(dest).map_err(|e| CoreError::Video(format!("create {}: {e}", dest.display())))?;
+fn extract_zip_entry_to(entry: &mut zip::read::ZipFile<'_>, dest: &Path) -> Result<(), CoreError> {
+    let mut out = std::fs::File::create(dest)
+        .map_err(|e| CoreError::Video(format!("create {}: {e}", dest.display())))?;
     std::io::copy(entry, &mut out)
         .map_err(|e| CoreError::Video(format!("extract to {}: {e}", dest.display())))?;
     Ok(())
@@ -1605,10 +1599,7 @@ fn extract_ffmpeg_from_tar_xz(
         let path = entry
             .path()
             .map_err(|e| CoreError::Video(format!("Invalid tar entry path: {e}")))?;
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if file_name == ffmpeg_name {
             let dest = dest_dir.join(ffmpeg_name);

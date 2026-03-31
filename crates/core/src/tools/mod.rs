@@ -23,7 +23,7 @@ pub enum ToolCategory {
     /// Knowledge / playbook / memory tools
     Knowledge,
     /// URL fetching
-Web,
+    Web,
     /// Detailed document inspection & comparison
     DocumentAnalysis,
     /// Subagent / multi-agent tools
@@ -264,7 +264,8 @@ impl ToolRegistry {
 
     /// Check if a tool requires confirmation for the given arguments.
     pub fn requires_confirmation(&self, name: &str, args: &serde_json::Value) -> bool {
-        self.get(name).map_or(false, |t| t.requires_confirmation(args))
+        self.get(name)
+            .map_or(false, |t| t.requires_confirmation(args))
     }
 
     /// Get the confirmation message for a tool with the given arguments.
@@ -273,7 +274,10 @@ impl ToolRegistry {
     }
 
     /// Return definitions for tools whose categories overlap with `active`.
-    pub fn definitions_for_categories(&self, active: &HashSet<ToolCategory>) -> Vec<ToolDefinition> {
+    pub fn definitions_for_categories(
+        &self,
+        active: &HashSet<ToolCategory>,
+    ) -> Vec<ToolDefinition> {
         self.tools
             .iter()
             .filter(|t| t.categories().iter().any(|c| active.contains(c)))

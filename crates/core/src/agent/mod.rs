@@ -415,9 +415,8 @@ struct DirectDispatch {
 /// Async callback invoked when a destructive tool needs user confirmation.
 /// Receives a human-readable message describing the action and returns
 /// `true` to proceed or `false` to cancel.
-pub type ConfirmationCallback = Arc<
-    dyn Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync,
->;
+pub type ConfirmationCallback =
+    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
 pub struct AgentExecutor {
     provider: Box<dyn LlmProvider>,
@@ -568,10 +567,10 @@ impl AgentExecutor {
             .join(" ");
 
         // --- Trace: initialize ------------------------------------------------
-        let ctx_window_for_trace = self
-            .config
-            .context_window
-            .unwrap_or_else(|| model_context_window(model)) as usize;
+        let ctx_window_for_trace =
+            self.config
+                .context_window
+                .unwrap_or_else(|| model_context_window(model)) as usize;
         let mut trace = if self.config.trace_enabled {
             Some(AgentTrace::begin(
                 conversation_id.unwrap_or(""),
@@ -592,7 +591,8 @@ impl AgentExecutor {
         let has_sources = !source_scope.is_empty();
 
         let tool_defs = if self.config.dynamic_tool_visibility {
-            self.tools.select_tools(&user_query_text_for_tools, has_sources)
+            self.tools
+                .select_tools(&user_query_text_for_tools, has_sources)
         } else {
             self.tools.definitions()
         };
@@ -666,9 +666,11 @@ impl AgentExecutor {
 
         // --- 3d. Check answer cache before ReAct loop ------------------------
         if !user_query_text.is_empty() {
-            if let Ok(Some(cached)) =
-                db.find_cached_answer(&user_query_text, cache_source_filter.as_deref(), self.config.cache_ttl_hours.map(|h| h as i64))
-            {
+            if let Ok(Some(cached)) = db.find_cached_answer(
+                &user_query_text,
+                cache_source_filter.as_deref(),
+                self.config.cache_ttl_hours.map(|h| h as i64),
+            ) {
                 let _ = db.increment_cache_hit(&cached.id);
                 debug!("Cache hit for query: {}", user_query_text);
                 let _ = tx
@@ -755,7 +757,9 @@ impl AgentExecutor {
                                     thinking: None,
                                 };
                                 if let Err(e) = db.add_message(&synthetic) {
-                                    warn!("Failed to insert synthetic tool response on cancel: {e}");
+                                    warn!(
+                                        "Failed to insert synthetic tool response on cancel: {e}"
+                                    );
                                 }
                                 sort_order += 1;
                             }
@@ -1012,7 +1016,10 @@ impl AgentExecutor {
                     }
                     Err(CoreError::StreamIncomplete) => {
                         warn!("Stream incomplete — response may be truncated");
-                        info!("Stream ended incomplete: {chunk_count} chunks, {} chars", full_content.len());
+                        info!(
+                            "Stream ended incomplete: {chunk_count} chunks, {} chars",
+                            full_content.len()
+                        );
                         let _ = tx
                             .send(AgentEvent::Error {
                                 message: "Response may be truncated (stream ended unexpectedly)"
@@ -1040,7 +1047,10 @@ impl AgentExecutor {
                 }
             }
 
-            info!("Stream complete: {chunk_count} chunks, {} chars", full_content.len());
+            info!(
+                "Stream complete: {chunk_count} chunks, {} chars",
+                full_content.len()
+            );
 
             // -- 4b. Accumulate usage ------------------------------------------
             let mut iteration_compacted = false;
@@ -1071,8 +1081,7 @@ impl AgentExecutor {
                 let max_response = self.config.max_tokens.unwrap_or(4096);
                 let budget = ctx_window.saturating_sub(max_response);
                 if budget > 0 {
-                    iteration_context_pct =
-                        (u.prompt_tokens as f32 / budget as f32) * 100.0;
+                    iteration_context_pct = (u.prompt_tokens as f32 / budget as f32) * 100.0;
                     if u.prompt_tokens > (budget as f64 * 0.85) as u32 {
                         if let Err(e) = self.aggressive_compact(&mut messages, model, &tx).await {
                             warn!("Auto-compact failed: {e}");
@@ -1249,9 +1258,7 @@ impl AgentExecutor {
                                     let message = self
                                         .tools
                                         .confirmation_message(&tc.name, &parsed_args)
-                                        .unwrap_or_else(|| {
-                                            format!("Execute tool: {}", tc.name)
-                                        });
+                                        .unwrap_or_else(|| format!("Execute tool: {}", tc.name));
                                     if !cb(message).await {
                                         let declined = crate::tools::ToolResult {
                                             call_id: tc.id.clone(),
@@ -1589,7 +1596,11 @@ impl AgentExecutor {
         // pull back to before that assistant message.
         if evict_end > non_system_start && evict_end < messages.len() {
             if let Some(ref tc) = messages[evict_end - 1].tool_calls {
-                if !tc.is_empty() && messages.get(evict_end).map_or(false, |m| m.role == Role::Tool) {
+                if !tc.is_empty()
+                    && messages
+                        .get(evict_end)
+                        .map_or(false, |m| m.role == Role::Tool)
+                {
                     evict_end -= 1;
                 }
             }

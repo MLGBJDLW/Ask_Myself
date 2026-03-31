@@ -372,7 +372,10 @@ pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool 
         ProviderType::DeepSeek => false,
         ProviderType::Zhipu => m.contains("glm-4v"),
         ProviderType::Qwen => m.contains("qwen-vl"),
-        ProviderType::Moonshot | ProviderType::Doubao | ProviderType::Yi | ProviderType::Baichuan => false,
+        ProviderType::Moonshot
+        | ProviderType::Doubao
+        | ProviderType::Yi
+        | ProviderType::Baichuan => false,
         ProviderType::Ollama | ProviderType::LmStudio => {
             m.contains("vision")
                 || m.contains("llava")

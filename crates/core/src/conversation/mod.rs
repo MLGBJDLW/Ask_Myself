@@ -1196,7 +1196,10 @@ pub async fn generate_title(
     user_message: &str,
     assistant_reply: Option<&str>,
 ) -> String {
-    let mut user_content = format!("User message:\n{}", truncate_for_title_context(user_message, 500));
+    let mut user_content = format!(
+        "User message:\n{}",
+        truncate_for_title_context(user_message, 500)
+    );
     if let Some(reply) = assistant_reply {
         let trimmed = truncate_for_title_context(reply, 300);
         if !trimmed.is_empty() {

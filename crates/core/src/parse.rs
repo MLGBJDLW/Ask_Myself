@@ -1575,7 +1575,12 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
     #[test]
     fn test_parse_pdf_not_found() {
         let ocr_cfg = crate::ocr::OcrConfig::default();
-        let result = parse_pdf(Path::new("/tmp/nonexistent_report.pdf"), &ocr_cfg, None, DEFAULT_MAX_CHUNK_CHARS);
+        let result = parse_pdf(
+            Path::new("/tmp/nonexistent_report.pdf"),
+            &ocr_cfg,
+            None,
+            DEFAULT_MAX_CHUNK_CHARS,
+        );
         assert!(result.is_err());
     }
 

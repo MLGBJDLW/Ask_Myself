@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use rusqlite::params;
 use crate::db::Database;
 use crate::error::CoreError;
+use rusqlite::params;
+use serde::{Deserialize, Serialize};
 
 const APP_CONFIG_KEY: &str = "app_config";
 
@@ -54,17 +54,39 @@ pub struct AppConfig {
     pub auto_memory_extraction: bool,
 }
 
-fn default_tool_timeout() -> i64 { 30 }
-fn default_agent_timeout() -> i64 { 180 }
-fn default_cache_ttl_hours() -> u32 { 24 }
-fn default_search_limit() -> usize { 20 }
-fn default_min_search_similarity() -> f32 { 0.2 }
-fn default_max_text_file_size() -> u64 { 100 * 1024 * 1024 }
-fn default_max_video_file_size() -> u64 { 2 * 1024 * 1024 * 1024 }
-fn default_max_audio_file_size() -> u64 { 500 * 1024 * 1024 }
-fn default_llm_timeout_secs() -> u64 { 300 }
-fn default_mcp_call_timeout_secs() -> u64 { 60 }
-fn default_auto_memory_extraction() -> bool { true }
+fn default_tool_timeout() -> i64 {
+    30
+}
+fn default_agent_timeout() -> i64 {
+    180
+}
+fn default_cache_ttl_hours() -> u32 {
+    24
+}
+fn default_search_limit() -> usize {
+    20
+}
+fn default_min_search_similarity() -> f32 {
+    0.2
+}
+fn default_max_text_file_size() -> u64 {
+    100 * 1024 * 1024
+}
+fn default_max_video_file_size() -> u64 {
+    2 * 1024 * 1024 * 1024
+}
+fn default_max_audio_file_size() -> u64 {
+    500 * 1024 * 1024
+}
+fn default_llm_timeout_secs() -> u64 {
+    300
+}
+fn default_mcp_call_timeout_secs() -> u64 {
+    60
+}
+fn default_auto_memory_extraction() -> bool {
+    true
+}
 
 impl Default for AppConfig {
     fn default() -> Self {

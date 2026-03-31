@@ -55,9 +55,7 @@ fn max_file_size_for_path(path: &Path, limits: &FileSizeLimits) -> u64 {
         Some("mp4" | "mkv" | "webm" | "avi" | "mov" | "flv" | "mpeg" | "mpg" | "wmv" | "m4v") => {
             limits.max_video
         }
-        Some("mp3" | "wav" | "flac" | "aac" | "ogg" | "wma" | "m4a" | "opus") => {
-            limits.max_audio
-        }
+        Some("mp3" | "wav" | "flac" | "aac" | "ogg" | "wma" | "m4a" | "opus") => limits.max_audio,
         _ => limits.max_text,
     }
 }
@@ -335,7 +333,10 @@ fn scan_source_inner(
     // Purge stale documents: entries in the DB whose files no longer exist on disk.
     for (doc_path, (_doc_id, _hash)) in &existing_docs {
         if !Path::new(doc_path).exists() {
-            info!("Purging stale document (file removed from disk): {}", doc_path);
+            info!(
+                "Purging stale document (file removed from disk): {}",
+                doc_path
+            );
             match db.delete_document_by_path(doc_path) {
                 Ok(true) => result.files_purged += 1,
                 Ok(false) => {

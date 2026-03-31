@@ -122,7 +122,10 @@ impl Tool for CreateFileTool {
     }
 
     fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
-        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("<unknown>");
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown>");
         Some(format!("Create file: {path}"))
     }
 
@@ -133,9 +136,8 @@ impl Tool for CreateFileTool {
         db: &Database,
         _source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
-        let args: CreateFileArgs = serde_json::from_str(arguments).map_err(|e| {
-            CoreError::InvalidInput(format!("Invalid create_file arguments: {e}"))
-        })?;
+        let args: CreateFileArgs = serde_json::from_str(arguments)
+            .map_err(|e| CoreError::InvalidInput(format!("Invalid create_file arguments: {e}")))?;
 
         // Reject path traversal early.
         if has_path_traversal(&args.path) {

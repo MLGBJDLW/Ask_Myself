@@ -23,8 +23,6 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 
-
-
 // ---------------------------------------------------------------------------
 // Anthropic API wire types — request
 // ---------------------------------------------------------------------------

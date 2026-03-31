@@ -192,17 +192,9 @@ fn extract_text_delta_from_choice(choice: &SseChoice) -> String {
 // Thinking-token tag definitions
 // ---------------------------------------------------------------------------
 
-const THINK_OPEN_TAGS: &[&str] = &[
-    "<think>",
-    "<|begin_of_thinking|>",
-    "<|startofthought|>",
-];
+const THINK_OPEN_TAGS: &[&str] = &["<think>", "<|begin_of_thinking|>", "<|startofthought|>"];
 
-const THINK_CLOSE_TAGS: &[&str] = &[
-    "</think>",
-    "<|end_of_thinking|>",
-    "<|endofthought|>",
-];
+const THINK_CLOSE_TAGS: &[&str] = &["</think>", "<|end_of_thinking|>", "<|endofthought|>"];
 
 /// Find the earliest occurrence of any tag in `haystack`.
 /// Returns `(byte_position, tag_byte_length)` or `None`.
@@ -288,9 +280,7 @@ fn split_think_tags(
                 }
                 break;
             }
-        } else if let Some((start_pos, tag_len)) =
-            find_earliest_tag(tag_buffer, THINK_OPEN_TAGS)
-        {
+        } else if let Some((start_pos, tag_len)) = find_earliest_tag(tag_buffer, THINK_OPEN_TAGS) {
             let before = &tag_buffer[..start_pos];
             if !before.is_empty() {
                 visible.push_str(before);
@@ -576,8 +566,11 @@ mod tests {
     fn think_tags_basic() {
         let mut in_block = false;
         let mut buf = String::new();
-        let (vis, think) =
-            split_think_tags("hello<think>reasoning</think>world", &mut in_block, &mut buf);
+        let (vis, think) = split_think_tags(
+            "hello<think>reasoning</think>world",
+            &mut in_block,
+            &mut buf,
+        );
         assert_eq!(vis, "helloworld");
         assert_eq!(think.as_deref(), Some("reasoning"));
         assert!(!in_block);
@@ -616,8 +609,7 @@ mod tests {
         let mut buf = String::new();
 
         // First chunk ends mid-tag.
-        let (vis1, think1) =
-            split_think_tags("hello<|begin_of_", &mut in_block, &mut buf);
+        let (vis1, think1) = split_think_tags("hello<|begin_of_", &mut in_block, &mut buf);
         assert_eq!(vis1, "hello");
         assert!(think1.is_none());
         assert!(!in_block);
@@ -641,15 +633,13 @@ mod tests {
         let mut buf = String::new();
 
         // First chunk ends mid-close-tag.
-        let (vis1, think1) =
-            split_think_tags("reasoning<|end_of_", &mut in_block, &mut buf);
+        let (vis1, think1) = split_think_tags("reasoning<|end_of_", &mut in_block, &mut buf);
         assert_eq!(vis1, "");
         assert_eq!(think1.as_deref(), Some("reasoning"));
         assert!(in_block);
 
         // Second chunk completes the close tag.
-        let (vis2, think2) =
-            split_think_tags("thinking|>visible", &mut in_block, &mut buf);
+        let (vis2, think2) = split_think_tags("thinking|>visible", &mut in_block, &mut buf);
         assert_eq!(vis2, "visible");
         assert!(think2.is_none());
         assert!(!in_block);
@@ -687,7 +677,8 @@ mod tests {
         // land inside a multi-byte character.
         let mut in_block = false;
         let mut buf = String::new();
-        let (vis, think) = split_think_tags("根据<think>中文思考</think>结果", &mut in_block, &mut buf);
+        let (vis, think) =
+            split_think_tags("根据<think>中文思考</think>结果", &mut in_block, &mut buf);
         assert_eq!(vis, "根据结果");
         assert_eq!(think.as_deref(), Some("中文思考"));
         assert!(!in_block);
