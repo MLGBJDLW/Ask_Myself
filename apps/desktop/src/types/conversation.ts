@@ -4,6 +4,12 @@ export interface Conversation {
   provider: string;
   model: string;
   systemPrompt: string;
+  collectionContext?: {
+    title: string;
+    description?: string | null;
+    queryText?: string | null;
+    sourceIds: string[];
+  } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -25,6 +31,19 @@ export interface ConversationMessage {
   thinking: string | null;
   /** Optimistic-only: image attachments sent with this user message. */
   imageAttachments?: ImageAttachment[] | null;
+}
+
+export interface ConversationTurn {
+  id: string;
+  conversationId: string;
+  userMessageId: string;
+  assistantMessageId: string | null;
+  status: string;
+  routeKind?: string | null;
+  trace?: Record<string, unknown> | unknown[] | null;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt?: string | null;
 }
 
 export interface ToolCallRequest {
@@ -152,12 +171,13 @@ export type ProviderType =
   | 'custom';
 
 export interface AgentEvent {
-  type: 'textDelta' | 'toolCallStart' | 'toolCallResult' | 'thinking' | 'done' | 'error' | 'autoCompacted' | 'usageUpdate';
+  type: 'textDelta' | 'toolCallStart' | 'toolCallResult' | 'thinking' | 'status' | 'done' | 'error' | 'autoCompacted' | 'usageUpdate';
   delta?: string;
   callId?: string;
   toolName?: string;
   arguments?: string;
   content?: string;
+  tone?: 'muted' | 'success' | 'error';
   isError?: boolean;
   artifacts?: ArtifactPayload;
   // `Done` events carry a full ConversationMessage; `Error` events carry a plain string.
@@ -174,6 +194,7 @@ export interface AgentFrontendEvent {
   toolName?: string;
   arguments?: string;
   content?: string;
+  tone?: 'muted' | 'success' | 'error';
   isError?: boolean;
   artifacts?: ArtifactPayload;
   message?: ConversationMessage | string;

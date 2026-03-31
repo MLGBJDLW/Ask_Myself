@@ -202,6 +202,27 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
         "v030_subagent_allowed_skills",
         "ALTER TABLE agent_configs ADD COLUMN subagent_allowed_skill_ids_json TEXT;",
     ),
+    (
+        "v031_conversation_collection_context",
+        "ALTER TABLE conversations ADD COLUMN collection_context_json TEXT;",
+    ),
+    (
+        "v032_conversation_turns",
+        "CREATE TABLE IF NOT EXISTS conversation_turns (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            user_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+            assistant_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            route_kind TEXT,
+            trace_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation
+            ON conversation_turns(conversation_id, created_at);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

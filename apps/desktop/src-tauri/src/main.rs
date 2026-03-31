@@ -61,6 +61,7 @@ fn main() {
             // Search
             commands::search,
             commands::get_evidence_card,
+            commands::get_evidence_cards,
             // Index
             commands::get_index_stats,
             commands::rebuild_index,
@@ -113,6 +114,8 @@ fn main() {
             commands::create_conversation_cmd,
             commands::list_conversations_cmd,
             commands::get_conversation_cmd,
+            commands::get_conversation_turns_cmd,
+            commands::update_conversation_collection_context_cmd,
             commands::delete_conversation_cmd,
             commands::delete_conversations_batch_cmd,
             commands::delete_all_conversations_cmd,

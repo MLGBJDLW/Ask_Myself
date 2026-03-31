@@ -284,9 +284,13 @@ impl DelegationRuntime {
     fn get_tool_registry(&self) -> Result<ToolRegistry, CoreError> {
         self.tool_registry
             .lock()
-            .map_err(|_| CoreError::Internal("delegation runtime tool registry lock poisoned".into()))?
+            .map_err(|_| {
+                CoreError::Internal("delegation runtime tool registry lock poisoned".into())
+            })?
             .clone()
-            .ok_or_else(|| CoreError::Internal("delegation runtime tool registry not initialized".into()))
+            .ok_or_else(|| {
+                CoreError::Internal("delegation runtime tool registry not initialized".into())
+            })
     }
 }
 
@@ -832,8 +836,10 @@ async fn run_subagent_once(
     let effective_source_scope =
         resolve_source_scope(&inherited_source_scope, args.source_ids.as_deref());
     let evidence_handoff = build_evidence_handoff(&db, args.evidence_chunk_ids.as_deref());
-    let enabled_skills =
-        filter_enabled_skills(db.get_enabled_skills().unwrap_or_default(), runtime.allowed_skill_ids.as_deref());
+    let enabled_skills = filter_enabled_skills(
+        db.get_enabled_skills().unwrap_or_default(),
+        runtime.allowed_skill_ids.as_deref(),
+    );
     let applied_skill_refs = applied_skills(&enabled_skills);
 
     let tools = available_tool_registry.filtered(&effective_allowed_tools);
@@ -846,11 +852,11 @@ async fn run_subagent_once(
         &evidence_handoff,
     );
 
-    let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
+    let (tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
     let event_task = tokio::spawn(async move {
         let mut capture = EventCapture::default();
 
-        while let Some(event) = rx.recv().await {
+        while let Some(event) = event_rx.recv().await {
             match event {
                 AgentEvent::ToolCallStart {
                     call_id,
@@ -881,6 +887,15 @@ async fn run_subagent_once(
                         capture.thinking.push(content);
                     }
                 }
+                AgentEvent::Status { content, tone } => {
+                    if !content.trim().is_empty() {
+                        capture.tool_events.push(serde_json::json!({
+                            "phase": "status",
+                            "content": content,
+                            "tone": tone,
+                        }));
+                    }
+                }
                 AgentEvent::UsageUpdate { usage_total, .. } => {
                     capture.usage_total = usage_total;
                 }
@@ -907,6 +922,7 @@ async fn run_subagent_once(
             vec![ContentPart::Text { text: request_text }],
             &db,
             None,
+            None,
             Some(effective_source_scope.clone()),
             tx,
             0,
@@ -922,8 +938,11 @@ async fn run_subagent_once(
     } else {
         result_text
     };
-    let source_scope_applied =
-        !inherited_source_scope.is_empty() || args.source_ids.as_deref().is_some_and(|ids| !ids.is_empty());
+    let source_scope_applied = !inherited_source_scope.is_empty()
+        || args
+            .source_ids
+            .as_deref()
+            .is_some_and(|ids| !ids.is_empty());
 
     Ok(SubagentRunArtifact {
         id: worker_id.unwrap_or_else(|| call_label),

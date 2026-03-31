@@ -22,6 +22,7 @@ import type {
   SaveAgentConfigInput,
   Conversation,
   ConversationMessage,
+  ConversationTurn,
   ConversationStats,
   ConversationSearchResult,
   ImageAttachment,
@@ -64,6 +65,9 @@ export const search = (queryText: string, limit?: number, offset?: number, filte
 
 export const getEvidenceCard = (chunkId: string) =>
   invoke<EvidenceCard>("get_evidence_card", { chunkId });
+
+export const getEvidenceCards = (chunkIds: string[]) =>
+  invoke<EvidenceCard[]>('get_evidence_cards', { chunkIds });
 
 // ── Index ───────────────────────────────────────────────────────────────
 
@@ -233,10 +237,20 @@ export const testAgentConnection = (config: SaveAgentConfigInput) =>
 export const createConversation = (provider: string, model: string, systemPrompt?: string) =>
   invoke<Conversation>('create_conversation_cmd', { provider, model, systemPrompt });
 
+export const createConversationWithContext = (
+  provider: string,
+  model: string,
+  systemPrompt?: string,
+  collectionContext?: Conversation['collectionContext'],
+) => invoke<Conversation>('create_conversation_cmd', { provider, model, systemPrompt, collectionContext });
+
 export const listConversations = () => invoke<Conversation[]>('list_conversations_cmd');
 
 export const getConversation = (id: string) =>
   invoke<[Conversation, ConversationMessage[]]>('get_conversation_cmd', { id });
+
+export const getConversationTurns = (conversationId: string) =>
+  invoke<ConversationTurn[]>('get_conversation_turns_cmd', { conversationId });
 
 export const deleteConversation = (id: string) =>
   invoke<void>('delete_conversation_cmd', { id });
@@ -255,6 +269,11 @@ export const generateTitle = (conversationId: string) =>
 
 export const updateConversationSystemPrompt = (id: string, systemPrompt: string) =>
   invoke<void>('update_conversation_system_prompt_cmd', { id, systemPrompt });
+
+export const updateConversationCollectionContext = (
+  id: string,
+  collectionContext: Conversation['collectionContext'],
+) => invoke<void>('update_conversation_collection_context_cmd', { id, collectionContext });
 
 // ── Agent Chat ──────────────────────────────────────────────────────────
 

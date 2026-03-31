@@ -183,7 +183,10 @@ impl Tool for EditFileTool {
     }
 
     fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
-        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("<unknown>");
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown>");
         Some(format!("Edit file: {path}"))
     }
 

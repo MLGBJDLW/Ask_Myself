@@ -4,7 +4,7 @@ import * as api from './api';
 import { useAgentStream, UsageTotal } from './useAgentStream';
 import { streamStore } from './streamStore';
 import { useTranslation } from '../i18n';
-import type { Conversation, ConversationMessage, AgentConfig, ImageAttachment } from '../types/conversation';
+import type { Conversation, ConversationMessage, ConversationTurn, AgentConfig, ImageAttachment } from '../types/conversation';
 import { appTimeMs } from './dateTime';
 
 /* ------------------------------------------------------------------ */
@@ -105,15 +105,21 @@ export interface UseChatSessionOptions {
   onConversationCreated?: (id: string) => void;
   /** Optional custom system prompt to use when creating a conversation */
   systemPrompt?: string;
+  /** Optional source scope to apply when creating a new conversation */
+  initialSourceIds?: string[];
+  /** Optional collection context to persist on the conversation */
+  initialCollectionContext?: Conversation['collectionContext'];
 }
 
 export interface UseChatSessionReturn {
   messages: ConversationMessage[];
+  turns: ConversationTurn[];
   conversations: Conversation[];
   setConversations: React.Dispatch<React.SetStateAction<Conversation[]>>;
   isStreaming: boolean;
   streamText: string;
   streamRounds: ReturnType<typeof useAgentStream>['streamRounds'];
+  traceEvents: ReturnType<typeof useAgentStream>['traceEvents'];
   thinkingText: string;
   isThinking: boolean;
   toolCalls: ReturnType<typeof useAgentStream>['toolCalls'];
@@ -144,6 +150,7 @@ export interface UseChatSessionReturn {
   setActiveConversation: (id: string) => void;
   createNewConversation: () => void;
   activeId: string | null;
+  activeConversation: Conversation | null;
   customSystemPrompt: string;
   setCustomSystemPrompt: (prompt: string) => void;
   error: string | null;
@@ -161,13 +168,20 @@ export interface UseChatSessionReturn {
 /* ------------------------------------------------------------------ */
 
 export function useChatSession(options: UseChatSessionOptions = {}): UseChatSessionReturn {
-  const { conversationId: externalConversationId, onConversationCreated, systemPrompt: externalSystemPrompt } = options;
+  const {
+    conversationId: externalConversationId,
+    onConversationCreated,
+    systemPrompt: externalSystemPrompt,
+    initialSourceIds = [],
+    initialCollectionContext = null,
+  } = options;
 
   const { t } = useTranslation();
 
   /* ── State ──────────────────────────────────────────────────────── */
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messageCache, setMessageCache] = useState<Record<string, ConversationMessage[]>>({});
+  const [turnCache, setTurnCache] = useState<Record<string, ConversationTurn[]>>({});
   const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null);
   const [customSystemPrompt, setCustomSystemPrompt] = useState<string>(externalSystemPrompt ?? '');
   const [loadingConfig, setLoadingConfig] = useState(true);
@@ -198,6 +212,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   messageCacheRef.current = messageCache;
 
   const messages = activeId ? (messageCache[activeId] ?? []) : [];
+  const turns = activeId ? (turnCache[activeId] ?? []) : [];
 
   const setMessagesForConversation = useCallback((
     conversationId: string,
@@ -215,12 +230,29 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     });
   }, []);
 
+  const setTurnsForConversation = useCallback((
+    conversationId: string,
+    updater: ConversationTurn[] | ((prev: ConversationTurn[]) => ConversationTurn[]),
+  ) => {
+    setTurnCache(prev => {
+      const current = prev[conversationId] ?? [];
+      const nextTurns = typeof updater === 'function'
+        ? (updater as (prev: ConversationTurn[]) => ConversationTurn[])(current)
+        : updater;
+      return {
+        ...prev,
+        [conversationId]: nextTurns,
+      };
+    });
+  }, []);
+
   const {
     send: streamSend,
     stop: streamStop,
     isStreaming,
     streamText,
     streamRounds,
+    traceEvents,
     thinkingText,
     isThinking,
     toolCalls,
@@ -239,7 +271,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   // (runs during render so scoping computed values below see the correct ref)
   if (activeId && !streamingConversationRef.current) {
     const storeStream = streamStore.getStream(activeId);
-    if (storeStream && (storeStream.isStreaming || storeStream.streamRounds.length > 0 || storeStream.streamText.length > 0)) {
+    if (storeStream && (
+      storeStream.isStreaming
+      || storeStream.streamRounds.length > 0
+      || storeStream.traceEvents.length > 0
+      || storeStream.streamText.length > 0
+    )) {
       streamingConversationRef.current = activeId;
       usageConversationRef.current = activeId;
     }
@@ -367,9 +404,20 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
     void (async () => {
       try {
-        const [conv, msgs] = await api.getConversation(activeId);
+        const [[conv, msgs], conversationTurns] = await Promise.all([
+          api.getConversation(activeId),
+          api.getConversationTurns(activeId),
+        ]);
         if (cancelled) return;
         setMessagesForConversation(activeId, msgs);
+        setTurnsForConversation(activeId, conversationTurns);
+        setConversations((prev) => {
+          const existing = prev.find((item) => item.id === conv.id);
+          if (existing) {
+            return prev.map((item) => (item.id === conv.id ? { ...item, ...conv } : item));
+          }
+          return [conv, ...prev];
+        });
         systemPromptCacheRef.current = {
           ...systemPromptCacheRef.current,
           [activeId]: conv.systemPrompt ?? '',
@@ -395,7 +443,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     return () => {
       cancelled = true;
     };
-  }, [activeId, defaultContextWindow, externalSystemPrompt, isStreaming, setMessagesForConversation]);
+  }, [activeId, defaultContextWindow, externalSystemPrompt, isStreaming, setMessagesForConversation, setTurnsForConversation]);
 
   /* ── Reload messages when streaming completes ───────────────────── */
   useEffect(() => {
@@ -403,9 +451,20 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     const completedConversationId = !isStreaming ? streamingConversationRef.current : null;
     if (completedConversationId) {
       // Re-fetch messages after agent is done.
-      api.getConversation(completedConversationId).then(([conv, msgs]) => {
+      Promise.all([
+        api.getConversation(completedConversationId),
+        api.getConversationTurns(completedConversationId),
+      ]).then(([[conv, msgs], conversationTurns]) => {
         if (!cancelled) {
           setMessagesForConversation(completedConversationId, msgs);
+          setTurnsForConversation(completedConversationId, conversationTurns);
+          setConversations((prev) => {
+            const existing = prev.find((item) => item.id === conv.id);
+            if (existing) {
+              return prev.map((item) => (item.id === conv.id ? { ...item, ...conv } : item));
+            }
+            return [conv, ...prev];
+          });
           systemPromptCacheRef.current = {
             ...systemPromptCacheRef.current,
             [completedConversationId]: conv.systemPrompt ?? '',
@@ -477,12 +536,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     }
     if (streamText.trim().length > 0) return;
     if (streamRounds.length > 0) return;
+    if (traceEvents.length > 0) return;
     if (thinkingText.trim().length > 0) return;
     if (isThinking) return;
     if (toolCalls.length > 0) return;
     pendingStreamConversationRef.current = null;
     streamingConversationRef.current = null;
-  }, [isStreaming, isThinking, streamRounds.length, streamText, thinkingText, toolCalls.length]);
+  }, [isStreaming, isThinking, streamRounds.length, streamText, thinkingText, toolCalls.length, traceEvents.length]);
 
   useEffect(() => {
     if (!activeId || !lastUsage) return;
@@ -638,13 +698,26 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       // Auto-create conversation if none active
       if (!convId) {
         try {
-          const conv = await api.createConversation(
+          const conv = initialCollectionContext
+            ? await api.createConversationWithContext(
+              agentConfig.provider,
+              agentConfig.model,
+              customSystemPrompt || undefined,
+              initialCollectionContext,
+            )
+            : await api.createConversation(
             agentConfig.provider,
             agentConfig.model,
             customSystemPrompt || undefined,
           );
           convId = conv.id;
-          setConversations((prev) => [conv, ...prev]);
+          if (initialSourceIds.length > 0) {
+            await api.setConversationSources(convId, initialSourceIds);
+          }
+          const nextConversation = initialCollectionContext
+            ? { ...conv, collectionContext: initialCollectionContext }
+            : conv;
+          setConversations((prev) => [nextConversation, ...prev]);
           setInternalConversationId(convId);
           onConversationCreated?.(convId);
         } catch (e) {
@@ -677,7 +750,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
       await streamSend(convId, content, attachments);
     },
-    [activeId, agentConfig, customSystemPrompt, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
+    [activeId, agentConfig, customSystemPrompt, initialCollectionContext, initialSourceIds, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
   );
 
   const stop = useCallback(() => {
@@ -692,9 +765,15 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     if (!lastUserMessageRef.current || !activeId) return;
 
     // Remove the last user message and any subsequent assistant messages from local state
-    const lastUserIdx = messages.map(m => m.role).lastIndexOf('user');
+    const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
+    const lastUserIdx = lastTurn
+      ? messages.findIndex((message) => message.id === lastTurn.userMessageId)
+      : messages.map(m => m.role).lastIndexOf('user');
     if (lastUserIdx >= 0) {
       setMessagesForConversation(activeId, (prev) => prev.slice(0, lastUserIdx));
+      if (lastTurn) {
+        setTurnsForConversation(activeId, (prev) => prev.slice(0, -1));
+      }
     }
 
     setChatError(null);
@@ -722,7 +801,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     streamingConversationRef.current = activeId;
 
     await streamSend(activeId, content, attachments);
-  }, [activeId, messages, setMessagesForConversation, streamSend]);
+  }, [activeId, messages, setMessagesForConversation, setTurnsForConversation, streamSend, turns]);
 
   /* ── Delete single message (optimistic, local only) ─────────────── */
   const deleteMessage = useCallback((messageId: string) => {
@@ -771,18 +850,27 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const reloadMessages = useCallback(async () => {
     if (!activeId) return;
     try {
-      const [, msgs] = await api.getConversation(activeId);
+      const [[, msgs], conversationTurns] = await Promise.all([
+        api.getConversation(activeId),
+        api.getConversationTurns(activeId),
+      ]);
       setMessagesForConversation(activeId, msgs);
+      setTurnsForConversation(activeId, conversationTurns);
     } catch { /* ignore */ }
-  }, [activeId, setMessagesForConversation]);
+  }, [activeId, setMessagesForConversation, setTurnsForConversation]);
 
   /* ── Computed ────────────────────────────────────────────────────── */
 
   const isViewingStreamingConversation =
     activeId != null && streamingConversationRef.current === activeId;
+  const activeConversation = activeId
+    ? conversations.find((conversation) => conversation.id === activeId) ?? null
+    : null;
+  const activeTurns = turns;
   const activeIsStreaming = isViewingStreamingConversation && isStreaming;
   const activeStreamText = isViewingStreamingConversation ? streamText : '';
   const activeStreamRounds = isViewingStreamingConversation ? streamRounds : [];
+  const activeTraceEvents = isViewingStreamingConversation ? traceEvents : [];
   const activeThinkingText = isViewingStreamingConversation ? thinkingText : '';
   const activeIsThinking = isViewingStreamingConversation ? isThinking : false;
   const activeToolCalls = isViewingStreamingConversation ? toolCalls : [];
@@ -825,11 +913,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   return {
     messages,
+    turns: activeTurns,
     conversations,
     setConversations,
     isStreaming: activeIsStreaming,
     streamText: activeStreamText,
     streamRounds: activeStreamRounds,
+    traceEvents: activeTraceEvents,
     thinkingText: activeThinkingText,
     isThinking: activeIsThinking,
     toolCalls: activeToolCalls,
@@ -852,6 +942,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     setActiveConversation,
     createNewConversation,
     activeId,
+    activeConversation,
     customSystemPrompt,
     setCustomSystemPrompt: setCustomSystemPromptForActiveConversation,
     error: scopedError,

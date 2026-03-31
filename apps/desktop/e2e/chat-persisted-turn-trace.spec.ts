@@ -10,6 +10,7 @@ test.beforeEach(async ({ page }) => {
       provider: string;
       model: string;
       systemPrompt: string;
+      collectionContext?: null;
       createdAt: string;
       updatedAt: string;
     };
@@ -31,89 +32,88 @@ test.beforeEach(async ({ page }) => {
 
     const nowIso = new Date().toISOString();
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-
-    const conversations: Record<string, Conversation> = {
-      'conv-persisted-order': {
-        id: 'conv-persisted-order',
-        title: 'Persisted Order',
-        provider: 'open_ai',
-        model: 'gpt-4.1',
-        systemPrompt: '',
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      },
-    };
-
-    const toolCallId = 'tool-order-1';
-
-    const messagesByConversation: Record<string, Message[]> = {
-      'conv-persisted-order': [
-        {
-          id: 'm-user-1',
-          conversationId: 'conv-persisted-order',
-          role: 'user',
-          content: 'Walk through the persisted order.',
-          toolCallId: null,
-          toolCalls: [],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 0,
-          thinking: null,
-          imageAttachments: null,
-        },
-        {
-          id: 'm-assistant-tools-1',
-          conversationId: 'conv-persisted-order',
-          role: 'assistant',
-          content: '',
-          toolCallId: null,
-          toolCalls: [{ id: toolCallId, name: 'search_knowledge_base', arguments: '{"query":"order"}' }],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 1,
-          thinking: 'phase one thinking',
-          imageAttachments: null,
-        },
-        {
-          id: 'm-tool-1',
-          conversationId: 'conv-persisted-order',
-          role: 'tool',
-          content: 'Found the order note.',
-          toolCallId,
-          toolCalls: [],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 2,
-          thinking: null,
-          imageAttachments: null,
-        },
-        {
-          id: 'm-assistant-final',
-          conversationId: 'conv-persisted-order',
-          role: 'assistant',
-          content: 'final-reply-segment',
-          toolCallId: null,
-          toolCalls: [],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 3,
-          thinking: 'phase one thinking\nphase two thinking',
-          imageAttachments: null,
-        },
-      ],
-    };
-
-    const callbackMap = new Map<number, (event: unknown) => void>();
     let callbackSeq = 1;
     let listenerSeq = 1;
+    const callbackMap = new Map<number, (event: unknown) => void>();
+
+    const conversation: Conversation = {
+      id: 'conv-turn-trace',
+      title: 'Turn Trace',
+      provider: 'open_ai',
+      model: 'gpt-4.1',
+      systemPrompt: '',
+      collectionContext: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    const messages: Message[] = [
+      {
+        id: 'm-user-turn',
+        conversationId: 'conv-turn-trace',
+        role: 'user',
+        content: 'Why did the retry guard fail?',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 0,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-assistant-turn',
+        conversationId: 'conv-turn-trace',
+        role: 'assistant',
+        content: 'The retry guard was bypassed because the timeout branch did not return early.',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 1,
+        thinking: null,
+        imageAttachments: null,
+      },
+    ];
+
+    const turns = [
+      {
+        id: 'turn-1',
+        conversationId: 'conv-turn-trace',
+        userMessageId: 'm-user-turn',
+        assistantMessageId: 'm-assistant-turn',
+        status: 'success',
+        routeKind: 'KnowledgeRetrieval',
+        trace: {
+          kind: 'turnTrace',
+          routeKind: 'KnowledgeRetrieval',
+          items: [
+            { kind: 'thinking', text: 'Checking the retry path through the saved evidence first.' },
+            {
+              kind: 'tool',
+              toolCall: {
+                callId: 'tool-turn-1',
+                toolName: 'search_knowledge_base',
+                arguments: '{"query":"retry guard"}',
+                status: 'done',
+                content: 'Found 2 retry notes.',
+                isError: false,
+                artifacts: null,
+              },
+            },
+          ],
+        },
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        finishedAt: nowIso,
+      },
+    ];
 
     const defaultAgentConfig = {
-      id: 'cfg-persisted-order',
-      name: 'Persisted Order Config',
+      id: 'cfg-turn-trace',
+      name: 'Turn Trace Config',
       provider: 'open_ai',
       apiKey: '',
       baseUrl: null,
@@ -144,11 +144,11 @@ test.beforeEach(async ({ page }) => {
         case 'get_model_context_window':
           return 1047576;
         case 'list_conversations_cmd':
-          return Object.values(conversations).map(clone);
-        case 'get_conversation_cmd': {
-          const id = String(args.id ?? '');
-          return [clone(conversations[id]), clone(messagesByConversation[id] ?? [])];
-        }
+          return [clone(conversation)];
+        case 'get_conversation_cmd':
+          return [clone(conversation), clone(messages)];
+        case 'get_conversation_turns_cmd':
+          return clone(turns);
         case 'list_sources':
           return [];
         case 'get_conversation_sources_cmd':
@@ -156,6 +156,8 @@ test.beforeEach(async ({ page }) => {
         case 'set_conversation_sources_cmd':
           return null;
         case 'update_conversation_system_prompt_cmd':
+          return null;
+        case 'update_conversation_collection_context_cmd':
           return null;
         case 'list_checkpoints_cmd':
           return [];
@@ -221,20 +223,12 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('renders persisted multi-step traces in chronological order', async ({ page }) => {
-  await page.goto('/chat/conv-persisted-order');
+test('renders persisted turn traces from conversation_turns data', async ({ page }) => {
+  await page.goto('/chat/conv-turn-trace');
 
-  const chatLogText = await page.getByLabel('Chat messages').textContent();
-  expect(chatLogText).toBeTruthy();
-
-  const text = chatLogText ?? '';
-  expect(text.indexOf('phase one thinking')).toBeGreaterThanOrEqual(0);
-  expect(text.indexOf('search_knowledge_base')).toBeGreaterThan(text.indexOf('phase one thinking'));
-  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
-  expect(text.indexOf('final-reply-segment')).toBeGreaterThan(text.indexOf('phase two thinking'));
-
-  await expect(
-    page.locator('button[aria-expanded="true"]').filter({ hasText: 'Thinking completed' }),
-  ).toHaveCount(1);
-  await expect(page.getByText('Conclusion')).toHaveCount(1);
+  await expect(page.getByText('Route: Knowledge Retrieval')).toBeVisible();
+  await expect(page.getByText('Status: Success')).toBeVisible();
+  await expect(page.getByText('Checking the retry path through the saved evidence first.')).toBeVisible();
+  await expect(page.getByText('search_knowledge_base')).toBeVisible();
+  await expect(page.getByText('The retry guard was bypassed because the timeout branch did not return early.')).toBeVisible();
 });

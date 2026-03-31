@@ -845,11 +845,7 @@ pub fn ocr_pdf(
     let doc = lopdf::Document::load_mem(pdf_bytes)
         .map_err(|e| CoreError::Parse(format!("PDF load: {e}")))?;
 
-    let pages: Vec<lopdf::ObjectId> = doc
-        .get_pages()
-        .into_iter()
-        .map(|(_num, id)| id)
-        .collect();
+    let pages: Vec<lopdf::ObjectId> = doc.get_pages().into_iter().map(|(_num, id)| id).collect();
 
     let mut all_text = String::new();
 
@@ -868,8 +864,7 @@ pub fn ocr_pdf(
                 continue;
             }
 
-            match extract_text_from_image(&buf.into_inner(), "image/png", config, llm_provider)
-            {
+            match extract_text_from_image(&buf.into_inner(), "image/png", config, llm_provider) {
                 Ok(result) if !result.full_text.is_empty() => {
                     if !all_text.is_empty() {
                         all_text.push_str("\n\n--- Page Break ---\n\n");
@@ -960,16 +955,13 @@ fn extract_images_from_pdf_page(
             .get(b"Filter")
             .ok()
             .and_then(|f| {
-                f.as_name()
-                    .ok()
-                    .map(|n| n.to_vec())
-                    .or_else(|| {
-                        f.as_array().ok().and_then(|arr| {
-                            arr.last()
-                                .and_then(|n| n.as_name().ok())
-                                .map(|n| n.to_vec())
-                        })
+                f.as_name().ok().map(|n| n.to_vec()).or_else(|| {
+                    f.as_array().ok().and_then(|arr| {
+                        arr.last()
+                            .and_then(|n| n.as_name().ok())
+                            .map(|n| n.to_vec())
                     })
+                })
             })
             .unwrap_or_default();
 
@@ -1001,28 +993,29 @@ fn extract_images_from_pdf_page(
                 .get(b"ColorSpace")
                 .ok()
                 .and_then(|c| {
-                    c.as_name()
-                        .ok()
-                        .map(|n| n.to_vec())
-                        .or_else(|| {
-                            c.as_array()
-                                .ok()
-                                .and_then(|a| a.first())
-                                .and_then(|n| n.as_name().ok())
-                                .map(|n| n.to_vec())
-                        })
+                    c.as_name().ok().map(|n| n.to_vec()).or_else(|| {
+                        c.as_array()
+                            .ok()
+                            .and_then(|a| a.first())
+                            .and_then(|n| n.as_name().ok())
+                            .map(|n| n.to_vec())
+                    })
                 })
                 .unwrap_or_default();
 
             let expected_len = (width * height) as usize;
             if cs_name == b"DeviceGray" && raw.len() >= expected_len {
-                if let Some(gray) = image::GrayImage::from_raw(width, height, raw[..expected_len].to_vec()) {
+                if let Some(gray) =
+                    image::GrayImage::from_raw(width, height, raw[..expected_len].to_vec())
+                {
                     images.push(image::DynamicImage::ImageLuma8(gray));
                 }
             } else if (cs_name == b"DeviceRGB" || cs_name.is_empty())
                 && raw.len() >= expected_len * 3
             {
-                if let Some(rgb) = image::RgbImage::from_raw(width, height, raw[..expected_len * 3].to_vec()) {
+                if let Some(rgb) =
+                    image::RgbImage::from_raw(width, height, raw[..expected_len * 3].to_vec())
+                {
                     images.push(image::DynamicImage::ImageRgb8(rgb));
                 }
             }

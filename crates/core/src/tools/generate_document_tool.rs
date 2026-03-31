@@ -45,23 +45,30 @@ struct DocxSection {
 fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<u64, String> {
     use docx_rs::*;
 
-    let content: DocxContent =
-        serde_json::from_value(content.clone()).map_err(|e| format!("Invalid DOCX content: {e}"))?;
+    let content: DocxContent = serde_json::from_value(content.clone())
+        .map_err(|e| format!("Invalid DOCX content: {e}"))?;
 
-    let calibri = RunFonts::new().ascii("Calibri").hi_ansi("Calibri").east_asia("Calibri").cs("Calibri");
-    let calibri_light = RunFonts::new().ascii("Calibri Light").hi_ansi("Calibri Light").east_asia("Calibri Light").cs("Calibri Light");
+    let calibri = RunFonts::new()
+        .ascii("Calibri")
+        .hi_ansi("Calibri")
+        .east_asia("Calibri")
+        .cs("Calibri");
+    let calibri_light = RunFonts::new()
+        .ascii("Calibri Light")
+        .hi_ansi("Calibri Light")
+        .east_asia("Calibri Light")
+        .cs("Calibri Light");
 
     // 1 inch = 1440 twips; page margins
-    let mut doc = Docx::new()
-        .page_margin(
-            PageMargin::new()
-                .top(1440)
-                .bottom(1440)
-                .left(1440)
-                .right(1440)
-                .header(720)
-                .footer(720),
-        );
+    let mut doc = Docx::new().page_margin(
+        PageMargin::new()
+            .top(1440)
+            .bottom(1440)
+            .left(1440)
+            .right(1440)
+            .header(720)
+            .footer(720),
+    );
 
     // Set up bullet list numbering: abstract numbering 1, numbering 1
     let bullet_abstract = AbstractNumbering::new(1).add_level(
@@ -76,7 +83,9 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
         .fonts(RunFonts::new().ascii("Symbol").hi_ansi("Symbol")),
     );
     let bullet_num = Numbering::new(1, 1);
-    doc = doc.add_abstract_numbering(bullet_abstract).add_numbering(bullet_num);
+    doc = doc
+        .add_abstract_numbering(bullet_abstract)
+        .add_numbering(bullet_num);
 
     // Title
     if let Some(title) = &content.title {
@@ -121,7 +130,10 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
         // Body text — handle bullet lines (starting with "- " or "• ")
         for line in section.body.split('\n') {
             let trimmed = line.trim();
-            if let Some(bullet_text) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("• ")) {
+            if let Some(bullet_text) = trimmed
+                .strip_prefix("- ")
+                .or_else(|| trimmed.strip_prefix("• "))
+            {
                 doc = doc.add_paragraph(
                     Paragraph::new()
                         .numbering(NumberingId::new(1), IndentLevel::new(0))
@@ -170,19 +182,13 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                                 .line_rule(LineSpacingType::Auto)
                                 .after(120),
                         )
-                        .add_run(
-                            Run::new()
-                                .add_text(item)
-                                .size(22)
-                                .fonts(calibri.clone()),
-                        ),
+                        .add_run(Run::new().add_text(item).size(22).fonts(calibri.clone())),
                 );
             }
         }
     }
 
-    let file =
-        std::fs::File::create(path).map_err(|e| format!("Failed to create file: {e}"))?;
+    let file = std::fs::File::create(path).map_err(|e| format!("Failed to create file: {e}"))?;
 
     doc.build()
         .pack(file)
@@ -212,8 +218,8 @@ struct XlsxSheet {
 fn generate_xlsx(path: &std::path::Path, content: &serde_json::Value) -> Result<u64, String> {
     use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder};
 
-    let content: XlsxContent =
-        serde_json::from_value(content.clone()).map_err(|e| format!("Invalid XLSX content: {e}"))?;
+    let content: XlsxContent = serde_json::from_value(content.clone())
+        .map_err(|e| format!("Invalid XLSX content: {e}"))?;
 
     let mut workbook = rust_xlsxwriter::Workbook::new();
 
@@ -302,8 +308,16 @@ fn generate_xlsx(path: &std::path::Path, content: &serde_json::Value) -> Result<
 
         for row in &sheet.rows {
             let is_alt = (row_idx % 2) == 0; // alternating; row 0 is header, so data rows 1,2,3...
-            let cell_fmt = if is_alt { &data_fmt_gray } else { &data_fmt_white };
-            let n_fmt = if is_alt { &num_fmt_gray } else { &num_fmt_white };
+            let cell_fmt = if is_alt {
+                &data_fmt_gray
+            } else {
+                &data_fmt_white
+            };
+            let n_fmt = if is_alt {
+                &num_fmt_gray
+            } else {
+                &num_fmt_white
+            };
 
             for (col, value) in row.iter().enumerate() {
                 match value {
@@ -478,7 +492,10 @@ fn build_content_slide(slide: &PptxSlide, slide_num: usize) -> String {
                 body_parts.push_str(r#"<a:p><a:endParaRPr lang="en-US" sz="2000"/></a:p>"#);
                 continue;
             }
-            let (text, is_bullet) = if let Some(t) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("• ")) {
+            let (text, is_bullet) = if let Some(t) = trimmed
+                .strip_prefix("- ")
+                .or_else(|| trimmed.strip_prefix("• "))
+            {
                 (t, true)
             } else {
                 (trimmed, false)
@@ -570,15 +587,14 @@ fn build_content_slide(slide: &PptxSlide, slide_num: usize) -> String {
 }
 
 fn generate_pptx(path: &std::path::Path, content: &serde_json::Value) -> Result<u64, String> {
-    let content: PptxContent =
-        serde_json::from_value(content.clone()).map_err(|e| format!("Invalid PPTX content: {e}"))?;
+    let content: PptxContent = serde_json::from_value(content.clone())
+        .map_err(|e| format!("Invalid PPTX content: {e}"))?;
 
     if content.slides.is_empty() {
         return Err("PPTX content must have at least one slide.".into());
     }
 
-    let file =
-        std::fs::File::create(path).map_err(|e| format!("Failed to create file: {e}"))?;
+    let file = std::fs::File::create(path).map_err(|e| format!("Failed to create file: {e}"))?;
 
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
@@ -689,7 +705,8 @@ fn generate_pptx(path: &std::path::Path, content: &serde_json::Value) -> Result<
             .map_err(|e| format!("Write error: {e}"))?;
     }
 
-    zip.finish().map_err(|e| format!("ZIP finalize error: {e}"))?;
+    zip.finish()
+        .map_err(|e| format!("ZIP finalize error: {e}"))?;
 
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     Ok(size)
@@ -722,7 +739,10 @@ impl Tool for GenerateDocumentTool {
     }
 
     fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
-        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("<unknown>");
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown>");
         let fmt = args.get("format").and_then(|v| v.as_str()).unwrap_or("?");
         Some(format!("Generate {fmt} document: {path}"))
     }

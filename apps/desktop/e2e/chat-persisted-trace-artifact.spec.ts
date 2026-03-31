@@ -33,9 +33,9 @@ test.beforeEach(async ({ page }) => {
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
     const conversations: Record<string, Conversation> = {
-      'conv-persisted-order': {
-        id: 'conv-persisted-order',
-        title: 'Persisted Order',
+      'conv-persisted-artifact-trace': {
+        id: 'conv-persisted-artifact-trace',
+        title: 'Persisted Trace Artifact',
         provider: 'open_ai',
         model: 'gpt-4.1',
         systemPrompt: '',
@@ -44,15 +44,13 @@ test.beforeEach(async ({ page }) => {
       },
     };
 
-    const toolCallId = 'tool-order-1';
-
     const messagesByConversation: Record<string, Message[]> = {
-      'conv-persisted-order': [
+      'conv-persisted-artifact-trace': [
         {
-          id: 'm-user-1',
-          conversationId: 'conv-persisted-order',
+          id: 'm-user-artifact',
+          conversationId: 'conv-persisted-artifact-trace',
           role: 'user',
-          content: 'Walk through the persisted order.',
+          content: 'Check the retry issue.',
           toolCallId: null,
           toolCalls: [],
           artifacts: null,
@@ -63,45 +61,36 @@ test.beforeEach(async ({ page }) => {
           imageAttachments: null,
         },
         {
-          id: 'm-assistant-tools-1',
-          conversationId: 'conv-persisted-order',
+          id: 'm-assistant-artifact',
+          conversationId: 'conv-persisted-artifact-trace',
           role: 'assistant',
-          content: '',
+          content: 'Final answer from persisted trace artifacts.',
           toolCallId: null,
-          toolCalls: [{ id: toolCallId, name: 'search_knowledge_base', arguments: '{"query":"order"}' }],
-          artifacts: null,
+          toolCalls: [],
+          artifacts: {
+            kind: 'traceTimeline',
+            version: 1,
+            items: [
+              { kind: 'thinking', text: 'Investigating retry behaviour from persisted artifacts.' },
+              {
+                kind: 'tool',
+                toolCall: {
+                  callId: 'tool-artifact-1',
+                  toolName: 'search_knowledge_base',
+                  arguments: '{"query":"retry"}',
+                  status: 'done',
+                  content: 'Found 2 retry notes.',
+                  isError: false,
+                  artifacts: null,
+                },
+              },
+              { kind: 'status', text: 'Recovered from persisted trace data.', tone: 'success' },
+            ],
+          },
           tokenCount: 0,
           createdAt: nowIso,
           sortOrder: 1,
-          thinking: 'phase one thinking',
-          imageAttachments: null,
-        },
-        {
-          id: 'm-tool-1',
-          conversationId: 'conv-persisted-order',
-          role: 'tool',
-          content: 'Found the order note.',
-          toolCallId,
-          toolCalls: [],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 2,
           thinking: null,
-          imageAttachments: null,
-        },
-        {
-          id: 'm-assistant-final',
-          conversationId: 'conv-persisted-order',
-          role: 'assistant',
-          content: 'final-reply-segment',
-          toolCallId: null,
-          toolCalls: [],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 3,
-          thinking: 'phase one thinking\nphase two thinking',
           imageAttachments: null,
         },
       ],
@@ -112,8 +101,8 @@ test.beforeEach(async ({ page }) => {
     let listenerSeq = 1;
 
     const defaultAgentConfig = {
-      id: 'cfg-persisted-order',
-      name: 'Persisted Order Config',
+      id: 'cfg-persisted-artifact-trace',
+      name: 'Persisted Artifact Trace Config',
       provider: 'open_ai',
       apiKey: '',
       baseUrl: null,
@@ -221,20 +210,18 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('renders persisted multi-step traces in chronological order', async ({ page }) => {
-  await page.goto('/chat/conv-persisted-order');
+test('renders persisted trace artifacts as a single unified timeline', async ({ page }) => {
+  await page.goto('/chat/conv-persisted-artifact-trace');
+
+  await expect(page.getByText('Investigating retry behaviour from persisted artifacts.')).toBeVisible();
+  await expect(page.getByText('search_knowledge_base')).toBeVisible();
+  await expect(page.getByText('Recovered from persisted trace data.')).toBeVisible();
+  await expect(page.getByText('Final answer from persisted trace artifacts.')).toBeVisible();
 
   const chatLogText = await page.getByLabel('Chat messages').textContent();
-  expect(chatLogText).toBeTruthy();
-
   const text = chatLogText ?? '';
-  expect(text.indexOf('phase one thinking')).toBeGreaterThanOrEqual(0);
-  expect(text.indexOf('search_knowledge_base')).toBeGreaterThan(text.indexOf('phase one thinking'));
-  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
-  expect(text.indexOf('final-reply-segment')).toBeGreaterThan(text.indexOf('phase two thinking'));
-
-  await expect(
-    page.locator('button[aria-expanded="true"]').filter({ hasText: 'Thinking completed' }),
-  ).toHaveCount(1);
-  await expect(page.getByText('Conclusion')).toHaveCount(1);
+  expect(text.indexOf('Investigating retry behaviour from persisted artifacts.')).toBeGreaterThanOrEqual(0);
+  expect(text.indexOf('search_knowledge_base')).toBeGreaterThan(text.indexOf('Investigating retry behaviour from persisted artifacts.'));
+  expect(text.indexOf('Recovered from persisted trace data.')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
+  expect(text.indexOf('Final answer from persisted trace artifacts.')).toBeGreaterThan(text.indexOf('Recovered from persisted trace data.'));
 });

@@ -40,6 +40,7 @@ pub enum FileType {
 pub struct EvidenceCard {
     pub chunk_id: Uuid,
     pub document_id: Uuid,
+    pub source_id: Uuid,
     pub source_name: String,
     pub document_path: String,
     pub document_title: String,
@@ -97,6 +98,8 @@ pub struct Playbook {
     pub id: Uuid,
     pub title: String,
     pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_text: Option<String>,
     pub citations: Vec<PlaybookCitation>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

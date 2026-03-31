@@ -47,7 +47,10 @@ impl Tool for ManageSourceTool {
 
     fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
         if args.get("action").and_then(|v| v.as_str()) == Some("remove") {
-            let id = args.get("source_id").and_then(|v| v.as_str()).unwrap_or("<unknown>");
+            let id = args
+                .get("source_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
             Some(format!("Remove source: {id}"))
         } else {
             None

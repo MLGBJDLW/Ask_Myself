@@ -10,10 +10,11 @@ import { useRef, useEffect, useState } from 'react';
 export function useTypewriter(
   sourceText: string,
   isActive: boolean,
-  options?: { charsPerTick?: number; intervalMs?: number },
+  options?: { charsPerTick?: number; intervalMs?: number; instantThreshold?: number },
 ): string {
   const charsPerTick = options?.charsPerTick ?? 5;
   const intervalMs = options?.intervalMs ?? 30;
+  const instantThreshold = options?.instantThreshold ?? 160;
 
   const [displayed, setDisplayed] = useState('');
   const revealIdx = useRef(0);
@@ -26,12 +27,18 @@ export function useTypewriter(
   useEffect(() => {
     latestSourceRef.current = sourceText;
 
+    if (isActive && sourceText.length > 0 && sourceText.length <= instantThreshold) {
+      revealIdx.current = sourceText.length;
+      setDisplayed(sourceText);
+      return;
+    }
+
     // Source may reset mid-stream (e.g., between tool-call phases).
     if (isActive && sourceText.length === 0) {
       revealIdx.current = 0;
       setDisplayed('');
     }
-  }, [isActive, sourceText]);
+  }, [instantThreshold, isActive, sourceText]);
 
   // When streaming finishes, flush everything immediately.
   useEffect(() => {
@@ -53,6 +60,12 @@ export function useTypewriter(
     if (!hasSource) {
       revealIdx.current = 0;
       setDisplayed('');
+      return;
+    }
+
+    if (latestSourceRef.current.length <= instantThreshold) {
+      revealIdx.current = latestSourceRef.current.length;
+      setDisplayed(latestSourceRef.current);
       return;
     }
 
@@ -91,7 +104,7 @@ export function useTypewriter(
         timerRef.current = null;
       }
     };
-  }, [isActive, hasSource, charsPerTick, intervalMs]);
+  }, [isActive, hasSource, charsPerTick, instantThreshold, intervalMs]);
 
   // Cleanup on unmount.
   useEffect(() => {

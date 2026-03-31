@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     provider    TEXT NOT NULL,
     model       TEXT NOT NULL,
     system_prompt TEXT NOT NULL DEFAULT '',
+    collection_context_json TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -198,6 +199,22 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation
     ON messages(conversation_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS conversation_turns (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    user_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    assistant_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    route_kind TEXT,
+    trace_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation
+    ON conversation_turns(conversation_id, created_at);
 
 -- Agent configs (v007 base + v008/v010/v012/v014 columns folded in)
 CREATE TABLE IF NOT EXISTS agent_configs (

@@ -25,8 +25,20 @@ pub struct Conversation {
     pub provider: String,
     pub model: String,
     pub system_prompt: String,
+    pub collection_context: Option<CollectionContext>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Structured collection context attached to a conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionContext {
+    pub title: String,
+    pub description: Option<String>,
+    pub query_text: Option<String>,
+    #[serde(default)]
+    pub source_ids: Vec<String>,
 }
 
 /// A single message within a conversation.
@@ -106,6 +118,22 @@ pub struct ConversationSearchResult {
     pub relevance_score: f64,
 }
 
+/// A persisted user turn with its route and trace lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTurn {
+    pub id: String,
+    pub conversation_id: String,
+    pub user_message_id: String,
+    pub assistant_message_id: Option<String>,
+    pub status: String,
+    pub route_kind: Option<String>,
+    pub trace: Option<serde_json::Value>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub finished_at: Option<String>,
+}
+
 /// A snapshot of conversation state before compaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +157,7 @@ pub struct CreateConversationInput {
     pub provider: String,
     pub model: String,
     pub system_prompt: Option<String>,
+    pub collection_context: Option<CollectionContext>,
 }
 
 /// Input for creating / updating an agent config.
@@ -206,6 +235,19 @@ fn parse_optional_string_list(value: Option<String>) -> Option<Vec<String>> {
     value.and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
 }
 
+fn serialize_collection_context(
+    value: Option<&CollectionContext>,
+) -> Result<Option<String>, CoreError> {
+    match value {
+        Some(context) => Ok(Some(serde_json::to_string(context)?)),
+        None => Ok(None),
+    }
+}
+
+fn parse_collection_context(value: Option<String>) -> Option<CollectionContext> {
+    value.and_then(|json| serde_json::from_str::<CollectionContext>(&json).ok())
+}
+
 /// Truncate a string to `max_chars`, appending "…" if truncated.
 fn truncate_preview(s: &str, max_chars: usize) -> String {
     if s.len() <= max_chars {
@@ -230,11 +272,18 @@ impl Database {
     ) -> Result<Conversation, CoreError> {
         let id = new_id();
         let system_prompt = input.system_prompt.as_deref().unwrap_or("");
+        let collection_context_json = serialize_collection_context(input.collection_context.as_ref())?;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO conversations (id, provider, model, system_prompt)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![&id, &input.provider, &input.model, system_prompt],
+            "INSERT INTO conversations (id, provider, model, system_prompt, collection_context_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                &id,
+                &input.provider,
+                &input.model,
+                system_prompt,
+                &collection_context_json
+            ],
         )?;
         drop(conn);
         self.get_conversation(&id)
@@ -244,7 +293,7 @@ impl Database {
     pub fn list_conversations(&self) -> Result<Vec<Conversation>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, title, provider, model, system_prompt, created_at, updated_at
+            "SELECT id, title, provider, model, system_prompt, collection_context_json, created_at, updated_at
              FROM conversations ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -254,8 +303,9 @@ impl Database {
                 provider: row.get(2)?,
                 model: row.get(3)?,
                 system_prompt: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
+                collection_context: parse_collection_context(row.get(5)?),
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
             })
         })?;
         let mut results = Vec::new();
@@ -269,7 +319,7 @@ impl Database {
     pub fn get_conversation(&self, id: &str) -> Result<Conversation, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, title, provider, model, system_prompt, created_at, updated_at
+            "SELECT id, title, provider, model, system_prompt, collection_context_json, created_at, updated_at
              FROM conversations WHERE id = ?1",
             rusqlite::params![id],
             |row| {
@@ -279,8 +329,9 @@ impl Database {
                     provider: row.get(2)?,
                     model: row.get(3)?,
                     system_prompt: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    collection_context: parse_collection_context(row.get(5)?),
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                 })
             },
         )
@@ -356,6 +407,24 @@ impl Database {
         let affected = conn.execute(
             "UPDATE conversations SET system_prompt = ?2, updated_at = datetime('now') WHERE id = ?1",
             rusqlite::params![id, system_prompt],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!("Conversation {id}")));
+        }
+        Ok(())
+    }
+
+    /// Update the structured collection context for a conversation.
+    pub fn update_conversation_collection_context(
+        &self,
+        id: &str,
+        collection_context: Option<&CollectionContext>,
+    ) -> Result<(), CoreError> {
+        let collection_context_json = serialize_collection_context(collection_context)?;
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE conversations SET collection_context_json = ?2, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![id, collection_context_json],
         )?;
         if affected == 0 {
             return Err(CoreError::NotFound(format!("Conversation {id}")));
@@ -504,6 +573,194 @@ impl Database {
             }
             Ok(results)
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Turn CRUD
+// ---------------------------------------------------------------------------
+
+impl Database {
+    /// Create a new conversation turn for a just-persisted user message.
+    pub fn create_conversation_turn(
+        &self,
+        conversation_id: &str,
+        user_message_id: &str,
+        route_kind: Option<&str>,
+    ) -> Result<ConversationTurn, CoreError> {
+        let id = new_id();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO conversation_turns (id, conversation_id, user_message_id, route_kind, status)
+             VALUES (?1, ?2, ?3, ?4, 'running')",
+            rusqlite::params![&id, conversation_id, user_message_id, route_kind],
+        )?;
+        drop(conn);
+        self.get_conversation_turn(&id)
+    }
+
+    /// Update a turn with its final assistant message and optional trace payload.
+    pub fn finalize_conversation_turn(
+        &self,
+        turn_id: &str,
+        status: &str,
+        assistant_message_id: Option<&str>,
+        trace: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        let trace_json = match trace {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE conversation_turns
+             SET status = ?2,
+                 assistant_message_id = COALESCE(?3, assistant_message_id),
+                 trace_json = COALESCE(?4, trace_json),
+                 finished_at = datetime('now'),
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![turn_id, status, assistant_message_id, trace_json],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!("Conversation turn {turn_id}")));
+        }
+        Ok(())
+    }
+
+    /// Update a running turn trace without finalizing it.
+    pub fn update_conversation_turn_trace(
+        &self,
+        turn_id: &str,
+        trace: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        let trace_json = match trace {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE conversation_turns
+             SET trace_json = ?2,
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![turn_id, trace_json],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!("Conversation turn {turn_id}")));
+        }
+        Ok(())
+    }
+
+    /// Update route kind and optional trace for a running turn.
+    pub fn update_conversation_turn_progress(
+        &self,
+        turn_id: &str,
+        route_kind: Option<&str>,
+        trace: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        let trace_json = match trace {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE conversation_turns
+             SET route_kind = COALESCE(?2, route_kind),
+                 trace_json = COALESCE(?3, trace_json),
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![turn_id, route_kind, trace_json],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!("Conversation turn {turn_id}")));
+        }
+        Ok(())
+    }
+
+    /// Load one turn by id.
+    pub fn get_conversation_turn(&self, id: &str) -> Result<ConversationTurn, CoreError> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT id, conversation_id, user_message_id, assistant_message_id, status, route_kind, trace_json, created_at, updated_at, finished_at
+             FROM conversation_turns
+             WHERE id = ?1",
+            rusqlite::params![id],
+            |row| {
+                let trace_json: Option<String> = row.get(6)?;
+                Ok(ConversationTurn {
+                    id: row.get(0)?,
+                    conversation_id: row.get(1)?,
+                    user_message_id: row.get(2)?,
+                    assistant_message_id: row.get(3)?,
+                    status: row.get(4)?,
+                    route_kind: row.get(5)?,
+                    trace: match trace_json {
+                        Some(json) => Some(serde_json::from_str(&json).map_err(|err| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                6,
+                                rusqlite::types::Type::Text,
+                                Box::new(err),
+                            )
+                        })?),
+                        None => None,
+                    },
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                    finished_at: row.get(9)?,
+                })
+            },
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("Conversation turn {id}"))
+            }
+            other => CoreError::Database(other),
+        })
+    }
+
+    /// List turns for a conversation ordered by creation time.
+    pub fn get_conversation_turns(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<ConversationTurn>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, user_message_id, assistant_message_id, status, route_kind, trace_json, created_at, updated_at, finished_at
+             FROM conversation_turns
+             WHERE conversation_id = ?1
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
+            let trace_json: Option<String> = row.get(6)?;
+            Ok(ConversationTurn {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                user_message_id: row.get(2)?,
+                assistant_message_id: row.get(3)?,
+                status: row.get(4)?,
+                route_kind: row.get(5)?,
+                trace: match trace_json {
+                    Some(json) => Some(serde_json::from_str(&json).map_err(|err| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            6,
+                            rusqlite::types::Type::Text,
+                            Box::new(err),
+                        )
+                    })?),
+                    None => None,
+                },
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                finished_at: row.get(9)?,
+            })
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
     }
 }
 
@@ -1174,6 +1431,33 @@ pub fn build_source_scope_prompt_section(
     Ok(section)
 }
 
+/// Build a structured collection-context prompt section.
+pub fn build_collection_context_prompt_section(
+    collection_context: Option<&CollectionContext>,
+) -> String {
+    let Some(context) = collection_context else {
+        return String::new();
+    };
+
+    let mut section = String::from("## Collection Context\n");
+    section.push_str(&format!("Title: {}\n", context.title));
+    if let Some(description) = context.description.as_deref().filter(|value| !value.trim().is_empty()) {
+        section.push_str(&format!("Description: {}\n", description));
+    }
+    if let Some(query_text) = context.query_text.as_deref().filter(|value| !value.trim().is_empty()) {
+        section.push_str(&format!("Base query: {}\n", query_text));
+    }
+    if !context.source_ids.is_empty() {
+        section.push_str(&format!("Source IDs: {}\n", context.source_ids.join(", ")));
+    }
+    section.push_str(
+        "\nUse this collection and its saved evidence as your primary working set.\n\
+If the collection is insufficient, say so explicitly before widening to the full knowledge base.\n\
+When widening scope, explain why extra retrieval was needed.",
+    );
+    section
+}
+
 // ---------------------------------------------------------------------------
 // LLM-based title generation
 // ---------------------------------------------------------------------------
@@ -1196,7 +1480,10 @@ pub async fn generate_title(
     user_message: &str,
     assistant_reply: Option<&str>,
 ) -> String {
-    let mut user_content = format!("User message:\n{}", truncate_for_title_context(user_message, 500));
+    let mut user_content = format!(
+        "User message:\n{}",
+        truncate_for_title_context(user_message, 500)
+    );
     if let Some(reply) = assistant_reply {
         let trimmed = truncate_for_title_context(reply, 300);
         if !trimmed.is_empty() {
@@ -1288,6 +1575,7 @@ mod tests {
                 provider: "openai".into(),
                 model: "gpt-4o".into(),
                 system_prompt: Some("You are helpful.".into()),
+                collection_context: None,
             })
             .unwrap();
         assert_eq!(conv.provider, "openai");
@@ -1312,6 +1600,102 @@ mod tests {
     }
 
     #[test]
+    fn test_conversation_persists_collection_context() {
+        let db = Database::open_memory().unwrap();
+
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: Some(CollectionContext {
+                    title: "Retry Collection".into(),
+                    description: Some("Saved retry evidence".into()),
+                    query_text: Some("retry timeout guard".into()),
+                    source_ids: vec!["source-1".into(), "source-2".into()],
+                }),
+            })
+            .unwrap();
+
+        let fetched = db.get_conversation(&conv.id).unwrap();
+        let context = fetched.collection_context.expect("collection context");
+        assert_eq!(context.title, "Retry Collection");
+        assert_eq!(context.source_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_conversation_turn_lifecycle() {
+        let db = Database::open_memory().unwrap();
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+            })
+            .unwrap();
+
+        let user_msg = ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::User,
+            content: "Why did the retry guard fail?".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 8,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+        };
+        db.add_message(&user_msg).unwrap();
+
+        let turn = db
+            .create_conversation_turn(&conv.id, &user_msg.id, Some("KnowledgeRetrieval"))
+            .unwrap();
+        assert_eq!(turn.status, "running");
+        assert_eq!(turn.route_kind.as_deref(), Some("KnowledgeRetrieval"));
+
+        let trace = serde_json::json!({
+            "kind": "turnTrace",
+            "routeKind": "KnowledgeRetrieval",
+            "items": [{ "kind": "status", "text": "Testing", "tone": "muted" }]
+        });
+        db.update_conversation_turn_progress(&turn.id, Some("KnowledgeRetrieval"), Some(&trace))
+            .unwrap();
+
+        let assistant_msg = ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::Assistant,
+            content: "It skipped the early return.".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 7,
+            created_at: String::new(),
+            sort_order: 1,
+            thinking: None,
+        };
+        db.add_message(&assistant_msg).unwrap();
+
+        db.finalize_conversation_turn(&turn.id, "success", Some(&assistant_msg.id), Some(&trace))
+            .unwrap();
+
+        let fetched = db.get_conversation_turn(&turn.id).unwrap();
+        assert_eq!(fetched.status, "success");
+        assert_eq!(
+            fetched.assistant_message_id.as_deref(),
+            Some(assistant_msg.id.as_str())
+        );
+        assert!(fetched.finished_at.is_some());
+
+        let all = db.get_conversation_turns(&conv.id).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, turn.id);
+    }
+
+    #[test]
     fn test_message_crud() {
         let db = Database::open_memory().unwrap();
         let conv = db
@@ -1319,6 +1703,7 @@ mod tests {
                 provider: "openai".into(),
                 model: "gpt-4o".into(),
                 system_prompt: None,
+                collection_context: None,
             })
             .unwrap();
 
@@ -1375,6 +1760,7 @@ mod tests {
                 provider: "openai".into(),
                 model: "gpt-4o".into(),
                 system_prompt: None,
+                collection_context: None,
             })
             .unwrap();
         let msg = ConversationMessage {
@@ -1589,6 +1975,7 @@ mod tests {
                 provider: "openai".into(),
                 model: "gpt-4o".into(),
                 system_prompt: None,
+                collection_context: None,
             })
             .unwrap();
 
@@ -1654,6 +2041,7 @@ mod tests {
                 provider: "openai".into(),
                 model: "gpt-4o".into(),
                 system_prompt: None,
+                collection_context: None,
             })
             .unwrap();
 

@@ -11,7 +11,9 @@ use serde_json::json;
 use crate::db::Database;
 use crate::error::CoreError;
 
-use super::{current_scope_miss_message, ensure_source_in_scope, Tool, ToolCategory, ToolDef, ToolResult};
+use super::{
+    current_scope_miss_message, ensure_source_in_scope, Tool, ToolCategory, ToolDef, ToolResult,
+};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/retrieve_evidence.json");

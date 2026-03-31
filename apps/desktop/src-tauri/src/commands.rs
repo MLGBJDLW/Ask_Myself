@@ -9,16 +9,15 @@ use std::time::{Duration, Instant};
 use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, SubagentBatchTool, SubagentTool,
 };
-use ask_core::app_settings::AppConfig;
 use ask_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
     CancellationToken, ConfirmationCallback,
 };
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use ask_core::app_settings::AppConfig;
 use ask_core::conversation::memory::estimate_tokens;
 use ask_core::conversation::{
-    AgentConfig as DbAgentConfig, Conversation, ConversationMessage, ConversationStats,
-    CreateConversationInput, SaveAgentConfigInput,
+    AgentConfig as DbAgentConfig, CollectionContext, Conversation, ConversationMessage,
+    ConversationStats, ConversationTurn, CreateConversationInput, SaveAgentConfigInput,
 };
 use ask_core::db::Database;
 use ask_core::embed::{EmbedderConfig, LocalEmbeddingModel};
@@ -29,12 +28,11 @@ use ask_core::llm::{
     create_provider, model_supports_vision, ContentPart, Message, ProviderConfig, ProviderType,
     ReasoningEffort, Role,
 };
-use ask_core::ocr::extract_text_from_image;
-use base64::Engine;
 use ask_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 use ask_core::models::{
     EvidenceCard, Playbook, PlaybookCitation, SearchFilters, SearchQuery, Source,
 };
+use ask_core::ocr::extract_text_from_image;
 use ask_core::playbook::QueryLog;
 use ask_core::privacy::PrivacyConfig;
 use ask_core::search::{self, SearchResult};
@@ -42,9 +40,11 @@ use ask_core::skills::{SaveSkillInput, Skill};
 use ask_core::sources::{CreateSourceInput, UpdateSourceInput};
 use ask_core::tools::default_tool_registry;
 use ask_core::watcher::{FileWatcher, WatcherEventKind};
+use base64::Engine;
 use log::{info, warn};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
 
@@ -75,7 +75,9 @@ async fn sync_enabled_mcp_servers(
 ) -> Result<HashMap<String, String>, String> {
     let enabled_servers = db.get_enabled_mcp_servers().map_err(|e| e.to_string())?;
     let app_cfg = db.load_app_config().unwrap_or_default();
-    Ok(manager.sync_servers(&enabled_servers, Some(app_cfg.mcp_call_timeout_secs)).await)
+    Ok(manager
+        .sync_servers(&enabled_servers, Some(app_cfg.mcp_call_timeout_secs))
+        .await)
 }
 
 /// State for the file watcher.
@@ -452,6 +454,14 @@ pub fn get_evidence_card(
     chunk_id: String,
 ) -> Result<EvidenceCard, String> {
     search::get_evidence_card(&state.db, &chunk_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_evidence_cards(
+    state: tauri::State<'_, AppState>,
+    chunk_ids: Vec<String>,
+) -> Result<Vec<EvidenceCard>, String> {
+    search::get_evidence_cards(&state.db, &chunk_ids).map_err(|e| e.to_string())
 }
 
 // ── Index Commands ──────────────────────────────────────────────────────
@@ -1031,7 +1041,10 @@ fn parse_provider_type(s: &str) -> ProviderType {
 
 /// Convert a DB [`DbAgentConfig`] to a [`ProviderConfig`] suitable for
 /// [`create_provider`].
-fn db_config_to_provider_config(config: &DbAgentConfig, timeout_secs: Option<u64>) -> ProviderConfig {
+fn db_config_to_provider_config(
+    config: &DbAgentConfig,
+    timeout_secs: Option<u64>,
+) -> ProviderConfig {
     ProviderConfig {
         provider_type: parse_provider_type(&config.provider),
         api_key: Some(config.api_key.clone()),
@@ -1227,11 +1240,13 @@ pub async fn create_conversation_cmd(
     provider: String,
     model: String,
     system_prompt: Option<String>,
+    collection_context: Option<CollectionContext>,
 ) -> Result<Conversation, String> {
     let input = CreateConversationInput {
         provider,
         model,
         system_prompt,
+        collection_context,
     };
     state
         .db
@@ -1254,6 +1269,29 @@ pub async fn get_conversation_cmd(
     let conv = state.db.get_conversation(&id).map_err(|e| e.to_string())?;
     let msgs = state.db.get_messages(&id).map_err(|e| e.to_string())?;
     Ok((conv, msgs))
+}
+
+#[tauri::command]
+pub async fn get_conversation_turns_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Vec<ConversationTurn>, String> {
+    state
+        .db
+        .get_conversation_turns(&conversation_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_conversation_collection_context_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    collection_context: Option<CollectionContext>,
+) -> Result<(), String> {
+    state
+        .db
+        .update_conversation_collection_context(&id, collection_context.as_ref())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1422,8 +1460,18 @@ pub async fn compact_conversation_cmd(
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
-        tool_timeout_secs: Some(db_config.tool_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.tool_timeout_secs as u32)),
-        agent_timeout_secs: Some(db_config.agent_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.agent_timeout_secs as u32)),
+        tool_timeout_secs: Some(
+            db_config
+                .tool_timeout_secs
+                .map(|v| v as u32)
+                .unwrap_or(app_cfg.tool_timeout_secs as u32),
+        ),
+        agent_timeout_secs: Some(
+            db_config
+                .agent_timeout_secs
+                .map(|v| v as u32)
+                .unwrap_or(app_cfg.agent_timeout_secs as u32),
+        ),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
         dynamic_tool_visibility: true,
         trace_enabled: true,
@@ -1686,6 +1734,10 @@ pub async fn agent_chat_cmd(
         thinking: None,
     };
     state.db.add_message(&user_msg).map_err(|e| e.to_string())?;
+    let turn = state
+        .db
+        .create_conversation_turn(&conversation_id, &user_msg.id, None)
+        .map_err(|e| e.to_string())?;
 
     // 5. Load conversation to check for custom system prompt.
     let conv = state
@@ -1699,6 +1751,10 @@ pub async fn agent_chat_cmd(
     let source_scope_section =
         ask_core::conversation::build_source_scope_prompt_section(&state.db, &source_scope_ids)
             .unwrap_or_default();
+    let collection_context_section =
+        ask_core::conversation::build_collection_context_prompt_section(
+            conv.collection_context.as_ref(),
+        );
     let memory_section =
         ask_core::personalization::build_memory_summary_for_query(&state.db, Some(&message))
             .unwrap_or_default();
@@ -1707,7 +1763,12 @@ pub async fn agent_chat_cmd(
             .unwrap_or_default();
     let system_prompt = build_system_prompt(
         Some(&conv.system_prompt),
-        &[&source_scope_section, &memory_section, &preference_section],
+        &[
+            &collection_context_section,
+            &source_scope_section,
+            &memory_section,
+            &preference_section,
+        ],
     );
 
     // 6. Build executor config from DB config.
@@ -1734,8 +1795,18 @@ pub async fn agent_chat_cmd(
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
-        tool_timeout_secs: Some(db_config.tool_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.tool_timeout_secs as u32)),
-        agent_timeout_secs: Some(db_config.agent_timeout_secs.map(|v| v as u32).unwrap_or(app_cfg.agent_timeout_secs as u32)),
+        tool_timeout_secs: Some(
+            db_config
+                .tool_timeout_secs
+                .map(|v| v as u32)
+                .unwrap_or(app_cfg.tool_timeout_secs as u32),
+        ),
+        agent_timeout_secs: Some(
+            db_config
+                .agent_timeout_secs
+                .map(|v| v as u32)
+                .unwrap_or(app_cfg.agent_timeout_secs as u32),
+        ),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
         dynamic_tool_visibility: true,
         trace_enabled: true,
@@ -1754,7 +1825,10 @@ pub async fn agent_chat_cmd(
                     .message(&message)
                     .title("Confirm Tool Execution")
                     .kind(MessageDialogKind::Warning)
-                    .buttons(MessageDialogButtons::OkCancelCustom("Allow".into(), "Deny".into()))
+                    .buttons(MessageDialogButtons::OkCancelCustom(
+                        "Allow".into(),
+                        "Deny".into(),
+                    ))
                     .show(move |confirmed| {
                         let _ = tx.send(confirmed);
                     });
@@ -1823,8 +1897,7 @@ pub async fn agent_chat_cmd(
     delegation_runtime.set_tool_registry(tools.clone());
 
     // 7b. Build user content parts (text + optional image attachments).
-    let vision_supported =
-        model_supports_vision(&provider_config.provider_type, &db_config.model);
+    let vision_supported = model_supports_vision(&provider_config.provider_type, &db_config.model);
     info!(
         "Image attachment vision check: provider={}, model={}, provider_type={:?}, vision_supported={}, has_attachments={}",
         db_config.provider, db_config.model, provider_config.provider_type, vision_supported, attachments.is_some()
@@ -1849,7 +1922,8 @@ pub async fn agent_chat_cmd(
                     extract_text_from_image(&image_bytes, &att.media_type, &ocr_config, None);
                 info!(
                     "OCR fallback result for non-vision model: success={}, text_len={}",
-                    ocr_result.is_ok(), ocr_result.as_ref().map(|r| r.full_text.len()).unwrap_or(0)
+                    ocr_result.is_ok(),
+                    ocr_result.as_ref().map(|r| r.full_text.len()).unwrap_or(0)
                 );
                 match ocr_result {
                     Ok(result) if !result.full_text.is_empty() => {
@@ -1876,6 +1950,7 @@ pub async fn agent_chat_cmd(
     // 8. Spawn the agent loop in a background task.
     let db = state.db.clone();
     let conv_id = conversation_id.clone();
+    let turn_id = turn.id.clone();
     let handle = app_handle.clone();
     let assistant_sort_order = next_sort_order + 1;
     let db_config_for_extraction = db_config.clone();
@@ -1920,6 +1995,7 @@ pub async fn agent_chat_cmd(
             user_parts,
             &db,
             Some(&conv_id),
+            Some(&turn_id),
             tx,
             assistant_sort_order,
         );
@@ -1929,9 +2005,8 @@ pub async fn agent_chat_cmd(
         // or SSE gaps). The actual hard stop remains `turn_timeout_secs`.
         let mut run_future = Box::pin(run_future);
         let mut turn_timeout = Box::pin(tokio::time::sleep(Duration::from_secs(turn_timeout_secs)));
-        let mut keepalive = tokio::time::interval(Duration::from_secs(
-            STREAM_KEEPALIVE_INTERVAL_SECS,
-        ));
+        let mut keepalive =
+            tokio::time::interval(Duration::from_secs(STREAM_KEEPALIVE_INTERVAL_SECS));
         keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         keepalive.tick().await;
 
@@ -1995,31 +2070,38 @@ pub async fn agent_chat_cmd(
             let app_cfg = db.load_app_config().unwrap_or_default();
             if app_cfg.auto_memory_extraction {
                 // Determine the model: prefer summarization model, fall back to main.
-                let extract_model = db_config_for_extraction.summarization_model
+                let extract_model = db_config_for_extraction
+                    .summarization_model
                     .as_deref()
                     .unwrap_or(&db_config_for_extraction.model);
                 // Build a provider for extraction (reuse summarization provider config or main).
-                let extract_provider_config = if let Some(ref sp) = db_config_for_extraction.summarization_provider {
-                    ProviderConfig {
-                        provider_type: parse_provider_type(sp),
-                        api_key: Some(db_config_for_extraction.api_key.clone()),
-                        base_url: db_config_for_extraction.base_url.clone(),
-                        org_id: None,
-                        timeout_secs: Some(app_cfg.llm_timeout_secs),
-                    }
-                } else {
-                    ProviderConfig {
-                        provider_type: parse_provider_type(&db_config_for_extraction.provider),
-                        api_key: Some(db_config_for_extraction.api_key.clone()),
-                        base_url: db_config_for_extraction.base_url.clone(),
-                        org_id: None,
-                        timeout_secs: Some(app_cfg.llm_timeout_secs),
-                    }
-                };
+                let extract_provider_config =
+                    if let Some(ref sp) = db_config_for_extraction.summarization_provider {
+                        ProviderConfig {
+                            provider_type: parse_provider_type(sp),
+                            api_key: Some(db_config_for_extraction.api_key.clone()),
+                            base_url: db_config_for_extraction.base_url.clone(),
+                            org_id: None,
+                            timeout_secs: Some(app_cfg.llm_timeout_secs),
+                        }
+                    } else {
+                        ProviderConfig {
+                            provider_type: parse_provider_type(&db_config_for_extraction.provider),
+                            api_key: Some(db_config_for_extraction.api_key.clone()),
+                            base_url: db_config_for_extraction.base_url.clone(),
+                            org_id: None,
+                            timeout_secs: Some(app_cfg.llm_timeout_secs),
+                        }
+                    };
                 if let Ok(extract_llm) = create_provider(extract_provider_config) {
                     match ask_core::personalization::auto_extract_and_save(
-                        &db, &conv_id, extract_llm.as_ref(), extract_model,
-                    ).await {
+                        &db,
+                        &conv_id,
+                        extract_llm.as_ref(),
+                        extract_model,
+                    )
+                    .await
+                    {
                         Ok(n) if n > 0 => {
                             info!("Auto-extracted {n} memories from conversation {conv_id}");
                         }
@@ -2080,9 +2162,7 @@ pub async fn agent_stop_cmd(
 // ── App Config ──────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_app_config_cmd(
-    state: tauri::State<'_, AppState>,
-) -> Result<AppConfig, String> {
+pub fn get_app_config_cmd(state: tauri::State<'_, AppState>) -> Result<AppConfig, String> {
     state.db.load_app_config().map_err(|e| e.to_string())
 }
 
@@ -2253,8 +2333,8 @@ pub async fn transcribe_audio_buffer_cmd(
         }
         let _guard = Guard(whisper_busy, wav_path.clone());
 
-        let segments = ask_core::video::transcribe_audio(&wav_path, &config)
-            .map_err(|e| e.to_string())?;
+        let segments =
+            ask_core::video::transcribe_audio(&wav_path, &config).map_err(|e| e.to_string())?;
 
         let text = segments
             .iter()

@@ -7,6 +7,7 @@ export interface Highlight {
 export interface EvidenceCard {
   chunkId: string;
   documentId: string;
+  sourceId: string;
   sourceName: string;
   documentPath: string;
   documentTitle: string;

@@ -22,8 +22,6 @@ use crate::error::CoreError;
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
-
-
 // ---------------------------------------------------------------------------
 // Gemini API wire types
 // ---------------------------------------------------------------------------
@@ -44,7 +42,11 @@ enum GeminiPartV2 {
     FunctionCall {
         #[serde(rename = "functionCall")]
         function_call: GeminiFunctionCall,
-        #[serde(rename = "thoughtSignature", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "thoughtSignature",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         thought_signature: Option<String>,
     },
     FunctionResponse {
@@ -453,7 +455,10 @@ fn extract_response(
                         GeminiPartV2::Thought { text, .. } | GeminiPartV2::Text { text } => {
                             text_parts.push(text.clone());
                         }
-                        GeminiPartV2::FunctionCall { function_call, thought_signature } => {
+                        GeminiPartV2::FunctionCall {
+                            function_call,
+                            thought_signature,
+                        } => {
                             tool_calls.push(ToolCallRequest {
                                 id: format!("call_{idx}"),
                                 name: function_call.name.clone(),
@@ -893,7 +898,11 @@ impl LlmProvider for GeminiProvider {
         let (system_instruction, contents) = convert_messages(&request.messages);
         let body = build_request_body(request, system_instruction, contents);
 
-        info!("Gemini stream request to {}..., model={}", &url[..url.find("key=").unwrap_or(url.len())], request.model);
+        info!(
+            "Gemini stream request to {}..., model={}",
+            &url[..url.find("key=").unwrap_or(url.len())],
+            request.model
+        );
 
         let response = self
             .client

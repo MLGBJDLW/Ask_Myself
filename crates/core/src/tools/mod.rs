@@ -23,7 +23,7 @@ pub enum ToolCategory {
     /// Knowledge / playbook / memory tools
     Knowledge,
     /// URL fetching
-Web,
+    Web,
     /// Detailed document inspection & comparison
     DocumentAnalysis,
     /// Subagent / multi-agent tools
@@ -264,7 +264,8 @@ impl ToolRegistry {
 
     /// Check if a tool requires confirmation for the given arguments.
     pub fn requires_confirmation(&self, name: &str, args: &serde_json::Value) -> bool {
-        self.get(name).map_or(false, |t| t.requires_confirmation(args))
+        self.get(name)
+            .map_or(false, |t| t.requires_confirmation(args))
     }
 
     /// Get the confirmation message for a tool with the given arguments.
@@ -273,7 +274,10 @@ impl ToolRegistry {
     }
 
     /// Return definitions for tools whose categories overlap with `active`.
-    pub fn definitions_for_categories(&self, active: &HashSet<ToolCategory>) -> Vec<ToolDefinition> {
+    pub fn definitions_for_categories(
+        &self,
+        active: &HashSet<ToolCategory>,
+    ) -> Vec<ToolDefinition> {
         self.tools
             .iter()
             .filter(|t| t.categories().iter().any(|c| active.contains(c)))
@@ -296,6 +300,26 @@ impl ToolRegistry {
         categories.insert(ToolCategory::Mcp);
 
         let msg = user_message.to_lowercase();
+        let looks_like_question = msg.contains('?')
+            || msg.contains("what")
+            || msg.contains("why")
+            || msg.contains("how")
+            || msg.contains("which")
+            || msg.contains("where")
+            || msg.contains("when")
+            || msg.contains("who")
+            || msg.contains("tell me")
+            || msg.contains("explain")
+            || msg.contains("analyze")
+            || msg.contains("analysis")
+            || msg.contains("总结")
+            || msg.contains("分析")
+            || msg.contains("为什么")
+            || msg.contains("如何")
+            || msg.contains("怎么")
+            || msg.contains("哪些")
+            || msg.contains("什么")
+            || msg.contains("解释");
 
         // File operations
         if msg.contains("file")
@@ -340,8 +364,18 @@ impl ToolRegistry {
         if msg.contains("remember")
             || msg.contains("memory")
             || msg.contains("playbook")
+            || msg.contains("collection")
+            || msg.contains("collections")
+            || msg.contains("citation")
+            || msg.contains("citations")
+            || msg.contains("evidence")
+            || msg.contains("saved")
+            || msg.contains("bookmark")
             || msg.contains("skill")
             || msg.contains("workflow")
+            || msg.contains("收藏")
+            || msg.contains("引用")
+            || msg.contains("证据")
             || msg.contains("记住")
             || msg.contains("记忆")
         {
@@ -366,9 +400,16 @@ impl ToolRegistry {
             || msg.contains("document")
             || msg.contains("summarize")
             || msg.contains("summary")
+            || msg.contains("analyze")
+            || msg.contains("analysis")
+            || msg.contains("evidence")
+            || msg.contains("citation")
             || msg.contains("statistics")
             || msg.contains("stats")
             || msg.contains("info")
+            || msg.contains("分析")
+            || msg.contains("总结")
+            || msg.contains("引用")
             || msg.contains("文档")
             || msg.contains("比较")
             || msg.contains("统计")
@@ -379,6 +420,10 @@ impl ToolRegistry {
         // If the conversation has linked sources, source management is likely useful
         if has_sources {
             categories.insert(ToolCategory::SourceManagement);
+            if looks_like_question {
+                categories.insert(ToolCategory::Knowledge);
+                categories.insert(ToolCategory::DocumentAnalysis);
+            }
         }
 
         self.definitions_for_categories(&categories)
@@ -432,4 +477,29 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(update_plan_tool::UpdatePlanTool));
     registry.register(Box::new(record_verification_tool::RecordVerificationTool));
     registry
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_tools_includes_knowledge_for_collection_queries() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools("summarize this collection and its evidence", false);
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "manage_playbook"));
+        assert!(names.iter().any(|name| name == "search_playbooks"));
+    }
+
+    #[test]
+    fn select_tools_includes_document_analysis_for_question_with_sources() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools("What changed in my retry notes and why?", true);
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "compare_documents"));
+        assert!(names.iter().any(|name| name == "summarize_document"));
+    }
 }

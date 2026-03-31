@@ -5,16 +5,18 @@ import type { ImageAttachment } from '../types/conversation';
 import type { StreamState } from './streamStore';
 
 // Re-export types from streamStore for backward compatibility
-export type { ToolCallEvent, StreamRoundEvent, UsageTotal } from './streamStore';
+export type { ToolCallEvent, StreamRoundEvent, TraceEvent, UsageTotal } from './streamStore';
 
 type AutoCompactedInfo = { summary: string } | null;
 type StreamRoundEvent = import('./streamStore').StreamRoundEvent;
 type ToolCallEvent = import('./streamStore').ToolCallEvent;
+type TraceEvent = import('./streamStore').TraceEvent;
 type UsageTotal = import('./streamStore').UsageTotal;
 
 // Stable references for empty collections (avoids re-renders)
 const EMPTY_ROUNDS: StreamRoundEvent[] = [];
 const EMPTY_TOOLS: ToolCallEvent[] = [];
+const EMPTY_TRACE_EVENTS: TraceEvent[] = [];
 
 interface UseAgentStreamReturn {
   send: (conversationId: string, message: string, attachments?: ImageAttachment[]) => Promise<void>;
@@ -22,6 +24,7 @@ interface UseAgentStreamReturn {
   isStreaming: boolean;
   streamText: string;
   streamRounds: StreamRoundEvent[];
+  traceEvents: TraceEvent[];
   thinkingText: string;
   isThinking: boolean;
   toolCalls: ToolCallEvent[];
@@ -108,6 +111,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     isStreaming: storeState?.isStreaming ?? false,
     streamText: storeState?.streamText ?? '',
     streamRounds: storeState?.streamRounds ?? EMPTY_ROUNDS,
+    traceEvents: storeState?.traceEvents ?? EMPTY_TRACE_EVENTS,
     thinkingText: storeState?.thinkingText ?? '',
     isThinking: storeState?.isThinking ?? false,
     toolCalls: storeState?.toolCalls ?? EMPTY_TOOLS,

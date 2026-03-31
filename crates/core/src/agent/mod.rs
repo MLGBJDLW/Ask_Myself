@@ -24,7 +24,7 @@ use crate::llm::{
 };
 use crate::privacy;
 use crate::skills::Skill;
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolCategory, ToolRegistry};
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
 pub mod context;
@@ -239,6 +239,12 @@ pub enum AgentEvent {
     },
     /// Thinking / chain-of-thought text (if the model supports it).
     Thinking { content: String },
+    /// A lightweight status update for the trace timeline.
+    Status {
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tone: Option<String>,
+    },
     /// The agent finished producing a final answer.
     Done {
         message: Message,
@@ -270,6 +276,95 @@ pub enum AgentEvent {
         #[serde(rename = "evictedCount")]
         evicted_count: usize,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedTraceToolCall {
+    call_id: String,
+    tool_name: String,
+    arguments: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_error: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artifacts: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum PersistedTraceItem {
+    Thinking { text: String },
+    Tool { tool_call: PersistedTraceToolCall },
+    Status { text: String, tone: String },
+}
+
+fn append_persisted_trace_thinking(items: &mut Vec<PersistedTraceItem>, text: &str) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    items.push(PersistedTraceItem::Thinking {
+        text: trimmed.to_string(),
+    });
+}
+
+fn append_persisted_trace_tool(
+    items: &mut Vec<PersistedTraceItem>,
+    tool_name: &str,
+    arguments: &str,
+    call_id: &str,
+    status: &str,
+    content: Option<String>,
+    is_error: Option<bool>,
+    artifacts: Option<serde_json::Value>,
+) {
+    items.push(PersistedTraceItem::Tool {
+        tool_call: PersistedTraceToolCall {
+            call_id: call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            arguments: arguments.to_string(),
+            status: status.to_string(),
+            content,
+            is_error,
+            artifacts,
+        },
+    });
+}
+
+fn append_persisted_trace_status(items: &mut Vec<PersistedTraceItem>, text: &str, tone: &str) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    items.push(PersistedTraceItem::Status {
+        text: trimmed.to_string(),
+        tone: tone.to_string(),
+    });
+}
+
+fn build_trace_artifacts(items: &[PersistedTraceItem]) -> Option<serde_json::Value> {
+    if items.is_empty() {
+        return None;
+    }
+
+    Some(serde_json::json!({
+        "kind": "traceTimeline",
+        "version": 1,
+        "items": items,
+    }))
+}
+
+fn build_turn_trace(route_kind: AgentRouteKind, items: &[PersistedTraceItem]) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "turnTrace",
+        "routeKind": format!("{route_kind:?}"),
+        "items": items,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +498,175 @@ struct DirectDispatch {
     arguments: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentRouteKind {
+    DirectResponse,
+    KnowledgeRetrieval,
+    CollectionFocused,
+    ConversationRecall,
+    FileOperation,
+    WebLookup,
+    SourceManagement,
+}
+
+#[derive(Debug, Clone)]
+struct AgentRoutePlan {
+    kind: AgentRouteKind,
+    prompt_section: String,
+    extra_categories: Vec<ToolCategory>,
+}
+
+fn query_looks_like_question(query: &str) -> bool {
+    let q = query.to_lowercase();
+    q.contains('?')
+        || q.contains("what")
+        || q.contains("why")
+        || q.contains("how")
+        || q.contains("which")
+        || q.contains("where")
+        || q.contains("when")
+        || q.contains("who")
+        || q.contains("tell me")
+        || q.contains("explain")
+        || q.contains("analyze")
+        || q.contains("analysis")
+        || q.contains("summarize")
+        || q.contains("compare")
+        || q.contains("分析")
+        || q.contains("总结")
+        || q.contains("为什么")
+        || q.contains("如何")
+        || q.contains("怎么")
+        || q.contains("哪些")
+        || q.contains("什么")
+}
+
+fn system_prompt_has_collection_context(system_prompt: &str) -> bool {
+    let prompt = system_prompt.to_lowercase();
+    prompt.contains("## collection context")
+        || prompt.contains("title:")
+            && prompt.contains("saved evidence:")
+        || prompt.contains("collection description:")
+        || prompt.contains("base query:")
+        || prompt.contains("saved evidence")
+        || prompt.contains("focus first on this citation")
+}
+
+fn route_user_turn(
+    query: &str,
+    system_prompt: &str,
+    has_sources: bool,
+) -> AgentRoutePlan {
+    let q = query.to_lowercase();
+    let collection_context = system_prompt_has_collection_context(system_prompt);
+
+    let file_operation = q.contains("file")
+        || q.contains("read")
+        || q.contains("edit")
+        || q.contains("write")
+        || q.contains("create")
+        || q.contains("folder")
+        || q.contains("directory")
+        || q.contains("document")
+        || q.contains("docx")
+        || q.contains("xlsx")
+        || q.contains("pptx");
+
+    let source_management = q.contains("source")
+        || q.contains("index")
+        || q.contains("reindex")
+        || q.contains("数据源")
+        || q.contains("索引");
+
+    let web_lookup = q.contains("http")
+        || q.contains("url")
+        || q.contains("website")
+        || q.contains("web ")
+        || q.contains("网页")
+        || q.contains("链接");
+
+    let conversation_recall = q.contains("earlier")
+        || q.contains("previous")
+        || q.contains("before")
+        || q.contains("this conversation")
+        || q.contains("chat history")
+        || q.contains("we discussed")
+        || q.contains("刚才")
+        || q.contains("之前")
+        || q.contains("上面")
+        || q.contains("这段对话");
+
+    if collection_context {
+        return AgentRoutePlan {
+            kind: AgentRouteKind::CollectionFocused,
+            prompt_section: "## Active Routing Plan\nUse the current collection and its saved evidence as your primary working set. Stay anchored to that collection first, and only widen beyond it if the collection is clearly insufficient. If you widen scope, explain why.".to_string(),
+            extra_categories: vec![ToolCategory::Knowledge, ToolCategory::DocumentAnalysis],
+        };
+    }
+
+    if source_management {
+        return AgentRoutePlan {
+            kind: AgentRouteKind::SourceManagement,
+            prompt_section: "## Active Routing Plan\nThis is a source/index management request. Prefer direct, operational handling over exploratory retrieval, and avoid unnecessary long-form analysis.".to_string(),
+            extra_categories: vec![ToolCategory::SourceManagement],
+        };
+    }
+
+    if file_operation {
+        return AgentRoutePlan {
+            kind: AgentRouteKind::FileOperation,
+            prompt_section: "## Active Routing Plan\nThis request is file-centric. Prefer reading, comparing, or editing the relevant files directly before broad knowledge-base search.".to_string(),
+            extra_categories: vec![ToolCategory::FileSystem, ToolCategory::DocumentAnalysis],
+        };
+    }
+
+    if conversation_recall {
+        return AgentRoutePlan {
+            kind: AgentRouteKind::ConversationRecall,
+            prompt_section: "## Active Routing Plan\nThe user is asking about the current conversation context. Check the conversation history and already-available evidence first before widening to new retrieval.".to_string(),
+            extra_categories: vec![ToolCategory::Knowledge, ToolCategory::DocumentAnalysis],
+        };
+    }
+
+    if web_lookup && !has_sources {
+        return AgentRoutePlan {
+            kind: AgentRouteKind::WebLookup,
+            prompt_section: "## Active Routing Plan\nThis request likely needs web or URL inspection. Prefer targeted fetch or MCP/web tools instead of broad local retrieval.".to_string(),
+            extra_categories: vec![ToolCategory::Web],
+        };
+    }
+
+    if has_sources && query_looks_like_question(query) {
+        return AgentRoutePlan {
+            kind: AgentRouteKind::KnowledgeRetrieval,
+            prompt_section: "## Active Routing Plan\nThis is a knowledge retrieval turn. Prefer grounded retrieval, comparison, and evidence synthesis before answering. Stop once the evidence is sufficient instead of over-searching.".to_string(),
+            extra_categories: vec![ToolCategory::Knowledge, ToolCategory::DocumentAnalysis],
+        };
+    }
+
+    AgentRoutePlan {
+        kind: AgentRouteKind::DirectResponse,
+        prompt_section: "## Active Routing Plan\nAnswer directly when the request is already clear from the conversation and available evidence. Avoid unnecessary tool use when it would not materially improve the answer.".to_string(),
+        extra_categories: Vec::new(),
+    }
+}
+
+fn merge_tool_definitions(
+    primary: Vec<crate::llm::ToolDefinition>,
+    secondary: Vec<crate::llm::ToolDefinition>,
+) -> Vec<crate::llm::ToolDefinition> {
+    let mut seen = std::collections::HashSet::new();
+    let mut merged = Vec::new();
+
+    for def in primary.into_iter().chain(secondary.into_iter()) {
+        if seen.insert(def.name.clone()) {
+            merged.push(def);
+        }
+    }
+
+    merged
+}
+
 // ---------------------------------------------------------------------------
 // Executor
 // ---------------------------------------------------------------------------
@@ -415,9 +679,8 @@ struct DirectDispatch {
 /// Async callback invoked when a destructive tool needs user confirmation.
 /// Receives a human-readable message describing the action and returns
 /// `true` to proceed or `false` to cancel.
-pub type ConfirmationCallback = Arc<
-    dyn Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync,
->;
+pub type ConfirmationCallback =
+    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
 pub struct AgentExecutor {
     provider: Box<dyn LlmProvider>,
@@ -498,6 +761,7 @@ impl AgentExecutor {
         user_parts: Vec<ContentPart>,
         db: &Database,
         conversation_id: Option<&str>,
+        turn_id: Option<&str>,
         tx: mpsc::Sender<AgentEvent>,
         next_sort_order: i64,
     ) -> Result<Message, CoreError> {
@@ -506,6 +770,7 @@ impl AgentExecutor {
             user_parts,
             db,
             conversation_id,
+            turn_id,
             None,
             tx,
             next_sort_order,
@@ -524,6 +789,7 @@ impl AgentExecutor {
         user_parts: Vec<ContentPart>,
         db: &Database,
         conversation_id: Option<&str>,
+        turn_id: Option<&str>,
         source_scope_override: Option<Vec<String>>,
         tx: mpsc::Sender<AgentEvent>,
         next_sort_order: i64,
@@ -568,10 +834,10 @@ impl AgentExecutor {
             .join(" ");
 
         // --- Trace: initialize ------------------------------------------------
-        let ctx_window_for_trace = self
-            .config
-            .context_window
-            .unwrap_or_else(|| model_context_window(model)) as usize;
+        let ctx_window_for_trace =
+            self.config
+                .context_window
+                .unwrap_or_else(|| model_context_window(model)) as usize;
         let mut trace = if self.config.trace_enabled {
             Some(AgentTrace::begin(
                 conversation_id.unwrap_or(""),
@@ -590,9 +856,34 @@ impl AgentExecutor {
                 None => Vec::new(),
             });
         let has_sources = !source_scope.is_empty();
+        let route_plan = route_user_turn(
+            &user_query_text_for_tools,
+            &self.config.system_prompt,
+            has_sources,
+        );
+        let _ = tx
+            .send(AgentEvent::Status {
+                content: format!("Route selected: {}", format!("{:?}", route_plan.kind)),
+                tone: Some("muted".to_string()),
+            })
+            .await;
+        if let Some(tid) = turn_id {
+            let route_label = format!("{:?}", route_plan.kind);
+            let _ = db.update_conversation_turn_progress(tid, Some(&route_label), None);
+        }
+
+        debug!("Agent route selected: {:?}", route_plan.kind);
 
         let tool_defs = if self.config.dynamic_tool_visibility {
-            self.tools.select_tools(&user_query_text_for_tools, has_sources)
+            let selected = self.tools.select_tools(&user_query_text_for_tools, has_sources);
+            if route_plan.extra_categories.is_empty() {
+                selected
+            } else {
+                let extra_categories: std::collections::HashSet<ToolCategory> =
+                    route_plan.extra_categories.iter().copied().collect();
+                let extra = self.tools.definitions_for_categories(&extra_categories);
+                merge_tool_definitions(selected, extra)
+            }
         } else {
             self.tools.definitions()
         };
@@ -609,6 +900,9 @@ impl AgentExecutor {
             &skills,
             &tool_defs,
         );
+        if !route_plan.prompt_section.trim().is_empty() {
+            messages.insert(1, Message::text(Role::System, route_plan.prompt_section.clone()));
+        }
 
         // --- 2. Privacy redaction on outgoing user content --------------------
         let privacy_cfg = db.load_privacy_config().unwrap_or_default();
@@ -637,6 +931,7 @@ impl AgentExecutor {
         let mut accumulated_content = String::new();
         let mut last_iteration_content = String::new();
         let mut last_finish_reason: Option<String> = None;
+        let mut persisted_trace_items: Vec<PersistedTraceItem> = Vec::new();
 
         // --- 3c. Extract user query text and build cache key -----------------
         let user_query_text = &user_query_text_for_tools;
@@ -657,6 +952,7 @@ impl AgentExecutor {
                 &source_scope,
                 &tx,
                 conversation_id,
+                turn_id,
                 next_sort_order,
             )
             .await
@@ -666,9 +962,11 @@ impl AgentExecutor {
 
         // --- 3d. Check answer cache before ReAct loop ------------------------
         if !user_query_text.is_empty() {
-            if let Ok(Some(cached)) =
-                db.find_cached_answer(&user_query_text, cache_source_filter.as_deref(), self.config.cache_ttl_hours.map(|h| h as i64))
-            {
+            if let Ok(Some(cached)) = db.find_cached_answer(
+                &user_query_text,
+                cache_source_filter.as_deref(),
+                self.config.cache_ttl_hours.map(|h| h as i64),
+            ) {
                 let _ = db.increment_cache_hit(&cached.id);
                 debug!("Cache hit for query: {}", user_query_text);
                 let _ = tx
@@ -680,8 +978,9 @@ impl AgentExecutor {
 
                 // Save cached response to conversation history.
                 if let Some(cid) = conversation_id {
+                    let assistant_message_id = Uuid::new_v4().to_string();
                     let conv_msg = ConversationMessage {
-                        id: Uuid::new_v4().to_string(),
+                        id: assistant_message_id.clone(),
                         conversation_id: cid.to_string(),
                         role: Role::Assistant,
                         content: msg.text_content(),
@@ -700,6 +999,23 @@ impl AgentExecutor {
                                 message: format!("Warning: message was not saved to history: {e}"),
                             })
                             .await;
+                    }
+                    if let Some(tid) = turn_id {
+                        let trace = serde_json::json!({
+                            "kind": "turnTrace",
+                            "routeKind": format!("{:?}", route_plan.kind),
+                            "items": [{
+                                "kind": "status",
+                                "text": "Answered from cache.",
+                                "tone": "success"
+                            }]
+                        });
+                        let _ = db.finalize_conversation_turn(
+                            tid,
+                            "cached",
+                            Some(&assistant_message_id),
+                            Some(&trace),
+                        );
                     }
                 }
 
@@ -755,7 +1071,9 @@ impl AgentExecutor {
                                     thinking: None,
                                 };
                                 if let Err(e) = db.add_message(&synthetic) {
-                                    warn!("Failed to insert synthetic tool response on cancel: {e}");
+                                    warn!(
+                                        "Failed to insert synthetic tool response on cancel: {e}"
+                                    );
                                 }
                                 sort_order += 1;
                             }
@@ -776,15 +1094,21 @@ impl AgentExecutor {
                         accumulated_content.clone()
                     };
                     let final_msg = Message::text(Role::Assistant, cancel_text);
+                    append_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        "Request cancelled by user.",
+                        "error",
+                    );
                     if let Some(cid) = conversation_id {
+                        let assistant_message_id = Uuid::new_v4().to_string();
                         let conv_msg = ConversationMessage {
-                            id: Uuid::new_v4().to_string(),
+                            id: assistant_message_id.clone(),
                             conversation_id: cid.to_string(),
                             role: Role::Assistant,
                             content: final_msg.text_content(),
                             tool_call_id: None,
                             tool_calls: vec![],
-                            artifacts: None,
+                            artifacts: build_trace_artifacts(&persisted_trace_items),
                             token_count: estimate_message_tokens(&final_msg),
                             created_at: String::new(),
                             sort_order,
@@ -799,6 +1123,15 @@ impl AgentExecutor {
                                     ),
                                 })
                                 .await;
+                        }
+                        if let Some(tid) = turn_id {
+                            let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                            let _ = db.finalize_conversation_turn(
+                                tid,
+                                "cancelled",
+                                Some(&assistant_message_id),
+                                Some(&trace),
+                            );
                         }
                     }
                     let _ = tx
@@ -900,6 +1233,15 @@ impl AgentExecutor {
                                     warn!("Failed to save agent trace: {te}");
                                 }
                             }
+                            if let Some(tid) = turn_id {
+                                let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                                let _ = db.finalize_conversation_turn(
+                                    tid,
+                                    "error",
+                                    None,
+                                    Some(&trace),
+                                );
+                            }
                             return Err(CoreError::RateLimited { retry_after_secs });
                         }
                         // Use server's Retry-After, falling back to exponential backoff.
@@ -940,6 +1282,15 @@ impl AgentExecutor {
                                     warn!("Failed to save agent trace: {te}");
                                 }
                             }
+                            if let Some(tid) = turn_id {
+                                let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                                let _ = db.finalize_conversation_turn(
+                                    tid,
+                                    "error",
+                                    None,
+                                    Some(&trace),
+                                );
+                            }
                             return Err(CoreError::Llm(err_msg));
                         }
                         let wait = 2u64.pow(retry_count - 1); // 1s, 2s, 4s
@@ -966,6 +1317,15 @@ impl AgentExecutor {
                             if let Err(te) = db.save_agent_trace(t) {
                                 warn!("Failed to save agent trace: {te}");
                             }
+                        }
+                        if let Some(tid) = turn_id {
+                            let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                            let _ = db.finalize_conversation_turn(
+                                tid,
+                                "error",
+                                None,
+                                Some(&trace),
+                            );
                         }
                         return Err(e);
                     }
@@ -1012,7 +1372,10 @@ impl AgentExecutor {
                     }
                     Err(CoreError::StreamIncomplete) => {
                         warn!("Stream incomplete — response may be truncated");
-                        info!("Stream ended incomplete: {chunk_count} chunks, {} chars", full_content.len());
+                        info!(
+                            "Stream ended incomplete: {chunk_count} chunks, {} chars",
+                            full_content.len()
+                        );
                         let _ = tx
                             .send(AgentEvent::Error {
                                 message: "Response may be truncated (stream ended unexpectedly)"
@@ -1035,12 +1398,24 @@ impl AgentExecutor {
                                 warn!("Failed to save agent trace: {te}");
                             }
                         }
+                        if let Some(tid) = turn_id {
+                            let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                            let _ = db.finalize_conversation_turn(
+                                tid,
+                                "error",
+                                None,
+                                Some(&trace),
+                            );
+                        }
                         return Err(e);
                     }
                 }
             }
 
-            info!("Stream complete: {chunk_count} chunks, {} chars", full_content.len());
+            info!(
+                "Stream complete: {chunk_count} chunks, {} chars",
+                full_content.len()
+            );
 
             // -- 4b. Accumulate usage ------------------------------------------
             let mut iteration_compacted = false;
@@ -1071,8 +1446,7 @@ impl AgentExecutor {
                 let max_response = self.config.max_tokens.unwrap_or(4096);
                 let budget = ctx_window.saturating_sub(max_response);
                 if budget > 0 {
-                    iteration_context_pct =
-                        (u.prompt_tokens as f32 / budget as f32) * 100.0;
+                    iteration_context_pct = (u.prompt_tokens as f32 / budget as f32) * 100.0;
                     if u.prompt_tokens > (budget as f64 * 0.85) as u32 {
                         if let Err(e) = self.aggressive_compact(&mut messages, model, &tx).await {
                             warn!("Auto-compact failed: {e}");
@@ -1126,16 +1500,18 @@ impl AgentExecutor {
 
             // -- 4d. Check termination -----------------------------------------
             if tool_calls.is_empty() {
+                append_persisted_trace_thinking(&mut persisted_trace_items, &iteration_thinking);
                 // Save final assistant message to DB.
                 if let Some(cid) = conversation_id {
+                    let assistant_message_id = Uuid::new_v4().to_string();
                     let conv_msg = ConversationMessage {
-                        id: Uuid::new_v4().to_string(),
+                        id: assistant_message_id.clone(),
                         conversation_id: cid.to_string(),
                         role: Role::Assistant,
                         content: assistant_msg.text_content(),
                         tool_call_id: None,
                         tool_calls: assistant_msg.tool_calls.clone().unwrap_or_default(),
-                        artifacts: None,
+                        artifacts: build_trace_artifacts(&persisted_trace_items),
                         token_count: estimate_message_tokens(&assistant_msg),
                         created_at: String::new(),
                         sort_order,
@@ -1147,6 +1523,15 @@ impl AgentExecutor {
                     };
                     if let Err(e) = db.add_message(&conv_msg) {
                         warn!("Failed to save final assistant message: {e}");
+                    }
+                    if let Some(tid) = turn_id {
+                        let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                        let _ = db.finalize_conversation_turn(
+                            tid,
+                            "success",
+                            Some(&assistant_message_id),
+                            Some(&trace),
+                        );
                     }
                 }
 
@@ -1186,6 +1571,15 @@ impl AgentExecutor {
             }
 
             // -- 4d'. Save intermediate assistant message (with tool_calls) ----
+            append_persisted_trace_thinking(&mut persisted_trace_items, &iteration_thinking);
+            if let Some(tid) = turn_id {
+                let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                let _ = db.update_conversation_turn_progress(
+                    tid,
+                    Some(&format!("{:?}", route_plan.kind)),
+                    Some(&trace),
+                );
+            }
             if let Some(cid) = conversation_id {
                 let conv_msg = ConversationMessage {
                     id: Uuid::new_v4().to_string(),
@@ -1249,9 +1643,7 @@ impl AgentExecutor {
                                     let message = self
                                         .tools
                                         .confirmation_message(&tc.name, &parsed_args)
-                                        .unwrap_or_else(|| {
-                                            format!("Execute tool: {}", tc.name)
-                                        });
+                                        .unwrap_or_else(|| format!("Execute tool: {}", tc.name));
                                     if !cb(message).await {
                                         let declined = crate::tools::ToolResult {
                                             call_id: tc.id.clone(),
@@ -1288,7 +1680,7 @@ impl AgentExecutor {
 
             // Process results in original order (join_all preserves order).
             for (tc, tool_timeout, tool_result, tool_elapsed) in tool_results {
-                let (tool_msg, tool_artifacts) = match tool_result {
+                let (tool_msg, tool_artifacts, tool_is_error) = match tool_result {
                     Ok(Ok(result)) => {
                         let _ = tx
                             .send(AgentEvent::ToolCallResult {
@@ -1299,7 +1691,7 @@ impl AgentExecutor {
                                 artifacts: result.artifacts.clone(),
                             })
                             .await;
-                        (result.content, result.artifacts)
+                        (result.content, result.artifacts, result.is_error)
                     }
                     Ok(Err(e)) => {
                         let err_content = format!("Error: {e}");
@@ -1312,7 +1704,7 @@ impl AgentExecutor {
                                 artifacts: None,
                             })
                             .await;
-                        (err_content, None)
+                        (err_content, None, true)
                     }
                     Err(_elapsed) => {
                         warn!("Tool '{}' timed out after {:?}", tc.name, tool_timeout);
@@ -1329,7 +1721,7 @@ impl AgentExecutor {
                                 artifacts: None,
                             })
                             .await;
-                        (err_content, None)
+                        (err_content, None, true)
                     }
                 };
 
@@ -1339,6 +1731,25 @@ impl AgentExecutor {
                 } else {
                     tool_msg
                 };
+
+                append_persisted_trace_tool(
+                    &mut persisted_trace_items,
+                    &tc.name,
+                    &tc.arguments,
+                    &tc.id,
+                    if tool_is_error { "error" } else { "done" },
+                    Some(content.clone()),
+                    Some(tool_is_error),
+                    tool_artifacts.clone(),
+                );
+                if let Some(tid) = turn_id {
+                    let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                    let _ = db.update_conversation_turn_progress(
+                        tid,
+                        Some(&format!("{:?}", route_plan.kind)),
+                        Some(&trace),
+                    );
+                }
 
                 // Save tool result message to DB.
                 if let Some(cid) = conversation_id {
@@ -1424,16 +1835,22 @@ impl AgentExecutor {
         }
 
         let final_msg = Message::text(Role::Assistant, final_content);
+        append_persisted_trace_status(
+            &mut persisted_trace_items,
+            "Reached maximum iterations before producing a final answer.",
+            "error",
+        );
 
         if let Some(cid) = conversation_id {
+            let assistant_message_id = Uuid::new_v4().to_string();
             let conv_msg = ConversationMessage {
-                id: Uuid::new_v4().to_string(),
+                id: assistant_message_id.clone(),
                 conversation_id: cid.to_string(),
                 role: Role::Assistant,
                 content: final_msg.text_content(),
                 tool_call_id: None,
                 tool_calls: vec![],
-                artifacts: None,
+                artifacts: build_trace_artifacts(&persisted_trace_items),
                 token_count: estimate_message_tokens(&final_msg),
                 created_at: String::new(),
                 sort_order,
@@ -1441,6 +1858,15 @@ impl AgentExecutor {
             };
             if let Err(e) = db.add_message(&conv_msg) {
                 warn!("Failed to save final assistant message: {e}");
+            }
+            if let Some(tid) = turn_id {
+                let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                let _ = db.finalize_conversation_turn(
+                    tid,
+                    "max_iterations",
+                    Some(&assistant_message_id),
+                    Some(&trace),
+                );
             }
         }
 
@@ -1589,7 +2015,11 @@ impl AgentExecutor {
         // pull back to before that assistant message.
         if evict_end > non_system_start && evict_end < messages.len() {
             if let Some(ref tc) = messages[evict_end - 1].tool_calls {
-                if !tc.is_empty() && messages.get(evict_end).map_or(false, |m| m.role == Role::Tool) {
+                if !tc.is_empty()
+                    && messages
+                        .get(evict_end)
+                        .map_or(false, |m| m.role == Role::Tool)
+                {
                     evict_end -= 1;
                 }
             }
@@ -1784,6 +2214,7 @@ impl AgentExecutor {
         source_scope: &[String],
         tx: &mpsc::Sender<AgentEvent>,
         conversation_id: Option<&str>,
+        turn_id: Option<&str>,
         sort_order: i64,
     ) -> Option<Message> {
         if user_text.is_empty() {
@@ -1849,8 +2280,9 @@ impl AgentExecutor {
 
                 // Persist the assistant message.
                 if let Some(cid) = conversation_id {
+                    let assistant_message_id = Uuid::new_v4().to_string();
                     let conv_msg = ConversationMessage {
-                        id: Uuid::new_v4().to_string(),
+                        id: assistant_message_id.clone(),
                         conversation_id: cid.to_string(),
                         role: Role::Assistant,
                         content: msg.text_content(),
@@ -1869,6 +2301,23 @@ impl AgentExecutor {
                                 message: format!("Warning: message was not saved to history: {e}"),
                             })
                             .await;
+                    }
+                    if let Some(tid) = turn_id {
+                        let trace = serde_json::json!({
+                            "kind": "turnTrace",
+                            "routeKind": "DirectResponse",
+                            "items": [{
+                                "kind": "status",
+                                "text": "Handled via direct dispatch without a full agent loop.",
+                                "tone": "success"
+                            }]
+                        });
+                        let _ = db.finalize_conversation_turn(
+                            tid,
+                            "success",
+                            Some(&assistant_message_id),
+                            Some(&trace),
+                        );
                     }
                 }
 
@@ -2266,6 +2715,26 @@ mod tests {
         assert_eq!(prompt, DEFAULT_SYSTEM_PROMPT.trim());
     }
 
+    #[test]
+    fn test_route_user_turn_prefers_collection_context() {
+        let route = route_user_turn(
+            "Explain what this saved citation means",
+            "Collection description: Retry Collection\n\nPrefer the following saved evidence before widening to the full knowledge base.",
+            true,
+        );
+
+        assert_eq!(route.kind, AgentRouteKind::CollectionFocused);
+        assert!(route.extra_categories.contains(&ToolCategory::Knowledge));
+    }
+
+    #[test]
+    fn test_route_user_turn_prefers_knowledge_retrieval_for_question_with_sources() {
+        let route = route_user_turn("Why did the retry guard fail?", "", true);
+
+        assert_eq!(route.kind, AgentRouteKind::KnowledgeRetrieval);
+        assert!(route.extra_categories.contains(&ToolCategory::DocumentAnalysis));
+    }
+
     struct MockProvider {
         stream_calls: Arc<AtomicUsize>,
     }
@@ -2466,6 +2935,7 @@ mod tests {
                 }],
                 &db,
                 None,
+                None,
                 tx,
                 0,
             )
@@ -2518,6 +2988,7 @@ mod tests {
                 provider: "open_ai".to_string(),
                 model: "mock-model".to_string(),
                 system_prompt: None,
+                collection_context: None,
             })
             .expect("conversation");
         let (tx, _rx) = mpsc::channel(32);
@@ -2530,6 +3001,7 @@ mod tests {
                 }],
                 &db,
                 Some(&conversation.id),
+                None,
                 tx,
                 0,
             )
@@ -2552,6 +3024,29 @@ mod tests {
         assert_eq!(
             messages[2].thinking.as_deref(),
             Some("second round reasoning")
+        );
+        let artifacts = messages[2]
+            .artifacts
+            .as_ref()
+            .and_then(|value| value.as_object())
+            .expect("final assistant message should persist trace artifacts");
+        assert_eq!(
+            artifacts.get("kind").and_then(|v| v.as_str()),
+            Some("traceTimeline")
+        );
+        let items = artifacts
+            .get("items")
+            .and_then(|v| v.as_array())
+            .expect("trace timeline should include items");
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items[0].get("kind").and_then(|v| v.as_str()),
+            Some("thinking")
+        );
+        assert_eq!(items[1].get("kind").and_then(|v| v.as_str()), Some("tool"));
+        assert_eq!(
+            items[2].get("kind").and_then(|v| v.as_str()),
+            Some("thinking")
         );
     }
 }

@@ -12,6 +12,7 @@ import { useTranslation } from '../../i18n';
 export interface ThinkingSection {
   text: string;
   toolCallCards?: React.ReactNode;
+  node?: React.ReactNode;
 }
 
 interface ThinkingBlockProps {
@@ -19,6 +20,7 @@ interface ThinkingBlockProps {
   sections?: ThinkingSection[];
   isStreaming?: boolean;
   defaultExpanded?: boolean;
+  collapseOnFinish?: boolean;
   children?: React.ReactNode;
 }
 
@@ -70,7 +72,14 @@ const thinkingMarkdownComponents: Record<string, React.ComponentType<ComponentPr
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function ThinkingBlock({ content, sections, isStreaming = false, defaultExpanded, children }: ThinkingBlockProps) {
+export function ThinkingBlock({
+  content,
+  sections,
+  isStreaming = false,
+  defaultExpanded,
+  collapseOnFinish = true,
+  children,
+}: ThinkingBlockProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
   const [expanded, setExpanded] = useState(defaultExpanded ?? isStreaming);
@@ -83,10 +92,11 @@ export function ThinkingBlock({ content, sections, isStreaming = false, defaultE
   const combinedContent = effectiveSections
     ? effectiveSections.map(s => s.text).filter(Boolean).join('\n')
     : content;
+  const hasSectionCards = Boolean(effectiveSections?.some(section => section.toolCallCards || section.node));
 
   // Keep the live trace open while it is streaming, then collapse it once that phase ends.
   useEffect(() => {
-    const hasContent = combinedContent.trim().length > 0;
+    const hasContent = combinedContent.trim().length > 0 || hasSectionCards;
     if (!prevStreamingRef.current && isStreaming) {
       startTimeRef.current = Date.now();
       setElapsed(0);
@@ -95,12 +105,12 @@ export function ThinkingBlock({ content, sections, isStreaming = false, defaultE
       setExpanded(true);
       autoOpenedRef.current = true;
     }
-    if (prevStreamingRef.current && !isStreaming && autoOpenedRef.current) {
+    if (collapseOnFinish && prevStreamingRef.current && !isStreaming && autoOpenedRef.current) {
       setExpanded(false);
       autoOpenedRef.current = false;
     }
     prevStreamingRef.current = isStreaming;
-  }, [combinedContent, isStreaming]);
+  }, [collapseOnFinish, combinedContent, hasSectionCards, isStreaming]);
 
   // Track elapsed thinking time
   useEffect(() => {
@@ -118,7 +128,7 @@ export function ThinkingBlock({ content, sections, isStreaming = false, defaultE
   }, [isStreaming]);
 
   const tokenEstimate = Math.round(combinedContent.length / 4); // rough estimate
-  const summaryExcerpt = !isStreaming
+  const summaryExcerpt = !isStreaming && !effectiveSections
     ? combinedContent
         .replace(/[#>*`_~-]/g, ' ')
         .replace(/\s+/g, ' ')
@@ -189,6 +199,7 @@ export function ThinkingBlock({ content, sections, isStreaming = false, defaultE
                             {sec.text}
                           </ReactMarkdown>
                         )}
+                        {sec.node}
                         {sec.toolCallCards}
                       </div>
                     ))

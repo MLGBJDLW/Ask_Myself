@@ -608,11 +608,7 @@ impl McpManager {
             }
             match tokio::net::TcpStream::connect(&addr).await {
                 Ok(_) => {
-                    tracing::info!(
-                        "Managed server '{}' is ready on port {}",
-                        server.name,
-                        port
-                    );
+                    tracing::info!("Managed server '{}' is ready on port {}", server.name, port);
                     break;
                 }
                 Err(_) => {
@@ -731,7 +727,11 @@ impl McpManager {
 
     /// Ensure the active connections match the currently enabled server set.
     /// Returns per-server connection failures without aborting healthy servers.
-    pub async fn sync_servers(&mut self, servers: &[McpServer], call_timeout_secs: Option<u64>) -> HashMap<String, String> {
+    pub async fn sync_servers(
+        &mut self,
+        servers: &[McpServer],
+        call_timeout_secs: Option<u64>,
+    ) -> HashMap<String, String> {
         let desired: HashMap<&str, &McpServer> = servers
             .iter()
             .map(|server| (server.id.as_str(), server))

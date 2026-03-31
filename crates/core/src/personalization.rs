@@ -795,8 +795,12 @@ pub async fn auto_extract_and_save(
     for memory_text in extracted {
         // Double-check deduplication: skip if any existing memory contains the same text.
         let dominated = existing.iter().any(|m| {
-            m.content.to_lowercase().contains(&memory_text.to_lowercase())
-                || memory_text.to_lowercase().contains(&m.content.to_lowercase())
+            m.content
+                .to_lowercase()
+                .contains(&memory_text.to_lowercase())
+                || memory_text
+                    .to_lowercase()
+                    .contains(&m.content.to_lowercase())
         });
         if dominated {
             continue;

@@ -10,6 +10,7 @@ export interface Playbook {
   id: string;
   title: string;
   description: string;
+  queryText?: string | null;
   citations: PlaybookCitation[];
   createdAt: string;
   updatedAt: string;

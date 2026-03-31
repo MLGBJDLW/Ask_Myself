@@ -53,13 +53,15 @@ fn playbook_from_row(row: &rusqlite::Row) -> Result<Playbook, rusqlite::Error> {
     let id_str: String = row.get(0)?;
     let title: String = row.get(1)?;
     let description: String = row.get(2)?;
-    let created_str: String = row.get(3)?;
-    let updated_str: String = row.get(4)?;
+    let query_text: Option<String> = row.get(3)?;
+    let created_str: String = row.get(4)?;
+    let updated_str: String = row.get(5)?;
 
     Ok(Playbook {
         id: parse_uuid(&id_str)?,
         title,
         description,
+        query_text: query_text.filter(|value| !value.trim().is_empty()),
         citations: Vec::new(),
         created_at: parse_sqlite_datetime(&created_str)?,
         updated_at: parse_sqlite_datetime(&updated_str)?,
@@ -81,6 +83,21 @@ fn citation_from_row(row: &rusqlite::Row) -> Result<PlaybookCitation, rusqlite::
         annotation,
         order: sort_order,
     })
+}
+
+fn load_playbook_citations(
+    conn: &std::sync::MutexGuard<'_, rusqlite::Connection>,
+    playbook_id: &str,
+) -> Result<Vec<PlaybookCitation>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, playbook_id, chunk_id, sort_order, annotation
+         FROM playbook_citations
+         WHERE playbook_id = ?1
+         ORDER BY sort_order",
+    )?;
+
+    let rows = stmt.query_map(params![playbook_id], citation_from_row)?;
+    rows.collect::<Result<Vec<_>, _>>()
 }
 
 // ── Playbook CRUD ───────────────────────────────────────────────────────
@@ -110,7 +127,7 @@ impl Database {
         let conn = self.conn();
         let mut playbook = conn
             .query_row(
-                "SELECT id, title, body_md, created_at, updated_at
+                "SELECT id, title, body_md, goal, created_at, updated_at
                  FROM playbooks WHERE id = ?1",
                 params![playbook_id],
                 playbook_from_row,
@@ -122,30 +139,25 @@ impl Database {
                 other => CoreError::Database(other),
             })?;
 
-        let mut stmt = conn.prepare(
-            "SELECT id, playbook_id, chunk_id, sort_order, annotation
-             FROM playbook_citations
-             WHERE playbook_id = ?1
-             ORDER BY sort_order",
-        )?;
-        playbook.citations = stmt
-            .query_map(params![playbook_id], citation_from_row)?
-            .collect::<Result<Vec<_>, _>>()?;
+        playbook.citations = load_playbook_citations(&conn, playbook_id)?;
 
         Ok(playbook)
     }
 
-    /// List all playbooks ordered by `updated_at` DESC (without citations).
+    /// List all playbooks ordered by `updated_at` DESC, including citations.
     pub fn list_playbooks(&self) -> Result<Vec<Playbook>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, title, body_md, created_at, updated_at
+            "SELECT id, title, body_md, goal, created_at, updated_at
              FROM playbooks
              ORDER BY updated_at DESC",
         )?;
-        let rows = stmt
+        let mut rows = stmt
             .query_map([], playbook_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
+        for playbook in &mut rows {
+            playbook.citations = load_playbook_citations(&conn, &playbook.id.to_string())?;
+        }
         Ok(rows)
     }
 
@@ -544,6 +556,7 @@ mod tests {
 
         assert_eq!(pb.title, "My SOP");
         assert_eq!(pb.description, "Description here");
+        assert_eq!(pb.query_text.as_deref(), Some("search query"));
         assert!(pb.citations.is_empty());
 
         let fetched = db.get_playbook(&pb.id.to_string()).expect("get_playbook");
@@ -581,6 +594,20 @@ mod tests {
         assert_eq!(list[1].title, "Older");
         // Verify descending order
         assert_eq!(list[0].id, p2.id);
+    }
+
+    #[test]
+    fn test_list_playbooks_includes_citation_counts_via_loaded_citations() {
+        let db = test_db();
+        let pb = db.create_playbook("PB", "Desc", "query").unwrap();
+        let chunk = setup_chunk(&db);
+        db.add_citation(&pb.id.to_string(), &chunk, "Note", 0)
+            .unwrap();
+
+        let list = db.list_playbooks().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].citations.len(), 1);
+        assert_eq!(list[0].query_text.as_deref(), Some("query"));
     }
 
     #[test]

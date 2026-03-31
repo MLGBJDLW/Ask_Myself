@@ -8,7 +8,10 @@ use serde::Deserialize;
 use crate::db::Database;
 use crate::error::CoreError;
 
-use super::{ensure_source_in_scope, scope_is_active, scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
+use super::{
+    ensure_source_in_scope, scope_is_active, scoped_sources, Tool, ToolCategory, ToolDef,
+    ToolResult,
+};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/get_statistics.json");
