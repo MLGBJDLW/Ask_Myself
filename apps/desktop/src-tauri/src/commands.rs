@@ -25,8 +25,8 @@ use ask_core::feedback::{Feedback, FeedbackAction};
 use ask_core::index::IndexStats;
 use ask_core::ingest::{self, EmbedResult, IngestResult};
 use ask_core::llm::{
-    create_provider, model_supports_vision, ContentPart, Message, ProviderConfig, ProviderType,
-    ReasoningEffort, Role,
+    create_provider, model_supports_vision, CompletionRequest, ContentPart, Message,
+    ProviderConfig, ProviderType, ReasoningEffort, Role,
 };
 use ask_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 use ask_core::models::{
@@ -1039,6 +1039,17 @@ fn parse_provider_type(s: &str) -> ProviderType {
     }
 }
 
+fn normalize_optional_base_url(base_url: Option<String>) -> Option<String> {
+    base_url.and_then(|value| {
+        let trimmed = value.trim().trim_end_matches('/').to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 /// Convert a DB [`DbAgentConfig`] to a [`ProviderConfig`] suitable for
 /// [`create_provider`].
 fn db_config_to_provider_config(
@@ -1048,9 +1059,23 @@ fn db_config_to_provider_config(
     ProviderConfig {
         provider_type: parse_provider_type(&config.provider),
         api_key: Some(config.api_key.clone()),
-        base_url: config.base_url.clone(),
+        base_url: normalize_optional_base_url(config.base_url.clone()),
         org_id: None,
         timeout_secs,
+    }
+}
+
+fn build_connection_probe_request(config: &SaveAgentConfigInput) -> CompletionRequest {
+    CompletionRequest {
+        model: config.model.trim().to_string(),
+        messages: vec![Message::text(Role::User, "Reply with exactly: OK")],
+        temperature: Some(0.0),
+        max_tokens: Some(8),
+        tools: None,
+        stop: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+        provider_type: Some(parse_provider_type(&config.provider)),
     }
 }
 
@@ -1674,14 +1699,27 @@ pub async fn test_agent_connection_cmd(
     let provider_config = ProviderConfig {
         provider_type: parse_provider_type(&config.provider),
         api_key: Some(config.api_key.clone()),
-        base_url: config.base_url.clone(),
+        base_url: normalize_optional_base_url(config.base_url.clone()),
         org_id: None,
         timeout_secs: None,
     };
-    let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
-    provider.health_check().await.map_err(|e| e.to_string())?;
-    let models = provider.list_models().await.map_err(|e| e.to_string())?;
-    Ok(models)
+    let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
+
+    provider
+        .complete(&build_connection_probe_request(&config))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    match provider.list_models().await {
+        Ok(models) => Ok(models),
+        Err(error) => {
+            warn!(
+                "Connection probe succeeded but model listing failed for provider {}: {}",
+                config.provider, error
+            );
+            Ok(vec![])
+        }
+    }
 }
 
 // ── Agent Chat Command (streaming) ──────────────────────────────────────

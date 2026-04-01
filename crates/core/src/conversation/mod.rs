@@ -205,6 +205,17 @@ fn new_id() -> String {
     Uuid::new_v4().to_string()
 }
 
+fn normalize_optional_url(url: Option<&str>) -> Option<String> {
+    url.and_then(|value| {
+        let trimmed = value.trim().trim_end_matches('/').to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 fn role_to_str(role: &Role) -> &'static str {
     match role {
         Role::System => "system",
@@ -1085,6 +1096,7 @@ impl Database {
         input: &SaveAgentConfigInput,
     ) -> Result<AgentConfig, CoreError> {
         let id = input.id.clone().unwrap_or_else(new_id);
+        let normalized_base_url = normalize_optional_url(input.base_url.as_deref());
         let subagent_allowed_tools_json =
             serialize_optional_string_list(input.subagent_allowed_tools.as_deref())?;
         let subagent_allowed_skill_ids_json =
@@ -1122,7 +1134,7 @@ impl Database {
                 &input.name,
                 &input.provider,
                 &input.api_key,
-                &input.base_url,
+                &normalized_base_url,
                 &input.model,
                 input.temperature,
                 input.max_tokens,
@@ -1894,6 +1906,44 @@ mod tests {
         // Delete
         db.delete_agent_config(&config.id).unwrap();
         assert!(db.get_agent_config(&config.id).is_err());
+    }
+
+    #[test]
+    fn test_agent_config_normalizes_base_url() {
+        let db = Database::open_memory().unwrap();
+
+        let config = db
+            .save_agent_config(&SaveAgentConfigInput {
+                id: None,
+                name: "Qwen".into(),
+                provider: "qwen".into(),
+                api_key: "sk-test".into(),
+                base_url: Some("  https://dashscope.aliyuncs.com/compatible-mode/v1/  ".into()),
+                model: "qwen3.5-plus".into(),
+                temperature: Some(0.3),
+                max_tokens: Some(256),
+                context_window: None,
+                is_default: false,
+                reasoning_enabled: None,
+                thinking_budget: None,
+                reasoning_effort: None,
+                max_iterations: None,
+                summarization_model: None,
+                summarization_provider: None,
+                subagent_allowed_tools: None,
+                subagent_allowed_skill_ids: None,
+                subagent_max_parallel: None,
+                subagent_max_calls_per_turn: None,
+                subagent_token_budget: None,
+                tool_timeout_secs: None,
+                agent_timeout_secs: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            config.base_url.as_deref(),
+            Some("https://dashscope.aliyuncs.com/compatible-mode/v1")
+        );
     }
 
     #[test]

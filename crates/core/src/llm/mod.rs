@@ -329,12 +329,25 @@ pub trait LlmProvider: Send + Sync {
     async fn health_check(&self) -> Result<(), CoreError>;
 }
 
+fn normalize_base_url(base_url: Option<String>) -> Option<String> {
+    base_url.and_then(|url| {
+        let trimmed = url.trim().trim_end_matches('/').to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 /// Create a provider instance from configuration.
-pub fn create_provider(config: ProviderConfig) -> Result<Box<dyn LlmProvider>, CoreError> {
+pub fn create_provider(mut config: ProviderConfig) -> Result<Box<dyn LlmProvider>, CoreError> {
+    config.base_url = normalize_base_url(config.base_url);
+
     match config.provider_type {
         ProviderType::OpenAi
         | ProviderType::DeepSeek
