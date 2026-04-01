@@ -1,12 +1,16 @@
-import { createContext, useCallback, useContext, useState, type ComponentPropsWithoutRef } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useState, type ComponentPropsWithoutRef } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
 import { Copy, Check, FileText, Paperclip, ExternalLink } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { useTranslation } from '../../i18n';
 import { openFileInDefaultApp } from '../../lib/api';
 import { FileBadge } from '../ui/FileBadge';
 import { CitationChip } from './EvidenceCard';
 import type { CitationCardData } from '../../lib/citationParser';
+
+type MermaidModule = typeof import('mermaid');
 
 /* ------------------------------------------------------------------ */
 /*  Citation context — provides chunk_id → evidence data lookup        */
@@ -283,6 +287,153 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
   );
 }
 
+let mermaidInitialized = false;
+let mermaidModulePromise: Promise<MermaidModule> | null = null;
+
+async function loadMermaid() {
+  if (!mermaidModulePromise) {
+    mermaidModulePromise = import('mermaid');
+  }
+  const module = await mermaidModulePromise;
+  const mermaid = module.default;
+  if (mermaidInitialized) return mermaid;
+
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: 'strict',
+    theme: 'base',
+    fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
+    themeVariables: {
+      primaryColor: '#1f4e79',
+      primaryTextColor: '#0f172a',
+      primaryBorderColor: '#2e75b6',
+      lineColor: '#64748b',
+      secondaryColor: '#eaf3fb',
+      tertiaryColor: '#f8fafc',
+      mainBkg: '#ffffff',
+      nodeBorder: '#2e75b6',
+      clusterBkg: '#f8fafc',
+      clusterBorder: '#cbd5e1',
+      edgeLabelBackground: '#ffffff',
+    },
+  });
+  mermaidInitialized = true;
+  return mermaid;
+}
+
+function MermaidBlock({ chart }: { chart: string }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  const [svg, setSvg] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [rendering, setRendering] = useState(true);
+  const diagramId = useId().replace(/[:]/g, '-');
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(chart);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // ignore clipboard failures
+    }
+  }, [chart]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const render = async () => {
+      try {
+        const mermaid = await loadMermaid();
+        setRendering(true);
+        const { svg: nextSvg } = await mermaid.render(
+          `mermaid-${diagramId}-${Date.now()}`,
+          chart,
+        );
+        if (!cancelled) {
+          setSvg(nextSvg);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setSvg('');
+          setError(err instanceof Error ? err.message : 'Mermaid render failed');
+        }
+      } finally {
+        if (!cancelled) {
+          setRendering(false);
+        }
+      }
+    };
+
+    void render();
+    return () => {
+      cancelled = true;
+    };
+  }, [chart, diagramId]);
+
+  return (
+    <div className="group/code relative my-2 overflow-hidden rounded-lg border border-border bg-surface-1/70">
+      <div className="flex items-center justify-between border-b border-border/60 bg-surface-2/80 px-3 py-2">
+        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-text-tertiary">
+          Mermaid
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          title={copied ? t('chat.copied') : t('chat.copyCode')}
+          className="flex items-center gap-1 rounded border border-border/40 bg-surface-0/60 px-1.5 py-0.5 text-[11px] text-text-tertiary transition-all duration-150 hover:border-border hover:bg-surface-0 hover:text-text-primary cursor-pointer"
+        >
+          {copied ? (
+            <>
+              <Check className="h-3 w-3 text-green-500" />
+              <span className="text-green-500">{t('chat.copied')}</span>
+            </>
+          ) : (
+            <>
+              <Copy className="h-3 w-3" />
+              <span>{t('chat.copyCode')}</span>
+            </>
+          )}
+        </button>
+      </div>
+
+      <div className="overflow-x-auto bg-white px-3 py-3">
+        {svg ? (
+          <div
+            className="[&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full"
+            dangerouslySetInnerHTML={{ __html: svg }}
+          />
+        ) : rendering ? (
+          <div className="py-6 text-center text-xs text-slate-500">Rendering diagram...</div>
+        ) : (
+          <div className="space-y-2">
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Mermaid render failed: {error ?? 'Unknown error'}
+            </div>
+            <pre className="overflow-x-auto rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+              <code>{chart}</code>
+            </pre>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Sanitize schema for rehype-sanitize: allows common formatting HTML
+ * but blocks dangerous elements (script, iframe, form, object, embed, style, link).
+ */
+export const sanitizeSchema = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames || []), 'br', 'sub', 'sup', 'mark', 'kbd', 'abbr', 'details', 'summary'],
+};
+
+/** Pre-built rehype plugin list for ReactMarkdown */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const rehypePlugins: any[] = [rehypeRaw, [rehypeSanitize, sanitizeSchema]];
+
 /** Shared markdown component map for ReactMarkdown */
 export const markdownComponents: Record<string, React.ComponentType<ComponentPropsWithoutRef<any>>> = {
   a: MarkdownLink,
@@ -314,6 +465,9 @@ export const markdownComponents: Record<string, React.ComponentType<ComponentPro
           : String(children ?? '');
       // Remove trailing newline that react-markdown adds
       const code = raw.replace(/\n$/, '');
+      if (language.toLowerCase() === 'mermaid') {
+        return <MermaidBlock chart={code} />;
+      }
       return <CodeBlock code={code} language={language} />;
     }
 

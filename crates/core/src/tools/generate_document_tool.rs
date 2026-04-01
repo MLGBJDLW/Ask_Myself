@@ -25,21 +25,70 @@ struct GenerateDocArgs {
     content: serde_json::Value,
 }
 
+fn normalized_hex(input: Option<&str>, fallback: &str) -> String {
+    input
+        .map(str::trim)
+        .map(|value| value.trim_start_matches('#'))
+        .filter(|value| value.len() == 6 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .map(|value| value.to_ascii_uppercase())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn value_to_display_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(v) => v.to_string(),
+        serde_json::Value::Number(v) => v.to_string(),
+        other => other.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DOCX generation (via docx-rs)
 // ---------------------------------------------------------------------------
 
+#[derive(Deserialize, Clone, Default)]
+struct DocxTheme {
+    primary_color: Option<String>,
+    accent_color: Option<String>,
+    title_font: Option<String>,
+    body_font: Option<String>,
+    title_align: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct DocxContent {
     title: Option<String>,
+    subtitle: Option<String>,
+    cover_note: Option<String>,
+    theme: Option<DocxTheme>,
     sections: Vec<DocxSection>,
 }
 
 #[derive(Deserialize)]
 struct DocxSection {
     heading: Option<String>,
-    body: String,
+    body: Option<String>,
     bullet_items: Option<Vec<String>>,
+    callout: Option<DocxCallout>,
+    table: Option<DocxTable>,
+    page_break_before: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct DocxCallout {
+    title: Option<String>,
+    body: String,
+    tone: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DocxTable {
+    title: Option<String>,
+    headers: Option<Vec<String>>,
+    rows: Vec<Vec<String>>,
+    column_widths: Option<Vec<usize>>,
 }
 
 fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<u64, String> {
@@ -48,16 +97,33 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
     let content: DocxContent = serde_json::from_value(content.clone())
         .map_err(|e| format!("Invalid DOCX content: {e}"))?;
 
-    let calibri = RunFonts::new()
-        .ascii("Calibri")
-        .hi_ansi("Calibri")
-        .east_asia("Calibri")
-        .cs("Calibri");
-    let calibri_light = RunFonts::new()
-        .ascii("Calibri Light")
-        .hi_ansi("Calibri Light")
-        .east_asia("Calibri Light")
-        .cs("Calibri Light");
+    let theme = content.theme.clone().unwrap_or_default();
+    let primary_color = normalized_hex(theme.primary_color.as_deref(), "1F4E79");
+    let accent_color = normalized_hex(theme.accent_color.as_deref(), "2E75B6");
+    let title_font_name = theme.title_font.as_deref().unwrap_or("Calibri Light");
+    let body_font_name = theme.body_font.as_deref().unwrap_or("Calibri");
+    let title_alignment = match theme
+        .title_align
+        .as_deref()
+        .unwrap_or("center")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "left" => AlignmentType::Left,
+        "right" => AlignmentType::Right,
+        _ => AlignmentType::Center,
+    };
+
+    let run_fonts = |family: &str| {
+        RunFonts::new()
+            .ascii(family)
+            .hi_ansi(family)
+            .east_asia(family)
+            .cs(family)
+    };
+
+    let body_fonts = run_fonts(body_font_name);
+    let title_fonts = run_fonts(title_font_name);
 
     // 1 inch = 1440 twips; page margins
     let mut doc = Docx::new().page_margin(
@@ -91,26 +157,66 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
     if let Some(title) = &content.title {
         doc = doc.add_paragraph(
             Paragraph::new()
-                .align(AlignmentType::Center)
+                .align(title_alignment)
                 .line_spacing(LineSpacing::new().after(200))
                 .add_run(
                     Run::new()
                         .add_text(title)
                         .bold()
                         .size(56) // 28pt = 56 half-points
-                        .color("1F4E79")
-                        .fonts(calibri_light.clone()),
+                        .color(primary_color.clone())
+                        .fonts(title_fonts.clone()),
                 ),
         );
-        // Bottom border separator line (thin horizontal rule using an empty paragraph with bottom border)
+        if let Some(subtitle) = &content.subtitle {
+            doc = doc.add_paragraph(
+                Paragraph::new()
+                    .align(title_alignment)
+                    .line_spacing(LineSpacing::new().after(160))
+                    .add_run(
+                        Run::new()
+                            .add_text(subtitle)
+                            .italic()
+                            .size(24)
+                            .color(accent_color.clone())
+                            .fonts(body_fonts.clone()),
+                    ),
+            );
+        }
+        if let Some(cover_note) = &content.cover_note {
+            doc = doc.add_paragraph(
+                Paragraph::new()
+                    .align(title_alignment)
+                    .line_spacing(LineSpacing::new().after(220))
+                    .add_run(
+                        Run::new()
+                            .add_text(cover_note)
+                            .size(20)
+                            .color("6B7280")
+                            .fonts(body_fonts.clone()),
+                    ),
+            );
+        }
         doc = doc.add_paragraph(
             Paragraph::new()
-                .line_spacing(LineSpacing::new().after(200).before(0))
-                .add_run(Run::new().size(4)),
+                .line_spacing(LineSpacing::new().after(220).before(0))
+                .add_run(
+                    Run::new()
+                        .add_text("________________________________________")
+                        .size(16)
+                        .color(accent_color.clone())
+                        .fonts(body_fonts.clone()),
+                ),
         );
     }
 
     for section in &content.sections {
+        if section.page_break_before.unwrap_or(false) {
+            doc = doc.add_paragraph(
+                Paragraph::new().add_run(Run::new().add_break(BreakType::Page)),
+            );
+        }
+
         // Heading
         if let Some(heading) = &section.heading {
             doc = doc.add_paragraph(
@@ -121,16 +227,21 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                             .add_text(heading)
                             .bold()
                             .size(32) // 16pt
-                            .color("2E75B6")
-                            .fonts(calibri_light.clone()),
+                            .color(accent_color.clone())
+                            .fonts(title_fonts.clone()),
                     ),
             );
         }
 
         // Body text — handle bullet lines (starting with "- " or "• ")
-        for line in section.body.split('\n') {
-            let trimmed = line.trim();
-            if let Some(bullet_text) = trimmed
+        if let Some(body) = &section.body {
+            for line in body.split('\n') {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    doc = doc.add_paragraph(Paragraph::new());
+                    continue;
+                }
+                if let Some(bullet_text) = trimmed
                 .strip_prefix("- ")
                 .or_else(|| trimmed.strip_prefix("• "))
             {
@@ -147,7 +258,7 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                             Run::new()
                                 .add_text(bullet_text)
                                 .size(22) // 11pt
-                                .fonts(calibri.clone()),
+                                .fonts(body_fonts.clone()),
                         ),
                 );
             } else {
@@ -164,9 +275,10 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                             Run::new()
                                 .add_text(line)
                                 .size(22) // 11pt
-                                .fonts(calibri.clone()),
+                                .fonts(body_fonts.clone()),
                         ),
                 );
+            }
             }
         }
 
@@ -182,7 +294,162 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                                 .line_rule(LineSpacingType::Auto)
                                 .after(120),
                         )
-                        .add_run(Run::new().add_text(item).size(22).fonts(calibri.clone())),
+                        .add_run(
+                            Run::new()
+                                .add_text(item)
+                                .size(22)
+                                .fonts(body_fonts.clone()),
+                        ),
+                );
+            }
+        }
+
+        if let Some(callout) = &section.callout {
+            let fill = match callout
+                .tone
+                .as_deref()
+                .unwrap_or("info")
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "success" => "E8F5E9",
+                "warning" => "FFF4D6",
+                _ => "EAF3FB",
+            };
+
+            let callout_cell = TableCell::new()
+                .width(9000, WidthType::Dxa)
+                .shading(Shading::new().shd_type(ShdType::Clear).fill(fill))
+                .add_paragraph(
+                    Paragraph::new()
+                        .line_spacing(LineSpacing::new().after(80))
+                        .add_run(
+                            Run::new()
+                                .add_text(callout.title.as_deref().unwrap_or("Highlight"))
+                                .bold()
+                                .size(22)
+                                .color(primary_color.clone())
+                                .fonts(title_fonts.clone()),
+                        ),
+                )
+                .add_paragraph(
+                    Paragraph::new()
+                        .line_spacing(LineSpacing::new().line(264).after(80))
+                        .add_run(
+                            Run::new()
+                                .add_text(&callout.body)
+                                .size(22)
+                                .fonts(body_fonts.clone()),
+                        ),
+                );
+            doc = doc.add_table(
+                Table::without_borders(vec![TableRow::new(vec![callout_cell])])
+                    .width(9000, WidthType::Dxa)
+                    .set_grid(vec![9000]),
+            );
+        }
+
+        if let Some(table) = &section.table {
+            if let Some(table_title) = &table.title {
+                doc = doc.add_paragraph(
+                    Paragraph::new()
+                        .line_spacing(LineSpacing::new().before(140).after(80))
+                        .add_run(
+                            Run::new()
+                                .add_text(table_title)
+                                .bold()
+                                .size(22)
+                                .color(accent_color.clone())
+                                .fonts(title_fonts.clone()),
+                        ),
+                );
+            }
+
+            let column_count = table
+                .headers
+                .as_ref()
+                .map(|headers| headers.len())
+                .unwrap_or_else(|| table.rows.iter().map(|row| row.len()).max().unwrap_or(0));
+
+            if column_count > 0 {
+                let grid = if let Some(widths) = &table.column_widths {
+                    let mut weights: Vec<usize> = widths
+                        .iter()
+                        .copied()
+                        .take(column_count)
+                        .map(|value| value.max(1))
+                        .collect();
+                    while weights.len() < column_count {
+                        weights.push(1);
+                    }
+                    let sum = weights.iter().sum::<usize>().max(1);
+                    weights
+                        .iter()
+                        .map(|value| (9000 * *value / sum).max(900))
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![(9000 / column_count).max(900); column_count]
+                };
+
+                let mut rows: Vec<TableRow> = Vec::new();
+                if let Some(headers) = &table.headers {
+                    rows.push(TableRow::new(
+                        headers
+                            .iter()
+                            .enumerate()
+                            .map(|(index, header)| {
+                                TableCell::new()
+                                    .width(*grid.get(index).unwrap_or(&2000), WidthType::Dxa)
+                                    .shading(
+                                        Shading::new()
+                                            .shd_type(ShdType::Clear)
+                                            .fill(primary_color.clone()),
+                                    )
+                                    .add_paragraph(
+                                        Paragraph::new().add_run(
+                                            Run::new()
+                                                .add_text(header)
+                                                .bold()
+                                                .size(20)
+                                                .color("FFFFFF")
+                                                .fonts(body_fonts.clone()),
+                                        ),
+                                    )
+                            })
+                            .collect(),
+                    ));
+                }
+
+                for (row_index, row) in table.rows.iter().enumerate() {
+                    let shade = if row_index % 2 == 0 { "FFFFFF" } else { "F7FAFC" };
+                    rows.push(TableRow::new(
+                        (0..column_count)
+                            .map(|index| {
+                                TableCell::new()
+                                    .width(*grid.get(index).unwrap_or(&2000), WidthType::Dxa)
+                                    .shading(Shading::new().shd_type(ShdType::Clear).fill(shade))
+                                    .add_paragraph(
+                                        Paragraph::new().add_run(
+                                            Run::new()
+                                                .add_text(row.get(index).cloned().unwrap_or_default())
+                                                .size(20)
+                                                .fonts(body_fonts.clone()),
+                                        ),
+                                    )
+                            })
+                            .collect(),
+                    ));
+                }
+
+                doc = doc.add_table(
+                    Table::new(rows)
+                        .width(9000, WidthType::Dxa)
+                        .set_grid(grid)
+                        .margins(
+                            TableCellMargins::new()
+                                .margin_left(100, WidthType::Dxa)
+                                .margin_right(100, WidthType::Dxa),
+                        ),
                 );
             }
         }
@@ -210,9 +477,27 @@ struct XlsxContent {
 #[derive(Deserialize)]
 struct XlsxSheet {
     name: String,
+    title: Option<String>,
+    notes: Option<String>,
     headers: Option<Vec<String>>,
     rows: Vec<Vec<serde_json::Value>>,
     column_widths: Option<Vec<f64>>,
+    tab_color: Option<String>,
+    freeze_rows: Option<u32>,
+    autofilter: Option<bool>,
+}
+
+#[derive(Deserialize, Default)]
+struct XlsxCellStyle {
+    value: Option<serde_json::Value>,
+    formula: Option<String>,
+    num_format: Option<String>,
+    bold: Option<bool>,
+    italic: Option<bool>,
+    align: Option<String>,
+    font_color: Option<String>,
+    background_color: Option<String>,
+    wrap: Option<bool>,
 }
 
 fn generate_xlsx(path: &std::path::Path, content: &serde_json::Value) -> Result<u64, String> {
@@ -221,9 +506,66 @@ fn generate_xlsx(path: &std::path::Path, content: &serde_json::Value) -> Result<
     let content: XlsxContent = serde_json::from_value(content.clone())
         .map_err(|e| format!("Invalid XLSX content: {e}"))?;
 
+    let parse_color = |input: Option<&str>, fallback: u32| {
+        let default_hex = format!("{fallback:06X}");
+        let hex = normalized_hex(input, &default_hex);
+        let value = u32::from_str_radix(&hex, 16).unwrap_or(fallback);
+        Color::RGB(value)
+    };
+
+    let apply_alignment = |format: Format, align: Option<&str>| match align
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "left" => format.set_align(FormatAlign::Left),
+        "right" => format.set_align(FormatAlign::Right),
+        "center" => format.set_align(FormatAlign::Center),
+        _ => format,
+    };
+
+    let apply_cell_style =
+        |base: &Format, style: &XlsxCellStyle, default_num_format: Option<&str>| {
+            let mut format = base.clone();
+            if style.bold.unwrap_or(false) {
+                format = format.set_bold();
+            }
+            if style.italic.unwrap_or(false) {
+                format = format.set_italic();
+            }
+            if style.wrap.unwrap_or(false) {
+                format = format.set_text_wrap();
+            }
+            if let Some(num_format) = style.num_format.as_deref().or(default_num_format) {
+                format = format.set_num_format(num_format);
+            }
+            if let Some(color) = style.font_color.as_deref() {
+                format = format.set_font_color(parse_color(Some(color), 0x1F2937));
+            }
+            if let Some(color) = style.background_color.as_deref() {
+                format = format.set_background_color(parse_color(Some(color), 0xFFFFFF));
+            }
+            apply_alignment(format, style.align.as_deref())
+        };
+
     let mut workbook = rust_xlsxwriter::Workbook::new();
 
-    // Shared formats
+    let title_fmt = Format::new()
+        .set_bold()
+        .set_font_name("Calibri")
+        .set_font_size(15)
+        .set_font_color(Color::White)
+        .set_background_color(Color::RGB(0x1F4E79))
+        .set_align(FormatAlign::Center)
+        .set_align(FormatAlign::VerticalCenter);
+
+    let notes_fmt = Format::new()
+        .set_font_name("Calibri")
+        .set_font_size(10)
+        .set_font_color(Color::RGB(0x4B5563))
+        .set_background_color(Color::RGB(0xEEF3F8))
+        .set_text_wrap();
+
     let header_fmt = Format::new()
         .set_bold()
         .set_font_name("Calibri")
@@ -232,7 +574,8 @@ fn generate_xlsx(path: &std::path::Path, content: &serde_json::Value) -> Result<
         .set_background_color(Color::RGB(0x2E75B6))
         .set_border(FormatBorder::Thin)
         .set_border_color(Color::RGB(0x1F4E79))
-        .set_align(FormatAlign::Center);
+        .set_align(FormatAlign::Center)
+        .set_align(FormatAlign::VerticalCenter);
 
     let data_fmt_white = Format::new()
         .set_font_name("Calibri")
@@ -247,34 +590,25 @@ fn generate_xlsx(path: &std::path::Path, content: &serde_json::Value) -> Result<
         .set_border(FormatBorder::Thin)
         .set_border_color(Color::RGB(0xD9D9D9));
 
-    let num_fmt_white = Format::new()
-        .set_font_name("Calibri")
-        .set_font_size(11)
-        .set_border(FormatBorder::Thin)
-        .set_border_color(Color::RGB(0xD9D9D9))
-        .set_num_format("#,##0.##");
-
-    let num_fmt_gray = Format::new()
-        .set_font_name("Calibri")
-        .set_font_size(11)
-        .set_background_color(Color::RGB(0xF2F2F2))
-        .set_border(FormatBorder::Thin)
-        .set_border_color(Color::RGB(0xD9D9D9))
-        .set_num_format("#,##0.##");
-
     for sheet in &content.sheets {
         let worksheet = workbook.add_worksheet();
         worksheet
             .set_name(&sheet.name)
             .map_err(|e| format!("Failed to set sheet name: {e}"))?;
 
-        let num_cols = sheet
+        if let Some(tab_color) = sheet.tab_color.as_deref() {
+            worksheet.set_tab_color(parse_color(Some(tab_color), 0x2E75B6));
+        }
+
+        let mut num_cols = sheet
             .headers
             .as_ref()
             .map(|h| h.len())
-            .unwrap_or_else(|| sheet.rows.first().map(|r| r.len()).unwrap_or(0));
+            .unwrap_or_else(|| sheet.rows.iter().map(|r| r.len()).max().unwrap_or(0));
+        if num_cols == 0 && (sheet.title.is_some() || sheet.notes.is_some()) {
+            num_cols = 1;
+        }
 
-        // Column widths: use explicit, else auto-estimate from headers
         for col in 0..num_cols {
             let width = sheet
                 .column_widths
@@ -286,65 +620,167 @@ fn generate_xlsx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                         .as_ref()
                         .and_then(|h| h.get(col))
                         .map(|s| s.len())
-                        .unwrap_or(8);
+                        .unwrap_or(10);
                     (header_len as f64 + 4.0).clamp(10.0, 30.0)
                 });
             let _ = worksheet.set_column_width(col as u16, width);
         }
 
         let mut row_idx: u32 = 0;
+        if let Some(title) = &sheet.title {
+            if num_cols > 1 {
+                worksheet
+                    .merge_range(0, 0, 0, (num_cols - 1) as u16, title, &title_fmt)
+                    .map_err(|e| format!("Failed to write merged title: {e}"))?;
+            } else {
+                worksheet
+                    .write_string_with_format(0, 0, title, &title_fmt)
+                    .map_err(|e| format!("Failed to write title: {e}"))?;
+            }
+            let _ = worksheet.set_row_height(0, 24.0);
+            row_idx += 1;
+        }
+        if let Some(notes) = &sheet.notes {
+            if num_cols > 1 {
+                worksheet
+                    .merge_range(
+                        row_idx,
+                        0,
+                        row_idx,
+                        (num_cols - 1) as u16,
+                        notes,
+                        &notes_fmt,
+                    )
+                    .map_err(|e| format!("Failed to write notes: {e}"))?;
+            } else {
+                worksheet
+                    .write_string_with_format(row_idx, 0, notes, &notes_fmt)
+                    .map_err(|e| format!("Failed to write notes: {e}"))?;
+            }
+            let _ = worksheet.set_row_height(row_idx, 36.0);
+            row_idx += 1;
+        }
 
-        if let Some(headers) = &sheet.headers {
+        let header_row = if let Some(headers) = &sheet.headers {
+            let current = row_idx;
             for (col, header) in headers.iter().enumerate() {
                 worksheet
-                    .write_string_with_format(row_idx, col as u16, header, &header_fmt)
+                    .write_string_with_format(current, col as u16, header, &header_fmt)
                     .map_err(|e| format!("Failed to write header: {e}"))?;
             }
             row_idx += 1;
+            Some(current)
+        } else {
+            None
+        };
 
-            // Freeze header row
-            let _ = worksheet.set_freeze_panes(1, 0);
-        }
-
+        let data_start_row = row_idx;
         for row in &sheet.rows {
-            let is_alt = (row_idx % 2) == 0; // alternating; row 0 is header, so data rows 1,2,3...
-            let cell_fmt = if is_alt {
+            let is_alt = ((row_idx - data_start_row) % 2) == 1;
+            let base_fmt = if is_alt {
                 &data_fmt_gray
             } else {
                 &data_fmt_white
             };
-            let n_fmt = if is_alt {
-                &num_fmt_gray
-            } else {
-                &num_fmt_white
-            };
 
             for (col, value) in row.iter().enumerate() {
+                if let Ok(style) = serde_json::from_value::<XlsxCellStyle>(value.clone()) {
+                    if style.value.is_some()
+                        || style.formula.is_some()
+                        || style.num_format.is_some()
+                        || style.bold.is_some()
+                        || style.italic.is_some()
+                        || style.align.is_some()
+                        || style.font_color.is_some()
+                        || style.background_color.is_some()
+                        || style.wrap.is_some()
+                    {
+                        let default_num_format = style
+                            .value
+                            .as_ref()
+                            .filter(|v| matches!(v, serde_json::Value::Number(_)))
+                            .map(|_| "#,##0.##");
+                        let fmt = apply_cell_style(base_fmt, &style, default_num_format);
+                        if let Some(formula) = style.formula.as_deref() {
+                            worksheet
+                                .write_formula_with_format(row_idx, col as u16, formula, &fmt)
+                                .map_err(|e| format!("Failed to write formula: {e}"))?;
+                        } else if let Some(cell_value) = style.value.as_ref() {
+                            match cell_value {
+                                serde_json::Value::Number(n) => {
+                                    if let Some(f) = n.as_f64() {
+                                        worksheet
+                                            .write_number_with_format(row_idx, col as u16, f, &fmt)
+                                            .map_err(|e| format!("Failed to write number: {e}"))?;
+                                    }
+                                }
+                                serde_json::Value::Bool(b) => {
+                                    worksheet
+                                        .write_boolean_with_format(row_idx, col as u16, *b, &fmt)
+                                        .map_err(|e| format!("Failed to write boolean: {e}"))?;
+                                }
+                                _ => {
+                                    worksheet
+                                        .write_string_with_format(
+                                            row_idx,
+                                            col as u16,
+                                            &value_to_display_text(cell_value),
+                                            &fmt,
+                                        )
+                                        .map_err(|e| format!("Failed to write string: {e}"))?;
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
+
                 match value {
                     serde_json::Value::Number(n) => {
                         if let Some(f) = n.as_f64() {
+                            let fmt = base_fmt.clone().set_num_format("#,##0.##");
                             worksheet
-                                .write_number_with_format(row_idx, col as u16, f, n_fmt)
+                                .write_number_with_format(row_idx, col as u16, f, &fmt)
                                 .map_err(|e| format!("Failed to write number: {e}"))?;
                         }
                     }
                     serde_json::Value::Bool(b) => {
                         worksheet
-                            .write_boolean_with_format(row_idx, col as u16, *b, cell_fmt)
+                            .write_boolean_with_format(row_idx, col as u16, *b, base_fmt)
                             .map_err(|e| format!("Failed to write boolean: {e}"))?;
                     }
                     _ => {
-                        let s = match value {
-                            serde_json::Value::String(s) => s.clone(),
-                            _ => value.to_string(),
-                        };
                         worksheet
-                            .write_string_with_format(row_idx, col as u16, &s, cell_fmt)
+                            .write_string_with_format(
+                                row_idx,
+                                col as u16,
+                                &value_to_display_text(value),
+                                base_fmt,
+                            )
                             .map_err(|e| format!("Failed to write string: {e}"))?;
                     }
                 }
             }
             row_idx += 1;
+        }
+
+        if let Some(header_row) = header_row {
+            if sheet.autofilter.unwrap_or(true) && row_idx > header_row {
+                let last_row = row_idx.saturating_sub(1);
+                let last_col = num_cols.saturating_sub(1) as u16;
+                let _ = worksheet.autofilter(header_row, 0, last_row, last_col);
+            }
+        }
+
+        let freeze_rows = sheet.freeze_rows.unwrap_or_else(|| {
+            if header_row.is_some() {
+                row_idx.min(data_start_row)
+            } else {
+                0
+            }
+        });
+        if freeze_rows > 0 {
+            let _ = worksheet.set_freeze_panes(freeze_rows, 0);
         }
     }
 
@@ -360,17 +796,48 @@ fn generate_xlsx(path: &std::path::Path, content: &serde_json::Value) -> Result<
 // PPTX generation (professional OOXML via zip)
 // ---------------------------------------------------------------------------
 
+#[derive(Deserialize, Clone, Default)]
+struct PptxTheme {
+    primary_color: Option<String>,
+    accent_color: Option<String>,
+    background_color: Option<String>,
+    title_color: Option<String>,
+    text_color: Option<String>,
+    title_font: Option<String>,
+    body_font: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct PptxContent {
+    theme: Option<PptxTheme>,
     slides: Vec<PptxSlide>,
 }
 
 #[derive(Deserialize)]
 struct PptxSlide {
     title: Option<String>,
+    subtitle: Option<String>,
     body: Option<String>,
     bullet_items: Option<Vec<String>>,
     layout: Option<String>,
+    left_title: Option<String>,
+    left_body: Option<String>,
+    left_bullet_items: Option<Vec<String>>,
+    right_title: Option<String>,
+    right_body: Option<String>,
+    right_bullet_items: Option<Vec<String>>,
+}
+
+#[derive(Clone)]
+struct ResolvedPptxTheme {
+    primary_color: String,
+    accent_color: String,
+    background_color: String,
+    title_color: String,
+    text_color: String,
+    muted_text_color: String,
+    title_font: String,
+    body_font: String,
 }
 
 fn xml_escape(s: &str) -> String {
@@ -379,6 +846,79 @@ fn xml_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+fn resolve_pptx_theme(theme: Option<&PptxTheme>) -> ResolvedPptxTheme {
+    let theme = theme.cloned().unwrap_or_default();
+    ResolvedPptxTheme {
+        primary_color: normalized_hex(theme.primary_color.as_deref(), "1F4E79"),
+        accent_color: normalized_hex(theme.accent_color.as_deref(), "2E75B6"),
+        background_color: normalized_hex(theme.background_color.as_deref(), "FFFFFF"),
+        title_color: normalized_hex(theme.title_color.as_deref(), "FFFFFF"),
+        text_color: normalized_hex(theme.text_color.as_deref(), "333333"),
+        muted_text_color: "D6DCE4".to_string(),
+        title_font: theme
+            .title_font
+            .unwrap_or_else(|| "Calibri Light".to_string()),
+        body_font: theme.body_font.unwrap_or_else(|| "Calibri".to_string()),
+    }
+}
+
+fn build_pptx_body_parts(
+    body: Option<&str>,
+    bullet_items: Option<&[String]>,
+    theme: &ResolvedPptxTheme,
+) -> String {
+    let mut body_parts = String::new();
+
+    if let Some(body_raw) = body {
+        for line in body_raw.split('\n') {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                body_parts.push_str(r#"<a:p><a:endParaRPr lang="en-US" sz="2000"/></a:p>"#);
+                continue;
+            }
+            let (text, is_bullet) = if let Some(t) = trimmed
+                .strip_prefix("- ")
+                .or_else(|| trimmed.strip_prefix("\u{2022} "))
+            {
+                (t, true)
+            } else {
+                (trimmed, false)
+            };
+            let escaped = xml_escape(text);
+            if is_bullet {
+                body_parts.push_str(&format!(
+                    r#"<a:p><a:pPr marL="342900" indent="-342900"><a:buChar char="&#x2022;"/></a:pPr><a:r><a:rPr lang="en-US" sz="2000" dirty="0"><a:solidFill><a:srgbClr val="{text_color}"/></a:solidFill><a:latin typeface="{body_font}"/></a:rPr><a:t>{escaped}</a:t></a:r></a:p>"#,
+                    text_color = theme.text_color,
+                    body_font = xml_escape(&theme.body_font)
+                ));
+            } else {
+                body_parts.push_str(&format!(
+                    r#"<a:p><a:r><a:rPr lang="en-US" sz="2000" dirty="0"><a:solidFill><a:srgbClr val="{text_color}"/></a:solidFill><a:latin typeface="{body_font}"/></a:rPr><a:t>{escaped}</a:t></a:r></a:p>"#,
+                    text_color = theme.text_color,
+                    body_font = xml_escape(&theme.body_font)
+                ));
+            }
+        }
+    }
+
+    if let Some(items) = bullet_items {
+        for item in items {
+            let escaped = xml_escape(item);
+            body_parts.push_str(&format!(
+                r#"<a:p><a:pPr marL="342900" indent="-342900"><a:buChar char="&#x2022;"/></a:pPr><a:r><a:rPr lang="en-US" sz="2000" dirty="0"><a:solidFill><a:srgbClr val="{text_color}"/></a:solidFill><a:latin typeface="{body_font}"/></a:rPr><a:t>{escaped}</a:t></a:r></a:p>"#,
+                text_color = theme.text_color,
+                body_font = xml_escape(&theme.body_font)
+            ));
+        }
+    }
+
+    if body_parts.is_empty() {
+        body_parts = r#"<a:p><a:endParaRPr lang="en-US"/></a:p>"#.into();
+    }
+
+    body_parts
 }
 
 /// EMU constants: 1 inch = 914400 EMU, 1 pt = 12700 EMU
@@ -419,9 +959,21 @@ fn pptx_theme_xml() -> &'static str {
 </a:theme>"#
 }
 
-fn build_title_slide(slide: &PptxSlide, slide_num: usize) -> String {
+fn build_title_slide(
+    slide: &PptxSlide,
+    slide_num: usize,
+    theme: &ResolvedPptxTheme,
+) -> String {
     let title_text = xml_escape(slide.title.as_deref().unwrap_or(""));
-    let subtitle_text = xml_escape(slide.body.as_deref().unwrap_or(""));
+    let subtitle_text = xml_escape(
+        slide
+            .subtitle
+            .as_deref()
+            .or(slide.body.as_deref())
+            .unwrap_or(""),
+    );
+    let title_font = xml_escape(&theme.title_font);
+    let body_font = xml_escape(&theme.body_font);
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -429,7 +981,7 @@ fn build_title_slide(slide: &PptxSlide, slide_num: usize) -> String {
  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <p:cSld>
-<p:bg><p:bgPr><a:solidFill><a:srgbClr val="1F4E79"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>
+<p:bg><p:bgPr><a:solidFill><a:srgbClr val="{primary_color}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>
 <p:spTree>
 <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
 <p:grpSpPr/>
@@ -442,7 +994,7 @@ fn build_title_slide(slide: &PptxSlide, slide_num: usize) -> String {
   <p:txBody>
     <a:bodyPr anchor="ctr"/>
     <a:p><a:pPr algn="ctr"/>
-      <a:r><a:rPr lang="en-US" sz="4400" b="1" dirty="0"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Calibri Light"/></a:rPr><a:t>{title_text}</a:t></a:r>
+      <a:r><a:rPr lang="en-US" sz="4400" b="1" dirty="0"><a:solidFill><a:srgbClr val="{title_color}"/></a:solidFill><a:latin typeface="{title_font}"/></a:rPr><a:t>{title_text}</a:t></a:r>
     </a:p>
   </p:txBody>
 </p:sp>
@@ -455,7 +1007,7 @@ fn build_title_slide(slide: &PptxSlide, slide_num: usize) -> String {
   <p:txBody>
     <a:bodyPr anchor="t"/>
     <a:p><a:pPr algn="ctr"/>
-      <a:r><a:rPr lang="en-US" sz="2000" dirty="0"><a:solidFill><a:srgbClr val="D6DCE4"/></a:solidFill><a:latin typeface="Calibri"/></a:rPr><a:t>{subtitle_text}</a:t></a:r>
+      <a:r><a:rPr lang="en-US" sz="2000" dirty="0"><a:solidFill><a:srgbClr val="{muted_text_color}"/></a:solidFill><a:latin typeface="{body_font}"/></a:rPr><a:t>{subtitle_text}</a:t></a:r>
     </a:p>
   </p:txBody>
 </p:sp>
@@ -467,20 +1019,39 @@ fn build_title_slide(slide: &PptxSlide, slide_num: usize) -> String {
   </p:spPr>
   <p:txBody><a:bodyPr anchor="ctr"/>
     <a:p><a:pPr algn="r"/>
-      <a:r><a:rPr lang="en-US" sz="1000" dirty="0"><a:solidFill><a:srgbClr val="D6DCE4"/></a:solidFill><a:latin typeface="Calibri"/></a:rPr><a:t>{slide_num}</a:t></a:r>
+      <a:r><a:rPr lang="en-US" sz="1000" dirty="0"><a:solidFill><a:srgbClr val="{muted_text_color}"/></a:solidFill><a:latin typeface="{body_font}"/></a:rPr><a:t>{slide_num}</a:t></a:r>
     </a:p>
   </p:txBody>
 </p:sp>
 </p:spTree>
 </p:cSld>
 </p:sld>"#,
+        primary_color = theme.primary_color,
+        title_color = theme.title_color,
+        muted_text_color = theme.muted_text_color,
+        title_font = title_font,
+        body_font = body_font,
         margin = MARGIN,
         content_w = SLIDE_W - 2 * MARGIN,
     )
 }
 
-fn build_content_slide(slide: &PptxSlide, slide_num: usize) -> String {
+fn build_section_slide(
+    slide: &PptxSlide,
+    slide_num: usize,
+    theme: &ResolvedPptxTheme,
+) -> String {
+    build_title_slide(slide, slide_num, theme)
+}
+
+fn build_content_slide(
+    slide: &PptxSlide,
+    slide_num: usize,
+    theme: &ResolvedPptxTheme,
+) -> String {
     let title_text = xml_escape(slide.title.as_deref().unwrap_or(""));
+    let title_font = xml_escape(&theme.title_font);
+    let body_font = xml_escape(&theme.body_font);
 
     // Build body paragraphs from body text and/or bullet_items
     let mut body_parts = String::new();
@@ -535,6 +1106,7 @@ fn build_content_slide(slide: &PptxSlide, slide_num: usize) -> String {
  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <p:cSld>
+<p:bg><p:bgPr><a:solidFill><a:srgbClr val="{background_color}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>
 <p:spTree>
 <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
 <p:grpSpPr/>
@@ -543,12 +1115,12 @@ fn build_content_slide(slide: &PptxSlide, slide_num: usize) -> String {
   <p:spPr>
     <a:xfrm><a:off x="0" y="0"/><a:ext cx="{slide_w}" cy="{header_h}"/></a:xfrm>
     <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
-    <a:solidFill><a:srgbClr val="1F4E79"/></a:solidFill>
+    <a:solidFill><a:srgbClr val="{primary_color}"/></a:solidFill>
   </p:spPr>
   <p:txBody>
     <a:bodyPr anchor="ctr" lIns="457200"/>
     <a:p><a:pPr algn="l"/>
-      <a:r><a:rPr lang="en-US" sz="3600" b="1" dirty="0"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Calibri Light"/></a:rPr><a:t>{title_text}</a:t></a:r>
+      <a:r><a:rPr lang="en-US" sz="3600" b="1" dirty="0"><a:solidFill><a:srgbClr val="{title_color}"/></a:solidFill><a:latin typeface="{title_font}"/></a:rPr><a:t>{title_text}</a:t></a:r>
     </a:p>
   </p:txBody>
 </p:sp>
@@ -572,23 +1144,128 @@ fn build_content_slide(slide: &PptxSlide, slide_num: usize) -> String {
   </p:spPr>
   <p:txBody><a:bodyPr anchor="ctr"/>
     <a:p><a:pPr algn="r"/>
-      <a:r><a:rPr lang="en-US" sz="1000" dirty="0"><a:solidFill><a:srgbClr val="888888"/></a:solidFill><a:latin typeface="Calibri"/></a:rPr><a:t>{slide_num}</a:t></a:r>
+      <a:r><a:rPr lang="en-US" sz="1000" dirty="0"><a:solidFill><a:srgbClr val="888888"/></a:solidFill><a:latin typeface="{body_font}"/></a:rPr><a:t>{slide_num}</a:t></a:r>
     </a:p>
   </p:txBody>
 </p:sp>
 </p:spTree>
 </p:cSld>
 </p:sld>"#,
+        background_color = theme.background_color,
         slide_w = SLIDE_W,
         header_h = HEADER_H,
+        primary_color = theme.primary_color,
+        title_color = theme.title_color,
+        title_font = title_font,
         margin = MARGIN,
         content_w = SLIDE_W - 2 * MARGIN,
+        body_font = body_font,
+    )
+}
+
+fn build_comparison_slide(
+    slide: &PptxSlide,
+    slide_num: usize,
+    theme: &ResolvedPptxTheme,
+) -> String {
+    let title_text = xml_escape(slide.title.as_deref().unwrap_or(""));
+    let left_title = xml_escape(slide.left_title.as_deref().unwrap_or("Option A"));
+    let right_title = xml_escape(slide.right_title.as_deref().unwrap_or("Option B"));
+    let left_body = build_pptx_body_parts(
+        slide.left_body.as_deref(),
+        slide.left_bullet_items.as_deref(),
+        theme,
+    );
+    let right_body = build_pptx_body_parts(
+        slide.right_body.as_deref(),
+        slide.right_bullet_items.as_deref(),
+        theme,
+    );
+    let title_font = xml_escape(&theme.title_font);
+    let body_font = xml_escape(&theme.body_font);
+    let column_gap = 182880;
+    let usable_w = SLIDE_W - (2 * MARGIN);
+    let column_w = (usable_w - column_gap) / 2;
+    let left_title_y = HEADER_H + 182880;
+    let body_y = HEADER_H + 640080;
+    let body_h = SLIDE_H - HEADER_H - 914400;
+    let right_x = MARGIN + column_w + column_gap;
+    let divider_x = MARGIN + column_w + (column_gap / 2);
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+ xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<p:cSld>
+<p:bg><p:bgPr><a:solidFill><a:srgbClr val="{background_color}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>
+<p:spTree>
+<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+<p:grpSpPr/>
+<p:sp>
+  <p:nvSpPr><p:cNvPr id="2" name="HeaderBar"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+  <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{slide_w}" cy="{header_h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="{primary_color}"/></a:solidFill></p:spPr>
+  <p:txBody><a:bodyPr anchor="ctr" lIns="457200"/><a:p><a:pPr algn="l"/><a:r><a:rPr lang="en-US" sz="3400" b="1" dirty="0"><a:solidFill><a:srgbClr val="{title_color}"/></a:solidFill><a:latin typeface="{title_font}"/></a:rPr><a:t>{title_text}</a:t></a:r></a:p></p:txBody>
+</p:sp>
+<p:sp>
+  <p:nvSpPr><p:cNvPr id="3" name="LeftTitle"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+  <p:spPr><a:xfrm><a:off x="{margin}" y="{left_title_y}"/><a:ext cx="{column_w}" cy="457200"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>
+  <p:txBody><a:bodyPr anchor="ctr"/><a:p><a:r><a:rPr lang="en-US" sz="2200" b="1" dirty="0"><a:solidFill><a:srgbClr val="{accent_color}"/></a:solidFill><a:latin typeface="{title_font}"/></a:rPr><a:t>{left_title}</a:t></a:r></a:p></p:txBody>
+</p:sp>
+<p:sp>
+  <p:nvSpPr><p:cNvPr id="4" name="RightTitle"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+  <p:spPr><a:xfrm><a:off x="{right_x}" y="{left_title_y}"/><a:ext cx="{column_w}" cy="457200"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>
+  <p:txBody><a:bodyPr anchor="ctr"/><a:p><a:r><a:rPr lang="en-US" sz="2200" b="1" dirty="0"><a:solidFill><a:srgbClr val="{accent_color}"/></a:solidFill><a:latin typeface="{title_font}"/></a:rPr><a:t>{right_title}</a:t></a:r></a:p></p:txBody>
+</p:sp>
+<p:sp>
+  <p:nvSpPr><p:cNvPr id="5" name="LeftBody"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+  <p:spPr><a:xfrm><a:off x="{margin}" y="{body_y}"/><a:ext cx="{column_w}" cy="{body_h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>
+  <p:txBody><a:bodyPr anchor="t" lIns="91440" tIns="91440" rIns="91440" bIns="45720"/><a:lstStyle/>{left_body}</p:txBody>
+</p:sp>
+<p:sp>
+  <p:nvSpPr><p:cNvPr id="6" name="RightBody"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+  <p:spPr><a:xfrm><a:off x="{right_x}" y="{body_y}"/><a:ext cx="{column_w}" cy="{body_h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>
+  <p:txBody><a:bodyPr anchor="t" lIns="91440" tIns="91440" rIns="91440" bIns="45720"/><a:lstStyle/>{right_body}</p:txBody>
+</p:sp>
+<p:sp>
+  <p:nvSpPr><p:cNvPr id="7" name="Divider"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+  <p:spPr><a:xfrm><a:off x="{divider_x}" y="{body_y}"/><a:ext cx="12700" cy="{body_h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="{accent_color}"/></a:solidFill></p:spPr>
+</p:sp>
+<p:sp>
+  <p:nvSpPr><p:cNvPr id="8" name="SlideNum"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+  <p:spPr><a:xfrm><a:off x="8229600" y="6400800"/><a:ext cx="685800" cy="365125"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>
+  <p:txBody><a:bodyPr anchor="ctr"/><a:p><a:pPr algn="r"/><a:r><a:rPr lang="en-US" sz="1000" dirty="0"><a:solidFill><a:srgbClr val="888888"/></a:solidFill><a:latin typeface="{body_font}"/></a:rPr><a:t>{slide_num}</a:t></a:r></a:p></p:txBody>
+</p:sp>
+</p:spTree>
+</p:cSld>
+</p:sld>"#,
+        background_color = theme.background_color,
+        slide_w = SLIDE_W,
+        header_h = HEADER_H,
+        primary_color = theme.primary_color,
+        title_color = theme.title_color,
+        accent_color = theme.accent_color,
+        title_font = title_font,
+        body_font = body_font,
+        title_text = title_text,
+        margin = MARGIN,
+        left_title_y = left_title_y,
+        body_y = body_y,
+        body_h = body_h,
+        column_w = column_w,
+        right_x = right_x,
+        divider_x = divider_x,
+        left_title = left_title,
+        right_title = right_title,
+        left_body = left_body,
+        right_body = right_body,
     )
 }
 
 fn generate_pptx(path: &std::path::Path, content: &serde_json::Value) -> Result<u64, String> {
     let content: PptxContent = serde_json::from_value(content.clone())
         .map_err(|e| format!("Invalid PPTX content: {e}"))?;
+    let theme = resolve_pptx_theme(content.theme.as_ref());
 
     if content.slides.is_empty() {
         return Err("PPTX content must have at least one slide.".into());
@@ -694,9 +1371,13 @@ fn generate_pptx(path: &std::path::Path, content: &serde_json::Value) -> Result<
             .unwrap_or(i == 0 && content.slides.len() > 1);
 
         let slide_xml = if is_title_layout {
-            build_title_slide(slide, slide_num)
+            build_title_slide(slide, slide_num, &theme)
+        } else if matches!(slide.layout.as_deref(), Some("section")) {
+            build_section_slide(slide, slide_num, &theme)
+        } else if matches!(slide.layout.as_deref(), Some("comparison")) {
+            build_comparison_slide(slide, slide_num, &theme)
         } else {
-            build_content_slide(slide, slide_num)
+            build_content_slide(slide, slide_num, &theme)
         };
 
         zip.start_file(format!("ppt/slides/slide{slide_num}.xml"), options)

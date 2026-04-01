@@ -317,6 +317,11 @@ Preferred patterns:
 
 Use Markdown when it improves readability.
 
+When a workflow, architecture, dependency graph, lifecycle, or comparison would be meaningfully clearer as a visual, you may include a compact Mermaid code block.
+- Use Mermaid selectively, not by default.
+- Prefer small, readable diagrams over large dense ones.
+- After the diagram, summarize the key takeaway in prose.
+
 When the response is long or multi-step, end with:
 `> **TL;DR:** ...`
 

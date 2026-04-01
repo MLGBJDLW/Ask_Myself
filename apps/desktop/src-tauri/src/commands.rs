@@ -26,7 +26,7 @@ use ask_core::index::IndexStats;
 use ask_core::ingest::{self, EmbedResult, IngestResult};
 use ask_core::llm::{
     create_provider, model_supports_vision, CompletionRequest, ContentPart, Message,
-    ProviderConfig, ProviderType, ReasoningEffort, Role,
+    ProviderConfig, ProviderType, ReasoningEffort, Role, Usage,
 };
 use ask_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 use ask_core::models::{
@@ -1811,7 +1811,7 @@ pub async fn agent_chat_cmd(
 
     // 6. Build executor config from DB config.
     let executor_config = ExecutorConfig {
-        max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(10),
+        max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(25),
         system_prompt,
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
@@ -2007,12 +2007,69 @@ pub async fn agent_chat_cmd(
         let event_handle = handle.clone();
         let stream_conv_id = conv_id.clone();
         let event_forwarder = tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                let payload = AgentFrontendEvent {
-                    conversation_id: stream_conv_id.clone(),
-                    event,
-                };
-                let _ = event_handle.emit("agent:event", &payload);
+            let mut pending_text = String::new();
+            let mut pending_thinking = String::new();
+            let mut tick = tokio::time::interval(Duration::from_millis(16));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tick.tick().await; // consume immediate first tick
+
+            let flush_text = |pending: &mut String, conv_id: &str, handle: &AppHandle| {
+                if !pending.is_empty() {
+                    let payload = AgentFrontendEvent {
+                        conversation_id: conv_id.to_string(),
+                        event: AgentEvent::TextDelta {
+                            delta: std::mem::take(pending),
+                        },
+                    };
+                    let _ = handle.emit("agent:event", &payload);
+                }
+            };
+            let flush_thinking = |pending: &mut String, conv_id: &str, handle: &AppHandle| {
+                if !pending.is_empty() {
+                    let payload = AgentFrontendEvent {
+                        conversation_id: conv_id.to_string(),
+                        event: AgentEvent::Thinking {
+                            content: std::mem::take(pending),
+                        },
+                    };
+                    let _ = handle.emit("agent:event", &payload);
+                }
+            };
+
+            loop {
+                tokio::select! {
+                    biased;
+                    maybe_event = rx.recv() => {
+                        match maybe_event {
+                            Some(AgentEvent::TextDelta { delta }) => {
+                                pending_text.push_str(&delta);
+                            }
+                            Some(AgentEvent::Thinking { content }) => {
+                                pending_thinking.push_str(&content);
+                            }
+                            Some(other) => {
+                                // Flush any buffered deltas before forwarding
+                                flush_text(&mut pending_text, &stream_conv_id, &event_handle);
+                                flush_thinking(&mut pending_thinking, &stream_conv_id, &event_handle);
+                                let payload = AgentFrontendEvent {
+                                    conversation_id: stream_conv_id.clone(),
+                                    event: other,
+                                };
+                                let _ = event_handle.emit("agent:event", &payload);
+                            }
+                            None => {
+                                // Channel closed — flush remaining and exit
+                                flush_text(&mut pending_text, &stream_conv_id, &event_handle);
+                                flush_thinking(&mut pending_thinking, &stream_conv_id, &event_handle);
+                                break;
+                            }
+                        }
+                    }
+                    _ = tick.tick() => {
+                        flush_text(&mut pending_text, &stream_conv_id, &event_handle);
+                        flush_thinking(&mut pending_thinking, &stream_conv_id, &event_handle);
+                    }
+                }
             }
         });
 
@@ -2084,7 +2141,19 @@ pub async fn agent_chat_cmd(
                         message: "Agent execution failed unexpectedly.".to_string(),
                     },
                 };
-                let _ = handle.emit("agent:event", payload);
+                let _ = handle.emit("agent:event", &payload);
+                // Send Done so the frontend exits streaming state.
+                let done_payload = AgentFrontendEvent {
+                    conversation_id: conv_id.clone(),
+                    event: AgentEvent::Done {
+                        message: Message::text(Role::Assistant, ""),
+                        usage_total: Usage::default(),
+                        last_prompt_tokens: 0,
+                        cached: false,
+                        finish_reason: Some("error".to_string()),
+                    },
+                };
+                let _ = handle.emit("agent:event", &done_payload);
             }
             None => {
                 warn!("Agent execution timed out for conversation {conv_id}");
@@ -2094,7 +2163,19 @@ pub async fn agent_chat_cmd(
                         message: "Agent execution timed out.".to_string(),
                     },
                 };
-                let _ = handle.emit("agent:event", payload);
+                let _ = handle.emit("agent:event", &payload);
+                // Send Done so the frontend exits streaming state.
+                let done_payload = AgentFrontendEvent {
+                    conversation_id: conv_id.clone(),
+                    event: AgentEvent::Done {
+                        message: Message::text(Role::Assistant, ""),
+                        usage_total: Usage::default(),
+                        last_prompt_tokens: 0,
+                        cached: false,
+                        finish_reason: Some("timeout".to_string()),
+                    },
+                };
+                let _ = handle.emit("agent:event", &done_payload);
             }
         }
 

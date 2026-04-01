@@ -21,6 +21,7 @@ export function useTypewriter(
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const latestSourceRef = useRef(sourceText);
   const hasSource = sourceText.length > 0;
+  const shouldAnimate = isActive && sourceText.length > instantThreshold;
 
   // Keep latest source text available to the interval callback without
   // recreating the timer on every streamed chunk.
@@ -63,7 +64,7 @@ export function useTypewriter(
       return;
     }
 
-    if (latestSourceRef.current.length <= instantThreshold) {
+    if (!shouldAnimate) {
       revealIdx.current = latestSourceRef.current.length;
       setDisplayed(latestSourceRef.current);
       return;
@@ -104,7 +105,7 @@ export function useTypewriter(
         timerRef.current = null;
       }
     };
-  }, [isActive, hasSource, charsPerTick, instantThreshold, intervalMs]);
+  }, [isActive, hasSource, shouldAnimate, charsPerTick, intervalMs]);
 
   // Cleanup on unmount.
   useEffect(() => {

@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { rehypePlugins } from './markdownComponents';
 import { Check, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { markdownComponents, preprocessFilePaths, preprocessCitations, CitationContext } from './markdownComponents';
@@ -246,7 +247,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
 
               <div className="prose-chat">
                 <CitationContext.Provider value={citationLookup ?? { getCard: () => undefined }}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins} components={markdownComponents}>
                     {preprocessFilePaths(preprocessCitations(preprocessInlineCitations(preprocessChunkCitations(msg.content))))}
                   </ReactMarkdown>
                 </CitationContext.Provider>

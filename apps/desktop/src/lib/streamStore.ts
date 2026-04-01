@@ -301,6 +301,8 @@ type StoreListener = (conversationId: string) => void;
 class StreamStoreImpl {
   private _streams: Record<string, InternalStreamState> = {};
   private _listeners = new Set<StoreListener>();
+  private _pendingNotify = new Set<string>();
+  private _notifyScheduled = false;
 
   subscribe = (listener: StoreListener): (() => void) => {
     this._listeners.add(listener);
@@ -310,6 +312,23 @@ class StreamStoreImpl {
   private notify(conversationId: string): void {
     for (const listener of this._listeners) {
       listener(conversationId);
+    }
+  }
+
+  private scheduleNotify(conversationId: string): void {
+    this._pendingNotify.add(conversationId);
+    if (!this._notifyScheduled) {
+      this._notifyScheduled = true;
+      queueMicrotask(() => {
+        this._notifyScheduled = false;
+        const pending = new Set(this._pendingNotify);
+        this._pendingNotify.clear();
+        for (const id of pending) {
+          for (const listener of this._listeners) {
+            listener(id);
+          }
+        }
+      });
     }
   }
 
@@ -743,7 +762,7 @@ class StreamStoreImpl {
       }
     }
 
-    this.notify(conversationId);
+    this.scheduleNotify(conversationId);
   }
 }
 

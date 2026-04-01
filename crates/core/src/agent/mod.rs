@@ -433,7 +433,7 @@ fn default_dynamic_tool_visibility() -> bool {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 10,
+            max_iterations: 25,
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
             model: None,
             temperature: Some(0.3),

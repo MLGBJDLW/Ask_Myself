@@ -72,7 +72,28 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     return streamStore.subscribe((changedId) => {
       const convId = watchIdRef.current ?? activeConversationRef.current;
       if (!convId || changedId !== convId) return;
-      setStoreState(streamStore.getStream(convId) ?? null);
+      const next = streamStore.getStream(convId) ?? null;
+      setStoreState(prev => {
+        if (prev === null && next === null) return prev;
+        if (prev === null || next === null) return next;
+        if (
+          prev.isStreaming === next.isStreaming &&
+          prev.streamText === next.streamText &&
+          prev.thinkingText === next.thinkingText &&
+          prev.isThinking === next.isThinking &&
+          prev.streamRounds === next.streamRounds &&
+          prev.toolCalls === next.toolCalls &&
+          prev.traceEvents === next.traceEvents &&
+          prev.error === next.error &&
+          prev.lastUsage === next.lastUsage &&
+          prev.lastCached === next.lastCached &&
+          prev.finishReason === next.finishReason &&
+          prev.contextOverflow === next.contextOverflow &&
+          prev.rateLimited === next.rateLimited &&
+          prev.autoCompacted === next.autoCompacted
+        ) return prev;
+        return next;
+      });
     });
   }, []);
 

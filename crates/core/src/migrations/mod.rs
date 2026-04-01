@@ -223,6 +223,23 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation
             ON conversation_turns(conversation_id, created_at);",
     ),
+    (
+        "v033_default_skills",
+        r#"INSERT OR IGNORE INTO skills (id, name, content, enabled)
+        VALUES (
+            'builtin-visual-explanations',
+            'Visual Explanations',
+            'When a workflow, architecture, state transition, hierarchy, timeline, or comparison would be easier to understand visually, prefer a compact Mermaid code block in the final reply. Use Mermaid only when it genuinely clarifies. Favor flowcharts for workflows, sequence diagrams for request or tool exchanges, state diagrams for lifecycle changes, and graph layouts for dependencies. Keep diagrams accurate, small, and readable, then summarize the takeaway in prose under the diagram.',
+            1
+        );
+        INSERT OR IGNORE INTO skills (id, name, content, enabled)
+        VALUES (
+            'builtin-office-document-design',
+            'Office Document Design Director',
+            'When creating DOCX, XLSX, or PPTX files, decide the design brief before using tools: audience, tone, information hierarchy, and visual style. Then generate the file deliberately instead of dumping raw text. For DOCX, use cover details, section rhythm, callouts, and tables when useful. For XLSX, create a clear title band or summary area, freeze important rows, use formulas for derived metrics, and separate presentation from raw data. For PPTX, storyboard the deck, keep one message per slide, and use section or comparison layouts where they improve clarity. If the user leaves design choices open, choose polished professional defaults.',
+            1
+        );"#,
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -359,5 +376,23 @@ mod tests {
             "should have exactly {} migration records",
             total_migration_count()
         );
+    }
+
+    #[test]
+    fn test_default_skills_seeded() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+
+        let mut stmt = conn
+            .prepare("SELECT id, enabled FROM skills ORDER BY id")
+            .unwrap();
+        let rows: Vec<(String, i32)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .filter_map(|row| row.ok())
+            .collect();
+
+        assert!(rows.iter().any(|(id, enabled)| id == "builtin-office-document-design" && *enabled == 1));
+        assert!(rows.iter().any(|(id, enabled)| id == "builtin-visual-explanations" && *enabled == 1));
     }
 }

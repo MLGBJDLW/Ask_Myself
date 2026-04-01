@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useRef,
   useEffect,
   useLayoutEffect,
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { rehypePlugins } from "./markdownComponents";
 import { useTranslation } from "../../i18n";
 import { useTypewriter } from "../../lib/useTypewriter";
 import { hasTimeGap } from "../../lib/relativeTime";
@@ -396,10 +398,11 @@ export function ChatMessages({
       return;
     }
 
+    const throttleMs = isStreaming ? 150 : 60;
     markdownThrottleTimerRef.current = setTimeout(() => {
       markdownThrottleTimerRef.current = null;
       setDebouncedMarkdown(latestDisplayedTextRef.current);
-    }, 60);
+    }, throttleMs);
   }, [displayedText, isStreaming, shouldReduceMotion]);
 
   useEffect(
@@ -813,13 +816,122 @@ export function ChatMessages({
     });
   }, [visibleTraceEvents]);
 
-  const streamTraceActive = useMemo(() => {
+  /**
+   * Build ThinkingSection[] for a single streaming round.
+   *
+   * `streamStore` closes the previous visible reply when the next tool phase
+   * starts, so a round's `reply` belongs before that round's thinking/tool
+   * trace in the rendered timeline.
+   */
+  const buildRoundSections = useCallback(
+    (round: StreamRoundEvent): ThinkingSection[] => {
+      const sections: ThinkingSection[] = [];
+      if (round.thinking?.trim()) {
+        sections.push({ text: round.thinking });
+      }
+      for (const tc of round.toolCalls) {
+        sections.push({
+          text: "",
+          node: (
+            <ToolCallCard
+              key={`round-tool-${round.id}-${tc.callId}`}
+              toolName={tc.toolName}
+              arguments={tc.arguments}
+              status={tc.status}
+              content={tc.content}
+              isError={tc.isError}
+              artifacts={tc.artifacts}
+              trace
+            />
+          ),
+        });
+      }
+      return sections;
+    },
+    [],
+  );
+
+  /**
+   * Trace events that are NOT already captured inside a completed round.
+   * We find the last tool trace event whose callId belongs to a round,
+   * then treat everything after that index as "current / in-progress".
+   */
+  const currentThinkingSections = useMemo<ThinkingSection[]>(() => {
+    if (streamRounds.length === 0) return streamTraceSections;
+
+    const roundCallIds = new Set<string>();
+    for (const round of streamRounds) {
+      for (const tc of round.toolCalls) {
+        roundCallIds.add(tc.callId);
+      }
+    }
+
+    // Find last trace event index belonging to a completed round
+    let cutoffIdx = -1;
+    for (let i = visibleTraceEvents.length - 1; i >= 0; i--) {
+      const ev = visibleTraceEvents[i];
+      if (ev.kind === "tool" && roundCallIds.has(ev.toolCall.callId)) {
+        cutoffIdx = i;
+        break;
+      }
+    }
+
+    const currentEvents = visibleTraceEvents.slice(cutoffIdx + 1);
+    return currentEvents.flatMap((event) => {
+      if (event.kind === "thinking") {
+        return event.text.trim().length > 0 ? [{ text: event.text }] : [];
+      }
+      if (event.kind === "tool") {
+        return [
+          {
+            text: "",
+            node: (
+              <ToolCallCard
+                key={`stream-trace-${event.id}`}
+                toolName={event.toolCall.toolName}
+                arguments={event.toolCall.arguments}
+                status={event.toolCall.status}
+                content={event.toolCall.content}
+                isError={event.toolCall.isError}
+                artifacts={event.toolCall.artifacts}
+                trace
+              />
+            ),
+          },
+        ];
+      }
+      return [
+        {
+          text: "",
+          node: (
+            <TraceStatusRow
+              key={`stream-status-${event.id}`}
+              text={event.text}
+              tone={event.tone}
+            />
+          ),
+        },
+      ];
+    });
+  }, [visibleTraceEvents, streamRounds, streamTraceSections]);
+
+  const currentTraceActive = useMemo(() => {
     if (!isStreaming) return false;
     if (isThinking || thinkingText.trim().length > 0) return true;
+    // Check if any tool in currentThinkingSections is still running
+    const roundCallIds = new Set<string>();
+    for (const round of streamRounds) {
+      for (const tc of round.toolCalls) {
+        roundCallIds.add(tc.callId);
+      }
+    }
     return traceEvents.some(
-      (event) => event.kind === "tool" && event.toolCall.status === "running",
+      (event) =>
+        event.kind === "tool" &&
+        event.toolCall.status === "running" &&
+        !roundCallIds.has(event.toolCall.callId),
     );
-  }, [isStreaming, isThinking, thinkingText, traceEvents]);
+  }, [isStreaming, isThinking, thinkingText, traceEvents, streamRounds]);
 
   const getScrollMetrics = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -905,7 +1017,7 @@ export function ChatMessages({
     scrollToContainerBottom("auto");
   }, [
     messages,
-    streamText,
+    debouncedMarkdown,
     streamRounds,
     traceEvents,
     toolCalls,
@@ -1165,7 +1277,73 @@ export function ChatMessages({
         })}
       </AnimatePresence>
 
-      {streamTraceSections.length > 0 && (
+      {/* ── Interleaved per-round rendering ─────────────────────────── */}
+      {shouldRenderStreamRounds &&
+        streamRounds.map((round) => {
+          const roundSections = buildRoundSections(round);
+          const hasThinking = roundSections.length > 0;
+          const hasReply = round.reply.trim().length > 0;
+          if (!hasThinking && !hasReply) return null;
+          return (
+            <Fragment key={`round-${round.id}`}>
+              {hasReply && (
+                <motion.div
+                  initial={
+                    shouldReduceMotion || isStreaming ? false : { opacity: 0 }
+                  }
+                  animate={{ opacity: 1 }}
+                  layout={!shouldReduceMotion}
+                  transition={
+                    shouldReduceMotion ? INSTANT_TRANSITION : undefined
+                  }
+                  className="flex justify-start mb-4"
+                >
+                  <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
+                    <div className="prose-chat">
+                      <CitationContext.Provider
+                        value={streamingCitationLookup}
+                      >
+                        <ReactMarkdown
+                          remarkPlugins={remarkPlugins}
+                          rehypePlugins={rehypePlugins}
+                          components={markdownComponents}
+                        >
+                          {preprocessStreamingMarkdown(round.reply)}
+                        </ReactMarkdown>
+                      </CitationContext.Provider>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+              {hasThinking && (
+                <motion.div
+                  initial={
+                    shouldReduceMotion || isStreaming ? false : { opacity: 0 }
+                  }
+                  animate={{ opacity: 1 }}
+                  layout={!shouldReduceMotion}
+                  transition={
+                    shouldReduceMotion ? INSTANT_TRANSITION : undefined
+                  }
+                  className="flex justify-start mb-3"
+                >
+                  <div className="max-w-[80%]">
+                    <ThinkingBlock
+                      content=""
+                      sections={roundSections}
+                      isStreaming={false}
+                      defaultExpanded
+                      collapseOnFinish={false}
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </Fragment>
+          );
+        })}
+
+      {/* ── Current in-progress thinking (not yet in a round) ──────── */}
+      {currentThinkingSections.length > 0 && (
         <motion.div
           initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -1176,43 +1354,14 @@ export function ChatMessages({
           <div className="max-w-[80%]">
             <ThinkingBlock
               content=""
-              sections={streamTraceSections}
-              isStreaming={streamTraceActive}
+              sections={currentThinkingSections}
+              isStreaming={currentTraceActive}
               defaultExpanded
               collapseOnFinish={false}
             />
           </div>
         </motion.div>
       )}
-
-      {shouldRenderStreamRounds &&
-        streamRounds
-          .filter((round) => round.reply.trim().length > 0)
-          .map((round) => (
-            <motion.div
-              key={`reply-${round.id}`}
-              initial={
-                shouldReduceMotion || isStreaming ? false : { opacity: 0 }
-              }
-              animate={{ opacity: 1 }}
-              layout={!shouldReduceMotion}
-              transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
-              className="flex justify-start mb-4"
-            >
-              <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
-                <div className="prose-chat">
-                  <CitationContext.Provider value={streamingCitationLookup}>
-                    <ReactMarkdown
-                      remarkPlugins={remarkPlugins}
-                      components={markdownComponents}
-                    >
-                      {preprocessStreamingMarkdown(round.reply)}
-                    </ReactMarkdown>
-                  </CitationContext.Provider>
-                </div>
-              </div>
-            </motion.div>
-          ))}
 
       {shouldShowStreamingText && streamText.trim().length > 0 && (
         <motion.div
@@ -1231,6 +1380,7 @@ export function ChatMessages({
               <CitationContext.Provider value={streamingCitationLookup}>
                 <ReactMarkdown
                   remarkPlugins={remarkPlugins}
+                  rehypePlugins={rehypePlugins}
                   components={markdownComponents}
                 >
                   {processedMarkdown}
