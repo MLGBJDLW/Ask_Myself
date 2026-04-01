@@ -1,22 +1,55 @@
-import { useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback } from 'react';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { MessageCircle, ChevronDown, AlertCircle, RotateCcw, X, Search, FileText, Link2, HelpCircle } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { useTranslation } from '../../i18n';
-import { useTypewriter } from '../../lib/useTypewriter';
-import { hasTimeGap } from '../../lib/relativeTime';
-import { appTimeMs } from '../../lib/dateTime';
-import { preprocessChunkCitations, buildCitationMap } from '../../lib/citationParser';
-import type { CitationCardData } from '../../lib/citationParser';
-import type { StreamRoundEvent, ToolCallEvent, TraceEvent } from '../../lib/useAgentStream';
-import { ToolCallCard } from './ToolCallCard';
-import { ThinkingBlock } from './ThinkingBlock';
-import type { ThinkingSection } from './ThinkingBlock';
-import { markdownComponents, preprocessFilePaths, preprocessCitations, CitationContext } from './markdownComponents';
-import { MessageBubble } from './MessageBubble';
-import { Skeleton } from '../ui/Skeleton';
-import type { ArtifactPayload, ConversationMessage, ConversationTurn } from '../../types/conversation';
+import {
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  useCallback,
+} from "react";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import {
+  MessageCircle,
+  ChevronDown,
+  AlertCircle,
+  RotateCcw,
+  X,
+  Search,
+  FileText,
+  Link2,
+  HelpCircle,
+} from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { useTranslation } from "../../i18n";
+import { useTypewriter } from "../../lib/useTypewriter";
+import { hasTimeGap } from "../../lib/relativeTime";
+import { appTimeMs } from "../../lib/dateTime";
+import {
+  preprocessChunkCitations,
+  buildCitationMap,
+} from "../../lib/citationParser";
+import type { CitationCardData } from "../../lib/citationParser";
+import type {
+  StreamRoundEvent,
+  ToolCallEvent,
+  TraceEvent,
+} from "../../lib/useAgentStream";
+import { ToolCallCard } from "./ToolCallCard";
+import { ThinkingBlock } from "./ThinkingBlock";
+import type { ThinkingSection } from "./ThinkingBlock";
+import {
+  markdownComponents,
+  preprocessFilePaths,
+  preprocessCitations,
+  CitationContext,
+} from "./markdownComponents";
+import { MessageBubble } from "./MessageBubble";
+import { Skeleton } from "../ui/Skeleton";
+import type {
+  ArtifactPayload,
+  ConversationMessage,
+  ConversationTurn,
+} from "../../types/conversation";
 
 interface ChatMessagesProps {
   messages: ConversationMessage[];
@@ -38,11 +71,31 @@ interface ChatMessagesProps {
   onSuggestionClick?: (text: string) => void;
 }
 
-const SUGGESTIONS: { icon: typeof Search; labelKey: keyof import('../../i18n').TranslationKeys; promptKey: keyof import('../../i18n').TranslationKeys }[] = [
-  { icon: Search, labelKey: 'chat.suggestions.search', promptKey: 'chat.suggestions.search.prompt' },
-  { icon: FileText, labelKey: 'chat.suggestions.summarize', promptKey: 'chat.suggestions.summarize.prompt' },
-  { icon: Link2, labelKey: 'chat.suggestions.connections', promptKey: 'chat.suggestions.connections.prompt' },
-  { icon: HelpCircle, labelKey: 'chat.suggestions.question', promptKey: 'chat.suggestions.question.prompt' },
+const SUGGESTIONS: {
+  icon: typeof Search;
+  labelKey: keyof import("../../i18n").TranslationKeys;
+  promptKey: keyof import("../../i18n").TranslationKeys;
+}[] = [
+  {
+    icon: Search,
+    labelKey: "chat.suggestions.search",
+    promptKey: "chat.suggestions.search.prompt",
+  },
+  {
+    icon: FileText,
+    labelKey: "chat.suggestions.summarize",
+    promptKey: "chat.suggestions.summarize.prompt",
+  },
+  {
+    icon: Link2,
+    labelKey: "chat.suggestions.connections",
+    promptKey: "chat.suggestions.connections.prompt",
+  },
+  {
+    icon: HelpCircle,
+    labelKey: "chat.suggestions.question",
+    promptKey: "chat.suggestions.question.prompt",
+  },
 ];
 
 const INSTANT_TRANSITION = { duration: 0 };
@@ -50,49 +103,65 @@ const NEAR_BOTTOM_THRESHOLD = 96;
 const FOLLOW_RELEASE_THRESHOLD = 160;
 
 function normalizeThinking(content: string): string {
-  return content.replace(/\r\n/g, '\n').trim();
+  return content.replace(/\r\n/g, "\n").trim();
 }
 
-function hasTraceToolCalls<T extends { toolName?: string; name?: string }>(toolCalls: T[]): boolean {
-  return toolCalls.some(tc => (tc.toolName ?? tc.name) !== 'update_plan');
+function hasTraceToolCalls<T extends { toolName?: string; name?: string }>(
+  toolCalls: T[],
+): boolean {
+  return toolCalls.some((tc) => (tc.toolName ?? tc.name) !== "update_plan");
 }
 
 interface PersistedTraceToolCall {
   callId: string;
   toolName: string;
   arguments: string;
-  status: 'running' | 'done' | 'error';
+  status: "running" | "done" | "error";
   content?: string;
   isError?: boolean;
   artifacts?: ArtifactPayload;
 }
 
 type PersistedTraceItem =
-  | { kind: 'thinking'; text: string }
-  | { kind: 'tool'; toolCall: PersistedTraceToolCall }
-  | { kind: 'status'; text: string; tone?: 'muted' | 'success' | 'error' };
+  | { kind: "thinking"; text: string }
+  | { kind: "tool"; toolCall: PersistedTraceToolCall }
+  | { kind: "status"; text: string; tone?: "muted" | "success" | "error" };
 
 function formatRouteKind(routeKind: string): string {
   return routeKind
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/^./, (char) => char.toUpperCase());
+}
+
+function shouldHideRouteKind(routeKind: string | null | undefined): boolean {
+  return (
+    (routeKind ?? "").replace(/\s+/g, "").toLowerCase() === "directresponse"
+  );
+}
+
+function shouldHideTraceStatus(text: string | null | undefined): boolean {
+  const normalized = (text ?? "").replace(/\s+/g, "").toLowerCase();
+  return (
+    normalized === "routeselected:directresponse" ||
+    normalized === "route:directresponse"
+  );
 }
 
 function formatTurnStatus(status: string): string {
   switch (status) {
-    case 'success':
-      return 'Success';
-    case 'cached':
-      return 'Cached';
-    case 'cancelled':
-      return 'Cancelled';
-    case 'max_iterations':
-      return 'Max iterations';
-    case 'error':
-      return 'Error';
-    case 'running':
+    case "success":
+      return "Success";
+    case "cached":
+      return "Cached";
+    case "cancelled":
+      return "Cancelled";
+    case "max_iterations":
+      return "Max iterations";
+    case "error":
+      return "Error";
+    case "running":
     default:
-      return 'Running';
+      return "Running";
   }
 }
 
@@ -100,47 +169,78 @@ function formatTurnDuration(turn: ConversationTurn): string | null {
   if (!turn.finishedAt) return null;
   const startedAt = appTimeMs(turn.createdAt);
   const finishedAt = appTimeMs(turn.finishedAt);
-  if (Number.isNaN(startedAt) || Number.isNaN(finishedAt) || finishedAt < startedAt) return null;
+  if (
+    Number.isNaN(startedAt) ||
+    Number.isNaN(finishedAt) ||
+    finishedAt < startedAt
+  )
+    return null;
   const seconds = Math.max(0, Math.round((finishedAt - startedAt) / 1000));
   return `${seconds}s`;
 }
 
-function extractPersistedTraceItems(artifacts: ConversationMessage['artifacts']): PersistedTraceItem[] | null {
-  if (!artifacts || Array.isArray(artifacts) || typeof artifacts !== 'object') return null;
+function extractPersistedTraceItems(
+  artifacts: ConversationMessage["artifacts"],
+): PersistedTraceItem[] | null {
+  if (!artifacts || Array.isArray(artifacts) || typeof artifacts !== "object")
+    return null;
   const record = artifacts as Record<string, unknown>;
-  if (record.kind !== 'traceTimeline' || !Array.isArray(record.items)) return null;
+  if (record.kind !== "traceTimeline" || !Array.isArray(record.items))
+    return null;
 
   const items: PersistedTraceItem[] = [];
   for (const rawItem of record.items) {
-    if (!rawItem || typeof rawItem !== 'object') continue;
+    if (!rawItem || typeof rawItem !== "object") continue;
     const item = rawItem as Record<string, unknown>;
-    if (item.kind === 'thinking' && typeof item.text === 'string') {
-      items.push({ kind: 'thinking', text: item.text });
+    if (item.kind === "thinking" && typeof item.text === "string") {
+      items.push({ kind: "thinking", text: item.text });
       continue;
     }
-    if (item.kind === 'status' && typeof item.text === 'string') {
+    if (item.kind === "status" && typeof item.text === "string") {
       items.push({
-        kind: 'status',
+        kind: "status",
         text: item.text,
-        tone: item.tone === 'success' || item.tone === 'error' ? item.tone : 'muted',
+        tone:
+          item.tone === "success" || item.tone === "error"
+            ? item.tone
+            : "muted",
       });
       continue;
     }
-    if (item.kind === 'tool' && item.toolCall && typeof item.toolCall === 'object') {
+    if (
+      item.kind === "tool" &&
+      item.toolCall &&
+      typeof item.toolCall === "object"
+    ) {
       const toolCall = item.toolCall as Record<string, unknown>;
-      if (typeof toolCall.callId !== 'string' || typeof toolCall.toolName !== 'string') continue;
+      if (
+        typeof toolCall.callId !== "string" ||
+        typeof toolCall.toolName !== "string"
+      )
+        continue;
       items.push({
-        kind: 'tool',
+        kind: "tool",
         toolCall: {
           callId: toolCall.callId,
           toolName: toolCall.toolName,
-          arguments: typeof toolCall.arguments === 'string' ? toolCall.arguments : '',
-          status: toolCall.status === 'error' ? 'error' : toolCall.status === 'running' ? 'running' : 'done',
-          content: typeof toolCall.content === 'string' ? toolCall.content : undefined,
-          isError: typeof toolCall.isError === 'boolean' ? toolCall.isError : undefined,
-          artifacts: toolCall.artifacts && typeof toolCall.artifacts === 'object'
-            ? toolCall.artifacts as ArtifactPayload
-            : undefined,
+          arguments:
+            typeof toolCall.arguments === "string" ? toolCall.arguments : "",
+          status:
+            toolCall.status === "error"
+              ? "error"
+              : toolCall.status === "running"
+                ? "running"
+                : "done",
+          content:
+            typeof toolCall.content === "string" ? toolCall.content : undefined,
+          isError:
+            typeof toolCall.isError === "boolean"
+              ? toolCall.isError
+              : undefined,
+          artifacts:
+            toolCall.artifacts && typeof toolCall.artifacts === "object"
+              ? (toolCall.artifacts as ArtifactPayload)
+              : undefined,
         },
       });
     }
@@ -150,28 +250,41 @@ function extractPersistedTraceItems(artifacts: ConversationMessage['artifacts'])
 }
 
 function extractTurnTrace(
-  trace: ConversationTurn['trace'],
+  trace: ConversationTurn["trace"],
 ): { routeKind?: string; items: PersistedTraceItem[] } | null {
-  if (!trace || Array.isArray(trace) || typeof trace !== 'object') return null;
+  if (!trace || Array.isArray(trace) || typeof trace !== "object") return null;
   const record = trace as Record<string, unknown>;
-  if (record.kind !== 'turnTrace' || !Array.isArray(record.items)) return null;
-  const items = extractPersistedTraceItems({ kind: 'traceTimeline', items: record.items } as unknown as ConversationMessage['artifacts']);
+  if (record.kind !== "turnTrace" || !Array.isArray(record.items)) return null;
+  const items = extractPersistedTraceItems({
+    kind: "traceTimeline",
+    items: record.items,
+  } as unknown as ConversationMessage["artifacts"]);
   if (!items || items.length === 0) return null;
   return {
-    routeKind: typeof record.routeKind === 'string' ? record.routeKind : undefined,
+    routeKind:
+      typeof record.routeKind === "string" ? record.routeKind : undefined,
     items,
   };
 }
 
-function TraceStatusRow({ text, tone = 'muted' }: { text: string; tone?: 'muted' | 'success' | 'error' }) {
-  const toneClass = tone === 'error'
-    ? 'border-danger/25 bg-danger/8 text-danger'
-    : tone === 'success'
-      ? 'border-success/25 bg-success/8 text-success'
-      : 'border-border/45 bg-surface-0/25 text-text-tertiary';
+function TraceStatusRow({
+  text,
+  tone = "muted",
+}: {
+  text: string;
+  tone?: "muted" | "success" | "error";
+}) {
+  const toneClass =
+    tone === "error"
+      ? "border-danger/25 bg-danger/8 text-danger"
+      : tone === "success"
+        ? "border-success/25 bg-success/8 text-success"
+        : "border-border/45 bg-surface-0/25 text-text-tertiary";
 
   return (
-    <div className={`rounded-md border px-3 py-2 text-[11px] leading-relaxed ${toneClass}`}>
+    <div
+      className={`rounded-md border px-3 py-2 text-[11px] leading-relaxed ${toneClass}`}
+    >
       {text}
     </div>
   );
@@ -212,10 +325,16 @@ export function ChatMessages({
   useEffect(() => {
     const ids: string[] = [];
     for (const tc of toolCalls) {
-      if (tc.status !== 'done' || !tc.artifacts) continue;
-      const arr = Array.isArray(tc.artifacts) ? tc.artifacts : Object.values(tc.artifacts);
+      if (tc.status !== "done" || !tc.artifacts) continue;
+      const arr = Array.isArray(tc.artifacts)
+        ? tc.artifacts
+        : Object.values(tc.artifacts);
       for (const item of arr) {
-        if (item && typeof item === 'object' && 'chunkId' in (item as Record<string, unknown>)) {
+        if (
+          item &&
+          typeof item === "object" &&
+          "chunkId" in (item as Record<string, unknown>)
+        ) {
           ids.push((item as Record<string, unknown>).chunkId as string);
         }
       }
@@ -227,10 +346,15 @@ export function ChatMessages({
 
   const prevMessagesLenRef = useRef(messages.length);
   useEffect(() => {
-    if (messages.length > prevMessagesLenRef.current && pendingChunkIdsRef.current.length > 0) {
+    if (
+      messages.length > prevMessagesLenRef.current &&
+      pendingChunkIdsRef.current.length > 0
+    ) {
       for (let i = messages.length - 1; i >= 0; i -= 1) {
-        if (messages[i].role === 'assistant') {
-          chunkIdCacheRef.current.set(messages[i].id, [...pendingChunkIdsRef.current]);
+        if (messages[i].role === "assistant") {
+          chunkIdCacheRef.current.set(messages[i].id, [
+            ...pendingChunkIdsRef.current,
+          ]);
           pendingChunkIdsRef.current = [];
           break;
         }
@@ -239,10 +363,13 @@ export function ChatMessages({
     prevMessagesLenRef.current = messages.length;
   }, [messages]);
 
-  const typewriterText = useTypewriter(streamText, isStreaming, { charsPerTick: 5, intervalMs: 30 });
+  const typewriterText = useTypewriter(streamText, isStreaming, {
+    charsPerTick: 5,
+    intervalMs: 30,
+  });
   const displayedText = shouldReduceMotion ? streamText : typewriterText;
 
-  const [debouncedMarkdown, setDebouncedMarkdown] = useState('');
+  const [debouncedMarkdown, setDebouncedMarkdown] = useState("");
   useEffect(() => {
     if (shouldReduceMotion || !isStreaming || displayedText.length <= 240) {
       setDebouncedMarkdown(displayedText);
@@ -255,12 +382,18 @@ export function ChatMessages({
   const remarkPlugins = useMemo(() => [remarkGfm], []);
 
   const processedMarkdown = useMemo(
-    () => preprocessFilePaths(preprocessCitations(preprocessChunkCitations(debouncedMarkdown))),
+    () =>
+      preprocessFilePaths(
+        preprocessCitations(preprocessChunkCitations(debouncedMarkdown)),
+      ),
     [debouncedMarkdown],
   );
 
   const preprocessStreamingMarkdown = useCallback(
-    (content: string) => preprocessFilePaths(preprocessCitations(preprocessChunkCitations(content))),
+    (content: string) =>
+      preprocessFilePaths(
+        preprocessCitations(preprocessChunkCitations(content)),
+      ),
     [],
   );
 
@@ -273,10 +406,10 @@ export function ChatMessages({
     const map = new Map<number, ConversationMessage[]>();
     for (let i = 0; i < messages.length; i += 1) {
       const msg = messages[i];
-      if (msg.role !== 'assistant' || msg.toolCalls.length === 0) continue;
+      if (msg.role !== "assistant" || msg.toolCalls.length === 0) continue;
       const toolResults: ConversationMessage[] = [];
       for (let j = i + 1; j < messages.length; j += 1) {
-        if (messages[j].role !== 'tool') break;
+        if (messages[j].role !== "tool") break;
         toolResults.push(messages[j]);
       }
       map.set(i, toolResults);
@@ -285,10 +418,13 @@ export function ChatMessages({
   }, [messages]);
 
   const messageCitationLookups = useMemo(() => {
-    const map = new Map<number, { getCard: (id: string) => CitationCardData | undefined }>();
+    const map = new Map<
+      number,
+      { getCard: (id: string) => CitationCardData | undefined }
+    >();
     for (const [idx, toolResults] of messageToolCalls.entries()) {
       const citationMap = buildCitationMap(
-        toolResults.map(result => ({ artifacts: result.artifacts })),
+        toolResults.map((result) => ({ artifacts: result.artifacts })),
       );
       map.set(idx, { getCard: (id: string) => citationMap.get(id) });
     }
@@ -301,27 +437,34 @@ export function ChatMessages({
 
     for (let i = 0; i < messages.length; i += 1) {
       const msg = messages[i];
-      if (msg.role === 'user') {
+      if (msg.role === "user") {
         lastUserIdx = i;
         continue;
       }
-      if (msg.role !== 'assistant' || !msg.thinking) continue;
+      if (msg.role !== "assistant" || !msg.thinking) continue;
 
       let renderableThinking = normalizeThinking(msg.thinking);
       if (msg.toolCalls.length === 0) {
         const priorToolRoundThinking: string[] = [];
         for (let j = lastUserIdx + 1; j < i; j += 1) {
           const prev = messages[j];
-          if (prev.role !== 'assistant' || !prev.thinking || prev.toolCalls.length === 0) continue;
+          if (
+            prev.role !== "assistant" ||
+            !prev.thinking ||
+            prev.toolCalls.length === 0
+          )
+            continue;
           const segment = normalizeThinking(prev.thinking);
           if (segment) {
             priorToolRoundThinking.push(segment);
           }
         }
 
-        const knownPrefix = priorToolRoundThinking.join('\n').trim();
+        const knownPrefix = priorToolRoundThinking.join("\n").trim();
         if (knownPrefix && renderableThinking.startsWith(knownPrefix)) {
-          renderableThinking = renderableThinking.slice(knownPrefix.length).replace(/^\s+/, '');
+          renderableThinking = renderableThinking
+            .slice(knownPrefix.length)
+            .replace(/^\s+/, "");
         }
       }
 
@@ -342,7 +485,10 @@ export function ChatMessages({
   }, [messages]);
 
   const turnRenderMap = useMemo(() => {
-    const anchors = new Map<number, { turn: ConversationTurn; assistantIdx: number | null }>();
+    const anchors = new Map<
+      number,
+      { turn: ConversationTurn; assistantIdx: number | null }
+    >();
     const members = new Set<number>();
 
     for (const turn of turns) {
@@ -362,19 +508,23 @@ export function ChatMessages({
   }, [messageIndexById, turns]);
 
   const messageTraceGroups = useMemo(() => {
-    const map = new Map<number, { type: 'anchor'; sections: ThinkingSection[] } | { type: 'member' }>();
+    const map = new Map<
+      number,
+      { type: "anchor"; sections: ThinkingSection[] } | { type: "member" }
+    >();
 
     for (const turn of turns) {
       const trace = extractTurnTrace(turn.trace);
-      if (!trace || trace.items.length === 0 || !turn.assistantMessageId) continue;
+      if (!trace || trace.items.length === 0 || !turn.assistantMessageId)
+        continue;
       const anchorIdx = messageIndexById.get(turn.assistantMessageId);
       if (anchorIdx == null) continue;
 
       const sections: ThinkingSection[] = [];
 
-      if (trace.routeKind) {
+      if (trace.routeKind && !shouldHideRouteKind(trace.routeKind)) {
         sections.push({
-          text: '',
+          text: "",
           node: (
             <TraceStatusRow
               key={`turn-route-${turn.id}`}
@@ -387,50 +537,61 @@ export function ChatMessages({
 
       const duration = formatTurnDuration(turn);
       sections.push({
-        text: '',
+        text: "",
         node: (
           <TraceStatusRow
             key={`turn-status-${turn.id}`}
-            text={`Status: ${formatTurnStatus(turn.status)}${duration ? ` · ${duration}` : ''}`}
-            tone={turn.status === 'error' ? 'error' : turn.status === 'success' || turn.status === 'cached' ? 'success' : 'muted'}
+            text={`Status: ${formatTurnStatus(turn.status)}${duration ? ` · ${duration}` : ""}`}
+            tone={
+              turn.status === "error"
+                ? "error"
+                : turn.status === "success" || turn.status === "cached"
+                  ? "success"
+                  : "muted"
+            }
           />
         ),
       });
 
-      sections.push(...trace.items.map((item, itemIdx) => {
-        if (item.kind === 'thinking') {
-          return { text: item.text };
-        }
-        if (item.kind === 'status') {
+      sections.push(
+        ...trace.items.flatMap((item, itemIdx) => {
+          if (item.kind === "thinking") {
+            return { text: item.text };
+          }
+          if (item.kind === "status") {
+            if (shouldHideTraceStatus(item.text)) {
+              return [];
+            }
+            return {
+              text: "",
+              node: (
+                <TraceStatusRow
+                  key={`turn-status-${turn.id}-${itemIdx}`}
+                  text={item.text}
+                  tone={item.tone}
+                />
+              ),
+            };
+          }
           return {
-            text: '',
+            text: "",
             node: (
-              <TraceStatusRow
-                key={`turn-status-${turn.id}-${itemIdx}`}
-                text={item.text}
-                tone={item.tone}
+              <ToolCallCard
+                key={`turn-tool-${turn.id}-${item.toolCall.callId}-${itemIdx}`}
+                toolName={item.toolCall.toolName}
+                arguments={item.toolCall.arguments}
+                status={item.toolCall.status}
+                content={item.toolCall.content}
+                isError={item.toolCall.isError}
+                artifacts={item.toolCall.artifacts}
+                trace
               />
             ),
           };
-        }
-        return {
-          text: '',
-          node: (
-            <ToolCallCard
-              key={`turn-tool-${turn.id}-${item.toolCall.callId}-${itemIdx}`}
-              toolName={item.toolCall.toolName}
-              arguments={item.toolCall.arguments}
-              status={item.toolCall.status}
-              content={item.toolCall.content}
-              isError={item.toolCall.isError}
-              artifacts={item.toolCall.artifacts}
-              trace
-            />
-            ),
-          };
-      }));
+        }),
+      );
 
-      map.set(anchorIdx, { type: 'anchor', sections });
+      map.set(anchorIdx, { type: "anchor", sections });
     }
 
     let currentGroup: number[] = [];
@@ -443,8 +604,11 @@ export function ChatMessages({
         return;
       }
 
-      const persistedTraceCarrierIdx = [...currentGroup].reverse().find((idx) =>
-        Boolean(extractPersistedTraceItems(messages[idx].artifacts)));
+      const persistedTraceCarrierIdx = [...currentGroup]
+        .reverse()
+        .find((idx) =>
+          Boolean(extractPersistedTraceItems(messages[idx].artifacts)),
+        );
 
       const tracedIndexes = currentGroup.filter((idx) => {
         const msg = messages[idx];
@@ -456,44 +620,52 @@ export function ChatMessages({
       }
 
       if (persistedTraceCarrierIdx != null) {
-        const persistedItems = extractPersistedTraceItems(messages[persistedTraceCarrierIdx].artifacts) ?? [];
-        const sections: ThinkingSection[] = persistedItems.map((item, itemIdx) => {
-          if (item.kind === 'thinking') {
-            return { text: item.text };
-          }
-          if (item.kind === 'status') {
+        const persistedItems =
+          extractPersistedTraceItems(
+            messages[persistedTraceCarrierIdx].artifacts,
+          ) ?? [];
+        const sections: ThinkingSection[] = persistedItems.flatMap(
+          (item, itemIdx) => {
+            if (item.kind === "thinking") {
+              return { text: item.text };
+            }
+            if (item.kind === "status") {
+              if (shouldHideTraceStatus(item.text)) {
+                return [];
+              }
+              return {
+                text: "",
+                node: (
+                  <TraceStatusRow
+                    key={`persisted-status-${messages[persistedTraceCarrierIdx].id}-${itemIdx}`}
+                    text={item.text}
+                    tone={item.tone}
+                  />
+                ),
+              };
+            }
             return {
-              text: '',
+              text: "",
               node: (
-                <TraceStatusRow
-                  key={`persisted-status-${messages[persistedTraceCarrierIdx].id}-${itemIdx}`}
-                  text={item.text}
-                  tone={item.tone}
+                <ToolCallCard
+                  key={`persisted-tool-${messages[persistedTraceCarrierIdx].id}-${item.toolCall.callId}-${itemIdx}`}
+                  toolName={item.toolCall.toolName}
+                  arguments={item.toolCall.arguments}
+                  status={item.toolCall.status}
+                  content={item.toolCall.content}
+                  isError={item.toolCall.isError}
+                  artifacts={item.toolCall.artifacts}
+                  trace
                 />
               ),
             };
-          }
-          return {
-            text: '',
-            node: (
-              <ToolCallCard
-                key={`persisted-tool-${messages[persistedTraceCarrierIdx].id}-${item.toolCall.callId}-${itemIdx}`}
-                toolName={item.toolCall.toolName}
-                arguments={item.toolCall.arguments}
-                status={item.toolCall.status}
-                content={item.toolCall.content}
-                isError={item.toolCall.isError}
-                artifacts={item.toolCall.artifacts}
-                trace
-              />
-            ),
-          };
-        });
+          },
+        );
 
-        map.set(persistedTraceCarrierIdx, { type: 'anchor', sections });
+        map.set(persistedTraceCarrierIdx, { type: "anchor", sections });
         for (const idx of tracedIndexes) {
           if (idx !== persistedTraceCarrierIdx) {
-            map.set(idx, { type: 'member' });
+            map.set(idx, { type: "member" });
           }
         }
         currentGroup = [];
@@ -502,19 +674,19 @@ export function ChatMessages({
 
       const sections: ThinkingSection[] = tracedIndexes.map((idx) => {
         const msg = messages[idx];
-        const thinking = messageThinkingText.get(idx) ?? '';
+        const thinking = messageThinkingText.get(idx) ?? "";
         const renderedToolCalls = msg.toolCalls
-          .filter(tc => tc.name !== 'update_plan')
+          .filter((tc) => tc.name !== "update_plan")
           .map((tc, toolIdx) => {
-            const toolResult = messageToolCalls.get(idx)?.find(
-              (tr) => tr.toolCallId === tc.id,
-            );
+            const toolResult = messageToolCalls
+              .get(idx)
+              ?.find((tr) => tr.toolCallId === tc.id);
             return (
               <ToolCallCard
                 key={`persisted-trace-${msg.id}-${tc.id || tc.name || toolIdx}`}
-                toolName={tc.name || 'unknown_tool'}
-                arguments={tc.arguments || ''}
-                status={toolResult ? 'done' : 'running'}
+                toolName={tc.name || "unknown_tool"}
+                arguments={tc.arguments || ""}
+                status={toolResult ? "done" : "running"}
                 content={toolResult?.content}
                 artifacts={toolResult?.artifacts ?? undefined}
                 trace
@@ -524,71 +696,96 @@ export function ChatMessages({
 
         return {
           text: thinking,
-          node: renderedToolCalls.length > 0 ? (
-            <div className="mt-1 space-y-1">
-              {renderedToolCalls}
-            </div>
-          ) : undefined,
+          node:
+            renderedToolCalls.length > 0 ? (
+              <div className="mt-1 space-y-1">{renderedToolCalls}</div>
+            ) : undefined,
         };
       });
 
       const anchorIdx = tracedIndexes[0];
-      map.set(anchorIdx, { type: 'anchor', sections });
+      map.set(anchorIdx, { type: "anchor", sections });
       for (const idx of tracedIndexes.slice(1)) {
-        map.set(idx, { type: 'member' });
+        map.set(idx, { type: "member" });
       }
       currentGroup = [];
     };
 
     for (let i = 0; i < messages.length; i += 1) {
       const msg = messages[i];
-      if (msg.role === 'user') {
+      if (msg.role === "user") {
         flushGroup();
         continue;
       }
-      if (msg.role === 'assistant') {
+      if (msg.role === "assistant") {
         currentGroup.push(i);
       }
     }
     flushGroup();
 
     return map;
-  }, [messageIndexById, messageThinkingText, messageToolCalls, messages, turns]);
+  }, [
+    messageIndexById,
+    messageThinkingText,
+    messageToolCalls,
+    messages,
+    turns,
+  ]);
+
+  const visibleTraceEvents = useMemo(
+    () =>
+      traceEvents.filter(
+        (event) =>
+          !(event.kind === "status" && shouldHideTraceStatus(event.text)),
+      ),
+    [traceEvents],
+  );
 
   const streamTraceSections = useMemo<ThinkingSection[]>(() => {
-    return traceEvents.flatMap((event) => {
-      if (event.kind === 'thinking') {
+    return visibleTraceEvents.flatMap((event) => {
+      if (event.kind === "thinking") {
         return event.text.trim().length > 0 ? [{ text: event.text }] : [];
       }
-      if (event.kind === 'tool') {
-        return [{
-          text: '',
+      if (event.kind === "tool") {
+        return [
+          {
+            text: "",
+            node: (
+              <ToolCallCard
+                key={`stream-trace-${event.id}`}
+                toolName={event.toolCall.toolName}
+                arguments={event.toolCall.arguments}
+                status={event.toolCall.status}
+                content={event.toolCall.content}
+                isError={event.toolCall.isError}
+                artifacts={event.toolCall.artifacts}
+                trace
+              />
+            ),
+          },
+        ];
+      }
+      return [
+        {
+          text: "",
           node: (
-            <ToolCallCard
-              key={`stream-trace-${event.id}`}
-              toolName={event.toolCall.toolName}
-              arguments={event.toolCall.arguments}
-              status={event.toolCall.status}
-              content={event.toolCall.content}
-              isError={event.toolCall.isError}
-              artifacts={event.toolCall.artifacts}
-              trace
+            <TraceStatusRow
+              key={`stream-status-${event.id}`}
+              text={event.text}
+              tone={event.tone}
             />
           ),
-        }];
-      }
-      return [{
-        text: '',
-        node: <TraceStatusRow key={`stream-status-${event.id}`} text={event.text} tone={event.tone} />,
-      }];
+        },
+      ];
     });
-  }, [traceEvents]);
+  }, [visibleTraceEvents]);
 
   const streamTraceActive = useMemo(() => {
     if (!isStreaming) return false;
     if (isThinking || thinkingText.trim().length > 0) return true;
-    return traceEvents.some(event =>
-      event.kind === 'tool' && event.toolCall.status === 'running');
+    return traceEvents.some(
+      (event) => event.kind === "tool" && event.toolCall.status === "running",
+    );
   }, [isStreaming, isThinking, thinkingText, traceEvents]);
 
   const getScrollMetrics = useCallback(() => {
@@ -596,7 +793,10 @@ export function ChatMessages({
     if (!el) {
       return { distanceFromBottom: 0, nearBottom: true, overflow: false };
     }
-    const distanceFromBottom = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
+    const distanceFromBottom = Math.max(
+      0,
+      el.scrollHeight - el.scrollTop - el.clientHeight,
+    );
     return {
       distanceFromBottom,
       nearBottom: distanceFromBottom <= NEAR_BOTTOM_THRESHOLD,
@@ -621,11 +821,14 @@ export function ChatMessages({
     });
   }, []);
 
-  useEffect(() => () => {
-    if (autoScrollFrameRef.current != null) {
-      cancelAnimationFrame(autoScrollFrameRef.current);
-    }
-  }, []);
+  useEffect(
+    () => () => {
+      if (autoScrollFrameRef.current != null) {
+        cancelAnimationFrame(autoScrollFrameRef.current);
+      }
+    },
+    [],
+  );
 
   const handleScroll = useCallback(() => {
     const { distanceFromBottom, nearBottom, overflow } = getScrollMetrics();
@@ -666,17 +869,25 @@ export function ChatMessages({
       return;
     }
 
-    scrollToContainerBottom('auto');
-  }, [messages, streamText, streamRounds, traceEvents, toolCalls, getScrollMetrics, scrollToContainerBottom]);
+    scrollToContainerBottom("auto");
+  }, [
+    messages,
+    streamText,
+    streamRounds,
+    traceEvents,
+    toolCalls,
+    getScrollMetrics,
+    scrollToContainerBottom,
+  ]);
 
   const scrollToBottom = useCallback(() => {
     shouldAutoFollowRef.current = true;
-    scrollToContainerBottom(shouldReduceMotion ? 'auto' : 'smooth');
+    scrollToContainerBottom(shouldReduceMotion ? "auto" : "smooth");
   }, [scrollToContainerBottom, shouldReduceMotion]);
 
   const lastAssistantIdx = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i].role === 'assistant') return i;
+      if (messages[i].role === "assistant") return i;
     }
     return -1;
   }, [messages]);
@@ -684,20 +895,22 @@ export function ChatMessages({
   const lastRenderableMessageRole = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const msg = messages[i];
-      if (msg.role === 'tool' || msg.role === 'system') continue;
-      if (msg.role === 'assistant' && msg.content.trim().length === 0) continue;
+      if (msg.role === "tool" || msg.role === "system") continue;
+      if (msg.role === "assistant" && msg.content.trim().length === 0) continue;
       return msg.role;
     }
     return null;
   }, [messages]);
 
   const shouldRenderStreamRounds = streamRounds.length > 0;
-  const shouldShowStreamingText = isStreaming
-    || (
-      streamText.trim().length > 0
-      && (lastRenderableMessageRole == null || lastRenderableMessageRole === 'user')
-    );
-  const shouldRenderInlineError = Boolean(error && !isStreaming && traceEvents.length === 0);
+  const shouldShowStreamingText =
+    isStreaming ||
+    (streamText.trim().length > 0 &&
+      (lastRenderableMessageRole == null ||
+        lastRenderableMessageRole === "user"));
+  const shouldRenderInlineError = Boolean(
+    error && !isStreaming && traceEvents.length === 0,
+  );
 
   if (messages.length === 0 && !isStreaming && !loadingMsgs) {
     return (
@@ -706,7 +919,9 @@ export function ChatMessages({
           <div className="p-4 rounded-2xl bg-surface-2 text-text-tertiary inline-block mb-4">
             <MessageCircle className="h-8 w-8" />
           </div>
-          <p className="text-sm text-text-tertiary mb-6">{t('chat.placeholder')}</p>
+          <p className="text-sm text-text-tertiary mb-6">
+            {t("chat.placeholder")}
+          </p>
           {onSuggestionClick && (
             <div className="grid grid-cols-2 gap-3">
               {SUGGESTIONS.map((s, i) => {
@@ -718,13 +933,21 @@ export function ChatMessages({
                     type="button"
                     initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={shouldReduceMotion ? INSTANT_TRANSITION : { delay: i * 0.07, duration: 0.3, ease: 'easeOut' }}
+                    transition={
+                      shouldReduceMotion
+                        ? INSTANT_TRANSITION
+                        : { delay: i * 0.07, duration: 0.3, ease: "easeOut" }
+                    }
                     onClick={() => onSuggestionClick(prompt)}
                     className="bg-surface-1 hover:bg-surface-2 border border-border rounded-lg p-4 cursor-pointer transition-colors text-left"
                   >
                     <Icon className="h-4 w-4 text-accent mb-2" />
-                    <p className="text-sm font-medium text-text-primary mb-1">{t(s.labelKey)}</p>
-                    <p className="text-xs text-text-tertiary truncate">{prompt}</p>
+                    <p className="text-sm font-medium text-text-primary mb-1">
+                      {t(s.labelKey)}
+                    </p>
+                    <p className="text-xs text-text-tertiary truncate">
+                      {prompt}
+                    </p>
                   </motion.button>
                 );
               })}
@@ -767,21 +990,27 @@ export function ChatMessages({
       className="flex-1 overflow-y-auto px-4 py-4 relative"
       role="log"
       aria-live="polite"
-      aria-label={t('chat.messageArea')}
+      aria-label={t("chat.messageArea")}
     >
       <AnimatePresence initial={false}>
         {messages.map((msg, idx) => {
-          if (msg.role === 'tool' || msg.role === 'system') return null;
+          if (msg.role === "tool" || msg.role === "system") return null;
           if (turnRenderMap.members.has(idx)) return null;
 
           const turnRender = turnRenderMap.anchors.get(idx);
-          if (turnRender && msg.role === 'user') {
-            const assistantMsg = turnRender.assistantIdx != null
-              ? messages[turnRender.assistantIdx]
-              : null;
+          if (turnRender && msg.role === "user") {
+            const assistantMsg =
+              turnRender.assistantIdx != null
+                ? messages[turnRender.assistantIdx]
+                : null;
             const assistantIdx = turnRender.assistantIdx ?? -1;
-            const traceGroup = assistantIdx >= 0 ? messageTraceGroups.get(assistantIdx) : undefined;
-            const chunkIds = assistantMsg ? (chunkIdCacheRef.current.get(assistantMsg.id) ?? []) : [];
+            const traceGroup =
+              assistantIdx >= 0
+                ? messageTraceGroups.get(assistantIdx)
+                : undefined;
+            const chunkIds = assistantMsg
+              ? (chunkIdCacheRef.current.get(assistantMsg.id) ?? [])
+              : [];
 
             return (
               <div key={`turn-${turnRender.turn.id}`}>
@@ -790,7 +1019,7 @@ export function ChatMessages({
                   alwaysShowTimestamp={(() => {
                     for (let p = idx - 1; p >= 0; p -= 1) {
                       const prev = messages[p];
-                      if (prev.role !== 'tool' && prev.role !== 'system') {
+                      if (prev.role !== "tool" && prev.role !== "system") {
                         return hasTimeGap(prev.createdAt, msg.createdAt);
                       }
                     }
@@ -800,7 +1029,7 @@ export function ChatMessages({
                   onEditAndResend={onEditAndResend}
                 />
 
-                {traceGroup?.type === 'anchor' && (
+                {traceGroup?.type === "anchor" && (
                   <div className="flex justify-start mb-1">
                     <div className="max-w-[80%]">
                       <ThinkingBlock
@@ -814,35 +1043,55 @@ export function ChatMessages({
                   </div>
                 )}
 
-                {assistantMsg && assistantMsg.role === 'assistant' && assistantMsg.content.trim().length > 0 && (
-                  <MessageBubble
-                    msg={assistantMsg}
-                    chunkIds={chunkIds}
-                    queryText={msg.content}
-                    citationLookup={assistantIdx >= 0 ? messageCitationLookups.get(assistantIdx) : undefined}
-                    isLastAssistant={assistantIdx === lastAssistantIdx && !isStreaming}
-                    lastCached={assistantIdx === lastAssistantIdx ? lastCached : undefined}
-                    onRetry={onRetry}
-                    alwaysShowTimestamp={hasTimeGap(msg.createdAt, assistantMsg.createdAt)}
-                    onDeleteMessage={onDeleteMessage}
-                    onEditAndResend={onEditAndResend}
-                  />
-                )}
+                {assistantMsg &&
+                  assistantMsg.role === "assistant" &&
+                  assistantMsg.content.trim().length > 0 && (
+                    <MessageBubble
+                      msg={assistantMsg}
+                      chunkIds={chunkIds}
+                      queryText={msg.content}
+                      citationLookup={
+                        assistantIdx >= 0
+                          ? messageCitationLookups.get(assistantIdx)
+                          : undefined
+                      }
+                      isLastAssistant={
+                        assistantIdx === lastAssistantIdx && !isStreaming
+                      }
+                      lastCached={
+                        assistantIdx === lastAssistantIdx
+                          ? lastCached
+                          : undefined
+                      }
+                      onRetry={onRetry}
+                      alwaysShowTimestamp={hasTimeGap(
+                        msg.createdAt,
+                        assistantMsg.createdAt,
+                      )}
+                      onDeleteMessage={onDeleteMessage}
+                      onEditAndResend={onEditAndResend}
+                    />
+                  )}
               </div>
             );
           }
 
-          const queryText = msg.role === 'assistant'
-            ? (messages.slice(0, idx).reverse().find((m) => m.role === 'user')?.content ?? '')
-            : '';
+          const queryText =
+            msg.role === "assistant"
+              ? (messages
+                  .slice(0, idx)
+                  .reverse()
+                  .find((m) => m.role === "user")?.content ?? "")
+              : "";
           const chunkIds = chunkIdCacheRef.current.get(msg.id) ?? [];
-          const traceGroup = msg.role === 'assistant' ? messageTraceGroups.get(idx) : undefined;
+          const traceGroup =
+            msg.role === "assistant" ? messageTraceGroups.get(idx) : undefined;
           const hasRenderableAssistantContent =
-            msg.role !== 'assistant' || msg.content.trim().length > 0;
+            msg.role !== "assistant" || msg.content.trim().length > 0;
 
           return (
             <div key={msg.id}>
-              {traceGroup?.type === 'anchor' && (
+              {traceGroup?.type === "anchor" && (
                 <div className="flex justify-start mb-1">
                   <div className="max-w-[80%]">
                     <ThinkingBlock
@@ -868,7 +1117,7 @@ export function ChatMessages({
                   alwaysShowTimestamp={(() => {
                     for (let p = idx - 1; p >= 0; p -= 1) {
                       const prev = messages[p];
-                      if (prev.role !== 'tool' && prev.role !== 'system') {
+                      if (prev.role !== "tool" && prev.role !== "system") {
                         return hasTimeGap(prev.createdAt, msg.createdAt);
                       }
                     }
@@ -903,28 +1152,34 @@ export function ChatMessages({
         </motion.div>
       )}
 
-      {shouldRenderStreamRounds && streamRounds
-        .filter(round => round.reply.trim().length > 0)
-        .map((round) => (
-          <motion.div
-            key={`reply-${round.id}`}
-            initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            layout={!shouldReduceMotion}
-            transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
-            className="flex justify-start mb-4"
-          >
-            <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
-              <div className="prose-chat">
-                <CitationContext.Provider value={streamingCitationLookup}>
-                  <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
-                    {preprocessStreamingMarkdown(round.reply)}
-                  </ReactMarkdown>
-                </CitationContext.Provider>
+      {shouldRenderStreamRounds &&
+        streamRounds
+          .filter((round) => round.reply.trim().length > 0)
+          .map((round) => (
+            <motion.div
+              key={`reply-${round.id}`}
+              initial={
+                shouldReduceMotion || isStreaming ? false : { opacity: 0 }
+              }
+              animate={{ opacity: 1 }}
+              layout={!shouldReduceMotion}
+              transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
+              className="flex justify-start mb-4"
+            >
+              <div className="max-w-[80%] rounded-lg px-3.5 py-2.5 text-sm leading-relaxed bg-surface-2 text-text-primary">
+                <div className="prose-chat">
+                  <CitationContext.Provider value={streamingCitationLookup}>
+                    <ReactMarkdown
+                      remarkPlugins={remarkPlugins}
+                      components={markdownComponents}
+                    >
+                      {preprocessStreamingMarkdown(round.reply)}
+                    </ReactMarkdown>
+                  </CitationContext.Provider>
+                </div>
               </div>
-            </div>
-          </motion.div>
-        ))}
+            </motion.div>
+          ))}
 
       {shouldShowStreamingText && streamText.trim().length > 0 && (
         <motion.div
@@ -935,45 +1190,73 @@ export function ChatMessages({
         >
           <div
             className="relative max-w-[80%] rounded-lg px-3.5 py-2.5 pr-6 text-sm leading-relaxed bg-surface-2 text-text-primary"
-            style={streamText.length > 2000 ? { willChange: 'contents' } : undefined}
+            style={
+              streamText.length > 2000 ? { willChange: "contents" } : undefined
+            }
           >
             <div className="prose-chat">
               <CitationContext.Provider value={streamingCitationLookup}>
-                <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
+                <ReactMarkdown
+                  remarkPlugins={remarkPlugins}
+                  components={markdownComponents}
+                >
                   {processedMarkdown}
                 </ReactMarkdown>
               </CitationContext.Provider>
             </div>
-            <span className={`streaming-caret-overlay ${shouldReduceMotion ? '' : 'animate-pulse'}`} />
+            <span
+              className={`streaming-caret-overlay ${shouldReduceMotion ? "" : "animate-pulse"}`}
+            />
           </div>
         </motion.div>
       )}
 
-      {isStreaming && !streamText && streamRounds.length === 0 && traceEvents.length === 0 && toolCalls.length === 0 && !thinkingText && !isThinking && (
-        <motion.div
-          initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
-          className="flex justify-start mb-3"
-        >
-          <div className="rounded-lg px-3.5 py-2.5 bg-surface-2" role="status" aria-label={t('chat.thinking')}>
-            <div className="flex items-center gap-2 text-sm text-text-tertiary">
-              <div className="flex gap-1">
-                <span className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? '' : 'animate-bounce'}`} style={{ animationDelay: '0ms' }} />
-                <span className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? '' : 'animate-bounce'}`} style={{ animationDelay: '150ms' }} />
-                <span className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? '' : 'animate-bounce'}`} style={{ animationDelay: '300ms' }} />
+      {isStreaming &&
+        !streamText &&
+        streamRounds.length === 0 &&
+        visibleTraceEvents.length === 0 &&
+        toolCalls.length === 0 &&
+        !thinkingText &&
+        !isThinking && (
+          <motion.div
+            initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
+            className="flex justify-start mb-3"
+          >
+            <div
+              className="rounded-lg px-3.5 py-2.5 bg-surface-2"
+              role="status"
+              aria-label={t("chat.thinking")}
+            >
+              <div className="flex items-center gap-2 text-sm text-text-tertiary">
+                <div className="flex gap-1">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? "" : "animate-bounce"}`}
+                    style={{ animationDelay: "0ms" }}
+                  />
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? "" : "animate-bounce"}`}
+                    style={{ animationDelay: "150ms" }}
+                  />
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? "" : "animate-bounce"}`}
+                    style={{ animationDelay: "300ms" }}
+                  />
+                </div>
+                {t("chat.thinking")}
               </div>
-              {t('chat.thinking')}
             </div>
-          </div>
-        </motion.div>
-      )}
+          </motion.div>
+        )}
 
       {shouldRenderInlineError && (
         <motion.div
           initial={shouldReduceMotion ? false : { opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={shouldReduceMotion ? { opacity: 0, y: 0 } : { opacity: 0, y: 8 }}
+          exit={
+            shouldReduceMotion ? { opacity: 0, y: 0 } : { opacity: 0, y: 8 }
+          }
           transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
           className="flex justify-start mb-3"
         >
@@ -981,7 +1264,9 @@ export function ChatMessages({
             <div className="flex items-start gap-2">
               <AlertCircle className="h-4 w-4 text-red-400 mt-0.5 shrink-0" />
               <div className="flex-1 min-w-0">
-                <p className="text-red-400 font-medium text-xs mb-1">{t('chat.errorOccurred')}</p>
+                <p className="text-red-400 font-medium text-xs mb-1">
+                  {t("chat.errorOccurred")}
+                </p>
                 <p className="text-red-300/80 text-xs break-words">{error}</p>
                 <div className="flex items-center gap-2 mt-2">
                   {onRetry && (
@@ -991,7 +1276,7 @@ export function ChatMessages({
                       className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-red-500/20 text-red-300 hover:bg-red-500/30 transition-colors cursor-pointer"
                     >
                       <RotateCcw className="h-3 w-3" />
-                      {t('chat.retry')}
+                      {t("chat.retry")}
                     </button>
                   )}
                   {onDismissError && (
@@ -1001,7 +1286,7 @@ export function ChatMessages({
                       className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-surface-2 text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer"
                     >
                       <X className="h-3 w-3" />
-                      {t('chat.dismiss')}
+                      {t("chat.dismiss")}
                     </button>
                   )}
                 </div>
@@ -1016,16 +1301,24 @@ export function ChatMessages({
           <motion.button
             initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={shouldReduceMotion ? { opacity: 0, y: 0 } : { opacity: 0, y: 12 }}
-            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.18, ease: 'easeOut' }}
+            exit={
+              shouldReduceMotion ? { opacity: 0, y: 0 } : { opacity: 0, y: 12 }
+            }
+            transition={
+              shouldReduceMotion
+                ? INSTANT_TRANSITION
+                : { duration: 0.18, ease: "easeOut" }
+            }
             type="button"
             onClick={scrollToBottom}
-            title={t('chat.scrollToBottom')}
+            title={t("chat.scrollToBottom")}
             className="sticky bottom-3 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 rounded-full bg-surface-3 hover:bg-surface-4 text-text-primary shadow-md px-3 py-2 transition-colors cursor-pointer z-10"
           >
             <ChevronDown className="h-4 w-4" />
             {unreadCount > 0 && (
-              <span className="text-xs font-medium tabular-nums">{unreadCount}</span>
+              <span className="text-xs font-medium tabular-nums">
+                {unreadCount}
+              </span>
             )}
           </motion.button>
         )}

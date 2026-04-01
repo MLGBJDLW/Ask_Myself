@@ -1,22 +1,28 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import { Send, Square, Paperclip, X, FileText } from 'lucide-react';
-import { useTranslation } from '../../i18n';
-import type { ImageAttachment } from '../../types/conversation';
-import { CheckpointMenu } from './CheckpointMenu';
-import { VoiceInputButton } from './VoiceInputButton';
+import { useState, useRef, useCallback, useEffect } from "react";
+import { motion } from "framer-motion";
+import { Send, Square, Paperclip, X, FileText } from "lucide-react";
+import { useTranslation } from "../../i18n";
+import type { ImageAttachment } from "../../types/conversation";
+import { CheckpointMenu } from "./CheckpointMenu";
+import { VoiceInputButton } from "./VoiceInputButton";
 
 const ALLOWED_MIME_TYPES = new Set([
-  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-  'application/pdf',
-  'text/plain', 'text/markdown', 'text/x-markdown', 'text/csv',
-  'application/json',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'application/msword',
-  'application/vnd.ms-excel',
-  'application/vnd.ms-powerpoint',
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "text/x-markdown",
+  "text/csv",
+  "application/json",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
 ]);
 
 interface ChatInputProps {
@@ -44,8 +50,8 @@ export function ChatInput({
   prefillText,
 }: ChatInputProps) {
   const { t } = useTranslation();
-  const draftKey = conversationId ?? '__new__';
-  const [value, setValue] = useState('');
+  const draftKey = conversationId ?? "__new__";
+  const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -55,11 +61,11 @@ export function ChatInput({
 
   useEffect(() => {
     const draft = draftsRef.current[draftKey];
-    setValue(draft?.value ?? '');
+    setValue(draft?.value ?? "");
     setAttachments(draft?.attachments ?? []);
     setTimeout(() => {
       if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
+        textareaRef.current.style.height = "auto";
       }
     }, 0);
   }, [draftKey]);
@@ -70,7 +76,7 @@ export function ChatInput({
 
   // Accept prefilled text from outside (e.g. suggestion cards)
   useEffect(() => {
-    if (prefillText != null && prefillText !== '') {
+    if (prefillText != null && prefillText !== "") {
       setValue(prefillText);
       draftsRef.current[draftKey] = { value: prefillText, attachments };
       setTimeout(() => textareaRef.current?.focus(), 0);
@@ -81,7 +87,7 @@ export function ChatInput({
   const adjustHeight = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
-    el.style.height = 'auto';
+    el.style.height = "auto";
     const lineHeight = 22;
     const maxHeight = lineHeight * 6 + 16;
     el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
@@ -94,20 +100,23 @@ export function ChatInput({
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed && attachments.length === 0) return;
-    onSend(trimmed || t('chat.imageMessage'), attachments.length > 0 ? attachments : undefined);
-    draftsRef.current[draftKey] = { value: '', attachments: [] };
-    setValue('');
+    onSend(
+      trimmed || t("chat.imageMessage"),
+      attachments.length > 0 ? attachments : undefined,
+    );
+    draftsRef.current[draftKey] = { value: "", attachments: [] };
+    setValue("");
     setAttachments([]);
     setTimeout(() => {
       if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
+        textareaRef.current.style.height = "auto";
       }
     }, 0);
   }, [attachments, draftKey, onSend, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         if (!isStreaming && !disabled) {
           handleSend();
@@ -117,33 +126,49 @@ export function ChatInput({
     [handleSend, isStreaming, disabled],
   );
 
-  const addAttachment = useCallback(async (blob: Blob, name: string): Promise<boolean> => {
-    const reader = new FileReader();
-    const result = await new Promise<string>((resolve, reject) => {
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-    const match = result.match(/^data:([^;]+);base64,(.+)$/);
-    if (!match) return false;
-    const [, mediaType, base64Data] = match;
-    if (!ALLOWED_MIME_TYPES.has(mediaType)) return false;
-    setAttachments((prev) => [...prev, { base64Data, mediaType, originalName: name }]);
-    return true;
-  }, []);
+  const addAttachmentFromDataUrl = useCallback(
+    (dataUrl: string, name: string): boolean => {
+      const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!match) return false;
+      const [, mediaType, base64Data] = match;
+      if (!ALLOWED_MIME_TYPES.has(mediaType)) return false;
+      setAttachments((prev) => [
+        ...prev,
+        { base64Data, mediaType, originalName: name },
+      ]);
+      return true;
+    },
+    [],
+  );
 
-  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
-    for (const file of Array.from(files)) {
-      try {
-        await addAttachment(file, file.name);
-      } catch {
-        // Silently skip files that fail to read
+  const addAttachment = useCallback(
+    async (blob: Blob, name: string): Promise<boolean> => {
+      const reader = new FileReader();
+      const result = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      return addAttachmentFromDataUrl(result, name);
+    },
+    [addAttachmentFromDataUrl],
+  );
+
+  const handleFileSelect = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files) return;
+      for (const file of Array.from(files)) {
+        try {
+          await addAttachment(file, file.name);
+        } catch {
+          // Silently skip files that fail to read
+        }
       }
-    }
-    e.target.value = '';
-  }, [addAttachment]);
+      e.target.value = "";
+    },
+    [addAttachment],
+  );
 
   const removeAttachment = useCallback((index: number) => {
     setAttachments((prev) => prev.filter((_, i) => i !== index));
@@ -158,7 +183,7 @@ export function ChatInput({
     e.preventDefault();
     e.stopPropagation();
     dragCounterRef.current += 1;
-    if (e.dataTransfer.types.includes('Files')) {
+    if (e.dataTransfer.types.includes("Files")) {
       setIsDragging(true);
     }
   }, []);
@@ -173,47 +198,86 @@ export function ChatInput({
     }
   }, []);
 
-  const handleDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCounterRef.current = 0;
-    setIsDragging(false);
-    const files = e.dataTransfer.files;
-    if (!files) return;
-    for (const file of Array.from(files)) {
-      if (!ALLOWED_MIME_TYPES.has(file.type)) continue;
-      try {
-        await addAttachment(file, file.name);
-      } catch {
-        // Silently skip
-      }
-    }
-  }, [addAttachment]);
-
-  const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    for (const item of Array.from(items)) {
-      if (!item.type.startsWith('image/')) continue;
-      const blob = item.getAsFile();
-      if (!blob) continue;
+  const handleDrop = useCallback(
+    async (e: React.DragEvent) => {
       e.preventDefault();
-      const ext = item.type.split('/')[1] || 'png';
-      const name = `pasted-image-${Date.now()}.${ext}`;
-      try {
-        await addAttachment(blob, name);
-      } catch {
-        // Silently skip
+      e.stopPropagation();
+      dragCounterRef.current = 0;
+      setIsDragging(false);
+      const files = e.dataTransfer.files;
+      if (!files) return;
+      for (const file of Array.from(files)) {
+        if (!ALLOWED_MIME_TYPES.has(file.type)) continue;
+        try {
+          await addAttachment(file, file.name);
+        } catch {
+          // Silently skip
+        }
       }
-      return;
-    }
-  }, [addAttachment]);
+    },
+    [addAttachment],
+  );
+
+  const handlePaste = useCallback(
+    async (e: React.ClipboardEvent) => {
+      const files = e.clipboardData?.files;
+      if (files && files.length > 0) {
+        let handled = false;
+        for (const file of Array.from(files)) {
+          if (!file.type.startsWith("image/")) continue;
+          try {
+            const didAdd = await addAttachment(
+              file,
+              file.name || `pasted-image-${Date.now()}.png`,
+            );
+            handled = handled || didAdd;
+          } catch {
+            // Silently skip
+          }
+        }
+        if (handled) {
+          e.preventDefault();
+          return;
+        }
+      }
+
+      const items = e.clipboardData?.items;
+      if (items) {
+        for (const item of Array.from(items)) {
+          if (!item.type.startsWith("image/")) continue;
+          const blob = item.getAsFile();
+          if (!blob) continue;
+          e.preventDefault();
+          const ext = item.type.split("/")[1] || "png";
+          const name = `pasted-image-${Date.now()}.${ext}`;
+          try {
+            await addAttachment(blob, name);
+          } catch {
+            // Silently skip
+          }
+          return;
+        }
+      }
+
+      const html = e.clipboardData?.getData("text/html") ?? "";
+      const dataUrlMatch = html.match(/src=["'](data:image\/[^"']+)["']/i);
+      if (dataUrlMatch) {
+        const dataUrl = dataUrlMatch[1];
+        const ext = dataUrl.match(/^data:image\/([^;]+)/i)?.[1] || "png";
+        const name = `pasted-image-${Date.now()}.${ext}`;
+        if (addAttachmentFromDataUrl(dataUrl, name)) {
+          e.preventDefault();
+        }
+      }
+    },
+    [addAttachment, addAttachmentFromDataUrl],
+  );
 
   return (
     <div
       data-testid="chat-input"
       className={`relative border-t border-border bg-surface-1 px-4 py-3 transition-colors ${
-        isDragging ? 'ring-2 ring-accent/50 bg-accent-subtle' : ''
+        isDragging ? "ring-2 ring-accent/50 bg-accent-subtle" : ""
       }`}
       onDragOver={handleDragOver}
       onDragEnter={handleDragEnter}
@@ -222,7 +286,9 @@ export function ChatInput({
     >
       {isDragging && (
         <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-accent bg-accent-subtle/50 pointer-events-none">
-          <span className="text-sm font-medium text-accent">{t('chat.dragDropHint')}</span>
+          <span className="text-sm font-medium text-accent">
+            {t("chat.dragDropHint")}
+          </span>
         </div>
       )}
 
@@ -230,7 +296,7 @@ export function ChatInput({
         <div className="flex flex-wrap gap-2 pb-2">
           {attachments.map((att, i) => (
             <div key={i} className="relative group">
-              {att.mediaType.startsWith('image/') ? (
+              {att.mediaType.startsWith("image/") ? (
                 <img
                   src={`data:${att.mediaType};base64,${att.base64Data}`}
                   alt={att.originalName}
@@ -244,7 +310,7 @@ export function ChatInput({
               <button
                 onClick={() => removeAttachment(i)}
                 className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-danger text-[10px] leading-none text-white opacity-0 transition-opacity cursor-pointer group-hover:opacity-100"
-                aria-label={t('chat.removeAttachment')}
+                aria-label={t("chat.removeAttachment")}
               >
                 <X className="h-3 w-3" />
               </button>
@@ -262,7 +328,7 @@ export function ChatInput({
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled || isStreaming}
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
-          aria-label={t('chat.attachImage')}
+          aria-label={t("chat.attachImage")}
         >
           <Paperclip className="h-4 w-4" />
         </motion.button>
@@ -282,14 +348,16 @@ export function ChatInput({
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder={t('chat.placeholder')}
+          placeholder={t("chat.placeholder")}
           disabled={disabled}
           rows={1}
           className="flex-1 resize-none rounded-lg border border-border bg-surface-0 px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-tertiary outline-none transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 disabled:pointer-events-none disabled:opacity-40"
         />
 
         <VoiceInputButton
-          onTranscript={(text) => setValue((prev) => prev + (prev ? ' ' : '') + text)}
+          onTranscript={(text) =>
+            setValue((prev) => prev + (prev ? " " : "") + text)
+          }
           disabled={disabled || isStreaming}
         />
 
@@ -298,7 +366,7 @@ export function ChatInput({
             whileTap={{ scale: 0.95 }}
             onClick={onStop}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-danger/10 text-danger transition-colors duration-fast ease-out cursor-pointer hover:bg-danger/20"
-            aria-label={t('chat.stop')}
+            aria-label={t("chat.stop")}
           >
             <Square className="h-4 w-4" />
           </motion.button>
@@ -309,7 +377,7 @@ export function ChatInput({
             disabled={disabled || (!value.trim() && attachments.length === 0)}
             data-testid="chat-send"
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-white transition-colors duration-fast ease-out cursor-pointer hover:bg-accent-hover disabled:pointer-events-none disabled:opacity-40"
-            aria-label={t('chat.send')}
+            aria-label={t("chat.send")}
           >
             <Send className="h-4 w-4" />
           </motion.button>
@@ -318,7 +386,10 @@ export function ChatInput({
 
       {conversationId && onRestoreCheckpoint && (
         <div className="mt-2 flex justify-end">
-          <CheckpointMenu conversationId={conversationId} onRestore={onRestoreCheckpoint} />
+          <CheckpointMenu
+            conversationId={conversationId}
+            onRestore={onRestoreCheckpoint}
+          />
         </div>
       )}
     </div>

@@ -370,12 +370,18 @@ pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool 
         ProviderType::Anthropic => m.contains("claude-3") || m.contains("claude-4"),
         ProviderType::Google => true,
         ProviderType::DeepSeek => false,
-        ProviderType::Zhipu => m.contains("glm-4v"),
-        ProviderType::Qwen => m.contains("qwen-vl"),
-        ProviderType::Moonshot
-        | ProviderType::Doubao
-        | ProviderType::Yi
-        | ProviderType::Baichuan => false,
+        ProviderType::Zhipu => {
+            m.contains("glm-4v") || m.contains("glm-4.1v") || m.contains("glm-4.6v")
+        }
+        ProviderType::Qwen => {
+            m.contains("qwen-vl")
+                || m.contains("qwen2.5-vl")
+                || m.contains("qwen3-vl")
+                || m.contains("qvq")
+                || m.contains("qwen3.5-plus")
+        }
+        ProviderType::Moonshot => m.contains("kimi-k2.5"),
+        ProviderType::Doubao | ProviderType::Yi | ProviderType::Baichuan => false,
         ProviderType::Ollama | ProviderType::LmStudio => {
             m.contains("vision")
                 || m.contains("llava")

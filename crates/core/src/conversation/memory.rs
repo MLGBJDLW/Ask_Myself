@@ -221,10 +221,19 @@ fn prefix_model_context_window(m: &str) -> u32 {
         // Meta Llama
         _ if m.contains("llama") => 128_000,
 
+        // Zhipu GLM
+        _ if m.contains("glm") => 128_000,
+
+        // Moonshot / Kimi
+        _ if m.contains("kimi-k2") => 256_000,
+        _ if m.contains("kimi") || m.contains("moonshot") => 128_000,
+
         // Qwen
         _ if m.contains("qwen") => 128_000,
 
         // Others
+        _ if m.contains("doubao") => 128_000,
+        _ if m.contains("baichuan") => 128_000,
         _ if m.contains("phi") => 128_000,
         _ if m.contains("command") => 128_000,
         _ if m.contains("yi") => 128_000,

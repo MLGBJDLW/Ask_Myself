@@ -272,7 +272,8 @@ impl Database {
     ) -> Result<Conversation, CoreError> {
         let id = new_id();
         let system_prompt = input.system_prompt.as_deref().unwrap_or("");
-        let collection_context_json = serialize_collection_context(input.collection_context.as_ref())?;
+        let collection_context_json =
+            serialize_collection_context(input.collection_context.as_ref())?;
         let conn = self.conn();
         conn.execute(
             "INSERT INTO conversations (id, provider, model, system_prompt, collection_context_json)
@@ -1441,10 +1442,18 @@ pub fn build_collection_context_prompt_section(
 
     let mut section = String::from("## Collection Context\n");
     section.push_str(&format!("Title: {}\n", context.title));
-    if let Some(description) = context.description.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(description) = context
+        .description
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         section.push_str(&format!("Description: {}\n", description));
     }
-    if let Some(query_text) = context.query_text.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(query_text) = context
+        .query_text
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         section.push_str(&format!("Base query: {}\n", query_text));
     }
     if !context.source_ids.is_empty() {

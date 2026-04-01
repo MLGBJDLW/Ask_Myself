@@ -544,19 +544,14 @@ fn query_looks_like_question(query: &str) -> bool {
 fn system_prompt_has_collection_context(system_prompt: &str) -> bool {
     let prompt = system_prompt.to_lowercase();
     prompt.contains("## collection context")
-        || prompt.contains("title:")
-            && prompt.contains("saved evidence:")
+        || prompt.contains("title:") && prompt.contains("saved evidence:")
         || prompt.contains("collection description:")
         || prompt.contains("base query:")
         || prompt.contains("saved evidence")
         || prompt.contains("focus first on this citation")
 }
 
-fn route_user_turn(
-    query: &str,
-    system_prompt: &str,
-    has_sources: bool,
-) -> AgentRoutePlan {
+fn route_user_turn(query: &str, system_prompt: &str, has_sources: bool) -> AgentRoutePlan {
     let q = query.to_lowercase();
     let collection_context = system_prompt_has_collection_context(system_prompt);
 
@@ -875,7 +870,9 @@ impl AgentExecutor {
         debug!("Agent route selected: {:?}", route_plan.kind);
 
         let tool_defs = if self.config.dynamic_tool_visibility {
-            let selected = self.tools.select_tools(&user_query_text_for_tools, has_sources);
+            let selected = self
+                .tools
+                .select_tools(&user_query_text_for_tools, has_sources);
             if route_plan.extra_categories.is_empty() {
                 selected
             } else {
@@ -901,7 +898,10 @@ impl AgentExecutor {
             &tool_defs,
         );
         if !route_plan.prompt_section.trim().is_empty() {
-            messages.insert(1, Message::text(Role::System, route_plan.prompt_section.clone()));
+            messages.insert(
+                1,
+                Message::text(Role::System, route_plan.prompt_section.clone()),
+            );
         }
 
         // --- 2. Privacy redaction on outgoing user content --------------------
@@ -1234,13 +1234,10 @@ impl AgentExecutor {
                                 }
                             }
                             if let Some(tid) = turn_id {
-                                let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
-                                let _ = db.finalize_conversation_turn(
-                                    tid,
-                                    "error",
-                                    None,
-                                    Some(&trace),
-                                );
+                                let trace =
+                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
+                                let _ =
+                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
                             }
                             return Err(CoreError::RateLimited { retry_after_secs });
                         }
@@ -1283,13 +1280,10 @@ impl AgentExecutor {
                                 }
                             }
                             if let Some(tid) = turn_id {
-                                let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
-                                let _ = db.finalize_conversation_turn(
-                                    tid,
-                                    "error",
-                                    None,
-                                    Some(&trace),
-                                );
+                                let trace =
+                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
+                                let _ =
+                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
                             }
                             return Err(CoreError::Llm(err_msg));
                         }
@@ -1320,12 +1314,7 @@ impl AgentExecutor {
                         }
                         if let Some(tid) = turn_id {
                             let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
-                            let _ = db.finalize_conversation_turn(
-                                tid,
-                                "error",
-                                None,
-                                Some(&trace),
-                            );
+                            let _ = db.finalize_conversation_turn(tid, "error", None, Some(&trace));
                         }
                         return Err(e);
                     }
@@ -1400,12 +1389,7 @@ impl AgentExecutor {
                         }
                         if let Some(tid) = turn_id {
                             let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
-                            let _ = db.finalize_conversation_turn(
-                                tid,
-                                "error",
-                                None,
-                                Some(&trace),
-                            );
+                            let _ = db.finalize_conversation_turn(tid, "error", None, Some(&trace));
                         }
                         return Err(e);
                     }
@@ -2732,7 +2716,9 @@ mod tests {
         let route = route_user_turn("Why did the retry guard fail?", "", true);
 
         assert_eq!(route.kind, AgentRouteKind::KnowledgeRetrieval);
-        assert!(route.extra_categories.contains(&ToolCategory::DocumentAnalysis));
+        assert!(route
+            .extra_categories
+            .contains(&ToolCategory::DocumentAnalysis));
     }
 
     struct MockProvider {
