@@ -165,6 +165,24 @@ pub fn model_context_window(model: &str) -> u32 {
         // DeepSeek
         "deepseek-chat" | "deepseek-reasoner" => 128_000,
 
+        // Zhipu GLM
+        "glm-4-long" => 1_000_000,
+
+        // Moonshot / Kimi
+        "kimi-k2.5" | "kimi-k2-thinking" | "kimi-k2" => 256_000,
+        "kimi-latest" => 128_000,
+
+        // Doubao
+        "doubao-seed-1-6-251015" | "doubao-seed-1-6-thinking" | "doubao-seed-1-6-flash-250828" => {
+            256_000
+        }
+
+        // Qwen / DashScope
+        "qwen3-max-preview" => 81_920,
+
+        // Baichuan
+        "baichuan-m3-plus" | "baichuan-m3" | "baichuan4-turbo" | "baichuan4" => 32_000,
+
         // xAI Grok
         "grok-4" | "grok-4-0709" => 256_000,
         "grok-4-1-fast" | "grok-4-1-fast-reasoning" | "grok-4-1-fast-non-reasoning" => 2_000_000,
@@ -183,8 +201,77 @@ pub fn model_context_window(model: &str) -> u32 {
     }
 }
 
+/// Parse explicit context hints embedded in model IDs, such as `128k` or `1m`.
+fn parse_context_window_hint(m: &str) -> Option<u32> {
+    let bytes = m.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+
+        let suffix = (bytes[i] as char).to_ascii_lowercase();
+        if suffix != 'k' && suffix != 'm' {
+            continue;
+        }
+
+        let prev_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+        let next_ok = i + 1 == bytes.len() || !bytes[i + 1].is_ascii_alphanumeric();
+        if !prev_ok || !next_ok {
+            i += 1;
+            continue;
+        }
+
+        let value = m[start..i].parse::<u32>().ok()?;
+        return Some(match suffix {
+            'k' => value.saturating_mul(1_000),
+            'm' => value.saturating_mul(1_000_000),
+            _ => unreachable!(),
+        });
+    }
+
+    None
+}
+
+fn qwen_model_context_window(m: &str) -> Option<u32> {
+    match m {
+        _ if m.starts_with("qwen3.5-plus")
+            || m.starts_with("qwen3.5-flash")
+            || m.starts_with("qwen3-coder-plus") =>
+        {
+            Some(1_000_000)
+        }
+        _ if m.starts_with("qwen3-max")
+            || m.starts_with("qwen3-coder-next")
+            || m.starts_with("qwen3-vl-plus") =>
+        {
+            Some(262_144)
+        }
+        _ if m.starts_with("qwen3-vl-flash") => Some(258_048),
+        _ if m.starts_with("qwq-plus") || m.starts_with("qvq-max") => Some(131_072),
+        _ => None,
+    }
+}
+
 /// Fallback matching for model variants not in the exact list.
 fn prefix_model_context_window(m: &str) -> u32 {
+    if let Some(parsed) = parse_context_window_hint(m) {
+        return parsed;
+    }
+    if let Some(qwen) = qwen_model_context_window(m) {
+        return qwen;
+    }
+
     match m {
         // OpenAI
         _ if m.starts_with("gpt-5.4") => 1_050_000,
@@ -454,9 +541,39 @@ mod tests {
         assert_eq!(model_context_window("gemini-2.0-flash"), 1_048_576);
         assert_eq!(model_context_window("gemini-1.5-pro"), 2_097_152);
         assert_eq!(model_context_window("gemini-1.5-flash"), 1_048_576);
+        // Zhipu GLM
+        assert_eq!(model_context_window("glm-4-long"), 1_000_000);
+        // Moonshot / Kimi
+        assert_eq!(model_context_window("kimi-k2.5"), 256_000);
+        assert_eq!(model_context_window("kimi-k2-thinking"), 256_000);
+        assert_eq!(model_context_window("kimi-k2"), 256_000);
+        assert_eq!(model_context_window("kimi-latest"), 128_000);
         // DeepSeek
         assert_eq!(model_context_window("deepseek-chat"), 128_000);
         assert_eq!(model_context_window("deepseek-reasoner"), 128_000);
+        // Doubao
+        assert_eq!(model_context_window("doubao-seed-1-6-251015"), 256_000);
+        assert_eq!(model_context_window("doubao-seed-1-6-thinking"), 256_000);
+        assert_eq!(
+            model_context_window("doubao-seed-1-6-flash-250828"),
+            256_000
+        );
+        // Qwen / DashScope
+        assert_eq!(model_context_window("qwen3-max-2026-01-23"), 262_144);
+        assert_eq!(model_context_window("qwen3-max-preview"), 81_920);
+        assert_eq!(model_context_window("qwen3.5-plus"), 1_000_000);
+        assert_eq!(model_context_window("qwen3.5-flash"), 1_000_000);
+        assert_eq!(model_context_window("qwen3-coder-next"), 262_144);
+        assert_eq!(model_context_window("qwen3-coder-plus"), 1_000_000);
+        assert_eq!(model_context_window("qwen3-vl-plus"), 262_144);
+        assert_eq!(model_context_window("qwen3-vl-flash"), 258_048);
+        assert_eq!(model_context_window("qwq-plus"), 131_072);
+        assert_eq!(model_context_window("qvq-max"), 131_072);
+        // Baichuan
+        assert_eq!(model_context_window("Baichuan-M3-Plus"), 32_000);
+        assert_eq!(model_context_window("Baichuan-M3"), 32_000);
+        assert_eq!(model_context_window("Baichuan4-Turbo"), 32_000);
+        assert_eq!(model_context_window("Baichuan4"), 32_000);
         // xAI Grok
         assert_eq!(model_context_window("grok-4"), 256_000);
         assert_eq!(model_context_window("grok-4-1-fast-reasoning"), 2_000_000);
@@ -480,11 +597,20 @@ mod tests {
         assert_eq!(model_context_window("claude-3-opus"), 200_000);
         assert_eq!(model_context_window("gemini-2.5-future"), 1_048_576);
         assert_eq!(model_context_window("deepseek-something"), 128_000);
+        assert_eq!(model_context_window("qwen3.5-plus-2026-02-15"), 1_000_000);
+        assert_eq!(
+            model_context_window("qwen3-coder-plus-2025-07-22"),
+            1_000_000
+        );
+        assert_eq!(model_context_window("qwen3-max-latest"), 262_144);
+        assert_eq!(model_context_window("qwen3-vl-flash-2026-01-22"), 258_048);
         assert_eq!(model_context_window("grok-4-future"), 256_000);
         assert_eq!(model_context_window("grok-4-fast-anything"), 2_000_000);
         assert_eq!(model_context_window("grok-3-beta"), 131_072);
         assert_eq!(model_context_window("llama-3-70b"), 128_000);
         assert_eq!(model_context_window("codex-future"), 200_000);
+        assert_eq!(model_context_window("custom-model-256k"), 256_000);
+        assert_eq!(model_context_window("custom-model-1m-preview"), 1_000_000);
     }
 
     #[test]

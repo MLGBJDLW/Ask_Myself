@@ -370,14 +370,47 @@ export function ChatMessages({
   const displayedText = shouldReduceMotion ? streamText : typewriterText;
 
   const [debouncedMarkdown, setDebouncedMarkdown] = useState("");
+  const latestDisplayedTextRef = useRef(displayedText);
+  const markdownThrottleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
   useEffect(() => {
-    if (shouldReduceMotion || !isStreaming || displayedText.length <= 240) {
+    latestDisplayedTextRef.current = displayedText;
+  }, [displayedText]);
+
+  useEffect(() => {
+    const flushImmediately =
+      shouldReduceMotion || !isStreaming || displayedText.length <= 240;
+
+    if (flushImmediately) {
+      if (markdownThrottleTimerRef.current) {
+        clearTimeout(markdownThrottleTimerRef.current);
+        markdownThrottleTimerRef.current = null;
+      }
       setDebouncedMarkdown(displayedText);
       return;
     }
-    const timer = setTimeout(() => setDebouncedMarkdown(displayedText), 60);
-    return () => clearTimeout(timer);
+
+    if (markdownThrottleTimerRef.current) {
+      return;
+    }
+
+    markdownThrottleTimerRef.current = setTimeout(() => {
+      markdownThrottleTimerRef.current = null;
+      setDebouncedMarkdown(latestDisplayedTextRef.current);
+    }, 60);
   }, [displayedText, isStreaming, shouldReduceMotion]);
+
+  useEffect(
+    () => () => {
+      if (markdownThrottleTimerRef.current) {
+        clearTimeout(markdownThrottleTimerRef.current);
+        markdownThrottleTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   const remarkPlugins = useMemo(() => [remarkGfm], []);
 

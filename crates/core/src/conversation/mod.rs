@@ -1545,17 +1545,16 @@ pub async fn generate_title(
     }
 }
 
+fn truncate_to_char_count(text: &str, max_chars: usize) -> &str {
+    match text.char_indices().nth(max_chars) {
+        Some((idx, _)) => &text[..idx],
+        None => text,
+    }
+}
+
 /// Truncate text to a maximum character count for title-generation context.
 fn truncate_for_title_context(text: &str, max_chars: usize) -> &str {
-    if text.len() <= max_chars {
-        return text;
-    }
-    // Find a char boundary near max_chars
-    let mut end = max_chars;
-    while !text.is_char_boundary(end) && end > 0 {
-        end -= 1;
-    }
-    &text[..end]
+    truncate_to_char_count(text, max_chars)
 }
 
 /// Simple truncation fallback when LLM title generation fails.
@@ -1564,10 +1563,10 @@ fn fallback_title(message: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    if trimmed.len() <= 50 {
+    if trimmed.chars().count() <= 50 {
         return trimmed.to_string();
     }
-    let truncated = &trimmed[..50.min(trimmed.len())];
+    let truncated = truncate_to_char_count(trimmed, 50);
     // Try to break at a word boundary
     if let Some(pos) = truncated.rfind(' ') {
         if pos > 20 {
@@ -1585,6 +1584,23 @@ fn fallback_title(message: &str) -> String {
 mod tests {
     use super::*;
     use crate::sources::CreateSourceInput;
+
+    #[test]
+    fn test_fallback_title_handles_cjk_without_panicking() {
+        let message = "多字节片段".repeat(16);
+        let title = fallback_title(&message);
+
+        assert!(title.starts_with("多字节片段"));
+        assert!(title.ends_with("..."));
+        assert!(title.chars().count() <= 53);
+    }
+
+    #[test]
+    fn test_truncate_for_title_context_counts_characters() {
+        let text = "北".repeat(400);
+        let truncated = truncate_for_title_context(&text, 300);
+        assert_eq!(truncated.chars().count(), 300);
+    }
 
     #[test]
     fn test_conversation_crud() {

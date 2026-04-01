@@ -639,6 +639,18 @@ const EXTRACT_MIN_MESSAGES: usize = 5;
 /// Stored as a conversation-level key in the DB app_config table.
 const EXTRACT_MIN_TURN_INTERVAL: usize = 5;
 
+fn truncate_to_char_boundary(text: &str, max_len: usize) -> &str {
+    if text.len() <= max_len {
+        return text;
+    }
+
+    let mut end = max_len;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 const EXTRACT_SYSTEM_PROMPT: &str = r#"You are a memory extraction assistant. Analyze the conversation and extract key personal facts, preferences, or decisions the user has shared that would be useful to remember in future conversations.
 
 Rules:
@@ -699,7 +711,7 @@ pub async fn extract_memories_from_conversation(
             _ => continue,
         };
         let text = if msg.content.len() > EXTRACT_MSG_CAP {
-            &msg.content[..EXTRACT_MSG_CAP]
+            truncate_to_char_boundary(&msg.content, EXTRACT_MSG_CAP)
         } else {
             &msg.content
         };
@@ -707,7 +719,7 @@ pub async fn extract_memories_from_conversation(
     }
     let mut transcript = transcript_parts.join("\n");
     if transcript.len() > EXTRACT_MAX_INPUT {
-        transcript.truncate(EXTRACT_MAX_INPUT);
+        transcript = truncate_to_char_boundary(&transcript, EXTRACT_MAX_INPUT).to_string();
     }
 
     let user_prompt = format!(

@@ -38,6 +38,18 @@ const MIN_TOKENS_FOR_LLM: u32 = 100;
 /// Maximum chars kept per tool-result message to avoid blowing up input.
 const TOOL_RESULT_CAP: usize = 500;
 
+fn truncate_to_char_boundary(text: &str, max_len: usize) -> &str {
+    if text.len() <= max_len {
+        return text;
+    }
+
+    let mut end = max_len;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 /// Summarise evicted messages using an LLM.
 ///
 /// Falls back to `extractive_fallback` if the LLM call fails or the evicted
@@ -58,7 +70,7 @@ pub async fn summarize_evicted_messages(
     let input = if conversation_text.len() > MAX_INPUT_FOR_SUMMARY {
         format!(
             "{}...[earlier messages omitted]",
-            &conversation_text[..MAX_INPUT_FOR_SUMMARY]
+            truncate_to_char_boundary(&conversation_text, MAX_INPUT_FOR_SUMMARY)
         )
     } else {
         conversation_text
@@ -160,7 +172,7 @@ fn build_conversation_text(messages: &[Message]) -> String {
                 let text = msg.text_content();
                 if !text.trim().is_empty() {
                     let truncated = if text.len() > TOOL_RESULT_CAP {
-                        &text[..TOOL_RESULT_CAP]
+                        truncate_to_char_boundary(&text, TOOL_RESULT_CAP)
                     } else {
                         text.as_str()
                     };
