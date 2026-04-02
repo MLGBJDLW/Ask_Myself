@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { SubagentRun } from '../../lib/subagentArtifacts';
 import { getSubagentToolDescriptor } from '../../lib/subagentTools';
+import { useTranslation } from '../../i18n';
 
 interface SubagentCardProps {
   run: SubagentRun;
@@ -63,6 +64,7 @@ export function SubagentCard({
   compact = false,
   defaultOpen,
 }: SubagentCardProps) {
+  const { t } = useTranslation();
   const autoOpen = defaultOpen ?? run.status === 'running';
   const [expanded, setExpanded] = useState(autoOpen);
   const status = statusCopy(run.status);
@@ -103,7 +105,7 @@ export function SubagentCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-semibold text-text-primary">
-              {run.role?.trim() ? run.role : 'Subagent'}
+              {run.role?.trim() ? run.role : t('chat.helperDefaultLabel')}
             </span>
             <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${status.chipClassName}`}>
               <StatusIcon className={`h-3 w-3 ${status.spin ? 'animate-spin' : ''}`} />

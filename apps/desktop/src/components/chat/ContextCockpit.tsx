@@ -36,7 +36,7 @@ function formatTokens(n: number): string {
 }
 
 export function ContextCockpit({
-  sourceSummary: _sourceSummary,
+  sourceSummary,
   tokenUsage,
   finishReason,
   contextOverflow = false,
@@ -51,6 +51,11 @@ export function ContextCockpit({
   const usage = tokenUsage && tokenUsage.contextWindow > 0 ? tokenUsage : null;
   const usagePercent = usage ? Math.min(100, (usage.promptTokens / usage.contextWindow) * 100) : 0;
   const usagePercentRounded = Math.round(usagePercent);
+  const scopeSummary = sourceSummary.loading
+    ? t('common.loading')
+    : sourceSummary.totalCount === 0 || sourceSummary.selectedCount === 0
+      ? t('chat.allSources')
+      : `${sourceSummary.selectedCount} / ${sourceSummary.totalCount}`;
   const canCompact = Boolean(onCompact);
   const canStartNewChat = Boolean(onStartNewChat);
 
@@ -137,11 +142,15 @@ export function ContextCockpit({
           })()}
 
           {(usage || lastCached) && (
-            <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">
-              <Zap className="h-3 w-3 text-text-tertiary" />
-              <span className="truncate">{lastCached && !usage ? t('chat.cached') : usageSourceLabel}</span>
-            </span>
-          )}
+          <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">
+            <Zap className="h-3 w-3 text-text-tertiary" />
+            <span className="truncate">{lastCached && !usage ? t('chat.cached') : usageSourceLabel}</span>
+          </span>
+        )}
+
+          <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">
+            <span className="truncate">{t('chat.knowledgeSources')}: {scopeSummary}</span>
+          </span>
 
           <span className={`inline-flex min-w-0 items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${riskChipTone}`}>
             <RiskIcon className="h-3 w-3 shrink-0" />
@@ -204,6 +213,23 @@ export function ContextCockpit({
                 {!isStreaming && !finishReason && !contextOverflow && !rateLimited && (
                   <span className="rounded-full bg-surface-2 px-2 py-1">{t('chat.contextHealthy')}</span>
                 )}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
+              <div className="mb-1 text-[11px] font-medium text-text-tertiary">
+                {t('chat.knowledgeSources')}
+              </div>
+              <div className="text-sm text-text-primary">{scopeSummary}</div>
+              <div className="mt-1 text-[11px] text-text-secondary">
+                {sourceSummary.loading
+                  ? t('common.loading')
+                  : sourceSummary.totalCount === 0 || sourceSummary.selectedCount === 0
+                    ? t('chat.allSources')
+                    : t('chat.contextScopeSelected', {
+                        selected: sourceSummary.selectedCount,
+                        total: sourceSummary.totalCount,
+                      })}
               </div>
             </div>
           </div>

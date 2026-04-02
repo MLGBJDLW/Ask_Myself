@@ -168,7 +168,7 @@ export function PlanPanel({
           className="mt-1 text-[11px] text-accent hover:underline"
           onClick={() => setShowAll(prev => !prev)}
         >
-          {showAll ? t('chat.showLess') : `Show all ${plan.steps.length} steps`}
+          {showAll ? t('chat.showLess') : t('chat.showAllSteps', { count: String(plan.steps.length) })}
         </button>
       )}
     </div>
@@ -253,7 +253,7 @@ export function VerificationPanel({
           className="mt-1 text-[11px] text-accent hover:underline"
           onClick={() => setShowAll(prev => !prev)}
         >
-          {showAll ? t('chat.showLess') : `Show all ${verification.checks.length} checks`}
+          {showAll ? t('chat.showLess') : t('chat.showAllChecks', { count: String(verification.checks.length) })}
         </button>
       )}
     </div>

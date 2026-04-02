@@ -337,6 +337,35 @@ export function PlaybooksPage() {
     };
   }, [buildPlaybookSourceIds, selectedPlaybook]);
 
+  const buildCollectionWorkspacePrompt = useCallback((mode: 'investigate' | 'brief' | 'report' | 'slides') => {
+    if (!selectedPlaybook) return '';
+
+    const evidenceLines = citations
+      .sort((a, b) => a.order - b.order)
+      .map((citation, index) => {
+        const evidence = citationEvidence[citation.id];
+        const title = evidence?.documentTitle || (evidence?.documentPath ? basename(evidence.documentPath) : citation.chunkId.slice(0, 12));
+        const snippet = evidence?.snippet || evidence?.content || '';
+        const note = citation.annotation ? `Note: ${citation.annotation}` : '';
+        return `${index + 1}. ${title}${note ? `\n${note}` : ''}${snippet ? `\nExcerpt: ${truncate(snippet, 260)}` : ''}`;
+      })
+      .join('\n');
+
+    const intro =
+      mode === 'brief'
+        ? 'Write a short executive brief using this collection.'
+        : mode === 'report'
+          ? 'Draft a polished report using this collection as the working evidence set.'
+          : mode === 'slides'
+            ? 'Create a presentation outline using this collection as the working evidence set.'
+            : 'Continue investigating this collection and help me reason over the saved evidence.';
+
+    return `${intro}
+Collection: ${selectedPlaybook.title}
+${selectedPlaybook.description ? `Description: ${selectedPlaybook.description}\n` : ''}${selectedPlaybook.queryText ? `Base query: ${selectedPlaybook.queryText}\n` : ''}Saved evidence:
+${evidenceLines}`;
+  }, [citationEvidence, citations, selectedPlaybook]);
+
   /* 鈹€鈹€ Citation reordering 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
   const handleMoveCitation = async (index: number, direction: 'up' | 'down') => {
@@ -574,6 +603,70 @@ export function PlaybooksPage() {
 
                 {/* Citations section */}
                 <div className="px-5 py-4">
+                  <div className="mb-4 rounded-xl border border-border/70 bg-surface-1/70 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-text-primary">
+                          {t('playbooks.workspaceTitle')}
+                        </h3>
+                        <p className="mt-1 text-xs text-text-tertiary max-w-2xl">
+                          {t('playbooks.workspaceDesc')}
+                        </p>
+                      </div>
+                      <Badge variant="info">{citations.length}</Badge>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        icon={<BotMessageSquare size={13} />}
+                        onClick={() => handleAskAI(
+                          buildCollectionWorkspacePrompt('investigate'),
+                          buildPlaybookCollectionContext() ?? undefined,
+                          buildPlaybookSourceIds(),
+                        )}
+                      >
+                        {t('playbooks.actionInvestigate')}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<FileText size={13} />}
+                        onClick={() => handleAskAI(
+                          buildCollectionWorkspacePrompt('brief'),
+                          buildPlaybookCollectionContext() ?? undefined,
+                          buildPlaybookSourceIds(),
+                        )}
+                      >
+                        {t('playbooks.actionBrief')}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<FileText size={13} />}
+                        onClick={() => handleAskAI(
+                          buildCollectionWorkspacePrompt('report'),
+                          buildPlaybookCollectionContext() ?? undefined,
+                          buildPlaybookSourceIds(),
+                        )}
+                      >
+                        {t('playbooks.actionReport')}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<FileText size={13} />}
+                        onClick={() => handleAskAI(
+                          buildCollectionWorkspacePrompt('slides'),
+                          buildPlaybookCollectionContext() ?? undefined,
+                          buildPlaybookSourceIds(),
+                        )}
+                      >
+                        {t('playbooks.actionSlides')}
+                      </Button>
+                    </div>
+                  </div>
+
                   <div className="flex items-center gap-2 mb-3">
                     <h3 className="text-xs font-medium uppercase tracking-wider text-text-tertiary">
                       {t('playbooks.citations')}

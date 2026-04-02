@@ -11,7 +11,7 @@ use crate::db::Database;
 use crate::error::CoreError;
 
 use super::create_file_tool::{has_path_traversal, resolve_and_validate};
-use super::{Tool, ToolCategory, ToolDef, ToolResult};
+use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/generate_document.json");
@@ -212,9 +212,8 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
 
     for section in &content.sections {
         if section.page_break_before.unwrap_or(false) {
-            doc = doc.add_paragraph(
-                Paragraph::new().add_run(Run::new().add_break(BreakType::Page)),
-            );
+            doc =
+                doc.add_paragraph(Paragraph::new().add_run(Run::new().add_break(BreakType::Page)));
         }
 
         // Heading
@@ -242,43 +241,43 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                     continue;
                 }
                 if let Some(bullet_text) = trimmed
-                .strip_prefix("- ")
-                .or_else(|| trimmed.strip_prefix("• "))
-            {
-                doc = doc.add_paragraph(
-                    Paragraph::new()
-                        .numbering(NumberingId::new(1), IndentLevel::new(0))
-                        .line_spacing(
-                            LineSpacing::new()
-                                .line(276) // 1.15 line spacing (240 * 1.15 = 276)
-                                .line_rule(LineSpacingType::Auto)
-                                .after(120), // 6pt
-                        )
-                        .add_run(
-                            Run::new()
-                                .add_text(bullet_text)
-                                .size(22) // 11pt
-                                .fonts(body_fonts.clone()),
-                        ),
-                );
-            } else {
-                doc = doc.add_paragraph(
-                    Paragraph::new()
-                        .align(AlignmentType::Both) // justified
-                        .line_spacing(
-                            LineSpacing::new()
-                                .line(276)
-                                .line_rule(LineSpacingType::Auto)
-                                .after(120),
-                        )
-                        .add_run(
-                            Run::new()
-                                .add_text(line)
-                                .size(22) // 11pt
-                                .fonts(body_fonts.clone()),
-                        ),
-                );
-            }
+                    .strip_prefix("- ")
+                    .or_else(|| trimmed.strip_prefix("• "))
+                {
+                    doc = doc.add_paragraph(
+                        Paragraph::new()
+                            .numbering(NumberingId::new(1), IndentLevel::new(0))
+                            .line_spacing(
+                                LineSpacing::new()
+                                    .line(276) // 1.15 line spacing (240 * 1.15 = 276)
+                                    .line_rule(LineSpacingType::Auto)
+                                    .after(120), // 6pt
+                            )
+                            .add_run(
+                                Run::new()
+                                    .add_text(bullet_text)
+                                    .size(22) // 11pt
+                                    .fonts(body_fonts.clone()),
+                            ),
+                    );
+                } else {
+                    doc = doc.add_paragraph(
+                        Paragraph::new()
+                            .align(AlignmentType::Both) // justified
+                            .line_spacing(
+                                LineSpacing::new()
+                                    .line(276)
+                                    .line_rule(LineSpacingType::Auto)
+                                    .after(120),
+                            )
+                            .add_run(
+                                Run::new()
+                                    .add_text(line)
+                                    .size(22) // 11pt
+                                    .fonts(body_fonts.clone()),
+                            ),
+                    );
+                }
             }
         }
 
@@ -294,12 +293,7 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                                 .line_rule(LineSpacingType::Auto)
                                 .after(120),
                         )
-                        .add_run(
-                            Run::new()
-                                .add_text(item)
-                                .size(22)
-                                .fonts(body_fonts.clone()),
-                        ),
+                        .add_run(Run::new().add_text(item).size(22).fonts(body_fonts.clone())),
                 );
             }
         }
@@ -421,7 +415,11 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                 }
 
                 for (row_index, row) in table.rows.iter().enumerate() {
-                    let shade = if row_index % 2 == 0 { "FFFFFF" } else { "F7FAFC" };
+                    let shade = if row_index % 2 == 0 {
+                        "FFFFFF"
+                    } else {
+                        "F7FAFC"
+                    };
                     rows.push(TableRow::new(
                         (0..column_count)
                             .map(|index| {
@@ -431,7 +429,9 @@ fn generate_docx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                                     .add_paragraph(
                                         Paragraph::new().add_run(
                                             Run::new()
-                                                .add_text(row.get(index).cloned().unwrap_or_default())
+                                                .add_text(
+                                                    row.get(index).cloned().unwrap_or_default(),
+                                                )
                                                 .size(20)
                                                 .fonts(body_fonts.clone()),
                                         ),
@@ -959,11 +959,7 @@ fn pptx_theme_xml() -> &'static str {
 </a:theme>"#
 }
 
-fn build_title_slide(
-    slide: &PptxSlide,
-    slide_num: usize,
-    theme: &ResolvedPptxTheme,
-) -> String {
+fn build_title_slide(slide: &PptxSlide, slide_num: usize, theme: &ResolvedPptxTheme) -> String {
     let title_text = xml_escape(slide.title.as_deref().unwrap_or(""));
     let subtitle_text = xml_escape(
         slide
@@ -1036,19 +1032,11 @@ fn build_title_slide(
     )
 }
 
-fn build_section_slide(
-    slide: &PptxSlide,
-    slide_num: usize,
-    theme: &ResolvedPptxTheme,
-) -> String {
+fn build_section_slide(slide: &PptxSlide, slide_num: usize, theme: &ResolvedPptxTheme) -> String {
     build_title_slide(slide, slide_num, theme)
 }
 
-fn build_content_slide(
-    slide: &PptxSlide,
-    slide_num: usize,
-    theme: &ResolvedPptxTheme,
-) -> String {
+fn build_content_slide(slide: &PptxSlide, slide_num: usize, theme: &ResolvedPptxTheme) -> String {
     let title_text = xml_escape(slide.title.as_deref().unwrap_or(""));
     let title_font = xml_escape(&theme.title_font);
     let body_font = xml_escape(&theme.body_font);
@@ -1433,7 +1421,7 @@ impl Tool for GenerateDocumentTool {
         call_id: &str,
         arguments: &str,
         db: &Database,
-        _source_scope: &[String],
+        source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let args: GenerateDocArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid generate_document arguments: {e}"))
@@ -1462,9 +1450,10 @@ impl Tool for GenerateDocumentTool {
         let call_id = call_id.to_string();
         let content = args.content;
         let path_str = args.path;
+        let source_scope = source_scope.to_vec();
 
         tokio::task::spawn_blocking(move || {
-            let sources = db.list_sources()?;
+            let sources = scoped_sources(&db, &source_scope)?;
             if sources.is_empty() {
                 return Ok(ToolResult {
                     call_id: call_id.clone(),

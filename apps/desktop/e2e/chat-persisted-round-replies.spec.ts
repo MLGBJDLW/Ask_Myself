@@ -33,9 +33,9 @@ test.beforeEach(async ({ page }) => {
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
     const conversations: Record<string, Conversation> = {
-      'conv-persisted-order': {
-        id: 'conv-persisted-order',
-        title: 'Persisted Order',
+      'conv-persisted-round-replies': {
+        id: 'conv-persisted-round-replies',
+        title: 'Persisted Round Replies',
         provider: 'open_ai',
         model: 'gpt-4.1',
         systemPrompt: '',
@@ -44,15 +44,15 @@ test.beforeEach(async ({ page }) => {
       },
     };
 
-    const toolCallId = 'tool-order-1';
+    const toolCallId = 'tool-round-reply-1';
 
     const messagesByConversation: Record<string, Message[]> = {
-      'conv-persisted-order': [
+      'conv-persisted-round-replies': [
         {
           id: 'm-user-1',
-          conversationId: 'conv-persisted-order',
+          conversationId: 'conv-persisted-round-replies',
           role: 'user',
-          content: 'Walk through the persisted order.',
+          content: 'Show the persisted round ordering.',
           toolCallId: null,
           toolCalls: [],
           artifacts: null,
@@ -64,11 +64,11 @@ test.beforeEach(async ({ page }) => {
         },
         {
           id: 'm-assistant-tools-1',
-          conversationId: 'conv-persisted-order',
+          conversationId: 'conv-persisted-round-replies',
           role: 'assistant',
-          content: '',
+          content: 'first-round-reply',
           toolCallId: null,
-          toolCalls: [{ id: toolCallId, name: 'search_knowledge_base', arguments: '{"query":"order"}' }],
+          toolCalls: [{ id: toolCallId, name: 'read_file', arguments: '{"path":"notes/retries.md"}' }],
           artifacts: null,
           tokenCount: 0,
           createdAt: nowIso,
@@ -78,9 +78,9 @@ test.beforeEach(async ({ page }) => {
         },
         {
           id: 'm-tool-1',
-          conversationId: 'conv-persisted-order',
+          conversationId: 'conv-persisted-round-replies',
           role: 'tool',
-          content: 'Found the order note.',
+          content: 'Loaded retries.md',
           toolCallId,
           toolCalls: [],
           artifacts: null,
@@ -92,9 +92,9 @@ test.beforeEach(async ({ page }) => {
         },
         {
           id: 'm-assistant-final',
-          conversationId: 'conv-persisted-order',
+          conversationId: 'conv-persisted-round-replies',
           role: 'assistant',
-          content: 'final-reply-segment',
+          content: 'final-round-reply',
           toolCallId: null,
           toolCalls: [],
           artifacts: null,
@@ -107,13 +107,13 @@ test.beforeEach(async ({ page }) => {
       ],
     };
 
-    const callbackMap = new Map<number, (event: unknown) => void>();
     let callbackSeq = 1;
     let listenerSeq = 1;
+    const callbackMap = new Map<number, (event: unknown) => void>();
 
     const defaultAgentConfig = {
-      id: 'cfg-persisted-order',
-      name: 'Persisted Order Config',
+      id: 'cfg-persisted-round-replies',
+      name: 'Persisted Round Replies Config',
       provider: 'open_ai',
       apiKey: '',
       baseUrl: null,
@@ -149,6 +149,8 @@ test.beforeEach(async ({ page }) => {
           const id = String(args.id ?? '');
           return [clone(conversations[id]), clone(messagesByConversation[id] ?? [])];
         }
+        case 'get_conversation_turns_cmd':
+          return [];
         case 'list_sources':
           return [];
         case 'get_conversation_sources_cmd':
@@ -221,19 +223,20 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('renders persisted multi-step traces in chronological order', async ({ page }) => {
-  await page.goto('/chat/conv-persisted-order');
+test('keeps persisted tool-round replies interleaved with their tool trace', async ({ page }) => {
+  await page.goto('/chat/conv-persisted-round-replies');
 
   const chatLogText = await page.getByLabel('Chat messages').textContent();
   expect(chatLogText).toBeTruthy();
 
   const text = chatLogText ?? '';
   expect(text.indexOf('phase one thinking')).toBeGreaterThanOrEqual(0);
-  expect(text.indexOf('search_knowledge_base')).toBeGreaterThan(text.indexOf('phase one thinking'));
-  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
-  expect(text.indexOf('final-reply-segment')).toBeGreaterThan(text.indexOf('phase two thinking'));
+  expect(text.indexOf('first-round-reply')).toBeGreaterThan(text.indexOf('phase one thinking'));
+  expect(text.indexOf('read_file')).toBeGreaterThan(text.indexOf('first-round-reply'));
+  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('read_file'));
+  expect(text.indexOf('final-round-reply')).toBeGreaterThan(text.indexOf('phase two thinking'));
 
   await expect(
     page.locator('button[aria-expanded="true"]').filter({ hasText: 'Thinking completed' }),
-  ).toHaveCount(1);
+  ).toHaveCount(2);
 });

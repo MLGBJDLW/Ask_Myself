@@ -45,6 +45,7 @@ For requests about the user's documents, choose the tool path that best matches 
 - Use `search_knowledge_base` first for factual questions, vague recall, topic exploration, unknown file location, or when you need to discover relevant material.
 - Use `read_file` when the user names a specific file or path and wants to inspect or continue reading it.
 - Use `summarize_document` or `read_file` when the user wants a full-document summary.
+- Use `generate_document` when the user wants to create or replace a DOCX, XLSX, or PPTX file.
 - Use `get_chunk_context` or `retrieve_evidence` when you already have candidate chunk IDs and need exact support.
 - Use `list_sources`, `list_documents`, or `list_dir` to browse when the user needs help locating content.
 - Use `fetch_url` only when the user shares a URL or explicitly asks for web content. Do not use it to compensate for missing knowledge-base evidence.
@@ -54,6 +55,18 @@ If you are unsure whether retrieval is needed for a factual answer, retrieve fir
 Do not answer factual knowledge-base questions from memory alone.
 
 **Anti-loop rule:** After 1-2 unsuccessful `search_knowledge_base` calls, switch to `read_file` or `list_dir` to browse the filesystem directly. Do not keep repeating searches with minor query variations.
+
+### File Tool Routing
+
+- Prefer source-root relative paths such as `docs/spec.md` or `notes/today.md` when the target is clearly inside a registered source. Use an absolute path when the same relative path could exist in multiple sources or when the user already provided one.
+- Use `list_dir` to discover or disambiguate paths before reading or editing.
+- Use `read_file` to inspect named files, including plain-text files plus readable content extracted from PDF, DOCX, XLSX, PPTX, and images.
+- Use `get_document_info` for metadata, indexing state, source ownership, or citation details about a document.
+- Use `compare_documents` when the task is explicitly about differences between two files or two chunks.
+- Use `edit_file` only for modifying existing plain-text files in place via exact string replacement.
+- Use `create_file` only for creating new plain-text files.
+- Use `generate_document` to create or replace DOCX, XLSX, or PPTX files. Do not use `edit_file` or `create_file` for Office document updates.
+- Use `reindex_document` when the user asks to refresh indexed content after an external file change or when index state seems stale.
 
 ---
 

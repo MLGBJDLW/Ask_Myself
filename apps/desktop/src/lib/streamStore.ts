@@ -31,6 +31,12 @@ export interface TraceThinkingEvent {
   text: string;
 }
 
+export interface TraceReplyEvent {
+  id: string;
+  kind: 'reply';
+  text: string;
+}
+
 export interface TraceToolEvent {
   id: string;
   kind: 'tool';
@@ -44,7 +50,7 @@ export interface TraceStatusEvent {
   tone?: 'muted' | 'success' | 'error';
 }
 
-export type TraceEvent = TraceThinkingEvent | TraceToolEvent | TraceStatusEvent;
+export type TraceEvent = TraceThinkingEvent | TraceReplyEvent | TraceToolEvent | TraceStatusEvent;
 
 export interface UsageTotal {
   promptTokens: number;
@@ -265,6 +271,24 @@ function appendThinkingTraceEvent(state: InternalStreamState, delta: string): vo
   state.traceEvents = [...state.traceEvents, {
     id: `trace-thinking-${Date.now()}-${state._traceSeq++}`,
     kind: 'thinking',
+    text: delta,
+  }];
+}
+
+function appendReplyTraceEvent(state: InternalStreamState, delta: string): void {
+  if (!delta) return;
+  const last = state.traceEvents[state.traceEvents.length - 1];
+  if (last?.kind === 'reply') {
+    state.traceEvents = [
+      ...state.traceEvents.slice(0, -1),
+      { ...last, text: last.text + delta },
+    ];
+    return;
+  }
+
+  state.traceEvents = [...state.traceEvents, {
+    id: `trace-reply-${Date.now()}-${state._traceSeq++}`,
+    kind: 'reply',
     text: delta,
   }];
 }
@@ -494,7 +518,10 @@ class StreamStoreImpl {
         const delta = typeof event.delta === 'string'
           ? event.delta
           : (typeof raw.delta === 'string' ? raw.delta : '');
+        if (!delta) break;
+        s.thinkingText = '';
         s.streamText += delta;
+        appendReplyTraceEvent(s, delta);
         break;
       }
 
@@ -568,30 +595,15 @@ class StreamStoreImpl {
             }];
           }
         } else {
-          const lastRound = s.streamRounds.length > 0 ? s.streamRounds[s.streamRounds.length - 1] : null;
-          if (lastRound && !lastRound.reply.trim()) {
-            s._activeRoundId = lastRound.id;
-            s._activeRoundAcceptingStarts = true;
-            s.streamRounds = s.streamRounds.map(round =>
-              round.id === lastRound.id
-                ? {
-                    ...round,
-                    thinking: roundThinking ? ((round.thinking || '') + roundThinking) : round.thinking,
-                    toolCalls: [...round.toolCalls, nextCall],
-                  }
-                : round,
-            );
-          } else {
-            const roundId = `stream-round-${Date.now()}-${s._roundSeq++}`;
-            s._activeRoundId = roundId;
-            s._activeRoundAcceptingStarts = true;
-            s.streamRounds = [...s.streamRounds, {
-              id: roundId,
-              thinking: roundThinking || undefined,
-              reply: '',
-              toolCalls: [nextCall],
-            }];
-          }
+          const roundId = `stream-round-${Date.now()}-${s._roundSeq++}`;
+          s._activeRoundId = roundId;
+          s._activeRoundAcceptingStarts = true;
+          s.streamRounds = [...s.streamRounds, {
+            id: roundId,
+            thinking: roundThinking || undefined,
+            reply: '',
+            toolCalls: [nextCall],
+          }];
         }
 
         // Update flat toolCalls list
@@ -656,6 +668,7 @@ class StreamStoreImpl {
             break;
           }
         }
+        s._activeRoundAcceptingStarts = false;
         } catch (err) {
           console.error('[streamStore] toolCallResult error:', err);
         }
@@ -704,7 +717,10 @@ class StreamStoreImpl {
         if (!hasFinalRound) {
           const doneMessage = event.message ?? raw.message;
           const doneText = extractMessageText(doneMessage);
-          if (doneText) s.streamText = doneText;
+          if (doneText) {
+            s.streamText = doneText;
+            appendReplyTraceEvent(s, doneText);
+          }
         }
 
         s.toolCalls = markToolCallsFinished(s.toolCalls, 'done', 'No output');

@@ -19,6 +19,7 @@ import {
   FolderOpen,
   ExternalLink,
   MessageSquare,
+  Sparkles,
 } from 'lucide-react';
 import { Logo } from '../components/Logo';
 import { toast } from 'sonner';
@@ -64,6 +65,53 @@ const FILE_TYPE_OPTIONS: { value: FileType; labelKey: 'search.markdown' | 'searc
   { value: 'audio', labelKey: 'search.audio' },
 ];
 
+function buildRecallPrompt(
+  input: {
+  clue: string;
+  where: string;
+  roughDate: string;
+  fileType: string;
+  },
+  labels: {
+    intro: string;
+    clue: string;
+    where: string;
+    date: string;
+    fileType: string;
+    instruction: string;
+  },
+): string {
+  const parts = [
+    labels.intro,
+    `${labels.clue}: ${input.clue.trim()}`,
+  ];
+
+  if (input.where.trim()) {
+    parts.push(`${labels.where}: ${input.where.trim()}`);
+  }
+  if (input.roughDate.trim()) {
+    parts.push(`${labels.date}: ${input.roughDate.trim()}`);
+  }
+  if (input.fileType.trim()) {
+    parts.push(`${labels.fileType}: ${input.fileType.trim()}`);
+  }
+
+  parts.push(labels.instruction);
+  return parts.join('\n');
+}
+
+function buildRecallSearchQuery(input: {
+  clue: string;
+  where: string;
+  roughDate: string;
+  fileType: string;
+}): string {
+  return [input.clue, input.where, input.roughDate, input.fileType]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -99,6 +147,10 @@ export function SearchPage() {
   const [newPlaybookTitle, setNewPlaybookTitle] = useState('');
   const [citationNote, setCitationNote] = useState('');
   const [saveLoading, setSaveLoading] = useState(false);
+  const [recallClue, setRecallClue] = useState('');
+  const [recallWhere, setRecallWhere] = useState('');
+  const [recallDate, setRecallDate] = useState('');
+  const [recallFileType, setRecallFileType] = useState('');
 
   // ── Search tab ────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<'kb' | 'conversations'>('kb');
@@ -121,12 +173,31 @@ export function SearchPage() {
   // 鈹€鈹€ Knowledge Base stats 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const [indexStats, setIndexStats] = useState<IndexStats | null>(null);
   const [kbOpen, setKbOpen] = useState(true);
+  const activeSearchSourceNames = useMemo(
+    () => sources
+      .filter((source) => filters.sourceIds.includes(source.id))
+      .map((source) => source.rootPath.split(/[/\\]/).pop() || source.rootPath),
+    [filters.sourceIds, sources],
+  );
+  const recallExamples = useMemo(
+    () => [
+      t('search.recallExampleRetry'),
+      t('search.recallExampleBudget'),
+      t('search.recallExampleMeeting'),
+    ],
+    [t],
+  );
 
   // Navigate to full chat page (optional one-off initial message)
-  const openChatWithMessage = useCallback((message: string) => {
+  const openChatWithMessage = useCallback((message: string, sourceIds?: string[]) => {
     const trimmed = message.trim();
     navigate('/chat', {
-      state: trimmed ? { initialMessage: trimmed } : null,
+      state: trimmed
+        ? {
+            initialMessage: trimmed,
+            sourceIds: sourceIds && sourceIds.length > 0 ? sourceIds : undefined,
+          }
+        : null,
     });
   }, [navigate]);
 
@@ -142,12 +213,12 @@ export function SearchPage() {
       }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'a' || e.key === 'A')) {
         e.preventDefault();
-        openChatWithMessage(query);
+        openChatWithMessage(query, filters.sourceIds);
       }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [openChatWithMessage, query]);
+  }, [filters.sourceIds, openChatWithMessage, query]);
 
   // 鈹€鈹€ Load recent queries on mount 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const loadRecentQueries = useCallback(async () => {
@@ -267,6 +338,39 @@ export function SearchPage() {
   };
 
   // ── Conversation search handler ───────────────────────────────────
+  const handleRecallWithAi = useCallback(() => {
+    const clue = recallClue.trim();
+    if (!clue) return;
+    openChatWithMessage(
+      buildRecallPrompt({
+        clue: recallClue,
+        where: recallWhere,
+        roughDate: recallDate,
+        fileType: recallFileType,
+      }, {
+        intro: t('search.recallPromptIntro'),
+        clue: t('search.recallPromptClue'),
+        where: t('search.recallPromptWhere'),
+        date: t('search.recallPromptDate'),
+        fileType: t('search.recallPromptFileType'),
+        instruction: t('search.recallPromptInstruction'),
+      }),
+      filters.sourceIds,
+    );
+  }, [filters.sourceIds, openChatWithMessage, recallClue, recallDate, recallFileType, recallWhere, t]);
+
+  const handleRecallSearch = useCallback(() => {
+    const queryText = buildRecallSearchQuery({
+      clue: recallClue,
+      where: recallWhere,
+      roughDate: recallDate,
+      fileType: recallFileType,
+    });
+    if (!queryText.trim()) return;
+    setQuery(queryText);
+    handleSearch(queryText);
+  }, [handleSearch, recallClue, recallDate, recallFileType, recallWhere]);
+
   const handleConvSearch = useCallback(async (text?: string) => {
     const q = (text ?? convQuery).trim();
     if (!q) return;
@@ -498,6 +602,122 @@ export function SearchPage() {
         </div>
       )}
 
+      <div className="mb-6 rounded-xl border border-border bg-surface-1 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <Sparkles size={15} className="text-accent" />
+              <h2 className="text-sm font-semibold text-text-primary">
+                {t('search.recallTitle')}
+              </h2>
+            </div>
+            <p className="mt-1 text-xs text-text-tertiary">
+              {t('search.recallDesc')}
+            </p>
+          </div>
+          {filters.sourceIds.length > 0 && (
+            <span className="rounded-full border border-accent/25 bg-accent/10 px-2.5 py-1 text-[11px] text-accent">
+              {t('chat.knowledgeSources')}: {activeSearchSourceNames.join(', ')}
+            </span>
+          )}
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className="mb-1.5 block text-[11px] font-medium text-text-tertiary">
+              {t('search.recallClues')}
+            </label>
+            <textarea
+              aria-label={t('search.recallClues')}
+              value={recallClue}
+              onChange={(e) => setRecallClue(e.target.value)}
+              placeholder={t('search.recallCluesPlaceholder')}
+              rows={3}
+              className="w-full rounded-lg border border-border bg-surface-0 px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary outline-none transition-colors hover:border-border-hover focus:border-accent"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-[11px] font-medium text-text-tertiary">
+              {t('search.recallWhere')}
+            </label>
+            <Input
+              aria-label={t('search.recallWhere')}
+              value={recallWhere}
+              onChange={(e) => setRecallWhere(e.target.value)}
+              placeholder={t('search.recallWherePlaceholder')}
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-[11px] font-medium text-text-tertiary">
+              {t('search.recallDateLabel')}
+            </label>
+            <Input
+              aria-label={t('search.recallDateLabel')}
+              value={recallDate}
+              onChange={(e) => setRecallDate(e.target.value)}
+              placeholder={t('search.recallDatePlaceholder')}
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-[11px] font-medium text-text-tertiary">
+              {t('search.fileTypeFilter')}
+            </label>
+            <select
+              aria-label={t('search.fileTypeFilter')}
+              value={recallFileType}
+              onChange={(e) => setRecallFileType(e.target.value)}
+              className="h-11 w-full rounded-lg border border-border bg-surface-0 px-3 text-sm text-text-primary outline-none transition-colors hover:border-border-hover focus:border-accent"
+            >
+              <option value="">{t('search.allTypes')}</option>
+              {FILE_TYPE_OPTIONS.map((ft) => (
+                <option key={ft.value} value={t(ft.labelKey)}>
+                  {t(ft.labelKey)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-[11px] font-medium text-text-tertiary">
+              {t('search.recallExamples')}
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {recallExamples.map((example) => (
+                <button
+                  key={example}
+                  type="button"
+                  onClick={() => setRecallClue(example)}
+                  className="rounded-full border border-border bg-surface-2 px-2.5 py-1 text-[11px] text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+                >
+                  {example}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button
+            onClick={handleRecallWithAi}
+            disabled={!recallClue.trim()}
+            icon={<BotMessageSquare size={14} />}
+          >
+            {t('search.recallWithAi')}
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={handleRecallSearch}
+            disabled={!recallClue.trim()}
+            icon={<Search size={14} />}
+          >
+            {t('search.recallSearch')}
+          </Button>
+        </div>
+      </div>
+
       {/* 鈹€鈹€ Search input 鈹€鈹€ */}
       <div className="mb-4">
         <div className="flex gap-2">
@@ -581,7 +801,7 @@ export function SearchPage() {
               icon={<BotMessageSquare size={16} />}
               onClick={() => {
                 const msg = query.trim() || '';
-                openChatWithMessage(msg);
+                openChatWithMessage(msg, filters.sourceIds);
               }}
               className="shrink-0"
             >
@@ -592,6 +812,16 @@ export function SearchPage() {
       </div>
 
       {/* ── Tab bar: Knowledge Base / Conversations ── */}
+      {filters.sourceIds.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-1.5 text-[11px] text-text-secondary">
+          <span className="rounded-full border border-accent/25 bg-accent/10 px-2.5 py-1 text-accent">
+            {t('chat.knowledgeSources')}: {activeSearchSourceNames.join(', ')}
+          </span>
+          <span className="rounded-full border border-border bg-surface-1 px-2.5 py-1">
+            {t('chat.askAiScopedHint')}
+          </span>
+        </div>
+      )}
       <div className="mb-4 flex items-center gap-1 border-b border-border">
         <button
           onClick={() => setActiveTab('kb')}

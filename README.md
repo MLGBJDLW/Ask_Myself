@@ -1,8 +1,8 @@
 # Ask Myself
 
-> A local-first personal knowledge recall engine.
+> A local-first personal knowledge and desktop assistance workspace.
 
-Ask Myself is a desktop application that turns your local files into a searchable, AI-augmented knowledge base. Point it at folders containing notes, PDFs, logs, spreadsheets, and other documents; it indexes everything locally, lets you search in natural language, and uses an evidence-first agent to answer with citations back to your own data.
+Ask Myself is a desktop application that turns your local files into a searchable, AI-augmented knowledge base and a practical desktop assistant. Point it at folders containing notes, PDFs, logs, spreadsheets, presentations, and other documents; it indexes everything locally, lets you search in natural language, grounds answers in evidence from your own data, and increasingly helps with everyday desktop tasks such as investigation, summarization, document creation, and office-style assistance.
 
 Unlike cloud-native note tools, the core data path stays on your machine. Indexing, parsing, embedding, OCR, search, collections, and chat persistence all run locally. External LLM providers can be used for generation, but the app sends scoped context rather than your full document store.
 
@@ -12,6 +12,27 @@ The project has recently evolved beyond a flat chat log:
 - Each user turn can persist route, status, trace, and final answer bindings.
 - The chat UI is moving toward a turn-driven trace timeline rather than disconnected thinking/tool/reply fragments.
 - Collections can launch scoped follow-up chat with both source scope and collection metadata attached.
+
+## Product Direction
+
+Ask Myself is no longer only a “local knowledge base chat” product.
+
+The active direction is:
+
+- local-first personal knowledge recall
+- evidence-first investigation over the user's own files
+- practical desktop assistance for normal users, not just programmers
+- office and document help that stays grounded in the user's local context
+
+The product should feel like a trustworthy desktop assistant with strong local memory, not a developer-only agent console.
+
+See the living docs:
+
+- [docs/PRODUCT_DIRECTION.md](docs/PRODUCT_DIRECTION.md)
+- [docs/ROADMAP.md](docs/ROADMAP.md)
+- [docs/UX_QUALITY_BAR.md](docs/UX_QUALITY_BAR.md)
+- [docs/I18N_GUIDELINES.md](docs/I18N_GUIDELINES.md)
+- [docs/README.md](docs/README.md)
 
 ## Core Workflow
 
@@ -45,7 +66,7 @@ Supported formats include:
 - PPTX
 - Images
 
-### AI-Powered Chat
+### AI-Powered Chat and Assistance
 
 - Evidence-first answers with `[cite:CHUNK_ID]` citations
 - Hybrid retrieval over your local knowledge base
@@ -53,6 +74,9 @@ Supported formats include:
 - Persistent conversations with recoverable turn traces
 - Live trace timeline for thinking, tool activity, route selection, and status
 - Collection-aware chat handoff from the Collections page
+- Consumer-friendly investigation workspace in the Chat UI
+- Recall Mode entry in Search for vague memory lookup
+- Office-style document assistance through document and file tools
 - Configurable providers: OpenAI, Anthropic, Google Gemini, Ollama, and other OpenAI-compatible endpoints already supported by the codebase
 - Custom per-conversation system prompts
 - Answer caching and personalization signals from feedback
@@ -221,6 +245,9 @@ The current direction of the project is clear, but a few major upgrades are stil
 - Deepening collection-aware retrieval and answer planning
 - Making persisted traces the primary replay source across the app
 - Reducing large-file complexity in both Rust and React modules
+- Evolving from a recall-only experience toward a broader consumer desktop assistant
+- Raising the i18n discipline bar so all shipped locales remain coherent
+- Defining and enforcing a stronger UX quality bar across Search, Collections, and Chat
 
 ## Supported UI Languages
 

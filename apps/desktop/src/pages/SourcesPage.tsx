@@ -533,10 +533,15 @@ export function SourcesPage() {
 
   /* 鈹€鈹€ Ask AI handler 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
-  const handleAskAI = (context: string) => {
+  const handleAskAI = (context: string, sourceIds?: string[]) => {
     const trimmed = context.trim();
     navigate('/chat', {
-      state: trimmed ? { initialMessage: trimmed } : null,
+      state: trimmed
+        ? {
+            initialMessage: trimmed,
+            sourceIds: sourceIds && sourceIds.length > 0 ? sourceIds : undefined,
+          }
+        : null,
     });
   };
 
@@ -795,7 +800,7 @@ export function SourcesPage() {
                       {t('common.delete')}
                     </Button>
                     <button
-                      onClick={() => handleAskAI(`Tell me about the source at "${source.rootPath}". Include globs: ${source.includeGlobs.join(', ')}. Exclude globs: ${source.excludeGlobs.join(', ')}.`)}
+                      onClick={() => handleAskAI(`Tell me about the source at "${source.rootPath}". Include globs: ${source.includeGlobs.join(', ')}. Exclude globs: ${source.excludeGlobs.join(', ')}.`, [source.id])}
                       className="rounded-md p-1.5 text-accent hover:bg-accent/10 transition-colors cursor-pointer"
                       title={t('chat.askAboutThis')}
                     >

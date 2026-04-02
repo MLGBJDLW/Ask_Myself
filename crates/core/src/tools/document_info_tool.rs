@@ -9,7 +9,8 @@ use serde::Deserialize;
 use crate::db::Database;
 use crate::error::CoreError;
 
-use super::{ensure_source_in_scope, Tool, ToolCategory, ToolDef, ToolResult};
+use super::path_utils::resolve_existing_file_in_sources;
+use super::{ensure_source_in_scope, scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/get_document_info.json");
@@ -65,6 +66,24 @@ impl Tool for GetDocumentInfoTool {
         let call_id = call_id.to_string();
         let source_scope = source_scope.to_vec();
         tokio::task::spawn_blocking(move || {
+            let lookup_paths = if let Some(ref path) = args.path {
+                let sources = scoped_sources(&db, &source_scope)?;
+                let mut candidates = Vec::new();
+                if let Ok(resolved) =
+                    resolve_existing_file_in_sources(std::path::Path::new(path), &sources)
+                {
+                    let canonical = resolved.to_string_lossy().to_string();
+                    candidates.push(canonical.clone());
+                    let normalized = canonical.replace('\\', "/");
+                    if normalized != canonical {
+                        candidates.push(normalized);
+                    }
+                }
+                candidates.push(path.clone());
+                candidates
+            } else {
+                Vec::new()
+            };
             let conn = db.conn();
 
             // Query document by id or path.
@@ -105,28 +124,45 @@ impl Tool for GetDocumentInfoTool {
                     },
                 )
             } else {
-                let path = args.path.as_ref().unwrap();
-                conn.query_row(
-                    "SELECT d.id, d.source_id, d.path, d.title, d.mime_type, d.file_size,
-                            d.modified_at, d.content_hash, d.indexed_at, d.metadata
-                     FROM documents d
-                     WHERE d.path = ?1",
-                    params![path],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                            row.get(5)?,
-                            row.get(6)?,
-                            row.get(7)?,
-                            row.get(8)?,
-                            row.get(9)?,
-                        ))
-                    },
-                )
+                let query_by_path = |path_value: &str| {
+                    conn.query_row(
+                        "SELECT d.id, d.source_id, d.path, d.title, d.mime_type, d.file_size,
+                                d.modified_at, d.content_hash, d.indexed_at, d.metadata
+                         FROM documents d
+                         WHERE d.path = ?1",
+                        params![path_value],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                                row.get(6)?,
+                                row.get(7)?,
+                                row.get(8)?,
+                                row.get(9)?,
+                            ))
+                        },
+                    )
+                };
+
+                let mut row = Err(rusqlite::Error::QueryReturnedNoRows);
+                for path_value in &lookup_paths {
+                    match query_by_path(path_value) {
+                        Ok(found) => {
+                            row = Ok(found);
+                            break;
+                        }
+                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                        Err(other) => {
+                            row = Err(other);
+                            break;
+                        }
+                    }
+                }
+                row
             };
 
             let (

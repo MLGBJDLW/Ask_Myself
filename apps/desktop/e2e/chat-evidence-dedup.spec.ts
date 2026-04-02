@@ -32,88 +32,112 @@ test.beforeEach(async ({ page }) => {
     const nowIso = new Date().toISOString();
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-    const conversations: Record<string, Conversation> = {
-      'conv-persisted-order': {
-        id: 'conv-persisted-order',
-        title: 'Persisted Order',
-        provider: 'open_ai',
-        model: 'gpt-4.1',
-        systemPrompt: '',
+    const conversation: Conversation = {
+      id: 'conv-evidence-dedup',
+      title: 'Evidence Dedup',
+      provider: 'open_ai',
+      model: 'gpt-4.1',
+      systemPrompt: '',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    const messages: Message[] = [
+      {
+        id: 'm-user',
+        conversationId: 'conv-evidence-dedup',
+        role: 'user',
+        content: 'What should we change?',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 0,
         createdAt: nowIso,
-        updatedAt: nowIso,
+        sortOrder: 0,
+        thinking: null,
+        imageAttachments: null,
       },
-    };
-
-    const toolCallId = 'tool-order-1';
-
-    const messagesByConversation: Record<string, Message[]> = {
-      'conv-persisted-order': [
-        {
-          id: 'm-user-1',
-          conversationId: 'conv-persisted-order',
-          role: 'user',
-          content: 'Walk through the persisted order.',
-          toolCallId: null,
-          toolCalls: [],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 0,
-          thinking: null,
-          imageAttachments: null,
+      {
+        id: 'm-assistant-tools',
+        conversationId: 'conv-evidence-dedup',
+        role: 'assistant',
+        content: '',
+        toolCallId: null,
+        toolCalls: [{ id: 'tool-1', name: 'search_knowledge_base', arguments: '{"query":"retry"}' }],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 1,
+        thinking: 'Searching retry notes',
+        imageAttachments: null,
+      },
+      {
+        id: 'm-tool-1',
+        conversationId: 'conv-evidence-dedup',
+        role: 'tool',
+        content: 'Chunk A',
+        toolCallId: 'tool-1',
+        toolCalls: [],
+        artifacts: {
+          result1: {
+            chunkId: 'chunk-a',
+            documentPath: 'D:/notes/retries.md',
+            documentTitle: 'Retries Guide',
+            sourceName: 'Knowledge Base',
+            content: 'Keep the timeout guard.',
+            score: 0.95,
+            headingPath: ['Retries'],
+          },
         },
-        {
-          id: 'm-assistant-tools-1',
-          conversationId: 'conv-persisted-order',
-          role: 'assistant',
-          content: '',
-          toolCallId: null,
-          toolCalls: [{ id: toolCallId, name: 'search_knowledge_base', arguments: '{"query":"order"}' }],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 1,
-          thinking: 'phase one thinking',
-          imageAttachments: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 2,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-tool-2',
+        conversationId: 'conv-evidence-dedup',
+        role: 'tool',
+        content: 'Chunk B',
+        toolCallId: 'tool-1',
+        toolCalls: [],
+        artifacts: {
+          result2: {
+            chunkId: 'chunk-b',
+            documentPath: 'D:/notes/retries.md',
+            documentTitle: 'Retries Guide',
+            sourceName: 'Knowledge Base',
+            content: 'Show retry limits in the UI.',
+            score: 0.93,
+            headingPath: ['Retries'],
+          },
         },
-        {
-          id: 'm-tool-1',
-          conversationId: 'conv-persisted-order',
-          role: 'tool',
-          content: 'Found the order note.',
-          toolCallId,
-          toolCalls: [],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 2,
-          thinking: null,
-          imageAttachments: null,
-        },
-        {
-          id: 'm-assistant-final',
-          conversationId: 'conv-persisted-order',
-          role: 'assistant',
-          content: 'final-reply-segment',
-          toolCallId: null,
-          toolCalls: [],
-          artifacts: null,
-          tokenCount: 0,
-          createdAt: nowIso,
-          sortOrder: 3,
-          thinking: 'phase one thinking\nphase two thinking',
-          imageAttachments: null,
-        },
-      ],
-    };
-
-    const callbackMap = new Map<number, (event: unknown) => void>();
-    let callbackSeq = 1;
-    let listenerSeq = 1;
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 3,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-assistant-final',
+        conversationId: 'conv-evidence-dedup',
+        role: 'assistant',
+        content: 'Update the UI and keep the timeout guard [cite:chunk-a] [cite:chunk-b].',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 4,
+        thinking: null,
+        imageAttachments: null,
+      },
+    ];
 
     const defaultAgentConfig = {
-      id: 'cfg-persisted-order',
-      name: 'Persisted Order Config',
+      id: 'cfg-evidence-dedup',
+      name: 'Evidence Dedup Config',
       provider: 'open_ai',
       apiKey: '',
       baseUrl: null,
@@ -133,6 +157,10 @@ test.beforeEach(async ({ page }) => {
       updatedAt: nowIso,
     };
 
+    let callbackSeq = 1;
+    let listenerSeq = 1;
+    const callbackMap = new Map<number, (event: unknown) => void>();
+
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
       switch (cmd) {
         case 'plugin:event|listen':
@@ -144,11 +172,11 @@ test.beforeEach(async ({ page }) => {
         case 'get_model_context_window':
           return 1047576;
         case 'list_conversations_cmd':
-          return Object.values(conversations).map(clone);
-        case 'get_conversation_cmd': {
-          const id = String(args.id ?? '');
-          return [clone(conversations[id]), clone(messagesByConversation[id] ?? [])];
-        }
+          return [clone(conversation)];
+        case 'get_conversation_cmd':
+          return [clone(conversation), clone(messages)];
+        case 'get_conversation_turns_cmd':
+          return [];
         case 'list_sources':
           return [];
         case 'get_conversation_sources_cmd':
@@ -156,6 +184,8 @@ test.beforeEach(async ({ page }) => {
         case 'set_conversation_sources_cmd':
           return null;
         case 'update_conversation_system_prompt_cmd':
+          return null;
+        case 'update_conversation_collection_context_cmd':
           return null;
         case 'list_checkpoints_cmd':
           return [];
@@ -221,19 +251,9 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('renders persisted multi-step traces in chronological order', async ({ page }) => {
-  await page.goto('/chat/conv-persisted-order');
+test('groups multiple cited chunks from the same file into one evidence source chip', async ({ page }) => {
+  await page.goto('/chat/conv-evidence-dedup');
 
-  const chatLogText = await page.getByLabel('Chat messages').textContent();
-  expect(chatLogText).toBeTruthy();
-
-  const text = chatLogText ?? '';
-  expect(text.indexOf('phase one thinking')).toBeGreaterThanOrEqual(0);
-  expect(text.indexOf('search_knowledge_base')).toBeGreaterThan(text.indexOf('phase one thinking'));
-  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
-  expect(text.indexOf('final-reply-segment')).toBeGreaterThan(text.indexOf('phase two thinking'));
-
-  await expect(
-    page.locator('button[aria-expanded="true"]').filter({ hasText: 'Thinking completed' }),
-  ).toHaveCount(1);
+  await expect(page.getByText('Retries Guide ×2')).toBeVisible();
+  await expect(page.getByText('1 cited sources').first()).toBeVisible();
 });

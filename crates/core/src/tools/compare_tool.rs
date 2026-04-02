@@ -1,7 +1,7 @@
 //! CompareTool — compares content between two documents or chunks.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
@@ -11,6 +11,8 @@ use serde::Deserialize;
 use crate::db::Database;
 use crate::error::CoreError;
 
+use super::document_utils::read_supported_file_content;
+use super::path_utils::resolve_existing_file_in_sources;
 use super::{ensure_source_in_scope, scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
@@ -31,23 +33,9 @@ fn read_validated_file(
     path_str: &str,
     sources: &[crate::models::Source],
 ) -> Result<String, String> {
-    let requested = PathBuf::from(path_str);
-    let canonical = std::fs::canonicalize(&requested)
-        .map_err(|e| format!("Cannot resolve path '{}': {e}", path_str))?;
-
-    let allowed = sources.iter().any(|s| {
-        std::fs::canonicalize(Path::new(&s.root_path))
-            .map(|root| canonical.starts_with(&root))
-            .unwrap_or(false)
-    });
-    if !allowed {
-        return Err(format!(
-            "Access denied: '{}' is not within any registered source directory.",
-            path_str
-        ));
-    }
-
-    crate::parse::read_text_file(&canonical).map_err(|e| format!("Cannot read '{}': {e}", path_str))
+    let canonical = resolve_existing_file_in_sources(Path::new(path_str), sources)
+        .map_err(|e| e.to_string())?;
+    read_supported_file_content(&canonical).map_err(|e| format!("Cannot read '{}': {e}", path_str))
 }
 
 /// Retrieve chunk content from the database.
@@ -183,6 +171,15 @@ impl Tool for CompareTool {
                 match (&args.path_a, &args.path_b, &args.chunk_id_a, &args.chunk_id_b) {
                     (Some(pa), Some(pb), _, _) => {
                         let sources = scoped_sources(&db, &source_scope)?;
+                        if sources.is_empty() {
+                            return Ok(ToolResult {
+                                call_id,
+                                content: "The current source scope does not include any readable files."
+                                    .to_string(),
+                                is_error: true,
+                                artifacts: None,
+                            });
+                        }
                         let a = read_validated_file(pa, &sources).map_err(|e| {
                             CoreError::InvalidInput(e)
                         })?;

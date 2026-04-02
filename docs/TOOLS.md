@@ -79,13 +79,32 @@ Browse documents by modification/creation date range. Returns a chronological do
 
 ## 📖 Reading & Analysis
 
+### File Tool Matrix
+
+Use this quick routing guide when a request is about files or documents:
+
+| Scenario | Preferred tool | File types / scope | Relative source-root path? | Notes |
+|-----------|----------------|--------------------|----------------------------|-------|
+| Locate a file or browse a folder | `list_dir` | Any file/folder inside a source | yes | Best first step when the exact path is unknown or ambiguous |
+| Read a named file | `read_file` | Text, PDF, DOCX, XLSX, PPTX, image text extraction | yes | Supports line windows via `start_line` and `max_lines` |
+| Inspect document metadata or index state | `get_document_info` | Indexed documents | yes | Good for source ID, chunk count, MIME type, citation info |
+| Compare two files or indexed chunks | `compare_documents` | Text or parsed document content | yes for file paths | Use chunk IDs when you already know the exact evidence |
+| Create a new plain-text file | `create_file` | Text-based files only | yes | For new `.md`, `.txt`, `.json`, `.rs`, etc. |
+| Edit an existing plain-text file | `edit_file` | Text-based files only | yes | Exact `str_replace` only; must match once |
+| Create or replace an Office file | `generate_document` | DOCX, XLSX, PPTX | yes | Use this instead of `create_file` / `edit_file` for Office output |
+| Refresh indexed content after file changes | `reindex_document` | File path or whole source | yes for file path | Use when external edits are not reflected in search/results yet |
+
+Path guidance:
+Use source-root relative paths like `notes/today.md` when the file clearly belongs to one registered source.
+Use absolute paths when the user already supplied one or when a relative path could match multiple sources.
+
 ### `read_file`
 
-Read file content from the knowledge base with optional line range. The file must reside within a registered source directory.
+Read file content from the knowledge base with optional line range. The file must reside within a registered source directory. Paths may be absolute or relative to a source root. In addition to plain-text files, the tool can extract readable text from PDF, DOCX, XLSX, PPTX, and image files when supported.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes | Absolute or relative file path |
+| `path` | string | yes | Absolute path or path relative to a source root |
 | `start_line` | integer | no | 1-based start line (default 1) |
 | `max_lines` | integer | no | Max lines to return (default 100) |
 
@@ -121,7 +140,7 @@ Browse directory structure with optional recursion and glob filtering.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes | Directory path (must be within a registered source) |
+| `path` | string | yes | Directory path (absolute or relative to a source root) |
 | `recursive` | boolean | no | Recurse into subdirectories (default false) |
 | `max_depth` | integer | no | Max recursion depth (default 3) |
 | `pattern` | string | no | Filename glob filter (e.g. `*.md`, `*.pdf`) |
@@ -136,7 +155,7 @@ Get detailed metadata about a single document — file path, size, modification 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | no* | File path of the document |
+| `path` | string | no* | Document path (absolute or relative to a source root) |
 | `document_id` | string | no* | UUID of the document |
 
 \* At least one of `path` or `document_id` must be provided.
@@ -151,8 +170,8 @@ Compare content between two documents or chunks, showing differences and similar
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path_a` | string | no | File path of the first document |
-| `path_b` | string | no | File path of the second document |
+| `path_a` | string | no | First document path (absolute or relative to a source root) |
+| `path_b` | string | no | Second document path (absolute or relative to a source root) |
 | `chunk_id_a` | string | no | UUID of the first chunk (alternative to `path_a`) |
 | `chunk_id_b` | string | no | UUID of the second chunk (alternative to `path_b`) |
 
@@ -209,16 +228,48 @@ Create, append to, or overwrite note files (.md, .txt, .org, .rst) in a source's
 
 ### `edit_file`
 
-Edit existing files via string replacement or create new files within registered source directories. Supports all text-based file types.
+Edit existing plain-text files via string replacement or create new plain-text files within registered source directories. Paths may be absolute or relative to a source root.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes | File path (absolute or relative to a source) |
+| `path` | string | yes | File path (absolute or relative to a source root) |
 | `action` | string | yes | `str_replace` or `create` |
 | `old_str` | string | no | Exact text to find (for `str_replace`; must match once) |
 | `new_str` | string | no | Replacement text (for `str_replace`) or file content (for `create`) |
 
-> **Example:** Fix a typo in an existing document or create a new configuration file.
+Use `generate_document` instead of `edit_file` for DOCX/XLSX/PPTX creation or replacement.
+
+> **Example:** Fix a typo in an existing text document or create a new configuration file.
+
+---
+
+### `create_file`
+
+Create a new plain-text file within a registered source directory. Paths may be absolute or relative to a source root. Parent directories are created automatically.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Output file path (absolute or relative to a source root) |
+| `content` | string | yes | Plain-text content to write |
+| `overwrite` | boolean | no | Overwrite an existing file if true |
+
+Use `generate_document` instead of `create_file` for DOCX/XLSX/PPTX files.
+
+> **Example:** Create a new Markdown draft under `notes/` or add a config file in a nested folder.
+
+---
+
+### `generate_document`
+
+Generate or replace a professional Office document (`docx`, `xlsx`, or `pptx`) inside a registered source directory. Paths may be absolute or relative to a source root.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `format` | string | yes | `docx`, `xlsx`, or `pptx` |
+| `path` | string | yes | Output path (absolute or relative to a source root) |
+| `content` | object | yes | Structured content payload for the selected Office format |
+
+> **Example:** Replace an existing Word report or generate a new PowerPoint deck with structured sections/slides.
 
 ---
 
@@ -278,7 +329,7 @@ Trigger re-indexing of a specific document or an entire source directory. Use wh
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | no | File path to reindex |
+| `path` | string | no | File path to reindex (absolute or relative to a source root) |
 | `source_id` | string | no | Source ID to reindex entirely |
 
 At least one of `path` or `source_id` should be provided.

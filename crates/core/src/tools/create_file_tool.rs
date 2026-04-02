@@ -9,7 +9,11 @@ use serde::Deserialize;
 use crate::db::Database;
 use crate::error::CoreError;
 
-use super::{Tool, ToolCategory, ToolDef, ToolResult};
+use super::document_utils::{edit_guidance_for_path, generated_document_mime};
+use super::path_utils::{
+    has_path_traversal as has_path_traversal_impl, resolve_writable_file_in_sources,
+};
+use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/create_file.json");
@@ -32,71 +36,12 @@ pub(crate) fn resolve_and_validate(
     requested: &Path,
     sources: &[crate::models::Source],
 ) -> Result<PathBuf, String> {
-    // First try to canonicalize directly (works for existing files).
-    if let Ok(canonical) = std::fs::canonicalize(requested) {
-        let allowed = sources.iter().any(|s| {
-            std::fs::canonicalize(Path::new(&s.root_path))
-                .map(|root| canonical.starts_with(&root))
-                .unwrap_or(false)
-        });
-        if allowed {
-            return Ok(canonical);
-        }
-        return Err(format!(
-            "Access denied: '{}' is not within any registered source directory.",
-            requested.display()
-        ));
-    }
-
-    // For new files, walk up the ancestor chain to find the nearest existing
-    // directory, canonicalize it, then reconstruct the full path.
-    let mut ancestor = requested.to_path_buf();
-    let mut suffix_parts: Vec<std::ffi::OsString> = Vec::new();
-
-    loop {
-        if let Some(parent) = ancestor.parent() {
-            suffix_parts.push(
-                ancestor
-                    .file_name()
-                    .ok_or_else(|| "Invalid file path".to_string())?
-                    .to_os_string(),
-            );
-            ancestor = parent.to_path_buf();
-            if ancestor.exists() {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-
-    if let Ok(canonical_ancestor) = std::fs::canonicalize(&ancestor) {
-        let mut full = canonical_ancestor;
-        for part in suffix_parts.into_iter().rev() {
-            full = full.join(part);
-        }
-        let allowed = sources.iter().any(|s| {
-            std::fs::canonicalize(Path::new(&s.root_path))
-                .map(|root| full.starts_with(&root))
-                .unwrap_or(false)
-        });
-        if allowed {
-            return Ok(full);
-        }
-    }
-
-    Err(format!(
-        "Access denied: '{}' is not within any registered source directory.",
-        requested.display()
-    ))
+    resolve_writable_file_in_sources(requested, sources)
 }
 
 /// Reject paths containing traversal sequences.
 pub(crate) fn has_path_traversal(path: &str) -> bool {
-    path.contains('\0')
-        || std::path::Path::new(path)
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
+    has_path_traversal_impl(path)
 }
 
 #[async_trait]
@@ -134,7 +79,7 @@ impl Tool for CreateFileTool {
         call_id: &str,
         arguments: &str,
         db: &Database,
-        _source_scope: &[String],
+        source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let args: CreateFileArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid create_file arguments: {e}")))?;
@@ -151,8 +96,9 @@ impl Tool for CreateFileTool {
 
         let db = db.clone();
         let call_id = call_id.to_string();
+        let source_scope = source_scope.to_vec();
         tokio::task::spawn_blocking(move || {
-            let sources = db.list_sources()?;
+            let sources = scoped_sources(&db, &source_scope)?;
             if sources.is_empty() {
                 return Ok(ToolResult {
                     call_id: call_id.clone(),
@@ -175,6 +121,16 @@ impl Tool for CreateFileTool {
                     });
                 }
             };
+
+            if generated_document_mime(&canonical).is_some() {
+                return Ok(ToolResult {
+                    call_id: call_id.clone(),
+                    content: edit_guidance_for_path(&canonical)
+                        .unwrap_or_else(|| "Use generate_document for Office files.".to_string()),
+                    is_error: true,
+                    artifacts: None,
+                });
+            }
 
             // Check if file exists.
             if canonical.exists() && !args.overwrite {
@@ -326,6 +282,47 @@ mod tests {
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert!(file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_create_file_resolves_source_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = setup_db_with_source(dir.path());
+        let tool = CreateFileTool;
+        let args = serde_json::json!({
+            "path": "notes/today.md",
+            "content": "hello"
+        });
+
+        let result = tool
+            .execute("c-rel", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("notes").join("today.md")).unwrap(),
+            "hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_file_rejects_office_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = setup_db_with_source(dir.path());
+        let tool = CreateFileTool;
+        let args = serde_json::json!({
+            "path": "reports/status.docx",
+            "content": "this should be structured, not plain text"
+        });
+
+        let result = tool
+            .execute("c-docx", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.content.contains("generate_document"));
     }
 
     #[tokio::test]

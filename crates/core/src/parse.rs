@@ -139,6 +139,24 @@ fn overlap_chars_for(max_chunk_chars: usize) -> usize {
     max_chunk_chars / 10
 }
 
+fn chunk_plaintext_preserving_short_document(
+    content: &str,
+    max_chunk_chars: usize,
+) -> Vec<ParsedChunk> {
+    let chunks = chunk_plaintext(content, max_chunk_chars);
+    if !chunks.is_empty() || content.trim().is_empty() {
+        return chunks;
+    }
+
+    vec![make_chunk(
+        content.trim().to_string(),
+        0,
+        0,
+        content.len() as i64,
+        None,
+    )]
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -318,7 +336,7 @@ pub fn parse_pdf(
     // Normalize: replace \r\n with \n, collapse excessive blank lines.
     let text = text.replace("\r\n", "\n");
 
-    let chunks = chunk_plaintext(&text, max_chunk_chars);
+    let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
 
     let file_name = path
         .file_name()
@@ -386,6 +404,96 @@ fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
     "unknown panic payload".to_string()
 }
 
+fn decode_xml_entities(text: &str) -> String {
+    text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+}
+
+fn strip_ooxml_tags(xml: &str) -> Result<String, String> {
+    let tag_re = regex::Regex::new(r"<[^>]+>").map_err(|e| format!("regex init failed: {e}"))?;
+    let without_tags = tag_re.replace_all(xml, "");
+    let decoded = decode_xml_entities(&without_tags);
+    Ok(decoded
+        .replace("\r\n", "\n")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+fn read_zip_entry_text(
+    bytes: &[u8],
+    include_entry: impl Fn(&str) -> bool,
+) -> Result<String, String> {
+    use std::io::{Cursor, Read};
+
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("zip open failed: {e}"))?;
+    let mut fragments = Vec::new();
+
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| format!("zip entry open failed: {e}"))?;
+        let name = file.name().to_string();
+        if !include_entry(&name) {
+            continue;
+        }
+
+        let mut xml = String::new();
+        file.read_to_string(&mut xml)
+            .map_err(|e| format!("zip entry read failed for {name}: {e}"))?;
+        fragments.push(xml);
+    }
+
+    if fragments.is_empty() {
+        return Ok(String::new());
+    }
+
+    Ok(fragments.join("\n"))
+}
+
+fn extract_docx_text_from_xml(bytes: &[u8]) -> Result<String, String> {
+    let xml = read_zip_entry_text(bytes, |name| {
+        name == "word/document.xml"
+            || name.starts_with("word/header")
+            || name.starts_with("word/footer")
+            || name == "word/footnotes.xml"
+            || name == "word/endnotes.xml"
+    })?;
+
+    let with_breaks = xml
+        .replace("<w:tab/>", "\t")
+        .replace("<w:tab />", "\t")
+        .replace("<w:br/>", "\n")
+        .replace("<w:br />", "\n")
+        .replace("<w:cr/>", "\n")
+        .replace("<w:cr />", "\n")
+        .replace("</w:p>", "\n")
+        .replace("</w:tr>", "\n");
+
+    strip_ooxml_tags(&with_breaks)
+}
+
+fn extract_pptx_text_from_xml(bytes: &[u8]) -> Result<String, String> {
+    let xml = read_zip_entry_text(bytes, |name| {
+        name.starts_with("ppt/slides/slide") && name.ends_with(".xml")
+    })?;
+
+    let with_breaks = xml
+        .replace("<a:tab/>", "\t")
+        .replace("<a:tab />", "\t")
+        .replace("<a:br/>", "\n")
+        .replace("<a:br />", "\n")
+        .replace("</a:p>", "\n");
+
+    strip_ooxml_tags(&with_breaks)
+}
+
 /// Parse a .docx file by extracting its text content.
 pub fn parse_docx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, CoreError> {
     use dotext::*;
@@ -395,14 +503,28 @@ pub fn parse_docx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument,
     let file_size = bytes.len() as i64;
     let content_hash = blake3::hash(&bytes).to_hex().to_string();
 
-    let mut file = Docx::open(path)
-        .map_err(|e| CoreError::Parse(format!("DOCX open failed for {}: {}", path.display(), e)))?;
-    let mut text = String::new();
-    file.read_to_string(&mut text)
-        .map_err(|e| CoreError::Parse(format!("DOCX read failed for {}: {}", path.display(), e)))?;
+    let dotext_result = (|| -> Result<String, String> {
+        let mut file = Docx::open(path)
+            .map_err(|e| format!("DOCX open failed for {}: {}", path.display(), e))?;
+        let mut text = String::new();
+        file.read_to_string(&mut text)
+            .map_err(|e| format!("DOCX read failed for {}: {}", path.display(), e))?;
+        Ok(text)
+    })();
+
+    let text = match dotext_result {
+        Ok(text) if !text.trim().is_empty() => text,
+        Ok(_) | Err(_) => extract_docx_text_from_xml(&bytes).map_err(|e| {
+            CoreError::Parse(format!(
+                "DOCX read failed for {} (OOXML fallback also failed: {})",
+                path.display(),
+                e
+            ))
+        })?,
+    };
 
     let text = text.replace("\r\n", "\n");
-    let chunks = chunk_plaintext(&text, max_chunk_chars);
+    let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
 
     let file_name = path
         .file_name()
@@ -461,7 +583,7 @@ pub fn parse_xlsx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument,
         }
     }
 
-    let chunks = chunk_plaintext(&all_text, max_chunk_chars);
+    let chunks = chunk_plaintext_preserving_short_document(&all_text, max_chunk_chars);
 
     let file_name = path
         .file_name()
@@ -488,14 +610,28 @@ pub fn parse_pptx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument,
     let file_size = bytes.len() as i64;
     let content_hash = blake3::hash(&bytes).to_hex().to_string();
 
-    let mut file = Pptx::open(path)
-        .map_err(|e| CoreError::Parse(format!("PPTX open failed for {}: {}", path.display(), e)))?;
-    let mut text = String::new();
-    file.read_to_string(&mut text)
-        .map_err(|e| CoreError::Parse(format!("PPTX read failed for {}: {}", path.display(), e)))?;
+    let dotext_result = (|| -> Result<String, String> {
+        let mut file = Pptx::open(path)
+            .map_err(|e| format!("PPTX open failed for {}: {}", path.display(), e))?;
+        let mut text = String::new();
+        file.read_to_string(&mut text)
+            .map_err(|e| format!("PPTX read failed for {}: {}", path.display(), e))?;
+        Ok(text)
+    })();
+
+    let text = match dotext_result {
+        Ok(text) if !text.trim().is_empty() => text,
+        Ok(_) | Err(_) => extract_pptx_text_from_xml(&bytes).map_err(|e| {
+            CoreError::Parse(format!(
+                "PPTX read failed for {} (OOXML fallback also failed: {})",
+                path.display(),
+                e
+            ))
+        })?,
+    };
 
     let text = text.replace("\r\n", "\n");
-    let chunks = chunk_plaintext(&text, max_chunk_chars);
+    let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
 
     let file_name = path
         .file_name()
@@ -555,7 +691,7 @@ pub fn parse_image(
         };
 
     let chunks = if ocr_source != crate::ocr::OcrSource::None {
-        chunk_plaintext(&text_content, max_chunk_chars)
+        chunk_plaintext_preserving_short_document(&text_content, max_chunk_chars)
     } else {
         vec![ParsedChunk {
             content: text_content,

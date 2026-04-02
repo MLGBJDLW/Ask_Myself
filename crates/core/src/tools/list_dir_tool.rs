@@ -1,6 +1,6 @@
 //! ListDirTool — lists directory contents within registered source roots.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
@@ -11,6 +11,7 @@ use serde_json::json;
 use crate::db::Database;
 use crate::error::CoreError;
 
+use super::path_utils::resolve_existing_directory_in_sources;
 use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
@@ -76,33 +77,8 @@ impl Tool for ListDirTool {
         let call_id = call_id.to_string();
         let source_scope = source_scope.to_vec();
         tokio::task::spawn_blocking(move || {
-            let requested = PathBuf::from(&args.path);
-
-            // Canonicalize the requested path so we can compare prefixes reliably.
-            let canonical = std::fs::canonicalize(&requested).map_err(|e| {
-                CoreError::InvalidInput(format!("Cannot resolve path '{}': {e}", args.path))
-            })?;
-
-            if !canonical.is_dir() {
-                return Ok(ToolResult {
-                    call_id: call_id.clone(),
-                    content: format!("'{}' is not a directory.", args.path),
-                    is_error: true,
-                    artifacts: None,
-                });
-            }
-
-            // Validate that the directory is inside a registered source root.
             let sources = scoped_sources(&db, &source_scope)?;
-            let allowed = sources.iter().any(|s| {
-                if let Ok(root) = std::fs::canonicalize(Path::new(&s.root_path)) {
-                    canonical.starts_with(&root)
-                } else {
-                    false
-                }
-            });
-
-            if !allowed {
+            if sources.is_empty() {
                 return Ok(ToolResult {
                     call_id: call_id.clone(),
                     content: format!(
@@ -113,6 +89,8 @@ impl Tool for ListDirTool {
                     artifacts: None,
                 });
             }
+            let canonical = resolve_existing_directory_in_sources(Path::new(&args.path), &sources)
+                .map_err(CoreError::InvalidInput)?;
 
             // Collect entries.
             let mut entries = Vec::new();

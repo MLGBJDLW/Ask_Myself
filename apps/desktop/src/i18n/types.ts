@@ -82,6 +82,26 @@ export interface TranslationKeys {
   'search.conversationsPlaceholder': string;
   'search.conversationsNoResults': string;
   'search.conversationsResultCount': string;
+  'search.recallTitle': string;
+  'search.recallDesc': string;
+  'search.recallClues': string;
+  'search.recallCluesPlaceholder': string;
+  'search.recallWhere': string;
+  'search.recallWherePlaceholder': string;
+  'search.recallDateLabel': string;
+  'search.recallDatePlaceholder': string;
+  'search.recallExamples': string;
+  'search.recallExampleRetry': string;
+  'search.recallExampleBudget': string;
+  'search.recallExampleMeeting': string;
+  'search.recallWithAi': string;
+  'search.recallSearch': string;
+  'search.recallPromptIntro': string;
+  'search.recallPromptClue': string;
+  'search.recallPromptWhere': string;
+  'search.recallPromptDate': string;
+  'search.recallPromptFileType': string;
+  'search.recallPromptInstruction': string;
 
   // Evidence Card
   'card.relevance': string;
@@ -220,6 +240,12 @@ export interface TranslationKeys {
   'playbooks.noteUpdated': string;
   'playbooks.noteUpdateError': string;
   'playbooks.reorderError': string;
+  'playbooks.workspaceTitle': string;
+  'playbooks.workspaceDesc': string;
+  'playbooks.actionInvestigate': string;
+  'playbooks.actionBrief': string;
+  'playbooks.actionReport': string;
+  'playbooks.actionSlides': string;
 
   // Settings
   'settings.title': string;
@@ -595,9 +621,39 @@ export interface TranslationKeys {
   'chat.answerEvidence': string;
   'chat.answerEvidenceSummary': string;
   'chat.evidenceSourceLabel': string;
+  'chat.investigationLabel': string;
+  'chat.investigationNew': string;
+  'chat.investigationDefaultSummary': string;
+  'chat.investigationWorkingSet': string;
+  'chat.investigationConversationContext': string;
+  'chat.investigationCollectionContext': string;
+  'chat.investigationGeneralContext': string;
+  'chat.investigationRouteLabel': string;
+  'chat.investigationRouteLiveDefault': string;
+  'chat.investigationRouteIdle': string;
+  'chat.investigationRouteLiveHint': string;
+  'chat.investigationRouteLastTurnHint': string;
+  'chat.investigationEvidenceHigh': string;
+  'chat.investigationEvidenceMedium': string;
+  'chat.investigationEvidenceLow': string;
+  'chat.investigationEvidenceNone': string;
+  'chat.investigationSupportingCount': string;
+  'chat.investigationSupportingNone': string;
+  'chat.investigationScopeAllHint': string;
+  'chat.investigationScopeSelectedHint': string;
+  'chat.investigationStatusReady': string;
+  'chat.investigationStatusNeedsAttention': string;
+  'chat.investigationStatusInvestigating': string;
+  'chat.investigationStatusIncomplete': string;
+  'chat.investigationStatusStopped': string;
+  'chat.investigationStatusIdle': string;
+  'chat.askAiScopedHint': string;
   'chat.traceOutputReady': string;
   'chat.taskBoard': string;
   'chat.taskBoardDetails': string;
+  'chat.helpersActive': string;
+  'chat.helpersCount': string;
+  'chat.helperDefaultLabel': string;
   'chat.planLabel': string;
   'chat.planDefaultTitle': string;
   'chat.planStepsCompleted': string;
@@ -616,6 +672,8 @@ export interface TranslationKeys {
   'chat.verificationPendingCount': string;
   'chat.verificationSkippedCount': string;
   'chat.showLess': string;
+  'chat.showAllSteps': string;
+  'chat.showAllChecks': string;
   'chat.selectMode': string;
   'chat.exitSelectMode': string;
   'chat.deleteAll': string;
@@ -639,6 +697,14 @@ export interface TranslationKeys {
   'chat.suggestions.connections.prompt': string;
   'chat.suggestions.question': string;
   'chat.suggestions.question.prompt': string;
+  'chat.suggestions.report': string;
+  'chat.suggestions.report.prompt': string;
+  'chat.suggestions.meeting': string;
+  'chat.suggestions.meeting.prompt': string;
+  'chat.suggestions.slides': string;
+  'chat.suggestions.slides.prompt': string;
+  'chat.suggestions.table': string;
+  'chat.suggestions.table.prompt': string;
 
   // Voice Input
   'voice.startRecording': string;

@@ -1,16 +1,17 @@
-import { useCallback, useState, useEffect, useRef } from 'react';
+import { useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Settings, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
-import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput, ActiveExtensions, ContextCockpit, TaskBoard } from '../components/chat';
+import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput, ActiveExtensions, ContextCockpit, InvestigationHeader, TaskBoard } from '../components/chat';
 import { useTranslation } from '../i18n';
 import { EmptyState } from '../components/ui/EmptyState';
 import { useChatSession } from '../lib/useChatSession';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
 import type { AgentConfig, Conversation } from '../types/conversation';
+import { extractChunkCitations } from '../lib/citationParser';
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -254,6 +255,33 @@ export function ChatPage() {
     }
   }, [chat.activeId, chat.reloadMessages]);
 
+  const latestTurn = useMemo(
+    () => (chat.turns.length > 0 ? chat.turns[chat.turns.length - 1] : null),
+    [chat.turns],
+  );
+
+  const latestAnswerEvidence = useMemo(() => {
+    const latestAssistant = [...chat.messages]
+      .reverse()
+      .find((message) => message.role === 'assistant' && message.content.trim().length > 0);
+
+    if (!latestAssistant) {
+      return { level: 'none' as const, count: 0 };
+    }
+
+    const chunkCitationCount = extractChunkCitations(latestAssistant.content).length;
+    const documentCitationCount = (latestAssistant.content.match(/\[(doc|file|url):/g) ?? []).length;
+    const totalCitations = chunkCitationCount + documentCitationCount;
+
+    if (totalCitations >= 3) {
+      return { level: 'high' as const, count: totalCitations };
+    }
+    if (totalCitations >= 1) {
+      return { level: 'medium' as const, count: totalCitations };
+    }
+    return { level: 'low' as const, count: 0 };
+  }, [chat.messages]);
+
   /* ── No provider configured ─────────────────────────────────────── */
   if (!chat.loadingConfig && !chat.agentConfig) {
     return (
@@ -361,12 +389,6 @@ export function ChatPage() {
                     </div>
                   )}
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                    {collectionContext && (
-                      <div className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-accent/25 bg-accent/10 px-2.5 py-1 text-[11px] text-accent">
-                        <Logo size={12} />
-                        <span className="truncate">Collection: {collectionContext.title}</span>
-                      </div>
-                    )}
                     <SourceSelector conversationId={chat.activeId} onStateChange={setSourceSummary} />
                     <SystemPromptEditor
                       conversationId={chat.activeId}
@@ -377,6 +399,18 @@ export function ChatPage() {
                   </div>
                 </div>
               </div>
+            )}
+            {chat.activeId && (
+              <InvestigationHeader
+                conversationTitle={chat.activeConversation?.title ?? null}
+                collectionContext={collectionContext}
+                sourceSummary={sourceSummary}
+                isStreaming={chat.isStreaming}
+                routeKind={latestTurn?.routeKind ?? null}
+                turnStatus={latestTurn?.status ?? null}
+                evidenceLevel={latestAnswerEvidence.level}
+                evidenceCount={latestAnswerEvidence.count}
+              />
             )}
             {chat.activeId && (
               <ContextCockpit

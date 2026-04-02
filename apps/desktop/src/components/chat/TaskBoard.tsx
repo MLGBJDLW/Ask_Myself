@@ -70,8 +70,11 @@ export function TaskBoard({
               <Bot className="h-3 w-3 text-accent" />
               <span className="truncate">
                 {runningSubagents > 0
-                  ? `Subagents ${runningSubagents}/${subagents.length} active`
-                  : `Subagents ${subagents.length}`}
+                  ? t('chat.helpersActive', {
+                      active: runningSubagents,
+                      total: subagents.length,
+                    })
+                  : t('chat.helpersCount', { count: subagents.length })}
               </span>
             </span>
           )}

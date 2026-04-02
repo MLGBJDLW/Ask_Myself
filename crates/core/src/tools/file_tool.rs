@@ -1,6 +1,6 @@
 //! FileTool — reads files from managed source directories.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
@@ -10,6 +10,8 @@ use crate::db::Database;
 use crate::error::CoreError;
 use crate::privacy;
 
+use super::document_utils::read_supported_file_content;
+use super::path_utils::resolve_existing_file_in_sources;
 use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
@@ -35,63 +37,6 @@ fn default_start_line() -> usize {
 
 fn default_max_lines() -> usize {
     100
-}
-
-fn is_binary_file_error(err: &CoreError) -> bool {
-    matches!(err, CoreError::Parse(msg) if msg.starts_with("File appears to be binary:"))
-}
-
-fn supports_document_fallback(path: &Path) -> bool {
-    let mime = crate::parse::detect_mime_type(path);
-    matches!(
-        mime.as_str(),
-        "application/pdf"
-            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    ) || mime.starts_with("image/")
-}
-
-fn flatten_parsed_document_text(parsed: &crate::parse::ParsedDocument) -> String {
-    let mut out = String::new();
-    for chunk in &parsed.chunks {
-        let visible = chunk
-            .content
-            .get(chunk.overlap_start..)
-            .unwrap_or(chunk.content.as_str());
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(visible);
-    }
-
-    if out.trim().is_empty() {
-        format!(
-            "[No extractable text found in document: {}]",
-            parsed.file_name
-        )
-    } else {
-        out
-    }
-}
-
-fn read_file_content(path: &Path) -> Result<String, CoreError> {
-    match crate::parse::read_text_file(path) {
-        Ok(raw) => Ok(raw),
-        Err(err) if is_binary_file_error(&err) && supports_document_fallback(path) => {
-            let parsed = crate::parse::parse_file(
-                path,
-                None,
-                #[cfg(feature = "video")]
-                None,
-                None,
-                None,
-                None,
-            )?;
-            Ok(flatten_parsed_document_text(&parsed))
-        }
-        Err(err) => Err(err),
-    }
 }
 
 #[async_trait]
@@ -128,22 +73,8 @@ impl Tool for FileTool {
         tokio::task::spawn_blocking(move || {
             let requested = PathBuf::from(&args.path);
 
-            // Canonicalize the requested path so we can compare prefixes reliably.
-            let canonical = std::fs::canonicalize(&requested).map_err(|e| {
-                CoreError::InvalidInput(format!("Cannot resolve path '{}': {e}", args.path))
-            })?;
-
-            // Validate that the file is inside a registered source root.
             let sources = scoped_sources(&db, &source_scope)?;
-            let allowed = sources.iter().any(|s| {
-                if let Ok(root) = std::fs::canonicalize(Path::new(&s.root_path)) {
-                    canonical.starts_with(&root)
-                } else {
-                    false
-                }
-            });
-
-            if !allowed {
+            if sources.is_empty() {
                 return Ok(ToolResult {
                     call_id: call_id.clone(),
                     content: format!(
@@ -154,9 +85,11 @@ impl Tool for FileTool {
                     artifacts: None,
                 });
             }
+            let canonical = resolve_existing_file_in_sources(&requested, &sources)
+                .map_err(CoreError::InvalidInput)?;
 
             // Read text files directly; for supported binary docs, parse and extract text.
-            let raw = read_file_content(&canonical)?;
+            let raw = read_supported_file_content(&canonical)?;
 
             // Skip to start_line (1-based) and truncate to max_lines.
             let start = args.start_line.max(1);
@@ -231,6 +164,7 @@ impl Tool for FileTool {
 mod tests {
     use super::*;
     use crate::sources::CreateSourceInput;
+    use std::path::Path;
 
     fn setup_db_with_source(root: &Path) -> Database {
         let db = Database::open_memory().expect("open in-memory db");
@@ -348,5 +282,40 @@ mod tests {
 
         assert!(result.is_error);
         assert!(result.content.contains("current source scope"));
+    }
+
+    #[tokio::test]
+    async fn read_file_resolves_source_relative_docx_paths() {
+        use docx_rs::{Docx, Paragraph, Run};
+
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let docs_dir = dir.path().join("docs");
+        std::fs::create_dir_all(&docs_dir).expect("create docs dir");
+        let docx_path = docs_dir.join("status.docx");
+        let file = std::fs::File::create(&docx_path).expect("create docx");
+        Docx::new()
+            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("DOCX fallback works")))
+            .build()
+            .pack(file)
+            .expect("write docx");
+
+        let db = setup_db_with_source(dir.path());
+        let tool = FileTool;
+        let args = serde_json::json!({
+            "path": "docs/status.docx"
+        })
+        .to_string();
+
+        let result = tool
+            .execute("call-docx", &args, &db, &[])
+            .await
+            .expect("relative docx read should succeed");
+
+        assert!(!result.is_error);
+        assert!(
+            result.content.contains("DOCX fallback works"),
+            "unexpected content: {}",
+            result.content
+        );
     }
 }

@@ -10,7 +10,8 @@ use crate::db::Database;
 use crate::error::CoreError;
 use crate::ingest;
 
-use super::{Tool, ToolCategory, ToolDef, ToolResult};
+use super::path_utils::resolve_existing_file_in_sources;
+use super::{ensure_source_in_scope, scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/reindex_document.json");
@@ -64,7 +65,7 @@ impl Tool for ReindexTool {
         call_id: &str,
         arguments: &str,
         db: &Database,
-        _source_scope: &[String],
+        source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let args: ReindexArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid reindex_document arguments: {e}"))
@@ -81,13 +82,16 @@ impl Tool for ReindexTool {
 
         let db = db.clone();
         let call_id = call_id.to_string();
+        let source_scope = source_scope.to_vec();
 
         tokio::task::spawn_blocking(move || {
             if let Some(ref source_id) = args.source_id {
                 // Validate source exists.
-                let _source = db.get_source(source_id).map_err(|_| {
+                let source = db.get_source(source_id).map_err(|_| {
                     CoreError::NotFound(format!("Source not found: {source_id}"))
                 })?;
+                ensure_source_in_scope(&source.id, &source_scope)
+                    .map_err(CoreError::InvalidInput)?;
 
                 let result = ingest::scan_source(&db, source_id)?;
                 return Ok(ToolResult {
@@ -107,18 +111,11 @@ impl Tool for ReindexTool {
 
             // path mode
             let file_path_str = args.path.as_ref().unwrap();
-            let file_path = Path::new(file_path_str);
+            let sources = scoped_sources(&db, &source_scope)?;
+            let file_path = resolve_existing_file_in_sources(Path::new(file_path_str), &sources)
+                .map_err(CoreError::InvalidInput)?;
 
-            if !file_path.is_file() {
-                return Ok(ToolResult {
-                    call_id,
-                    content: format!("File not found: '{file_path_str}'"),
-                    is_error: true,
-                    artifacts: None,
-                });
-            }
-
-            let source = match find_source_for_path(&db, file_path)? {
+            let source = match find_source_for_path(&db, &file_path)? {
                 Some(s) => s,
                 None => {
                     return Ok(ToolResult {
@@ -135,8 +132,8 @@ impl Tool for ReindexTool {
 
             // Delete existing document to force re-index (even if hash unchanged).
             // Try multiple path formats since the DB may store OS-native or normalized paths.
-            let canonical = std::fs::canonicalize(file_path)
-                .unwrap_or_else(|_| file_path.to_path_buf());
+            let canonical = std::fs::canonicalize(&file_path)
+                .unwrap_or_else(|_| file_path.clone());
             let canonical_str = canonical.to_string_lossy();
             let _ = db.delete_document_by_path(&canonical_str);
 
@@ -148,7 +145,7 @@ impl Tool for ReindexTool {
             // And try the raw input path.
             let _ = db.delete_document_by_path(file_path_str);
 
-            let outcome = ingest::ingest_single_file(&db, &source.id, file_path)?;
+            let outcome = ingest::ingest_single_file(&db, &source.id, &file_path)?;
             let status = match outcome {
                 ingest::IngestFileResult::Added => "added (re-indexed)",
                 ingest::IngestFileResult::Updated => "updated",
