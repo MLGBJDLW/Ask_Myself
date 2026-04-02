@@ -485,14 +485,28 @@ export function ChatMessages({
       number,
       { getCard: (id: string) => CitationCardData | undefined }
     >();
-    for (const [idx, toolResults] of messageToolCalls.entries()) {
-      const citationMap = buildCitationMap(
-        toolResults.map((result) => ({ artifacts: result.artifacts })),
-      );
-      map.set(idx, { getCard: (id: string) => citationMap.get(id) });
+    let turnToolResults: ConversationMessage[] = [];
+    for (let i = 0; i < messages.length; i += 1) {
+      const msg = messages[i];
+      if (msg.role === 'user') {
+        turnToolResults = [];
+        continue;
+      }
+      if (msg.role === 'assistant') {
+        const directToolResults = messageToolCalls.get(i) ?? [];
+        if (directToolResults.length > 0) {
+          turnToolResults = [...turnToolResults, ...directToolResults];
+        }
+        if (turnToolResults.length > 0) {
+          const citationMap = buildCitationMap(
+            turnToolResults.map((result) => ({ artifacts: result.artifacts })),
+          );
+          map.set(i, { getCard: (id: string) => citationMap.get(id) });
+        }
+      }
     }
     return map;
-  }, [messageToolCalls]);
+  }, [messageToolCalls, messages]);
 
   const renderTraceReplyNode = useCallback(
     (

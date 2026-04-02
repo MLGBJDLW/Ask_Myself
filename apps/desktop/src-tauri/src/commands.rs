@@ -128,6 +128,27 @@ pub struct BatchProgress {
     pub current_file: Option<String>,
 }
 
+fn emit_app_event<T: Serialize + ?Sized>(app_handle: &AppHandle, event: &str, payload: &T) {
+    let windows = app_handle.webview_windows();
+    if windows.is_empty() {
+        return;
+    }
+
+    for (label, window) in windows {
+        if let Err(err) = window.emit(event, payload) {
+            let msg = err.to_string();
+            let lower = msg.to_ascii_lowercase();
+            if lower.contains("0x80070578")
+                || lower.contains("invalid window handle")
+                || lower.contains("invalid window")
+            {
+                continue;
+            }
+            warn!("Failed to emit event '{event}' to window '{label}': {msg}");
+        }
+    }
+}
+
 /// Progress for FTS index operations.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -284,7 +305,7 @@ pub fn init_watcher(app_handle: tauri::AppHandle, db: &Database) {
                     "filesUpdated": files_updated,
                     "filesRemoved": removed_paths.len(),
                 });
-                let _ = handle.emit("file-changed", payload);
+                emit_app_event(&handle, "file-changed", &payload);
             }
         }
     });
@@ -363,7 +384,7 @@ pub async fn scan_source(
     let result = tokio::task::spawn_blocking(move || {
         let _lock = scan_lock.lock().map_err(|e| format!("scan lock: {e}"))?;
         ingest::scan_source_with_progress(&db, &sid, |progress| {
-            let _ = app_handle.emit("source:scan-progress", &progress);
+            emit_app_event(&app_handle, "source:scan-progress", &progress);
         })
         .map_err(|e| e.to_string())
     })
@@ -392,7 +413,8 @@ pub async fn scan_all_sources(
             let ah = app_handle.clone();
             let sid = source.id.clone();
             let result = ingest::scan_source_with_progress(&db, &source.id, move |progress| {
-                let _ = ah.emit(
+                emit_app_event(
+                    &ah,
                     "batch:scan-progress",
                     &BatchProgress {
                         operation: "scan-all".to_string(),
@@ -478,7 +500,8 @@ pub async fn rebuild_index(
 ) -> Result<(), String> {
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || {
-        let _ = app_handle.emit(
+        emit_app_event(
+            &app_handle,
             "batch:fts-progress",
             &FtsProgress {
                 operation: "rebuild-fts".to_string(),
@@ -486,7 +509,8 @@ pub async fn rebuild_index(
             },
         );
         let result = db.rebuild_fts_index().map_err(|e| e.to_string());
-        let _ = app_handle.emit(
+        emit_app_event(
+            &app_handle,
             "batch:fts-progress",
             &FtsProgress {
                 operation: "rebuild-fts".to_string(),
@@ -648,7 +672,7 @@ pub async fn embed_source(
     let sid = source_id.clone();
     tokio::task::spawn_blocking(move || {
         ingest::embed_source_with_progress(&db, &sid, |progress| {
-            let _ = app_handle.emit("source:scan-progress", &progress);
+            emit_app_event(&app_handle, "source:scan-progress", &progress);
         })
     })
     .await
@@ -664,7 +688,7 @@ pub async fn rebuild_embeddings(
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || {
         ingest::rebuild_embeddings_with_progress(&db, |progress| {
-            let _ = app_handle.emit("batch:rebuild-progress", &progress);
+            emit_app_event(&app_handle, "batch:rebuild-progress", &progress);
         })
     })
     .await
@@ -742,7 +766,8 @@ pub async fn optimize_fts_index(
 ) -> Result<(), String> {
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || {
-        let _ = app_handle.emit(
+        emit_app_event(
+            &app_handle,
             "batch:fts-progress",
             &FtsProgress {
                 operation: "optimize-fts".to_string(),
@@ -750,7 +775,8 @@ pub async fn optimize_fts_index(
             },
         );
         let result = db.optimize_fts_index().map_err(|e| e.to_string());
-        let _ = app_handle.emit(
+        emit_app_event(
+            &app_handle,
             "batch:fts-progress",
             &FtsProgress {
                 operation: "optimize-fts".to_string(),
@@ -832,7 +858,7 @@ pub async fn download_local_model_cmd(
             .map(|s| LocalEmbeddingModel::from_config_str(&s))
             .unwrap_or_default();
         ask_core::embed::download_local_model_for_with_progress(None, &model, |progress| {
-            let _ = app_handle.emit("model:download-progress", &progress);
+            emit_app_event(&app_handle, "model:download-progress", &progress);
         })
         .map_err(|e| e.to_string())
     })
@@ -2021,7 +2047,7 @@ pub async fn agent_chat_cmd(
                             delta: std::mem::take(pending),
                         },
                     };
-                    let _ = handle.emit("agent:event", &payload);
+                    emit_app_event(handle, "agent:event", &payload);
                 }
             };
             let flush_thinking = |pending: &mut String, conv_id: &str, handle: &AppHandle| {
@@ -2032,7 +2058,7 @@ pub async fn agent_chat_cmd(
                             content: std::mem::take(pending),
                         },
                     };
-                    let _ = handle.emit("agent:event", &payload);
+                    emit_app_event(handle, "agent:event", &payload);
                 }
             };
 
@@ -2055,7 +2081,7 @@ pub async fn agent_chat_cmd(
                                     conversation_id: stream_conv_id.clone(),
                                     event: other,
                                 };
-                                let _ = event_handle.emit("agent:event", &payload);
+                                emit_app_event(&event_handle, "agent:event", &payload);
                             }
                             None => {
                                 // Channel closed — flush remaining and exit
@@ -2116,7 +2142,7 @@ pub async fn agent_chat_cmd(
                             content: String::new(),
                         },
                     };
-                    let _ = handle.emit("agent:event", &payload);
+                    emit_app_event(&handle, "agent:event", &payload);
                 }
             }
         };
@@ -2141,7 +2167,7 @@ pub async fn agent_chat_cmd(
                         message: "Agent execution failed unexpectedly.".to_string(),
                     },
                 };
-                let _ = handle.emit("agent:event", &payload);
+                emit_app_event(&handle, "agent:event", &payload);
                 // Send Done so the frontend exits streaming state.
                 let done_payload = AgentFrontendEvent {
                     conversation_id: conv_id.clone(),
@@ -2153,7 +2179,7 @@ pub async fn agent_chat_cmd(
                         finish_reason: Some("error".to_string()),
                     },
                 };
-                let _ = handle.emit("agent:event", &done_payload);
+                emit_app_event(&handle, "agent:event", &done_payload);
             }
             None => {
                 warn!("Agent execution timed out for conversation {conv_id}");
@@ -2163,7 +2189,7 @@ pub async fn agent_chat_cmd(
                         message: "Agent execution timed out.".to_string(),
                     },
                 };
-                let _ = handle.emit("agent:event", &payload);
+                emit_app_event(&handle, "agent:event", &payload);
                 // Send Done so the frontend exits streaming state.
                 let done_payload = AgentFrontendEvent {
                     conversation_id: conv_id.clone(),
@@ -2175,7 +2201,7 @@ pub async fn agent_chat_cmd(
                         finish_reason: Some("timeout".to_string()),
                     },
                 };
-                let _ = handle.emit("agent:event", &done_payload);
+                emit_app_event(&handle, "agent:event", &done_payload);
             }
         }
 
@@ -2322,7 +2348,7 @@ pub async fn download_ocr_models_cmd(
 ) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         ask_core::ocr::download_ocr_models(&config, |progress| {
-            let _ = app_handle.emit("ocr:download-progress", &progress);
+            emit_app_event(&app_handle, "ocr:download-progress", &progress);
         })
         .map_err(|e| e.to_string())
     })
@@ -2366,7 +2392,7 @@ pub async fn download_whisper_model_cmd(
 ) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         ask_core::video::download_whisper_model(&config, |progress| {
-            let _ = app_handle.emit("video:download-progress", &progress);
+            emit_app_event(&app_handle, "video:download-progress", &progress);
         })
         .map_err(|e| e.to_string())
     })
@@ -2394,7 +2420,7 @@ pub async fn download_ffmpeg_cmd(
 
     let path = tokio::task::spawn_blocking(move || {
         ask_core::video::download_ffmpeg(&data_dir, |progress| {
-            let _ = app_handle.emit("ffmpeg:download-progress", &progress);
+            emit_app_event(&app_handle, "ffmpeg:download-progress", &progress);
         })
         .map_err(|e| e.to_string())
     })
@@ -2514,9 +2540,10 @@ pub async fn analyze_video_cmd(
         let ah = app_handle.clone();
         let fname = file_name.clone();
         let result = ask_core::video::analyze_video(file_path, &config, move |progress| {
-            let _ = ah.emit(
+            emit_app_event(
+                &ah,
                 "video:processing-progress",
-                serde_json::json!({
+                &serde_json::json!({
                     "progress": progress.progress_pct,
                     "phase": progress.phase,
                     "detail": progress.detail,

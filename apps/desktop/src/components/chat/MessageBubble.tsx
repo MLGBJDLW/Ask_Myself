@@ -37,6 +37,12 @@ export interface MessageBubbleProps {
   onEditAndResend?: (messageId: string, newContent: string) => void;
 }
 
+function basename(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, '');
+  const lastSep = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+  return lastSep === -1 ? normalized : normalized.slice(lastSep + 1);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -92,29 +98,66 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
     if (isUser) return [];
 
     const parsed = extractChunkCitations(msg.content);
-    const items: Array<{ chunkId: string; displayText: string }> = [];
-    const seen = new Set<string>();
+    const grouped = new Map<string, {
+      chunkId: string;
+      card?: CitationCardData;
+      count: number;
+      displayText?: string;
+    }>();
+    const seenChunks = new Set<string>();
+
+    const addEvidence = (chunkId: string, displayText?: string) => {
+      if (seenChunks.has(chunkId)) return;
+      seenChunks.add(chunkId);
+
+      const card = citationLookup?.getCard(chunkId);
+      const groupKey =
+        card?.documentPath?.trim()
+        || card?.documentTitle?.trim()
+        || chunkId;
+      const existing = grouped.get(groupKey);
+      if (existing) {
+        existing.count += 1;
+        if (!existing.card && card) existing.card = card;
+        if (!existing.displayText && displayText) existing.displayText = displayText;
+        return;
+      }
+
+      grouped.set(groupKey, {
+        chunkId,
+        card: card ?? undefined,
+        count: 1,
+        displayText,
+      });
+    };
 
     for (const entry of parsed) {
-      if (seen.has(entry.chunkId)) continue;
-      seen.add(entry.chunkId);
-      items.push({
-        chunkId: entry.chunkId,
-        displayText: entry.displayText || t('chat.evidenceSourceLabel', { index: String(items.length + 1) }),
-      });
+      addEvidence(entry.chunkId, entry.displayText);
     }
 
     for (const chunkId of chunkIds ?? []) {
-      if (seen.has(chunkId)) continue;
-      seen.add(chunkId);
-      items.push({
-        chunkId,
-        displayText: t('chat.evidenceSourceLabel', { index: String(items.length + 1) }),
-      });
+      addEvidence(chunkId);
     }
 
-    return items;
-  }, [chunkIds, isUser, msg.content, t]);
+    return Array.from(grouped.values())
+      .sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        const aLabel = a.card?.documentTitle || a.card?.documentPath || a.displayText || a.chunkId;
+        const bLabel = b.card?.documentTitle || b.card?.documentPath || b.displayText || b.chunkId;
+        return aLabel.localeCompare(bLabel);
+      })
+      .map((item, index) => {
+        const baseLabel =
+          item.card?.documentTitle
+          || (item.card?.documentPath ? basename(item.card.documentPath) : '')
+          || item.displayText
+          || t('chat.evidenceSourceLabel', { index: String(index + 1) });
+        return {
+          chunkId: item.chunkId,
+          displayText: item.count > 1 ? `${baseLabel} ×${item.count}` : baseLabel,
+        };
+      });
+  }, [chunkIds, citationLookup, isUser, msg.content, t]);
 
   const timestamp = messageTimestamp(msg.createdAt, t);
   const ariaLabel = isUser ? t('chat.userMessage') : t('chat.assistantResponse');
