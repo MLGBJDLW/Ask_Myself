@@ -114,7 +114,7 @@ export function KnowledgePage() {
     try {
       const results = await api.compilePendingDocuments(20);
       setCompileResults(results);
-      toast.success(`Compiled ${results.length} documents`);
+      toast.success(`Processed ${results.length} documents`);
       await loadStats();
     } catch (e) {
       toast.error(String(e));
@@ -279,8 +279,8 @@ export function KnowledgePage() {
                             </span>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            <Badge variant="info">{r.entitiesFound} entities</Badge>
-                            <Badge variant="default">{r.linksCreated} links</Badge>
+                            <Badge variant="info">{r.entitiesFound} topics</Badge>
+                            <Badge variant="default">{r.linksCreated} connections</Badge>
                           </div>
                         </motion.div>
                       ))}
