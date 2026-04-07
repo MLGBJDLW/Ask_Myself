@@ -13,6 +13,7 @@ import { Layout } from "./components/Layout";
 import { SearchPage } from "./pages/SearchPage";
 import { SourcesPage } from "./pages/SourcesPage";
 import { PlaybooksPage } from "./pages/PlaybooksPage";
+import { KnowledgePage } from "./pages/KnowledgePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ChatPage } from './pages/ChatPage';
 import { CommandPalette } from "./components/CommandPalette";
@@ -70,6 +71,7 @@ const router = createBrowserRouter(
         <Route path="/" element={<PageTransition><SearchPage /></PageTransition>} />
         <Route path="/sources" element={<PageTransition><SourcesPage /></PageTransition>} />
         <Route path="/playbooks" element={<PageTransition><PlaybooksPage /></PageTransition>} />
+        <Route path="/knowledge" element={<PageTransition><KnowledgePage /></PageTransition>} />
         <Route path="/chat/:conversationId?" element={<PageTransition><ChatPage /></PageTransition>} />
         <Route path="/settings" element={<PageTransition><SettingsPage /></PageTransition>} />
         <Route path="*" element={<PageTransition><NotFoundPage /></PageTransition>} />
