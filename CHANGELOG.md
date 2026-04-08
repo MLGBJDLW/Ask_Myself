@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/MLGBJDLW/Ask_Myself/compare/v0.1.1...v0.1.2) (2026-04-08)
+
+
+### Bug Fixes
+
+* convert icon.png to RGBA and fix compiler warnings ([50acc0f](https://github.com/MLGBJDLW/Ask_Myself/commit/50acc0f6f5c954683d5cb77c2119c1999c42ae8e))
+
 ## [0.1.1](https://github.com/MLGBJDLW/Ask_Myself/compare/v0.1.0...v0.1.1) (2026-04-08)
 
 
