@@ -14,7 +14,7 @@
         {
           "type": "toml",
           "path": "apps/desktop/src-tauri/Cargo.toml",
-          "key": "package.version"
+          "jsonpath": "$.package.version"
         },
         {
           "type": "json",
