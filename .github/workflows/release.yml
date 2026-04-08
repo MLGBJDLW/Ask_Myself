@@ -2,18 +2,29 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [master]
 
-env:
-  CARGO_TERM_COLOR: always
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
-  ci:
-    uses: ./.github/workflows/ci.yml
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: node
+          target-branch: master
 
   build:
-    needs: ci
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
     permissions:
       contents: write
     strategy:
@@ -72,14 +83,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional signing keys (configure as GitHub Secrets if needed):
-          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Ask Myself v__VERSION__'
-          releaseBody: 'See [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.'
-          releaseDraft: true
+          tagName: ${{ needs.release-please.outputs.tag_name }}
+          releaseName: 'Ask Myself v${{ needs.release-please.outputs.version }}'
+          releaseBody: 'See [CHANGELOG](https://github.com/${{ github.repository }}/blob/master/CHANGELOG.md) for details.'
+          releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
