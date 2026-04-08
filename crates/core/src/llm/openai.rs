@@ -238,13 +238,13 @@ fn convert_message(msg: &Message, include_reasoning_content: bool) -> OaiMessage
         let parts: Vec<OaiContentPart> = msg
             .parts
             .iter()
-            .filter_map(|p| match p {
-                ContentPart::Text { text } => Some(OaiContentPart::Text { text: text.clone() }),
+            .map(|p| match p {
+                ContentPart::Text { text } => OaiContentPart::Text { text: text.clone() },
                 ContentPart::Image { media_type, data } => {
                     let url = format!("data:{media_type};base64,{data}");
-                    Some(OaiContentPart::ImageUrl {
+                    OaiContentPart::ImageUrl {
                         image_url: OaiImageUrl { url },
-                    })
+                    }
                 }
             })
             .collect();

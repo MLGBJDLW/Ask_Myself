@@ -2882,3 +2882,121 @@ pub fn get_recent_traces(
         .get_recent_traces(limit.unwrap_or(20))
         .map_err(|e| e.to_string())
 }
+
+// ── Knowledge Compilation Commands ─────────────────────────────────────
+
+#[tauri::command]
+pub async fn compile_document_cmd(
+    state: tauri::State<'_, AppState>,
+    doc_id: i64,
+) -> Result<serde_json::Value, String> {
+    let db_config = state
+        .db
+        .get_default_agent_config()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No default agent config set.".to_string())?;
+    let app_cfg = state.db.load_app_config().unwrap_or_default();
+    let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+    let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
+
+    let result =
+        ask_core::compile::compile_document(&state.db, doc_id, provider.as_ref(), &db_config.model)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    serde_json::to_value(&result).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn compile_pending_documents_cmd(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let db_config = state
+        .db
+        .get_default_agent_config()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No default agent config set.".to_string())?;
+    let app_cfg = state.db.load_app_config().unwrap_or_default();
+    let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+    let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
+
+    let results = ask_core::compile::compile_pending(
+        &state.db,
+        provider.as_ref(),
+        &db_config.model,
+        limit.unwrap_or(10),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    serde_json::to_value(&results).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_compile_stats_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let stats = state.db.get_compile_stats().map_err(|e| e.to_string())?;
+    serde_json::to_value(&stats).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_knowledge_map_cmd(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let map = state
+        .db
+        .get_knowledge_map(limit.unwrap_or(50))
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(&map).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn run_knowledge_health_check_cmd(
+    state: tauri::State<'_, AppState>,
+    stale_days: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let report = state
+        .db
+        .run_health_check(stale_days.unwrap_or(90))
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(&report).map_err(|e| e.to_string())
+}
+
+/// Compile pending documents after a scan/embed cycle.
+/// This is an opt-in command the frontend can call after ingestion completes.
+#[tauri::command]
+pub async fn compile_after_scan_cmd(
+    state: tauri::State<'_, AppState>,
+    app_handle: AppHandle,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let db_config = state
+        .db
+        .get_default_agent_config()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No default agent config set.".to_string())?;
+    let app_cfg = state.db.load_app_config().unwrap_or_default();
+    let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+    let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
+
+    let cap = limit.unwrap_or(10);
+    let results =
+        ask_core::compile::compile_pending(&state.db, provider.as_ref(), &db_config.model, cap)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    // Notify frontend of compilation progress
+    emit_app_event(
+        &app_handle,
+        "compile:complete",
+        &serde_json::json!({
+            "compiled": results.len(),
+            "limit": cap,
+        }),
+    );
+
+    serde_json::to_value(&results).map_err(|e| e.to_string())
+}

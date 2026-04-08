@@ -57,9 +57,9 @@ impl EmbedderConfig {
 /// - `"local"` → [`OnnxEmbedder`] (downloads model on first use)
 /// - `"api"`   → [`ApiEmbedder`] (OpenAI-compatible)
 /// - `"tfidf"` → returns an error; TF-IDF requires corpus-based
-///    construction via [`TfIdfEmbedder::build_from_corpus`] so this
-///    factory cannot create one directly. Callers should handle TF-IDF
-///    separately.
+///   construction via [`TfIdfEmbedder::build_from_corpus`] so this
+///   factory cannot create one directly. Callers should handle TF-IDF
+///   separately.
 pub fn create_embedder(config: &EmbedderConfig) -> Result<Box<dyn Embedder>, CoreError> {
     match config.provider.as_str() {
         "local" => {
@@ -648,6 +648,7 @@ impl Database {
     /// Load a previously saved embedder state.
     ///
     /// Returns `None` if the model has never been saved.
+    #[allow(clippy::type_complexity)]
     pub fn load_embedder_state(
         &self,
         model: &str,
@@ -682,18 +683,13 @@ impl Database {
 // ── Local Embedding Model Selection ──────────────────────────────────
 
 /// Selectable local ONNX embedding model.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum LocalEmbeddingModel {
     /// ~46 MB, 384-dim, 50+ languages. Default, fast.
+    #[default]
     MultilingualMiniLM,
     /// ~470 MB, 768-dim, 100+ languages. Highest quality.
     MultilingualE5Base,
-}
-
-impl Default for LocalEmbeddingModel {
-    fn default() -> Self {
-        Self::MultilingualMiniLM
-    }
 }
 
 impl LocalEmbeddingModel {
@@ -1252,7 +1248,7 @@ impl ApiEmbedder {
                 .ok()
                 .and_then(|r| r.error)
                 .and_then(|e| e.message)
-                .unwrap_or_else(|| err_text);
+                .unwrap_or(err_text);
             return Err(CoreError::Embedding(format!(
                 "API returned HTTP {status}: {detail}"
             )));

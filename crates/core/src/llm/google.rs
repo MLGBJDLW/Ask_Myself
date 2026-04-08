@@ -225,16 +225,14 @@ fn convert_messages(
                 let parts: Vec<GeminiPartV2> = msg
                     .parts
                     .iter()
-                    .filter_map(|p| match p {
-                        ContentPart::Text { text } => {
-                            Some(GeminiPartV2::Text { text: text.clone() })
-                        }
-                        ContentPart::Image { media_type, data } => Some(GeminiPartV2::InlineData {
+                    .map(|p| match p {
+                        ContentPart::Text { text } => GeminiPartV2::Text { text: text.clone() },
+                        ContentPart::Image { media_type, data } => GeminiPartV2::InlineData {
                             inline_data: GeminiBlob {
                                 mime_type: media_type.clone(),
                                 data: data.clone(),
                             },
-                        }),
+                        },
                     })
                     .collect();
                 contents.push(GeminiContentV2 {

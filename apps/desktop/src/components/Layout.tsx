@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { Search, FolderOpen, BookOpen, MessageCircle, Settings, ChevronLeft, ChevronRight, BotMessageSquare } from 'lucide-react';
+import { Search, FolderOpen, BookOpen, MessageCircle, Settings, ChevronLeft, ChevronRight, Brain, BotMessageSquare } from 'lucide-react';
 import { Logo } from './Logo';
 import { Toaster } from 'sonner';
 import { useTranslation } from '../i18n';
@@ -15,6 +15,7 @@ const navItems: { to: string; labelKey: TranslationKey; icon: typeof Search }[] 
   { to: '/', labelKey: 'nav.search', icon: Search },
   { to: '/sources', labelKey: 'nav.sources', icon: FolderOpen },
   { to: '/playbooks', labelKey: 'nav.playbooks', icon: BookOpen },
+  { to: '/knowledge', labelKey: 'nav.knowledge', icon: Brain },
   { to: '/chat', labelKey: 'nav.chat', icon: MessageCircle },
   { to: '/settings', labelKey: 'nav.settings', icon: Settings },
 ];
@@ -69,7 +70,7 @@ export function Layout() {
   });
 
   const toggle = () => {
-    setCollapsed((prev) => {
+    setCollapsed((prev: boolean) => {
       const next = !prev;
       try { localStorage.setItem(STORAGE_KEY, String(next)); } catch { /* noop */ }
       return next;
@@ -119,7 +120,7 @@ export function Layout() {
                   end={item.to === '/'}
                   aria-label={label}
                   aria-current={isCurrentPage ? 'page' : undefined}
-                  className={({ isActive }) =>
+                  className={({ isActive }: { isActive: boolean }) =>
                     `relative flex items-center gap-2.5 rounded-md text-sm transition-colors duration-fast ease-out
                     ${collapsed ? 'justify-center px-0 py-2' : 'px-3 py-2'}
                     ${isActive
@@ -128,16 +129,16 @@ export function Layout() {
                     }`
                   }
                 >
-                  {({ isActive }) => (
+                  {({ isActive }: { isActive: boolean }) => (
                     <>
                       {/* Active indicator bar */}
                       <motion.span
-                        className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] rounded-r-full bg-accent"
+                        className="absolute left-0 top-1/2 -translate-y-1/2 w-0.75 rounded-r-full bg-accent"
                         initial={false}
                         animate={{ height: isActive ? 20 : 0, opacity: isActive ? 1 : 0 }}
                         transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
                       />
-                      <Icon className="h-[18px] w-[18px] shrink-0" />
+                      <Icon className="h-4.5 w-4.5 shrink-0" />
                       <AnimatePresence>
                         {!collapsed && (
                           <motion.span

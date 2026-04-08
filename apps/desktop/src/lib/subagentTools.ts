@@ -183,6 +183,41 @@ export const SUBAGENT_TOOL_CATALOG: SubagentToolDescriptor[] = [
     enabledByDefault: false,
     source: 'delegation',
   },
+  {
+    name: 'compile_document',
+    label: 'Compile Document',
+    description: 'Distill a document into a structured summary, entities, and relationships.',
+    enabledByDefault: true,
+    source: 'built_in',
+  },
+  {
+    name: 'query_knowledge_graph',
+    label: 'Knowledge Graph',
+    description: 'Query the entity-relationship graph for connected concepts and paths.',
+    enabledByDefault: true,
+    source: 'built_in',
+  },
+  {
+    name: 'run_health_check',
+    label: 'Health Check',
+    description: 'Detect stale documents, orphans, coverage gaps, and duplicates.',
+    enabledByDefault: true,
+    source: 'built_in',
+  },
+  {
+    name: 'archive_output',
+    label: 'Archive Output',
+    description: 'Archive an agent answer as a new document in the knowledge base.',
+    enabledByDefault: true,
+    source: 'built_in',
+  },
+  {
+    name: 'get_related_concepts',
+    label: 'Related Concepts',
+    description: 'Find entities related to a topic with link strength and evidence.',
+    enabledByDefault: true,
+    source: 'built_in',
+  },
 ];
 
 export const DEFAULT_SUBAGENT_TOOL_NAMES = SUBAGENT_TOOL_CATALOG

@@ -155,19 +155,20 @@ fn json_value_to_text(value: &serde_json::Value) -> Option<String> {
 }
 
 fn extract_reasoning_delta(delta: &SseDelta) -> Option<String> {
-    for value in [
+    for v in [
         delta.reasoning_content.as_ref(),
         delta.reasoning_content_delta.as_ref(),
         delta.reasoning.as_ref(),
         delta.reasoning_delta.as_ref(),
         delta.thinking.as_ref(),
         delta.reasoning_text.as_ref(),
-    ] {
-        if let Some(v) = value {
-            if let Some(text) = json_value_to_text(v) {
-                if !text.is_empty() {
-                    return Some(text);
-                }
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(text) = json_value_to_text(v) {
+            if !text.is_empty() {
+                return Some(text);
             }
         }
     }
@@ -431,6 +432,7 @@ pub async fn parse_sse_stream(
                     }
 
                     // Emit text/finish/usage metadata as one chunk.
+                    #[allow(clippy::collapsible_if)]
                     if !delta.is_empty()
                         || finish_reason.is_some()
                         || usage.is_some()

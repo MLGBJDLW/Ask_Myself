@@ -496,11 +496,7 @@ impl McpClient {
                     )))
                 }
                 Ok(None) => {
-                    return if expected_id.is_some() {
-                        Ok(None)
-                    } else {
-                        Ok(None)
-                    };
+                    return Ok(None);
                 }
                 Err(_) if expected_id.is_none() => return Ok(None),
                 Err(_) => return Err(self.transport_timeout_error(context).await),
@@ -1545,8 +1541,7 @@ fn windows_pathexts() -> Vec<String> {
     #[cfg(windows)]
     {
         let raw = env::var_os("PATHEXT").unwrap_or_else(|| OsString::from(".COM;.EXE;.BAT;.CMD"));
-        return raw
-            .to_string_lossy()
+        raw.to_string_lossy()
             .split(';')
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -1557,7 +1552,7 @@ fn windows_pathexts() -> Vec<String> {
                     format!(".{value}")
                 }
             })
-            .collect();
+            .collect()
     }
 
     #[cfg(not(windows))]

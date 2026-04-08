@@ -1,0 +1,21 @@
+{
+  "name": "compile_document",
+  "description": "Check the compilation status of knowledge base documents. When given a specific document_id, returns its compilation status (summary, entities, tags). When compile_all is true, returns a list of uncompiled documents that need processing. Use this to understand what has been compiled and what still needs attention.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "document_id": {
+        "type": "integer",
+        "description": "Specific document ID to check compilation status for."
+      },
+      "compile_all": {
+        "type": "boolean",
+        "description": "When true, return a list of all uncompiled (pending) documents. Default false."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of pending documents to return when compile_all is true. Default 10."
+      }
+    }
+  }
+}

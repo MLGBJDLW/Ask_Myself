@@ -462,3 +462,30 @@ export const getTraceSummary = () =>
 
 export const getRecentTraces = (limit?: number) =>
   invoke<AgentTrace[]>('get_recent_traces', { limit });
+
+// ── Knowledge Compilation ───────────────────────────────────────────
+
+import type {
+  CompileResult,
+  CompileStats,
+  KnowledgeMap,
+  HealthReport,
+} from '../types/knowledge';
+
+export const compileDocument = (docId: number) =>
+  invoke<CompileResult>('compile_document_cmd', { docId });
+
+export const compilePendingDocuments = (limit?: number) =>
+  invoke<CompileResult[]>('compile_pending_documents_cmd', { limit: limit ?? 10 });
+
+export const getCompileStats = () =>
+  invoke<CompileStats>('get_compile_stats_cmd');
+
+export const getKnowledgeMap = (limit?: number) =>
+  invoke<KnowledgeMap>('get_knowledge_map_cmd', { limit: limit ?? 50 });
+
+export const runKnowledgeHealthCheck = (staleDays?: number) =>
+  invoke<HealthReport>('run_knowledge_health_check_cmd', { staleDays: staleDays ?? 90 });
+
+export const compileAfterScan = (limit?: number) =>
+  invoke<CompileResult[]>('compile_after_scan_cmd', { limit: limit ?? 10 });

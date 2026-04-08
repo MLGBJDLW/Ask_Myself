@@ -86,8 +86,8 @@ fn snippet_around(content: &str, byte_offset: usize, replacement_len: usize) -> 
     let to = (end_line + context_lines + 1).min(lines.len());
 
     let mut out = String::new();
-    for i in from..to {
-        out.push_str(&format!("{:>4} | {}\n", i + 1, lines[i]));
+    for (i, line) in lines.iter().enumerate().take(to).skip(from) {
+        out.push_str(&format!("{:>4} | {}\n", i + 1, line));
     }
     out
 }

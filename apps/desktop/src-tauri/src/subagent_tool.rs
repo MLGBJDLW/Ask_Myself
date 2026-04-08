@@ -124,6 +124,26 @@ const SUBAGENT_TOOL_SPECS: &[SubagentToolSpec] = &[
         name: "judge_subagent_results",
         enabled_by_default: false,
     },
+    SubagentToolSpec {
+        name: "compile_document",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "query_knowledge_graph",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "run_health_check",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "archive_output",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "get_related_concepts",
+        enabled_by_default: true,
+    },
 ];
 
 pub struct SubagentTool {

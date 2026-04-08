@@ -96,7 +96,7 @@ fn html_to_text(html: &str) -> String {
     let input = html;
 
     // Step 1: Remove <script> and <style> blocks entirely.
-    let input = strip_blocks(&input, "script");
+    let input = strip_blocks(input, "script");
     let input = strip_blocks(&input, "style");
 
     // Step 2: Replace block-level tags with newlines for readability.

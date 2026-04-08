@@ -1,0 +1,27 @@
+{
+  "name": "get_related_concepts",
+  "description": "Explore the knowledge base at a high level: browse the wiki index, generate a Map of Content for a topic, find hot concepts, get exploration suggestions, view query trends, or identify knowledge gaps. Use this for big-picture understanding and discovery.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["wiki_index", "moc", "hot", "suggestions", "trends", "gaps"],
+        "description": "'wiki_index' — full entity index by type; 'moc' — Map of Content for a topic; 'hot' — most active concepts; 'suggestions' — exploration topic recommendations; 'trends' — recent query trends; 'gaps' — topics frequently queried but lacking content."
+      },
+      "topic": {
+        "type": "string",
+        "description": "Topic name for 'moc' action. Required when action is 'moc'."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of results to return. Default 10."
+      },
+      "days": {
+        "type": "integer",
+        "description": "Lookback window in days for 'trends' action. Default 30."
+      }
+    },
+    "required": ["action"]
+  }
+}

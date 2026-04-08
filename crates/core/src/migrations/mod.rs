@@ -240,6 +240,68 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
             1
         );"#,
     ),
+    (
+        "v034_knowledge_compile",
+        "CREATE TABLE IF NOT EXISTS document_summaries (
+            id TEXT PRIMARY KEY NOT NULL,
+            document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            summary TEXT NOT NULL,
+            key_points TEXT NOT NULL DEFAULT '[]',
+            tags TEXT NOT NULL DEFAULT '[]',
+            model_used TEXT NOT NULL DEFAULT '',
+            compiled_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_summaries_doc ON document_summaries(document_id);
+
+        CREATE TABLE IF NOT EXISTS entities (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            first_seen_doc INTEGER REFERENCES documents(id) ON DELETE SET NULL,
+            mention_count INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_name_type ON entities(name, entity_type);
+        CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
+
+        CREATE TABLE IF NOT EXISTS document_entities (
+            document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+            relevance REAL NOT NULL DEFAULT 1.0,
+            context_snippet TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(document_id, entity_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS entity_links (
+            id TEXT PRIMARY KEY NOT NULL,
+            source_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+            target_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+            relation_type TEXT NOT NULL,
+            strength REAL NOT NULL DEFAULT 1.0,
+            evidence_doc_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_links_unique ON entity_links(source_entity_id, target_entity_id, relation_type);
+        CREATE INDEX IF NOT EXISTS idx_entity_links_source ON entity_links(source_entity_id);
+        CREATE INDEX IF NOT EXISTS idx_entity_links_target ON entity_links(target_entity_id);
+
+        CREATE TABLE IF NOT EXISTS health_checks (
+            id TEXT PRIMARY KEY NOT NULL,
+            check_type TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'info',
+            target_doc_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+            target_entity_id TEXT REFERENCES entities(id) ON DELETE CASCADE,
+            description TEXT NOT NULL,
+            suggestion TEXT NOT NULL DEFAULT '',
+            resolved INTEGER NOT NULL DEFAULT 0,
+            checked_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_health_checks_type ON health_checks(check_type);
+        CREATE INDEX IF NOT EXISTS idx_health_checks_resolved ON health_checks(resolved);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -392,7 +454,11 @@ mod tests {
             .filter_map(|row| row.ok())
             .collect();
 
-        assert!(rows.iter().any(|(id, enabled)| id == "builtin-office-document-design" && *enabled == 1));
-        assert!(rows.iter().any(|(id, enabled)| id == "builtin-visual-explanations" && *enabled == 1));
+        assert!(rows
+            .iter()
+            .any(|(id, enabled)| id == "builtin-office-document-design" && *enabled == 1));
+        assert!(rows
+            .iter()
+            .any(|(id, enabled)| id == "builtin-visual-explanations" && *enabled == 1));
     }
 }

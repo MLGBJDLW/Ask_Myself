@@ -70,7 +70,7 @@ impl FileWatcher {
             },
             Config::default().with_poll_interval(Duration::from_secs(2)),
         )
-        .map_err(|e| CoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| CoreError::Io(std::io::Error::other(e)))?;
 
         info!("File watcher initialized");
         Ok((Self { watcher }, rx))
@@ -80,7 +80,7 @@ impl FileWatcher {
     pub fn watch(&mut self, path: &Path) -> Result<(), CoreError> {
         self.watcher
             .watch(path, RecursiveMode::Recursive)
-            .map_err(|e| CoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| CoreError::Io(std::io::Error::other(e)))?;
         info!("Started watching: {}", path.display());
         Ok(())
     }
@@ -89,7 +89,7 @@ impl FileWatcher {
     pub fn unwatch(&mut self, path: &Path) -> Result<(), CoreError> {
         self.watcher
             .unwatch(path)
-            .map_err(|e| CoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| CoreError::Io(std::io::Error::other(e)))?;
         info!("Stopped watching: {}", path.display());
         Ok(())
     }

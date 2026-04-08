@@ -221,6 +221,7 @@ enum AnthropicStreamContentBlock {
 #[derive(Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
 enum AnthropicStreamDelta {
     TextDelta { text: String },
     InputJsonDelta { partial_json: String },
@@ -280,18 +281,18 @@ fn convert_messages(
                     let blocks: Vec<AnthropicContentBlock> = msg
                         .parts
                         .iter()
-                        .filter_map(|p| match p {
+                        .map(|p| match p {
                             ContentPart::Text { text } => {
-                                Some(AnthropicContentBlock::Text { text: text.clone() })
+                                AnthropicContentBlock::Text { text: text.clone() }
                             }
                             ContentPart::Image { media_type, data } => {
-                                Some(AnthropicContentBlock::Image {
+                                AnthropicContentBlock::Image {
                                     source: AnthropicImageSource {
                                         r#type: "base64".to_string(),
                                         media_type: media_type.clone(),
                                         data: data.clone(),
                                     },
-                                })
+                                }
                             }
                         })
                         .collect();

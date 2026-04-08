@@ -203,7 +203,7 @@ impl Tool for SummarizeDocumentTool {
             });
         }
 
-        let max_chunks = args.max_chunks.min(500).max(1);
+        let max_chunks = args.max_chunks.clamp(1, 500);
         let db = db.clone();
         let call_id = call_id.to_string();
         let source_scope = source_scope.to_vec();

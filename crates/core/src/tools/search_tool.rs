@@ -115,7 +115,7 @@ impl Tool for SearchTool {
             CoreError::InvalidInput(format!("Invalid search_knowledge_base arguments: {e}"))
         })?;
 
-        let limit = args.limit.min(20).max(1);
+        let limit = args.limit.clamp(1, 20);
 
         let mut filters = crate::models::SearchFilters::default();
 

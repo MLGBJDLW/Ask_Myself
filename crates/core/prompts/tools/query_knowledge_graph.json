@@ -1,0 +1,27 @@
+{
+  "name": "query_knowledge_graph",
+  "description": "Query the knowledge graph to explore entity relationships, find connection paths between concepts, search entities, or get an overview map of top entities. Use this to understand how concepts relate to each other across the knowledge base.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["related", "path", "map", "search"],
+        "description": "'related' — get entities related to entity_name; 'path' — find shortest path between entity_name and target_name; 'map' — get top entities and their links; 'search' — search entities by name/description."
+      },
+      "entity_name": {
+        "type": "string",
+        "description": "Entity name to query. Required for 'related', 'path', and 'search' actions."
+      },
+      "target_name": {
+        "type": "string",
+        "description": "Target entity name for 'path' action."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of results to return. Default 20."
+      }
+    },
+    "required": ["action"]
+  }
+}

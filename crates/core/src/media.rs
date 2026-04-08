@@ -93,8 +93,8 @@ pub fn prepare_base64_image_for_llm(
 /// Based on OpenAI's tiling model: ~85 tokens per 512×512 tile plus a
 /// base cost of 85 tokens.
 pub fn estimate_image_tokens(width: u32, height: u32) -> u32 {
-    let tiles_x = (width + 511) / 512;
-    let tiles_y = (height + 511) / 512;
+    let tiles_x = width.div_ceil(512);
+    let tiles_y = height.div_ceil(512);
     tiles_x * tiles_y * 85 + 85
 }
 

@@ -67,7 +67,7 @@ impl Tool for ListDocumentsTool {
         let db = db.clone();
         let call_id = call_id.to_string();
         tokio::task::spawn_blocking(move || {
-            let limit = args.limit.min(200).max(1);
+            let limit = args.limit.clamp(1, 200);
             let offset = args.offset;
 
             // Verify the source exists.

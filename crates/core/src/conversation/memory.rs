@@ -197,7 +197,7 @@ pub fn model_context_window(model: &str) -> u32 {
         "codestral-2508" => 128_000,
         "devstral-2512" | "devstral-2-2512" => 256_000,
 
-        _ => return prefix_model_context_window(m),
+        _ => prefix_model_context_window(m),
     }
 }
 
@@ -246,6 +246,7 @@ fn parse_context_window_hint(m: &str) -> Option<u32> {
 fn qwen_model_context_window(m: &str) -> Option<u32> {
     match m {
         _ if m.starts_with("qwen3.5-plus")
+            || m.starts_with("qwen3.6-plus")
             || m.starts_with("qwen3.5-flash")
             || m.starts_with("qwen3-coder-plus") =>
         {
@@ -417,8 +418,7 @@ fn build_message_blocks(conversation: &[&Message]) -> Vec<MessageBlock> {
         let msg = conversation[i];
 
         // Check if this is an assistant message with tool calls
-        if msg.role == Role::Assistant && msg.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
-        {
+        if msg.role == Role::Assistant && msg.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty()) {
             let mut block_msgs = vec![msg.clone()];
             let mut cost = estimate_message_tokens(msg);
 

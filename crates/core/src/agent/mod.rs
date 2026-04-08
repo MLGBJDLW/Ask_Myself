@@ -312,6 +312,7 @@ fn append_persisted_trace_thinking(items: &mut Vec<PersistedTraceItem>, text: &s
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_persisted_trace_tool(
     items: &mut Vec<PersistedTraceItem>,
     tool_name: &str,
@@ -750,6 +751,7 @@ impl AgentExecutor {
     ///   one past the last message it already persisted (e.g. the user message).
     ///
     /// Returns the final assistant [`Message`] on success.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run(
         &self,
         history: Vec<Message>,
@@ -778,6 +780,7 @@ impl AgentExecutor {
     /// This is primarily useful for short-lived delegated workers that should
     /// inherit the parent's retrieval scope without persisting their internal
     /// reasoning into the parent's conversation history.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_with_source_scope(
         &self,
         history: Vec<Message>,
@@ -858,7 +861,7 @@ impl AgentExecutor {
         );
         let _ = tx
             .send(AgentEvent::Status {
-                content: format!("Route selected: {}", format!("{:?}", route_plan.kind)),
+                content: format!("Route selected: {:?}", route_plan.kind),
                 tone: Some("muted".to_string()),
             })
             .await;
@@ -947,7 +950,7 @@ impl AgentExecutor {
         // --- 3c'. Try direct dispatch (skip LLM for simple commands) ---------
         if let Some(msg) = self
             .try_direct_dispatch(
-                &user_query_text,
+                user_query_text,
                 db,
                 &source_scope,
                 &tx,
@@ -963,7 +966,7 @@ impl AgentExecutor {
         // --- 3d. Check answer cache before ReAct loop ------------------------
         if !user_query_text.is_empty() {
             if let Ok(Some(cached)) = db.find_cached_answer(
-                &user_query_text,
+                user_query_text,
                 cache_source_filter.as_deref(),
                 self.config.cache_ttl_hours.map(|h| h as i64),
             ) {
@@ -1525,7 +1528,7 @@ impl AgentExecutor {
                     let citations = crate::cache::extract_citations(&final_text);
                     if !citations.is_empty() {
                         let _ = db.cache_answer(
-                            &user_query_text,
+                            user_query_text,
                             &final_text,
                             &citations,
                             cache_source_filter.as_deref(),
@@ -1910,7 +1913,7 @@ impl AgentExecutor {
         }
 
         // Estimate total tokens across the history.
-        let total_tokens: u32 = history.iter().map(|m| estimate_message_tokens(m)).sum();
+        let total_tokens: u32 = history.iter().map(estimate_message_tokens).sum();
 
         // Only trigger when history consumes >50% of available budget.
         if total_tokens <= budget / 2 {
@@ -2002,7 +2005,7 @@ impl AgentExecutor {
                 if !tc.is_empty()
                     && messages
                         .get(evict_end)
-                        .map_or(false, |m| m.role == Role::Tool)
+                        .is_some_and(|m| m.role == Role::Tool)
                 {
                     evict_end -= 1;
                 }
@@ -2191,6 +2194,7 @@ impl AgentExecutor {
     /// Attempt to handle the query without an LLM call by detecting simple,
     /// unambiguous command patterns. Returns `Some(Message)` if handled
     /// directly, `None` to fall through to the normal ReAct loop.
+    #[allow(clippy::too_many_arguments)]
     async fn try_direct_dispatch(
         &self,
         user_text: &str,
@@ -2357,7 +2361,7 @@ impl AgentExecutor {
             "\u{30BD}\u{30FC}\u{30B9}\u{4E00}\u{89A7}", // ソース一覧
             "\u{30BD}\u{30FC}\u{30B9}\u{3092}\u{8868}\u{793A}", // ソースを表示
         ];
-        if LIST_SOURCES.iter().any(|p| q == *p) {
+        if LIST_SOURCES.contains(&q) {
             return Some(DirectDispatch {
                 tool_name: "list_sources".into(),
                 arguments: "{}".into(),
@@ -2378,7 +2382,7 @@ impl AgentExecutor {
             "\u{5267}\u{672C}\u{5217}\u{8868}", // 剧本列表
             "\u{30D7}\u{30EC}\u{30A4}\u{30D6}\u{30C3}\u{30AF}\u{4E00}\u{89A7}", // プレイブック一覧
         ];
-        if LIST_PLAYBOOKS.iter().any(|p| q == *p) {
+        if LIST_PLAYBOOKS.contains(&q) {
             return Some(DirectDispatch {
                 tool_name: "manage_playbook".into(),
                 arguments: r#"{"action":"list"}"#.into(),

@@ -673,7 +673,7 @@ impl McpManager {
                     };
 
                 let mut client =
-                    McpClient::connect_stdio(&command, &args, env.as_ref(), &server.name).await?;
+                    McpClient::connect_stdio(command, &args, env.as_ref(), &server.name).await?;
                 if let Some(secs) = call_timeout_secs {
                     client.set_call_timeout(std::time::Duration::from_secs(secs));
                 }

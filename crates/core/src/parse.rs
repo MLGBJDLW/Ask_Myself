@@ -1213,7 +1213,7 @@ pub fn chunk_plaintext(content: &str, max_chunk_chars: usize) -> Vec<ParsedChunk
 /// The first chunk is left unchanged (`overlap_start` remains 0).
 /// Subsequent chunks receive an overlap prefix and their `overlap_start`
 /// field is set to the byte length of that prefix.
-fn apply_chunk_overlap(chunks: &mut Vec<ParsedChunk>, overlap_chars: usize) {
+fn apply_chunk_overlap(chunks: &mut [ParsedChunk], overlap_chars: usize) {
     if chunks.len() <= 1 {
         return;
     }
@@ -1315,12 +1315,11 @@ fn parse_yaml_simple(yaml: &str) -> HashMap<String, String> {
             let key = key.trim().to_lowercase();
             let mut value = value.trim().to_string();
             // Remove surrounding quotes.
-            if (value.starts_with('"') && value.ends_with('"'))
-                || (value.starts_with('\'') && value.ends_with('\''))
+            if ((value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\'')))
+                && value.len() >= 2
             {
-                if value.len() >= 2 {
-                    value = value[1..value.len() - 1].to_string();
-                }
+                value = value[1..value.len() - 1].to_string();
             }
             // Handle inline YAML arrays: [tag1, tag2, tag3]
             if value.starts_with('[') && value.ends_with(']') && value.len() >= 2 {

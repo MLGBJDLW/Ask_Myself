@@ -93,17 +93,17 @@ impl Tool for DateSearchTool {
             .as_deref()
             .map(normalize_date)
             .transpose()
-            .map_err(|e| CoreError::InvalidInput(e))?;
+            .map_err(CoreError::InvalidInput)?;
 
         let before = args
             .before
             .as_deref()
             .map(normalize_date)
             .transpose()
-            .map_err(|e| CoreError::InvalidInput(e))?;
+            .map_err(CoreError::InvalidInput)?;
 
         let order_desc = args.order != "oldest";
-        let limit = args.limit.min(200).max(1);
+        let limit = args.limit.clamp(1, 200);
         let source_id = args.source_id.clone();
 
         let db = db.clone();

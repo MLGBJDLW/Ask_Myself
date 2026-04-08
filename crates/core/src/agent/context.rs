@@ -19,6 +19,7 @@ const MAX_SYSTEM_PROMPT_CHARS: usize = 16_000;
 ///    minus `max_tokens_response` (reserved for the model's answer).
 ///
 /// If `context_window_override` is `Some`, it takes priority over auto-detection.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_messages(
     system_prompt: &str,
     history: &[Message],
@@ -135,7 +136,7 @@ fn build_evicted_recap(evicted: &[&Message]) -> String {
             }
             Role::Assistant => {
                 // Skip tool-call intermediary messages.
-                if msg.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty()) {
+                if msg.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty()) {
                     continue;
                 }
                 let text = msg.text_content();

@@ -490,6 +490,7 @@ export interface TranslationKeys {
 
   // Chat
   'nav.chat': string;
+  'nav.knowledge': string;
   'chat.title': string;
   'chat.newChat': string;
   'chat.send': string;
@@ -954,6 +955,35 @@ export interface TranslationKeys {
   'analytics.toolName': string;
   'analytics.count': string;
   'analytics.message': string;
+
+  // Knowledge
+  'knowledge.title': string;
+  'knowledge.compile': string;
+  'knowledge.knowledgeMap': string;
+  'knowledge.healthCheck': string;
+  'knowledge.compileStats': string;
+  'knowledge.totalDocs': string;
+  'knowledge.compiledDocs': string;
+  'knowledge.totalEntities': string;
+  'knowledge.totalLinks': string;
+  'knowledge.compilePending': string;
+  'knowledge.compiling': string;
+  'knowledge.noEntities': string;
+  'knowledge.searchEntities': string;
+  'knowledge.runCheck': string;
+  'knowledge.checking': string;
+  'knowledge.noIssues': string;
+  'knowledge.stale': string;
+  'knowledge.orphan': string;
+  'knowledge.duplicate': string;
+  'knowledge.gap': string;
+  'knowledge.contradiction': string;
+  'knowledge.info': string;
+  'knowledge.warning': string;
+  'knowledge.critical': string;
+  'knowledge.entityType': string;
+  'knowledge.mentions': string;
+  'knowledge.documents': string;
 
   // Common
   'common.save': string;

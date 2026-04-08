@@ -1,0 +1,18 @@
+{
+  "name": "run_health_check",
+  "description": "Run knowledge base health diagnostics to find stale documents, orphaned content, duplicate entities, and coverage gaps. Returns actionable issues with severity levels and suggestions for improvement.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "check_type": {
+        "type": "string",
+        "enum": ["all", "stale", "orphan", "duplicate", "gap"],
+        "description": "Type of health check to run. Default 'all' runs all checks."
+      },
+      "stale_days": {
+        "type": "integer",
+        "description": "Number of days after which a document is considered stale. Default 90."
+      }
+    }
+  }
+}

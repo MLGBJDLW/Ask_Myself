@@ -1,0 +1,22 @@
+{
+  "name": "archive_output",
+  "description": "Archive an agent response or generated content as a new document in the knowledge base. This writes a markdown file to the specified source directory and indexes it. Useful for persisting high-quality answers, summaries, or research outputs so they become searchable knowledge.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Title for the archived document. Used as filename and frontmatter title."
+      },
+      "content": {
+        "type": "string",
+        "description": "The content to archive as a knowledge base document."
+      },
+      "source_directory": {
+        "type": "string",
+        "description": "The source directory path to save the archived document in."
+      }
+    },
+    "required": ["title", "content", "source_directory"]
+  }
+}

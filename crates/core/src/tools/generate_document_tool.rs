@@ -724,7 +724,7 @@ fn generate_xlsx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                                         .write_string_with_format(
                                             row_idx,
                                             col as u16,
-                                            &value_to_display_text(cell_value),
+                                            value_to_display_text(cell_value),
                                             &fmt,
                                         )
                                         .map_err(|e| format!("Failed to write string: {e}"))?;
@@ -754,7 +754,7 @@ fn generate_xlsx(path: &std::path::Path, content: &serde_json::Value) -> Result<
                             .write_string_with_format(
                                 row_idx,
                                 col as u16,
-                                &value_to_display_text(value),
+                                value_to_display_text(value),
                                 base_fmt,
                             )
                             .map_err(|e| format!("Failed to write string: {e}"))?;

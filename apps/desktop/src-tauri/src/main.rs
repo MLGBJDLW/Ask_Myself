@@ -199,6 +199,13 @@ fn main() {
             // Trace analytics
             commands::get_trace_summary,
             commands::get_recent_traces,
+            // Knowledge compilation
+            commands::compile_document_cmd,
+            commands::compile_pending_documents_cmd,
+            commands::get_compile_stats_cmd,
+            commands::get_knowledge_map_cmd,
+            commands::run_knowledge_health_check_cmd,
+            commands::compile_after_scan_cmd,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

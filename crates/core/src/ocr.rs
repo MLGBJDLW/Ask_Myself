@@ -317,8 +317,8 @@ impl OcrEngine {
         let new_h = (h as f32 * scale).round() as u32;
 
         // Pad to next multiple of 32.
-        let pad_w = ((new_w + 31) / 32) * 32;
-        let pad_h = ((new_h + 31) / 32) * 32;
+        let pad_w = (new_w.div_ceil(32)) * 32;
+        let pad_h = (new_h.div_ceil(32)) * 32;
 
         let resized =
             image::imageops::resize(rgb, new_w, new_h, image::imageops::FilterType::Triangle);
@@ -419,7 +419,7 @@ impl OcrEngine {
         let unclip_ratio: f32 = 1.5;
         let mut boxes: Vec<TextBox> = Vec::new();
 
-        for (_label, (min_x, min_y, max_x, max_y)) in &label_bounds {
+        for (min_x, min_y, max_x, max_y) in label_bounds.values() {
             let bw = (max_x - min_x) as f32;
             let bh = (max_y - min_y) as f32;
 
@@ -845,7 +845,7 @@ pub fn ocr_pdf(
     let doc = lopdf::Document::load_mem(pdf_bytes)
         .map_err(|e| CoreError::Parse(format!("PDF load: {e}")))?;
 
-    let pages: Vec<lopdf::ObjectId> = doc.get_pages().into_iter().map(|(_num, id)| id).collect();
+    let pages: Vec<lopdf::ObjectId> = doc.get_pages().into_values().collect();
 
     let mut all_text = String::new();
 

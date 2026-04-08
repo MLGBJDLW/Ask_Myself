@@ -933,7 +933,7 @@ fn compute_freshness(document_date: &Option<String>) -> (Option<i64>, f64) {
 /// them into the final ranking score.
 ///
 /// `final_score = bm25_score * 0.7 + credibility * 0.2 + freshness * 0.1`
-fn apply_credibility_scoring(cards: &mut Vec<EvidenceCard>) {
+fn apply_credibility_scoring(cards: &mut [EvidenceCard]) {
     for card in cards.iter_mut() {
         let credibility = compute_credibility(&card.document_path);
         let (freshness_days, freshness_bonus) = compute_freshness(&card.document_date);
@@ -960,7 +960,7 @@ fn apply_credibility_scoring(cards: &mut Vec<EvidenceCard>) {
 /// 4. Source preference boost (+0.05 for preferred sources)
 /// 5. Playbook citation boost (+0.10 single playbook, +0.15 multiple playbooks)
 fn apply_feedback_reranking(
-    cards: &mut Vec<EvidenceCard>,
+    cards: &mut [EvidenceCard],
     db: &Database,
     query_text: &str,
 ) -> Result<(), CoreError> {

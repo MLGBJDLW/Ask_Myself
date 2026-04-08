@@ -350,22 +350,20 @@ async fn parse_ollama_ndjson_stream(
                         }
                         break;
                     }
-                } else {
-                    if let Some(start_pos) = tag_buffer.find("<think>") {
-                        // Text before the tag is normal content.
-                        let before = &tag_buffer[..start_pos];
-                        if !before.is_empty() {
-                            delta.push_str(before);
-                        }
-                        tag_buffer = tag_buffer[start_pos + 7..].to_string();
-                        in_think_block = true;
-                        // Continue loop – the rest may contain </think>.
-                    } else {
-                        // No opening tag; emit as normal content.
-                        delta.push_str(&tag_buffer);
-                        tag_buffer.clear();
-                        break;
+                } else if let Some(start_pos) = tag_buffer.find("<think>") {
+                    // Text before the tag is normal content.
+                    let before = &tag_buffer[..start_pos];
+                    if !before.is_empty() {
+                        delta.push_str(before);
                     }
+                    tag_buffer = tag_buffer[start_pos + 7..].to_string();
+                    in_think_block = true;
+                    // Continue loop – the rest may contain </think>.
+                } else {
+                    // No opening tag; emit as normal content.
+                    delta.push_str(&tag_buffer);
+                    tag_buffer.clear();
+                    break;
                 }
             }
 
