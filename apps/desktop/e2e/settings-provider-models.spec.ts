@@ -164,6 +164,7 @@ test("settings provider form shows updated preset models for add and edit flows"
   await expect(modelSelect.locator("option")).toContainText([
     "Qwen3 Max",
     "Qwen3.5 Plus",
+    "Qwen3.6 Plus",
     "Qwen3 VL Plus",
     "QVQ Max",
   ]);

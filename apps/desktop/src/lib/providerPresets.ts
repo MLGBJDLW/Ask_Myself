@@ -318,13 +318,12 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     requiresApiKey: true,
     icon: "🪶",
-    description: "Qwen3-Max, Qwen3.5, Qwen3-VL, QwQ",
+    description: "Qwen3.6 Plus, Qwen3-Max, QwQ, Qwen3-VL",
     models: [
       {
         id: "qwen3-max-2026-01-23",
         name: "Qwen3 Max",
-        tagKey: "providers.tagLatest",
-        recommended: true,
+        tagKey: "providers.tagMostIntelligent",
       },
       {
         id: "qwen3-max-preview",
@@ -335,6 +334,12 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
         id: "qwen3.5-plus",
         name: "Qwen3.5 Plus",
         tagKey: "providers.tagBestBalance",
+      },
+      {
+        id: "qwen3.6-plus",
+        name: "Qwen3.6 Plus",
+        tagKey: "providers.tagLatest",
+        recommended: true,
       },
       {
         id: "qwen3.5-flash",

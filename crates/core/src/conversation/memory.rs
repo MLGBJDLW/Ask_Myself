@@ -246,6 +246,7 @@ fn parse_context_window_hint(m: &str) -> Option<u32> {
 fn qwen_model_context_window(m: &str) -> Option<u32> {
     match m {
         _ if m.starts_with("qwen3.5-plus")
+            || m.starts_with("qwen3.6-plus")
             || m.starts_with("qwen3.5-flash")
             || m.starts_with("qwen3-coder-plus") =>
         {
