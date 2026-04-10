@@ -194,6 +194,21 @@ pub fn parse_file(
     if mime_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation" {
         return parse_pptx(path, max_chars);
     }
+    if mime_type == "application/msword" {
+        return parse_doc(path, max_chars);
+    }
+    if mime_type == "application/vnd.ms-powerpoint" {
+        return parse_ppt(path, max_chars);
+    }
+    if mime_type == "text/html" {
+        return parse_html(path, max_chars);
+    }
+    if mime_type == "application/epub+zip" {
+        return parse_epub(path, max_chars);
+    }
+    if mime_type.starts_with("application/vnd.oasis.opendocument.") {
+        return parse_odf(path, &mime_type, max_chars);
+    }
 
     // Image files — extract text via OCR when available, otherwise metadata stub.
     if mime_type.starts_with("image/") {
@@ -969,6 +984,493 @@ fn parse_video(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Legacy Office / HTML / EPUB / ODF parsers
+// ---------------------------------------------------------------------------
+
+/// Extract readable text sequences from binary document data.
+///
+/// Scans for runs of printable ASCII characters, filtering out short
+/// runs that are likely formatting artifacts rather than real content.
+fn extract_text_from_binary(bytes: &[u8]) -> String {
+    let min_run_length = 20;
+    let mut result = String::new();
+    let mut current_run = String::new();
+
+    for &byte in bytes {
+        if (byte >= 0x20 && byte < 0x7F) || byte == b'\n' || byte == b'\r' || byte == b'\t' {
+            current_run.push(byte as char);
+        } else {
+            if current_run.trim().len() >= min_run_length {
+                if !result.is_empty() {
+                    result.push('\n');
+                }
+                result.push_str(current_run.trim());
+            }
+            current_run.clear();
+        }
+    }
+    // Flush last run.
+    if current_run.trim().len() >= min_run_length {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str(current_run.trim());
+    }
+
+    result
+}
+
+/// Decode common HTML entities to their character equivalents.
+fn decode_html_entities(text: &str) -> String {
+    text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .replace("&ndash;", "\u{2013}")
+        .replace("&mdash;", "\u{2014}")
+        .replace("&hellip;", "\u{2026}")
+        .replace("&copy;", "\u{00A9}")
+        .replace("&reg;", "\u{00AE}")
+        .replace("&trade;", "\u{2122}")
+}
+
+/// Strip HTML tags from content, preserving meaningful structure.
+///
+/// Removes script/style blocks, converts headings to markdown format,
+/// preserves link URLs in markdown syntax, converts block elements to
+/// newlines, strips remaining tags, and decodes HTML entities.
+fn strip_html_tags(html: &str) -> String {
+    // Remove script, style, noscript blocks entirely.
+    let re_script = regex::Regex::new(r"(?is)<script[^>]*>.*?</script>").unwrap();
+    let without_scripts = re_script.replace_all(html, "");
+    let re_style = regex::Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap();
+    let without_styles = re_style.replace_all(&without_scripts, "");
+    let re_noscript = regex::Regex::new(r"(?is)<noscript[^>]*>.*?</noscript>").unwrap();
+    let without_noscript = re_noscript.replace_all(&without_styles, "");
+
+    // Convert headings to markdown.
+    let re_heading = regex::Regex::new(r"(?is)<h([1-6])[^>]*>(.*?)</h[1-6]>").unwrap();
+    let with_headings = re_heading.replace_all(&without_noscript, |caps: &regex::Captures| {
+        let level = caps[1].parse::<usize>().unwrap_or(1);
+        let hashes = "#".repeat(level);
+        format!("\n{} {}\n", hashes, caps[2].trim())
+    });
+
+    // Convert links to markdown format.
+    let re_link = regex::Regex::new(r#"(?is)<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#).unwrap();
+    let with_links = re_link.replace_all(&with_headings, |caps: &regex::Captures| {
+        let url = &caps[1];
+        let text = caps[2].trim();
+        if text.is_empty() {
+            url.to_string()
+        } else {
+            format!("[{}]({})", text, url)
+        }
+    });
+
+    // Convert block elements to newlines.
+    let re_block = regex::Regex::new(r"(?i)</?(p|div|br|tr|li|blockquote|pre|hr)[^>]*/?>").unwrap();
+    let with_blocks = re_block.replace_all(&with_links, "\n");
+
+    // Strip all remaining tags.
+    let re_tags = regex::Regex::new(r"<[^>]+>").unwrap();
+    let without_tags = re_tags.replace_all(&with_blocks, "");
+
+    // Decode HTML entities.
+    let decoded = decode_html_entities(&without_tags);
+
+    // Normalize whitespace: trim lines, collapse blank lines.
+    decoded
+        .replace("\r\n", "\n")
+        .lines()
+        .map(|line| line.trim())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .split("\n\n\n")
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .trim()
+        .to_string()
+}
+
+/// Parse a legacy .doc file by attempting text extraction.
+///
+/// Tries to open as a zip archive first (handles modern .docx files
+/// saved with a .doc extension), then falls back to raw text
+/// extraction from the binary data.
+fn parse_doc(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, CoreError> {
+    let bytes = std::fs::read(path)?;
+    let file_size = bytes.len() as i64;
+    let content_hash = blake3::hash(&bytes).to_hex().to_string();
+
+    // Try as zip first (handles renamed .docx files).
+    let text = if let Ok(xml_text) = extract_docx_text_from_xml(&bytes) {
+        if !xml_text.trim().is_empty() {
+            xml_text
+        } else {
+            extract_text_from_binary(&bytes)
+        }
+    } else {
+        extract_text_from_binary(&bytes)
+    };
+
+    if text.trim().is_empty() {
+        return Err(CoreError::Parse(format!(
+            "Could not extract text from legacy .doc file: {}",
+            path.display()
+        )));
+    }
+
+    let text = text.replace("\r\n", "\n");
+    let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
+
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Ok(ParsedDocument {
+        file_path: path.to_string_lossy().to_string(),
+        title: file_name.clone(),
+        file_name,
+        mime_type: "application/msword".to_string(),
+        file_size,
+        content_hash,
+        chunks,
+        metadata: extract_fs_metadata(path),
+    })
+}
+
+/// Parse a legacy .ppt file by attempting text extraction.
+///
+/// Tries to open as a zip archive first (handles modern .pptx files
+/// saved with a .ppt extension), then falls back to raw text
+/// extraction from the binary data.
+fn parse_ppt(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, CoreError> {
+    let bytes = std::fs::read(path)?;
+    let file_size = bytes.len() as i64;
+    let content_hash = blake3::hash(&bytes).to_hex().to_string();
+
+    // Try as zip first (handles renamed .pptx files).
+    let text = if let Ok(xml_text) = extract_pptx_text_from_xml(&bytes) {
+        if !xml_text.trim().is_empty() {
+            xml_text
+        } else {
+            extract_text_from_binary(&bytes)
+        }
+    } else {
+        extract_text_from_binary(&bytes)
+    };
+
+    if text.trim().is_empty() {
+        return Err(CoreError::Parse(format!(
+            "Could not extract text from legacy .ppt file: {}",
+            path.display()
+        )));
+    }
+
+    let text = text.replace("\r\n", "\n");
+    let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
+
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Ok(ParsedDocument {
+        file_path: path.to_string_lossy().to_string(),
+        title: file_name.clone(),
+        file_name,
+        mime_type: "application/vnd.ms-powerpoint".to_string(),
+        file_size,
+        content_hash,
+        chunks,
+        metadata: extract_fs_metadata(path),
+    })
+}
+
+/// Parse an HTML file by stripping tags and extracting clean text.
+fn parse_html(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, CoreError> {
+    let content = read_text_file(path)?;
+    let fs_meta = std::fs::metadata(path)?;
+
+    let file_path = path.to_string_lossy().to_string();
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let file_size = fs_meta.len() as i64;
+    let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+
+    let clean_text = strip_html_tags(&content);
+
+    // Try to extract title from <title> tag.
+    let title_re = regex::Regex::new(r"(?is)<title[^>]*>(.*?)</title>").ok();
+    let title = title_re
+        .and_then(|re| re.captures(&content))
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| file_name.clone());
+
+    let chunks = chunk_plaintext_preserving_short_document(&clean_text, max_chunk_chars);
+
+    Ok(ParsedDocument {
+        file_path,
+        file_name,
+        title,
+        mime_type: "text/html".to_string(),
+        file_size,
+        content_hash,
+        chunks,
+        metadata: extract_fs_metadata(path),
+    })
+}
+
+/// Parse an EPUB file by extracting text from XHTML chapters.
+///
+/// Opens the EPUB as a zip archive, reads the OPF manifest and spine
+/// to determine chapter order, extracts text from each chapter's
+/// XHTML content, and concatenates them with separators.
+fn parse_epub(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, CoreError> {
+    use std::io::{Cursor, Read};
+
+    let bytes = std::fs::read(path)?;
+    let file_size = bytes.len() as i64;
+    let content_hash = blake3::hash(&bytes).to_hex().to_string();
+
+    let mut archive = zip::ZipArchive::new(Cursor::new(&bytes)).map_err(|e| {
+        CoreError::Parse(format!(
+            "EPUB zip open failed for {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
+
+    // 1. Read container.xml to find the OPF file path.
+    let opf_path = {
+        let mut container = archive
+            .by_name("META-INF/container.xml")
+            .map_err(|e| CoreError::Parse(format!("EPUB container.xml not found: {}", e)))?;
+        let mut xml = String::new();
+        container
+            .read_to_string(&mut xml)
+            .map_err(|e| CoreError::Parse(format!("Failed to read container.xml: {}", e)))?;
+
+        let re = regex::Regex::new(r#"full-path="([^"]+)""#).unwrap();
+        re.captures(&xml)
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str().to_string())
+            .ok_or_else(|| {
+                CoreError::Parse("Could not find rootfile path in container.xml".to_string())
+            })?
+    };
+
+    // Determine the base directory of the OPF file for resolving relative paths.
+    let opf_dir = if let Some(pos) = opf_path.rfind('/') {
+        opf_path[..=pos].to_string()
+    } else {
+        String::new()
+    };
+
+    // 2. Read and parse the OPF file.
+    let (manifest_items, spine_idrefs, epub_title) = {
+        let mut opf_file = archive
+            .by_name(&opf_path)
+            .map_err(|e| CoreError::Parse(format!("EPUB OPF file not found: {}", e)))?;
+        let mut opf_xml = String::new();
+        opf_file
+            .read_to_string(&mut opf_xml)
+            .map_err(|e| CoreError::Parse(format!("Failed to read OPF file: {}", e)))?;
+
+        // Extract manifest items.
+        let item_re = regex::Regex::new(r#"<item\s+([^>]*)/?>"#).unwrap();
+        let attr_id = regex::Regex::new(r#"\bid="([^"]+)""#).unwrap();
+        let attr_href = regex::Regex::new(r#"\bhref="([^"]+)""#).unwrap();
+        let attr_media = regex::Regex::new(r#"\bmedia-type="([^"]+)""#).unwrap();
+
+        let mut items: HashMap<String, (String, String)> = HashMap::new();
+        for caps in item_re.captures_iter(&opf_xml) {
+            let attrs = &caps[1];
+            if let (Some(id), Some(href), Some(media)) = (
+                attr_id.captures(attrs).and_then(|c| c.get(1)),
+                attr_href.captures(attrs).and_then(|c| c.get(1)),
+                attr_media.captures(attrs).and_then(|c| c.get(1)),
+            ) {
+                items.insert(
+                    id.as_str().to_string(),
+                    (href.as_str().to_string(), media.as_str().to_string()),
+                );
+            }
+        }
+
+        // Extract spine idrefs.
+        let spine_re = regex::Regex::new(r#"<itemref[^>]*\bidref="([^"]+)"[^>]*/?\s*>"#).unwrap();
+        let idrefs: Vec<String> = spine_re
+            .captures_iter(&opf_xml)
+            .map(|caps| caps[1].to_string())
+            .collect();
+
+        // Extract title.
+        let title_re = regex::Regex::new(r"(?is)<dc:title[^>]*>(.*?)</dc:title>").unwrap();
+        let title = title_re
+            .captures(&opf_xml)
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str().trim().to_string())
+            .filter(|t| !t.is_empty());
+
+        (items, idrefs, title)
+    };
+
+    // 3. Read chapter content in spine order.
+    let mut all_text = String::new();
+    for idref in &spine_idrefs {
+        if let Some((href, media_type)) = manifest_items.get(idref) {
+            if !media_type.contains("html") && !media_type.contains("xml") {
+                continue;
+            }
+
+            let full_path = format!("{}{}", opf_dir, href);
+            if let Ok(mut entry) = archive.by_name(&full_path) {
+                let mut xhtml = String::new();
+                if entry.read_to_string(&mut xhtml).is_ok() {
+                    let chapter_text = strip_html_tags(&xhtml);
+                    if !chapter_text.trim().is_empty() {
+                        if !all_text.is_empty() {
+                            all_text.push_str("\n\n---\n\n");
+                        }
+                        all_text.push_str(&chapter_text);
+                    }
+                }
+            }
+        }
+    }
+
+    if all_text.trim().is_empty() {
+        return Err(CoreError::Parse(format!(
+            "EPUB contains no extractable text: {}",
+            path.display()
+        )));
+    }
+
+    let chunks = chunk_plaintext_preserving_short_document(&all_text, max_chunk_chars);
+
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let title = epub_title.unwrap_or_else(|| file_name.clone());
+
+    Ok(ParsedDocument {
+        file_path: path.to_string_lossy().to_string(),
+        file_name,
+        title,
+        mime_type: "application/epub+zip".to_string(),
+        file_size,
+        content_hash,
+        chunks,
+        metadata: extract_fs_metadata(path),
+    })
+}
+
+/// Parse an ODF file (.odt, .ods, .odp) by extracting text.
+///
+/// Uses `dotext` for `.odt` and `.odp` when available, with a zip-based
+/// fallback that reads `content.xml` and strips XML tags.
+fn parse_odf(
+    path: &Path,
+    mime_type: &str,
+    max_chunk_chars: usize,
+) -> Result<ParsedDocument, CoreError> {
+    use dotext::doc::OpenOfficeDoc;
+    use std::io::Read;
+
+    let bytes = std::fs::read(path)?;
+    let file_size = bytes.len() as i64;
+    let content_hash = blake3::hash(&bytes).to_hex().to_string();
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    // Try dotext first for supported formats.
+    let dotext_result: Option<String> = match ext.as_str() {
+        "odt" => {
+            let r = (|| -> Result<String, String> {
+                let mut file =
+                    dotext::Odt::open(path).map_err(|e| format!("ODT open failed: {}", e))?;
+                let mut text = String::new();
+                file.read_to_string(&mut text)
+                    .map_err(|e| format!("ODT read failed: {}", e))?;
+                Ok(text)
+            })();
+            r.ok().filter(|t| !t.trim().is_empty())
+        }
+        "odp" => {
+            let r = (|| -> Result<String, String> {
+                let mut file =
+                    dotext::Odp::open(path).map_err(|e| format!("ODP open failed: {}", e))?;
+                let mut text = String::new();
+                file.read_to_string(&mut text)
+                    .map_err(|e| format!("ODP read failed: {}", e))?;
+                Ok(text)
+            })();
+            r.ok().filter(|t| !t.trim().is_empty())
+        }
+        _ => None,
+    };
+
+    let text = if let Some(text) = dotext_result {
+        text
+    } else {
+        // Fallback: read content.xml from the zip and strip tags.
+        let xml = read_zip_entry_text(&bytes, |name| name == "content.xml").map_err(|e| {
+            CoreError::Parse(format!(
+                "ODF read failed for {} (content.xml extraction failed: {})",
+                path.display(),
+                e
+            ))
+        })?;
+        strip_ooxml_tags(&xml).map_err(|e| {
+            CoreError::Parse(format!(
+                "ODF tag stripping failed for {}: {}",
+                path.display(),
+                e
+            ))
+        })?
+    };
+
+    if text.trim().is_empty() {
+        return Err(CoreError::Parse(format!(
+            "ODF contains no extractable text: {}",
+            path.display()
+        )));
+    }
+
+    let text = text.replace("\r\n", "\n");
+    let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
+
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Ok(ParsedDocument {
+        file_path: path.to_string_lossy().to_string(),
+        title: file_name.clone(),
+        file_name,
+        mime_type: mime_type.to_string(),
+        file_size,
+        content_hash,
+        chunks,
+        metadata: extract_fs_metadata(path),
+    })
+}
+
 /// Detect MIME type from file extension.
 pub fn detect_mime_type(path: &Path) -> String {
     match path
@@ -990,6 +1492,13 @@ pub fn detect_mime_type(path: &Path) -> String {
         Some("pptx") => {
             "application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string()
         }
+        Some("doc") => "application/msword".to_string(),
+        Some("ppt") => "application/vnd.ms-powerpoint".to_string(),
+        Some("html" | "htm") => "text/html".to_string(),
+        Some("epub") => "application/epub+zip".to_string(),
+        Some("odt") => "application/vnd.oasis.opendocument.text".to_string(),
+        Some("ods") => "application/vnd.oasis.opendocument.spreadsheet".to_string(),
+        Some("odp") => "application/vnd.oasis.opendocument.presentation".to_string(),
         Some("jpg" | "jpeg") => "image/jpeg".to_string(),
         Some("png") => "image/png".to_string(),
         Some("gif") => "image/gif".to_string(),
@@ -1017,11 +1526,11 @@ pub fn detect_mime_type(path: &Path) -> String {
         Some("opus") => "audio/opus".to_string(),
         // Source code & config files
         Some(
-            "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "json" | "yaml" | "yml" | "toml" | "html"
-            | "htm" | "css" | "scss" | "less" | "csv" | "xml" | "c" | "cpp" | "h" | "hpp" | "java"
-            | "go" | "sh" | "bash" | "zsh" | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "sql"
-            | "lua" | "vim" | "el" | "clj" | "ex" | "exs" | "erl" | "hs" | "ml" | "ini" | "cfg"
-            | "conf" | "env" | "gitignore" | "dockerignore" | "cmake",
+            "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "json" | "yaml" | "yml" | "toml" | "css"
+            | "scss" | "less" | "csv" | "xml" | "c" | "cpp" | "h" | "hpp" | "java" | "go" | "sh"
+            | "bash" | "zsh" | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "sql" | "lua"
+            | "vim" | "el" | "clj" | "ex" | "exs" | "erl" | "hs" | "ml" | "ini" | "cfg" | "conf"
+            | "env" | "gitignore" | "dockerignore" | "cmake",
         ) => "text/plain".to_string(),
         _ => {
             // Check well-known filenames without extensions
@@ -1741,6 +2250,279 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
         assert!(
             result.is_ok() || result.is_err(),
             "Should handle corrupt PDF gracefully"
+        );
+    }
+
+    // -- New format MIME detection ------------------------------------------
+
+    #[test]
+    fn test_detect_mime_doc() {
+        assert_eq!(
+            detect_mime_type(Path::new("file.doc")),
+            "application/msword"
+        );
+    }
+
+    #[test]
+    fn test_detect_mime_ppt() {
+        assert_eq!(
+            detect_mime_type(Path::new("file.ppt")),
+            "application/vnd.ms-powerpoint"
+        );
+    }
+
+    #[test]
+    fn test_detect_mime_html() {
+        assert_eq!(detect_mime_type(Path::new("page.html")), "text/html");
+        assert_eq!(detect_mime_type(Path::new("page.htm")), "text/html");
+    }
+
+    #[test]
+    fn test_detect_mime_epub() {
+        assert_eq!(
+            detect_mime_type(Path::new("book.epub")),
+            "application/epub+zip"
+        );
+    }
+
+    #[test]
+    fn test_detect_mime_odf() {
+        assert_eq!(
+            detect_mime_type(Path::new("doc.odt")),
+            "application/vnd.oasis.opendocument.text"
+        );
+        assert_eq!(
+            detect_mime_type(Path::new("sheet.ods")),
+            "application/vnd.oasis.opendocument.spreadsheet"
+        );
+        assert_eq!(
+            detect_mime_type(Path::new("slides.odp")),
+            "application/vnd.oasis.opendocument.presentation"
+        );
+    }
+
+    // -- HTML stripping -----------------------------------------------------
+
+    #[test]
+    fn test_strip_html_tags_basic() {
+        let html =
+            "<html><head><title>Test</title></head><body><h1>Hello</h1><p>World</p></body></html>";
+        let result = strip_html_tags(html);
+        assert!(result.contains("# Hello"), "Should convert h1 to markdown");
+        assert!(result.contains("World"), "Should preserve text content");
+        assert!(
+            !result.contains("<p>"),
+            "Should strip tags: got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_strip_html_tags_preserves_links() {
+        let html = r#"<p>Visit <a href="https://example.com">Example</a> site</p>"#;
+        let result = strip_html_tags(html);
+        assert!(
+            result.contains("[Example](https://example.com)"),
+            "Links should be markdown: got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_strip_html_tags_removes_scripts() {
+        let html = "<p>Before</p><script>alert('xss')</script><p>After</p>";
+        let result = strip_html_tags(html);
+        assert!(result.contains("Before"));
+        assert!(result.contains("After"));
+        assert!(!result.contains("alert"), "Scripts should be removed");
+    }
+
+    #[test]
+    fn test_decode_html_entities_fn() {
+        assert_eq!(decode_html_entities("&amp; &lt; &gt;"), "& < >");
+        assert_eq!(decode_html_entities("&nbsp;"), " ");
+    }
+
+    // -- Binary text extraction ---------------------------------------------
+
+    #[test]
+    fn test_extract_text_from_binary_basic() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00; 10]);
+        data.extend_from_slice(
+            b"This is a test string that is long enough to be extracted as text content from binary data",
+        );
+        data.extend_from_slice(&[0x00; 10]);
+
+        let result = extract_text_from_binary(&data);
+        assert!(
+            result.contains("This is a test string"),
+            "Should extract readable text"
+        );
+    }
+
+    #[test]
+    fn test_extract_text_from_binary_filters_short() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00; 5]);
+        data.extend_from_slice(b"short"); // too short to extract
+        data.extend_from_slice(&[0x00; 5]);
+
+        let result = extract_text_from_binary(&data);
+        assert!(result.is_empty(), "Short runs should be filtered out");
+    }
+
+    // -- HTML file parsing --------------------------------------------------
+
+    #[test]
+    fn test_parse_html_file() {
+        let mut f = NamedTempFile::with_suffix(".html").unwrap();
+        write!(
+            f,
+            "<html><head><title>Test Page</title></head><body>\
+             <h1>Welcome</h1>\
+             <p>This is a test paragraph with enough content to meet the minimum \
+             chunk size threshold for extraction and indexing purposes.</p>\
+             </body></html>"
+        )
+        .unwrap();
+        f.flush().unwrap();
+
+        let doc = parse_file(
+            f.path(),
+            None,
+            #[cfg(feature = "video")]
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(doc.mime_type, "text/html");
+        assert_eq!(doc.title, "Test Page");
+        assert!(!doc.chunks.is_empty(), "Should produce chunks");
+        for chunk in &doc.chunks {
+            assert!(!chunk.content.contains("<html>"));
+            assert!(!chunk.content.contains("<p>"));
+        }
+    }
+
+    // -- EPUB parsing -------------------------------------------------------
+
+    #[test]
+    fn test_parse_epub_basic() {
+        use std::io::{Cursor, Write as IoWrite};
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+
+            zip.start_file("mimetype", options).unwrap();
+            zip.write_all(b"application/epub+zip").unwrap();
+
+            zip.start_file("META-INF/container.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0"?>
+                <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+                <rootfiles>
+                <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+                </rootfiles></container>"#,
+            )
+            .unwrap();
+
+            zip.start_file("OEBPS/content.opf", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0"?>
+                <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+                <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                <dc:title>Test Book</dc:title>
+                </metadata>
+                <manifest>
+                <item id="ch1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+                </manifest>
+                <spine><itemref idref="ch1"/></spine>
+                </package>"#,
+            )
+            .unwrap();
+
+            zip.start_file("OEBPS/chapter1.xhtml", options).unwrap();
+            zip.write_all(
+                b"<html><body><h1>Chapter One</h1>\
+                  <p>This is the first chapter of the test book with enough content \
+                  to pass the minimum chunk size threshold for parsing and indexing.</p>\
+                  </body></html>",
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let mut f = NamedTempFile::with_suffix(".epub").unwrap();
+        f.write_all(buf.get_ref()).unwrap();
+        f.flush().unwrap();
+
+        let doc = parse_file(
+            f.path(),
+            None,
+            #[cfg(feature = "video")]
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(doc.mime_type, "application/epub+zip");
+        assert_eq!(doc.title, "Test Book");
+        assert!(!doc.chunks.is_empty(), "Should produce chunks");
+        assert!(
+            doc.chunks
+                .iter()
+                .any(|c| c.content.contains("Chapter One") || c.content.contains("first chapter")),
+            "Should contain chapter text"
+        );
+    }
+
+    // -- ODF parsing --------------------------------------------------------
+
+    #[test]
+    fn test_parse_odf_zip_fallback() {
+        use std::io::{Cursor, Write as IoWrite};
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("content.xml", options).unwrap();
+            zip.write_all(
+                b"<office:document-content><office:body><office:text>\
+                  <text:p>This is test content from an ODF document that should be \
+                  long enough to meet the minimum chunk threshold for extraction.</text:p>\
+                  </office:text></office:body></office:document-content>",
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let mut f = NamedTempFile::with_suffix(".odt").unwrap();
+        f.write_all(buf.get_ref()).unwrap();
+        f.flush().unwrap();
+
+        let doc = parse_file(
+            f.path(),
+            None,
+            #[cfg(feature = "video")]
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(doc.mime_type, "application/vnd.oasis.opendocument.text");
+        assert!(!doc.chunks.is_empty(), "Should produce chunks");
+        assert!(
+            doc.chunks[0].content.contains("This is test content"),
+            "Should extract text from content.xml"
         );
     }
 }
