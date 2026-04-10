@@ -578,6 +578,7 @@ export const de: TranslationKeys = {
   'chat.contextFillingUp': 'Kontextfenster füllt sich ({percent}%). Erwägen Sie ein neues Gespräch.',
   'chat.contextNearlyFull': 'Kontextfenster fast voll ({percent}%). Ältere Nachrichten können verloren gehen.',
   'chat.imageMessage': '(Bild)',
+  'chat.pasteImageFailed': 'Failed to paste image',
   'chat.tokensLabel': 'Token',
   'chat.tokensShort': 'Tok.',
   'chat.removeAttachment': 'Anhang entfernen',

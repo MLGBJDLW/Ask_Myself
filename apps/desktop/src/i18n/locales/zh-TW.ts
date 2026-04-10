@@ -578,6 +578,7 @@ export const zhTW: TranslationKeys = {
   'chat.contextFillingUp': '上下文視窗即將滿載 ({percent}%)。建議開始新對話。',
   'chat.contextNearlyFull': '上下文視窗即將滿載 ({percent}%)。較早的訊息可能會遺失。',
   'chat.imageMessage': '(圖片)',
+  'chat.pasteImageFailed': 'Failed to paste image',
   'chat.tokensLabel': '權杖',
   'chat.tokensShort': '權杖',
   'chat.removeAttachment': '移除附件',

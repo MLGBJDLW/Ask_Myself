@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Send, Square, Paperclip, X, FileText } from "lucide-react";
+import { toast } from "sonner";
 import { useTranslation } from "../../i18n";
 import type { ImageAttachment } from "../../types/conversation";
 import { CheckpointMenu } from "./CheckpointMenu";
@@ -220,46 +221,55 @@ export function ChatInput({
 
   const handlePaste = useCallback(
     async (e: React.ClipboardEvent) => {
-      const files = e.clipboardData?.files;
-      if (files && files.length > 0) {
-        let handled = false;
-        for (const file of Array.from(files)) {
-          if (!file.type.startsWith("image/")) continue;
-          try {
-            const didAdd = await addAttachment(
+      const clipboardData = e.clipboardData;
+      if (!clipboardData) return;
+
+      // --- Synchronously collect all image files BEFORE any async work ---
+      const imageFiles: { file: File; name: string }[] = [];
+
+      // 1. Check clipboardData.files
+      if (clipboardData.files.length > 0) {
+        for (const file of Array.from(clipboardData.files)) {
+          if (file.type.startsWith("image/")) {
+            imageFiles.push({
               file,
-              file.name || `pasted-image-${Date.now()}.png`,
-            );
-            handled = handled || didAdd;
-          } catch {
-            // Silently skip
+              name: file.name || `pasted-image-${Date.now()}.png`,
+            });
           }
-        }
-        if (handled) {
-          e.preventDefault();
-          return;
         }
       }
 
-      const items = e.clipboardData?.items;
-      if (items) {
-        for (const item of Array.from(items)) {
+      // 2. Check clipboardData.items (clipboard items API fallback)
+      if (imageFiles.length === 0 && clipboardData.items) {
+        for (const item of Array.from(clipboardData.items)) {
           if (!item.type.startsWith("image/")) continue;
           const blob = item.getAsFile();
           if (!blob) continue;
-          e.preventDefault();
           const ext = item.type.split("/")[1] || "png";
-          const name = `pasted-image-${Date.now()}.${ext}`;
-          try {
-            await addAttachment(blob, name);
-          } catch {
-            // Silently skip
-          }
-          return;
+          imageFiles.push({
+            file: blob,
+            name: `pasted-image-${Date.now()}.${ext}`,
+          });
         }
       }
 
-      const html = e.clipboardData?.getData("text/html") ?? "";
+      // 3. If we found image files, preventDefault IMMEDIATELY (synchronous)
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        // Now process asynchronously
+        for (const { file, name } of imageFiles) {
+          try {
+            await addAttachment(file, name);
+          } catch (err) {
+            console.error("Failed to add image attachment:", err);
+            toast.error(t("chat.pasteImageFailed"));
+          }
+        }
+        return;
+      }
+
+      // 4. HTML data-URL fallback (no async needed)
+      const html = clipboardData.getData("text/html") ?? "";
       const dataUrlMatch = html.match(/src=["'](data:image\/[^"']+)["']/i);
       if (dataUrlMatch) {
         const dataUrl = dataUrlMatch[1];
@@ -270,7 +280,7 @@ export function ChatInput({
         }
       }
     },
-    [addAttachment, addAttachmentFromDataUrl],
+    [addAttachment, addAttachmentFromDataUrl, t],
   );
 
   return (

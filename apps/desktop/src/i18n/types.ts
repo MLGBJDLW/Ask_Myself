@@ -580,6 +580,7 @@ export interface TranslationKeys {
   'chat.contextFillingUp': string;
   'chat.contextNearlyFull': string;
   'chat.imageMessage': string;
+  'chat.pasteImageFailed': string;
   'chat.tokensLabel': string;
   'chat.tokensShort': string;
   'chat.removeAttachment': string;

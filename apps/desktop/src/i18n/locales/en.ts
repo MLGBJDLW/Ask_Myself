@@ -580,6 +580,7 @@ export const en: TranslationKeys = {
   'chat.contextFillingUp': 'Context window is filling up ({percent}%). Consider starting a new conversation.',
   'chat.contextNearlyFull': 'Context window nearly full ({percent}%). Older messages may be lost.',
   'chat.imageMessage': '(image)',
+  'chat.pasteImageFailed': 'Failed to paste image',
   'chat.tokensLabel': 'tokens',
   'chat.tokensShort': 'tok',
   'chat.removeAttachment': 'Remove attachment',

@@ -578,6 +578,7 @@ export const ja: TranslationKeys = {
   'chat.contextFillingUp': 'コンテキストウィンドウが満杯に近づいています ({percent}%)。新しい会話を開始してください。',
   'chat.contextNearlyFull': 'コンテキストウィンドウがほぼ一杯です ({percent}%)。古いメッセージが失われる可能性があります。',
   'chat.imageMessage': '(画像)',
+  'chat.pasteImageFailed': 'Failed to paste image',
   'chat.tokensLabel': 'トークン',
   'chat.tokensShort': 'トークン',
   'chat.removeAttachment': '添付ファイルを削除',

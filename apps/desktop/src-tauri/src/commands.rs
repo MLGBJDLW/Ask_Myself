@@ -2008,6 +2008,19 @@ pub async fn agent_chat_cmd(
                 });
             } else {
                 // Model doesn't support vision — OCR fallback
+                warn!(
+                    "Model '{}' (provider {:?}) does not support vision. Using OCR fallback for image '{}'.",
+                    db_config.model, provider_config.provider_type, att.original_name
+                );
+                emit_app_event(
+                    &app_handle,
+                    "image:ocr-fallback",
+                    &serde_json::json!({
+                        "image_name": att.original_name,
+                        "model": db_config.model,
+                        "reason": "Model does not support native image inputs"
+                    }),
+                );
                 let ocr_config = state.db.load_ocr_config().unwrap_or_default();
                 let image_bytes = base64::engine::general_purpose::STANDARD
                     .decode(&att.base64_data)
@@ -2023,15 +2036,28 @@ pub async fn agent_chat_cmd(
                     Ok(result) if !result.full_text.is_empty() => {
                         user_parts.push(ContentPart::Text {
                             text: format!(
-                                "[Image OCR - {}]:\n{}",
+                                "[Image \"{}\" — processed via OCR (model does not support native vision)]:\n{}",
                                 att.original_name, result.full_text
                             ),
                         });
                     }
                     _ => {
+                        warn!(
+                            "OCR fallback also failed for image '{}'. Install OCR model or use a vision-capable model.",
+                            att.original_name
+                        );
+                        emit_app_event(
+                            &app_handle,
+                            "image:ocr-failed",
+                            &serde_json::json!({
+                                "image_name": att.original_name,
+                                "model": db_config.model,
+                                "hint": "Install OCR model in Settings or switch to a vision-capable model"
+                            }),
+                        );
                         user_parts.push(ContentPart::Text {
                             text: format!(
-                                "[Image \"{}\" attached but could not be processed — this model does not support image inputs]",
+                                "[Image \"{}\" attached but could not be processed — this model does not support image inputs and OCR is not available. Install the OCR model in Settings or use a vision-capable model.]",
                                 att.original_name
                             ),
                         });

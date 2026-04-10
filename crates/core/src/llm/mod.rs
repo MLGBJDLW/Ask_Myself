@@ -366,27 +366,28 @@ pub fn create_provider(mut config: ProviderConfig) -> Result<Box<dyn LlmProvider
     }
 }
 
-/// Determines whether a model is known to support vision/image inputs.
-/// Conservative: returns `false` for unknown models.
+/// Determines whether a model is expected to support vision/image inputs.
+/// Defaults to `true` for most modern models; only returns `false` for models
+/// known to lack vision support (text-only, embedding-only, older generations).
 pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool {
     let m = model.to_lowercase();
     match provider_type {
         ProviderType::OpenAi | ProviderType::AzureOpenAi => {
-            m.contains("gpt-4o")
-                || m.contains("gpt-4-turbo")
-                || m.contains("gpt-4-vision")
-                || m.contains("gpt-4.1")
-                || m.starts_with("o1")
-                || m.starts_with("o3")
-                || m.starts_with("o4")
+            // Deny: older text-only models
+            !(m.contains("gpt-3.5") || m.contains("text-davinci") || m.contains("text-embedding"))
         }
-        ProviderType::Anthropic => m.contains("claude-3") || m.contains("claude-4"),
+        ProviderType::Anthropic => {
+            // Deny: pre-Claude-3 models
+            !(m.contains("claude-2") || m.contains("claude-instant"))
+        }
         ProviderType::Google => true,
         ProviderType::DeepSeek => false,
         ProviderType::Zhipu => {
+            // Zhipu vision requires explicit -v suffix
             m.contains("glm-4v") || m.contains("glm-4.1v") || m.contains("glm-4.6v")
         }
         ProviderType::Qwen => {
+            // Qwen vision requires explicit -vl / qvq suffix
             m.contains("qwen-vl")
                 || m.contains("qwen2.5-vl")
                 || m.contains("qwen3-vl")
@@ -396,6 +397,7 @@ pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool 
         ProviderType::Moonshot => m.contains("kimi-k2.5"),
         ProviderType::Doubao | ProviderType::Yi | ProviderType::Baichuan => false,
         ProviderType::Ollama | ProviderType::LmStudio => {
+            // Local models: allow if name hints at vision, deny tiny text-only
             m.contains("vision")
                 || m.contains("llava")
                 || m.contains("bakllava")
@@ -404,7 +406,8 @@ pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool 
                 || m.contains("minicpm")
         }
         ProviderType::Custom => {
-            m.contains("vision") || m.contains("gpt-4o") || m.contains("claude-3")
+            // Custom/OpenRouter: default to true unless clearly text-only
+            !(m.contains("gpt-3.5") || m.contains("text-davinci") || m.contains("text-embedding"))
         }
     }
 }

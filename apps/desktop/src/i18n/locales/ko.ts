@@ -580,6 +580,7 @@ export const ko: TranslationKeys = {
   'chat.contextFillingUp': '컨텍스트 창이 거의 찼습니다 ({percent}%). 새 대화를 시작하세요.',
   'chat.contextNearlyFull': '컨텍스트 창이 거의 가득 찼습니다 ({percent}%). 이전 메시지가 손실될 수 있습니다.',
   'chat.imageMessage': '(이미지)',
+  'chat.pasteImageFailed': 'Failed to paste image',
   'chat.tokensLabel': '토큰',
   'chat.tokensShort': '토큰',
   'chat.removeAttachment': '첨부 파일 제거',

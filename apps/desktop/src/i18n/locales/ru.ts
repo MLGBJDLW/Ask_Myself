@@ -580,6 +580,7 @@ export const ru: TranslationKeys = {
   'chat.contextFillingUp': 'Окно контекста заполняется ({percent}%). Рассмотрите начало нового разговора.',
   'chat.contextNearlyFull': 'Окно контекста почти заполнено ({percent}%). Старые сообщения могут быть утеряны.',
   'chat.imageMessage': '(изображение)',
+  'chat.pasteImageFailed': 'Failed to paste image',
   'chat.tokensLabel': 'токены',
   'chat.tokensShort': 'ток.',
   'chat.removeAttachment': 'Удалить вложение',

@@ -580,6 +580,7 @@ export const zhCN: TranslationKeys = {
   'chat.contextFillingUp': '上下文窗口即将满载 ({percent}%)。建议开始新对话。',
   'chat.contextNearlyFull': '上下文窗口即将满载 ({percent}%)。较早的消息可能会丢失。',
   'chat.imageMessage': '(图片)',
+  'chat.pasteImageFailed': '粘贴图片失败',
   'chat.tokensLabel': '令牌',
   'chat.tokensShort': '令牌',
   'chat.removeAttachment': '移除附件',
