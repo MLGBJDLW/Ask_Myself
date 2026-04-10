@@ -179,6 +179,12 @@ export const checkLocalModel = (localModel?: string) =>
 export const downloadLocalModel = (localModel?: string) =>
   invoke<void>('download_local_model_cmd', { localModel });
 
+export const cancelModelDownload = () =>
+  invoke<void>('cancel_model_download_cmd');
+
+export const deleteLocalModel = (localModel?: string) =>
+  invoke<void>('delete_local_model_cmd', { localModel });
+
 // ── File ────────────────────────────────────────────────────────────────
 
 export const openFileInDefaultApp = (path: string) =>

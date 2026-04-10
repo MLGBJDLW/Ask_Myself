@@ -4,12 +4,11 @@ mod commands;
 mod subagent_tool;
 
 use std::collections::HashMap;
-#[cfg(feature = "video")]
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use ask_core::db::Database;
-use commands::{AgentState, AppState, McpManagerState};
+use commands::{AgentState, AppState, DownloadCancelFlag, McpManagerState};
 use tauri::Manager;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -40,6 +39,7 @@ fn main() {
             app.manage(McpManagerState {
                 manager: TokioMutex::new(ask_core::mcp::McpManager::new()),
             });
+            app.manage(DownloadCancelFlag(Arc::new(AtomicBool::new(false))));
 
             // Initialise the file watcher for auto-indexing.
             let handle = app.handle().clone();
@@ -103,6 +103,8 @@ fn main() {
             commands::test_api_connection_cmd,
             commands::check_local_model_cmd,
             commands::download_local_model_cmd,
+            commands::cancel_model_download_cmd,
+            commands::delete_local_model_cmd,
             // File
             commands::open_file_in_default_app,
             commands::show_in_file_explorer,

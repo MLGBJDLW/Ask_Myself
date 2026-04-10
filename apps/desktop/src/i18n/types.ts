@@ -409,6 +409,13 @@ export interface TranslationKeys {
   'settings.videoDeleteConfirm': string;
   'settings.videoDeleteSuccess': string;
 
+  // Settings - Embedding Model Management
+  'settings.cancelDownload': string;
+  'settings.deleteModel': string;
+  'settings.deleteModelConfirm': string;
+  'settings.downloadCancelled': string;
+  'settings.modelDeleted': string;
+
   // Settings - Memory
   'settings.memorySection': string;
   'settings.memoryDescription': string;

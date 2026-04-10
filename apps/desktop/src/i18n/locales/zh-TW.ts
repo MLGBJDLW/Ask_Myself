@@ -409,6 +409,13 @@ export const zhTW: TranslationKeys = {
   'settings.videoDeleteConfirm': '確定要刪除已下載的 Whisper 模型嗎？您需要重新下載才能使用影片轉錄。',
   'settings.videoDeleteSuccess': 'Whisper 模型已刪除。',
 
+  // Settings - Embedding Model Management
+  'settings.cancelDownload': '取消下載',
+  'settings.deleteModel': '刪除模型',
+  'settings.deleteModelConfirm': '確定要刪除此模型嗎？之後可以重新下載。',
+  'settings.downloadCancelled': '下載已取消',
+  'settings.modelDeleted': '模型刪除成功',
+
   // Settings - Memory
   'settings.memorySection': '本機記憶',
   'settings.memoryDescription': '儲存在本裝置上的持久筆記，根據相關性逐步注入。',

@@ -409,6 +409,13 @@ export const fr: TranslationKeys = {
   'settings.videoDeleteConfirm': 'Êtes-vous sûr de vouloir supprimer le modèle Whisper téléchargé ? Vous devrez le retélécharger pour utiliser la transcription vidéo.',
   'settings.videoDeleteSuccess': 'Modèle Whisper supprimé.',
 
+  // Settings - Embedding Model Management
+  'settings.cancelDownload': 'Annuler le téléchargement',
+  'settings.deleteModel': 'Supprimer le modèle',
+  'settings.deleteModelConfirm': 'Êtes-vous sûr de vouloir supprimer ce modèle ? Vous pourrez le retélécharger ultérieurement.',
+  'settings.downloadCancelled': 'Téléchargement annulé',
+  'settings.modelDeleted': 'Modèle supprimé avec succès',
+
   // Settings - Memory
   'settings.memorySection': 'Mémoire locale',
   'settings.memoryDescription': 'Notes persistantes stockées sur cet appareil et injectées progressivement selon la pertinence.',

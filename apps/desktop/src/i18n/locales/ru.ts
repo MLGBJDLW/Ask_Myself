@@ -411,6 +411,13 @@ export const ru: TranslationKeys = {
   'settings.videoDeleteConfirm': 'Вы уверены, что хотите удалить загруженную модель Whisper? Для транскрибации видео потребуется повторная загрузка.',
   'settings.videoDeleteSuccess': 'Модель Whisper удалена.',
 
+  // Settings - Embedding Model Management
+  'settings.cancelDownload': 'Отменить загрузку',
+  'settings.deleteModel': 'Удалить модель',
+  'settings.deleteModelConfirm': 'Вы уверены, что хотите удалить эту модель? Её можно будет загрузить повторно.',
+  'settings.downloadCancelled': 'Загрузка отменена',
+  'settings.modelDeleted': 'Модель успешно удалена',
+
   // Settings - Memory
   'settings.memorySection': 'Локальная память',
   'settings.memoryDescription': 'Постоянные заметки, хранящиеся на этом устройстве и вводимые постепенно на основе релевантности.',

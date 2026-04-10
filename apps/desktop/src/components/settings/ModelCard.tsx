@@ -6,6 +6,8 @@ import {
   Loader2,
   ChevronDown,
   ChevronUp,
+  X,
+  Trash2,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { Button } from '../ui/Button';
@@ -20,6 +22,8 @@ interface ModelCardProps {
   status: ModelStatus;
   size?: string;
   onDownload: () => void;
+  onCancel?: () => void;
+  onDelete?: () => void;
   downloadProgress?: {
     filename: string;
     bytesDownloaded: number;
@@ -44,6 +48,8 @@ export function ModelCard({
   status,
   size,
   onDownload,
+  onCancel,
+  onDelete,
   downloadProgress,
   children,
 }: ModelCardProps) {
@@ -99,6 +105,28 @@ export function ModelCard({
               onClick={onDownload}
             >
               {t('settings.embeddingDownload')}
+            </Button>
+          )}
+          {status === 'downloading' && onCancel && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<X size={14} />}
+              onClick={onCancel}
+              className="text-danger hover:bg-danger/10"
+            >
+              {t('settings.cancelDownload')}
+            </Button>
+          )}
+          {status === 'downloaded' && onDelete && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<Trash2 size={14} />}
+              onClick={onDelete}
+              className="text-danger hover:bg-danger/10"
+            >
+              {t('settings.deleteModel')}
             </Button>
           )}
           {hasChildren && (

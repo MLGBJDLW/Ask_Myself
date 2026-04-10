@@ -411,6 +411,13 @@ export const zhCN: TranslationKeys = {
   'settings.videoDeleteConfirm': '确定要删除已下载的 Whisper 模型吗？您需要重新下载才能使用视频转录。',
   'settings.videoDeleteSuccess': 'Whisper 模型已删除。',
 
+  // Settings - Embedding Model Management
+  'settings.cancelDownload': '取消下载',
+  'settings.deleteModel': '删除模型',
+  'settings.deleteModelConfirm': '确定要删除此模型吗？之后可以重新下载。',
+  'settings.downloadCancelled': '下载已取消',
+  'settings.modelDeleted': '模型删除成功',
+
   // Settings - Memory
   'settings.memorySection': '本地记忆',
   'settings.memoryDescription': '存储在本设备上的持久笔记，根据相关性逐步注入。',

@@ -411,6 +411,13 @@ export const de: TranslationKeys = {
   'settings.videoDeleteConfirm': 'Möchten Sie das heruntergeladene Whisper-Modell wirklich löschen? Sie müssen es erneut herunterladen, um die Videotranskription zu verwenden.',
   'settings.videoDeleteSuccess': 'Whisper-Modell gelöscht.',
 
+  // Settings - Embedding Model Management
+  'settings.cancelDownload': 'Download abbrechen',
+  'settings.deleteModel': 'Modell löschen',
+  'settings.deleteModelConfirm': 'Möchten Sie dieses Modell wirklich löschen? Sie können es später erneut herunterladen.',
+  'settings.downloadCancelled': 'Download abgebrochen',
+  'settings.modelDeleted': 'Modell erfolgreich gelöscht',
+
   // Settings - Memory
   'settings.memorySection': 'Lokaler Speicher',
   'settings.memoryDescription': 'Dauerhafte Notizen auf diesem Gerät, die je nach Relevanz schrittweise eingespeist werden.',
