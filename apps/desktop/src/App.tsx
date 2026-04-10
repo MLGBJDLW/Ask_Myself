@@ -10,6 +10,7 @@ import {
 import { motion, MotionConfig, useReducedMotion } from "framer-motion";
 import { I18nProvider, useTranslation } from "./i18n";
 import { Layout } from "./components/Layout";
+import { UpdateNotification } from "./components/UpdateNotification";
 import { SearchPage } from "./pages/SearchPage";
 import { SourcesPage } from "./pages/SourcesPage";
 import { PlaybooksPage } from "./pages/PlaybooksPage";
@@ -57,6 +58,7 @@ function AppShell() {
   return (
     <I18nProvider>
       <MotionConfig reducedMotion="user">
+        <UpdateNotification />
         <CommandPalette />
         <Outlet />
       </MotionConfig>

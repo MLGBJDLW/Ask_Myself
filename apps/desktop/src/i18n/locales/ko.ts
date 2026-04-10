@@ -997,4 +997,16 @@ export const ko: TranslationKeys = {
   'knowledge.entityType': 'Type',
   'knowledge.mentions': 'Mentions',
   'knowledge.documents': 'Documents',
+
+  // Update
+  'update.available': '업데이트 사용 가능',
+  'update.version': '버전 {version}을 사용할 수 있습니다',
+  'update.downloading': '업데이트 다운로드 중...',
+  'update.ready': '업데이트 준비 완료. 재시작하여 적용합니다.',
+  'update.error': '업데이트 확인 실패',
+  'update.checkNow': '업데이트 확인',
+  'update.downloadInstall': '다운로드 및 설치',
+  'update.restart': '지금 재시작',
+  'update.dismiss': '나중에',
+  'update.upToDate': '최신 상태입니다',
 };

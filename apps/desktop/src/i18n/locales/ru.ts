@@ -997,4 +997,16 @@ export const ru: TranslationKeys = {
   'knowledge.entityType': 'Type',
   'knowledge.mentions': 'Mentions',
   'knowledge.documents': 'Documents',
+
+  // Update
+  'update.available': 'Доступно обновление',
+  'update.version': 'Доступна версия {version}',
+  'update.downloading': 'Загрузка обновления...',
+  'update.ready': 'Обновление готово. Перезапустите для применения.',
+  'update.error': 'Ошибка проверки обновлений',
+  'update.checkNow': 'Проверить обновления',
+  'update.downloadInstall': 'Скачать и установить',
+  'update.restart': 'Перезапустить сейчас',
+  'update.dismiss': 'Позже',
+  'update.upToDate': 'У вас последняя версия',
 };

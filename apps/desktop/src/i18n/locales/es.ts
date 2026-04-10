@@ -998,4 +998,16 @@ export const es: TranslationKeys = {
   'knowledge.entityType': 'Type',
   'knowledge.mentions': 'Mentions',
   'knowledge.documents': 'Documents',
+
+  // Update
+  'update.available': 'Actualización disponible',
+  'update.version': 'La versión {version} está disponible',
+  'update.downloading': 'Descargando actualización...',
+  'update.ready': 'Actualización lista. Reinicia para aplicar.',
+  'update.error': 'Error al buscar actualizaciones',
+  'update.checkNow': 'Buscar actualizaciones',
+  'update.downloadInstall': 'Descargar e instalar',
+  'update.restart': 'Reiniciar ahora',
+  'update.dismiss': 'Más tarde',
+  'update.upToDate': 'Estás al día',
 };

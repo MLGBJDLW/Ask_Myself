@@ -1012,4 +1012,16 @@ export const zhCN: TranslationKeys = {
   'knowledge.entityType': '分类',
   'knowledge.mentions': '提及次数',
   'knowledge.documents': '文档数',
+
+  // Update
+  'update.available': '有可用更新',
+  'update.version': '版本 {version} 可用',
+  'update.downloading': '正在下载更新...',
+  'update.ready': '更新已就绪，重启以应用。',
+  'update.error': '检查更新失败',
+  'update.checkNow': '检查更新',
+  'update.downloadInstall': '下载并安装',
+  'update.restart': '立即重启',
+  'update.dismiss': '稍后',
+  'update.upToDate': '已是最新版本',
 };

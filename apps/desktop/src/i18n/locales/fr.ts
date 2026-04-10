@@ -993,4 +993,16 @@ export const fr: TranslationKeys = {
   'knowledge.entityType': 'Type',
   'knowledge.mentions': 'Mentions',
   'knowledge.documents': 'Documents',
+
+  // Update
+  'update.available': 'Mise à jour disponible',
+  'update.version': 'La version {version} est disponible',
+  'update.downloading': 'Téléchargement de la mise à jour...',
+  'update.ready': 'Mise à jour prête. Redémarrez pour appliquer.',
+  'update.error': 'Échec de la vérification des mises à jour',
+  'update.checkNow': 'Rechercher des mises à jour',
+  'update.downloadInstall': 'Télécharger et installer',
+  'update.restart': 'Redémarrer maintenant',
+  'update.dismiss': 'Plus tard',
+  'update.upToDate': 'Vous êtes à jour',
 };

@@ -995,4 +995,16 @@ export const ja: TranslationKeys = {
   'knowledge.entityType': 'Type',
   'knowledge.mentions': 'Mentions',
   'knowledge.documents': 'Documents',
+
+  // Update
+  'update.available': 'アップデートがあります',
+  'update.version': 'バージョン {version} が利用可能です',
+  'update.downloading': 'アップデートをダウンロード中...',
+  'update.ready': 'アップデート準備完了。再起動して適用します。',
+  'update.error': 'アップデートの確認に失敗しました',
+  'update.checkNow': 'アップデートを確認',
+  'update.downloadInstall': 'ダウンロードしてインストール',
+  'update.restart': '今すぐ再起動',
+  'update.dismiss': '後で',
+  'update.upToDate': '最新の状態です',
 };

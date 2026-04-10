@@ -35,5 +35,16 @@
         "installMode": "perMachine"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVFNzgxNzY0RkEyQjQ4QzUKUldURlNDdjZaQmQ0WGtVenFxT3U4ZVc0YW8reDZTalBMTjhuZENNV3VYeUZidkljQU11YmV5MHAK",
+      "endpoints": [
+        "https://github.com/MLGBJDLW/Ask_Myself/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

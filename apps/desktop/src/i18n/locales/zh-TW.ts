@@ -995,4 +995,16 @@ export const zhTW: TranslationKeys = {
   'knowledge.entityType': 'Type',
   'knowledge.mentions': 'Mentions',
   'knowledge.documents': 'Documents',
+
+  // Update
+  'update.available': '有可用更新',
+  'update.version': '版本 {version} 可用',
+  'update.downloading': '正在下載更新...',
+  'update.ready': '更新已就緒，重新啟動以套用。',
+  'update.error': '檢查更新失敗',
+  'update.checkNow': '檢查更新',
+  'update.downloadInstall': '下載並安裝',
+  'update.restart': '立即重新啟動',
+  'update.dismiss': '稍後',
+  'update.upToDate': '已是最新版本',
 };

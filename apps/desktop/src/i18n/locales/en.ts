@@ -1012,4 +1012,16 @@ export const en: TranslationKeys = {
   'knowledge.entityType': 'Category',
   'knowledge.mentions': 'Mentions',
   'knowledge.documents': 'Documents',
+
+  // Update
+  'update.available': 'Update Available',
+  'update.version': 'Version {version} is available',
+  'update.downloading': 'Downloading update...',
+  'update.ready': 'Update ready. Restart to apply.',
+  'update.error': 'Update check failed',
+  'update.checkNow': 'Check for Updates',
+  'update.downloadInstall': 'Download & Install',
+  'update.restart': 'Restart Now',
+  'update.dismiss': 'Later',
+  'update.upToDate': "You're up to date",
 };

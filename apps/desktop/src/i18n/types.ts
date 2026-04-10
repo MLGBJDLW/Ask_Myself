@@ -998,6 +998,18 @@ export interface TranslationKeys {
   'common.delete': string;
   'common.edit': string;
   'common.close': string;
+
+  // Update
+  'update.available': string;
+  'update.version': string;
+  'update.downloading': string;
+  'update.ready': string;
+  'update.error': string;
+  'update.checkNow': string;
+  'update.downloadInstall': string;
+  'update.restart': string;
+  'update.dismiss': string;
+  'update.upToDate': string;
   'common.confirm': string;
   'common.loading': string;
   'common.error': string;
