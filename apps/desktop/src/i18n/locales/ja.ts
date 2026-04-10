@@ -409,6 +409,13 @@ export const ja: TranslationKeys = {
   'settings.videoDeleteConfirm': 'ダウンロード済みの Whisper モデルを削除してもよろしいですか？動画の文字起こしには再ダウンロードが必要です。',
   'settings.videoDeleteSuccess': 'Whisper モデルを削除しました。',
 
+  // Settings - Embedding Model Management
+  'settings.cancelDownload': 'ダウンロードをキャンセル',
+  'settings.deleteModel': 'モデルを削除',
+  'settings.deleteModelConfirm': 'このモデルを削除してもよろしいですか？後で再ダウンロードできます。',
+  'settings.downloadCancelled': 'ダウンロードがキャンセルされました',
+  'settings.modelDeleted': 'モデルを削除しました',
+
   // Settings - Memory
   'settings.memorySection': 'ローカルメモリ',
   'settings.memoryDescription': 'このデバイスに保存された永続的なメモで、関連性に基づいて段階的に注入されます。',

@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -160,12 +161,13 @@ pub fn download_local_model_for_with_progress(
     model_path: Option<&str>,
     model: &LocalEmbeddingModel,
     on_progress: impl Fn(DownloadProgress),
+    cancel: &AtomicBool,
 ) -> Result<(), CoreError> {
     let dir = match model_path {
         Some(p) if !p.is_empty() => PathBuf::from(p),
         _ => default_model_dir_for(model)?,
     };
-    download_model_files_with_progress(&dir, model, on_progress)
+    download_model_files_with_progress(&dir, model, on_progress, cancel)
 }
 
 // ── Embedder trait ──────────────────────────────────────────────────
@@ -905,21 +907,33 @@ impl Embedder for OnnxEmbedder {
             .map_err(|e| CoreError::Embedding(format!("input_ids tensor: {e}")))?;
         let attention_mask_tensor = ort::value::Tensor::from_array(attention_mask)
             .map_err(|e| CoreError::Embedding(format!("attention_mask tensor: {e}")))?;
-        let token_type_ids_tensor = ort::value::Tensor::from_array(token_type_ids)
-            .map_err(|e| CoreError::Embedding(format!("token_type_ids tensor: {e}")))?;
-
         let mut session = self
             .session
             .lock()
             .map_err(|e| CoreError::Embedding(format!("session lock: {e}")))?;
 
-        let outputs = session
-            .run(ort::inputs! {
+        // Not all models accept token_type_ids (e.g. newer/higher-end models).
+        // Inspect the session inputs to decide whether to include it.
+        let has_token_type_ids = session
+            .inputs()
+            .iter()
+            .any(|i| i.name() == "token_type_ids");
+
+        let outputs = if has_token_type_ids {
+            let token_type_ids_tensor = ort::value::Tensor::from_array(token_type_ids)
+                .map_err(|e| CoreError::Embedding(format!("token_type_ids tensor: {e}")))?;
+            session.run(ort::inputs! {
                 "input_ids" => input_ids_tensor,
                 "attention_mask" => attention_mask_tensor,
                 "token_type_ids" => token_type_ids_tensor
             })
-            .map_err(|e| CoreError::Embedding(format!("inference: {e}")))?;
+        } else {
+            session.run(ort::inputs! {
+                "input_ids" => input_ids_tensor,
+                "attention_mask" => attention_mask_tensor
+            })
+        }
+        .map_err(|e| CoreError::Embedding(format!("inference: {e}")))?;
 
         // last_hidden_state: [batch, seq_len, hidden_size]
         let hidden = outputs[0]
@@ -957,7 +971,7 @@ impl Embedder for OnnxEmbedder {
 }
 
 /// Default cache directory for a specific ONNX model.
-fn default_model_dir_for(model: &LocalEmbeddingModel) -> Result<PathBuf, CoreError> {
+pub fn default_model_dir_for(model: &LocalEmbeddingModel) -> Result<PathBuf, CoreError> {
     let data_dir = dirs::data_dir()
         .ok_or_else(|| CoreError::Embedding("cannot determine data directory".into()))?;
     Ok(data_dir
@@ -1030,6 +1044,7 @@ fn download_model_files_with_progress(
     target_dir: &Path,
     model: &LocalEmbeddingModel,
     on_progress: impl Fn(DownloadProgress),
+    cancel: &AtomicBool,
 ) -> Result<(), CoreError> {
     use std::io::Read;
     use std::time::Duration;
@@ -1090,6 +1105,9 @@ fn download_model_files_with_progress(
         });
 
         loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(CoreError::Embedding("download cancelled".into()));
+            }
             let n = reader
                 .read(&mut chunk)
                 .map_err(|e| CoreError::Embedding(format!("read {filename}: {e}")))?;

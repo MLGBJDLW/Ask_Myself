@@ -411,6 +411,13 @@ export const ko: TranslationKeys = {
   'settings.videoDeleteConfirm': '다운로드한 Whisper 모델을 삭제하시겠습니까? 동영상 전사를 사용하려면 재다운로드가 필요합니다.',
   'settings.videoDeleteSuccess': 'Whisper 모델이 삭제되었습니다.',
 
+  // Settings - Embedding Model Management
+  'settings.cancelDownload': '다운로드 취소',
+  'settings.deleteModel': '모델 삭제',
+  'settings.deleteModelConfirm': '이 모델을 삭제하시겠습니까? 나중에 다시 다운로드할 수 있습니다.',
+  'settings.downloadCancelled': '다운로드가 취소되었습니다',
+  'settings.modelDeleted': '모델이 삭제되었습니다',
+
   // Settings - Memory
   'settings.memorySection': '로컬 메모리',
   'settings.memoryDescription': '이 기기에 저장된 영구 메모로, 관련성에 따라 점진적으로 주입됩니다.',

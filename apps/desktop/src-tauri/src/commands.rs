@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-#[cfg(feature = "video")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -68,6 +67,9 @@ pub struct AgentState {
 pub struct McpManagerState {
     pub manager: TokioMutex<ask_core::mcp::McpManager>,
 }
+
+/// State for tracking active model download cancellation.
+pub struct DownloadCancelFlag(pub Arc<AtomicBool>);
 
 async fn sync_enabled_mcp_servers(
     db: &Database,
@@ -852,18 +854,46 @@ pub fn check_local_model_cmd(local_model: Option<String>) -> Result<bool, String
 pub async fn download_local_model_cmd(
     app_handle: AppHandle,
     local_model: Option<String>,
+    cancel_flag: tauri::State<'_, DownloadCancelFlag>,
 ) -> Result<(), String> {
+    let cancel = cancel_flag.0.clone();
+    cancel.store(false, Ordering::Relaxed);
     tokio::task::spawn_blocking(move || {
         let model = local_model
             .map(|s| LocalEmbeddingModel::from_config_str(&s))
             .unwrap_or_default();
-        ask_core::embed::download_local_model_for_with_progress(None, &model, |progress| {
-            emit_app_event(&app_handle, "model:download-progress", &progress);
-        })
+        ask_core::embed::download_local_model_for_with_progress(
+            None,
+            &model,
+            |progress| {
+                emit_app_event(&app_handle, "model:download-progress", &progress);
+            },
+            &cancel,
+        )
         .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+#[tauri::command]
+pub fn cancel_model_download_cmd(
+    cancel_flag: tauri::State<'_, DownloadCancelFlag>,
+) -> Result<(), String> {
+    cancel_flag.0.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_local_model_cmd(local_model: Option<String>) -> Result<(), String> {
+    let model = local_model
+        .map(|s| LocalEmbeddingModel::from_config_str(&s))
+        .unwrap_or_default();
+    let dir = ask_core::embed::default_model_dir_for(&model).map_err(|e| e.to_string())?;
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // ── Image Attachment Commands ───────────────────────────────────────────

@@ -387,6 +387,31 @@ export function SettingsPage() {
     }
   };
 
+  const handleCancelDownload = async () => {
+    try {
+      await api.cancelModelDownload();
+      setDownloadLoading(false);
+      toast.success(t('settings.downloadCancelled'));
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  const [deleteEmbedModelConfirmOpen, setDeleteEmbedModelConfirmOpen] = useState(false);
+
+  const handleDeleteModel = async () => {
+    if (!embedConfig) return;
+    try {
+      await api.deleteLocalModel(embedConfig.localModel);
+      setLocalModelReady(false);
+      toast.success(t('settings.modelDeleted'));
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setDeleteEmbedModelConfirmOpen(false);
+    }
+  };
+
   const handleTestConnection = async () => {
     if (!embedConfig) return;
     setTestLoading(true);
@@ -1535,6 +1560,8 @@ export function SettingsPage() {
               }
               size={embedConfig?.localModel === 'MultilingualE5Base' ? '~470 MB' : '~46 MB'}
               onDownload={handleDownloadModel}
+              onCancel={handleCancelDownload}
+              onDelete={() => setDeleteEmbedModelConfirmOpen(true)}
               downloadProgress={downloadProgress}
             >
               {embedConfig?.provider === 'local' && (
@@ -1701,6 +1728,17 @@ export function SettingsPage() {
               </div>
             </div>
           </div>
+
+          {/* Delete embedding model confirmation */}
+          <ConfirmDialog
+            open={deleteEmbedModelConfirmOpen}
+            onClose={() => setDeleteEmbedModelConfirmOpen(false)}
+            onConfirm={handleDeleteModel}
+            title={t('settings.deleteModel')}
+            message={t('settings.deleteModelConfirm')}
+            confirmText={t('common.delete')}
+            variant="danger"
+          />
         </Section>
 
         {/* Embedding Configuration section */}
