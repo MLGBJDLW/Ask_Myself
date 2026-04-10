@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4](https://github.com/MLGBJDLW/Ask_Myself/compare/v0.1.3...v0.1.4) (2026-04-10)
+
+
+### Bug Fixes
+
+* handle models without token_type_ids input & add model management ([da84a3a](https://github.com/MLGBJDLW/Ask_Myself/commit/da84a3a24ab378db7768dcb2f39341a9092e366c))
+* handle models without token_type_ids input & add model management ([a0b4781](https://github.com/MLGBJDLW/Ask_Myself/commit/a0b478154b19ae9eba9b290a7b5e8e2e2d12a1b4))
+
 ## [0.1.3](https://github.com/MLGBJDLW/Ask_Myself/compare/v0.1.2...v0.1.3) (2026-04-08)
 
 
