@@ -147,6 +147,125 @@ impl Database {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Scan error tracking
+// ---------------------------------------------------------------------------
+
+impl Database {
+    /// Record or update a scan error for a file.
+    ///
+    /// On conflict (same source+path), increments `error_count`, updates
+    /// `last_failed_at` and `error_message`.
+    pub fn upsert_scan_error(
+        &self,
+        source_id: &str,
+        path: &str,
+        error_message: &str,
+    ) -> Result<(), crate::error::CoreError> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO scan_errors (source_id, path, error_message)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(source_id, path) DO UPDATE SET
+                error_count = error_count + 1,
+                error_message = excluded.error_message,
+                last_failed_at = datetime('now')",
+            rusqlite::params![source_id, path, error_message],
+        )?;
+        Ok(())
+    }
+
+    /// Delete all scan errors for a source (retry all).
+    pub fn clear_scan_errors(&self, source_id: &str) -> Result<usize, crate::error::CoreError> {
+        let conn = self.conn();
+        let count = conn.execute(
+            "DELETE FROM scan_errors WHERE source_id = ?1",
+            rusqlite::params![source_id],
+        )?;
+        Ok(count)
+    }
+
+    /// Delete a single scan error (file recovered or manual reset).
+    pub fn clear_scan_error(
+        &self,
+        source_id: &str,
+        path: &str,
+    ) -> Result<bool, crate::error::CoreError> {
+        let conn = self.conn();
+        let count = conn.execute(
+            "DELETE FROM scan_errors WHERE source_id = ?1 AND path = ?2",
+            rusqlite::params![source_id, path],
+        )?;
+        Ok(count > 0)
+    }
+
+    /// List all scan errors for a source.
+    pub fn get_scan_errors(
+        &self,
+        source_id: &str,
+    ) -> Result<Vec<crate::models::ScanError>, crate::error::CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT source_id, path, error_message, error_count, first_failed_at, last_failed_at
+             FROM scan_errors WHERE source_id = ?1 ORDER BY last_failed_at DESC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![source_id], |row| {
+            Ok(crate::models::ScanError {
+                source_id: row.get(0)?,
+                path: row.get(1)?,
+                error_message: row.get(2)?,
+                error_count: row.get(3)?,
+                first_failed_at: row.get(4)?,
+                last_failed_at: row.get(5)?,
+            })
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    /// Check whether a file should be retried.
+    ///
+    /// Returns `true` (should retry) if:
+    /// - No error record exists, OR
+    /// - `error_count` < 3, OR
+    /// - `last_failed_at` is older than 24 hours.
+    pub fn should_retry_scan(
+        &self,
+        source_id: &str,
+        path: &str,
+    ) -> Result<bool, crate::error::CoreError> {
+        let conn = self.conn();
+        let result: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT error_count, last_failed_at FROM scan_errors
+                 WHERE source_id = ?1 AND path = ?2",
+                rusqlite::params![source_id, path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+
+        match result {
+            None => Ok(true), // no error record → retry
+            Some((count, last_failed)) => {
+                if count < 3 {
+                    return Ok(true);
+                }
+                // Parse last_failed_at and check if older than 24 hours.
+                if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&last_failed, "%Y-%m-%d %H:%M:%S") {
+                    let age = chrono::Utc::now().naive_utc() - dt;
+                    if age > chrono::Duration::hours(24) {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

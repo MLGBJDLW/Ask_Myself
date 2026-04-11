@@ -302,6 +302,18 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_health_checks_type ON health_checks(check_type);
         CREATE INDEX IF NOT EXISTS idx_health_checks_resolved ON health_checks(resolved);",
     ),
+    (
+        "v035_scan_errors",
+        "CREATE TABLE IF NOT EXISTS scan_errors (
+            source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            error_message TEXT NOT NULL,
+            error_count INTEGER NOT NULL DEFAULT 1,
+            first_failed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_failed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (source_id, path)
+        );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

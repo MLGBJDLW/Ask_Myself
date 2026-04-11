@@ -3167,3 +3167,39 @@ pub async fn compile_after_scan_cmd(
 
     serde_json::to_value(&results).map_err(|e| e.to_string())
 }
+
+// ── Scan Error Commands ─────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_scan_errors_cmd(
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+) -> Result<Vec<ask_core::models::ScanError>, String> {
+    state
+        .db
+        .get_scan_errors(&source_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_scan_errors_cmd(
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+) -> Result<usize, String> {
+    state
+        .db
+        .clear_scan_errors(&source_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_scan_error_cmd(
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+    path: String,
+) -> Result<bool, String> {
+    state
+        .db
+        .clear_scan_error(&source_id, &path)
+        .map_err(|e| e.to_string())
+}

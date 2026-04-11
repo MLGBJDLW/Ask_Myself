@@ -210,6 +210,10 @@ fn main() {
             commands::get_knowledge_map_cmd,
             commands::run_knowledge_health_check_cmd,
             commands::compile_after_scan_cmd,
+            // Scan errors
+            commands::get_scan_errors_cmd,
+            commands::clear_scan_errors_cmd,
+            commands::clear_scan_error_cmd,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

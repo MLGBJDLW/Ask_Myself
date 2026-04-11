@@ -115,3 +115,15 @@ pub struct PlaybookCitation {
     pub annotation: String,
     pub order: u32,
 }
+
+/// A persistent record of a file that failed to scan/ingest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanError {
+    pub source_id: String,
+    pub path: String,
+    pub error_message: String,
+    pub error_count: i64,
+    pub first_failed_at: String,
+    pub last_failed_at: String,
+}

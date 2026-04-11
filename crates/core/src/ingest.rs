@@ -290,6 +290,14 @@ fn scan_source_inner(
             _ => {} // proceed normally (missing metadata is handled by parse_file)
         }
 
+        // Skip files that have repeatedly failed (backoff).
+        let file_path_str = file_path.to_string_lossy();
+        if !db.should_retry_scan(source_id, &file_path_str).unwrap_or(true) {
+            debug!("Skipping file with repeated failures: {}", file_path.display());
+            result.files_skipped += 1;
+            continue;
+        }
+
         match classify_file(
             file_path,
             &existing_docs,
@@ -299,10 +307,14 @@ fn scan_source_inner(
             max_chunk_chars,
         ) {
             Ok(FileClassification::New(parsed)) => {
+                // File succeeded — clear any previous error record.
+                let _ = db.clear_scan_error(source_id, &file_path_str);
                 new_docs.push(parsed);
                 result.files_added += 1;
             }
             Ok(FileClassification::Changed(doc_id, parsed)) => {
+                // File succeeded — clear any previous error record.
+                let _ = db.clear_scan_error(source_id, &file_path_str);
                 update_docs.push((doc_id, parsed));
                 result.files_updated += 1;
             }
@@ -312,6 +324,8 @@ fn scan_source_inner(
             Err(e) => {
                 let msg = format!("{}: {}", file_path.display(), e);
                 warn!("Failed to ingest file: {}", msg);
+                // Persist the scan error for tracking and backoff.
+                let _ = db.upsert_scan_error(source_id, &file_path_str, &msg);
                 result.errors.push(msg);
                 result.files_failed += 1;
             }
@@ -1079,6 +1093,13 @@ pub fn ingest_single_file(
         }
     }
 
+    // Skip files that have repeatedly failed (backoff).
+    let path_str = path.to_string_lossy();
+    if !db.should_retry_scan(source_id, &path_str).unwrap_or(true) {
+        debug!("Skipping file with repeated failures: {}", path.display());
+        return Ok(IngestFileResult::Unchanged);
+    }
+
     // Load privacy config for redaction.
     let privacy_cfg = db.load_privacy_config()?;
 
@@ -1092,7 +1113,7 @@ pub fn ingest_single_file(
         .ok()
         .map(|cfg| cfg.local_embedding_model().max_chunk_chars());
 
-    let mut parsed = parse_file(
+    let parsed_result = parse_file(
         path,
         None,
         #[cfg(feature = "video")]
@@ -1100,7 +1121,16 @@ pub fn ingest_single_file(
         None,
         None,
         max_chunk_chars,
-    )?;
+    );
+
+    let mut parsed = match parsed_result {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = format!("{}: {}", path.display(), e);
+            let _ = db.upsert_scan_error(source_id, &path_str, &msg);
+            return Err(e);
+        }
+    };
 
     // Apply content redaction when privacy is enabled.
     if privacy_cfg.enabled {
@@ -1108,6 +1138,9 @@ pub fn ingest_single_file(
             chunk.content = privacy::redact_content(&chunk.content, &privacy_cfg.redact_patterns);
         }
     }
+
+    // Clear any previous scan error on success.
+    let _ = db.clear_scan_error(source_id, &path_str);
 
     // Check if the document already exists.
     match db.get_document_by_path(&parsed.file_path)? {
