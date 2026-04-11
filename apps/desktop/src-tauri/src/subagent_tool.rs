@@ -965,7 +965,7 @@ async fn run_subagent_once(
             .is_some_and(|ids| !ids.is_empty());
 
     Ok(SubagentRunArtifact {
-        id: worker_id.unwrap_or_else(|| call_label),
+        id: worker_id.unwrap_or(call_label),
         status: "done".to_string(),
         task: args.task,
         role: args.role,

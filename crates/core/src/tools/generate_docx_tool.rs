@@ -177,15 +177,13 @@ pub(crate) fn generate_docx(
     // Page header
     if let Some(header_text) = &content.header {
         let header = Header::new().add_paragraph(
-            Paragraph::new()
-                .align(AlignmentType::Right)
-                .add_run(
-                    Run::new()
-                        .add_text(header_text)
-                        .size(18)
-                        .color("888888")
-                        .fonts(body_fonts.clone()),
-                ),
+            Paragraph::new().align(AlignmentType::Right).add_run(
+                Run::new()
+                    .add_text(header_text)
+                    .size(18)
+                    .color("888888")
+                    .fonts(body_fonts.clone()),
+            ),
         );
         doc = doc.header(header);
     }
@@ -193,15 +191,13 @@ pub(crate) fn generate_docx(
     // Page footer
     if let Some(footer_text) = &content.footer {
         let footer = Footer::new().add_paragraph(
-            Paragraph::new()
-                .align(AlignmentType::Center)
-                .add_run(
-                    Run::new()
-                        .add_text(footer_text)
-                        .size(18)
-                        .color("888888")
-                        .fonts(body_fonts.clone()),
-                ),
+            Paragraph::new().align(AlignmentType::Center).add_run(
+                Run::new()
+                    .add_text(footer_text)
+                    .size(18)
+                    .color("888888")
+                    .fonts(body_fonts.clone()),
+            ),
         );
         doc = doc.footer(footer);
     }
@@ -323,12 +319,7 @@ pub(crate) fn generate_docx(
                                     .line_rule(LineSpacingType::Auto)
                                     .after(120),
                             )
-                            .add_run(
-                                Run::new()
-                                    .add_text(line)
-                                    .size(22)
-                                    .fonts(body_fonts.clone()),
-                            ),
+                            .add_run(Run::new().add_text(line).size(22).fonts(body_fonts.clone())),
                     );
                 }
             }

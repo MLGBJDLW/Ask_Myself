@@ -254,7 +254,9 @@ impl Database {
                     return Ok(true);
                 }
                 // Parse last_failed_at and check if older than 24 hours.
-                if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&last_failed, "%Y-%m-%d %H:%M:%S") {
+                if let Ok(dt) =
+                    chrono::NaiveDateTime::parse_from_str(&last_failed, "%Y-%m-%d %H:%M:%S")
+                {
                     let age = chrono::Utc::now().naive_utc() - dt;
                     if age > chrono::Duration::hours(24) {
                         return Ok(true);

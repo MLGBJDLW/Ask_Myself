@@ -998,7 +998,7 @@ fn extract_text_from_binary(bytes: &[u8]) -> String {
     let mut current_run = String::new();
 
     for &byte in bytes {
-        if (byte >= 0x20 && byte < 0x7F) || byte == b'\n' || byte == b'\r' || byte == b'\t' {
+        if (0x20..0x7F).contains(&byte) || byte == b'\n' || byte == b'\r' || byte == b'\t' {
             current_run.push(byte as char);
         } else {
             if current_run.trim().len() >= min_run_length {

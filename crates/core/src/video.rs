@@ -13,21 +13,16 @@ use std::path::{Path, PathBuf};
 // ═══════════════════════════════════════════
 
 /// Whisper model sizes with file size and accuracy trade-offs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WhisperModel {
-    Tiny,       // ~39 MB, fastest, lowest accuracy
-    Base,       // ~142 MB, good balance
-    Small,      // ~466 MB, better accuracy
-    Medium,     // ~1.5 GB, high accuracy
-    Large,      // ~3.1 GB, most accurate
+    Tiny, // ~39 MB, fastest, lowest accuracy
+    #[default]
+    Base, // ~142 MB, good balance
+    Small, // ~466 MB, better accuracy
+    Medium, // ~1.5 GB, high accuracy
+    Large, // ~3.1 GB, most accurate
     LargeTurbo, // ~1.6 GB, best speed/accuracy tradeoff
-}
-
-impl Default for WhisperModel {
-    fn default() -> Self {
-        Self::Base
-    }
 }
 
 impl WhisperModel {
@@ -445,7 +440,7 @@ pub fn extract_frames(
         .map_err(|e| CoreError::Video(format!("Failed to read frame dir: {e}")))?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "jpg"))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "jpg"))
         .collect();
     frames.sort();
     Ok(frames)
@@ -489,7 +484,7 @@ pub fn extract_keyframes(
         .map_err(|e| CoreError::Video(format!("Failed to read keyframe dir: {e}")))?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "jpg"))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "jpg"))
         .collect();
     frames.sort();
     Ok(frames)

@@ -292,8 +292,14 @@ fn scan_source_inner(
 
         // Skip files that have repeatedly failed (backoff).
         let file_path_str = file_path.to_string_lossy();
-        if !db.should_retry_scan(source_id, &file_path_str).unwrap_or(true) {
-            debug!("Skipping file with repeated failures: {}", file_path.display());
+        if !db
+            .should_retry_scan(source_id, &file_path_str)
+            .unwrap_or(true)
+        {
+            debug!(
+                "Skipping file with repeated failures: {}",
+                file_path.display()
+            );
             result.files_skipped += 1;
             continue;
         }

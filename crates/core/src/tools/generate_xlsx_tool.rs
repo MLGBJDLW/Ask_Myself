@@ -454,7 +454,7 @@ fn parse_range(range: &str) -> (u32, u16, u32, u16) {
     // Strip the "Sheet1!" prefix if present
     let range = range
         .split('!')
-        .last()
+        .next_back()
         .unwrap_or(range)
         .replace('$', "");
 

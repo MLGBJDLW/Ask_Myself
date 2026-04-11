@@ -405,11 +405,8 @@ fn build_content_slide(slide: &PptxSlide, slide_num: usize, theme: &ResolvedPptx
     let title_font = xml_escape(&theme.title_font);
     let body_font = xml_escape(&theme.body_font);
 
-    let body_parts = build_pptx_body_parts(
-        slide.body.as_deref(),
-        slide.bullet_items.as_deref(),
-        theme,
-    );
+    let body_parts =
+        build_pptx_body_parts(slide.body.as_deref(), slide.bullet_items.as_deref(), theme);
 
     // Table XML (placed after body text area if present)
     let table_xml = slide
