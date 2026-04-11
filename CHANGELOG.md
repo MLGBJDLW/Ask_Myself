@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.6](https://github.com/MLGBJDLW/Ask_Myself/compare/v0.1.5...v0.1.6) (2026-04-11)
+
+
+### Features
+
+* **core:** add persistent scan error tracking with retry backoff ([c588130](https://github.com/MLGBJDLW/Ask_Myself/commit/c5881309ef06f3dbbe30976192543ed75ab95b31))
+
+
+### Bug Fixes
+
+* **core:** correct column names and types in lint and knowledge_loop ([8cc1b59](https://github.com/MLGBJDLW/Ask_Myself/commit/8cc1b59b1fd24c5ba323c9b1cba9da3e3ad6c4b4))
+* **updater:** add createUpdaterArtifacts config and CI validation ([2413bed](https://github.com/MLGBJDLW/Ask_Myself/commit/2413bed4bc2944fc29a2419c6f1686cee2564669))
+
 ## [0.1.5](https://github.com/MLGBJDLW/Ask_Myself/compare/v0.1.4...v0.1.5) (2026-04-10)
 
 
