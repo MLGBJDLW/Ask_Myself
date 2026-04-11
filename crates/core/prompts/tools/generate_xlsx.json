@@ -1,0 +1,118 @@
+{
+  "name": "generate_xlsx",
+  "description": "Create or replace a professional XLSX (Excel) spreadsheet at the specified path within a registered source directory.\n\nUse this tool when the user asks to create or update an Excel spreadsheet. Design clean, well-structured sheets with appropriate formatting.\n\nCapabilities:\n- Multiple named sheets with optional tab colors\n- Sheet-level title bar and notes row\n- Column headers with auto-filter and freeze panes\n- Rich cell styling: bold, italic, alignment, colors, number formats, text wrap\n- Formula cells (e.g. \"=SUM(B2:B8)\")\n- Alternating row shading for readability\n- Charts: bar, column, line, pie, scatter, area, doughnut, radar\n\nCell value formats:\n- Primitive values: strings, numbers, booleans are auto-formatted\n- Styled cells: use an object with properties like `{ \"value\": 1200, \"num_format\": \"$#,##0\", \"bold\": true }`\n- Formula cells: `{ \"formula\": \"=SUM(B2:B8)\", \"bold\": true }`\n\nChart tips:\n- Place charts after data rows using `position: { row: <after-last-data-row>, col: 0 }`\n- Reference data with ranges like \"B2:B10\" or \"$B$2:$B$10\"\n- Set `categories_range` for axis labels",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Output file path (absolute or relative to a source directory). Must end in .xlsx and be within a registered source directory."
+      },
+      "content": {
+        "type": "object",
+        "description": "Structured content for the XLSX spreadsheet.",
+        "properties": {
+          "sheets": {
+            "type": "array",
+            "description": "Array of worksheet definitions. At least one sheet is required.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Sheet tab name (max 31 chars, no special characters like /\\?*[])."
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Title row merged across all columns with dark background. Optional."
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Notes row below title with light background. Optional."
+                },
+                "headers": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Column headers rendered with blue background and white text."
+                },
+                "rows": {
+                  "type": "array",
+                  "description": "Data rows. Each row is an array of cell values.",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "description": "Cell value: a string, number, boolean, or a styled object.\nStyled object properties:\n- value: the cell value (string/number/boolean)\n- formula: Excel formula string (e.g. \"=SUM(B2:B8)\")\n- num_format: number format (e.g. \"$#,##0\", \"0.00%\", \"yyyy-mm-dd\")\n- bold: boolean\n- italic: boolean\n- align: \"left\" | \"center\" | \"right\"\n- font_color: hex color (e.g. \"FF0000\")\n- background_color: hex color (e.g. \"EAF3FB\")\n- wrap: boolean (text wrap)"
+                    }
+                  }
+                },
+                "column_widths": {
+                  "type": "array",
+                  "items": { "type": "number" },
+                  "description": "Explicit column widths in character units. Default: auto-calculated from header length."
+                },
+                "tab_color": {
+                  "type": "string",
+                  "description": "Sheet tab color as hex (e.g. \"2E75B6\"). Optional."
+                },
+                "freeze_rows": {
+                  "type": "integer",
+                  "description": "Number of rows to freeze at the top. Default: auto-freeze at header row."
+                },
+                "autofilter": {
+                  "type": "boolean",
+                  "description": "Enable auto-filter on header row. Default: true when headers are present."
+                },
+                "charts": {
+                  "type": "array",
+                  "description": "Charts to embed in this sheet.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["bar", "column", "line", "pie", "scatter", "area", "doughnut", "radar"],
+                        "description": "Chart type. Default: \"column\"."
+                      },
+                      "title": {
+                        "type": "string",
+                        "description": "Chart title displayed above the chart."
+                      },
+                      "data_range": {
+                        "type": "string",
+                        "description": "Cell range for data values, e.g. \"B2:B10\" or \"$B$2:$B$10\"."
+                      },
+                      "categories_range": {
+                        "type": "string",
+                        "description": "Cell range for category (axis) labels, e.g. \"A2:A10\". Optional."
+                      },
+                      "width": {
+                        "type": "integer",
+                        "description": "Chart width in pixels. Default: 480."
+                      },
+                      "height": {
+                        "type": "integer",
+                        "description": "Chart height in pixels. Default: 288."
+                      },
+                      "position": {
+                        "type": "object",
+                        "description": "Where to place the chart on the sheet.",
+                        "properties": {
+                          "row": { "type": "integer", "description": "Row number (0-indexed). Default: after last data row." },
+                          "col": { "type": "integer", "description": "Column number (0-indexed). Default: 0." }
+                        }
+                      }
+                    },
+                    "required": ["type", "data_range"]
+                  }
+                }
+              },
+              "required": ["name", "rows"]
+            }
+          }
+        },
+        "required": ["sheets"]
+      }
+    },
+    "required": ["path", "content"]
+  }
+}

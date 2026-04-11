@@ -1,0 +1,151 @@
+{
+  "name": "generate_docx",
+  "description": "Create or replace a professional DOCX (Word) document at the specified path within a registered source directory.\n\nUse this tool when the user asks to create or update a Word document. Think carefully about audience, tone, hierarchy, and layout before calling it.\n\nCapabilities:\n- Cover page with title, subtitle, and cover note\n- Themed colors and fonts (primary, accent, title font, body font)\n- Page headers and footers\n- Sections with headings, body text, bullet lists, numbered lists, hyperlinks, callout boxes, and tables\n- Page breaks between sections\n- Body text auto-detects inline bullets (lines starting with \"- \" or \"• \")\n\nDesign tips:\n- Use `theme` to set brand colors and fonts consistently\n- Use `callout` for important highlights (info/warning/success tones)\n- Use `numbered_items` for step-by-step instructions\n- Use `links` to add clickable hyperlinks in sections\n- Set `header`/`footer` for consistent page branding\n- Use `page_break_before: true` to start major sections on fresh pages",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Output file path (absolute or relative to a source directory). Must end in .docx and be within a registered source directory."
+      },
+      "content": {
+        "type": "object",
+        "description": "Structured content for the DOCX document.",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Document cover title. Rendered large and bold at the top."
+          },
+          "subtitle": {
+            "type": "string",
+            "description": "Subtitle shown below the title in italics."
+          },
+          "cover_note": {
+            "type": "string",
+            "description": "Small note text below the subtitle (e.g. date, author, version)."
+          },
+          "header": {
+            "type": "string",
+            "description": "Text shown in the page header (top-right of every page). Optional."
+          },
+          "footer": {
+            "type": "string",
+            "description": "Text shown in the page footer (bottom-center of every page). Optional."
+          },
+          "theme": {
+            "type": "object",
+            "description": "Visual theme for colors and fonts.",
+            "properties": {
+              "primary_color": {
+                "type": "string",
+                "description": "Primary color hex (e.g. \"1F4E79\"). Used for title text and table headers."
+              },
+              "accent_color": {
+                "type": "string",
+                "description": "Accent color hex (e.g. \"2E75B6\"). Used for headings and decorative elements."
+              },
+              "title_font": {
+                "type": "string",
+                "description": "Font family for titles and headings. Default: \"Calibri Light\"."
+              },
+              "body_font": {
+                "type": "string",
+                "description": "Font family for body text. Default: \"Calibri\"."
+              },
+              "title_align": {
+                "type": "string",
+                "enum": ["left", "center", "right"],
+                "description": "Alignment of the cover title/subtitle. Default: \"center\"."
+              }
+            }
+          },
+          "sections": {
+            "type": "array",
+            "description": "Array of document sections. Each section can contain multiple content elements.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "heading": {
+                  "type": "string",
+                  "description": "Section heading (rendered bold, 16pt, accent color)."
+                },
+                "body": {
+                  "type": "string",
+                  "description": "Body text. Supports newlines. Lines starting with \"- \" or \"• \" auto-render as bullets."
+                },
+                "bullet_items": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Explicit bullet list items. Each string becomes a bullet point."
+                },
+                "numbered_items": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Numbered list items. Each string becomes a numbered item (1., 2., 3., etc.)."
+                },
+                "links": {
+                  "type": "array",
+                  "description": "Clickable hyperlinks rendered as blue underlined text.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "text": { "type": "string", "description": "Display text for the link." },
+                      "url": { "type": "string", "description": "Target URL (https://...)." }
+                    },
+                    "required": ["text", "url"]
+                  }
+                },
+                "callout": {
+                  "type": "object",
+                  "description": "Highlighted callout box with colored background.",
+                  "properties": {
+                    "title": { "type": "string", "description": "Callout title (default: \"Highlight\")." },
+                    "body": { "type": "string", "description": "Callout body text." },
+                    "tone": {
+                      "type": "string",
+                      "enum": ["info", "warning", "success"],
+                      "description": "Visual tone: info (blue), warning (yellow), success (green). Default: \"info\"."
+                    }
+                  },
+                  "required": ["body"]
+                },
+                "table": {
+                  "type": "object",
+                  "description": "Data table with optional headers and styled rows.",
+                  "properties": {
+                    "title": { "type": "string", "description": "Table caption shown above the table." },
+                    "headers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Column headers (rendered with primary color background, white text)."
+                    },
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      },
+                      "description": "Table data rows. Each row is an array of cell strings."
+                    },
+                    "column_widths": {
+                      "type": "array",
+                      "items": { "type": "integer" },
+                      "description": "Relative column width weights (e.g. [2, 1, 1]). Default: equal widths."
+                    }
+                  },
+                  "required": ["rows"]
+                },
+                "page_break_before": {
+                  "type": "boolean",
+                  "description": "If true, insert a page break before this section. Default: false."
+                }
+              }
+            }
+          }
+        },
+        "required": ["sections"]
+      }
+    },
+    "required": ["path", "content"]
+  }
+}

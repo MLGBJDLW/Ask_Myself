@@ -1,0 +1,136 @@
+{
+  "name": "generate_pptx",
+  "description": "Create or replace a professional PPTX (PowerPoint) presentation at the specified path within a registered source directory.\n\nUse this tool when the user asks to create or update a PowerPoint presentation. Design slides with clear hierarchy, consistent theming, and purposeful layouts.\n\nCapabilities:\n- Customizable theme: primary color, accent color, background, title/text colors, fonts\n- Slide layouts: title, content, section, comparison\n- Body text with inline bullet detection (lines starting with \"- \" or \"• \")\n- Explicit bullet_items arrays\n- Tables on content slides with themed header row and alternating bands\n- Speaker notes on any slide\n- Slide numbers on all slides\n\nLayout guide:\n- `title`: Full-slide primary-color background with centered title + subtitle. Auto-chosen for first slide.\n- `content`: Header bar with title + body area below. Default for most slides.\n- `section`: Same as title layout — use for section dividers.\n- `comparison`: Two-column layout with left/right titles and body content, separated by a divider.\n\nDesign tips:\n- Keep bullet items to 5-7 per slide\n- Use `comparison` layout for pros/cons, before/after, option A vs B\n- Add `notes` for speaker talking points (not shown during presentation)\n- Use `table` on content slides for structured data\n- Set theme colors once; they apply to all slides consistently",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Output file path (absolute or relative to a source directory). Must end in .pptx and be within a registered source directory."
+      },
+      "content": {
+        "type": "object",
+        "description": "Structured content for the PPTX presentation.",
+        "properties": {
+          "theme": {
+            "type": "object",
+            "description": "Presentation-wide visual theme. All colors are 6-digit hex (no #).",
+            "properties": {
+              "primary_color": {
+                "type": "string",
+                "description": "Primary color for title slide background and header bars. Default: \"1F4E79\"."
+              },
+              "accent_color": {
+                "type": "string",
+                "description": "Accent color for comparison titles and dividers. Default: \"2E75B6\"."
+              },
+              "background_color": {
+                "type": "string",
+                "description": "Content slide background color. Default: \"FFFFFF\"."
+              },
+              "title_color": {
+                "type": "string",
+                "description": "Title text color on header bars. Default: \"FFFFFF\" (white on dark bar)."
+              },
+              "text_color": {
+                "type": "string",
+                "description": "Body text color on content slides. Default: \"333333\"."
+              },
+              "title_font": {
+                "type": "string",
+                "description": "Font for titles and headings. Default: \"Calibri Light\"."
+              },
+              "body_font": {
+                "type": "string",
+                "description": "Font for body text and bullets. Default: \"Calibri\"."
+              }
+            }
+          },
+          "slides": {
+            "type": "array",
+            "description": "Array of slide definitions. At least one slide is required.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "layout": {
+                  "type": "string",
+                  "enum": ["title", "content", "section", "comparison"],
+                  "description": "Slide layout. Default: \"content\" (or \"title\" for first slide if >1 slides)."
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Slide title shown in header bar (content/comparison) or centered (title/section)."
+                },
+                "subtitle": {
+                  "type": "string",
+                  "description": "Subtitle text (title/section layouts only)."
+                },
+                "body": {
+                  "type": "string",
+                  "description": "Body text. Lines starting with \"- \" or \"• \" auto-render as bullets."
+                },
+                "bullet_items": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Explicit bullet list items."
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Speaker notes for this slide. Not visible during presentation; shown in presenter view."
+                },
+                "table": {
+                  "type": "object",
+                  "description": "Table rendered on the slide (content layout). Has themed header row and alternating row bands.",
+                  "properties": {
+                    "headers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Column headers (white text on primary-color background)."
+                    },
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      },
+                      "description": "Table data rows."
+                    }
+                  },
+                  "required": ["rows"]
+                },
+                "left_title": {
+                  "type": "string",
+                  "description": "Left column title (comparison layout only)."
+                },
+                "left_body": {
+                  "type": "string",
+                  "description": "Left column body text (comparison layout only)."
+                },
+                "left_bullet_items": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Left column bullet items (comparison layout only)."
+                },
+                "right_title": {
+                  "type": "string",
+                  "description": "Right column title (comparison layout only)."
+                },
+                "right_body": {
+                  "type": "string",
+                  "description": "Right column body text (comparison layout only)."
+                },
+                "right_bullet_items": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Right column bullet items (comparison layout only)."
+                }
+              }
+            }
+          }
+        },
+        "required": ["slides"]
+      }
+    },
+    "required": ["path", "content"]
+  }
+}
