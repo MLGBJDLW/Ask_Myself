@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.8](https://github.com/MLGBJDLW/Ask_Myself/compare/v0.1.7...v0.1.8) (2026-04-13)
+
+
+### Features
+
+* resolve 8 user-reported issues + add edit_document tool ([396e6fe](https://github.com/MLGBJDLW/Ask_Myself/commit/396e6fe6b1cf8f71015ce6c459310ac8bd247855))
+* **search:** overhaul search pipeline for quality and reliability ([d5b0f18](https://github.com/MLGBJDLW/Ask_Myself/commit/d5b0f18a532ffd4837f75e155a68d4060accf767))
+
+
+### Bug Fixes
+
+* tab state persistence, compile timeout, CI linting ([b61c16d](https://github.com/MLGBJDLW/Ask_Myself/commit/b61c16d89607ec615ddf91485a1b16888b39d0b5))
+
 ## [0.1.7](https://github.com/MLGBJDLW/Ask_Myself/compare/v0.1.6...v0.1.7) (2026-04-11)
 
 
