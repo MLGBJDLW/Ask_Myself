@@ -80,7 +80,7 @@ impl Tool for WriteNoteTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::FileSystem]
+        &[ToolCategory::Core, ToolCategory::FileSystem]
     }
 
     async fn execute(

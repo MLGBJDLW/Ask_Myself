@@ -1050,7 +1050,7 @@ fn build_fts_query(input: &str) -> String {
         }
     }
 
-    parts.join(" ")
+    parts.join(" OR ")
 }
 
 /// Escape double-quotes inside a token so it can be safely wrapped in `"…"`.
@@ -1546,19 +1546,19 @@ mod tests {
 
     #[test]
     fn test_build_fts_query_basic() {
-        assert_eq!(build_fts_query("hello world"), r#""hello" "world""#);
+        assert_eq!(build_fts_query("hello world"), r#""hello" OR "world""#);
     }
 
     #[test]
     fn test_build_fts_query_prefix() {
         assert_eq!(build_fts_query("depl*"), r#""depl"*"#);
-        assert_eq!(build_fts_query("hello depl*"), r#""hello" "depl"*"#);
+        assert_eq!(build_fts_query("hello depl*"), r#""hello" OR "depl"*"#);
     }
 
     #[test]
     fn test_build_fts_query_special_chars() {
         assert_eq!(build_fts_query("c++"), r#""c++""#);
-        assert_eq!(build_fts_query("NOT this"), r#""NOT" "this""#);
+        assert_eq!(build_fts_query("NOT this"), r#""NOT" OR "this""#);
     }
 
     #[test]
@@ -1573,8 +1573,9 @@ mod tests {
         {
             let conn = db.conn();
             let sid = insert_source(&conn);
-            let did = insert_document(&conn, &sid, "text/plain");
+            // Each chunk in its own document so dedup doesn't collapse them.
             for i in 0..5 {
+                let did = insert_document(&conn, &sid, "text/plain");
                 let id = new_id();
                 conn.execute(
                     "INSERT INTO chunks (id, document_id, chunk_index, kind, content,
@@ -1938,9 +1939,11 @@ mod tests {
         {
             let conn = db.conn();
             let sid = insert_source(&conn);
-            let did = insert_document(&conn, &sid, "text/markdown");
-            let _chunk_a = insert_chunk(&conn, &did, "deploy application to production server");
-            chunk_b = insert_chunk(&conn, &did, "deploy service to staging environment");
+            // Separate documents so dedup keeps both cards.
+            let did_a = insert_document(&conn, &sid, "text/markdown");
+            let _chunk_a = insert_chunk(&conn, &did_a, "deploy application to production server");
+            let did_b = insert_document(&conn, &sid, "text/markdown");
+            chunk_b = insert_chunk(&conn, &did_b, "deploy service to staging environment");
         }
 
         // Search without feedback — record baseline score for chunk_b.
@@ -1990,9 +1993,11 @@ mod tests {
         {
             let conn = db.conn();
             let sid = insert_source(&conn);
-            let did = insert_document(&conn, &sid, "text/markdown");
-            insert_chunk(&conn, &did, "configure server networking rules");
-            insert_chunk(&conn, &did, "configure network firewall settings");
+            // Separate documents so dedup keeps both cards.
+            let did_a = insert_document(&conn, &sid, "text/markdown");
+            insert_chunk(&conn, &did_a, "configure server networking rules");
+            let did_b = insert_document(&conn, &sid, "text/markdown");
+            insert_chunk(&conn, &did_b, "configure network firewall settings");
         }
 
         // Search without feedback — record baseline score for chunk_a.

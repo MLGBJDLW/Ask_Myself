@@ -72,6 +72,7 @@ pub mod create_file_tool;
 pub mod date_search_tool;
 pub mod document_info_tool;
 pub mod document_utils;
+pub mod edit_document_tool;
 pub mod edit_file_tool;
 pub mod fetch_url_tool;
 pub mod file_tool;
@@ -497,6 +498,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(generate_docx_tool::GenerateDocxTool));
     registry.register(Box::new(generate_xlsx_tool::GenerateXlsxTool));
     registry.register(Box::new(generate_pptx_tool::GeneratePptxTool));
+    registry.register(Box::new(edit_document_tool::EditDocumentTool));
     registry.register(Box::new(submit_feedback_tool::SubmitFeedbackTool));
     registry.register(Box::new(document_info_tool::GetDocumentInfoTool));
     registry.register(Box::new(reindex_tool::ReindexTool));

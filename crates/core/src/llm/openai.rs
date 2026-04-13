@@ -104,7 +104,7 @@ struct OaiToolCallOut {
 #[derive(Serialize)]
 struct OaiFunctionOut {
     name: String,
-    arguments: String,
+    arguments: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -230,7 +230,11 @@ fn parse_finish_reason(s: &str) -> FinishReason {
     }
 }
 
-fn convert_message(msg: &Message, include_reasoning_content: bool) -> OaiMessage {
+fn convert_message(
+    msg: &Message,
+    include_reasoning_content: bool,
+    raw_tool_args: bool,
+) -> OaiMessage {
     let has_images = msg.has_images();
 
     // Build content: use array format when images are present, plain string otherwise.
@@ -275,13 +279,22 @@ fn convert_message(msg: &Message, include_reasoning_content: bool) -> OaiMessage
         oai.tool_calls = Some(
             calls
                 .iter()
-                .map(|tc| OaiToolCallOut {
-                    id: tc.id.clone(),
-                    call_type: "function".to_string(),
-                    function: OaiFunctionOut {
-                        name: tc.name.clone(),
-                        arguments: tc.arguments.clone(),
-                    },
+                .map(|tc| {
+                    let arguments = if raw_tool_args {
+                        // DashScope requires arguments as a JSON object, not a string.
+                        serde_json::from_str(&tc.arguments)
+                            .unwrap_or_else(|_| serde_json::Value::String(tc.arguments.clone()))
+                    } else {
+                        serde_json::Value::String(tc.arguments.clone())
+                    };
+                    OaiToolCallOut {
+                        id: tc.id.clone(),
+                        call_type: "function".to_string(),
+                        function: OaiFunctionOut {
+                            name: tc.name.clone(),
+                            arguments,
+                        },
+                    }
                 })
                 .collect(),
         );
@@ -327,13 +340,15 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     let include_reasoning_content = is_deepseek_provider;
     let needs_completion_tokens = is_reasoning || is_deepseek;
     let suppress_temperature = is_reasoning || is_deepseek;
+    // DashScope (Qwen) requires function arguments as a JSON object, not a string.
+    let raw_tool_args = matches!(request.provider_type, Some(ProviderType::Qwen));
 
     OaiRequest {
         model: request.model.clone(),
         messages: request
             .messages
             .iter()
-            .map(|m| convert_message(m, include_reasoning_content))
+            .map(|m| convert_message(m, include_reasoning_content, raw_tool_args))
             .collect(),
         temperature: if suppress_temperature {
             None

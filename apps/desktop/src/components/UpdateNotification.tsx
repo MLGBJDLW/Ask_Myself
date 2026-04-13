@@ -1,11 +1,15 @@
 import { X, Download, RefreshCw } from 'lucide-react';
-import { useUpdater } from '../lib/useUpdater';
 import { useTranslation } from '../i18n';
 import { useState } from 'react';
+import type { useUpdater } from '../lib/useUpdater';
 
-export function UpdateNotification() {
+interface UpdateNotificationProps {
+  updater: ReturnType<typeof useUpdater>;
+}
+
+export function UpdateNotification({ updater }: UpdateNotificationProps) {
   const { t } = useTranslation();
-  const { status, version, progress, downloadAndInstall, checkForUpdate } = useUpdater();
+  const { status, version, progress, downloadAndInstall, checkForUpdate } = updater;
   const [dismissed, setDismissed] = useState(false);
 
   if (dismissed || status === 'idle' || status === 'checking' || status === 'up-to-date') {

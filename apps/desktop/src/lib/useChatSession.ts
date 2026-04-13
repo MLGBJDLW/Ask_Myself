@@ -511,8 +511,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
                 }
               })
               .catch((e) => {
-                // LLM title failed; placeholder already set — no action needed
+                // LLM title failed; placeholder already set — surface a warning
                 console.error('LLM title generation failed, keeping placeholder:', e);
+                toast.warning(`Smart title generation failed: ${String(e)}`);
               });
           }
         }

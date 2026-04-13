@@ -584,6 +584,7 @@ export interface TranslationKeys {
   'chat.tokensShort': string;
   'chat.removeAttachment': string;
   'chat.attachImage': string;
+  'chat.insertEmoji': string;
   'chat.scrollToBottom': string;
   'chat.errorOccurred': string;
   'chat.dismiss': string;
@@ -691,6 +692,26 @@ export interface TranslationKeys {
   'chat.deleteAllConfirmDesc': string;
   'chat.deleteBatchConfirm': string;
   'chat.deleteBatchConfirmDesc': string;
+
+  // Projects
+  'project.allConversations': string;
+  'project.createNew': string;
+  'project.name': string;
+  'project.namePlaceholder': string;
+  'project.description': string;
+  'project.moveToProject': string;
+  'project.removeFromProject': string;
+  'project.delete': string;
+  'project.deleteConfirm': string;
+  'project.deleteConfirmDesc': string;
+  'project.noProjects': string;
+  'project.settings': string;
+  'project.systemPrompt': string;
+  'project.manageProjects': string;
+  'project.created': string;
+  'project.deleted': string;
+  'project.moved': string;
+  'project.removed': string;
 
   // Chat - Active Extensions
   'chat.mcpSummary': string;
@@ -984,6 +1005,10 @@ export interface TranslationKeys {
   'knowledge.totalLinks': string;
   'knowledge.compilePending': string;
   'knowledge.compiling': string;
+  'knowledge.compileProgress': string;
+  'knowledge.compilePhase.compiling': string;
+  'knowledge.compilePhase.error': string;
+  'knowledge.compilePhase.timeout': string;
   'knowledge.noEntities': string;
   'knowledge.searchEntities': string;
   'knowledge.runCheck': string;

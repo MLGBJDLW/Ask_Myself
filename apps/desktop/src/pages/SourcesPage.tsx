@@ -21,8 +21,8 @@ import { toast } from 'sonner';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import * as api from '../lib/api';
-import type { Source, IngestResult, EmbedResult, ScanProgress } from '../types';
-import type { BatchProgress } from '../types/ingest';
+import type { Source, IngestResult, EmbedResult } from '../types';
+import { useProgress, progressStore } from '../lib/progressStore';
 import { useTranslation } from '../i18n';
 import type { TranslationKeys } from '../i18n/types';
 import { Button } from '../components/ui/Button';
@@ -34,7 +34,6 @@ import { Modal } from '../components/ui/Modal';
 import { CardSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { VideoProcessingProgress } from '../components/media/VideoProcessingProgress';
-import type { ProcessingPhase } from '../components/media/VideoProcessingProgress';
 import { undoableAction } from '../lib/undoToast';
 
 /* ------------------------------------------------------------------ */
@@ -155,17 +154,29 @@ export function SourcesPage() {
   // Watcher
   const [togglingWatch, setTogglingWatch] = useState<string | null>(null);
 
-  // Scan/embed progress
-  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
-  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
+  // Scan/embed progress (from global store)
+  const progress = useProgress();
+  const scanProgress = progress.scanProgress;
+  const videoProcessing = progress.videoProcessing;
+  // Merge batch:scan-progress and batch:rebuild-progress into one batchProgress
+  const batchProgress = useMemo(() => {
+    if (progress.batchProgress) return progress.batchProgress;
+    if (progress.embedRebuildProgress) {
+      const p = progress.embedRebuildProgress;
+      return {
+        operation: 'rebuild-embeddings',
+        sourceIndex: 0,
+        sourceCount: 0,
+        sourceId: p.sourceId,
+        phase: p.phase,
+        current: p.current,
+        total: p.total,
+        currentFile: p.currentFile,
+      };
+    }
+    return null;
+  }, [progress.batchProgress, progress.embedRebuildProgress]);
   const [pendingBatchAction, setPendingBatchAction] = useState<BatchAction | null>(null);
-
-  // Video processing progress
-  const [videoProcessing, setVideoProcessing] = useState<{
-    phase: ProcessingPhase;
-    progress: number;
-    fileName: string;
-  } | null>(null);
 
   // Whisper model check
   const [whisperModelMissing, setWhisperModelMissing] = useState(false);
@@ -224,99 +235,14 @@ export function SourcesPage() {
     };
   }, [sources, loadSources, t]);
 
-  /* 鈹€鈹€ Scan/embed progress event listener 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-
-    listen<ScanProgress>('source:scan-progress', (event) => {
-      if (cancelled) return;
-      setScanProgress(event.payload);
-    }).then((fn) => {
-      if (cancelled) {
-        fn();
-      } else {
-        unlisten = fn;
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-
-  /* 鈹€鈹€ Batch progress event listeners 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlistenBatch: (() => void) | undefined;
-    let unlistenRebuild: (() => void) | undefined;
-
-    listen<BatchProgress>('batch:scan-progress', (event) => {
-      if (cancelled) return;
-      setBatchProgress(event.payload);
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlistenBatch = fn; }
-    });
-
-    listen<ScanProgress>('batch:rebuild-progress', (event) => {
-      if (cancelled) return;
-      const p = event.payload;
-      setBatchProgress({
-        operation: 'rebuild-embeddings',
-        sourceIndex: 0,
-        sourceCount: 0,
-        sourceId: p.sourceId,
-        phase: p.phase,
-        current: p.current,
-        total: p.total,
-        currentFile: p.currentFile,
-      });
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlistenRebuild = fn; }
-    });
-
-    return () => {
-      cancelled = true;
-      unlistenBatch?.();
-      unlistenRebuild?.();
-    };
-  }, []);
+  /* ── Progress clear on idle (from global store) ──────────────────── */
 
   useEffect(() => {
     if (!scanningAll && !rebuildingEmbeddings) {
-      setBatchProgress(null);
+      progressStore.update('batchProgress', null);
+      progressStore.update('embedRebuildProgress', null);
     }
   }, [scanningAll, rebuildingEmbeddings]);
-
-  /* ── Video processing progress listener ──────────────────────────── */
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-
-    listen<{ phase: ProcessingPhase; progress: number; fileName: string }>(
-      'video:processing-progress',
-      (event) => {
-        if (cancelled) return;
-        const p = event.payload;
-        if (p.phase === 'complete') {
-          setVideoProcessing(null);
-        } else {
-          setVideoProcessing(p);
-        }
-      },
-    ).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
-    });
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
 
   useEffect(() => {
     const incomingBatchAction = (location.state as { pendingBatchAction?: BatchAction } | null)?.pendingBatchAction;
@@ -452,7 +378,7 @@ export function SourcesPage() {
 
   const handleScan = async (sourceId: string) => {
     setScanningId(sourceId);
-    setScanProgress(null);
+    progressStore.update('scanProgress', null);
     try {
       const result = await api.scanSource(sourceId);
       toast.success(formatScanResult(result, t));
@@ -460,7 +386,7 @@ export function SourcesPage() {
       toast.error(`${t('sources.scanError')}: ${String(e)}`);
     } finally {
       setScanningId(null);
-      setScanProgress(null);
+      progressStore.update('scanProgress', null);
     }
   };
 
@@ -486,7 +412,8 @@ export function SourcesPage() {
       toast.error(`${t('sources.scanAllError')}: ${String(e)}`);
     } finally {
       setScanningAll(false);
-      setBatchProgress(null);
+      progressStore.update('batchProgress', null);
+      progressStore.update('embedRebuildProgress', null);
     }
   };
 
@@ -494,7 +421,7 @@ export function SourcesPage() {
 
   const handleEmbed = async (sourceId: string) => {
     setEmbeddingId(sourceId);
-    setScanProgress(null);
+    progressStore.update('scanProgress', null);
     try {
       const result = await api.embedSource(sourceId);
       toast.success(formatEmbedResult(result, t));
@@ -502,7 +429,7 @@ export function SourcesPage() {
       toast.error(`${t('sources.embedError')}: ${String(e)}`);
     } finally {
       setEmbeddingId(null);
-      setScanProgress(null);
+      progressStore.update('scanProgress', null);
     }
   };
 
@@ -515,7 +442,8 @@ export function SourcesPage() {
       toast.error(`${t('sources.rebuildEmbedError')}: ${String(e)}`);
     } finally {
       setRebuildingEmbeddings(false);
-      setBatchProgress(null);
+      progressStore.update('batchProgress', null);
+      progressStore.update('embedRebuildProgress', null);
     }
   };
 

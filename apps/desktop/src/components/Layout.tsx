@@ -3,9 +3,11 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Search, FolderOpen, BookOpen, MessageCircle, Settings, ChevronLeft, ChevronRight, Brain, BotMessageSquare } from 'lucide-react';
 import { Logo } from './Logo';
+import { UpdateNotification } from './UpdateNotification';
 import { Toaster } from 'sonner';
 import { getVersion } from '@tauri-apps/api/app';
 import { useTranslation } from '../i18n';
+import { useUpdater } from '../lib/useUpdater';
 import { useTheme } from '../lib/ThemeProvider';
 import type { TranslationKey } from '../i18n';
 
@@ -66,6 +68,8 @@ export function Layout() {
   const { t } = useTranslation();
   const { theme } = useTheme();
   const appVersion = useAppVersion();
+  const updater = useUpdater();
+  const updateStatus = updater.status;
   const shouldReduceMotion = useReducedMotion();
   const location = useLocation();
   const navigate = useNavigate();
@@ -184,7 +188,12 @@ export function Layout() {
               <>
                 <ChevronLeft className="h-4 w-4 shrink-0" />
                 <span className="overflow-hidden whitespace-nowrap">{t('nav.collapse')}</span>
-                <span className="ml-auto text-text-tertiary/60">v{appVersion}</span>
+                <span className="ml-auto text-text-tertiary/60 relative">
+                  v{appVersion}
+                  {(updateStatus === 'available' || updateStatus === 'downloading' || updateStatus === 'ready') && (
+                    <span className="absolute -top-0.5 -right-2 h-2 w-2 rounded-full bg-danger animate-pulse" />
+                  )}
+                </span>
               </>
             )}
           </button>
@@ -198,6 +207,7 @@ export function Layout() {
 
       {/* Main content */}
       <main className="flex-1 min-h-0 overflow-y-auto">
+        <UpdateNotification updater={updater} />
         <Outlet />
       </main>
 

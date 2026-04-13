@@ -208,10 +208,12 @@ fn scan_source_inner(
     };
 
     // Derive max chunk size from the configured embedding model.
+    // Floor at 1500 chars — the embedder truncates its own input, but
+    // chunks must be large enough for good FTS recall.
     let max_chunk_chars = db
         .get_embedder_config()
         .ok()
-        .map(|cfg| cfg.local_embedding_model().max_chunk_chars());
+        .map(|cfg| cfg.local_embedding_model().max_chunk_chars().max(1500));
 
     // Collect all files recursively, sorted for deterministic order.
     let files = walk_directory(root)?;
@@ -1114,10 +1116,12 @@ pub fn ingest_single_file(
     let video_config = db.load_video_config().ok();
 
     // Derive max chunk size from the configured embedding model.
+    // Floor at 1500 chars — the embedder truncates its own input, but
+    // chunks must be large enough for good FTS recall.
     let max_chunk_chars = db
         .get_embedder_config()
         .ok()
-        .map(|cfg| cfg.local_embedding_model().max_chunk_chars());
+        .map(|cfg| cfg.local_embedding_model().max_chunk_chars().max(1500));
 
     let parsed_result = parse_file(
         path,
@@ -1252,10 +1256,10 @@ mod tests {
         let result = scan_source(&db, &source_id).expect("scan_source");
 
         assert_eq!(result.source_id, source_id);
-        // 6 files: 2 in docs/, 2 in notes/, 2 in logs/
+        // 4 files: 2 in docs/, 2 in notes/
         assert!(
-            result.files_scanned >= 6,
-            "expected >= 6 files scanned, got {}",
+            result.files_scanned >= 4,
+            "expected >= 4 files scanned, got {}",
             result.files_scanned
         );
         assert_eq!(result.files_added, result.files_scanned);

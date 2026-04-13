@@ -13,6 +13,7 @@ import type {
   EmbedResult,
 } from "../types";
 import type { PrivacyConfig } from "../types/privacy";
+import type { Project, CreateProjectInput, UpdateProjectInput } from "../types/project";
 import type { EmbedderConfig } from "../types/embedder";
 import type { OcrConfig } from "../types/ocr";
 import type { VideoConfig, TranscriptChunk, VideoMetadata } from "../types/video";
@@ -239,15 +240,16 @@ export const testAgentConnection = (config: SaveAgentConfigInput) =>
 
 // ── Conversations ───────────────────────────────────────────────────────
 
-export const createConversation = (provider: string, model: string, systemPrompt?: string) =>
-  invoke<Conversation>('create_conversation_cmd', { provider, model, systemPrompt });
+export const createConversation = (provider: string, model: string, systemPrompt?: string, projectId?: string) =>
+  invoke<Conversation>('create_conversation_cmd', { provider, model, systemPrompt, projectId });
 
 export const createConversationWithContext = (
   provider: string,
   model: string,
   systemPrompt?: string,
   collectionContext?: Conversation['collectionContext'],
-) => invoke<Conversation>('create_conversation_cmd', { provider, model, systemPrompt, collectionContext });
+  projectId?: string,
+) => invoke<Conversation>('create_conversation_cmd', { provider, model, systemPrompt, collectionContext, projectId });
 
 export const listConversations = () => invoke<Conversation[]>('list_conversations_cmd');
 
@@ -279,6 +281,28 @@ export const updateConversationCollectionContext = (
   id: string,
   collectionContext: Conversation['collectionContext'],
 ) => invoke<void>('update_conversation_collection_context_cmd', { id, collectionContext });
+
+// ── Projects ────────────────────────────────────────────────────────────
+
+export const createProject = (input: CreateProjectInput) =>
+  invoke<Project>('create_project_cmd', { input });
+
+export const listProjects = () => invoke<Project[]>('list_projects_cmd');
+
+export const getProject = (id: string) =>
+  invoke<Project>('get_project_cmd', { id });
+
+export const updateProject = (id: string, input: UpdateProjectInput) =>
+  invoke<Project>('update_project_cmd', { id, input });
+
+export const deleteProject = (id: string) =>
+  invoke<void>('delete_project_cmd', { id });
+
+export const moveConversationToProject = (conversationId: string, projectId: string) =>
+  invoke<void>('move_conversation_to_project_cmd', { conversationId, projectId });
+
+export const removeConversationFromProject = (conversationId: string) =>
+  invoke<void>('remove_conversation_from_project_cmd', { conversationId });
 
 // ── Agent Chat ──────────────────────────────────────────────────────────
 

@@ -34,15 +34,14 @@ import {
   BarChart3,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { listen } from '@tauri-apps/api/event';
 import * as api from '../lib/api';
+import { useProgress, progressStore } from '../lib/progressStore';
 import type { IndexStats } from '../types/index-stats';
 import type { PrivacyConfig, RedactRule } from '../types/privacy';
 import type { EmbedderConfig } from '../types/embedder';
 import type { AgentConfig, AppConfig, SaveAgentConfigInput, UserMemory } from '../types/conversation';
-import type { ScanProgress, FtsProgress, DownloadProgress } from '../types/ingest';
-import type { OcrConfig, OcrDownloadProgress } from '../types/ocr';
-import type { VideoConfig, VideoDownloadProgress, FfmpegDownloadProgress } from '../types/video';
+import type { OcrConfig } from '../types/ocr';
+import type { VideoConfig } from '../types/video';
 import type { Skill, McpServer, McpToolInfo, SaveSkillInput, SaveMcpServerInput } from '../types/extensions';
 import type { TraceSummary, AgentTrace } from '../types/trace';
 import { useTranslation } from '../i18n';
@@ -200,8 +199,9 @@ export function SettingsPage() {
   const [rebuildLoading, setRebuildLoading] = useState(false);
   const [optimizeLoading, setOptimizeLoading] = useState(false);
   const [clearCacheLoading, setClearCacheLoading] = useState(false);
-  const [ftsProgress, setFtsProgress] = useState<FtsProgress | null>(null);
-  const [embedRebuildProgress, setEmbedRebuildProgress] = useState<ScanProgress | null>(null);
+  const progress = useProgress();
+  const ftsProgress = progress.ftsProgress;
+  const embedRebuildProgress = progress.embedRebuildProgress;
 
   const loadStats = useCallback(() => {
     api.getIndexStats().then(setStats).catch(() => {
@@ -213,38 +213,7 @@ export function SettingsPage() {
     loadStats();
   }, [loadStats]);
 
-  /* ── FTS & rebuild progress listeners ───────────────────────────── */
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlistenFts: (() => void) | undefined;
-    let unlistenRebuild: (() => void) | undefined;
-
-    listen<FtsProgress>('batch:fts-progress', (event) => {
-      if (cancelled) return;
-      const p = event.payload;
-      if (p.phase === 'complete') {
-        setFtsProgress(null);
-      } else {
-        setFtsProgress(p);
-      }
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlistenFts = fn; }
-    });
-
-    listen<ScanProgress>('batch:rebuild-progress', (event) => {
-      if (cancelled) return;
-      setEmbedRebuildProgress(event.payload);
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlistenRebuild = fn; }
-    });
-
-    return () => {
-      cancelled = true;
-      unlistenFts?.();
-      unlistenRebuild?.();
-    };
-  }, []);
+  /* ── FTS & rebuild progress (from global store) ─────────────────── */
 
   const handleRebuild = async () => {
     setRebuildLoading(true);
@@ -303,7 +272,7 @@ export function SettingsPage() {
   const [embedConfig, setEmbedConfig] = useState<EmbedderConfig | null>(null);
   const [localModelReady, setLocalModelReady] = useState<boolean | null>(null);
   const [downloadLoading, setDownloadLoading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
+  const downloadProgress = progress.modelDownload;
   const [testLoading, setTestLoading] = useState(false);
   const [embedSaveLoading, setEmbedSaveLoading] = useState(false);
   const [rebuildEmbedLoading, setRebuildEmbedLoading] = useState(false);
@@ -316,7 +285,7 @@ export function SettingsPage() {
   const [ocrConfig, setOcrConfig] = useState<OcrConfig | null>(null);
   const [ocrModelsExist, setOcrModelsExist] = useState<boolean | null>(null);
   const [ocrDownloading, setOcrDownloading] = useState(false);
-  const [ocrProgress, setOcrProgress] = useState<OcrDownloadProgress | null>(null);
+  const ocrProgress = progress.ocrDownload;
   const [ocrSaveLoading, setOcrSaveLoading] = useState(false);
 
   /* ── Video state ──────────────────────────────────────────────────── */
@@ -324,28 +293,23 @@ export function SettingsPage() {
   const [whisperModelExists, setWhisperModelExists] = useState<boolean | null>(null);
   const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
   const [videoDownloading, setVideoDownloading] = useState(false);
-  const [videoProgress, setVideoProgress] = useState<VideoDownloadProgress | null>(null);
+  const videoProgress = progress.videoDownload;
   const [videoSaveLoading, setVideoSaveLoading] = useState(false);
   const [showAdvancedVideo, setShowAdvancedVideo] = useState(false);
   const [deleteModelConfirmOpen, setDeleteModelConfirmOpen] = useState(false);
   const [ffmpegDownloading, setFfmpegDownloading] = useState(false);
-  const [ffmpegProgress, setFfmpegProgress] = useState<FfmpegDownloadProgress | null>(null);
+  const ffmpegProgress = progress.ffmpegDownload;
 
   useEffect(() => {
     if (!rebuildEmbedLoading) {
-      setEmbedRebuildProgress(null);
+      progressStore.update('embedRebuildProgress', null);
     }
   }, [rebuildEmbedLoading]);
 
   useEffect(() => {
     if (!downloadLoading) {
-      setDownloadProgress(null);
-      return;
+      progressStore.update('modelDownload', null);
     }
-    const unlisten = listen<DownloadProgress>('model:download-progress', (event) => {
-      setDownloadProgress(event.payload);
-    });
-    return () => { unlisten.then(fn => fn()); };
   }, [downloadLoading]);
 
   const loadEmbedConfig = useCallback(async () => {
@@ -514,13 +478,8 @@ export function SettingsPage() {
 
   useEffect(() => {
     if (!ocrDownloading) {
-      setOcrProgress(null);
-      return;
+      progressStore.update('ocrDownload', null);
     }
-    const unlisten = listen<OcrDownloadProgress>('ocr:download-progress', (event) => {
-      setOcrProgress(event.payload);
-    });
-    return () => { unlisten.then(fn => fn()); };
   }, [ocrDownloading]);
 
   const handleDownloadOcrModels = async () => {
@@ -569,24 +528,7 @@ export function SettingsPage() {
   }, [loadVideoConfig]);
 
   useEffect(() => {
-    if (!videoDownloading) { setVideoProgress(null); return; }
-    let cancelled = false;
-    let unlistenFn: (() => void) | undefined;
-    const setupListener = async () => {
-      const fn = await listen<VideoDownloadProgress>('video:download-progress', (event) => {
-        if (!cancelled) setVideoProgress(event.payload);
-      });
-      if (cancelled) {
-        fn();
-      } else {
-        unlistenFn = fn;
-      }
-    };
-    setupListener();
-    return () => {
-      cancelled = true;
-      unlistenFn?.();
-    };
+    if (!videoDownloading) { progressStore.update('videoDownload', null); }
   }, [videoDownloading]);
 
   const handleWhisperDownload = async () => {
@@ -616,17 +558,7 @@ export function SettingsPage() {
 
   // FFmpeg download
   useEffect(() => {
-    if (!ffmpegDownloading) { setFfmpegProgress(null); return; }
-    let cancelled = false;
-    let unlistenFn: (() => void) | undefined;
-    const setup = async () => {
-      const fn = await listen<FfmpegDownloadProgress>('ffmpeg:download-progress', (event) => {
-        if (!cancelled) setFfmpegProgress(event.payload);
-      });
-      if (cancelled) { fn(); } else { unlistenFn = fn; }
-    };
-    setup();
-    return () => { cancelled = true; unlistenFn?.(); };
+    if (!ffmpegDownloading) { progressStore.update('ffmpegDownload', null); }
   }, [ffmpegDownloading]);
 
   const handleFfmpegDownload = async () => {

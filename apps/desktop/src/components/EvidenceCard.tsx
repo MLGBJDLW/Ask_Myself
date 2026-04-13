@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import type { EvidenceCard as EvidenceCardType, Highlight } from '../types/evidence';
 import { Badge } from './ui/Badge';
+import { SaveToPlaybookButton } from './SaveToPlaybookButton';
 import { Tooltip } from './ui/Tooltip';
 import { useTranslation } from '../i18n';
 import { openFileInDefaultApp, showInFileExplorer } from '../lib/api';
@@ -328,6 +329,8 @@ export function EvidenceCardComponent({
               <FolderOpen size={14} />
             </button>
           </Tooltip>
+
+          <SaveToPlaybookButton chunkId={card.chunkId} size="sm" />
 
           <span className="mx-0.5 h-4 w-px bg-border" />
 

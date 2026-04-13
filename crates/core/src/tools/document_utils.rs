@@ -30,7 +30,7 @@ pub(crate) fn supports_document_fallback(path: &Path) -> bool {
 pub(crate) fn edit_guidance_for_path(path: &Path) -> Option<String> {
     if let Some(format) = generated_document_mime(path) {
         return Some(format!(
-            "Office documents are not plain-text editable with edit_file/create_file. Use generate_document with format '{}' and the same path to create or replace this file.",
+            "Office documents are not plain-text editable with edit_file/create_file. Use edit_document to modify text in the existing file, or generate_document with format '{}' and the same path to recreate it.",
             format
         ));
     }

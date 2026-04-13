@@ -142,7 +142,7 @@ export function ChatPage() {
     [navigate],
   );
 
-  const handleNewConversation = useCallback(async () => {
+  const handleNewConversation = useCallback(async (projectId?: string | null) => {
     if (!chat.agentConfig) {
       navigate('/chat');
       chat.createNewConversation();
@@ -150,10 +150,20 @@ export function ChatPage() {
     }
 
     try {
+      // If creating within a project, fetch project's system prompt as default
+      let systemPrompt = chat.customSystemPrompt || undefined;
+      if (projectId && !chat.customSystemPrompt) {
+        try {
+          const proj = await api.getProject(projectId);
+          if (proj.systemPrompt) systemPrompt = proj.systemPrompt;
+        } catch { /* ignore, use default */ }
+      }
+
       const conv = await api.createConversation(
         chat.agentConfig.provider,
         chat.agentConfig.model,
-        chat.customSystemPrompt || undefined,
+        systemPrompt,
+        projectId ?? undefined,
       );
       chat.setConversations((prev) => [conv, ...prev.filter((c) => c.id !== conv.id)]);
       navigate(`/chat/${conv.id}`);
@@ -319,6 +329,7 @@ export function ChatPage() {
             onRename={chat.renameConversation}
             onDeleteBatch={handleDeleteBatch}
             onDeleteAll={handleDeleteAll}
+            onConversationMoved={chat.loadConversations}
           />
         </div>
       </motion.div>

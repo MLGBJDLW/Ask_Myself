@@ -6,6 +6,7 @@ import { useTranslation } from "../../i18n";
 import type { ImageAttachment } from "../../types/conversation";
 import { CheckpointMenu } from "./CheckpointMenu";
 import { VoiceInputButton } from "./VoiceInputButton";
+import { EmojiPicker } from "./EmojiPicker";
 
 const ALLOWED_MIME_TYPES = new Set([
   "image/jpeg",
@@ -368,6 +369,14 @@ export function ChatInput({
           onTranscript={(text) =>
             setValue((prev) => prev + (prev ? " " : "") + text)
           }
+          disabled={disabled || isStreaming}
+        />
+
+        <EmojiPicker
+          onEmojiSelect={(emoji) => {
+            setValue((prev) => prev + emoji);
+            textareaRef.current?.focus();
+          }}
           disabled={disabled || isStreaming}
         />
 

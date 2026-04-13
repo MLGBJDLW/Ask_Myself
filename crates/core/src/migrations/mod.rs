@@ -476,6 +476,7 @@ When creating DOCX, XLSX, or PPTX files via generate_docx/generate_xlsx/generate
         VALUES (
             'builtin-evidence-first',
             'Evidence-First Answers',
+
             '## Trigger
 Every answer that uses knowledge base search results.
 
@@ -499,6 +500,28 @@ Every answer that uses knowledge base search results.
 💡 **Confidence:** HIGH/MEDIUM/LOW — [reason]',
             1
         );"#,
+    ),
+    (
+        "v038_projects",
+        "CREATE TABLE IF NOT EXISTS projects (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            icon        TEXT NOT NULL DEFAULT '',
+            color       TEXT NOT NULL DEFAULT '',
+            system_prompt TEXT NOT NULL DEFAULT '',
+            source_scope_json TEXT,
+            archived    INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name);
+        CREATE INDEX IF NOT EXISTS idx_projects_archived ON projects(archived);",
+    ),
+    (
+        "v039_conversation_project",
+        "ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id);",
     ),
 ];
 

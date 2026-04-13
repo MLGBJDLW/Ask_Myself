@@ -28,12 +28,14 @@ use ask_core::llm::{
     ProviderConfig, ProviderType, ReasoningEffort, Role, Usage,
 };
 use ask_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
+
 use ask_core::models::{
     EvidenceCard, Playbook, PlaybookCitation, SearchFilters, SearchQuery, Source,
 };
 use ask_core::ocr::extract_text_from_image;
 use ask_core::playbook::QueryLog;
 use ask_core::privacy::PrivacyConfig;
+use ask_core::project::{CreateProjectInput, Project, UpdateProjectInput};
 use ask_core::search::{self, SearchResult};
 use ask_core::skills::{SaveSkillInput, Skill};
 use ask_core::sources::{CreateSourceInput, UpdateSourceInput};
@@ -1334,6 +1336,72 @@ fn repair_orphaned_tool_calls(db: &Database, conversation_id: &str) {
     }
 }
 
+// ── Project Commands ────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn create_project_cmd(
+    state: tauri::State<'_, AppState>,
+    input: CreateProjectInput,
+) -> Result<Project, String> {
+    state.db.create_project(&input).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_projects_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<Project>, String> {
+    state.db.list_projects().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_project_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Project, String> {
+    state.db.get_project(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_project_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: UpdateProjectInput,
+) -> Result<Project, String> {
+    state
+        .db
+        .update_project(&id, &input)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_project_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    state.db.delete_project(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn move_conversation_to_project_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+    project_id: String,
+) -> Result<(), String> {
+    state
+        .db
+        .move_conversation_to_project(&conversation_id, &project_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn remove_conversation_from_project_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<(), String> {
+    state
+        .db
+        .remove_conversation_from_project(&conversation_id)
+        .map_err(|e| e.to_string())
+}
+
 // ── Conversation Commands ───────────────────────────────────────────────
 
 #[tauri::command]
@@ -1343,12 +1411,14 @@ pub async fn create_conversation_cmd(
     model: String,
     system_prompt: Option<String>,
     collection_context: Option<CollectionContext>,
+    project_id: Option<String>,
 ) -> Result<Conversation, String> {
     let input = CreateConversationInput {
         provider,
         model,
         system_prompt,
         collection_context,
+        project_id,
     };
     state
         .db
@@ -1442,12 +1512,37 @@ pub async fn generate_title_cmd(
     state: tauri::State<'_, AppState>,
     conversation_id: String,
 ) -> Result<String, String> {
-    // 1. Load default agent config for LLM access.
-    let db_config = state
+    // 1. Load agent config for LLM access.
+    //    Prefer the default config; fall back to any config matching the conversation's provider.
+    let (db_config, title_model) = match state
         .db
         .get_default_agent_config()
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "No default agent config set.".to_string())?;
+    {
+        Some(cfg) => {
+            let model = cfg.model.clone();
+            (cfg, model)
+        }
+        None => {
+            let conv = state
+                .db
+                .get_conversation(&conversation_id)
+                .map_err(|e| e.to_string())?;
+            let cfg = state
+                .db
+                .list_agent_configs()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|c| c.provider == conv.provider)
+                .ok_or_else(|| {
+                    format!(
+                        "No agent config for provider '{}'. Set a default agent or add a matching provider config.",
+                        conv.provider
+                    )
+                })?;
+            (cfg, conv.model)
+        }
+    };
 
     // 2. Load conversation messages.
     let messages = state
@@ -1471,7 +1566,7 @@ pub async fn generate_title_cmd(
 
     let title = ask_core::conversation::generate_title(
         provider.as_ref(),
-        &db_config.model,
+        &title_model,
         &user_content,
         assistant_content,
     )
@@ -3082,6 +3177,7 @@ pub async fn compile_document_cmd(
 #[tauri::command]
 pub async fn compile_pending_documents_cmd(
     state: tauri::State<'_, AppState>,
+    app_handle: AppHandle,
     limit: Option<usize>,
 ) -> Result<serde_json::Value, String> {
     let db_config = state
@@ -3093,11 +3189,14 @@ pub async fn compile_pending_documents_cmd(
     let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
-    let results = ask_core::compile::compile_pending(
+    let results = ask_core::compile::compile_pending_with_progress(
         &state.db,
         provider.as_ref(),
         &db_config.model,
         limit.unwrap_or(10),
+        |progress| {
+            emit_app_event(&app_handle, "compile:progress", progress);
+        },
     )
     .await
     .map_err(|e| e.to_string())?;

@@ -207,7 +207,8 @@ mod tests {
     fn test_skill_crud() {
         let db = Database::open_memory().unwrap();
 
-        // Initially empty.
+        // Clear seeded default skills so we start fresh.
+        db.conn().execute("DELETE FROM skills", []).unwrap();
         assert!(db.list_skills().unwrap().is_empty());
 
         // Create a skill.
@@ -251,6 +252,9 @@ mod tests {
     #[test]
     fn test_get_enabled_skills_filters() {
         let db = Database::open_memory().unwrap();
+
+        // Clear seeded default skills so counts are deterministic.
+        db.conn().execute("DELETE FROM skills", []).unwrap();
 
         db.save_skill(&SaveSkillInput {
             id: None,

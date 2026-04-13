@@ -26,6 +26,7 @@ pub struct Conversation {
     pub model: String,
     pub system_prompt: String,
     pub collection_context: Option<CollectionContext>,
+    pub project_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -158,6 +159,7 @@ pub struct CreateConversationInput {
     pub model: String,
     pub system_prompt: Option<String>,
     pub collection_context: Option<CollectionContext>,
+    pub project_id: Option<String>,
 }
 
 /// Input for creating / updating an agent config.
@@ -255,7 +257,7 @@ fn serialize_collection_context(
     }
 }
 
-fn parse_collection_context(value: Option<String>) -> Option<CollectionContext> {
+pub(crate) fn parse_collection_context(value: Option<String>) -> Option<CollectionContext> {
     value.and_then(|json| serde_json::from_str::<CollectionContext>(&json).ok())
 }
 
@@ -287,14 +289,15 @@ impl Database {
             serialize_collection_context(input.collection_context.as_ref())?;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO conversations (id, provider, model, system_prompt, collection_context_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO conversations (id, provider, model, system_prompt, collection_context_json, project_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 &id,
                 &input.provider,
                 &input.model,
                 system_prompt,
-                &collection_context_json
+                &collection_context_json,
+                &input.project_id
             ],
         )?;
         drop(conn);
@@ -305,7 +308,7 @@ impl Database {
     pub fn list_conversations(&self) -> Result<Vec<Conversation>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, title, provider, model, system_prompt, collection_context_json, created_at, updated_at
+            "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, created_at, updated_at
              FROM conversations ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -316,8 +319,9 @@ impl Database {
                 model: row.get(3)?,
                 system_prompt: row.get(4)?,
                 collection_context: parse_collection_context(row.get(5)?),
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                project_id: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
             })
         })?;
         let mut results = Vec::new();
@@ -331,7 +335,7 @@ impl Database {
     pub fn get_conversation(&self, id: &str) -> Result<Conversation, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, title, provider, model, system_prompt, collection_context_json, created_at, updated_at
+            "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, created_at, updated_at
              FROM conversations WHERE id = ?1",
             rusqlite::params![id],
             |row| {
@@ -342,8 +346,9 @@ impl Database {
                     model: row.get(3)?,
                     system_prompt: row.get(4)?,
                     collection_context: parse_collection_context(row.get(5)?),
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    project_id: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 })
             },
         )
@@ -1623,6 +1628,7 @@ mod tests {
                 model: "gpt-4o".into(),
                 system_prompt: Some("You are helpful.".into()),
                 collection_context: None,
+                project_id: None,
             })
             .unwrap();
         assert_eq!(conv.provider, "openai");
@@ -1661,6 +1667,7 @@ mod tests {
                     query_text: Some("retry timeout guard".into()),
                     source_ids: vec!["source-1".into(), "source-2".into()],
                 }),
+                project_id: None,
             })
             .unwrap();
 
@@ -1679,6 +1686,7 @@ mod tests {
                 model: "gpt-4o".into(),
                 system_prompt: None,
                 collection_context: None,
+                project_id: None,
             })
             .unwrap();
 
@@ -1751,6 +1759,7 @@ mod tests {
                 model: "gpt-4o".into(),
                 system_prompt: None,
                 collection_context: None,
+                project_id: None,
             })
             .unwrap();
 
@@ -1808,6 +1817,7 @@ mod tests {
                 model: "gpt-4o".into(),
                 system_prompt: None,
                 collection_context: None,
+                project_id: None,
             })
             .unwrap();
         let msg = ConversationMessage {
@@ -2061,6 +2071,7 @@ mod tests {
                 model: "gpt-4o".into(),
                 system_prompt: None,
                 collection_context: None,
+                project_id: None,
             })
             .unwrap();
 
@@ -2127,6 +2138,7 @@ mod tests {
                 model: "gpt-4o".into(),
                 system_prompt: None,
                 collection_context: None,
+                project_id: None,
             })
             .unwrap();
 

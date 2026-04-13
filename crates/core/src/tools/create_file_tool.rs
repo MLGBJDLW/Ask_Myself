@@ -59,7 +59,7 @@ impl Tool for CreateFileTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::FileSystem]
+        &[ToolCategory::Core, ToolCategory::FileSystem]
     }
 
     fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {

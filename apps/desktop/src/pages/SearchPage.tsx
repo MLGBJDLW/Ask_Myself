@@ -4,7 +4,6 @@ import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   Search,
   AlertTriangle,
-  BookmarkPlus,
   Clock,
   Filter,
   X,
@@ -29,7 +28,6 @@ import type {
   QueryLog,
   Feedback,
   Source,
-  Playbook,
   SearchFilters,
   IndexStats,
 } from '../types';
@@ -40,7 +38,6 @@ import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { CardSkeleton } from '../components/ui/Skeleton';
-import { Modal } from '../components/ui/Modal';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Tooltip } from '../components/ui/Tooltip';
 import { useTranslation } from '../i18n';
@@ -140,13 +137,6 @@ export function SearchPage() {
     dateTo: null,
   });
 
-  // 鈹€鈹€ Save-to-playbook modal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-  const [savingChunkId, setSavingChunkId] = useState<string | null>(null);
-  const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
-  const [selectedPlaybookId, setSelectedPlaybookId] = useState('');
-  const [newPlaybookTitle, setNewPlaybookTitle] = useState('');
-  const [citationNote, setCitationNote] = useState('');
-  const [saveLoading, setSaveLoading] = useState(false);
   const [recallClue, setRecallClue] = useState('');
   const [recallWhere, setRecallWhere] = useState('');
   const [recallDate, setRecallDate] = useState('');
@@ -427,57 +417,6 @@ export function SearchPage() {
       setFeedbackMap((prev) => ({ ...prev, [chunkId]: fb }));
     } catch (e) {
       toast.error(`${t('search.feedbackError')}: ${String(e)}`);
-    }
-  };
-
-  // 鈹€鈹€ Open save modal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-  const openSaveModal = async (chunkId: string) => {
-    setSavingChunkId(chunkId);
-    setSelectedPlaybookId('');
-    setNewPlaybookTitle('');
-    setCitationNote('');
-    try {
-      const pbs = await api.listPlaybooks();
-      setPlaybooks(pbs);
-      if (pbs.length > 0) setSelectedPlaybookId(pbs[0].id);
-    } catch {
-      setPlaybooks([]);
-    }
-  };
-
-  // 鈹€鈹€ Confirm save to playbook 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-  const confirmSave = async () => {
-    if (!savingChunkId) return;
-    setSaveLoading(true);
-    try {
-      let targetId = selectedPlaybookId;
-
-      // Create new playbook if needed
-      if (!targetId && newPlaybookTitle.trim()) {
-        const pb = await api.createPlaybook(
-          newPlaybookTitle.trim(),
-          '',
-          result?.query ?? '',
-        );
-        targetId = pb.id;
-      }
-
-      if (!targetId) {
-        toast.error(t('search.needSelectPlaybook'));
-        setSaveLoading(false);
-        return;
-      }
-
-      const existingCitations = await api.listCitations(targetId).catch(() => []);
-      await api.addCitation(targetId, savingChunkId, citationNote, existingCitations.length);
-      toast.success(t('search.savedToPlaybook'));
-      setSavingChunkId(null);
-      setCitationNote('');
-      setNewPlaybookTitle('');
-    } catch (e) {
-      toast.error(`${t('search.saveError')}: ${String(e)}`);
-    } finally {
-      setSaveLoading(false);
     }
   };
 
@@ -1264,17 +1203,6 @@ export function SearchPage() {
                     }}
                     onAskAbout={openChatWithMessage}
                   />
-
-                  {/* Save-to-playbook action */}
-                  <div className="mt-1.5 flex justify-end">
-                    <button
-                      onClick={() => openSaveModal(card.chunkId)}
-                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-secondary"
-                    >
-                      <BookmarkPlus size={12} />
-                      {t('search.saveToPlaybook')}
-                    </button>
-                  </div>
                 </motion.div>
               ))}
             </motion.div>
@@ -1358,114 +1286,6 @@ export function SearchPage() {
       </>
       )}
 
-      {/* 鈹€鈹€ Save to Playbook modal 鈹€鈹€ */}
-      <Modal
-        open={savingChunkId !== null}
-        onClose={() => {
-          setSavingChunkId(null);
-          setCitationNote('');
-          setNewPlaybookTitle('');
-        }}
-        title={t('search.saveToPlaybook')}
-        footer={
-          <>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setSavingChunkId(null);
-                setCitationNote('');
-                setNewPlaybookTitle('');
-              }}
-            >
-              {t('common.cancel')}
-            </Button>
-            <Button
-              size="sm"
-              onClick={confirmSave}
-              loading={saveLoading}
-              disabled={!selectedPlaybookId && !newPlaybookTitle.trim()}
-            >
-              {t('common.save')}
-            </Button>
-          </>
-        }
-      >
-        {playbooks.length > 0 ? (
-          <div className="space-y-4">
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-text-secondary">
-                {t('search.selectPlaybook')}
-              </label>
-              <select
-                value={selectedPlaybookId}
-                onChange={(e) => {
-                  setSelectedPlaybookId(e.target.value);
-                  if (e.target.value) setNewPlaybookTitle('');
-                }}
-                className="w-full rounded-md border border-border bg-surface-1 px-3 py-2 text-sm text-text-primary focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none"
-              >
-                {playbooks.map((pb) => (
-                  <option key={pb.id} value={pb.id}>
-                    {pb.title}
-                  </option>
-                ))}
-                <option value="">+ {t('search.createNewPlaybook')}</option>
-              </select>
-            </div>
-
-            {!selectedPlaybookId && (
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-text-secondary">
-                  {t('search.newPlaybookName')}
-                </label>
-                <Input
-                  value={newPlaybookTitle}
-                  onChange={(e) => setNewPlaybookTitle(e.target.value)}
-                  placeholder={t('search.newPlaybookName')}
-                />
-              </div>
-            )}
-
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-text-secondary">
-                {t('search.note')} <span className="text-text-tertiary">({t('search.optional')})</span>
-              </label>
-              <Input
-                value={citationNote}
-                onChange={(e) => setCitationNote(e.target.value)}
-                placeholder={t('search.note')}
-              />
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <p className="text-xs text-text-tertiary">
-              {t('search.noPlaybooks')}
-            </p>
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-text-secondary">
-                {t('search.newPlaybookName')}
-              </label>
-              <Input
-                value={newPlaybookTitle}
-                onChange={(e) => setNewPlaybookTitle(e.target.value)}
-                placeholder={t('search.newPlaybookName')}
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-text-secondary">
-                {t('search.note')} <span className="text-text-tertiary">({t('search.optional')})</span>
-              </label>
-              <Input
-                value={citationNote}
-                onChange={(e) => setCitationNote(e.target.value)}
-                placeholder={t('search.note')}
-              />
-            </div>
-          </div>
-        )}
-      </Modal>
         </div>
       </div>
 

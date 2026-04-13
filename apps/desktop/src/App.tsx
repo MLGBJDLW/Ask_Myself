@@ -11,7 +11,7 @@ import { motion, MotionConfig, useReducedMotion } from "framer-motion";
 import { I18nProvider, useTranslation } from "./i18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Layout } from "./components/Layout";
-import { UpdateNotification } from "./components/UpdateNotification";
+
 import { WelcomeWizard } from "./components/WelcomeWizard";
 import { SearchPage } from "./pages/SearchPage";
 import { SourcesPage } from "./pages/SourcesPage";
@@ -21,6 +21,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { ChatPage } from './pages/ChatPage';
 import { CommandPalette } from "./components/CommandPalette";
 import { StreamProvider } from "./lib/StreamProvider";
+import { ProgressProvider } from "./lib/ProgressProvider";
 import * as api from "./lib/api";
 import { useAutoCompile } from "./lib/useAutoCompile";
 import { useAutoHealthCheck } from "./lib/useAutoHealthCheck";
@@ -78,7 +79,6 @@ function AppShell() {
   return (
     <I18nProvider>
       <MotionConfig reducedMotion="user">
-        <UpdateNotification />
         <CommandPalette />
         {showWizard && (
           <WelcomeWizard onComplete={() => setShowWizard(false)} />
@@ -108,6 +108,7 @@ const router = createBrowserRouter(
 function App() {
   return (
     <ErrorBoundary>
+      <ProgressProvider />
       <StreamProvider>
         <RouterProvider router={router} />
       </StreamProvider>

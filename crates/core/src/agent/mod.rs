@@ -1160,6 +1160,59 @@ impl AgentExecutor {
             };
         }
 
+        // --- 3e. Auto pre-search for KnowledgeRetrieval route ----------------
+        // Eagerly execute search_knowledge_base so the LLM already has evidence
+        // in context instead of depending on it to call the tool itself.
+        if route_plan.kind == AgentRouteKind::KnowledgeRetrieval && !user_query_text.is_empty() {
+            let search_args = serde_json::json!({
+                "query": user_query_text,
+                "limit": 8
+            });
+            let pre_search_id = format!("pre-search-{}", Uuid::new_v4());
+            match self
+                .tools
+                .execute(
+                    "search_knowledge_base",
+                    &pre_search_id,
+                    &search_args.to_string(),
+                    db,
+                    &source_scope,
+                )
+                .await
+            {
+                Ok(result) if !result.is_error && !result.content.is_empty() => {
+                    let ctx_msg = format!(
+                        "## Pre-fetched Knowledge Base Results\n\
+                         The following evidence was automatically retrieved for the user's query. \
+                         Use it to ground your answer. You may search again if needed.\n\n{}",
+                        truncate_tool_result(&result.content, MAX_TOOL_RESULT_CHARS)
+                    );
+                    messages.push(Message::text(Role::System, ctx_msg));
+                    let _ = tx
+                        .send(AgentEvent::Status {
+                            content: "Pre-fetched search results for grounding.".to_string(),
+                            tone: Some("muted".to_string()),
+                        })
+                        .await;
+                    append_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        "Auto pre-search: injected knowledge base results.",
+                        "info",
+                    );
+                    debug!(
+                        "Pre-search injected {} chars of context",
+                        result.content.len()
+                    );
+                }
+                Ok(_) => {
+                    debug!("Pre-search returned empty or error, skipping injection");
+                }
+                Err(e) => {
+                    debug!("Pre-search failed (non-fatal): {e}");
+                }
+            }
+        }
+
         // --- 4. ReAct loop ----------------------------------------------------
         let mut last_tool_calls: Option<Vec<ToolCallRequest>> = None;
         for iteration in 0..self.config.max_iterations {
@@ -2662,7 +2715,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let cfg = AgentConfig::default();
-        assert_eq!(cfg.max_iterations, 10);
+        assert_eq!(cfg.max_iterations, 25);
         assert!(cfg.system_prompt.contains("knowledge recall engine"));
         assert_eq!(cfg.temperature, Some(0.3));
         assert_eq!(cfg.max_tokens, Some(4096));
@@ -2979,6 +3032,7 @@ mod tests {
                 model: "mock-model".to_string(),
                 system_prompt: None,
                 collection_context: None,
+                project_id: None,
             })
             .expect("conversation");
         let (tx, _rx) = mpsc::channel(32);

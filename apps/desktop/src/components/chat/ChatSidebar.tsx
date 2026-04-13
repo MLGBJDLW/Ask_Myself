@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Trash2, Pencil, MessageCircle, Check, X, Search, Star, MoreVertical } from 'lucide-react';
+import { Plus, Trash2, Pencil, MessageCircle, Check, X, Search, Star, MoreVertical, FolderOpen } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
 import { relativeTime } from '../../lib/relativeTime';
@@ -8,6 +8,9 @@ import { parseAppDate } from '../../lib/dateTime';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
 import { EmptyState } from '../ui/EmptyState';
+import { ProjectSwitcher, useActiveProject } from './ProjectSwitcher';
+import type { Project } from '../../types/project';
+import * as api from '../../lib/api';
 
 import type { Conversation } from '../../types/conversation';
 
@@ -19,11 +22,12 @@ interface ChatSidebarProps {
   conversations: Conversation[];
   activeId: string | null;
   onSelect: (id: string) => void;
-  onNew: () => void;
+  onNew: (projectId?: string | null) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onDeleteBatch: (ids: string[]) => void;
   onDeleteAll: () => void;
+  onConversationMoved?: () => void;
 }
 
 type TimeGroup = 'pinned' | 'today' | 'yesterday' | 'last7Days' | 'last30Days' | 'older';
@@ -302,10 +306,42 @@ export function ChatSidebar({
   onRename,
   onDeleteBatch,
   onDeleteAll,
+  onConversationMoved,
 }: ChatSidebarProps) {
   const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState('');
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(getPinnedIds);
+  const { activeProjectId, setProject } = useActiveProject();
+
+  // Project-related state for move-to-project context menu
+  const [moveMenuConvId, setMoveMenuConvId] = useState<string | null>(null);
+  const [moveMenuPos, setMoveMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const [projectList, setProjectList] = useState<Project[]>([]);
+  const moveMenuRef = useRef<HTMLDivElement>(null);
+
+  // Load projects for the move menu
+  useEffect(() => {
+    api.listProjects().then(setProjectList).catch(() => {});
+  }, [activeProjectId]);
+
+  // Close move menu on outside click
+  useEffect(() => {
+    if (!moveMenuConvId) return;
+    const handler = (e: MouseEvent) => {
+      if (moveMenuRef.current && !moveMenuRef.current.contains(e.target as Node)) {
+        setMoveMenuConvId(null);
+        setMoveMenuPos(null);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [moveMenuConvId]);
+
+  // Filter conversations by active project
+  const projectFiltered = useMemo(() => {
+    if (!activeProjectId) return conversations;
+    return conversations.filter((c) => c.projectId === activeProjectId);
+  }, [conversations, activeProjectId]);
 
   // Selection mode state
   const [selectMode, setSelectMode] = useState(false);
@@ -363,15 +399,35 @@ export function ChatSidebar({
 
   // Filter by search query
   const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return conversations;
+    if (!searchQuery.trim()) return projectFiltered;
     const q = searchQuery.toLowerCase();
-    return conversations.filter((c) =>
+    return projectFiltered.filter((c) =>
       (c.title || '').toLowerCase().includes(q),
     );
-  }, [conversations, searchQuery]);
+  }, [projectFiltered, searchQuery]);
 
   // Group filtered conversations
   const groups = useMemo(() => groupConversations(filtered, pinnedIds), [filtered, pinnedIds]);
+
+  // Move conversation to/from project
+  const handleMoveToProject = useCallback(async (convId: string, projectId: string | null) => {
+    try {
+      if (projectId) {
+        await api.moveConversationToProject(convId, projectId);
+      } else {
+        await api.removeConversationFromProject(convId);
+      }
+      onConversationMoved?.();
+    } catch { /* ignore */ }
+    setMoveMenuConvId(null);
+    setMoveMenuPos(null);
+  }, [onConversationMoved]);
+
+  const handleConvContextMenu = useCallback((e: React.MouseEvent, convId: string) => {
+    e.preventDefault();
+    setMoveMenuConvId(convId);
+    setMoveMenuPos({ x: e.clientX, y: e.clientY });
+  }, []);
 
   // Running index for stagger animation across groups
   let runningIndex = 0;
@@ -389,7 +445,7 @@ export function ChatSidebar({
           )}
         </div>
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={onNew}>
+          <Button variant="ghost" size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => onNew(activeProjectId)}>
             {t('chat.newChat')}
           </Button>
           {conversations.length > 0 && (
@@ -431,6 +487,11 @@ export function ChatSidebar({
             </div>
           )}
         </div>
+      </div>
+
+      {/* Project switcher */}
+      <div className="px-2 py-1.5 border-b border-border">
+        <ProjectSwitcher activeProjectId={activeProjectId} onProjectChange={setProject} />
       </div>
 
       {/* Search bar */}
@@ -492,21 +553,22 @@ export function ChatSidebar({
                 </div>
                 <AnimatePresence initial={false}>
                   {groupItems.map((conv, idx) => (
-                    <ConversationItem
-                      key={conv.id}
-                      conv={conv}
-                      isActive={conv.id === activeId}
-                      isPinned={pinnedIds.has(conv.id)}
-                      isSelectMode={selectMode}
-                      isSelected={selectedIds.has(conv.id)}
-                      index={startIdx + idx}
-                      onSelect={() => onSelect(conv.id)}
-                      onDelete={() => onDelete(conv.id)}
-                      onRename={(title) => onRename(conv.id, title)}
-                      onTogglePin={() => togglePin(conv.id)}
-                      onToggleSelect={() => toggleSelect(conv.id)}
-                      t={t}
-                    />
+                    <div key={conv.id} onContextMenu={(e) => handleConvContextMenu(e, conv.id)}>
+                      <ConversationItem
+                        conv={conv}
+                        isActive={conv.id === activeId}
+                        isPinned={pinnedIds.has(conv.id)}
+                        isSelectMode={selectMode}
+                        isSelected={selectedIds.has(conv.id)}
+                        index={startIdx + idx}
+                        onSelect={() => onSelect(conv.id)}
+                        onDelete={() => onDelete(conv.id)}
+                        onRename={(title) => onRename(conv.id, title)}
+                        onTogglePin={() => togglePin(conv.id)}
+                        onToggleSelect={() => toggleSelect(conv.id)}
+                        t={t}
+                      />
+                    </div>
                   ))}
                 </AnimatePresence>
               </div>
@@ -548,6 +610,43 @@ export function ChatSidebar({
         </div>
       )}
 
+
+      {/* Move-to-project context menu */}
+      {moveMenuConvId && moveMenuPos && (
+        <div
+          ref={moveMenuRef}
+          className="fixed z-[999] w-48 bg-surface-2 border border-border rounded-lg shadow-lg py-1 text-xs"
+          style={{ left: moveMenuPos.x, top: moveMenuPos.y }}
+        >
+          <div className="px-3 py-1.5 text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
+            {t('project.moveToProject')}
+          </div>
+          {projectList.length === 0 ? (
+            <div className="px-3 py-1.5 text-text-tertiary">{t('project.noProjects')}</div>
+          ) : (
+            projectList.map((p) => (
+              <button
+                key={p.id}
+                className="w-full text-left px-3 py-1.5 hover:bg-surface-3 text-text-secondary
+                  hover:text-text-primary transition-colors cursor-pointer flex items-center gap-1.5"
+                onClick={() => handleMoveToProject(moveMenuConvId, p.id)}
+              >
+                <FolderOpen className="h-3 w-3" />
+                {p.name}
+              </button>
+            ))
+          )}
+          {conversations.find((c) => c.id === moveMenuConvId)?.projectId && (
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-surface-3 text-text-secondary
+                hover:text-text-primary transition-colors cursor-pointer border-t border-border mt-1 pt-1.5"
+              onClick={() => handleMoveToProject(moveMenuConvId, null)}
+            >
+              {t('project.removeFromProject')}
+            </button>
+          )}
+        </div>
+      )}
 
     </div>
   );

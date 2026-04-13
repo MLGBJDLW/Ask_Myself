@@ -1,0 +1,32 @@
+{
+  "name": "edit_document",
+  "description": "Edit an existing Office document (DOCX, PPTX, XLSX) by performing targeted text replacements. Opens the document's internal XML, finds and replaces specified text, and saves the modified document. Preserves all formatting, images, styles, and elements not involved in the replacement.\n\nUse this tool when you need to modify text in an existing Office document without recreating it from scratch. For creating new Office documents, use generate_document instead.\n\nHandles the split-runs problem where Office XML splits visible text across multiple XML elements.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to the existing Office document (absolute or relative to a source directory)"
+      },
+      "replacements": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "old_text": {
+              "type": "string",
+              "description": "Exact text to find in the document"
+            },
+            "new_text": {
+              "type": "string",
+              "description": "Text to replace it with"
+            }
+          },
+          "required": ["old_text", "new_text"]
+        },
+        "description": "List of text replacements to apply. Each replacement finds exact text in the document and replaces it."
+      }
+    },
+    "required": ["path", "replacements"]
+  }
+}
