@@ -14,8 +14,8 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { listen } from '@tauri-apps/api/event';
 import * as api from '../lib/api';
+import { useProgress, progressStore } from '../lib/progressStore';
 import type {
   CompileStats,
   CompileResult,
@@ -65,14 +65,6 @@ function checkTypeIcon(ct: CheckType) {
 
 /* ── Component ─────────────────────────────────────────────────────── */
 
-interface CompileProgress {
-  current: number;
-  total: number;
-  documentId: string;
-  documentTitle: string | null;
-  phase: string;
-}
-
 export function KnowledgePage() {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<Tab>('compile');
@@ -81,7 +73,8 @@ export function KnowledgePage() {
   const [stats, setStats] = useState<CompileStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [compiling, setCompiling] = useState(false);
-  const [compileProgress, setCompileProgress] = useState<CompileProgress | null>(null);
+  const progress = useProgress();
+  const compileProgress = progress.compileProgress;
   const [compileResults, setCompileResults] = useState<CompileResult[]>([]);
 
   // Map state
@@ -121,7 +114,7 @@ export function KnowledgePage() {
 
   const handleCompile = useCallback(async () => {
     setCompiling(true);
-    setCompileProgress(null);
+    progressStore.update('compileProgress', null);
     try {
       const results = await api.compilePendingDocuments(20);
       setCompileResults(results);
@@ -131,7 +124,7 @@ export function KnowledgePage() {
       toast.error(String(e));
     } finally {
       setCompiling(false);
-      setCompileProgress(null);
+      progressStore.update('compileProgress', null);
     }
   }, [loadStats]);
 
@@ -153,25 +146,6 @@ export function KnowledgePage() {
     if (activeTab === 'compile') loadStats();
     if (activeTab === 'map') loadMap();
   }, [activeTab, loadStats, loadMap]);
-
-  /* ── Compile progress event listener ─────────────────────────── */
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-
-    listen<CompileProgress>('compile:progress', (event) => {
-      if (cancelled) return;
-      setCompileProgress(event.payload);
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
-    });
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
 
   /* ── Filtered entities ─────────────────────────────────────────── */
 
@@ -294,8 +268,20 @@ export function KnowledgePage() {
                     <div className="p-3 rounded-lg bg-surface-2 border border-border space-y-2">
                       <div className="flex items-center justify-between text-xs text-text-secondary">
                         <span className="flex items-center gap-1.5">
-                          <RefreshCw size={12} className="animate-spin text-accent" />
-                          <span className="font-medium">{t('knowledge.compilePhase.compiling')}</span>
+                          {compileProgress.phase === 'error' ? (
+                            <AlertTriangle size={12} className="text-danger" />
+                          ) : compileProgress.phase === 'timeout' ? (
+                            <AlertCircle size={12} className="text-warning" />
+                          ) : (
+                            <RefreshCw size={12} className="animate-spin text-accent" />
+                          )}
+                          <span className="font-medium">
+                            {compileProgress.phase === 'error'
+                              ? t('knowledge.compilePhase.error')
+                              : compileProgress.phase === 'timeout'
+                                ? t('knowledge.compilePhase.timeout')
+                                : t('knowledge.compilePhase.compiling')}
+                          </span>
                           <span className="text-text-tertiary">
                             {t('knowledge.compileProgress', { current: compileProgress.current, total: compileProgress.total })}
                           </span>
@@ -311,7 +297,10 @@ export function KnowledgePage() {
                       )}
                       <div className="w-full bg-surface-3 rounded-full h-2">
                         <div
-                          className="bg-accent h-2 rounded-full transition-all duration-300 ease-out"
+                          className={`h-2 rounded-full transition-all duration-300 ease-out ${
+                            compileProgress.phase === 'error' ? 'bg-danger' :
+                            compileProgress.phase === 'timeout' ? 'bg-warning' : 'bg-accent'
+                          }`}
                           style={{ width: `${Math.min(100, (compileProgress.current / compileProgress.total) * 100)}%` }}
                         />
                       </div>

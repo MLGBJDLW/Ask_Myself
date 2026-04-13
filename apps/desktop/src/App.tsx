@@ -21,6 +21,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { ChatPage } from './pages/ChatPage';
 import { CommandPalette } from "./components/CommandPalette";
 import { StreamProvider } from "./lib/StreamProvider";
+import { ProgressProvider } from "./lib/ProgressProvider";
 import * as api from "./lib/api";
 import { useAutoCompile } from "./lib/useAutoCompile";
 import { useAutoHealthCheck } from "./lib/useAutoHealthCheck";
@@ -107,6 +108,7 @@ const router = createBrowserRouter(
 function App() {
   return (
     <ErrorBoundary>
+      <ProgressProvider />
       <StreamProvider>
         <RouterProvider router={router} />
       </StreamProvider>

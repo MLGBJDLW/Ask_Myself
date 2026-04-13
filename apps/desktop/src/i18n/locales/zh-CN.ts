@@ -1028,6 +1028,8 @@ export const zhCN: TranslationKeys = {
   'knowledge.compiling': '整理中...',
   'knowledge.compileProgress': '第 {current} / {total} 篇文档',
   'knowledge.compilePhase.compiling': '正在分析文档',
+  'knowledge.compilePhase.error': '文档处理失败',
+  'knowledge.compilePhase.timeout': '文档处理超时',
   'knowledge.noEntities': '暂未发现主题',
   'knowledge.searchEntities': '搜索主题...',
   'knowledge.runCheck': '运行质量检查',

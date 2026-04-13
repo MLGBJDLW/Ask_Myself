@@ -1007,6 +1007,8 @@ export interface TranslationKeys {
   'knowledge.compiling': string;
   'knowledge.compileProgress': string;
   'knowledge.compilePhase.compiling': string;
+  'knowledge.compilePhase.error': string;
+  'knowledge.compilePhase.timeout': string;
   'knowledge.noEntities': string;
   'knowledge.searchEntities': string;
   'knowledge.runCheck': string;

@@ -82,8 +82,7 @@ impl Database {
         let icon = input.icon.as_deref().unwrap_or("");
         let color = input.color.as_deref().unwrap_or("");
         let system_prompt = input.system_prompt.as_deref().unwrap_or("");
-        let source_scope_json =
-            serialize_source_scope(input.source_scope.as_deref())?;
+        let source_scope_json = serialize_source_scope(input.source_scope.as_deref())?;
         let conn = self.conn();
         conn.execute(
             "INSERT INTO projects (id, name, description, icon, color, system_prompt, source_scope_json)
@@ -213,10 +212,7 @@ impl Database {
     /// Delete a project. Conversations' project_id is set to NULL via ON DELETE SET NULL.
     pub fn delete_project(&self, id: &str) -> Result<(), CoreError> {
         let conn = self.conn();
-        let affected = conn.execute(
-            "DELETE FROM projects WHERE id = ?1",
-            rusqlite::params![id],
-        )?;
+        let affected = conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
         if affected == 0 {
             return Err(CoreError::NotFound(format!("Project {id}")));
         }
@@ -241,10 +237,7 @@ impl Database {
     }
 
     /// Remove a conversation from its project (set project_id to NULL).
-    pub fn remove_conversation_from_project(
-        &self,
-        conversation_id: &str,
-    ) -> Result<(), CoreError> {
+    pub fn remove_conversation_from_project(&self, conversation_id: &str) -> Result<(), CoreError> {
         let conn = self.conn();
         let affected = conn.execute(
             "UPDATE conversations SET project_id = NULL, updated_at = datetime('now') WHERE id = ?1",
@@ -372,9 +365,7 @@ mod tests {
         assert_eq!(updated.project_id.as_deref(), Some(project.id.as_str()));
 
         // List by project
-        let filtered = db
-            .list_conversations_by_project(Some(&project.id))
-            .unwrap();
+        let filtered = db.list_conversations_by_project(Some(&project.id)).unwrap();
         assert_eq!(filtered.len(), 1);
 
         // Remove from project

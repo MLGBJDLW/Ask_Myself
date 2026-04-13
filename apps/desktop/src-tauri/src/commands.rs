@@ -1347,9 +1347,7 @@ pub async fn create_project_cmd(
 }
 
 #[tauri::command]
-pub async fn list_projects_cmd(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<Project>, String> {
+pub async fn list_projects_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<Project>, String> {
     state.db.list_projects().map_err(|e| e.to_string())
 }
 

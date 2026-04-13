@@ -1010,6 +1010,8 @@ export const fr: TranslationKeys = {
   'knowledge.compiling': 'Compiling...',
   'knowledge.compileProgress': 'Document {current} of {total}',
   'knowledge.compilePhase.compiling': 'Analyzing document',
+  'knowledge.compilePhase.error': 'Document failed',
+  'knowledge.compilePhase.timeout': 'Document timed out',
   'knowledge.noEntities': 'No entities found',
   'knowledge.searchEntities': 'Search entities...',
   'knowledge.runCheck': 'Run Health Check',

@@ -1028,6 +1028,8 @@ export const en: TranslationKeys = {
   'knowledge.compiling': 'Processing...',
   'knowledge.compileProgress': 'Document {current} of {total}',
   'knowledge.compilePhase.compiling': 'Analyzing document',
+  'knowledge.compilePhase.error': 'Document failed',
+  'knowledge.compilePhase.timeout': 'Document timed out',
   'knowledge.noEntities': 'No topics discovered yet',
   'knowledge.searchEntities': 'Search topics...',
   'knowledge.runCheck': 'Run Quality Check',

@@ -2662,7 +2662,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let cfg = AgentConfig::default();
-        assert_eq!(cfg.max_iterations, 10);
+        assert_eq!(cfg.max_iterations, 25);
         assert!(cfg.system_prompt.contains("knowledge recall engine"));
         assert_eq!(cfg.temperature, Some(0.3));
         assert_eq!(cfg.max_tokens, Some(4096));

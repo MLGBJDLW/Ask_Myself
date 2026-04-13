@@ -230,7 +230,11 @@ fn parse_finish_reason(s: &str) -> FinishReason {
     }
 }
 
-fn convert_message(msg: &Message, include_reasoning_content: bool, raw_tool_args: bool) -> OaiMessage {
+fn convert_message(
+    msg: &Message,
+    include_reasoning_content: bool,
+    raw_tool_args: bool,
+) -> OaiMessage {
     let has_images = msg.has_images();
 
     // Build content: use array format when images are present, plain string otherwise.

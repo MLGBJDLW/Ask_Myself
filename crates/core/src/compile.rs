@@ -2,6 +2,7 @@
 //! Automatically distills documents into structured summaries, entities, and relationships.
 
 use serde::{Deserialize, Serialize};
+use tokio::time::{timeout, Duration};
 
 use crate::db::Database;
 use crate::error::CoreError;
@@ -216,6 +217,7 @@ where
     let pending_ids = db.get_uncompiled_document_ids(limit)?;
     let total = pending_ids.len();
     let mut results = Vec::new();
+    let per_doc_timeout = Duration::from_secs(120);
 
     for (i, doc_id) in pending_ids.iter().enumerate() {
         let title = db.get_document_title(doc_id).ok().flatten();
@@ -223,15 +225,36 @@ where
             current: i + 1,
             total,
             document_id: doc_id.clone(),
-            document_title: title,
+            document_title: title.clone(),
             phase: "compiling".to_string(),
         });
 
-        match compile_document(db, doc_id, provider, model).await {
-            Ok(result) => results.push(result),
-            Err(e) => {
-                tracing::warn!("Failed to compile document {doc_id}: {e}");
-                continue;
+        match timeout(
+            per_doc_timeout,
+            compile_document(db, doc_id, provider, model),
+        )
+        .await
+        {
+            Ok(Ok(result)) => results.push(result),
+            Ok(Err(e)) => {
+                tracing::warn!("compile doc {doc_id}: {e}");
+                on_progress(&CompileProgress {
+                    current: i + 1,
+                    total,
+                    document_id: doc_id.clone(),
+                    document_title: title.clone(),
+                    phase: "error".to_string(),
+                });
+            }
+            Err(_) => {
+                tracing::warn!("compile doc {doc_id}: timed out after 120s");
+                on_progress(&CompileProgress {
+                    current: i + 1,
+                    total,
+                    document_id: doc_id.clone(),
+                    document_title: title,
+                    phase: "timeout".to_string(),
+                });
             }
         }
     }

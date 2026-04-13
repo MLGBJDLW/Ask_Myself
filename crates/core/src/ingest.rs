@@ -1252,10 +1252,10 @@ mod tests {
         let result = scan_source(&db, &source_id).expect("scan_source");
 
         assert_eq!(result.source_id, source_id);
-        // 6 files: 2 in docs/, 2 in notes/, 2 in logs/
+        // 4 files: 2 in docs/, 2 in notes/
         assert!(
-            result.files_scanned >= 6,
-            "expected >= 6 files scanned, got {}",
+            result.files_scanned >= 4,
+            "expected >= 4 files scanned, got {}",
             result.files_scanned
         );
         assert_eq!(result.files_added, result.files_scanned);

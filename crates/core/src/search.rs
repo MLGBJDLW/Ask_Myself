@@ -1573,8 +1573,9 @@ mod tests {
         {
             let conn = db.conn();
             let sid = insert_source(&conn);
-            let did = insert_document(&conn, &sid, "text/plain");
+            // Each chunk in its own document so dedup doesn't collapse them.
             for i in 0..5 {
+                let did = insert_document(&conn, &sid, "text/plain");
                 let id = new_id();
                 conn.execute(
                     "INSERT INTO chunks (id, document_id, chunk_index, kind, content,
@@ -1938,9 +1939,11 @@ mod tests {
         {
             let conn = db.conn();
             let sid = insert_source(&conn);
-            let did = insert_document(&conn, &sid, "text/markdown");
-            let _chunk_a = insert_chunk(&conn, &did, "deploy application to production server");
-            chunk_b = insert_chunk(&conn, &did, "deploy service to staging environment");
+            // Separate documents so dedup keeps both cards.
+            let did_a = insert_document(&conn, &sid, "text/markdown");
+            let _chunk_a = insert_chunk(&conn, &did_a, "deploy application to production server");
+            let did_b = insert_document(&conn, &sid, "text/markdown");
+            chunk_b = insert_chunk(&conn, &did_b, "deploy service to staging environment");
         }
 
         // Search without feedback — record baseline score for chunk_b.
@@ -1990,9 +1993,11 @@ mod tests {
         {
             let conn = db.conn();
             let sid = insert_source(&conn);
-            let did = insert_document(&conn, &sid, "text/markdown");
-            insert_chunk(&conn, &did, "configure server networking rules");
-            insert_chunk(&conn, &did, "configure network firewall settings");
+            // Separate documents so dedup keeps both cards.
+            let did_a = insert_document(&conn, &sid, "text/markdown");
+            insert_chunk(&conn, &did_a, "configure server networking rules");
+            let did_b = insert_document(&conn, &sid, "text/markdown");
+            insert_chunk(&conn, &did_b, "configure network firewall settings");
         }
 
         // Search without feedback — record baseline score for chunk_a.

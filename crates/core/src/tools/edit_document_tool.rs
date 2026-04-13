@@ -230,8 +230,7 @@ fn apply_split_run_replacement(
                         c.push_str(&escaped_new);
                         if i == ei {
                             // Same element: add the suffix after the match
-                            let suffix_start =
-                                offset_in_first + escaped_old.len();
+                            let suffix_start = offset_in_first + escaped_old.len();
                             if suffix_start <= elem.content.len() {
                                 // Clear the old suffix from the simple concat
                                 // and add the actual suffix
@@ -248,7 +247,8 @@ fn apply_split_run_replacement(
                         for e in text_elements.iter().take(i).skip(si) {
                             consumed += e.content.len();
                         }
-                        let match_end_in_this = (pos + escaped_old.len()) - (char_offset + consumed);
+                        let match_end_in_this =
+                            (pos + escaped_old.len()) - (char_offset + consumed);
                         if match_end_in_this <= elem.content.len() {
                             elem.content[match_end_in_this..].to_string()
                         } else {
@@ -308,15 +308,11 @@ fn patch_office_file(
         zip::ZipArchive::new(reader).map_err(|e| format!("Cannot open ZIP archive: {e}"))?;
 
     // Determine which entries to patch and the text tag to use.
+    #[allow(clippy::type_complexity)]
     let (entry_filter, text_tag): (Box<dyn Fn(&str) -> bool>, &str) = match format {
-        DocFormat::Docx => (
-            Box::new(|name: &str| name == "word/document.xml"),
-            "w:t",
-        ),
+        DocFormat::Docx => (Box::new(|name: &str| name == "word/document.xml"), "w:t"),
         DocFormat::Pptx => (
-            Box::new(|name: &str| {
-                name.starts_with("ppt/slides/slide") && name.ends_with(".xml")
-            }),
+            Box::new(|name: &str| name.starts_with("ppt/slides/slide") && name.ends_with(".xml")),
             "a:t",
         ),
         DocFormat::Xlsx => (
@@ -330,7 +326,8 @@ fn patch_office_file(
 
     // Collect all entry names and their raw bytes.
     let entry_count = archive.len();
-    let mut entries: Vec<(String, Vec<u8>, zip::CompressionMethod)> = Vec::with_capacity(entry_count);
+    let mut entries: Vec<(String, Vec<u8>, zip::CompressionMethod)> =
+        Vec::with_capacity(entry_count);
     for i in 0..entry_count {
         let mut entry = archive
             .by_index(i)
@@ -375,8 +372,7 @@ fn patch_office_file(
     }
 
     // Write back to the original path.
-    std::fs::write(path, out_buf.into_inner())
-        .map_err(|e| format!("Cannot write file: {e}"))?;
+    std::fs::write(path, out_buf.into_inner()).map_err(|e| format!("Cannot write file: {e}"))?;
 
     // Build summary.
     build_summary(path, &all_outcomes, replacements)
@@ -396,9 +392,7 @@ fn build_summary(
     let mut seen: std::collections::HashMap<String, (usize, Option<String>)> =
         std::collections::HashMap::new();
     for outcome in outcomes {
-        let entry = seen
-            .entry(outcome.old_text.clone())
-            .or_insert((0, None));
+        let entry = seen.entry(outcome.old_text.clone()).or_insert((0, None));
         entry.0 += outcome.count;
         if outcome.warning.is_some() && entry.0 == 0 {
             entry.1 = outcome.warning.clone();
@@ -549,7 +543,7 @@ impl Tool for EditDocumentTool {
 
             // Check file size.
             let meta = std::fs::metadata(&canonical)
-                .map_err(|e| CoreError::Io(e))?;
+                .map_err(CoreError::Io)?;
             if meta.len() > MAX_FILE_SIZE {
                 return Ok(ToolResult {
                     call_id: call_id.clone(),
