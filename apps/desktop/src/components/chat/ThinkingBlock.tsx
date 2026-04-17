@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type ComponentPropsWithoutRef } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, type ComponentPropsWithoutRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ChevronRight, Brain } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -86,6 +86,8 @@ export function ThinkingBlock({
   const startTimeRef = useRef<number>(Date.now());
   const prevStreamingRef = useRef(isStreaming);
   const autoOpenedRef = useRef(false);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const userScrolledUpRef = useRef(false);
   const [elapsed, setElapsed] = useState(0);
 
   const effectiveSections = sections && sections.length > 0 ? sections : null;
@@ -125,6 +127,23 @@ export function ThinkingBlock({
     }, 1000);
 
     return () => clearInterval(interval);
+  }, [isStreaming]);
+
+  // Auto-follow: keep the inner trace panel scrolled to the latest token
+  // while streaming, unless the user has scrolled up away from the bottom.
+  useLayoutEffect(() => {
+    if (!isStreaming || !expanded) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    if (userScrolledUpRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [combinedContent, isStreaming, expanded]);
+
+  // Reset the "user scrolled up" guard whenever a new streaming phase starts.
+  useEffect(() => {
+    if (isStreaming) {
+      userScrolledUpRef.current = false;
+    }
   }, [isStreaming]);
 
   const tokenEstimate = Math.round(combinedContent.length / 4); // rough estimate
@@ -188,7 +207,16 @@ export function ThinkingBlock({
               data-trace-soft="true"
               data-trace-active={traceActive ? 'true' : 'false'}
             >
-              <div className="relative max-h-[300px] overflow-y-auto rounded-r-md py-2 pl-3 pr-6 text-xs leading-relaxed text-text-secondary">
+              <div
+                ref={scrollContainerRef}
+                onScroll={(e) => {
+                  const el = e.currentTarget;
+                  const distanceFromBottom =
+                    el.scrollHeight - el.scrollTop - el.clientHeight;
+                  userScrolledUpRef.current = distanceFromBottom > 40;
+                }}
+                className="relative max-h-[300px] overflow-y-auto rounded-r-md py-2 pl-3 pr-6 text-xs leading-relaxed text-text-secondary"
+              >
                 <div className="border-l-2 border-accent/18 pl-3">
                   {effectiveSections ? (
                     effectiveSections.map((sec, secIdx) => (

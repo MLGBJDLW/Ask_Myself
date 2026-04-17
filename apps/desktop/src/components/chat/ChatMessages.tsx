@@ -548,7 +548,6 @@ export function ChatMessages({
             sections={sections}
             isStreaming={isStreaming}
             defaultExpanded
-            collapseOnFinish={false}
           />
         </div>
       </div>
@@ -1471,7 +1470,6 @@ export function ChatMessages({
               sections={currentThinkingSections}
               isStreaming={currentTraceActive}
               defaultExpanded
-              collapseOnFinish={false}
             />
           </div>
         </motion.div>

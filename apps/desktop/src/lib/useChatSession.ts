@@ -39,6 +39,42 @@ function sanitizeNumber(input: unknown, fallback = 0): number {
   return Math.max(0, Math.round(input));
 }
 
+/**
+ * Merge imageAttachments from the prior in-memory message list onto a fresh
+ * backend response. Backend rows that already include imageAttachments win
+ * (Tier B persistence). For rows that lack them, we fall back to:
+ *   1) the same message id in prior state, or
+ *   2) an optimistic `temp-*` user message with matching content (handles the
+ *      id swap after the backend assigns a permanent id).
+ * This is a safety net — once all historical rows have been persisted via
+ * Tier B, this merge becomes a no-op in practice.
+ */
+function mergeImageAttachments(
+  prev: ConversationMessage[],
+  next: ConversationMessage[],
+): ConversationMessage[] {
+  const prevById = new Map(prev.map((m) => [m.id, m]));
+  const prevOptimisticWithImages = prev.filter(
+    (m) =>
+      m.id.startsWith('temp-') &&
+      m.role === 'user' &&
+      m.imageAttachments &&
+      m.imageAttachments.length > 0,
+  );
+  return next.map((m) => {
+    if (m.imageAttachments && m.imageAttachments.length > 0) return m;
+    const existing = prevById.get(m.id);
+    if (existing?.imageAttachments && existing.imageAttachments.length > 0) {
+      return { ...m, imageAttachments: existing.imageAttachments };
+    }
+    if (m.role === 'user') {
+      const opt = prevOptimisticWithImages.find((o) => o.content === m.content);
+      if (opt) return { ...m, imageAttachments: opt.imageAttachments };
+    }
+    return m;
+  });
+}
+
 function normalizeUsage(usage: UsageTotal): UsageTotal {
   const promptTokens = sanitizeNumber(usage.promptTokens);
   const completionTokens = sanitizeNumber(usage.completionTokens);
@@ -409,7 +445,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           api.getConversationTurns(activeId),
         ]);
         if (cancelled) return;
-        setMessagesForConversation(activeId, msgs);
+        // Safety net (also covers pre-Tier-B persisted rows): preserve any
+        // imageAttachments present in prior in-memory state when the backend
+        // response lacks them (e.g. optimistic temp-* ids or legacy rows).
+        setMessagesForConversation(activeId, (prev) => mergeImageAttachments(prev, msgs));
         setTurnsForConversation(activeId, conversationTurns);
         setConversations((prev) => {
           const existing = prev.find((item) => item.id === conv.id);
@@ -456,7 +495,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         api.getConversationTurns(completedConversationId),
       ]).then(([[conv, msgs], conversationTurns]) => {
         if (!cancelled) {
-          setMessagesForConversation(completedConversationId, msgs);
+          // Safety net (also covers pre-Tier-B persisted rows): preserve any
+          // imageAttachments present in prior in-memory state when the backend
+          // response lacks them (e.g. optimistic temp-* ids or legacy rows).
+          setMessagesForConversation(completedConversationId, (prev) =>
+            mergeImageAttachments(prev, msgs),
+          );
           setTurnsForConversation(completedConversationId, conversationTurns);
           setConversations((prev) => {
             const existing = prev.find((item) => item.id === conv.id);

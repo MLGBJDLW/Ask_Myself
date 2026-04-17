@@ -42,6 +42,19 @@ pub struct CollectionContext {
     pub source_ids: Vec<String>,
 }
 
+/// A single image attachment sent with a user message.
+///
+/// Persisted alongside the message row as a JSON blob in the
+/// `image_attachments_json` column (see migration `v040`). The field name on
+/// the wire is `imageAttachments` to match the frontend DTO.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAttachment {
+    pub base64_data: String,
+    pub media_type: String,
+    pub original_name: String,
+}
+
 /// A single message within a conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +70,10 @@ pub struct ConversationMessage {
     pub created_at: String,
     pub sort_order: i64,
     pub thinking: Option<String>,
+    /// Image attachments sent with this user message. Persisted nullably;
+    /// legacy rows (pre-`v040`) and non-user messages will be `None`.
+    #[serde(default)]
+    pub image_attachments: Option<Vec<ImageAttachment>>,
 }
 
 /// Saved LLM provider configuration.
@@ -798,11 +815,15 @@ impl Database {
             Some(value) => Some(serde_json::to_string(value)?),
             None => None,
         };
+        let image_attachments_json = match &msg.image_attachments {
+            Some(atts) if !atts.is_empty() => Some(serde_json::to_string(atts)?),
+            _ => None,
+        };
 
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, sort_order, thinking)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO messages (id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, sort_order, thinking, image_attachments_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 &msg.id,
                 &msg.conversation_id,
@@ -814,6 +835,7 @@ impl Database {
                 msg.token_count,
                 msg.sort_order,
                 &msg.thinking,
+                &image_attachments_json,
             ],
         )?;
 
@@ -833,7 +855,7 @@ impl Database {
     ) -> Result<Vec<ConversationMessage>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, created_at, sort_order, thinking
+            "SELECT id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, created_at, sort_order, thinking, image_attachments_json
              FROM messages WHERE conversation_id = ?1 ORDER BY sort_order ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
@@ -852,6 +874,7 @@ impl Database {
                 row.get::<_, String>(8)?,
                 row.get::<_, i64>(9)?,
                 row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
             ))
         })?;
 
@@ -869,6 +892,7 @@ impl Database {
                 created_at,
                 sort_order,
                 thinking,
+                image_attachments_json,
             ) = row?;
             let tool_calls: Vec<ToolCallRequest> = match tc_json {
                 Some(json) => serde_json::from_str(&json)?,
@@ -876,6 +900,10 @@ impl Database {
             };
             let artifacts = match artifacts_json {
                 Some(json) => Some(serde_json::from_str(&json)?),
+                None => None,
+            };
+            let image_attachments = match image_attachments_json {
+                Some(json) => serde_json::from_str::<Vec<ImageAttachment>>(&json).ok(),
                 None => None,
             };
             results.push(ConversationMessage {
@@ -890,6 +918,7 @@ impl Database {
                 created_at,
                 sort_order,
                 thinking,
+                image_attachments,
             });
         }
         Ok(results)
@@ -1067,6 +1096,7 @@ impl Database {
                 created_at,
                 sort_order,
                 thinking: None, // Archived messages don't preserve thinking
+                image_attachments: None, // Archived messages don't preserve attachments
             });
         }
 
@@ -1702,6 +1732,7 @@ mod tests {
             created_at: String::new(),
             sort_order: 0,
             thinking: None,
+            image_attachments: None,
         };
         db.add_message(&user_msg).unwrap();
 
@@ -1731,6 +1762,7 @@ mod tests {
             created_at: String::new(),
             sort_order: 1,
             thinking: None,
+            image_attachments: None,
         };
         db.add_message(&assistant_msg).unwrap();
 
@@ -1775,6 +1807,7 @@ mod tests {
             created_at: String::new(),
             sort_order: 0,
             thinking: None,
+            image_attachments: None,
         };
         db.add_message(&msg).unwrap();
 
@@ -1797,6 +1830,7 @@ mod tests {
             created_at: String::new(),
             sort_order: 1,
             thinking: None,
+            image_attachments: None,
         };
         db.add_message(&msg2).unwrap();
 
@@ -1832,6 +1866,7 @@ mod tests {
             created_at: String::new(),
             sort_order: 0,
             thinking: None,
+            image_attachments: None,
         };
         db.add_message(&msg).unwrap();
 
@@ -2097,6 +2132,7 @@ mod tests {
                     created_at: String::new(),
                     sort_order: i,
                     thinking: None,
+                    image_attachments: None,
                 };
                 db.add_message(&msg).unwrap();
                 msg
@@ -2154,6 +2190,7 @@ mod tests {
             created_at: String::new(),
             sort_order: 0,
             thinking: None,
+            image_attachments: None,
         };
         db.add_message(&msg).unwrap();
 

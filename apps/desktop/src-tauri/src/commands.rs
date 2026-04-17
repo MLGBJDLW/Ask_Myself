@@ -16,7 +16,8 @@ use ask_core::app_settings::AppConfig;
 use ask_core::conversation::memory::estimate_tokens;
 use ask_core::conversation::{
     AgentConfig as DbAgentConfig, CollectionContext, Conversation, ConversationMessage,
-    ConversationStats, ConversationTurn, CreateConversationInput, SaveAgentConfigInput,
+    ConversationStats, ConversationTurn, CreateConversationInput, ImageAttachment,
+    SaveAgentConfigInput,
 };
 use ask_core::db::Database;
 use ask_core::embed::{EmbedderConfig, LocalEmbeddingModel};
@@ -922,14 +923,10 @@ fn mime_to_extension(mime: &str) -> &'static str {
 }
 
 /// An image attachment prepared for LLM submission.
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageAttachment {
-    pub base64_data: String,
-    pub media_type: String,
-    pub original_name: String,
-}
-
+///
+/// Re-uses [`ask_core::conversation::ImageAttachment`] so that the same
+/// serialized shape (camelCase JSON) can be persisted alongside a user
+/// message and round-tripped back to the frontend.
 #[tauri::command]
 pub async fn prepare_image_attachment(path: String) -> Result<ImageAttachment, String> {
     let file_path = std::path::Path::new(&path);
@@ -1324,6 +1321,7 @@ fn repair_orphaned_tool_calls(db: &Database, conversation_id: &str) {
                         created_at: String::new(),
                         sort_order: base_sort + extra_sort,
                         thinking: None,
+                        image_attachments: None,
                     };
                     if let Err(e) = db.add_message(&synthetic) {
                         warn!("Failed to insert synthetic tool response: {e}");
@@ -1942,6 +1940,13 @@ pub async fn agent_chat_cmd(
         created_at: String::new(),
         sort_order: next_sort_order,
         thinking: None,
+        image_attachments: attachments.as_ref().and_then(|atts| {
+            if atts.is_empty() {
+                None
+            } else {
+                Some(atts.clone())
+            }
+        }),
     };
     state.db.add_message(&user_msg).map_err(|e| e.to_string())?;
     let turn = state

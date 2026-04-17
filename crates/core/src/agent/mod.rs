@@ -994,6 +994,7 @@ impl AgentExecutor {
                         created_at: String::new(),
                         sort_order,
                         thinking: None,
+                        image_attachments: None,
                     };
                     if let Err(e) = db.add_message(&conv_msg) {
                         error!("Failed to persist message: {e}");
@@ -1072,6 +1073,7 @@ impl AgentExecutor {
                                     created_at: String::new(),
                                     sort_order,
                                     thinking: None,
+                                    image_attachments: None,
                                 };
                                 if let Err(e) = db.add_message(&synthetic) {
                                     warn!(
@@ -1116,6 +1118,7 @@ impl AgentExecutor {
                             created_at: String::new(),
                             sort_order,
                             thinking: None,
+                            image_attachments: None,
                         };
                         if let Err(e) = db.add_message(&conv_msg) {
                             error!("Failed to persist message: {e}");
@@ -1560,6 +1563,7 @@ impl AgentExecutor {
                         } else {
                             Some(iteration_thinking.clone())
                         },
+                        image_attachments: None,
                     };
                     if let Err(e) = db.add_message(&conv_msg) {
                         warn!("Failed to save final assistant message: {e}");
@@ -1637,6 +1641,7 @@ impl AgentExecutor {
                     } else {
                         Some(iteration_thinking.clone())
                     },
+                    image_attachments: None,
                 };
                 if let Err(e) = db.add_message(&conv_msg) {
                     warn!("Failed to save intermediate assistant message: {e}");
@@ -1805,6 +1810,7 @@ impl AgentExecutor {
                         created_at: String::new(),
                         sort_order,
                         thinking: None,
+                        image_attachments: None,
                     };
                     if let Err(e) = db.add_message(&tool_conv_msg) {
                         warn!("Failed to save tool result message: {e}");
@@ -1895,6 +1901,7 @@ impl AgentExecutor {
                 created_at: String::new(),
                 sort_order,
                 thinking: None,
+                image_attachments: None,
             };
             if let Err(e) = db.add_message(&conv_msg) {
                 warn!("Failed to save final assistant message: {e}");
@@ -2227,6 +2234,7 @@ impl AgentExecutor {
             created_at: String::new(),
             sort_order: 0,
             thinking: None,
+            image_attachments: None,
         };
 
         let mut compacted = Vec::with_capacity(1 + messages.len() - evict_count);
@@ -2334,6 +2342,7 @@ impl AgentExecutor {
                         created_at: String::new(),
                         sort_order,
                         thinking: None,
+                        image_attachments: None,
                     };
                     if let Err(e) = db.add_message(&conv_msg) {
                         error!("Failed to persist message: {e}");

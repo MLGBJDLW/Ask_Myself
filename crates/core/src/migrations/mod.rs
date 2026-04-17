@@ -523,6 +523,10 @@ Every answer that uses knowledge base search results.
         "ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;
         CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id);",
     ),
+    (
+        "v040_message_image_attachments",
+        "ALTER TABLE messages ADD COLUMN image_attachments_json TEXT;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
