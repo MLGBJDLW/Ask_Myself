@@ -339,7 +339,7 @@ export function ChatSidebar({
 
   // Filter conversations by active project
   const projectFiltered = useMemo(() => {
-    if (!activeProjectId) return conversations;
+    if (!activeProjectId) return conversations.filter((c) => !c.projectId);
     return conversations.filter((c) => c.projectId === activeProjectId);
   }, [conversations, activeProjectId]);
 
