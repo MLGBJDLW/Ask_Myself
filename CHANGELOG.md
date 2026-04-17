@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.9](https://github.com/MLGBJDLW/Ask_Myself/compare/v0.1.8...v0.1.9) (2026-04-17)
+
+
+### Features
+
+* apply current workspace updates ([4179176](https://github.com/MLGBJDLW/Ask_Myself/commit/41791767c56deeeab00661300a6c4d00e42cddb1))
+* **chat:** auto-collapse/follow thinking + persist image attachments ([b0df791](https://github.com/MLGBJDLW/Ask_Myself/commit/b0df791e0c2359f1b1596970cbd2c0365843f8b1))
+* **desktop:** draggable sidebar tabs and persistent UI/window state ([d09a622](https://github.com/MLGBJDLW/Ask_Myself/commit/d09a6228c42051f6850b8aec5f57eb8eacda83da))
+* **tools:** add run_shell tool with program whitelist and confirmation ([2364a66](https://github.com/MLGBJDLW/Ask_Myself/commit/2364a662a103d3a658ecc9ac5681f94b24db253e))
+
+
+### Bug Fixes
+
+* align Rust formatting with cargo fmt ([ddf3db4](https://github.com/MLGBJDLW/Ask_Myself/commit/ddf3db4dd199f2fb6890648a579dbe5e147a0776))
+* **chat:** show unassigned conversations when no project is selected ([e94224a](https://github.com/MLGBJDLW/Ask_Myself/commit/e94224a917041bb912c38dc30196b1c5127d2360))
+* **core:** handle UTF-8 char boundaries in edit_document str_replace ([69a7a40](https://github.com/MLGBJDLW/Ask_Myself/commit/69a7a4058877dca18937258195598c7b97d48577))
+
 ## [0.1.8](https://github.com/MLGBJDLW/Ask_Myself/compare/v0.1.7...v0.1.8) (2026-04-13)
 
 
