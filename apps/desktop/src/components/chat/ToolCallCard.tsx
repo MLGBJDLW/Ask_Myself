@@ -17,6 +17,7 @@ import {
   PenLine,
   ClipboardList,
   ShieldCheck,
+  Terminal,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { FileBadge } from '../ui/FileBadge';
@@ -71,6 +72,7 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   write_note: PenLine,
   update_plan: ClipboardList,
   record_verification: ShieldCheck,
+  run_shell: Terminal,
 };
 
 function getToolIcon(name?: string) {
@@ -120,7 +122,7 @@ function getToolBriefLabel(name: string, args?: string): string {
   if (!args) return name;
   try {
     const parsed = JSON.parse(args);
-    const key = parsed.path || parsed.file || parsed.filename || parsed.query;
+    const key = parsed.path || parsed.file || parsed.filename || parsed.query || parsed.program;
     if (key && typeof key === 'string') {
       const short = key.length > 25 ? '\u2026' + key.slice(-22) : key;
       return `${name}(${short})`;

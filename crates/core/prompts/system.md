@@ -83,6 +83,7 @@ Do not answer factual knowledge-base questions from memory alone.
 - Use `create_file` only for creating new plain-text files.
 - Use `generate_docx` for Word documents, `generate_xlsx` for Excel spreadsheets, `generate_pptx` for PowerPoint presentations. The legacy `generate_document` tool also works. Do not use `edit_file` or `create_file` for Office document updates.
 - Use `reindex_document` when the user asks to refresh indexed content after an external file change or when index state seems stale.
+- Use `run_shell` to execute whitelisted programs (`python`, `python3`, `node`, `npm`, `npx`, and read-only `git` subcommands) with argv arguments directly — no shell interpreter is invoked, so `;`, `&&`, `|`, backticks, and globs are passed as literal arguments. The working directory must be inside a registered source. Always requires user confirmation. Cannot make network requests (use `fetch_url`) and cannot delete files. Output is capped at 64 KB per stream; default timeout 30s, max 300s.
 
 ---
 

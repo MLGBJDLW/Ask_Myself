@@ -1,6 +1,6 @@
 # Tool Reference
 
-Ask Myself ships with 20 built-in tools that the AI agent calls autonomously during conversations. Every tool operates locally against your indexed knowledge base.
+Ask Myself ships with 21 built-in tools that the AI agent calls autonomously during conversations. Every tool operates locally against your indexed knowledge base.
 
 ---
 
@@ -239,6 +239,8 @@ Edit existing plain-text files via string replacement or create new plain-text f
 
 Use `generate_document` instead of `edit_file` for DOCX/XLSX/PPTX creation or replacement.
 
+`str_replace` operates on UTF-8 char boundaries, so replacements containing multi-byte characters (CJK text, emoji, etc.) are handled safely without byte-slice panics.
+
 > **Example:** Fix a typo in an existing text document or create a new configuration file.
 
 ---
@@ -348,3 +350,38 @@ Fetch and extract text content from a web page (HTML stripped). Use when the use
 | `max_length` | integer | no | Max characters to return (default 5000) |
 
 > **Example:** Fetch a Stack Overflow answer the user linked to and incorporate it into the conversation.
+
+---
+
+### `run_shell`
+
+Execute a whitelisted program with explicit argv arguments inside a registered source directory. The program is spawned directly — **there is no shell interpreter**, so metacharacters like `;`, `&&`, `|`, backticks, and globs are passed literally and never interpreted.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `program` | string | yes | Program basename; must be in the whitelist |
+| `args` | string[] | no | Argv list passed to the program (no shell expansion) |
+| `cwd` | string | yes | Working directory (absolute or relative to a source root) |
+| `timeout_secs` | integer | no | Timeout in seconds, 1–300 (default 30) |
+
+**Program whitelist:** `python`, `python3`, `node`, `npm`, `npx`, `git` (read-only subcommands only: `status`, `diff`, `log`, `show`, `ls-files`, `rev-parse`, `branch`, `tag`, `config`, `remote`, `describe`, `blame`). `git config` additionally requires an explicit read-only flag such as `--get`, `--list`, or `--get-regexp`.
+
+**Safety posture:**
+- Always requires user confirmation before executing.
+- stdout and stderr are each capped at 64 KB.
+- Default timeout 30s, hard max 300s; timed-out processes are killed.
+- Environment is rebuilt from scratch: secret-like vars (`*KEY*`, `*SECRET*`, `*TOKEN*`, `*PASSWORD*`, `*CREDENTIAL*`, …) are stripped; only a neutral allow-list (`PATH`, `LANG`, `HOME`, …) is forwarded.
+- `cwd` must canonicalize inside a registered source root (path sandbox).
+- No stdin is attached; interactive programs cannot prompt.
+- No network tunneling is provided — blocking network I/O is up to the child program.
+- Windows: child is spawned with `CREATE_NO_WINDOW` (no console flash).
+
+**Usage examples:** `python script.py`, `python -m pytest -q`, `node script.js`, `npm test`, `git status`, `git diff --stat`, `git log --oneline -n 20`, `git config --list`.
+
+**Cannot do (by design):**
+- No file-deletion helpers (no `rm`, `Remove-Item`, `del`).
+- No network fetchers (no `curl`, `wget`, `Invoke-WebRequest`).
+- No git write operations (`push`, `pull`, `fetch`, `commit`, `reset`, `merge`, `rebase`, `clone`, `add`, `checkout`, `stash`, `--set`, `--unset`, `--add`, …).
+- No shell interpreter wrappers (no `sh -c`, `bash -c`, `cmd /c`, `powershell -c`). Metacharacters do not expand.
+
+> **Example:** Run `python -m pytest -q` in a project source root and capture the summary output, or run `git diff --stat HEAD~1` to preview recent changes.

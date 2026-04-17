@@ -92,6 +92,7 @@ pub mod playbook_tool;
 pub mod record_verification_tool;
 pub mod reindex_tool;
 pub mod related_concepts_tool;
+pub mod run_shell_tool;
 pub mod search_playbooks_tool;
 pub mod search_tool;
 pub mod statistics_tool;
@@ -514,6 +515,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(health_check_tool::HealthCheckTool));
     registry.register(Box::new(archive_output_tool::ArchiveOutputTool));
     registry.register(Box::new(related_concepts_tool::RelatedConceptsTool));
+    registry.register(Box::new(run_shell_tool::RunShellTool));
     registry
 }
 

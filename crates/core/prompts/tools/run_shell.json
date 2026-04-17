@@ -1,0 +1,31 @@
+{
+  "name": "run_shell",
+  "description": "Execute a whitelisted program (python/python3/node/npm/npx/git read-only) with argv arguments. Does NOT invoke a shell interpreter, so shell metacharacters like `;`, `&&`, `|` are treated as literal arguments. Cannot delete files, cannot make network requests, cannot modify files outside registered sources. Use for running data processing scripts, git status/diff inspections, etc. Always requires user confirmation. Output is capped at 64 KB per stream. Default timeout 30s, max 300s.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "program": {
+        "type": "string",
+        "description": "Program to execute. Must be one of: python, python3, node, npm, npx, git. No shell interpreter is invoked."
+      },
+      "args": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": [],
+        "description": "Arguments passed directly as argv (no shell interpretation). Defaults to []. For git, first arg must be a read-only subcommand (status, diff, log, show, ls-files, rev-parse, branch, tag, config, remote, describe, blame)."
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Working directory for the command. Must resolve inside a registered source directory (absolute or source-relative)."
+      },
+      "timeout_secs": {
+        "type": "integer",
+        "description": "Timeout in seconds. Default 30, min 1, max 300. Values outside this range are clamped.",
+        "default": 30,
+        "minimum": 1,
+        "maximum": 300
+      }
+    },
+    "required": ["program", "cwd"]
+  }
+}

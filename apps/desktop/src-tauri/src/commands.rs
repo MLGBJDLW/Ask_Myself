@@ -2044,7 +2044,7 @@ pub async fn agent_chat_cmd(
                     });
                 match tokio::time::timeout(Duration::from_secs(30), rx).await {
                     Ok(Ok(confirmed)) => confirmed,
-                    _ => true, // auto-approve on timeout / channel error
+                    _ => !message.starts_with("Run:"), // deny run_shell on timeout; allow others
                 }
             })
         }))
