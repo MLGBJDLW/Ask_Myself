@@ -139,6 +139,33 @@ fn apply_replacements_to_xml(
     (result, outcomes)
 }
 
+/// Stable equivalent of nightly `str::floor_char_boundary`.
+/// Returns the largest index `<= idx` that is a valid char boundary in `s`.
+/// If `idx >= s.len()`, returns `s.len()`.
+fn floor_char_boundary(s: &str, idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    let mut i = idx;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Returns the smallest index `>= idx` that is a valid char boundary in `s`.
+/// If `idx >= s.len()`, returns `s.len()`.
+fn ceil_char_boundary(s: &str, idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    let mut i = idx;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 /// Handle split-run replacement by collecting text across adjacent text
 /// elements and redistributing after replacement.
 fn apply_split_run_replacement(
@@ -214,7 +241,20 @@ fn apply_split_run_replacement(
                 }
 
                 // Calculate the position within the first involved element.
-                let offset_in_first = pos - char_offset;
+                // `pos` is a valid char boundary in `concatenated`, and
+                // `char_offset` is the exact sum of preceding element byte
+                // lengths, so `offset_in_first` should already be a valid
+                // char boundary in `elem.content[si]`. We clamp defensively
+                // using `floor_char_boundary` to guarantee no panic even if
+                // upstream escaping logic drifts.
+                let first_elem = &text_elements[si];
+                let raw_offset_in_first = pos.saturating_sub(char_offset);
+                let offset_in_first =
+                    floor_char_boundary(&first_elem.content, raw_offset_in_first);
+                debug_assert!(
+                    first_elem.content.is_char_boundary(offset_in_first),
+                    "offset_in_first must be a valid char boundary"
+                );
 
                 // Build replacement: put everything into the first element,
                 // empty subsequent matched elements.
@@ -229,11 +269,12 @@ fn apply_split_run_replacement(
                         c.push_str(&elem.content[..offset_in_first]);
                         c.push_str(&escaped_new);
                         if i == ei {
-                            // Same element: add the suffix after the match
-                            let suffix_start = offset_in_first + escaped_old.len();
+                            // Same element: add the suffix after the match.
+                            let raw_suffix_start = offset_in_first + escaped_old.len();
+                            let suffix_start =
+                                ceil_char_boundary(&elem.content, raw_suffix_start);
                             if suffix_start <= elem.content.len() {
-                                // Clear the old suffix from the simple concat
-                                // and add the actual suffix
+                                debug_assert!(elem.content.is_char_boundary(suffix_start));
                                 c.clear();
                                 c.push_str(&elem.content[..offset_in_first]);
                                 c.push_str(&escaped_new);
@@ -247,9 +288,12 @@ fn apply_split_run_replacement(
                         for e in text_elements.iter().take(i).skip(si) {
                             consumed += e.content.len();
                         }
+                        let raw_match_end = (pos + escaped_old.len())
+                            .saturating_sub(char_offset + consumed);
                         let match_end_in_this =
-                            (pos + escaped_old.len()) - (char_offset + consumed);
+                            ceil_char_boundary(&elem.content, raw_match_end);
                         if match_end_in_this <= elem.content.len() {
+                            debug_assert!(elem.content.is_char_boundary(match_end_in_this));
                             elem.content[match_end_in_this..].to_string()
                         } else {
                             String::new()
@@ -430,7 +474,8 @@ fn truncate_text(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        let cut = floor_char_boundary(s, max);
+        format!("{}...", &s[..cut])
     }
 }
 
@@ -722,5 +767,131 @@ mod tests {
         assert_eq!(detect_format(Path::new("test.xlsx")), Some(DocFormat::Xlsx));
         assert_eq!(detect_format(Path::new("test.txt")), None);
         assert_eq!(detect_format(Path::new("test.pdf")), None);
+    }
+
+    // ---------------------------------------------------------------------
+    // UTF-8 / char-boundary safety (regression tests for the PPTX panic)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn test_floor_char_boundary_ascii() {
+        let s = "hello";
+        assert_eq!(floor_char_boundary(s, 0), 0);
+        assert_eq!(floor_char_boundary(s, 3), 3);
+        assert_eq!(floor_char_boundary(s, 5), 5);
+        assert_eq!(floor_char_boundary(s, 100), 5);
+    }
+
+    #[test]
+    fn test_floor_char_boundary_chinese() {
+        // Each CJK char is 3 bytes in UTF-8. Boundaries: 0, 3, 6, 9, 12.
+        let s = "你好世界";
+        assert_eq!(floor_char_boundary(s, 0), 0);
+        assert_eq!(floor_char_boundary(s, 1), 0);
+        assert_eq!(floor_char_boundary(s, 2), 0);
+        assert_eq!(floor_char_boundary(s, 3), 3);
+        assert_eq!(floor_char_boundary(s, 4), 3);
+        assert_eq!(floor_char_boundary(s, 12), 12);
+        assert_eq!(floor_char_boundary(s, 100), 12);
+    }
+
+    #[test]
+    fn test_ceil_char_boundary_chinese() {
+        let s = "你好";
+        assert_eq!(ceil_char_boundary(s, 0), 0);
+        assert_eq!(ceil_char_boundary(s, 1), 3);
+        assert_eq!(ceil_char_boundary(s, 2), 3);
+        assert_eq!(ceil_char_boundary(s, 3), 3);
+        assert_eq!(ceil_char_boundary(s, 6), 6);
+        assert_eq!(ceil_char_boundary(s, 100), 6);
+    }
+
+    #[test]
+    fn test_chinese_single_run_replacement() {
+        let xml = r#"<a:p><a:r><a:t>你好世界，欢迎使用</a:t></a:r></a:p>"#;
+        let replacements = vec![Replacement {
+            old_text: "你好世界".to_string(),
+            new_text: "Hello World".to_string(),
+        }];
+        let (result, outcomes) = apply_replacements_to_xml(xml, &replacements, "a:t");
+        assert!(result.contains("Hello World"), "got: {}", result);
+        assert!(!result.contains("你好世界"));
+        assert_eq!(outcomes[0].count, 1);
+    }
+
+    #[test]
+    fn test_chinese_spanning_runs() {
+        // Chinese text split across two runs — the classic PPTX panic case.
+        let xml = r#"<a:p><a:r><a:t>你好</a:t></a:r><a:r><a:t>世界</a:t></a:r></a:p>"#;
+        let replacements = vec![Replacement {
+            old_text: "你好世界".to_string(),
+            new_text: "Hello".to_string(),
+        }];
+        let (result, outcomes) = apply_replacements_to_xml(xml, &replacements, "a:t");
+        // Must not panic, and must replace.
+        assert!(result.contains("Hello"), "got: {}", result);
+        assert_eq!(outcomes[0].count, 1);
+    }
+
+    #[test]
+    fn test_chinese_no_panic_on_boundary_spanning_match() {
+        // Match that starts mid-run and ends mid-next-run with multi-byte
+        // chars on both sides of the boundary.
+        let xml = r#"<a:p><a:r><a:t>前缀中文</a:t></a:r><a:r><a:t>跨界文本后缀</a:t></a:r></a:p>"#;
+        let replacements = vec![Replacement {
+            old_text: "中文跨界".to_string(),
+            new_text: "X".to_string(),
+        }];
+        // Must not panic regardless of whether the match is found.
+        let (_result, _outcomes) =
+            apply_replacements_to_xml(xml, &replacements, "a:t");
+    }
+
+    #[test]
+    fn test_mixed_cjk_ascii_replacement() {
+        let xml = r#"<w:p><w:r><w:t>Hello世界 2026年Q1报告</w:t></w:r></w:p>"#;
+        let replacements = vec![Replacement {
+            old_text: "2026年Q1".to_string(),
+            new_text: "2026Q1工作".to_string(),
+        }];
+        let (result, outcomes) = apply_replacements_to_xml(xml, &replacements, "w:t");
+        assert!(result.contains("2026Q1工作"), "got: {}", result);
+        assert_eq!(outcomes[0].count, 1);
+    }
+
+    #[test]
+    fn test_emoji_4byte_replacement() {
+        // Emoji = 4-byte UTF-8 sequences.
+        let xml = r#"<a:p><a:r><a:t>emoji 🎉 test</a:t></a:r></a:p>"#;
+        let replacements = vec![Replacement {
+            old_text: "🎉".to_string(),
+            new_text: "✅".to_string(),
+        }];
+        let (result, _outcomes) =
+            apply_replacements_to_xml(xml, &replacements, "a:t");
+        // Must not panic.
+        assert!(result.contains("✅") || result.contains("🎉"));
+    }
+
+    #[test]
+    fn test_emoji_spanning_runs() {
+        // Emoji split across runs — upstream Office writers may split anywhere.
+        let xml = r#"<a:p><a:r><a:t>start 🎉party</a:t></a:r><a:r><a:t>🎊 end</a:t></a:r></a:p>"#;
+        let replacements = vec![Replacement {
+            old_text: "party🎊".to_string(),
+            new_text: "OK".to_string(),
+        }];
+        // Must not panic.
+        let _ = apply_replacements_to_xml(xml, &replacements, "a:t");
+    }
+
+    #[test]
+    fn test_truncate_text_chinese_safe() {
+        // truncate_text used to slice at arbitrary byte offsets; verify it
+        // no longer panics on multi-byte boundaries.
+        let s = "你好世界欢迎使用这个系统";
+        let _ = truncate_text(s, 5); // would have panicked before the fix
+        let _ = truncate_text(s, 7);
+        let _ = truncate_text(s, 1000);
     }
 }
