@@ -56,7 +56,7 @@ use crate::error::CoreError;
 use crate::models::Source;
 
 use super::path_utils::{
-    PathKind, resolve_existing_directory_in_sources, resolve_path_from_base_in_sources,
+    resolve_existing_directory_in_sources, resolve_path_from_base_in_sources, PathKind,
 };
 use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
 

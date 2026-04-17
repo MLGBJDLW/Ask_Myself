@@ -11,12 +11,12 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
+use crate::app_settings::ShellAccessMode;
 use crate::conversation::memory::{
     estimate_message_tokens, estimate_tokens, model_context_window, trim_to_context_window,
 };
 use crate::conversation::summarizer;
 use crate::conversation::ConversationMessage;
-use crate::app_settings::ShellAccessMode;
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::{
@@ -1706,12 +1706,7 @@ impl AgentExecutor {
                                         is_error: true,
                                         artifacts: None,
                                     };
-                                    return (
-                                        tc,
-                                        tool_timeout,
-                                        Ok(Ok(declined)),
-                                        Duration::ZERO,
-                                    );
+                                    return (tc, tool_timeout, Ok(Ok(declined)), Duration::ZERO);
                                 }
                             }
                         }

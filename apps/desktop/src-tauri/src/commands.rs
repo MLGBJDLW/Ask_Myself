@@ -2031,35 +2031,34 @@ pub async fn agent_chat_cmd(
     };
 
     // 6b. Build confirmation callback if enabled.
-    let confirmation_cb: Option<ConfirmationCallback> = if app_cfg.confirm_destructive
-        || app_cfg.shell_access_mode.requires_confirmation()
-    {
-        let dialog_handle = app_handle.clone();
-        Some(Arc::new(move |message: String| {
-            let handle = dialog_handle.clone();
-            Box::pin(async move {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                handle
-                    .dialog()
-                    .message(&message)
-                    .title("Confirm Tool Execution")
-                    .kind(MessageDialogKind::Warning)
-                    .buttons(MessageDialogButtons::OkCancelCustom(
-                        "Allow".into(),
-                        "Deny".into(),
-                    ))
-                    .show(move |confirmed| {
-                        let _ = tx.send(confirmed);
-                    });
-                match tokio::time::timeout(Duration::from_secs(30), rx).await {
-                    Ok(Ok(confirmed)) => confirmed,
-                    _ => !message.starts_with("Run:"), // deny run_shell on timeout; allow others
-                }
-            })
-        }))
-    } else {
-        None
-    };
+    let confirmation_cb: Option<ConfirmationCallback> =
+        if app_cfg.confirm_destructive || app_cfg.shell_access_mode.requires_confirmation() {
+            let dialog_handle = app_handle.clone();
+            Some(Arc::new(move |message: String| {
+                let handle = dialog_handle.clone();
+                Box::pin(async move {
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    handle
+                        .dialog()
+                        .message(&message)
+                        .title("Confirm Tool Execution")
+                        .kind(MessageDialogKind::Warning)
+                        .buttons(MessageDialogButtons::OkCancelCustom(
+                            "Allow".into(),
+                            "Deny".into(),
+                        ))
+                        .show(move |confirmed| {
+                            let _ = tx.send(confirmed);
+                        });
+                    match tokio::time::timeout(Duration::from_secs(30), rx).await {
+                        Ok(Ok(confirmed)) => confirmed,
+                        _ => !message.starts_with("Run:"), // deny run_shell on timeout; allow others
+                    }
+                })
+            }))
+        } else {
+            None
+        };
 
     // 6c. Create a separate summarization provider if configured.
     let summarization_provider: Option<Box<dyn ask_core::llm::LlmProvider>> =
