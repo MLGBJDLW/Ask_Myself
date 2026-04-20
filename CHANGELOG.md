@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.1...nexa-monorepo-v0.2.2) (2026-04-20)
+
+
+### Features
+
+* **ppt:** replace hand-crafted pptx tool with pptxgenjs renderer ([4b5ea60](https://github.com/MLGBJDLW/Nexa/commit/4b5ea604678446320003afefa6cde5f3abb70ca8))
+
+
+### Bug Fixes
+
+* **ppt:** address audit findings (capabilities, dedupe, validation) ([121352d](https://github.com/MLGBJDLW/Nexa/commit/121352d997d403162fe5e41a2cbea8feb31fdb5b))
+
 ## [0.2.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.0...nexa-monorepo-v0.2.1) (2026-04-20)
 
 
