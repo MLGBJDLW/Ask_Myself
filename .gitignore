@@ -54,3 +54,6 @@ $null
 # Docs
 docs/pre/
 .serena
+
+# Tauri-generated schemas (regenerated each build)
+apps/desktop/src-tauri/gen/schemas/

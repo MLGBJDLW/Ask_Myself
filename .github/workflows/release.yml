@@ -67,9 +67,8 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-release-
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-nexa-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-release-nexa-v1-
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -81,6 +80,10 @@ jobs:
       - name: Install frontend dependencies
         working-directory: apps/desktop
         run: npm ci
+
+      - name: Clean stale build artifacts
+        run: cargo clean
+        working-directory: ${{ github.workspace }}
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.5
