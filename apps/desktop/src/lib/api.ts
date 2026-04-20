@@ -193,6 +193,11 @@ export const openFileInDefaultApp = (path: string) =>
 export const showInFileExplorer = (path: string) =>
   invoke<void>('show_in_file_explorer', { path });
 
+/** Save bytes produced by pptxgenjs to disk at the given absolute path.
+ *  Returns the resolved absolute path on success. */
+export const savePptxBytes = (path: string, bytes: Uint8Array) =>
+  invoke<string>('save_pptx_bytes', { path, bytes: Array.from(bytes) });
+
 // ── Index (extra) ───────────────────────────────────────────────────────
 
 export const optimizeFtsIndex = () =>

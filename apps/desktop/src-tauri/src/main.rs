@@ -198,6 +198,7 @@ fn main() {
             // File
             commands::open_file_in_default_app,
             commands::show_in_file_explorer,
+            commands::save_pptx_bytes,
             // Watcher
             commands::start_watching,
             commands::stop_watching,

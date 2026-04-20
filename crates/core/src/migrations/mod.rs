@@ -438,7 +438,7 @@ sequenceDiagram
 **Takeaway:** Login is a 3-hop flow (client → server → DB) with JWT token returned on success.', updated_at = datetime('now') WHERE id = 'builtin-visual-explanations';
 
         UPDATE skills SET content = '## Trigger
-When creating DOCX, XLSX, or PPTX files via generate_docx/generate_xlsx/generate_pptx tools.
+When creating DOCX, XLSX, or PPTX files via generate_docx/generate_xlsx/ppt_generate tools.
 
 ## Rules
 

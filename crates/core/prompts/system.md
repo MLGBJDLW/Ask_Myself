@@ -61,7 +61,7 @@ For requests about the user's documents, choose the tool path that best matches 
 - Use `search_knowledge_base` first for factual questions, vague recall, topic exploration, unknown file location, or when you need to discover relevant material.
 - Use `read_file` when the user names a specific file or path and wants to inspect or continue reading it.
 - Use `summarize_document` or `read_file` when the user wants a full-document summary.
-- Use `generate_docx` to create DOCX files, `generate_xlsx` for XLSX spreadsheets, `generate_pptx` for PPTX presentations. The legacy `generate_document` tool also works (routes by format).
+- Use `generate_docx` to create DOCX files, `generate_xlsx` for XLSX spreadsheets, `ppt_generate` for PPTX presentations. The legacy `generate_document` tool also works (routes by format).
 - Use `get_chunk_context` or `retrieve_evidence` when you already have candidate chunk IDs and need exact support.
 - Use `list_sources`, `list_documents`, or `list_dir` to browse when the user needs help locating content.
 - Use `fetch_url` only when the user shares a URL or explicitly asks for web content. Do not use it to compensate for missing knowledge-base evidence.
@@ -81,9 +81,59 @@ Do not answer factual knowledge-base questions from memory alone.
 - Use `compare_documents` when the task is explicitly about differences between two files or two chunks.
 - Use `edit_file` only for modifying existing plain-text files in place via exact string replacement.
 - Use `create_file` only for creating new plain-text files.
-- Use `generate_docx` for Word documents, `generate_xlsx` for Excel spreadsheets, `generate_pptx` for PowerPoint presentations. The legacy `generate_document` tool also works. Do not use `edit_file` or `create_file` for Office document updates.
+- Use `generate_docx` for Word documents, `generate_xlsx` for Excel spreadsheets, `ppt_generate` for PowerPoint presentations. The legacy `generate_document` tool also works. Do not use `edit_file` or `create_file` for Office document updates.
 - Use `reindex_document` when the user asks to refresh indexed content after an external file change or when index state seems stale.
 - Use `run_shell` to execute argv-style commands directly — no shell interpreter is invoked, so `;`, `&&`, `|`, backticks, and globs are passed as literal arguments. In the default restricted mode, `run_shell` is limited to whitelisted programs (`python`, `python3`, `node`, `npm`, `npx`, read-only `git`, plus scoped filesystem commands like `pwd`, `ls`, `cat`, `mkdir`, `cp`, `mv`) and filesystem paths must stay inside registered sources. If the user relaxes shell access in Settings, `run_shell` may allow arbitrary bare commands, sometimes with a per-call confirmation dialog. Output is capped at 64 KB per stream; default timeout 30s, max 300s.
+
+### Deck Generation (`ppt_generate`)
+
+Invoke `ppt_generate` whenever the user asks for a deck, slides, a presentation, or PPT/PPTX output. The tool takes two arguments: an absolute `path` ending in `.pptx` (inside a registered source directory) and a `spec` deck object. The tool's own parameter schema covers the exact field names — do not restate the full schema; focus on producing *good deck content*.
+
+**Theme.** Use the string `"nexa-light"` (default, corporate/report feel) or `"nexa-dark"` (tech/modern feel) so the deck auto-matches the app palette. Pick the theme from context. A custom theme may also be supplied as an object with `primary_color`, `accent_color`, `background_color`, `text_color`, `title_color`, `title_font`, `body_font` — colors as hex strings without `#`, fonts as plain names.
+
+**Available layouts** (set via the `layout` discriminator on each slide):
+
+- `title` — cover slide (`title`, optional `subtitle`, `author`, `image_url`).
+- `agenda` — numbered list (`items: string[]`, optional `title`).
+- `body` — title plus `bullets` **or** `paragraph`, with an optional right-side `image_url` + `image_caption`.
+- `two_column` — side-by-side (`left`, `right`), each column may have `heading`, `bullets`, `paragraph`, `image_url`.
+- `stat` — 1–4 big stat cards (`stats: [{ value, label, caption? }]`, optional `title`).
+- `quote` — pull quote (`text`, optional `attribution`).
+- `section` — chapter break on an inverted full-color background (`title`, optional `subtitle`).
+- `image_full` — full-bleed image with overlay (`image_url`, optional `title`, `caption`).
+
+**Design guidance — produce decks a designer would ship:**
+
+- Vary layouts. Do **not** use `body` for every slide; mix in `stat`, `quote`, `section`, `two_column`, and `image_full`.
+- Keep bullets short: under ~10 words each, at most 5 per slide. Offload detail to speaker notes.
+- For decks longer than ~8 slides, use `section` slides to mark chapter boundaries.
+- Numbers and KPIs belong in `stat` slides (1–4 stats). Testimonials and sayings belong in `quote` slides. Use `image_full` for emotional openers or closers.
+- `image_url` must be a direct image URL — prefer `https://images.unsplash.com/...`, `https://images.pexels.com/...`, or URLs the user supplied. **Never** link to a search-results page, and never use Google image-search URLs.
+- Use the top-level `notes_per_slide: string[]` for speaker notes (one entry per slide, aligned by index).
+
+**Minimal example call:**
+
+```json
+{
+  "path": "/Users/me/Documents/sources/q4-review.pptx",
+  "spec": {
+    "title": "Q4 Business Review",
+    "theme": "nexa-dark",
+    "slides": [
+      { "layout": "title", "title": "Q4 Business Review", "subtitle": "Highlights & Forward Look", "author": "Finance Team" },
+      { "layout": "agenda", "items": ["Revenue", "Product", "Customers", "Outlook"] },
+      { "layout": "stat", "title": "By the numbers", "stats": [
+        { "value": "$4.2M", "label": "ARR", "caption": "+38% YoY" },
+        { "value": "97%", "label": "Retention" },
+        { "value": "12", "label": "New markets" }
+      ]},
+      { "layout": "quote", "text": "Best quarter of engagement we've shipped.", "attribution": "Head of Product" },
+      { "layout": "section", "title": "Looking ahead" },
+      { "layout": "body", "title": "2026 priorities", "bullets": ["Expand enterprise motion", "Ship multi-agent flows", "Invest in evals"] }
+    ]
+  }
+}
+```
 
 ---
 

@@ -46,7 +46,9 @@ $null
 .github/agents/
 .github/prompts/
 .github/copilot*
-.github/skills/
+.github/skills/*
+!.github/skills/ppt-generation/
+!.github/skills/ppt-generation/**
 
 # Ouroboros working files (keep templates/agents)
 .ouroboros/

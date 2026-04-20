@@ -32,6 +32,8 @@ import { PlanPanel, VerificationPanel } from './TaskPanels';
 import type { ArtifactPayload } from '../../types/conversation';
 import type { VerificationOverallStatus } from '../../lib/taskArtifacts';
 import { SubagentCard } from './SubagentCard';
+import { PptDeckCard } from './PptDeckCard';
+import type { DeckSpec } from '../../lib/ppt';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -144,6 +146,19 @@ function getToolBriefResult(status: string, content?: string, toolName?: string)
     if (lines > 3) return `${lines} lines`;
   }
   return 'done';
+}
+
+function extractPptDeckArtifact(
+  artifacts: ArtifactPayload | undefined,
+): { path: string; spec: DeckSpec } | null {
+  if (!artifacts || Array.isArray(artifacts)) return null;
+  const raw = (artifacts as Record<string, unknown>).ppt_deck;
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as { path?: unknown; spec?: unknown };
+  if (typeof obj.path !== 'string' || !obj.spec || typeof obj.spec !== 'object') return null;
+  const spec = obj.spec as DeckSpec;
+  if (!Array.isArray(spec.slides)) return null;
+  return { path: obj.path, spec };
 }
 
 function verificationStatusLabel(
@@ -282,6 +297,7 @@ export function ToolCallCard({
   const subagentJudgement = useMemo(() => extractSubagentJudgementArtifact(artifacts), [artifacts]);
   const planArtifact = useMemo(() => extractPlanArtifact(artifacts), [artifacts]);
   const verificationArtifact = useMemo(() => extractVerificationArtifact(artifacts), [artifacts]);
+  const pptDeckArtifact = useMemo(() => extractPptDeckArtifact(artifacts), [artifacts]);
   const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact);
 
   const isSearchDone =
@@ -417,6 +433,24 @@ export function ToolCallCard({
           </div>
         )}
       </div>
+    );
+  }
+
+  if (pptDeckArtifact && !inline && !compact && !trace) {
+    const artifactKey = `${pptDeckArtifact.path}::${pptDeckArtifact.spec.slides.length}::${pptDeckArtifact.spec.title}`;
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+        className="my-2"
+      >
+        <PptDeckCard
+          artifactKey={artifactKey}
+          path={pptDeckArtifact.path}
+          spec={pptDeckArtifact.spec}
+        />
+      </motion.div>
     );
   }
 

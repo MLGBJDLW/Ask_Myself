@@ -1,6 +1,6 @@
 {
   "name": "generate_document",
-  "description": "Routing proxy: dispatches to generate_docx, generate_xlsx, or generate_pptx based on the `format` field. Prefer calling the format-specific tool directly when the format is known.",
+  "description": "Routing proxy: dispatches to generate_docx, generate_xlsx, or ppt_generate based on the `format` field. Prefer calling the format-specific tool directly when the format is known.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -15,7 +15,7 @@
       },
       "content": {
         "type": "object",
-        "description": "Structured content for the document. Schema depends on the format chosen — see generate_docx, generate_xlsx, or generate_pptx for details."
+        "description": "Structured content for the document. Schema depends on the format chosen — see generate_docx, generate_xlsx, or ppt_generate for details."
       }
     },
     "required": ["format", "path", "content"]

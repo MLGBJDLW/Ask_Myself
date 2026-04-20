@@ -1017,6 +1017,31 @@ pub fn show_in_file_explorer(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Save raw bytes as a PPTX file. Used by the frontend pptxgenjs renderer
+/// to persist the deck produced by the `ppt_generate` tool artifact.
+///
+/// If `path` is empty or the parent directory does not exist, returns an error
+/// and expects the caller to fall back to a save dialog. The frontend is
+/// responsible for path validation / user confirmation before calling this.
+#[tauri::command]
+pub fn save_pptx_bytes(path: String, bytes: Vec<u8>) -> Result<String, String> {
+    if path.trim().is_empty() {
+        return Err("save_pptx_bytes: empty path".to_string());
+    }
+    let p = std::path::PathBuf::from(&path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            return Err(format!(
+                "save_pptx_bytes: parent directory does not exist: {}",
+                parent.display()
+            ));
+        }
+    }
+    std::fs::write(&p, &bytes)
+        .map_err(|e| format!("save_pptx_bytes: write failed: {e}"))?;
+    Ok(p.to_string_lossy().into_owned())
+}
+
 // ── Watcher Commands ────────────────────────────────────────────────────
 
 #[tauri::command]

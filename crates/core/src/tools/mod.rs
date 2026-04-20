@@ -78,8 +78,8 @@ pub mod fetch_url_tool;
 pub mod file_tool;
 pub mod generate_document_tool;
 pub mod generate_docx_tool;
-pub mod generate_pptx_tool;
 pub mod generate_xlsx_tool;
+pub mod ppt_generate_tool;
 pub mod health_check_tool;
 pub mod knowledge_graph_tool;
 pub mod list_dir_tool;
@@ -498,7 +498,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(generate_document_tool::GenerateDocumentTool));
     registry.register(Box::new(generate_docx_tool::GenerateDocxTool));
     registry.register(Box::new(generate_xlsx_tool::GenerateXlsxTool));
-    registry.register(Box::new(generate_pptx_tool::GeneratePptxTool));
+    registry.register(Box::new(ppt_generate_tool::PptGenerateTool));
     registry.register(Box::new(edit_document_tool::EditDocumentTool));
     registry.register(Box::new(submit_feedback_tool::SubmitFeedbackTool));
     registry.register(Box::new(document_info_tool::GetDocumentInfoTool));

@@ -1,5 +1,6 @@
 //! GenerateDocumentTool — backward-compatible router that dispatches to
-//! `generate_docx`, `generate_xlsx`, or `generate_pptx` based on the `format` field.
+//! `generate_docx` or `generate_xlsx` based on the `format` field.
+//! PPTX requests are redirected to the dedicated `ppt_generate` tool.
 //!
 //! This tool is kept for backward compatibility. New code should call the
 //! format-specific tools directly.
@@ -15,7 +16,6 @@ use crate::error::CoreError;
 
 use super::create_file_tool::{has_path_traversal, resolve_and_validate};
 use super::generate_docx_tool::generate_docx;
-use super::generate_pptx_tool::generate_pptx;
 use super::generate_xlsx_tool::generate_xlsx;
 use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
 
@@ -83,10 +83,19 @@ impl Tool for GenerateDocumentTool {
         }
 
         let format = args.format.to_lowercase();
-        if !matches!(format.as_str(), "docx" | "xlsx" | "pptx") {
+        if format == "pptx" {
             return Ok(ToolResult {
                 call_id: call_id.to_string(),
-                content: format!("Unsupported format '{format}'. Use docx, xlsx, or pptx."),
+                content: "For PPTX output, call the `ppt_generate` tool directly with a deck spec."
+                    .into(),
+                is_error: true,
+                artifacts: None,
+            });
+        }
+        if !matches!(format.as_str(), "docx" | "xlsx") {
+            return Ok(ToolResult {
+                call_id: call_id.to_string(),
+                content: format!("Unsupported format '{format}'. Use docx or xlsx (for pptx use `ppt_generate`)."),
                 is_error: true,
                 artifacts: None,
             });
@@ -131,7 +140,6 @@ impl Tool for GenerateDocumentTool {
             let result = match format.as_str() {
                 "docx" => generate_docx(&canonical, &content),
                 "xlsx" => generate_xlsx(&canonical, &content),
-                "pptx" => generate_pptx(&canonical, &content),
                 _ => unreachable!(),
             };
 
