@@ -219,7 +219,7 @@ impl McpClient {
                 "protocolVersion": version,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "ask-myself",
+                    "name": "nexa",
                     "version": "0.1.0"
                 }
             });

@@ -12,7 +12,19 @@ export const THEMES: ThemeOption[] = [
   { id: 'midnight', label: 'Midnight', icon: 'star' },
 ];
 
-export const STORAGE_KEY = 'ask-myself-theme';
+export const STORAGE_KEY = 'nexa-theme';
+const LEGACY_STORAGE_KEY = 'ask-myself-theme';
+
+// One-shot migration from pre-Nexa storage key (v0.x rebrand)
+if (typeof window !== 'undefined' && window.localStorage) {
+  if (!localStorage.getItem(STORAGE_KEY)) {
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacy) {
+      localStorage.setItem(STORAGE_KEY, legacy);
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    }
+  }
+}
 
 export function getInitialTheme(): ThemeId {
   const stored = localStorage.getItem(STORAGE_KEY);

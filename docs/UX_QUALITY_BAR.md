@@ -2,7 +2,7 @@
 
 ## Goal
 
-This document defines the front-end quality bar for Ask Myself as a consumer-facing desktop assistant.
+This document defines the front-end quality bar for Nexa as a consumer-facing desktop assistant.
 
 Every major UI change should be judged against this bar before it ships.
 

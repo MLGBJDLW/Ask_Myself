@@ -1,6 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
 
-const STORAGE_KEY = 'ask-myself-mic-device-id';
+const STORAGE_KEY = 'nexa-mic-device-id';
+const LEGACY_STORAGE_KEY = 'ask-myself-mic-device-id';
+
+// One-shot migration from pre-Nexa storage key (v0.x rebrand)
+if (typeof window !== 'undefined' && window.localStorage) {
+  if (!localStorage.getItem(STORAGE_KEY)) {
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacy) {
+      localStorage.setItem(STORAGE_KEY, legacy);
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    }
+  }
+}
 
 export interface UseMicrophoneDevicesReturn {
   devices: MediaDeviceInfo[];

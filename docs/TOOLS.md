@@ -1,6 +1,6 @@
 # Tool Reference
 
-Ask Myself ships with built-in tools that the AI agent calls autonomously during conversations. Every tool operates locally against your indexed knowledge base.
+Nexa ships with built-in tools that the AI agent calls autonomously during conversations. Every tool operates locally against your indexed knowledge base.
 
 ---
 

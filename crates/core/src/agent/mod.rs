@@ -2742,7 +2742,7 @@ mod tests {
         );
 
         let core_idx = prompt
-            .find("You are **Ask Myself**")
+            .find("You are **Nexa**")
             .expect("core prompt should be present");
         let custom_idx = prompt
             .find("## Conversation-Specific Instructions")

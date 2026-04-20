@@ -156,7 +156,7 @@ impl Default for VideoConfig {
     fn default() -> Self {
         let model_path = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("ask-myself")
+            .join(crate::APP_DIR)
             .join("models")
             .join("whisper")
             .to_string_lossy()
@@ -1866,7 +1866,7 @@ pub fn analyze_video(
     let duration_secs = get_video_duration(video_path, config).ok();
 
     // 2. Create temp directory for working files (RAII cleanup on drop)
-    let temp_dir = std::env::temp_dir().join(format!("ask-myself-video-{}", uuid::Uuid::new_v4()));
+    let temp_dir = std::env::temp_dir().join(format!("nexa-video-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir)
         .map_err(|e| CoreError::Video(format!("Failed to create temp dir: {e}")))?;
     let _guard = TempDirGuard(temp_dir.clone());
@@ -1995,7 +1995,7 @@ pub fn analyze_video(
     let thumbnail_path = {
         let thumb_dir = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("ask-myself")
+            .join(crate::APP_DIR)
             .join("thumbnails");
         let _ = std::fs::create_dir_all(&thumb_dir);
         let video_hash = blake3::hash(video_path.to_string_lossy().as_bytes())

@@ -272,7 +272,7 @@ impl Tool for FetchUrlTool {
 
         // Build an async reqwest client.
         let client = reqwest::Client::builder()
-            .user_agent("ask-myself/1.0")
+            .user_agent(crate::USER_AGENT)
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| CoreError::InvalidInput(format!("Failed to build HTTP client: {e}")))?;

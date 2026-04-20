@@ -2,7 +2,7 @@ import type { TranslationKeys } from '../types';
 
 export const ja: TranslationKeys = {
   // App
-  'app.name': 'Ask Myself',
+  'app.name': 'Nexa',
 
   // Nav
   'nav.search': '検索',
@@ -1061,7 +1061,7 @@ export const ja: TranslationKeys = {
   'search.embeddingWarningAction': '今すぐインストール',
 
   // Welcome Wizard
-  'welcome.title': 'Ask Myself へようこそ',
+  'welcome.title': 'Nexa へようこそ',
   'welcome.subtitle': 'あなたの個人ナレッジアシスタント',
   'welcome.description': 'ドキュメントを追加し、AI に接続して、自分のナレッジに質問を始めましょう。',
   'welcome.getStarted': '始めましょう',
@@ -1078,7 +1078,7 @@ export const ja: TranslationKeys = {
   'welcome.connectionFailed': '接続に失敗しました',
   'welcome.allSet': '準備完了！',
   'welcome.allSetDescription': 'ナレッジの探索を始めましょう',
-  'welcome.startUsing': 'Ask Myself を使い始める',
+  'welcome.startUsing': 'Nexa を使い始める',
   'welcome.skip': 'スキップ',
   'welcome.step': 'ステップ {current} / {total}',
 };

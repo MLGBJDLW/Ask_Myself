@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    localStorage.setItem("ask-myself-locale", "en");
+    localStorage.setItem("nexa-locale", "en");
 
     const nowIso = new Date().toISOString();
     const callbackMap = new Map<number, (event: unknown) => void>();

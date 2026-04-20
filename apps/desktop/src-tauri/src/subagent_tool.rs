@@ -6,13 +6,13 @@ use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 
-use ask_core::agent::{AgentConfig, AgentEvent, AgentExecutor};
-use ask_core::db::Database;
-use ask_core::error::CoreError;
-use ask_core::llm::{create_provider, CompletionRequest, ContentPart, ProviderConfig, Usage};
-use ask_core::search;
-use ask_core::skills::Skill;
-use ask_core::tools::{Tool, ToolRegistry, ToolResult};
+use nexa_core::agent::{AgentConfig, AgentEvent, AgentExecutor};
+use nexa_core::db::Database;
+use nexa_core::error::CoreError;
+use nexa_core::llm::{create_provider, CompletionRequest, ContentPart, ProviderConfig, Usage};
+use nexa_core::search;
+use nexa_core::skills::Skill;
+use nexa_core::tools::{Tool, ToolRegistry, ToolResult};
 
 const DESCRIPTION: &str = "Spawn a short-lived subagent to handle an isolated subtask, gather an independent perspective, or critique another result. You can call this tool multiple times in parallel, pass it explicit evidence and acceptance criteria, narrow its source scope or tool access, and then synthesize or adjudicate the returned results yourself.";
 const BATCH_DESCRIPTION: &str = "Spawn a batch of short-lived subagents for parallel fan-out research, critique, or comparison. Use this when you want several independent delegated workers launched together under one shared budget and then synthesize or adjudicate them later.";
@@ -1561,11 +1561,11 @@ impl Tool for JudgeSubagentResultsTool {
                 .or_else(|| self.runtime.base_config.model.clone())
                 .unwrap_or_else(|| "gpt-4o-mini".to_string()),
             messages: vec![
-                ask_core::llm::Message::text(
-                    ask_core::llm::Role::System,
+                nexa_core::llm::Message::text(
+                    nexa_core::llm::Role::System,
                     build_judge_system_prompt(&self.runtime.base_config.system_prompt),
                 ),
-                ask_core::llm::Message::text(ask_core::llm::Role::User, build_judge_request(&args)),
+                nexa_core::llm::Message::text(nexa_core::llm::Role::User, build_judge_request(&args)),
             ],
             temperature: Some(0.1),
             max_tokens: Some(1200),

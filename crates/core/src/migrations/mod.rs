@@ -1,4 +1,4 @@
-/// Schema migration runner for ask-core.
+/// Schema migration runner for nexa-core.
 ///
 /// Uses a single consolidated schema for fresh installs, with support
 /// for future incremental migrations (v017+). Tracks applied migrations

@@ -2,7 +2,7 @@ import type { TranslationKeys } from '../types';
 
 export const ko: TranslationKeys = {
   // App
-  'app.name': 'Ask Myself',
+  'app.name': 'Nexa',
 
   // Nav
   'nav.search': '검색',
@@ -1063,7 +1063,7 @@ export const ko: TranslationKeys = {
   'search.embeddingWarningAction': '지금 설치',
 
   // Welcome Wizard
-  'welcome.title': 'Ask Myself에 오신 것을 환영합니다',
+  'welcome.title': 'Nexa에 오신 것을 환영합니다',
   'welcome.subtitle': '나만의 지식 어시스턴트',
   'welcome.description': '문서를 추가하고 AI를 연결하여 나만의 지식에 대해 질문해 보세요.',
   'welcome.getStarted': '시작하기',
@@ -1080,7 +1080,7 @@ export const ko: TranslationKeys = {
   'welcome.connectionFailed': '연결 실패',
   'welcome.allSet': '모든 준비 완료!',
   'welcome.allSetDescription': '지식 탐색을 시작하세요',
-  'welcome.startUsing': 'Ask Myself 사용 시작',
+  'welcome.startUsing': 'Nexa 사용 시작',
   'welcome.skip': '나중에 하기',
   'welcome.step': '{total}단계 중 {current}단계',
 };

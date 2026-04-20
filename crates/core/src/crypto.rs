@@ -34,6 +34,11 @@ fn derive_machine_key() -> [u8; 32] {
         .or_else(|_| std::env::var("USER")) // Unix
         .unwrap_or_else(|_| "unknown-user".into());
 
+    // SECURITY: The two strings below are cryptographic domain separators, NOT brand tokens.
+    // They derive the AES-GCM key used to encrypt users' saved API keys. Renaming them
+    // (e.g., as part of the Nexa rebrand) would silently corrupt all existing encrypted
+    // API keys on users' machines. They are intentionally preserved across the rebrand.
+    // DO NOT MODIFY.
     let mut hasher = blake3::Hasher::new_derive_key("ask-myself api-key encryption v1");
     hasher.update(b"ask-myself-salt-2025");
     hasher.update(hostname.as_bytes());

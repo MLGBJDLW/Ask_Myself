@@ -4,13 +4,101 @@ mod commands;
 mod subagent_tool;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use ask_core::db::Database;
 use commands::{AgentState, AppState, DownloadCancelFlag, McpManagerState};
+use nexa_core::db::Database;
 use tauri::Manager;
 use tokio::sync::Mutex as TokioMutex;
+
+/// One-shot migration of user data from the pre-rebrand "ask-myself" layout
+/// to the new "nexa" layout. Runs on every startup but is a no-op once the
+/// new paths exist, so it is safe to call repeatedly.
+///
+/// Migrates, in this order:
+///   1. SQLite DB:      `ask-myself.db` -> `nexa.db` (same data_dir)
+///   2. Models cache:   `<data_dir>/ask-myself/` -> `<data_dir>/nexa/`
+///   3. Legacy-identifier fallback: on OSes where `app_data_dir()` is keyed
+///      by the bundle identifier (Tauri v2 behaviour on Windows & macOS),
+///      the old `com.askmyself.desktop` directory contains the user's data,
+///      while the current `data_dir` is a freshly-created empty dir under
+///      `com.nexa.desktop`. Detect this case by looking at a sibling of
+///      `data_dir` named `com.askmyself.desktop` and migrate the DB + models
+///      from there.
+///
+/// Failure policy: log + continue. We do NOT fail startup if a rename fails
+/// (users can still use the app with fresh state; data is not destroyed).
+fn migrate_legacy_data_dir(data_dir: &Path) {
+    // Helper: rename if src exists and dst does not. Logs outcome.
+    let try_rename = |src: &Path, dst: &Path, label: &str| {
+        if !src.exists() {
+            return;
+        }
+        if dst.exists() {
+            log::info!(
+                "[migrate] {label}: destination {} already exists; skipping",
+                dst.display()
+            );
+            return;
+        }
+        match std::fs::rename(src, dst) {
+            Ok(()) => log::info!(
+                "[migrate] {label}: {} -> {}",
+                src.display(),
+                dst.display()
+            ),
+            Err(e) => log::warn!(
+                "[migrate] {label}: failed to rename {} -> {}: {e}",
+                src.display(),
+                dst.display()
+            ),
+        }
+    };
+
+    // 1 & 2: same-directory migration (works when data_dir is identifier-agnostic,
+    //        e.g. Linux XDG path, or when user manually copied old data).
+    try_rename(
+        &data_dir.join("ask-myself.db"),
+        &data_dir.join("nexa.db"),
+        "db (same dir)",
+    );
+    try_rename(
+        &data_dir.join("ask-myself"),
+        &data_dir.join("nexa"),
+        "models dir (same dir)",
+    );
+
+    // 3: cross-identifier migration. On Windows & macOS, Tauri v2's
+    //    app_data_dir() is `<appdata-root>/<bundle-identifier>`, so the
+    //    legacy data lives in a sibling directory.
+    if let Some(parent) = data_dir.parent() {
+        let legacy_root = parent.join("com.askmyself.desktop");
+        if legacy_root.exists() && legacy_root != data_dir {
+            try_rename(
+                &legacy_root.join("ask-myself.db"),
+                &data_dir.join("nexa.db"),
+                "db (legacy identifier)",
+            );
+            try_rename(
+                &legacy_root.join("nexa.db"),
+                &data_dir.join("nexa.db"),
+                "db (legacy identifier, already renamed)",
+            );
+            try_rename(
+                &legacy_root.join("ask-myself"),
+                &data_dir.join("nexa"),
+                "models dir (legacy identifier)",
+            );
+            try_rename(
+                &legacy_root.join("nexa"),
+                &data_dir.join("nexa"),
+                "models dir (legacy identifier, already renamed)",
+            );
+        }
+    }
+}
 
 fn main() {
     let app = tauri::Builder::default()
@@ -26,7 +114,10 @@ fn main() {
                 .expect("failed to resolve app data directory");
             std::fs::create_dir_all(&data_dir).expect("failed to create app data directory");
 
-            let db_path = data_dir.join("ask-myself.db");
+            // Migrate legacy user data (ask-myself -> nexa). Safe to call every start.
+            migrate_legacy_data_dir(&data_dir);
+
+            let db_path = data_dir.join("nexa.db");
             let db = Database::new(&db_path).expect("failed to initialize database");
             let db = Arc::new(db);
 
@@ -40,7 +131,7 @@ fn main() {
                 running: TokioMutex::new(HashMap::new()),
             });
             app.manage(McpManagerState {
-                manager: TokioMutex::new(ask_core::mcp::McpManager::new()),
+                manager: TokioMutex::new(nexa_core::mcp::McpManager::new()),
             });
             app.manage(DownloadCancelFlag(Arc::new(AtomicBool::new(false))));
 

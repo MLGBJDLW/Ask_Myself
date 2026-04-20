@@ -1,8 +1,8 @@
-# Ask Myself
+# Nexa
 
 > A local-first personal knowledge and desktop assistance workspace.
 
-Ask Myself is a desktop application that turns your local files into a searchable, AI-augmented knowledge base and a practical desktop assistant. Point it at folders containing notes, PDFs, logs, spreadsheets, presentations, and other documents; it indexes everything locally, lets you search in natural language, grounds answers in evidence from your own data, and increasingly helps with everyday desktop tasks such as investigation, summarization, document creation, and office-style assistance.
+Nexa is a desktop application that turns your local files into a searchable, AI-augmented knowledge base and a practical desktop assistant. Point it at folders containing notes, PDFs, logs, spreadsheets, presentations, and other documents; it indexes everything locally, lets you search in natural language, grounds answers in evidence from your own data, and increasingly helps with everyday desktop tasks such as investigation, summarization, document creation, and office-style assistance.
 
 Unlike cloud-native note tools, the core data path stays on your machine. Indexing, parsing, embedding, OCR, search, collections, and chat persistence all run locally. External LLM providers can be used for generation, but the app sends scoped context rather than your full document store.
 
@@ -15,7 +15,7 @@ The project has recently evolved beyond a flat chat log:
 
 ## Product Direction
 
-Ask Myself is no longer only a “local knowledge base chat” product.
+Nexa is no longer only a “local knowledge base chat” product.
 
 The active direction is:
 
@@ -165,8 +165,8 @@ See [docs/TOOLS.md](docs/TOOLS.md) for the tool reference.
 ### Install
 
 ```bash
-git clone https://github.com/MLGBJDLW/Ask_Myself.git
-cd Ask_Myself
+git clone https://github.com/MLGBJDLW/Nexa.git
+cd Nexa
 cd apps/desktop
 npm install
 cd ../..
@@ -188,7 +188,7 @@ npm run tauri build
 
 ## Feature Flags
 
-The `ask-core` crate uses Cargo features to gate heavier functionality:
+The `nexa-core` crate uses Cargo features to gate heavier functionality:
 
 | Feature | Default | Notes |
 | --- | --- | --- |
@@ -199,10 +199,10 @@ Examples:
 
 ```bash
 # Core crate only
-cargo build -p ask-core
+cargo build -p nexa-core
 
 # Enable video support
-cargo build -p ask-core --features video
+cargo build -p nexa-core --features video
 ```
 
 ## Repository Layout

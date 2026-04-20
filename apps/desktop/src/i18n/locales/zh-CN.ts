@@ -2,7 +2,7 @@ import type { TranslationKeys } from '../types';
 
 export const zhCN: TranslationKeys = {
   // App
-  'app.name': 'Ask Myself',
+  'app.name': 'Nexa',
 
   // Nav
   'nav.search': '搜索',
@@ -1078,7 +1078,7 @@ export const zhCN: TranslationKeys = {
   'search.embeddingWarningAction': '立即安装',
 
   // Welcome Wizard
-  'welcome.title': '欢迎使用 Ask Myself',
+  'welcome.title': '欢迎使用 Nexa',
   'welcome.subtitle': '你的个人知识助手',
   'welcome.description': '添加文档、连接 AI，开始向自己的知识库提问。',
   'welcome.getStarted': '开始使用',
@@ -1095,7 +1095,7 @@ export const zhCN: TranslationKeys = {
   'welcome.connectionFailed': '连接失败',
   'welcome.allSet': '一切就绪！',
   'welcome.allSetDescription': '开始探索你的知识库',
-  'welcome.startUsing': '开始使用 Ask Myself',
+  'welcome.startUsing': '开始使用 Nexa',
   'welcome.skip': '暂时跳过',
   'welcome.step': '第 {current} 步，共 {total} 步',
 };

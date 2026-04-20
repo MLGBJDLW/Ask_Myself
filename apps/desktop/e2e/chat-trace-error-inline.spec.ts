@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    localStorage.setItem('ask-myself-locale', 'en');
+    localStorage.setItem('nexa-locale', 'en');
     (window as Window & { __ASK_STREAM_TIMEOUT_MS__?: number }).__ASK_STREAM_TIMEOUT_MS__ = 120;
     history.replaceState(
       { usr: { initialMessage: 'Why did the connection fail?' }, key: 'e2e-inline-error', idx: 0 },

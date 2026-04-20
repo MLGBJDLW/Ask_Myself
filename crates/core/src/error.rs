@@ -1,4 +1,4 @@
-//! Core error types for the ask-core crate.
+//! Core error types for the nexa-core crate.
 
 use thiserror::Error;
 

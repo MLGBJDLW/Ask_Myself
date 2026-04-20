@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    localStorage.setItem('ask-myself-locale', 'en');
+    localStorage.setItem('nexa-locale', 'en');
     history.replaceState(
       { usr: { initialMessage: 'What should we change for retries?' }, key: 'e2e-initial-message', idx: 0 },
       '',

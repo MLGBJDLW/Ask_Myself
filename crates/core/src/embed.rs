@@ -793,7 +793,7 @@ impl OnnxEmbedder {
     /// Create a new ONNX embedder.
     ///
     /// If `model_dir` is `None`, uses the default cache path at
-    /// `<data_dir>/ask-myself/models/<model_name>/`.
+    /// `<data_dir>/<APP_DIR>/models/<model_name>/`.
     /// Downloads model files from HuggingFace when not already present.
     pub fn new(model_dir: Option<PathBuf>, model: LocalEmbeddingModel) -> Result<Self, CoreError> {
         let dir = match model_dir {
@@ -977,7 +977,7 @@ pub fn default_model_dir_for(model: &LocalEmbeddingModel) -> Result<PathBuf, Cor
     let data_dir = dirs::data_dir()
         .ok_or_else(|| CoreError::Embedding("cannot determine data directory".into()))?;
     Ok(data_dir
-        .join("ask-myself")
+        .join(crate::APP_DIR)
         .join("models")
         .join(model.model_name()))
 }
@@ -996,7 +996,7 @@ fn download_model_files(target_dir: &Path, model: &LocalEmbeddingModel) -> Resul
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
-        .user_agent("ask-myself/1.0")
+        .user_agent(crate::USER_AGENT)
         .build()
         .map_err(|e| CoreError::Embedding(format!("create HTTP client: {e}")))?;
 
@@ -1056,7 +1056,7 @@ fn download_model_files_with_progress(
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
-        .user_agent("ask-myself/1.0")
+        .user_agent(crate::USER_AGENT)
         .build()
         .map_err(|e| CoreError::Embedding(format!("create HTTP client: {e}")))?;
 

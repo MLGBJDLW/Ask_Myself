@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    localStorage.setItem("ask-myself-locale", "en");
+    localStorage.setItem("nexa-locale", "en");
     history.replaceState(
       {
         usr: { initialMessage: "Why did the retry guard fail?" },

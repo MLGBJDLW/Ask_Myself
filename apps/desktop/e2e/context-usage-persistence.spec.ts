@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    localStorage.setItem('ask-myself-locale', 'en');
+    localStorage.setItem('nexa-locale', 'en');
     if (!sessionStorage.getItem('__e2e_initialized__')) {
       localStorage.removeItem('chat-token-usage-v1');
       sessionStorage.setItem('__e2e_initialized__', '1');

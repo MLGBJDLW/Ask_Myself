@@ -45,7 +45,7 @@ Set-Content $coreCargoToml -Value $content -Encoding UTF8 -NoNewline
 Write-Host "`nRunning cargo check ..."
 Push-Location $root
 try {
-    cargo check -p ask-myself-desktop --no-default-features
+    cargo check -p nexa-desktop --no-default-features
     if ($LASTEXITCODE -ne 0) {
         Write-Error "cargo check failed"
         exit 1

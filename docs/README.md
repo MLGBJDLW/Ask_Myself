@@ -1,6 +1,6 @@
 # Documentation Index
 
-This folder captures the durable product and engineering memory for Ask Myself.
+This folder captures the durable product and engineering memory for Nexa.
 
 ## Product
 

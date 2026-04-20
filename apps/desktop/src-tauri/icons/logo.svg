@@ -1,7 +1,60 @@
-<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="64" y="64" width="896" height="896" rx="220" fill="#111827"/>
-  <path d="M312 332C281.072 332 256 357.072 256 388V620C256 650.928 281.072 676 312 676H396L468 748V676H712C742.928 676 768 650.928 768 620V388C768 357.072 742.928 332 712 332H312Z" stroke="#14B8A6" stroke-width="64" stroke-linejoin="round"/>
-  <path d="M646 522H472" stroke="#F8FAFC" stroke-width="72" stroke-linecap="round"/>
-  <path d="M547 436L460 522L547 608" stroke="#F8FAFC" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="702" cy="522" r="40" fill="#14B8A6"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0E1530"/>
+      <stop offset="100%" stop-color="#1B2A52"/>
+    </linearGradient>
+    <linearGradient id="ribbonGrad" x1="0.2" y1="0.1" x2="0.9" y2="0.95">
+      <stop offset="0%" stop-color="#7CC6FF"/>
+      <stop offset="45%" stop-color="#5B8DEF"/>
+      <stop offset="100%" stop-color="#22D3B0"/>
+    </linearGradient>
+    <linearGradient id="ribbonGradMirror" x1="0.9" y1="0.1" x2="0.2" y2="0.95">
+      <stop offset="0%" stop-color="#7CC6FF"/>
+      <stop offset="45%" stop-color="#5B8DEF"/>
+      <stop offset="100%" stop-color="#22D3B0"/>
+    </linearGradient>
+    <radialGradient id="nodeGrad" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#EAF4FF"/>
+      <stop offset="60%" stop-color="#7CC6FF"/>
+      <stop offset="100%" stop-color="#5B8DEF"/>
+    </radialGradient>
+    <radialGradient id="nodeGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#7CC6FF" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#7CC6FF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softBlur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+  </defs>
+
+  <!-- Background squircle -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#bgGrad)"/>
+
+  <!-- Ribbon 1: descending (top-left → center → bottom-right) -->
+  <path d="M 280,240 C 260,380 300,460 420,512 C 540,540 620,620 744,784"
+        fill="none"
+        stroke="url(#ribbonGrad)"
+        stroke-width="112"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <!-- Weave shadow where Ribbon 2 crosses Ribbon 1 -->
+  <ellipse cx="512" cy="512" rx="80" ry="50" fill="#000" opacity="0.25" filter="url(#softBlur)"/>
+
+  <!-- Ribbon 2: ascending (bottom-left → center → top-right), rendered on top -->
+  <path d="M 280,784 C 360,700 440,600 512,512 C 584,424 660,360 744,240"
+        fill="none"
+        stroke="url(#ribbonGradMirror)"
+        stroke-width="112"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <!-- Luminous nodes -->
+  <circle cx="280" cy="240" r="36" fill="url(#nodeGrad)"/>
+  <circle cx="744" cy="784" r="36" fill="url(#nodeGrad)"/>
+
+  <!-- Center node with glow -->
+  <circle cx="512" cy="512" r="88" fill="url(#nodeGlow)"/>
+  <circle cx="512" cy="512" r="44" fill="url(#nodeGrad)"/>
 </svg>

@@ -37,7 +37,7 @@ pub struct OcrConfig {
     pub use_cls: bool,
 
     /// Optional override path for OCR model files.
-    /// When empty, defaults to `<data_dir>/ask-myself/models/paddleocr/`.
+    /// When empty, defaults to `<data_dir>/<APP_DIR>/models/paddleocr/`.
     pub model_path: String,
 
     /// ISO 639-1 language codes controlling which rec model + dictionary
@@ -214,7 +214,7 @@ fn ocr_model_dir(config: &OcrConfig) -> Result<PathBuf, CoreError> {
     }
     let data_dir =
         dirs::data_dir().ok_or_else(|| CoreError::Ocr("cannot determine data directory".into()))?;
-    Ok(data_dir.join("ask-myself").join("models").join("paddleocr"))
+    Ok(data_dir.join(crate::APP_DIR).join("models").join("paddleocr"))
 }
 
 // ── ImageNet normalisation constants ────────────────────────────────

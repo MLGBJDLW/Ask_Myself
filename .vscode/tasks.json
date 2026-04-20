@@ -4,7 +4,7 @@
 		{
 			"label": "Run feedback tests",
 			"type": "shell",
-			"command": "cargo test -p ask-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
+			"command": "cargo test -p nexa-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
@@ -12,7 +12,7 @@
 		{
 			"label": "Run feedback tests (retry)",
 			"type": "shell",
-			"command": "Remove-Item d:\\coder\\self-reply\\target\\debug\\deps\\ask_core-ba1817ef6c7753ff.exe -Force -ErrorAction SilentlyContinue; cargo test -p ask-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
+			"command": "Remove-Item d:\\coder\\self-reply\\target\\debug\\deps\\nexa_core-ba1817ef6c7753ff.exe -Force -ErrorAction SilentlyContinue; cargo test -p nexa-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
@@ -20,7 +20,7 @@
 		{
 			"label": "Kill & rerun tests",
 			"type": "shell",
-			"command": "taskkill /F /IM ask_core-ba1817ef6c7753ff.exe 2>$null; Start-Sleep 1; cargo test -p ask-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
+			"command": "taskkill /F /IM nexa_core-ba1817ef6c7753ff.exe 2>$null; Start-Sleep 1; cargo test -p nexa-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
@@ -28,7 +28,7 @@
 		{
 			"label": "Kill all & rerun",
 			"type": "shell",
-			"command": "taskkill /F /IM ask_core-ba1817ef6c7753ff.exe 2>$null; taskkill /F /IM ask_core-4e8d5cf5606cd93e.exe 2>$null; Start-Sleep 2; cargo test -p ask-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
+			"command": "taskkill /F /IM nexa_core-ba1817ef6c7753ff.exe 2>$null; taskkill /F /IM nexa_core-4e8d5cf5606cd93e.exe 2>$null; Start-Sleep 2; cargo test -p nexa-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
@@ -36,7 +36,7 @@
 		{
 			"label": "Run feedback tests (fix)",
 			"type": "shell",
-			"command": "taskkill /F /IM ask_core-ba1817ef6c7753ff.exe 2>$null; Start-Sleep 1; cargo test -p ask-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
+			"command": "taskkill /F /IM nexa_core-ba1817ef6c7753ff.exe 2>$null; Start-Sleep 1; cargo test -p nexa-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
@@ -44,7 +44,7 @@
 		{
 			"label": "Kill all processes & test",
 			"type": "shell",
-			"command": "Get-Process | Where-Object { $_.ProcessName -match 'ask_core' } | Stop-Process -Force 2>$null; Get-Process | Where-Object { $_.ProcessName -eq 'cargo' } | Stop-Process -Force 2>$null; Start-Sleep 3; cargo test -p ask-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
+			"command": "Get-Process | Where-Object { $_.ProcessName -match 'nexa_core' } | Stop-Process -Force 2>$null; Get-Process | Where-Object { $_.ProcessName -eq 'cargo' } | Stop-Process -Force 2>$null; Start-Sleep 3; cargo test -p nexa-core -- test_feedback_boosts test_feedback_penalizes test_apply_feedback_reranking_direct test_feedback_adjustment_clamped 2>&1",
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
@@ -52,7 +52,7 @@
 		{
 			"label": "Full test suite",
 			"type": "shell",
-			"command": "Get-Process | Where-Object { $_.ProcessName -match 'ask_core' } | Stop-Process -Force 2>$null; Start-Sleep 2; cargo test -p ask-core 2>&1",
+			"command": "Get-Process | Where-Object { $_.ProcessName -match 'nexa_core' } | Stop-Process -Force 2>$null; Start-Sleep 2; cargo test -p nexa-core 2>&1",
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"

@@ -1,9 +1,16 @@
-//! Ask-core — knowledge-base engine with embedding, search, and OCR.
+//! Nexa-core — knowledge-base engine with embedding, search, and OCR.
 //!
 //! This crate provides the core functionality for ingesting, parsing,
 //! embedding, and searching personal knowledge documents.  An optional
 //! OCR module (feature-gated) adds ONNX-based PaddleOCR for extracting
 //! text from images and scanned PDFs.
+
+/// Application directory name used under the OS data dir.
+/// Changed from "ask-myself" to "nexa" in the v0.x.x rebrand.
+pub const APP_DIR: &str = "nexa";
+
+/// User-agent string for outbound HTTP requests.
+pub const USER_AGENT: &str = "nexa/1.0";
 
 pub mod agent;
 pub mod app_settings;

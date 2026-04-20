@@ -1,13 +1,13 @@
-Ask Myself 桌面端使用说明
+Nexa 桌面端使用说明
 Desktop Application User Guide
 
 概述 Overview
 =============
 
-Ask Myself 是一个本地优先的证据回溯引擎。它帮助你在本地文件中
+Nexa 是一个本地优先的证据回溯引擎。它帮助你在本地文件中
 快速检索和定位关键信息，无需云服务或网络连接。
 
-Ask Myself is a local-first evidence recall engine. It helps you
+Nexa is a local-first evidence recall engine. It helps you
 quickly search and locate key information in your local files,
 without requiring cloud services or network connectivity.
 
@@ -38,5 +38,5 @@ without requiring cloud services or network connectivity.
 联系方式 Contact
 =================
 
-项目地址 Repository: https://github.com/example/ask-myself
-问题反馈 Issues: https://github.com/example/ask-myself/issues
+项目地址 Repository: https://github.com/example/nexa
+问题反馈 Issues: https://github.com/example/nexa/issues

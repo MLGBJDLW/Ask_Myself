@@ -8,40 +8,40 @@ use std::time::{Duration, Instant};
 use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, SubagentBatchTool, SubagentTool,
 };
-use ask_core::agent::{
+use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
     CancellationToken, ConfirmationCallback,
 };
-use ask_core::app_settings::{AppConfig, ShellAccessMode};
-use ask_core::conversation::memory::estimate_tokens;
-use ask_core::conversation::{
+use nexa_core::app_settings::{AppConfig, ShellAccessMode};
+use nexa_core::conversation::memory::estimate_tokens;
+use nexa_core::conversation::{
     AgentConfig as DbAgentConfig, CollectionContext, Conversation, ConversationMessage,
     ConversationStats, ConversationTurn, CreateConversationInput, ImageAttachment,
     SaveAgentConfigInput,
 };
-use ask_core::db::Database;
-use ask_core::embed::{EmbedderConfig, LocalEmbeddingModel};
-use ask_core::feedback::{Feedback, FeedbackAction};
-use ask_core::index::IndexStats;
-use ask_core::ingest::{self, EmbedResult, IngestResult};
-use ask_core::llm::{
+use nexa_core::db::Database;
+use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
+use nexa_core::feedback::{Feedback, FeedbackAction};
+use nexa_core::index::IndexStats;
+use nexa_core::ingest::{self, EmbedResult, IngestResult};
+use nexa_core::llm::{
     create_provider, model_supports_vision, CompletionRequest, ContentPart, Message,
     ProviderConfig, ProviderType, ReasoningEffort, Role, Usage,
 };
-use ask_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
+use nexa_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 
-use ask_core::models::{
+use nexa_core::models::{
     EvidenceCard, Playbook, PlaybookCitation, SearchFilters, SearchQuery, Source,
 };
-use ask_core::ocr::extract_text_from_image;
-use ask_core::playbook::QueryLog;
-use ask_core::privacy::PrivacyConfig;
-use ask_core::project::{CreateProjectInput, Project, UpdateProjectInput};
-use ask_core::search::{self, SearchResult};
-use ask_core::skills::{SaveSkillInput, Skill};
-use ask_core::sources::{CreateSourceInput, UpdateSourceInput};
-use ask_core::tools::default_tool_registry;
-use ask_core::watcher::{FileWatcher, WatcherEventKind};
+use nexa_core::ocr::extract_text_from_image;
+use nexa_core::playbook::QueryLog;
+use nexa_core::privacy::PrivacyConfig;
+use nexa_core::project::{CreateProjectInput, Project, UpdateProjectInput};
+use nexa_core::search::{self, SearchResult};
+use nexa_core::skills::{SaveSkillInput, Skill};
+use nexa_core::sources::{CreateSourceInput, UpdateSourceInput};
+use nexa_core::tools::default_tool_registry;
+use nexa_core::watcher::{FileWatcher, WatcherEventKind};
 use base64::Engine;
 use log::{info, warn};
 use serde::Serialize;
@@ -68,7 +68,7 @@ pub struct AgentState {
 
 /// State for the MCP server manager.
 pub struct McpManagerState {
-    pub manager: TokioMutex<ask_core::mcp::McpManager>,
+    pub manager: TokioMutex<nexa_core::mcp::McpManager>,
 }
 
 /// State for tracking active model download cancellation.
@@ -76,7 +76,7 @@ pub struct DownloadCancelFlag(pub Arc<AtomicBool>);
 
 async fn sync_enabled_mcp_servers(
     db: &Database,
-    manager: &mut ask_core::mcp::McpManager,
+    manager: &mut nexa_core::mcp::McpManager,
 ) -> Result<HashMap<String, String>, String> {
     let enabled_servers = db.get_enabled_mcp_servers().map_err(|e| e.to_string())?;
     let app_cfg = db.load_app_config().unwrap_or_default();
@@ -842,7 +842,7 @@ pub fn save_embedder_config_cmd(
 
 #[tauri::command]
 pub fn test_api_connection_cmd(api_key: String, base_url: String) -> Result<bool, String> {
-    ask_core::embed::test_api_connection(&api_key, &base_url).map_err(|e| e.to_string())
+    nexa_core::embed::test_api_connection(&api_key, &base_url).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -850,7 +850,7 @@ pub fn check_local_model_cmd(local_model: Option<String>) -> Result<bool, String
     let model = local_model
         .map(|s| LocalEmbeddingModel::from_config_str(&s))
         .unwrap_or_default();
-    Ok(ask_core::embed::check_local_model_exists_for(None, &model))
+    Ok(nexa_core::embed::check_local_model_exists_for(None, &model))
 }
 
 #[tauri::command]
@@ -865,7 +865,7 @@ pub async fn download_local_model_cmd(
         let model = local_model
             .map(|s| LocalEmbeddingModel::from_config_str(&s))
             .unwrap_or_default();
-        ask_core::embed::download_local_model_for_with_progress(
+        nexa_core::embed::download_local_model_for_with_progress(
             None,
             &model,
             |progress| {
@@ -892,7 +892,7 @@ pub fn delete_local_model_cmd(local_model: Option<String>) -> Result<(), String>
     let model = local_model
         .map(|s| LocalEmbeddingModel::from_config_str(&s))
         .unwrap_or_default();
-    let dir = ask_core::embed::default_model_dir_for(&model).map_err(|e| e.to_string())?;
+    let dir = nexa_core::embed::default_model_dir_for(&model).map_err(|e| e.to_string())?;
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
@@ -924,7 +924,7 @@ fn mime_to_extension(mime: &str) -> &'static str {
 
 /// An image attachment prepared for LLM submission.
 ///
-/// Re-uses [`ask_core::conversation::ImageAttachment`] so that the same
+/// Re-uses [`nexa_core::conversation::ImageAttachment`] so that the same
 /// serialized shape (camelCase JSON) can be persisted alongside a user
 /// message and round-tripped back to the frontend.
 #[tauri::command]
@@ -935,14 +935,14 @@ pub async fn prepare_image_attachment(path: String) -> Result<ImageAttachment, S
     }
 
     let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read file: {e}"))?;
-    let mime = ask_core::parse::detect_mime_type(file_path);
+    let mime = nexa_core::parse::detect_mime_type(file_path);
 
-    if !ask_core::media::is_supported_image(&mime) {
+    if !nexa_core::media::is_supported_image(&mime) {
         return Err(format!("Unsupported image type: {mime}"));
     }
 
     let (base64_data, media_type) =
-        ask_core::media::prepare_image_for_llm(&bytes, &mime).map_err(|e| e.to_string())?;
+        nexa_core::media::prepare_image_for_llm(&bytes, &mime).map_err(|e| e.to_string())?;
 
     let original_name = file_path
         .file_name()
@@ -1562,7 +1562,7 @@ pub async fn generate_title_cmd(
     let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
-    let title = ask_core::conversation::generate_title(
+    let title = nexa_core::conversation::generate_title(
         provider.as_ref(),
         &title_model,
         &user_content,
@@ -1674,7 +1674,7 @@ pub async fn compact_conversation_cmd(
         shell_access_mode: ShellAccessMode::Restricted,
     };
 
-    let summarization_provider: Option<Box<dyn ask_core::llm::LlmProvider>> =
+    let summarization_provider: Option<Box<dyn nexa_core::llm::LlmProvider>> =
         if let Some(ref summ_provider_name) = db_config.summarization_provider {
             let summ_config = ProviderConfig {
                 provider_type: parse_provider_type(summ_provider_name),
@@ -1717,7 +1717,7 @@ pub async fn search_conversations_cmd(
     state: tauri::State<'_, AppState>,
     query: String,
     limit: Option<usize>,
-) -> Result<Vec<ask_core::conversation::ConversationSearchResult>, String> {
+) -> Result<Vec<nexa_core::conversation::ConversationSearchResult>, String> {
     state
         .db
         .search_conversations(&query, limit.unwrap_or(20))
@@ -1730,7 +1730,7 @@ pub async fn search_conversations_cmd(
 pub fn list_checkpoints_cmd(
     state: tauri::State<'_, AppState>,
     conversation_id: String,
-) -> Result<Vec<ask_core::conversation::Checkpoint>, String> {
+) -> Result<Vec<nexa_core::conversation::Checkpoint>, String> {
     state
         .db
         .list_checkpoints(&conversation_id)
@@ -1789,7 +1789,7 @@ pub async fn get_conversation_sources_cmd(
 #[tauri::command]
 pub async fn list_user_memories_cmd(
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<ask_core::personalization::UserMemory>, String> {
+) -> Result<Vec<nexa_core::personalization::UserMemory>, String> {
     state.db.list_user_memories().map_err(|e| e.to_string())
 }
 
@@ -1797,7 +1797,7 @@ pub async fn list_user_memories_cmd(
 pub async fn create_user_memory_cmd(
     state: tauri::State<'_, AppState>,
     content: String,
-) -> Result<ask_core::personalization::UserMemory, String> {
+) -> Result<nexa_core::personalization::UserMemory, String> {
     state
         .db
         .create_user_memory(&content)
@@ -1809,7 +1809,7 @@ pub async fn update_user_memory_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
     content: String,
-) -> Result<ask_core::personalization::UserMemory, String> {
+) -> Result<nexa_core::personalization::UserMemory, String> {
     state
         .db
         .update_user_memory(&id, &content)
@@ -1965,17 +1965,17 @@ pub async fn agent_chat_cmd(
         .get_linked_sources(&conversation_id)
         .unwrap_or_default();
     let source_scope_section =
-        ask_core::conversation::build_source_scope_prompt_section(&state.db, &source_scope_ids)
+        nexa_core::conversation::build_source_scope_prompt_section(&state.db, &source_scope_ids)
             .unwrap_or_default();
     let collection_context_section =
-        ask_core::conversation::build_collection_context_prompt_section(
+        nexa_core::conversation::build_collection_context_prompt_section(
             conv.collection_context.as_ref(),
         );
     let memory_section =
-        ask_core::personalization::build_memory_summary_for_query(&state.db, Some(&message))
+        nexa_core::personalization::build_memory_summary_for_query(&state.db, Some(&message))
             .unwrap_or_default();
     let preference_section =
-        ask_core::personalization::build_preference_summary_for_query(&state.db, Some(&message))
+        nexa_core::personalization::build_preference_summary_for_query(&state.db, Some(&message))
             .unwrap_or_default();
     let system_prompt = build_system_prompt(
         Some(&conv.system_prompt),
@@ -2061,7 +2061,7 @@ pub async fn agent_chat_cmd(
         };
 
     // 6c. Create a separate summarization provider if configured.
-    let summarization_provider: Option<Box<dyn ask_core::llm::LlmProvider>> =
+    let summarization_provider: Option<Box<dyn nexa_core::llm::LlmProvider>> =
         if let Some(ref summ_provider_name) = db_config.summarization_provider {
             let summ_config = ProviderConfig {
                 provider_type: parse_provider_type(summ_provider_name),
@@ -2214,7 +2214,7 @@ pub async fn agent_chat_cmd(
                 }
                 let ext = mime_to_extension(&att.media_type);
                 let temp_path = std::env::temp_dir().join(format!(
-                    "ask-myself-attach-{}.{}",
+                    "nexa-attach-{}.{}",
                     Uuid::new_v4(),
                     ext
                 ));
@@ -2231,7 +2231,7 @@ pub async fn agent_chat_cmd(
                     });
                     continue;
                 }
-                let parse_result = ask_core::parse::parse_file(
+                let parse_result = nexa_core::parse::parse_file(
                     &temp_path,
                     None,
                     #[cfg(feature = "video")]
@@ -2509,7 +2509,7 @@ pub async fn agent_chat_cmd(
                         }
                     };
                 if let Ok(extract_llm) = create_provider(extract_provider_config) {
-                    match ask_core::personalization::auto_extract_and_save(
+                    match nexa_core::personalization::auto_extract_and_save(
                         &db,
                         &conv_id,
                         extract_llm.as_ref(),
@@ -2548,7 +2548,7 @@ pub async fn agent_chat_cmd(
 
 #[tauri::command]
 pub fn get_model_context_window(model: String) -> u32 {
-    ask_core::conversation::memory::model_context_window(&model)
+    nexa_core::conversation::memory::model_context_window(&model)
 }
 
 // ── Agent Stop Command ──────────────────────────────────────────────────
@@ -2594,30 +2594,30 @@ pub fn save_app_config_cmd(
 #[tauri::command]
 pub fn get_ocr_config_cmd(
     state: tauri::State<'_, AppState>,
-) -> Result<ask_core::ocr::OcrConfig, String> {
+) -> Result<nexa_core::ocr::OcrConfig, String> {
     state.db.load_ocr_config().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn save_ocr_config_cmd(
     state: tauri::State<'_, AppState>,
-    config: ask_core::ocr::OcrConfig,
+    config: nexa_core::ocr::OcrConfig,
 ) -> Result<(), String> {
     state.db.save_ocr_config(&config).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn check_ocr_models_cmd(config: ask_core::ocr::OcrConfig) -> bool {
-    ask_core::ocr::check_ocr_models_exist(&config)
+pub fn check_ocr_models_cmd(config: nexa_core::ocr::OcrConfig) -> bool {
+    nexa_core::ocr::check_ocr_models_exist(&config)
 }
 
 #[tauri::command]
 pub async fn download_ocr_models_cmd(
     app_handle: AppHandle,
-    config: ask_core::ocr::OcrConfig,
+    config: nexa_core::ocr::OcrConfig,
 ) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
-        ask_core::ocr::download_ocr_models(&config, |progress| {
+        nexa_core::ocr::download_ocr_models(&config, |progress| {
             emit_app_event(&app_handle, "ocr:download-progress", &progress);
         })
         .map_err(|e| e.to_string())
@@ -2632,7 +2632,7 @@ pub async fn download_ocr_models_cmd(
 #[tauri::command]
 pub fn get_video_config_cmd(
     state: tauri::State<'_, AppState>,
-) -> Result<ask_core::video::VideoConfig, String> {
+) -> Result<nexa_core::video::VideoConfig, String> {
     state.db.load_video_config().map_err(|e| e.to_string())
 }
 
@@ -2640,7 +2640,7 @@ pub fn get_video_config_cmd(
 #[tauri::command]
 pub fn save_video_config_cmd(
     state: tauri::State<'_, AppState>,
-    config: ask_core::video::VideoConfig,
+    config: nexa_core::video::VideoConfig,
 ) -> Result<(), String> {
     state
         .db
@@ -2650,18 +2650,18 @@ pub fn save_video_config_cmd(
 
 #[cfg(feature = "video")]
 #[tauri::command]
-pub fn check_whisper_model_cmd(config: ask_core::video::VideoConfig) -> bool {
-    ask_core::video::check_whisper_model_exists(&config)
+pub fn check_whisper_model_cmd(config: nexa_core::video::VideoConfig) -> bool {
+    nexa_core::video::check_whisper_model_exists(&config)
 }
 
 #[cfg(feature = "video")]
 #[tauri::command]
 pub async fn download_whisper_model_cmd(
     app_handle: AppHandle,
-    config: ask_core::video::VideoConfig,
+    config: nexa_core::video::VideoConfig,
 ) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
-        ask_core::video::download_whisper_model(&config, |progress| {
+        nexa_core::video::download_whisper_model(&config, |progress| {
             emit_app_event(&app_handle, "video:download-progress", &progress);
         })
         .map_err(|e| e.to_string())
@@ -2672,8 +2672,8 @@ pub async fn download_whisper_model_cmd(
 
 #[cfg(feature = "video")]
 #[tauri::command]
-pub fn check_ffmpeg_cmd(config: ask_core::video::VideoConfig) -> Result<bool, String> {
-    ask_core::video::check_ffmpeg(&config).map_err(|e| e.to_string())
+pub fn check_ffmpeg_cmd(config: nexa_core::video::VideoConfig) -> Result<bool, String> {
+    nexa_core::video::check_ffmpeg(&config).map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "video")]
@@ -2689,7 +2689,7 @@ pub async fn download_ffmpeg_cmd(
     let db = state.db.clone();
 
     let path = tokio::task::spawn_blocking(move || {
-        ask_core::video::download_ffmpeg(&data_dir, |progress| {
+        nexa_core::video::download_ffmpeg(&data_dir, |progress| {
             emit_app_event(&app_handle, "ffmpeg:download-progress", &progress);
         })
         .map_err(|e| e.to_string())
@@ -2714,7 +2714,7 @@ pub fn delete_whisper_model_cmd(state: tauri::State<'_, AppState>) -> Result<(),
         return Err("Cannot delete model while transcription is in progress".into());
     }
     let config = state.db.load_video_config().map_err(|e| e.to_string())?;
-    ask_core::video::delete_whisper_model(&config).map_err(|e| e.to_string())
+    nexa_core::video::delete_whisper_model(&config).map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "video")]
@@ -2733,7 +2733,7 @@ pub async fn transcribe_audio_buffer_cmd(
 
         let config = db.load_video_config().map_err(|e| e.to_string())?;
 
-        let temp_dir = std::env::temp_dir().join("ask-myself-voice");
+        let temp_dir = std::env::temp_dir().join("nexa-voice");
         std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
         let wav_path = temp_dir.join(format!("voice-{}.wav", Uuid::new_v4()));
         std::fs::write(&wav_path, &audio_data).map_err(|e| e.to_string())?;
@@ -2749,7 +2749,7 @@ pub async fn transcribe_audio_buffer_cmd(
         let _guard = Guard(whisper_busy, wav_path.clone());
 
         let segments =
-            ask_core::video::transcribe_audio(&wav_path, &config).map_err(|e| e.to_string())?;
+            nexa_core::video::transcribe_audio(&wav_path, &config).map_err(|e| e.to_string())?;
 
         let text = segments
             .iter()
@@ -2809,7 +2809,7 @@ pub async fn analyze_video_cmd(
 
         let ah = app_handle.clone();
         let fname = file_name.clone();
-        let result = ask_core::video::analyze_video(file_path, &config, move |progress| {
+        let result = nexa_core::video::analyze_video(file_path, &config, move |progress| {
             emit_app_event(
                 &ah,
                 "video:processing-progress",
@@ -3139,7 +3139,7 @@ pub async fn list_mcp_tools_cmd(
 #[tauri::command]
 pub fn get_trace_summary(
     state: tauri::State<'_, AppState>,
-) -> Result<ask_core::trace::TraceSummary, String> {
+) -> Result<nexa_core::trace::TraceSummary, String> {
     state.db.get_trace_summary().map_err(|e| e.to_string())
 }
 
@@ -3147,7 +3147,7 @@ pub fn get_trace_summary(
 pub fn get_recent_traces(
     state: tauri::State<'_, AppState>,
     limit: Option<usize>,
-) -> Result<Vec<ask_core::trace::AgentTrace>, String> {
+) -> Result<Vec<nexa_core::trace::AgentTrace>, String> {
     state
         .db
         .get_recent_traces(limit.unwrap_or(20))
@@ -3170,7 +3170,7 @@ pub async fn compile_document_cmd(
     let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
-    let result = ask_core::compile::compile_document(
+    let result = nexa_core::compile::compile_document(
         &state.db,
         &doc_id,
         provider.as_ref(),
@@ -3197,7 +3197,7 @@ pub async fn compile_pending_documents_cmd(
     let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
-    let results = ask_core::compile::compile_pending_with_progress(
+    let results = nexa_core::compile::compile_pending_with_progress(
         &state.db,
         provider.as_ref(),
         &db_config.model,
@@ -3263,7 +3263,7 @@ pub async fn compile_after_scan_cmd(
 
     let cap = limit.unwrap_or(10);
     let results =
-        ask_core::compile::compile_pending(&state.db, provider.as_ref(), &db_config.model, cap)
+        nexa_core::compile::compile_pending(&state.db, provider.as_ref(), &db_config.model, cap)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -3286,7 +3286,7 @@ pub async fn compile_after_scan_cmd(
 pub fn get_scan_errors_cmd(
     state: tauri::State<'_, AppState>,
     source_id: String,
-) -> Result<Vec<ask_core::models::ScanError>, String> {
+) -> Result<Vec<nexa_core::models::ScanError>, String> {
     state
         .db
         .get_scan_errors(&source_id)

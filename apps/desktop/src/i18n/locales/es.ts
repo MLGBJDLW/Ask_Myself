@@ -2,7 +2,7 @@ import type { TranslationKeys } from '../types';
 
 export const es: TranslationKeys = {
   // App
-  'app.name': 'Ask Myself',
+  'app.name': 'Nexa',
 
   // Nav
   'nav.search': 'Buscar',
@@ -1064,7 +1064,7 @@ export const es: TranslationKeys = {
   'search.embeddingWarningAction': 'Instalar ahora',
 
   // Welcome Wizard
-  'welcome.title': 'Bienvenido a Ask Myself',
+  'welcome.title': 'Bienvenido a Nexa',
   'welcome.subtitle': 'Tu asistente de conocimiento personal',
   'welcome.description': 'Añade tus documentos, conecta una IA y empieza a hacer preguntas sobre tu propio conocimiento.',
   'welcome.getStarted': 'Empezar',
@@ -1081,7 +1081,7 @@ export const es: TranslationKeys = {
   'welcome.connectionFailed': 'Error de conexión',
   'welcome.allSet': '¡Todo listo!',
   'welcome.allSetDescription': 'Comienza a explorar tu conocimiento',
-  'welcome.startUsing': 'Empezar a usar Ask Myself',
+  'welcome.startUsing': 'Empezar a usar Nexa',
   'welcome.skip': 'Omitir por ahora',
   'welcome.step': 'Paso {current} de {total}',
 };

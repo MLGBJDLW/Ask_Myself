@@ -2,7 +2,7 @@
 
 ## Goal
 
-Ask Myself ships to users across all supported locales. Internationalization is not a cleanup step; it is a product requirement.
+Nexa ships to users across all supported locales. Internationalization is not a cleanup step; it is a product requirement.
 
 ## Supported Locales
 

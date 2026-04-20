@@ -2,7 +2,7 @@
 
 ## Summary
 
-Ask Myself is evolving from a local-first personal knowledge recall engine into a broader local-first desktop assistant.
+Nexa is evolving from a local-first personal knowledge recall engine into a broader local-first desktop assistant.
 
 The assistant should still excel at evidence-first recall over the user's own files, but it should also become genuinely useful for everyday desktop work:
 
@@ -13,13 +13,13 @@ The assistant should still excel at evidence-first recall over the user's own fi
 
 ## Product Positioning
 
-Ask Myself should feel like:
+Nexa should feel like:
 
 - a trustworthy desktop assistant
 - a local knowledge investigator
 - a practical office helper for normal users, not only technical users
 
-Ask Myself should not feel like:
+Nexa should not feel like:
 
 - a developer-only coding console
 - a generic web chatbot with local files bolted on

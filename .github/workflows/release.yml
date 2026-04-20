@@ -157,7 +157,7 @@ jobs:
           # Linux AppImage
           LINUX_SIG=$(cat /tmp/sigs/*amd64.AppImage.tar.gz.sig 2>/dev/null || echo "")
           if [ -n "$LINUX_SIG" ]; then
-            LINUX_URL="https://github.com/$REPO/releases/download/$TAG/ask-myself-desktop_${VERSION}_amd64.AppImage.tar.gz"
+            LINUX_URL="https://github.com/$REPO/releases/download/$TAG/nexa-desktop_${VERSION}_amd64.AppImage.tar.gz"
             PLATFORMS=$(echo "$PLATFORMS" | jq --arg sig "$LINUX_SIG" --arg url "$LINUX_URL" '. + {"linux-x86_64": {"signature": $sig, "url": $url}}')
           fi
 

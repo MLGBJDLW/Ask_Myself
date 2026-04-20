@@ -2,7 +2,7 @@
 
 ## Active Direction
 
-Ask Myself is moving toward a local-first desktop assistant for everyday work.
+Nexa is moving toward a local-first desktop assistant for everyday work.
 
 The product should combine:
 

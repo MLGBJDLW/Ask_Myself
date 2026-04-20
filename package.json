@@ -1,9 +1,13 @@
 {
+  "name": "nexa-monorepo",
+  "private": true,
   "scripts": {
     "tauri": "npm run tauri --prefix apps/desktop --"
   },
   "devDependencies": {
-    "dependency-cruiser": "^17.3.8"
+    "@resvg/resvg-js": "^2.6.2",
+    "dependency-cruiser": "^17.3.8",
+    "png2icons": "^2.0.1"
   },
   "version": "0.1.9"
 }
