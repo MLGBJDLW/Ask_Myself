@@ -529,7 +529,7 @@ mod tests {
 
         // Chunk-based: should see both upvotes regardless of query
         let adjustments = db
-            .get_chunk_feedback_adjustments(&[chunk_id.clone()], None)
+            .get_chunk_feedback_adjustments(std::slice::from_ref(&chunk_id), None)
             .unwrap();
         assert!(adjustments.contains_key(&chunk_id));
         let adj = adjustments[&chunk_id];
@@ -537,7 +537,7 @@ mod tests {
 
         // get_feedback_adjustments with a third query should still pick up chunk feedback
         let adj2 = db
-            .get_feedback_adjustments("deployment process", &[chunk_id.clone()])
+            .get_feedback_adjustments("deployment process", std::slice::from_ref(&chunk_id))
             .unwrap();
         assert!(adj2.contains_key(&chunk_id));
         assert!(

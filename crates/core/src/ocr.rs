@@ -214,7 +214,10 @@ fn ocr_model_dir(config: &OcrConfig) -> Result<PathBuf, CoreError> {
     }
     let data_dir =
         dirs::data_dir().ok_or_else(|| CoreError::Ocr("cannot determine data directory".into()))?;
-    Ok(data_dir.join(crate::APP_DIR).join("models").join("paddleocr"))
+    Ok(data_dir
+        .join(crate::APP_DIR)
+        .join("models")
+        .join("paddleocr"))
 }
 
 // ── ImageNet normalisation constants ────────────────────────────────
@@ -1183,7 +1186,7 @@ mod tests {
         };
         db.save_ocr_config(&config).expect("save");
         let loaded = db.load_ocr_config().expect("load");
-        assert_eq!(loaded.enabled, false);
+        assert!(!loaded.enabled);
         assert!((loaded.confidence_threshold - 0.8).abs() < f32::EPSILON);
         assert_eq!(loaded.languages, vec!["en".to_string(), "ja".to_string()]);
     }

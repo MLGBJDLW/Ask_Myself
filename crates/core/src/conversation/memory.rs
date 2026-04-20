@@ -688,7 +688,7 @@ mod tests {
 
         // Verify that if the tool call assistant is present, the tool result is too
         let has_tool_call_assistant = result.iter().any(|m| {
-            m.role == Role::Assistant && m.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
+            m.role == Role::Assistant && m.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty())
         });
         let has_tool_result = result.iter().any(|m| m.role == Role::Tool);
 

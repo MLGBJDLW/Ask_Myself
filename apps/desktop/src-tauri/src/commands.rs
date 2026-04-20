@@ -30,6 +30,8 @@ use nexa_core::llm::{
 };
 use nexa_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 
+use base64::Engine;
+use log::{info, warn};
 use nexa_core::models::{
     EvidenceCard, Playbook, PlaybookCitation, SearchFilters, SearchQuery, Source,
 };
@@ -42,8 +44,6 @@ use nexa_core::skills::{SaveSkillInput, Skill};
 use nexa_core::sources::{CreateSourceInput, UpdateSourceInput};
 use nexa_core::tools::default_tool_registry;
 use nexa_core::watcher::{FileWatcher, WatcherEventKind};
-use base64::Engine;
-use log::{info, warn};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -2213,11 +2213,8 @@ pub async fn agent_chat_cmd(
                     continue;
                 }
                 let ext = mime_to_extension(&att.media_type);
-                let temp_path = std::env::temp_dir().join(format!(
-                    "nexa-attach-{}.{}",
-                    Uuid::new_v4(),
-                    ext
-                ));
+                let temp_path =
+                    std::env::temp_dir().join(format!("nexa-attach-{}.{}", Uuid::new_v4(), ext));
                 if let Err(e) = std::fs::write(&temp_path, &bytes) {
                     warn!(
                         "Failed to write temp file for attachment '{}': {}",

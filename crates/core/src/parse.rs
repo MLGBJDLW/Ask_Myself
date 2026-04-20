@@ -2148,7 +2148,7 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
     fn test_plaintext_large_paragraph_split() {
         let big = "line of text that is reasonably long\n".repeat(100);
         let chunks = chunk_plaintext(&big, DEFAULT_MAX_CHUNK_CHARS);
-        assert!(chunks.len() >= 1, "Large paragraph should produce chunks");
+        assert!(!chunks.is_empty(), "Large paragraph should produce chunks");
         for c in &chunks {
             assert!(c.content.len() <= DEFAULT_MAX_CHUNK_CHARS + 200);
         }

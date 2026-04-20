@@ -1565,7 +1565,10 @@ impl Tool for JudgeSubagentResultsTool {
                     nexa_core::llm::Role::System,
                     build_judge_system_prompt(&self.runtime.base_config.system_prompt),
                 ),
-                nexa_core::llm::Message::text(nexa_core::llm::Role::User, build_judge_request(&args)),
+                nexa_core::llm::Message::text(
+                    nexa_core::llm::Role::User,
+                    build_judge_request(&args),
+                ),
             ],
             temperature: Some(0.1),
             max_tokens: Some(1200),

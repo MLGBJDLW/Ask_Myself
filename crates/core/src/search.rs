@@ -1879,7 +1879,7 @@ mod tests {
                 ids.push(insert_chunk(&conn, &did, text));
             }
             chunk_ids = ids;
-            let refs: Vec<&str> = texts.iter().copied().collect();
+            let refs: Vec<&str> = texts.to_vec();
             embedder = TfIdfEmbedder::build_from_corpus(&refs);
         }
 
@@ -2148,7 +2148,7 @@ mod tests {
         }
 
         let adjustments = db
-            .get_feedback_adjustments("clamp", &[chunk_id.clone()])
+            .get_feedback_adjustments("clamp", std::slice::from_ref(&chunk_id))
             .unwrap();
         let adj = adjustments.get(&chunk_id).copied().unwrap_or(0.0);
         assert!(

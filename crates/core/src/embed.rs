@@ -1560,7 +1560,7 @@ mod tests {
 
     #[test]
     fn test_vector_blob_roundtrip() {
-        let original = vec![1.0f32, -2.5, 3.14, 0.0, f32::MAX, f32::MIN];
+        let original = vec![1.0f32, -2.5, 3.15, 0.0, f32::MAX, f32::MIN];
         let blob = vector_to_blob(&original);
         assert_eq!(blob.len(), original.len() * 4);
         let restored = blob_to_vector(&blob);

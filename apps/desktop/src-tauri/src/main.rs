@@ -44,11 +44,7 @@ fn migrate_legacy_data_dir(data_dir: &Path) {
             return;
         }
         match std::fs::rename(src, dst) {
-            Ok(()) => log::info!(
-                "[migrate] {label}: {} -> {}",
-                src.display(),
-                dst.display()
-            ),
+            Ok(()) => log::info!("[migrate] {label}: {} -> {}", src.display(), dst.display()),
             Err(e) => log::warn!(
                 "[migrate] {label}: failed to rename {} -> {}: {e}",
                 src.display(),
