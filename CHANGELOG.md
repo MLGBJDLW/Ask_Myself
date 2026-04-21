@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.2.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.2...nexa-monorepo-v0.2.3) (2026-04-21)
+
+
+### Features
+
+* **chat:** feedback loop UI, progressive disclosure, move conversation ([6344449](https://github.com/MLGBJDLW/Nexa/commit/6344449c3155f1340c0b630e7692f58f66d9fab6))
+* **conversation:** auto-name titles + manual compact + embed retrieval ([d98f3e2](https://github.com/MLGBJDLW/Nexa/commit/d98f3e2d45dd476edf14cea6a4ca16f38ca70cba))
+* **i18n:** externalize strings for mirrors, feedback, and skills ([ffed8da](https://github.com/MLGBJDLW/Nexa/commit/ffed8da6083eb31d6a7394a521c180069ee1857c))
+* **learning:** LLM-based distillation for learned successes ([c058a1a](https://github.com/MLGBJDLW/Nexa/commit/c058a1a009f4fc3c5b0022f81dd8a3ef81462fdc))
+* **llm:** parallel tool calls and new model presets ([a311f14](https://github.com/MLGBJDLW/Nexa/commit/a311f147a5c258b3e2c762410449e52649f7bffe))
+* **mirrors:** configurable HF/ghproxy mirrors with fallback ([3ca5e03](https://github.com/MLGBJDLW/Nexa/commit/3ca5e03285eea937dfa256538ee9d3dd42cc5361))
+* **search:** scope ask-AI context to current page selection ([c87ad53](https://github.com/MLGBJDLW/Nexa/commit/c87ad53d8cd57c1e9d759db261bd96b5858830df))
+* **settings:** mirror config UI, model status cache, download anti-spam ([26f40be](https://github.com/MLGBJDLW/Nexa/commit/26f40be1a5e9f2e23235692e31f8e139e20891bf))
+* **skills:** adopt Anthropic Agent Skills format with SKILL.md ([1787bd2](https://github.com/MLGBJDLW/Nexa/commit/1787bd22c2223d20a5f255512201924ac48cfae0))
+* **tauri:** wire mirror, scratchpad, learning, and feedback commands ([7c2c608](https://github.com/MLGBJDLW/Nexa/commit/7c2c6089277d2834ec57a76cbd5c4363bedfde14))
+* **tools:** add read_files batch tool and update_scratchpad ([cbda08a](https://github.com/MLGBJDLW/Nexa/commit/cbda08a162c785c51cdba6fdd96940dc0921b0ad))
+
+
+### Bug Fixes
+
+* **chat:** prevent circular JSON on in-chat new-conversation button ([07d6e98](https://github.com/MLGBJDLW/Nexa/commit/07d6e986bdc3f1101477b000553012d96a3d5707))
+
 ## [0.2.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.1...nexa-monorepo-v0.2.2) (2026-04-20)
 
 
