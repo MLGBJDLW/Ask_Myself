@@ -535,6 +535,55 @@ Every answer that uses knowledge base search results.
             WHERE id = 'builtin-office-document-design'
               AND content LIKE '%generate_pptx%';",
     ),
+    (
+        "v042_conversation_title_is_auto",
+        "ALTER TABLE conversations ADD COLUMN title_is_auto INTEGER NOT NULL DEFAULT 1;",
+    ),
+    (
+        "v043_agent_scratchpad",
+        "CREATE TABLE IF NOT EXISTS agent_scratchpad (
+            conversation_id TEXT PRIMARY KEY,
+            content TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_scratchpad_updated ON agent_scratchpad(updated_at);",
+    ),
+    (
+        "v044_message_feedback_and_learned_successes",
+        "CREATE TABLE IF NOT EXISTS message_feedback (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            rating INTEGER NOT NULL,
+            note TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+            UNIQUE(message_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_message_feedback_conv ON message_feedback(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_message_feedback_rating ON message_feedback(rating, created_at);
+
+        CREATE TABLE IF NOT EXISTS learned_successes (
+            id TEXT PRIMARY KEY,
+            user_query TEXT NOT NULL,
+            response_summary TEXT NOT NULL,
+            source_message_id TEXT NOT NULL,
+            query_embedding BLOB,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (source_message_id) REFERENCES messages(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_learned_successes_created ON learned_successes(created_at);",
+    ),
+    (
+        "v045_skill_description_and_bundled_builtins",
+        "ALTER TABLE skills ADD COLUMN description TEXT NOT NULL DEFAULT '';
+        DELETE FROM skills WHERE id IN (
+            'builtin-visual-explanations',
+            'builtin-office-document-design',
+            'builtin-evidence-first'
+        );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -678,20 +727,26 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).expect("migrations should succeed");
 
-        let mut stmt = conn
-            .prepare("SELECT id, enabled FROM skills ORDER BY id")
+        // v045 removes legacy built-in rows from DB; built-ins now live on
+        // the filesystem (see crates/core/assets/skills/). The DB should
+        // only contain user-created skills.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM skills WHERE id LIKE 'builtin-%'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        let rows: Vec<(String, i32)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .filter_map(|row| row.ok())
-            .collect();
+        assert_eq!(count, 0, "legacy built-in skills should be removed");
 
-        assert!(rows
-            .iter()
-            .any(|(id, enabled)| id == "builtin-office-document-design" && *enabled == 1));
-        assert!(rows
-            .iter()
-            .any(|(id, enabled)| id == "builtin-visual-explanations" && *enabled == 1));
+        // `description` column must exist after v045.
+        let has_desc: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('skills') WHERE name = 'description'",
+                [],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
+            )
+            .unwrap();
+        assert!(has_desc, "skills.description column should exist");
     }
 }
