@@ -92,6 +92,7 @@ pub async fn summarize_evicted_messages(
         thinking_budget: None,
         reasoning_effort: None,
         provider_type: None,
+        parallel_tool_calls: true,
     };
 
     let mut retry_count = 0u32;

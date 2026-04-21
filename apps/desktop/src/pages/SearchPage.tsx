@@ -287,6 +287,7 @@ export function SearchPage() {
 
   // ── Check embedding model status ──────────────────────────────────
   useEffect(() => {
+    // TODO: migrate to modelStatusCache
     api.getEmbedderConfig().then((cfg) => {
       if (cfg.provider === 'local') {
         api.checkLocalModel(cfg.localModel).then((ready) => {

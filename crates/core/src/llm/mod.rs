@@ -174,6 +174,34 @@ pub struct CompletionRequest {
     /// Provider type hint — lets providers apply model-specific logic.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_type: Option<ProviderType>,
+    /// When true, hint to the provider that multiple tool_use blocks in one
+    /// response are allowed. Default: true. Providers that natively support
+    /// parallel function calling translate this into a wire-level flag
+    /// (e.g. OpenAI `parallel_tool_calls`, Anthropic
+    /// `tool_choice.disable_parallel_tool_use: false`).
+    #[serde(default = "default_parallel_tool_calls")]
+    pub parallel_tool_calls: bool,
+}
+
+fn default_parallel_tool_calls() -> bool {
+    true
+}
+
+impl Default for CompletionRequest {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            messages: Vec::new(),
+            temperature: None,
+            max_tokens: None,
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: None,
+            parallel_tool_calls: true,
+        }
+    }
 }
 
 /// Definition of a tool the model may call.

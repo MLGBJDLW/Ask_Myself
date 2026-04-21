@@ -127,6 +127,7 @@ pub fn model_context_window(model: &str) -> u32 {
         // Default API context is 200K. Opus 4.6, Sonnet 4.6, Sonnet 4.5, and
         // Sonnet 4 can reach 1M only when the context-1m-2025-08-07 beta
         // header is enabled.
+        "claude-opus-4-7" => 1_000_000,
         "claude-opus-4-6" => 200_000,
         "claude-opus-4-5" | "claude-opus-4-5-20251101" => 200_000,
         "claude-opus-4-1" | "claude-opus-4-1-20250805" => 200_000,
@@ -178,6 +179,7 @@ pub fn model_context_window(model: &str) -> u32 {
         }
 
         // Qwen / DashScope
+        "qwen3.6-max-preview" => 262_144,
         "qwen3-max-preview" => 81_920,
 
         // Baichuan
@@ -525,6 +527,7 @@ mod tests {
         assert_eq!(model_context_window("o4-mini"), 200_000);
         assert_eq!(model_context_window("codex-mini-latest"), 200_000);
         // Anthropic
+        assert_eq!(model_context_window("claude-opus-4-7"), 1_000_000);
         assert_eq!(model_context_window("claude-opus-4-6"), 200_000);
         assert_eq!(model_context_window("claude-sonnet-4-6"), 200_000);
         assert_eq!(model_context_window("claude-opus-4-5"), 200_000);
@@ -560,6 +563,7 @@ mod tests {
         );
         // Qwen / DashScope
         assert_eq!(model_context_window("qwen3-max-2026-01-23"), 262_144);
+        assert_eq!(model_context_window("qwen3.6-max-preview"), 262_144);
         assert_eq!(model_context_window("qwen3-max-preview"), 81_920);
         assert_eq!(model_context_window("qwen3.5-plus"), 1_000_000);
         assert_eq!(model_context_window("qwen3.5-flash"), 1_000_000);

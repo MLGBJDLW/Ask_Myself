@@ -808,6 +808,7 @@ pub async fn extract_text_via_llm_vision(
         thinking_budget: None,
         reasoning_effort: None,
         provider_type: None,
+        parallel_tool_calls: true,
     };
 
     let response = provider.complete(&request).await?;

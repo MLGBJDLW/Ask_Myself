@@ -79,7 +79,6 @@ pub mod file_tool;
 pub mod generate_document_tool;
 pub mod generate_docx_tool;
 pub mod generate_xlsx_tool;
-pub mod ppt_generate_tool;
 pub mod health_check_tool;
 pub mod knowledge_graph_tool;
 pub mod list_dir_tool;
@@ -89,10 +88,13 @@ pub mod manage_source_tool;
 pub mod mcp_tool;
 pub mod path_utils;
 pub mod playbook_tool;
+pub mod ppt_generate_tool;
+pub mod read_files_tool;
 pub mod record_verification_tool;
 pub mod reindex_tool;
 pub mod related_concepts_tool;
 pub mod run_shell_tool;
+pub mod scratchpad_tool;
 pub mod search_playbooks_tool;
 pub mod search_tool;
 pub mod statistics_tool;
@@ -208,6 +210,22 @@ pub trait Tool: Send + Sync {
         db: &Database,
         source_scope: &[String],
     ) -> Result<ToolResult, CoreError>;
+
+    /// Context-aware variant of [`Tool::execute`] used by the registry.
+    ///
+    /// Conversation-scoped tools (e.g. `update_scratchpad`) override this to
+    /// receive the active `conversation_id`. The default impl falls back to
+    /// [`Tool::execute`] so existing tools need no changes.
+    async fn execute_with_context(
+        &self,
+        call_id: &str,
+        arguments: &str,
+        db: &Database,
+        source_scope: &[String],
+        _conversation_id: Option<&str>,
+    ) -> Result<ToolResult, CoreError> {
+        self.execute(call_id, arguments, db, source_scope).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +491,26 @@ impl ToolRegistry {
             .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
         tool.execute(call_id, arguments, db, source_scope).await
     }
+
+    /// Conversation-aware variant of [`ToolRegistry::execute`].
+    ///
+    /// Passes the active `conversation_id` to the tool so conversation-scoped
+    /// tools (e.g. `update_scratchpad`) can look up or mutate their state.
+    pub async fn execute_with_context(
+        &self,
+        name: &str,
+        call_id: &str,
+        arguments: &str,
+        db: &Database,
+        source_scope: &[String],
+        conversation_id: Option<&str>,
+    ) -> Result<ToolResult, CoreError> {
+        let tool = self
+            .get(name)
+            .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
+        tool.execute_with_context(call_id, arguments, db, source_scope, conversation_id)
+            .await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +523,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(search_tool::SearchTool));
     registry.register(Box::new(playbook_tool::PlaybookTool));
     registry.register(Box::new(file_tool::FileTool));
+    registry.register(Box::new(read_files_tool::ReadFilesTool));
     registry.register(Box::new(summarize_tool::RetrieveEvidenceTool));
     registry.register(Box::new(list_sources_tool::ListSourcesTool));
     registry.register(Box::new(list_documents_tool::ListDocumentsTool));
@@ -516,6 +555,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(archive_output_tool::ArchiveOutputTool));
     registry.register(Box::new(related_concepts_tool::RelatedConceptsTool));
     registry.register(Box::new(run_shell_tool::RunShellTool));
+    registry.register(Box::new(scratchpad_tool::UpdateScratchpadTool));
     registry
 }
 

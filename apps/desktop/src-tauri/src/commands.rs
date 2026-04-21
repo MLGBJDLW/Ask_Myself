@@ -744,6 +744,174 @@ pub fn delete_feedback(
         .map_err(|e| e.to_string())
 }
 
+// ── Message-Level Feedback (learning loop) ─────────────────────────────
+
+/// Persist thumbs up/down on a specific assistant message, and on upvote
+/// capture a distilled (user_query → response) "learned success" whose
+/// embedding is computed in the background.
+///
+/// `rating` semantics: `+1` = upvote, `-1` = downvote, `0` = clear.
+#[tauri::command]
+pub async fn set_message_feedback_cmd(
+    state: tauri::State<'_, AppState>,
+    message_id: String,
+    conversation_id: String,
+    rating: i32,
+    note: Option<String>,
+) -> Result<nexa_core::learning::MessageFeedback, String> {
+    let fb = state
+        .db
+        .set_message_feedback(&message_id, &conversation_id, rating, note.as_deref())
+        .map_err(|e| e.to_string())?;
+
+    if rating > 0 {
+        // Distill preceding user message + this assistant response into a
+        // learned-success row. Failures here are non-fatal — we still
+        // return the saved feedback.
+        if let Err(err) = spawn_learned_success_capture(state.db.clone(), message_id.clone()) {
+            warn!("Failed to capture learned success: {err}");
+        }
+    }
+
+    Ok(fb)
+}
+
+/// Create the learned-success row synchronously, then fire-and-forget a
+/// background task that (a) optionally LLM-distills the response via the
+/// configured summarization provider/model and (b) populates the embedding.
+fn spawn_learned_success_capture(
+    db: Arc<Database>,
+    assistant_message_id: String,
+) -> Result<(), String> {
+    // Resolve the (user_query, response) pair on the caller thread so we
+    // can fail fast if the message disappeared.
+    let assistant = db
+        .get_message_role_and_content(&assistant_message_id)
+        .map_err(|e| e.to_string())?;
+    let Some((role, response_content)) = assistant else {
+        return Ok(());
+    };
+    if role != "assistant" {
+        return Ok(());
+    }
+
+    let Some((_, user_content)) = db
+        .find_preceding_user_message(&assistant_message_id)
+        .map_err(|e| e.to_string())?
+    else {
+        // Orphan assistant message — nothing to learn from.
+        return Ok(());
+    };
+
+    if user_content.trim().is_empty() || response_content.trim().is_empty() {
+        return Ok(());
+    }
+
+    // Try to build a dedicated summarization provider from the default
+    // agent config. Falls back to char-truncation distillation if the
+    // config is missing or the provider can't be constructed.
+    let (summ_provider, summ_model): (
+        Option<Box<dyn nexa_core::llm::LlmProvider>>,
+        Option<String>,
+    ) = match db.get_default_agent_config() {
+        Ok(Some(db_config)) => {
+            let app_cfg = db.load_app_config().unwrap_or_default();
+            if let Some(ref summ_provider_name) = db_config.summarization_provider {
+                let summ_config = ProviderConfig {
+                    provider_type: parse_provider_type(summ_provider_name),
+                    api_key: Some(db_config.api_key.clone()),
+                    base_url: db_config.base_url.clone(),
+                    org_id: None,
+                    timeout_secs: Some(app_cfg.llm_timeout_secs),
+                };
+                match create_provider(summ_config) {
+                    Ok(p) => {
+                        let model = db_config
+                            .summarization_model
+                            .clone()
+                            .unwrap_or_else(|| db_config.model.clone());
+                        (Some(p), Some(model))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "learned_success: summarization provider unavailable ({e}); using char truncation"
+                        );
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None)
+            }
+        }
+        Ok(None) => (None, None),
+        Err(e) => {
+            warn!("learned_success: failed to load agent config ({e}); using char truncation");
+            (None, None)
+        }
+    };
+
+    let assistant_message_id_bg = assistant_message_id.clone();
+    let user_content_for_embed = nexa_core::learning::distill_text(
+        &user_content,
+        nexa_core::learning::LEARNED_TEXT_MAX_CHARS,
+    );
+    let db_bg = db.clone();
+
+    // Fire-and-forget: LLM distillation + insert + embedding computation.
+    tokio::spawn(async move {
+        let row_id = match nexa_core::learning::insert_learned_success_with_llm(
+            &db_bg,
+            &user_content,
+            &response_content,
+            &assistant_message_id_bg,
+            summ_provider.as_deref(),
+            summ_model.as_deref(),
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                warn!("learned_success insert failed: {e}");
+                return;
+            }
+        };
+
+        match db_bg.get_embedder_config() {
+            Ok(cfg) => match nexa_core::embed::create_embedder(&cfg) {
+                Ok(embedder) => {
+                    if embedder.dimensions() == 0 {
+                        return;
+                    }
+                    match embedder.embed(&user_content_for_embed) {
+                        Ok(vec) if !vec.iter().all(|&v| v == 0.0) => {
+                            if let Err(e) = db_bg.update_learned_success_embedding(&row_id, &vec) {
+                                warn!("learned_success embedding update failed: {e}");
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => warn!("learned_success embedding compute failed: {e}"),
+                    }
+                }
+                Err(e) => warn!("learned_success embedder create failed: {e}"),
+            },
+            Err(e) => warn!("learned_success embedder config load failed: {e}"),
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_message_feedback_cmd(
+    state: tauri::State<'_, AppState>,
+    message_id: String,
+) -> Result<Option<nexa_core::learning::MessageFeedback>, String> {
+    state
+        .db
+        .get_message_feedback(&message_id)
+        .map_err(|e| e.to_string())
+}
+
 // ── Privacy Commands ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1047,8 +1215,7 @@ pub fn save_pptx_bytes(path: String, bytes: Vec<u8>) -> Result<String, String> {
             })?;
         }
     }
-    std::fs::write(&p, &bytes)
-        .map_err(|e| format!("save_pptx_bytes: write failed: {e}"))?;
+    std::fs::write(&p, &bytes).map_err(|e| format!("save_pptx_bytes: write failed: {e}"))?;
     Ok(p.to_string_lossy().into_owned())
 }
 
@@ -1187,6 +1354,7 @@ fn build_connection_probe_request(config: &SaveAgentConfigInput) -> CompletionRe
         thinking_budget: None,
         reasoning_effort: None,
         provider_type: Some(parse_provider_type(&config.provider)),
+        parallel_tool_calls: true,
     }
 }
 
@@ -1536,7 +1704,7 @@ pub async fn rename_conversation_cmd(
 ) -> Result<(), String> {
     state
         .db
-        .update_conversation_title(&id, &title)
+        .rename_conversation_by_user(&id, &title)
         .map_err(|e| e.to_string())
 }
 
@@ -1545,9 +1713,19 @@ pub async fn generate_title_cmd(
     state: tauri::State<'_, AppState>,
     conversation_id: String,
 ) -> Result<String, String> {
+    // 0. Respect user-initiated renames: if the user already set a title,
+    //    skip auto regeneration.
+    let conversation = state
+        .db
+        .get_conversation(&conversation_id)
+        .map_err(|e| e.to_string())?;
+    if !conversation.title_is_auto {
+        return Ok(conversation.title);
+    }
+
     // 1. Load agent config for LLM access.
     //    Prefer the default config; fall back to any config matching the conversation's provider.
-    let (db_config, title_model) = match state
+    let (db_config, fallback_model) = match state
         .db
         .get_default_agent_config()
         .map_err(|e| e.to_string())?
@@ -1557,23 +1735,19 @@ pub async fn generate_title_cmd(
             (cfg, model)
         }
         None => {
-            let conv = state
-                .db
-                .get_conversation(&conversation_id)
-                .map_err(|e| e.to_string())?;
             let cfg = state
                 .db
                 .list_agent_configs()
                 .map_err(|e| e.to_string())?
                 .into_iter()
-                .find(|c| c.provider == conv.provider)
+                .find(|c| c.provider == conversation.provider)
                 .ok_or_else(|| {
                     format!(
                         "No agent config for provider '{}'. Set a default agent or add a matching provider config.",
-                        conv.provider
+                        conversation.provider
                     )
                 })?;
-            (cfg, conv.model)
+            (cfg, conversation.model.clone())
         }
     };
 
@@ -1592,10 +1766,52 @@ pub async fn generate_title_cmd(
     };
     let assistant_content = first_assistant.map(|m| m.content.as_str());
 
-    // 3. Create provider and generate title.
+    // 3. Build the provider + model pair for title generation.
+    //    Prefer the agent's configured summarization provider/model; fall back
+    //    to the default agent's primary provider/model.
     let app_cfg = state.db.load_app_config().unwrap_or_default();
-    let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
-    let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
+    let (provider, title_model) = if let Some(summ_provider_name) =
+        db_config.summarization_provider.as_deref()
+    {
+        let summ_config = ProviderConfig {
+            provider_type: parse_provider_type(summ_provider_name),
+            api_key: Some(db_config.api_key.clone()),
+            base_url: db_config.base_url.clone(),
+            org_id: None,
+            timeout_secs: Some(app_cfg.llm_timeout_secs),
+        };
+        match create_provider(summ_config) {
+            Ok(p) => {
+                let model = db_config
+                    .summarization_model
+                    .clone()
+                    .unwrap_or_else(|| fallback_model.clone());
+                (p, model)
+            }
+            Err(e) => {
+                warn!(
+                    "summarization provider '{summ_provider_name}' unavailable ({e}); falling back to default agent"
+                );
+                let provider_config =
+                    db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+                let p = create_provider(provider_config).map_err(|e| e.to_string())?;
+                let model = db_config
+                    .summarization_model
+                    .clone()
+                    .unwrap_or(fallback_model);
+                (p, model)
+            }
+        }
+    } else {
+        let provider_config =
+            db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+        let p = create_provider(provider_config).map_err(|e| e.to_string())?;
+        let model = db_config
+            .summarization_model
+            .clone()
+            .unwrap_or(fallback_model);
+        (p, model)
+    };
 
     let title = nexa_core::conversation::generate_title(
         provider.as_ref(),
@@ -1605,7 +1821,7 @@ pub async fn generate_title_cmd(
     )
     .await;
 
-    // 4. Update DB.
+    // 4. Update DB (auto path — preserves title_is_auto = 1).
     state
         .db
         .update_conversation_title(&conversation_id, &title)
@@ -1828,6 +2044,18 @@ pub async fn list_user_memories_cmd(
     state.db.list_user_memories().map_err(|e| e.to_string())
 }
 
+/// Debug / inspection endpoint for the per-conversation agent scratchpad.
+#[tauri::command]
+pub async fn get_agent_scratchpad_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Option<nexa_core::agent::scratchpad::AgentScratchpad>, String> {
+    state
+        .db
+        .get_agent_scratchpad(&conversation_id)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn create_user_memory_cmd(
     state: tauri::State<'_, AppState>,
@@ -2012,6 +2240,29 @@ pub async fn agent_chat_cmd(
     let preference_section =
         nexa_core::personalization::build_preference_summary_for_query(&state.db, Some(&message))
             .unwrap_or_default();
+    // Retrieve similar past upvoted turns and inject them as a few-shot
+    // "Learned Successes" section. Embedding failures are non-fatal —
+    // we just skip retrieval silently rather than blocking the turn.
+    let learned_section = {
+        let cfg = state.db.get_embedder_config().ok();
+        let embedding = cfg.and_then(|c| match nexa_core::embed::create_embedder(&c) {
+            Ok(embedder) if embedder.dimensions() > 0 => embedder.embed(&message).ok(),
+            _ => None,
+        });
+        match embedding {
+            Some(vec) if !vec.iter().all(|&v| v == 0.0) => {
+                match nexa_core::learning::retrieve_similar_successes(&state.db, &vec, 3) {
+                    Ok(hits) => nexa_core::learning::build_learned_successes_section(&hits),
+                    Err(_) => String::new(),
+                }
+            }
+            _ => String::new(),
+        }
+    };
+    let scratchpad_section = nexa_core::agent::scratchpad::build_agent_scratchpad_prompt_section(
+        &state.db,
+        Some(&conversation_id),
+    );
     let system_prompt = build_system_prompt(
         Some(&conv.system_prompt),
         &[
@@ -2019,6 +2270,8 @@ pub async fn agent_chat_cmd(
             &source_scope_section,
             &memory_section,
             &preference_section,
+            &learned_section,
+            &scratchpad_section,
         ],
     );
 
@@ -2690,10 +2943,13 @@ pub fn check_whisper_model_cmd(config: nexa_core::video::VideoConfig) -> bool {
 #[tauri::command]
 pub async fn download_whisper_model_cmd(
     app_handle: AppHandle,
+    state: tauri::State<'_, AppState>,
     config: nexa_core::video::VideoConfig,
 ) -> Result<(), String> {
+    let app_cfg = state.db.load_app_config().map_err(|e| e.to_string())?;
+    let hf_mirror_base = app_cfg.hf_mirror_base_url.clone();
     tokio::task::spawn_blocking(move || {
-        nexa_core::video::download_whisper_model(&config, |progress| {
+        nexa_core::video::download_whisper_model(&config, &hf_mirror_base, |progress| {
             emit_app_event(&app_handle, "video:download-progress", &progress);
         })
         .map_err(|e| e.to_string())
@@ -2719,9 +2975,11 @@ pub async fn download_ffmpeg_cmd(
         .app_local_data_dir()
         .map_err(|e| format!("Failed to get data dir: {e}"))?;
     let db = state.db.clone();
+    let app_cfg = db.load_app_config().map_err(|e| e.to_string())?;
+    let ghproxy_base = app_cfg.ghproxy_base_url.clone();
 
     let path = tokio::task::spawn_blocking(move || {
-        nexa_core::video::download_ffmpeg(&data_dir, |progress| {
+        nexa_core::video::download_ffmpeg(&data_dir, &ghproxy_base, |progress| {
             emit_app_event(&app_handle, "ffmpeg:download-progress", &progress);
         })
         .map_err(|e| e.to_string())
@@ -3006,6 +3264,47 @@ pub async fn toggle_skill_cmd(
         .db
         .toggle_skill(&id, enabled)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_builtin_skills_cmd() -> Result<Vec<Skill>, String> {
+    Ok(nexa_core::skills::load_builtin_skills())
+}
+
+#[tauri::command]
+pub async fn import_skill_from_md_cmd(
+    state: tauri::State<'_, AppState>,
+    content: String,
+) -> Result<Skill, String> {
+    let (fm, body) = nexa_core::skills::parse_skill_file(&content).map_err(|e| e.to_string())?;
+    let input = SaveSkillInput {
+        id: None,
+        name: fm.name,
+        description: fm.description,
+        content: body,
+        enabled: true,
+    };
+    state.db.save_skill(&input).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn export_skill_to_md_cmd(
+    state: tauri::State<'_, AppState>,
+    skill_id: String,
+) -> Result<String, String> {
+    // Check built-ins first.
+    if let Some(s) = nexa_core::skills::load_builtin_skills()
+        .into_iter()
+        .find(|s| s.id == skill_id)
+    {
+        return Ok(nexa_core::skills::export_skill_to_md(&s));
+    }
+    let skills = state.db.list_skills().map_err(|e| e.to_string())?;
+    let skill = skills
+        .into_iter()
+        .find(|s| s.id == skill_id)
+        .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
+    Ok(nexa_core::skills::export_skill_to_md(&skill))
 }
 
 // ── MCP Commands ────────────────────────────────────────────────────

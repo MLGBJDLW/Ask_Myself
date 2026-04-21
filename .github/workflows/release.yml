@@ -153,7 +153,7 @@ jobs:
           # Windows NSIS
           WIN_SIG=$(cat /tmp/sigs/*x64-setup.nsis.zip.sig 2>/dev/null || echo "")
           if [ -n "$WIN_SIG" ]; then
-            WIN_URL="https://github.com/$REPO/releases/download/$TAG/Ask.Myself_${VERSION}_x64-setup.nsis.zip"
+            WIN_URL="https://github.com/$REPO/releases/download/$TAG/Nexa_${VERSION}_x64-setup.nsis.zip"
             PLATFORMS=$(echo "$PLATFORMS" | jq --arg sig "$WIN_SIG" --arg url "$WIN_URL" '. + {"windows-x86_64": {"signature": $sig, "url": $url}}')
           fi
 
@@ -167,7 +167,7 @@ jobs:
           # macOS
           MAC_SIG=$(cat /tmp/sigs/*.app.tar.gz.sig 2>/dev/null || echo "")
           if [ -n "$MAC_SIG" ]; then
-            MAC_URL="https://github.com/$REPO/releases/download/$TAG/Ask.Myself_aarch64.app.tar.gz"
+            MAC_URL="https://github.com/$REPO/releases/download/$TAG/Nexa_aarch64.app.tar.gz"
             PLATFORMS=$(echo "$PLATFORMS" | jq --arg sig "$MAC_SIG" --arg url "$MAC_URL" '. + {"darwin-aarch64": {"signature": $sig, "url": $url}}')
           fi
 

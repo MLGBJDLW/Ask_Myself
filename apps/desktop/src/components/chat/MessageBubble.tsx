@@ -192,6 +192,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
               onRetry={onRetry}
               isUser={isUser}
               messageId={msg.id}
+              conversationId={msg.conversationId}
               onEdit={isUser && onEditAndResend ? handleStartEdit : undefined}
               onDelete={onDeleteMessage}
             />

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle,
+  ChevronDown,
   Info,
   Loader2,
   Save,
@@ -123,6 +124,15 @@ export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpSe
   const [testLoading, setTestLoading] = useState(false);
   const [discoveredTools, setDiscoveredTools] = useState<McpToolInfo[] | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
+  // Progressive disclosure: hide advanced fields (args / env / headers) by default
+  // for fresh drafts. When editing an existing server, default to open so users
+  // can see what's already configured.
+  const hasAdvancedConfig = Boolean(
+    (server?.args && server.args.trim().length > 0) ||
+      (server?.envJson && server.envJson.trim().length > 0) ||
+      (server?.headersJson && server.headersJson.trim().length > 0),
+  );
+  const [showAdvanced, setShowAdvanced] = useState(hasAdvancedConfig);
   const initialDraftRef = useRef({
     name: server?.name ?? '',
     transport: (server?.transport ?? 'stdio') as TransportType,
@@ -365,52 +375,68 @@ export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpSe
             />
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-text-primary">{t('settings.mcpArgs')}</label>
-            <textarea
-              value={args}
-              onChange={(event) => setArgs(event.target.value)}
-              placeholder='["-y", "@modelcontextprotocol/server-filesystem", "D:/vault"]'
-              rows={4}
-              disabled={!!server?.builtinId}
-              className={`w-full rounded-md border bg-surface-2 px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 resize-y disabled:opacity-50 disabled:cursor-not-allowed ${
-                parsedArgs.error
-                  ? 'border-danger focus:border-danger focus:ring-danger/30'
-                  : 'border-border focus:border-accent focus:ring-accent'
-              }`}
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="flex items-center gap-1 text-sm text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer"
+          >
+            <ChevronDown
+              size={14}
+              className={`transition-transform ${showAdvanced ? 'rotate-180' : ''}`}
             />
-            <p className="text-xs text-text-tertiary">{t('settings.mcpArgsHelp')}</p>
-            {parsedArgs.error && <p className="text-xs text-danger">{parsedArgs.error}</p>}
-            {parsedArgs.values.length > 0 && (
-              <div className="rounded-lg border border-border bg-surface-2 p-3 space-y-2">
-                <p className="text-[11px] uppercase tracking-wide text-text-tertiary">{t('settings.mcpParsedArgs')}</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {parsedArgs.values.map((value, index) => (
-                    <Badge key={`${value}-${index}`} variant="default" className="max-w-full text-[10px]">
-                      {value}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+            {t('settings.advancedSettings')}
+          </button>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-text-primary">{t('settings.mcpEnvVars')}</label>
-            <textarea
-              value={envJson}
-              onChange={(event) => setEnvJson(event.target.value)}
-              placeholder='{"API_KEY": "..."}'
-              rows={4}
-              className={`w-full rounded-md border bg-surface-2 px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 resize-y ${
-                parsedEnv.error
-                  ? 'border-danger focus:border-danger focus:ring-danger/30'
-                  : 'border-border focus:border-accent focus:ring-accent'
-              }`}
-            />
-            <p className="text-xs text-text-tertiary">{t('settings.mcpEnvHelp')}</p>
-            {parsedEnv.error && <p className="text-xs text-danger">{parsedEnv.error}</p>}
-          </div>
+          {showAdvanced && (
+            <>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-primary">{t('settings.mcpArgs')}</label>
+                <textarea
+                  value={args}
+                  onChange={(event) => setArgs(event.target.value)}
+                  placeholder='["-y", "@modelcontextprotocol/server-filesystem", "D:/vault"]'
+                  rows={4}
+                  disabled={!!server?.builtinId}
+                  className={`w-full rounded-md border bg-surface-2 px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 resize-y disabled:opacity-50 disabled:cursor-not-allowed ${
+                    parsedArgs.error
+                      ? 'border-danger focus:border-danger focus:ring-danger/30'
+                      : 'border-border focus:border-accent focus:ring-accent'
+                  }`}
+                />
+                <p className="text-xs text-text-tertiary">{t('settings.mcpArgsHelp')}</p>
+                {parsedArgs.error && <p className="text-xs text-danger">{parsedArgs.error}</p>}
+                {parsedArgs.values.length > 0 && (
+                  <div className="rounded-lg border border-border bg-surface-2 p-3 space-y-2">
+                    <p className="text-[11px] uppercase tracking-wide text-text-tertiary">{t('settings.mcpParsedArgs')}</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {parsedArgs.values.map((value, index) => (
+                        <Badge key={`${value}-${index}`} variant="default" className="max-w-full text-[10px]">
+                          {value}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-primary">{t('settings.mcpEnvVars')}</label>
+                <textarea
+                  value={envJson}
+                  onChange={(event) => setEnvJson(event.target.value)}
+                  placeholder='{"API_KEY": "..."}'
+                  rows={4}
+                  className={`w-full rounded-md border bg-surface-2 px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 resize-y ${
+                    parsedEnv.error
+                      ? 'border-danger focus:border-danger focus:ring-danger/30'
+                      : 'border-border focus:border-accent focus:ring-accent'
+                  }`}
+                />
+                <p className="text-xs text-text-tertiary">{t('settings.mcpEnvHelp')}</p>
+                {parsedEnv.error && <p className="text-xs text-danger">{parsedEnv.error}</p>}
+              </div>
+            </>
+          )}
         </>
       ) : (
         <>
@@ -426,23 +452,37 @@ export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpSe
             <p className="text-xs text-text-tertiary">{t('settings.mcpUrlHelp')}</p>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-text-primary">{t('settings.mcpHeadersLabel')}</label>
-            <textarea
-              value={headersJson}
-              onChange={(event) => setHeadersJson(event.target.value)}
-              placeholder='{"Authorization": "Bearer ..."}'
-              rows={4}
-              disabled={!!server?.builtinId}
-              className={`w-full rounded-md border bg-surface-2 px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 resize-y disabled:opacity-50 disabled:cursor-not-allowed ${
-                parsedHeaders.error
-                  ? 'border-danger focus:border-danger focus:ring-danger/30'
-                  : 'border-border focus:border-accent focus:ring-accent'
-              }`}
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="flex items-center gap-1 text-sm text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer"
+          >
+            <ChevronDown
+              size={14}
+              className={`transition-transform ${showAdvanced ? 'rotate-180' : ''}`}
             />
-            <p className="text-xs text-text-tertiary">{t('settings.mcpHeadersHelp')}</p>
-            {parsedHeaders.error && <p className="text-xs text-danger">{parsedHeaders.error}</p>}
-          </div>
+            {t('settings.advancedSettings')}
+          </button>
+
+          {showAdvanced && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-text-primary">{t('settings.mcpHeadersLabel')}</label>
+              <textarea
+                value={headersJson}
+                onChange={(event) => setHeadersJson(event.target.value)}
+                placeholder='{"Authorization": "Bearer ..."}'
+                rows={4}
+                disabled={!!server?.builtinId}
+                className={`w-full rounded-md border bg-surface-2 px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 resize-y disabled:opacity-50 disabled:cursor-not-allowed ${
+                  parsedHeaders.error
+                    ? 'border-danger focus:border-danger focus:ring-danger/30'
+                    : 'border-border focus:border-accent focus:ring-accent'
+                }`}
+              />
+              <p className="text-xs text-text-tertiary">{t('settings.mcpHeadersHelp')}</p>
+              {parsedHeaders.error && <p className="text-xs text-danger">{parsedHeaders.error}</p>}
+            </div>
+          )}
         </>
       )}
 

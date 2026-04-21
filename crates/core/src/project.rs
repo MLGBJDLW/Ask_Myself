@@ -260,7 +260,7 @@ impl Database {
             Some(pid) => {
                 let conn = self.conn();
                 let mut stmt = conn.prepare(
-                    "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, created_at, updated_at
+                    "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, title_is_auto, created_at, updated_at
                      FROM conversations WHERE project_id = ?1 ORDER BY updated_at DESC",
                 )?;
                 let rows = stmt.query_map(rusqlite::params![pid], |row| {
@@ -274,8 +274,9 @@ impl Database {
                             row.get(5)?,
                         ),
                         project_id: row.get(6)?,
-                        created_at: row.get(7)?,
-                        updated_at: row.get(8)?,
+                        title_is_auto: row.get::<_, i64>(7)? != 0,
+                        created_at: row.get(8)?,
+                        updated_at: row.get(9)?,
                     })
                 })?;
                 let mut results = Vec::new();

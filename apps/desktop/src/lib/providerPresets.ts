@@ -61,12 +61,17 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: "https://api.anthropic.com/v1",
     requiresApiKey: true,
     icon: "🧠",
-    description: "Claude Opus 4.6, Sonnet 4.6/4.5, Haiku 4.5",
+    description: "Claude Opus 4.7/4.6, Sonnet 4.6/4.5, Haiku 4.5",
     models: [
+      {
+        id: "claude-opus-4-7",
+        name: "Claude Opus 4.7",
+        tagKey: "providers.tagMostIntelligent",
+      },
       {
         id: "claude-opus-4-6",
         name: "Claude Opus 4.6",
-        tagKey: "providers.tagMostIntelligent",
+        tagKey: "providers.tagLatest",
       },
       {
         id: "claude-sonnet-4-6",
@@ -324,6 +329,11 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
         id: "qwen3-max-2026-01-23",
         name: "Qwen3 Max",
         tagKey: "providers.tagMostIntelligent",
+      },
+      {
+        id: "qwen3.6-max-preview",
+        name: "Qwen3.6 Max Preview",
+        tagKey: "providers.tagPreview",
       },
       {
         id: "qwen3-max-preview",

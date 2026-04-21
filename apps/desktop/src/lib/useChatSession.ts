@@ -526,40 +526,35 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       // Also refresh conversation list (updatedAt changes)
       loadConversations();
 
-      // Auto-title: set immediate truncated placeholder, then request LLM title
+      // Auto-title: request LLM-generated title. Show a truncated placeholder
+      // in local React state for responsiveness, but do NOT persist it — the
+      // DB stays empty until generateTitle() returns, and `loadConversations()`
+      // picks up the final LLM title.
       const conv = conversationsRef.current.find((c) => c.id === completedConversationId);
       if (conv && !conv.title) {
         const firstUserMsg = (messageCacheRef.current[completedConversationId] ?? []).find((m) => m.role === 'user');
         if (firstUserMsg) {
           const placeholder = generateTitle(firstUserMsg.content);
-          if (placeholder) {
-            // Set truncated title immediately for responsiveness
-            api.renameConversation(completedConversationId, placeholder)
-              .then(() => {
-                if (!cancelled) {
-                  setConversations((prev) =>
-                    prev.map((c) => (c.id === completedConversationId ? { ...c, title: placeholder } : c)),
-                  );
-                }
-              })
-              .catch((e) => {
-                console.error('Failed to set placeholder title:', e);
-              });
-            // Request LLM-generated title in background
-            api.generateTitle(completedConversationId)
-              .then((llmTitle) => {
-                if (!cancelled && llmTitle) {
-                  setConversations((prev) =>
-                    prev.map((c) => (c.id === completedConversationId ? { ...c, title: llmTitle } : c)),
-                  );
-                }
-              })
-              .catch((e) => {
-                // LLM title failed; placeholder already set — surface a warning
-                console.error('LLM title generation failed, keeping placeholder:', e);
-                toast.warning(`Smart title generation failed: ${String(e)}`);
-              });
+          if (placeholder && !cancelled) {
+            // Optimistic UI only — purely local state, not persisted.
+            setConversations((prev) =>
+              prev.map((c) => (c.id === completedConversationId ? { ...c, title: placeholder } : c)),
+            );
           }
+          // Request LLM-generated title in background; DB is written once here.
+          api.generateTitle(completedConversationId)
+            .then((llmTitle) => {
+              if (!cancelled && llmTitle) {
+                setConversations((prev) =>
+                  prev.map((c) => (c.id === completedConversationId ? { ...c, title: llmTitle } : c)),
+                );
+              }
+            })
+            .catch((e) => {
+              // LLM title failed; placeholder remains in local state only.
+              console.error('LLM title generation failed, keeping placeholder:', e);
+              toast.warning(`Smart title generation failed: ${String(e)}`);
+            });
         }
       }
     }

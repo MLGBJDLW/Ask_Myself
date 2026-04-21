@@ -40,6 +40,8 @@ struct OaiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OaiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stop: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
@@ -384,6 +386,10 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
             None
         },
         tools: request.tools.as_ref().map(|t| convert_tools(t)),
+        parallel_tool_calls: match request.tools.as_ref() {
+            Some(tools) if !tools.is_empty() && request.parallel_tool_calls => Some(true),
+            _ => None,
+        },
         stop: request.stop.clone(),
         stream: if stream { Some(true) } else { None },
         stream_options: if stream {

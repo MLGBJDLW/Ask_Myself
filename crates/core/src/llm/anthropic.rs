@@ -33,6 +33,16 @@ struct AnthropicThinking {
     budget_tokens: u32,
 }
 
+/// Anthropic `tool_choice`. We only emit `{"type":"auto", ...}` with an
+/// explicit parallel-tool-use toggle; other variants (`any`/`tool`/`none`)
+/// are not needed by any caller yet.
+#[derive(Serialize)]
+struct AnthropicToolChoice {
+    r#type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disable_parallel_tool_use: Option<bool>,
+}
+
 #[derive(Clone, Serialize)]
 struct CacheControl {
     r#type: String,
@@ -57,6 +67,8 @@ struct AnthropicRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<AnthropicToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stop_sequences: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -440,13 +452,25 @@ fn build_request_body(
             )
         };
 
+    let anthropic_tools = request.tools.as_ref().map(|t| convert_tools(t));
+    let tool_choice = match anthropic_tools.as_ref() {
+        Some(tools) if !tools.is_empty() && request.parallel_tool_calls => {
+            Some(AnthropicToolChoice {
+                r#type: "auto".to_string(),
+                disable_parallel_tool_use: Some(false),
+            })
+        }
+        _ => None,
+    };
+
     AnthropicRequest {
         model: request.model.clone(),
         max_tokens: effective_max_tokens,
         system,
         messages,
         temperature,
-        tools: request.tools.as_ref().map(|t| convert_tools(t)),
+        tools: anthropic_tools,
+        tool_choice,
         stop_sequences: request.stop.clone(),
         stream: if stream { Some(true) } else { None },
         thinking,

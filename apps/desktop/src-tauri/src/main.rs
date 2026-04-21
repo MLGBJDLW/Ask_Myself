@@ -179,6 +179,8 @@ fn main() {
             commands::add_feedback,
             commands::get_feedback_for_query,
             commands::delete_feedback,
+            commands::set_message_feedback_cmd,
+            commands::get_message_feedback_cmd,
             // Privacy
             commands::get_privacy_config,
             commands::save_privacy_config,
@@ -240,6 +242,8 @@ fn main() {
             commands::create_user_memory_cmd,
             commands::update_user_memory_cmd,
             commands::delete_user_memory_cmd,
+            // Agent scratchpad
+            commands::get_agent_scratchpad_cmd,
             // Agent configs
             commands::list_agent_configs_cmd,
             commands::save_agent_config_cmd,
@@ -289,6 +293,9 @@ fn main() {
             commands::save_skill_cmd,
             commands::delete_skill_cmd,
             commands::toggle_skill_cmd,
+            commands::list_builtin_skills_cmd,
+            commands::import_skill_from_md_cmd,
+            commands::export_skill_to_md_cmd,
             // MCP
             commands::list_mcp_servers_cmd,
             commands::save_mcp_server_cmd,

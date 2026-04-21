@@ -128,6 +128,7 @@ pub async fn compile_document(
         thinking_budget: None,
         reasoning_effort: None,
         provider_type: None,
+        parallel_tool_calls: true,
     };
 
     let response = provider.complete(&request).await?;

@@ -97,12 +97,13 @@ export function ModelCard({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
-          {status === 'not-downloaded' && (
+          {status !== 'downloaded' && (
             <Button
               variant="secondary"
               size="sm"
               icon={<Download size={14} />}
               onClick={onDownload}
+              disabled={status !== 'not-downloaded'}
             >
               {t('settings.embeddingDownload')}
             </Button>

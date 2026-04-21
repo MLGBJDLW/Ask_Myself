@@ -36,6 +36,7 @@ import {
 import { toast } from 'sonner';
 import * as api from '../lib/api';
 import { useProgress, progressStore } from '../lib/progressStore';
+import { getModelStatus, invalidate as invalidateModelStatus } from '../lib/modelStatusCache';
 import type { IndexStats } from '../types/index-stats';
 import type { PrivacyConfig, RedactRule } from '../types/privacy';
 import type { EmbedderConfig } from '../types/embedder';
@@ -335,16 +336,21 @@ export function SettingsPage() {
 
   useEffect(() => {
     if (embedConfig?.provider === 'local') {
-      api.checkLocalModel(embedConfig.localModel).then(setLocalModelReady).catch(() => setLocalModelReady(false));
+      const key = embedConfig.localModel ?? '';
+      getModelStatus('embed', key, () => api.checkLocalModel(embedConfig.localModel))
+        .then(setLocalModelReady)
+        .catch(() => setLocalModelReady(false));
     }
   }, [embedConfig?.provider, embedConfig?.localModel]);
 
   const handleDownloadModel = async () => {
     if (!embedConfig) return;
+    if (downloadLoading) return;
     setDownloadLoading(true);
     try {
       await api.downloadLocalModel(embedConfig.localModel);
       setLocalModelReady(true);
+      invalidateModelStatus('embed');
       toast.success(t('settings.embeddingDownloaded'));
     } catch (e) {
       toast.error(t('settings.embeddingDownloadFail') + ': ' + String(e));
@@ -370,6 +376,7 @@ export function SettingsPage() {
     try {
       await api.deleteLocalModel(embedConfig.localModel);
       setLocalModelReady(false);
+      invalidateModelStatus('embed');
       toast.success(t('settings.modelDeleted'));
     } catch (e) {
       toast.error(String(e));
@@ -440,6 +447,8 @@ export function SettingsPage() {
         mcpCallTimeoutSecs: 60,
         confirmDestructive: false,
         shellAccessMode: 'restricted',
+        hfMirrorBaseUrl: 'https://hf-mirror.com',
+        ghproxyBaseUrl: 'https://mirror.ghproxy.com',
       });
     }
   }, []);
@@ -466,7 +475,9 @@ export function SettingsPage() {
     try {
       const cfg = await api.getOcrConfig();
       setOcrConfig(cfg);
-      api.checkOcrModels(cfg).then(setOcrModelsExist).catch(() => setOcrModelsExist(false));
+      getModelStatus('ocr', JSON.stringify(cfg), () => api.checkOcrModels(cfg))
+        .then(setOcrModelsExist)
+        .catch(() => setOcrModelsExist(false));
       return true;
     } catch {
       toast.error(t('settings.ocrLoadError'));
@@ -486,10 +497,12 @@ export function SettingsPage() {
 
   const handleDownloadOcrModels = async () => {
     if (!ocrConfig) return;
+    if (ocrDownloading) return;
     setOcrDownloading(true);
     try {
       await api.downloadOcrModels(ocrConfig);
       setOcrModelsExist(true);
+      invalidateModelStatus('ocr');
       toast.success(t('settings.ocrModelsDownloaded'));
     } catch (e) {
       toast.error(t('settings.ocrDownloadFail') + ': ' + String(e));
@@ -517,8 +530,13 @@ export function SettingsPage() {
     try {
       const cfg = await api.getVideoConfig();
       setVideoConfig(cfg);
-      api.checkWhisperModel(cfg).then(setWhisperModelExists).catch(() => setWhisperModelExists(false));
-      api.checkFfmpeg(cfg).then(setFfmpegAvailable).catch(() => setFfmpegAvailable(false));
+      const cfgKey = JSON.stringify(cfg);
+      getModelStatus('whisper', cfgKey, () => api.checkWhisperModel(cfg))
+        .then(setWhisperModelExists)
+        .catch(() => setWhisperModelExists(false));
+      getModelStatus('ffmpeg', cfgKey, () => api.checkFfmpeg(cfg))
+        .then(setFfmpegAvailable)
+        .catch(() => setFfmpegAvailable(false));
       return true;
     } catch {
       return false;
@@ -535,10 +553,12 @@ export function SettingsPage() {
 
   const handleWhisperDownload = async () => {
     if (!videoConfig) return;
+    if (videoDownloading) return;
     setVideoDownloading(true);
     try {
       await api.downloadWhisperModel(videoConfig);
       setWhisperModelExists(true);
+      invalidateModelStatus('whisper');
     } catch (e) {
       toast.error(t('settings.videoDownloadFail') + ': ' + String(e));
     } finally {
@@ -550,6 +570,7 @@ export function SettingsPage() {
     try {
       await api.deleteWhisperModel();
       setWhisperModelExists(false);
+      invalidateModelStatus('whisper');
       toast.success(t('settings.videoDeleteSuccess'));
     } catch (e) {
       toast.error(String(e));
@@ -564,10 +585,12 @@ export function SettingsPage() {
   }, [ffmpegDownloading]);
 
   const handleFfmpegDownload = async () => {
+    if (ffmpegDownloading) return;
     setFfmpegDownloading(true);
     try {
       const path = await api.downloadFfmpeg();
       setFfmpegAvailable(true);
+      invalidateModelStatus('ffmpeg');
       toast.success(t('settings.videoFfmpegDownloadComplete'));
       // Refresh config to pick up the saved ffmpeg path
       await loadVideoConfig();
@@ -917,9 +940,14 @@ export function SettingsPage() {
   const [mcpToolsExpanded, setMcpToolsExpanded] = useState<Record<string, boolean>>({});
 
   const loadSkills = useCallback(() => {
-    api.listSkills().then(setSkills).catch(() => {
-      toast.error(t('common.error'));
-    });
+    Promise.all([api.listBuiltinSkills(), api.listSkills()])
+      .then(([builtins, user]) => {
+        // Built-ins first, then user skills.
+        setSkills([...builtins, ...user]);
+      })
+      .catch(() => {
+        toast.error(t('common.error'));
+      });
   }, []);
 
   const loadMcpServers = useCallback(() => {
@@ -1714,6 +1742,49 @@ export function SettingsPage() {
                 </span>
               </div>
             </div>
+
+            {/* Network mirrors (advanced) */}
+            {appConfig && (
+              <div className="rounded-lg border border-border p-4 bg-surface-1 space-y-3">
+                <div>
+                  <h4 className="text-sm font-medium text-text-primary">{t('settings.networkMirrors')}</h4>
+                  <p className="mt-1 text-xs text-text-tertiary">{t('settings.networkMirrorsDesc')}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-primary">{t('settings.hfMirrorLabel')}</label>
+                  <Input
+                    value={appConfig.hfMirrorBaseUrl ?? ''}
+                    onChange={(e) => {
+                      setAppConfig({ ...appConfig, hfMirrorBaseUrl: e.target.value });
+                      markDirty('models_embedding');
+                    }}
+                    placeholder="https://hf-mirror.com"
+                  />
+                  <p className="text-xs text-text-tertiary">{t('settings.hfMirrorHint')}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-primary">{t('settings.ghproxyLabel')}</label>
+                  <Input
+                    value={appConfig.ghproxyBaseUrl ?? ''}
+                    onChange={(e) => {
+                      setAppConfig({ ...appConfig, ghproxyBaseUrl: e.target.value });
+                      markDirty('models_embedding');
+                    }}
+                    placeholder="https://mirror.ghproxy.com"
+                  />
+                  <p className="text-xs text-text-tertiary">{t('settings.ghproxyHint')}</p>
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    size="sm"
+                    onClick={handleAppConfigSave}
+                    disabled={appConfigLoading}
+                  >
+                    {appConfigLoading ? '…' : t('common.save')}
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Delete embedding model confirmation */}
@@ -2601,6 +2672,7 @@ export function SettingsPage() {
                     size="sm"
                     variant="secondary"
                     onClick={handleFfmpegDownload}
+                    disabled={ffmpegDownloading}
                   >
                     {t('settings.videoFfmpegDownload')}
                   </Button>
@@ -2895,39 +2967,56 @@ export function SettingsPage() {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <p className="text-sm font-medium text-text-primary truncate">{skill.name}</p>
+                            {skill.builtin && (
+                              <Badge variant="default" className="text-[10px] shrink-0 border-accent/40 text-accent">
+                                built-in
+                              </Badge>
+                            )}
                             <Badge variant="default" className="text-[10px] shrink-0">
                               ~{estimateTokens(skill.content)} tok
                             </Badge>
                           </div>
-                          <p className="mt-0.5 text-xs text-text-tertiary truncate">
-                            {skill.content.slice(0, 80)}{skill.content.length > 80 ? '\u2026' : ''}
-                          </p>
+                          {skill.description ? (
+                            <p className="mt-0.5 text-xs text-text-secondary line-clamp-2">
+                              {skill.description}
+                            </p>
+                          ) : (
+                            <p className="mt-0.5 text-xs text-text-tertiary truncate">
+                              {skill.content.slice(0, 80)}{skill.content.length > 80 ? '\u2026' : ''}
+                            </p>
+                          )}
                         </div>
                         <div className="flex items-center gap-1 shrink-0 ml-3">
-                          <button
-                            onClick={() => handleToggleSkill(skill.id, !skill.enabled)}
-                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
-                              skill.enabled ? 'bg-accent' : 'bg-surface-3'
-                            }`}
-                          >
-                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
-                              skill.enabled ? 'translate-x-6' : 'translate-x-1'
-                            }`} />
-                          </button>
-                          <button
-                            onClick={() => { setEditingSkill(skill); setShowSkillForm(true); }}
-                            className="rounded p-1.5 text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
-                            aria-label={t('common.edit')}
-                          >
-                            <Pencil size={14} />
-                          </button>
-                          <button
-                            onClick={() => setDeleteSkillTarget(skill)}
-                            className="rounded p-1.5 text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
-                            aria-label={t('common.delete')}
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                          {!skill.builtin && (
+                            <button
+                              onClick={() => handleToggleSkill(skill.id, !skill.enabled)}
+                              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+                                skill.enabled ? 'bg-accent' : 'bg-surface-3'
+                              }`}
+                            >
+                              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+                                skill.enabled ? 'translate-x-6' : 'translate-x-1'
+                              }`} />
+                            </button>
+                          )}
+                          {!skill.builtin && (
+                            <button
+                              onClick={() => { setEditingSkill(skill); setShowSkillForm(true); }}
+                              className="rounded p-1.5 text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
+                              aria-label={t('common.edit')}
+                            >
+                              <Pencil size={14} />
+                            </button>
+                          )}
+                          {!skill.builtin && (
+                            <button
+                              onClick={() => setDeleteSkillTarget(skill)}
+                              className="rounded p-1.5 text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                              aria-label={t('common.delete')}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </div>
                       </motion.div>
                     ))}

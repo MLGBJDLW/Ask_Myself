@@ -1,0 +1,19 @@
+{
+  "name": "update_scratchpad",
+  "description": "Update the per-conversation agent scratchpad — a small self-maintained notebook visible at the start of every turn via the system prompt.\n\nUse this to record:\n- Key facts discovered during multi-step research\n- Decisions and rationale that should persist across turns\n- Plan / to-do status when tasks span many iterations\n- Useful context you want to remember after compaction\n\nKeep it concise (the store is capped at 4000 characters — oldest content is trimmed first). Prefer `append` for new findings and `replace` when refactoring the whole note. Use `clear` to wipe it once a task is fully resolved.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["append", "replace", "clear"],
+        "description": "How to update the scratchpad. 'append' adds a timestamped entry to the end. 'replace' overwrites with the given content. 'clear' empties it."
+      },
+      "content": {
+        "type": "string",
+        "description": "Text to write. Required for 'append' and 'replace'; ignored for 'clear'."
+      }
+    },
+    "required": ["action"]
+  }
+}

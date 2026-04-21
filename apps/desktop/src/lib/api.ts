@@ -142,6 +142,32 @@ export const getFeedbackForQuery = (queryText: string) =>
 export const deleteFeedback = (feedbackId: string) =>
   invoke<void>('delete_feedback', { feedbackId });
 
+export interface MessageFeedback {
+  id: string;
+  messageId: string;
+  conversationId: string;
+  rating: number;
+  note: string | null;
+  createdAt: string;
+}
+
+/** Save message-level thumbs up/down. rating: +1 upvote, -1 downvote, 0 clear. */
+export const setMessageFeedback = (
+  messageId: string,
+  conversationId: string,
+  rating: number,
+  note?: string,
+) =>
+  invoke<MessageFeedback>('set_message_feedback_cmd', {
+    messageId,
+    conversationId,
+    rating,
+    note: note ?? null,
+  });
+
+export const getMessageFeedback = (messageId: string) =>
+  invoke<MessageFeedback | null>('get_message_feedback_cmd', { messageId });
+
 // ── Sources (extra) ─────────────────────────────────────────────────────
 
 export const getSource = (sourceId: string) =>
@@ -436,6 +462,15 @@ export const deleteSkill = (id: string) =>
 
 export const toggleSkill = (id: string, enabled: boolean) =>
   invoke<void>('toggle_skill_cmd', { id, enabled });
+
+export const listBuiltinSkills = () =>
+  invoke<Skill[]>('list_builtin_skills_cmd');
+
+export const importSkillFromMd = (content: string) =>
+  invoke<Skill>('import_skill_from_md_cmd', { content });
+
+export const exportSkillToMd = (skillId: string) =>
+  invoke<string>('export_skill_to_md_cmd', { skillId });
 
 // ── MCP Servers ─────────────────────────────────────────────────────────
 

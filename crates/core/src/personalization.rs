@@ -739,6 +739,7 @@ pub async fn extract_memories_from_conversation(
         thinking_budget: None,
         reasoning_effort: None,
         provider_type: None,
+        parallel_tool_calls: true,
     };
 
     let response = llm.complete(&request).await?;

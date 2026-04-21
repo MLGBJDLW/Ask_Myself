@@ -26,6 +26,7 @@ pub mod index;
 pub mod ingest;
 pub mod knowledge_graph;
 pub mod knowledge_loop;
+pub mod learning;
 pub mod lint;
 pub mod llm;
 pub mod mcp;

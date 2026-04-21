@@ -38,15 +38,20 @@ export interface McpToolInfo {
 export interface Skill {
   id: string;
   name: string;
+  /** Concise trigger-match description (when to activate this skill). */
+  description: string;
   content: string;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  /** True for bundled SKILL.md skills — read-only in the UI. */
+  builtin?: boolean;
 }
 
 export interface SaveSkillInput {
   id?: string | null;
   name: string;
+  description: string;
   content: string;
   enabled: boolean;
 }

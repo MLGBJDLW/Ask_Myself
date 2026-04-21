@@ -102,6 +102,21 @@ impl WhisperModel {
             .collect()
     }
 
+    /// Mirror URLs for regions where `huggingface.co` is unreachable.
+    /// Host swapped: `huggingface.co` → `<mirror_base>`.
+    /// Returns an empty vec when `mirror_base` is empty (fallback disabled).
+    pub fn fallback_download_urls(&self, mirror_base: &str) -> Vec<(&'static str, String)> {
+        let base = mirror_base.trim().trim_end_matches('/');
+        if base.is_empty() {
+            return Vec::new();
+        }
+        let repo_id = self.repo_id();
+        self.required_files()
+            .iter()
+            .map(|f| (*f, format!("{base}/{repo_id}/resolve/main/{f}")))
+            .collect()
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Tiny => "Tiny (~151 MB)",
@@ -1249,17 +1264,42 @@ pub fn check_whisper_model_exists(config: &VideoConfig) -> bool {
 }
 
 /// Download the selected Whisper model (safetensors format) with progress reporting.
+///
+/// `hf_mirror_base` — fallback mirror base URL (e.g. `https://hf-mirror.com`).
+/// Empty string disables the fallback. The `HF_ENDPOINT` env var still wins
+/// over settings for the primary URL.
 pub fn download_whisper_model(
     config: &VideoConfig,
+    hf_mirror_base: &str,
     on_progress: impl Fn(VideoDownloadProgress),
 ) -> Result<(), CoreError> {
     let model_dir = Path::new(&config.model_path).join(config.whisper_model.dir_name());
     std::fs::create_dir_all(&model_dir)
         .map_err(|e| CoreError::Video(format!("Failed to create model directory: {e}")))?;
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .user_agent(concat!("nexa/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| CoreError::Video(format!("HTTP client error: {e}")))?;
 
-    for (filename, url) in config.whisper_model.download_urls() {
+    // HF_ENDPOINT env override: swap `https://huggingface.co` on primary URLs.
+    // Env var > user-configured mirror base for the primary; mirror base remains
+    // the secondary fallback (empty string disables it).
+    let hf_endpoint = std::env::var("HF_ENDPOINT").ok().and_then(|v| {
+        let trimmed = v.trim().trim_end_matches('/').to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+
+    let primary_urls = config.whisper_model.download_urls();
+    let mirror_urls = config.whisper_model.fallback_download_urls(hf_mirror_base);
+
+    for (idx, (filename, base_url)) in primary_urls.iter().enumerate() {
         let dest = model_dir.join(filename);
         if dest.exists() {
             tracing::info!("Model file already exists, skipping: {filename}");
@@ -1267,45 +1307,28 @@ pub fn download_whisper_model(
         }
         let tmp_dest = dest.with_extension("partial");
 
-        let resp = client
-            .get(&url)
-            .send()
-            .map_err(|e| CoreError::Video(format!("Failed to download {filename}: {e}")))?;
+        let primary_url = match &hf_endpoint {
+            Some(endpoint) => base_url.replace("https://huggingface.co", endpoint),
+            None => base_url.clone(),
+        };
 
-        if !resp.status().is_success() {
-            return Err(CoreError::Video(format!(
-                "HTTP {} downloading {filename} from {url}",
-                resp.status()
-            )));
-        }
+        let mirror_url = mirror_urls.get(idx).map(|(_, u)| u.as_str());
 
-        let total_bytes = resp.content_length();
-        let mut bytes_downloaded: u64 = 0;
-
-        let mut file = std::fs::File::create(&tmp_dest)
-            .map_err(|e| CoreError::Video(format!("Failed to create {filename}: {e}")))?;
-
-        let mut reader = std::io::BufReader::new(resp);
-        let mut buffer = [0u8; 8192];
-        loop {
-            use std::io::Read;
-            let n = reader
-                .read(&mut buffer)
-                .map_err(|e| CoreError::Video(format!("Download read error: {e}")))?;
-            if n == 0 {
-                break;
-            }
-            use std::io::Write;
-            file.write_all(&buffer[..n])
-                .map_err(|e| CoreError::Video(format!("Failed to write {filename}: {e}")))?;
-            bytes_downloaded += n as u64;
-            on_progress(VideoDownloadProgress {
-                filename: filename.to_string(),
-                bytes_downloaded,
-                total_bytes,
-            });
-        }
-        drop(file);
+        let filename_owned = filename.to_string();
+        download_with_fallback(
+            &client,
+            &primary_url,
+            mirror_url,
+            &tmp_dest,
+            |bytes_downloaded, total_bytes| {
+                on_progress(VideoDownloadProgress {
+                    filename: filename_owned.clone(),
+                    bytes_downloaded,
+                    total_bytes,
+                });
+            },
+        )
+        .map_err(|e| CoreError::Video(format!("Failed to download {filename}: {e}")))?;
 
         // Atomic rename: partial → final
         std::fs::rename(&tmp_dest, &dest).map_err(|e| {
@@ -1313,10 +1336,84 @@ pub fn download_whisper_model(
             CoreError::Video(format!("Failed to finalize {filename}: {e}"))
         })?;
 
-        tracing::info!("Downloaded {filename}: size={bytes_downloaded}");
+        tracing::info!("Downloaded {filename}");
     }
 
     Ok(())
+}
+
+/// Stream a single URL to `tmp_dest`. On HTTP error or network error, returns
+/// a descriptive `CoreError::Video` and leaves any partial file in place (the
+/// caller is responsible for cleanup before retrying).
+fn stream_to_file(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    tmp_dest: &Path,
+    mut progress: impl FnMut(u64, Option<u64>),
+) -> Result<u64, CoreError> {
+    let resp = client
+        .get(url)
+        .send()
+        .map_err(|e| CoreError::Video(format!("request {url}: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Err(CoreError::Video(format!(
+            "HTTP {} downloading {url}",
+            resp.status()
+        )));
+    }
+
+    let total_bytes = resp.content_length();
+    let mut bytes_downloaded: u64 = 0;
+
+    let mut file = std::fs::File::create(tmp_dest)
+        .map_err(|e| CoreError::Video(format!("create {}: {e}", tmp_dest.display())))?;
+    let mut reader = std::io::BufReader::new(resp);
+    let mut buffer = [0u8; 65536];
+    loop {
+        use std::io::Read;
+        let n = reader
+            .read(&mut buffer)
+            .map_err(|e| CoreError::Video(format!("read error: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        use std::io::Write;
+        file.write_all(&buffer[..n])
+            .map_err(|e| CoreError::Video(format!("write error: {e}")))?;
+        bytes_downloaded += n as u64;
+        progress(bytes_downloaded, total_bytes);
+    }
+    Ok(bytes_downloaded)
+}
+
+/// Download `primary_url` to `tmp_dest`; on failure, fall back to `mirror_url`
+/// (if provided). Partial files from a failed primary attempt are removed
+/// before retrying the mirror.
+fn download_with_fallback(
+    client: &reqwest::blocking::Client,
+    primary_url: &str,
+    mirror_url: Option<&str>,
+    tmp_dest: &Path,
+    mut progress: impl FnMut(u64, Option<u64>),
+) -> Result<u64, CoreError> {
+    match stream_to_file(client, primary_url, tmp_dest, &mut progress) {
+        Ok(n) => Ok(n),
+        Err(primary_err) => {
+            let _ = std::fs::remove_file(tmp_dest);
+            match mirror_url {
+                Some(mirror) => {
+                    tracing::warn!(
+                        "Primary download failed ({primary_err}); retrying via mirror {mirror}"
+                    );
+                    stream_to_file(client, mirror, tmp_dest, &mut progress).map_err(|mirror_err| {
+                        CoreError::Video(format!("primary: {primary_err}; mirror: {mirror_err}"))
+                    })
+                }
+                None => Err(primary_err),
+            }
+        }
+    }
 }
 
 /// Delete all model files for the configured whisper model.
@@ -1343,8 +1440,12 @@ pub struct FfmpegDownloadProgress {
 
 /// Download FFmpeg + ffprobe static binaries for the current platform.
 /// Returns the path to the downloaded ffmpeg binary.
+///
+/// `ghproxy_base` — GitHub reverse-proxy base URL used as fallback mirror.
+/// Empty string disables the fallback.
 pub fn download_ffmpeg(
     data_dir: &Path,
+    ghproxy_base: &str,
     on_progress: impl Fn(FfmpegDownloadProgress),
 ) -> Result<PathBuf, CoreError> {
     let bin_dir = data_dir.join("bin");
@@ -1366,6 +1467,7 @@ pub fn download_ffmpeg(
     }
 
     let (url, archive_ext) = ffmpeg_download_url()?;
+    let mirror_url = ffmpeg_mirror_url(ghproxy_base)?;
 
     on_progress(FfmpegDownloadProgress {
         progress_pct: 0.0,
@@ -1375,42 +1477,18 @@ pub fn download_ffmpeg(
     // Stream download
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(600))
+        .connect_timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| CoreError::Video(format!("HTTP client error: {e}")))?;
 
-    let resp = client
-        .get(&url)
-        .send()
-        .map_err(|e| CoreError::Video(format!("Failed to download FFmpeg: {e}")))?;
-
-    if !resp.status().is_success() {
-        return Err(CoreError::Video(format!(
-            "HTTP {} downloading FFmpeg from {url}",
-            resp.status()
-        )));
-    }
-
-    let total_bytes = resp.content_length();
-    let mut bytes_downloaded: u64 = 0;
-
     let tmp_archive = bin_dir.join(format!("ffmpeg-download.{archive_ext}"));
-    {
-        let mut file = std::fs::File::create(&tmp_archive)
-            .map_err(|e| CoreError::Video(format!("Failed to create temp archive: {e}")))?;
-        let mut reader = std::io::BufReader::new(resp);
-        let mut buffer = [0u8; 65536];
-        loop {
-            use std::io::Read;
-            let n = reader
-                .read(&mut buffer)
-                .map_err(|e| CoreError::Video(format!("Download read error: {e}")))?;
-            if n == 0 {
-                break;
-            }
-            use std::io::Write;
-            file.write_all(&buffer[..n])
-                .map_err(|e| CoreError::Video(format!("Failed to write archive: {e}")))?;
-            bytes_downloaded += n as u64;
+
+    download_with_fallback(
+        &client,
+        &url,
+        mirror_url.as_deref(),
+        &tmp_archive,
+        |bytes_downloaded, total_bytes| {
             let pct = total_bytes
                 .map(|t| (bytes_downloaded as f32 / t as f32) * 80.0) // 0-80% for download
                 .unwrap_or(0.0);
@@ -1421,8 +1499,9 @@ pub fn download_ffmpeg(
                     bytes_downloaded as f64 / 1_048_576.0
                 ),
             });
-        }
-    }
+        },
+    )
+    .map_err(|e| CoreError::Video(format!("Failed to download FFmpeg: {e}")))?;
 
     on_progress(FfmpegDownloadProgress {
         progress_pct: 80.0,
@@ -1510,6 +1589,36 @@ fn ffmpeg_download_url() -> Result<(String, &'static str), CoreError> {
         Err(CoreError::Video(
             "FFmpeg auto-download is not supported on this platform".into(),
         ))
+    }
+}
+
+/// Returns the mirror URL for regions where `github.com` is unreachable.
+///
+/// For Windows/Linux (GitHub-hosted builds) this wraps the primary URL with
+/// the configured GitHub reverse proxy (`ghproxy_base`). For macOS builds
+/// (served from `evermeet.cx`) no mirror is configured and this returns
+/// `Ok(None)`. An empty `ghproxy_base` also returns `Ok(None)`.
+#[allow(unused_variables)]
+fn ffmpeg_mirror_url(ghproxy_base: &str) -> Result<Option<String>, CoreError> {
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        let base = ghproxy_base.trim().trim_end_matches('/');
+        if base.is_empty() {
+            return Ok(None);
+        }
+        let (primary, _) = ffmpeg_download_url()?;
+        Ok(Some(format!("{base}/{primary}")))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // evermeet.cx — no generic mirror available.
+        Ok(None)
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        Ok(None)
     }
 }
 
@@ -2182,5 +2291,56 @@ mod tests {
         let config = db.load_video_config().unwrap();
         assert!(!config.enabled);
         assert_eq!(config.whisper_model, WhisperModel::Base);
+    }
+
+    #[test]
+    fn whisper_fallback_urls_swap_host() {
+        let urls = WhisperModel::Tiny.fallback_download_urls("https://hf-mirror.com");
+        assert!(!urls.is_empty());
+        assert!(urls.iter().all(|(_, u)| u.contains("hf-mirror.com")));
+        assert!(urls.iter().all(|(_, u)| !u.contains("huggingface.co")));
+        // Primary still points at huggingface.co
+        let primary = WhisperModel::Tiny.download_urls();
+        assert!(primary.iter().all(|(_, u)| u.contains("huggingface.co")));
+    }
+
+    #[test]
+    fn whisper_fallback_urls_empty_base_disables_mirror() {
+        let urls = WhisperModel::Tiny.fallback_download_urls("");
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn whisper_fallback_urls_cover_all_required_files() {
+        let primary = WhisperModel::Base.download_urls();
+        let mirror = WhisperModel::Base.fallback_download_urls("https://hf-mirror.com");
+        assert_eq!(primary.len(), mirror.len());
+        for ((fp, _), (fm, _)) in primary.iter().zip(mirror.iter()) {
+            assert_eq!(fp, fm);
+        }
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn ffmpeg_mirror_url_uses_ghproxy_on_github_platforms() {
+        let mirror = ffmpeg_mirror_url("https://mirror.ghproxy.com")
+            .expect("mirror url ok")
+            .expect("some");
+        assert!(mirror.starts_with("https://mirror.ghproxy.com/"));
+        assert!(mirror.contains("github.com"));
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn ffmpeg_mirror_url_empty_base_disables_mirror() {
+        assert!(ffmpeg_mirror_url("").unwrap().is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ffmpeg_mirror_url_none_on_macos() {
+        assert!(ffmpeg_mirror_url("https://mirror.ghproxy.com")
+            .unwrap()
+            .is_none());
     }
 }

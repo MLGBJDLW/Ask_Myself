@@ -59,6 +59,7 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     // Start: check model first
     try {
       const config = await api.getVideoConfig();
+      // TODO: migrate to modelStatusCache
       const exists = await api.checkWhisperModel(config);
       if (!exists) {
         toast.error(t('voice.noModel'));

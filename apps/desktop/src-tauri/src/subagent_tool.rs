@@ -857,7 +857,11 @@ async fn run_subagent_once(
         resolve_source_scope(&inherited_source_scope, args.source_ids.as_deref());
     let evidence_handoff = build_evidence_handoff(&db, args.evidence_chunk_ids.as_deref());
     let enabled_skills = filter_enabled_skills(
-        db.get_enabled_skills().unwrap_or_default(),
+        {
+            let mut combined = nexa_core::skills::load_builtin_skills();
+            combined.extend(db.get_enabled_skills().unwrap_or_default());
+            combined
+        },
         runtime.allowed_skill_ids.as_deref(),
     );
     let applied_skill_refs = applied_skills(&enabled_skills);
@@ -1577,6 +1581,7 @@ impl Tool for JudgeSubagentResultsTool {
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: self.runtime.base_config.provider_type.clone(),
+            parallel_tool_calls: true,
         };
         let response = provider.complete(&request).await?;
         self.runtime.budget.record_usage(&response.usage).await;

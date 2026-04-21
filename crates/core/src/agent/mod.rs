@@ -29,6 +29,7 @@ use crate::tools::{ToolCategory, ToolRegistry};
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
 pub mod context;
+pub mod scratchpad;
 
 // Re-export so consumers don't need to depend on tokio-util directly.
 pub use tokio_util::sync::CancellationToken;
@@ -821,12 +822,8 @@ impl AgentExecutor {
             .await;
 
         // --- 1. Build initial messages with context-window trimming -----------
-        let skills = self
-            .skills_override
-            .clone()
-            .unwrap_or_else(|| db.get_enabled_skills().unwrap_or_default());
-
-        // Extract user query text early for tool selection.
+        // Extract user query text early — used for both tool selection and
+        // skill trigger matching.
         let user_query_text_for_tools: String = user_parts
             .iter()
             .filter_map(|p| match p {
@@ -835,6 +832,11 @@ impl AgentExecutor {
             })
             .collect::<Vec<_>>()
             .join(" ");
+
+        let skills = self.skills_override.clone().unwrap_or_else(|| {
+            crate::skills::get_active_skills_for_query(db, &user_query_text_for_tools, 5)
+                .unwrap_or_default()
+        });
 
         // --- Trace: initialize ------------------------------------------------
         let ctx_window_for_trace =
@@ -1268,6 +1270,7 @@ impl AgentExecutor {
                     None
                 },
                 provider_type: self.config.provider_type.clone(),
+                parallel_tool_calls: true,
             };
 
             // -- 4a. Stream LLM response (with rate-limit retry) ----------------
@@ -1714,8 +1717,14 @@ impl AgentExecutor {
                         let tool_start = std::time::Instant::now();
                         let result = tokio::time::timeout(
                             tool_timeout,
-                            self.tools
-                                .execute(&tc.name, &tc.id, &tc.arguments, db, source_scope),
+                            self.tools.execute_with_context(
+                                &tc.name,
+                                &tc.id,
+                                &tc.arguments,
+                                db,
+                                source_scope,
+                                conversation_id,
+                            ),
                         )
                         .await;
                         let tool_elapsed = tool_start.elapsed();

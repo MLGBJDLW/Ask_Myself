@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Trash2, Pencil, MessageCircle, Check, X, Search, Star, MoreVertical, FolderOpen } from 'lucide-react';
+import { Plus, Trash2, Pencil, MessageCircle, Check, X, Search, Star, MoreVertical, FolderOpen, FolderInput } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
 import { relativeTime } from '../../lib/relativeTime';
@@ -136,6 +136,7 @@ function ConversationItem({
   onRename,
   onTogglePin,
   onToggleSelect,
+  onRequestMove,
   t,
 }: {
   conv: Conversation;
@@ -149,6 +150,7 @@ function ConversationItem({
   onRename: (title: string) => void;
   onTogglePin: () => void;
   onToggleSelect: () => void;
+  onRequestMove: (anchor: DOMRect) => void;
   t: (key: TranslationKey) => string;
 }) {
   const [hovered, setHovered] = useState(false);
@@ -276,6 +278,18 @@ function ConversationItem({
                 aria-label={t('common.edit')}
               >
                 <Pencil className="h-3 w-3" />
+              </button>
+              <button
+                onClick={(e) => {
+                  const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                  onRequestMove(rect);
+                }}
+                className="p-1 rounded hover:bg-surface-3 text-text-tertiary hover:text-text-secondary
+                  transition-colors cursor-pointer"
+                aria-label={t('sidebar.moveToProject')}
+                title={t('sidebar.moveToProject')}
+              >
+                <FolderInput className="h-3 w-3" />
               </button>
               <button
                 onClick={onDelete}
@@ -566,6 +580,10 @@ export function ChatSidebar({
                         onRename={(title) => onRename(conv.id, title)}
                         onTogglePin={() => togglePin(conv.id)}
                         onToggleSelect={() => toggleSelect(conv.id)}
+                        onRequestMove={(rect) => {
+                          setMoveMenuConvId(conv.id);
+                          setMoveMenuPos({ x: rect.right + 4, y: rect.bottom + 4 });
+                        }}
                         t={t}
                       />
                     </div>

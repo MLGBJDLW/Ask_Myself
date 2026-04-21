@@ -82,9 +82,8 @@ impl Tool for PptGenerateTool {
         db: &Database,
         source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
-        let args: PptGenerateArgs = serde_json::from_str(arguments).map_err(|e| {
-            CoreError::InvalidInput(format!("Invalid ppt_generate arguments: {e}"))
-        })?;
+        let args: PptGenerateArgs = serde_json::from_str(arguments)
+            .map_err(|e| CoreError::InvalidInput(format!("Invalid ppt_generate arguments: {e}")))?;
 
         if args.path.is_empty() {
             return Ok(ToolResult {

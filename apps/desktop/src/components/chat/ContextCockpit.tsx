@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronDown, Clock3, Gauge, Plus, Scissors, ShieldCheck, Zap } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Clock3, Gauge, Loader2, Plus, Scissors, ShieldCheck, Zap } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 
 interface TokenUsage {
@@ -25,6 +25,7 @@ interface ContextCockpitProps {
   rateLimited?: boolean;
   lastCached?: boolean;
   isStreaming?: boolean;
+  isCompacting?: boolean;
   onCompact?: () => void;
   onStartNewChat?: () => void;
 }
@@ -43,6 +44,7 @@ export function ContextCockpit({
   rateLimited = false,
   lastCached = false,
   isStreaming = false,
+  isCompacting = false,
   onCompact,
   onStartNewChat,
 }: ContextCockpitProps) {
@@ -133,10 +135,35 @@ export function ContextCockpit({
               ? 'text-cyan-400 bg-cyan-400/10'
               : 'text-text-tertiary bg-surface-3';
 
+            const chipBase = `inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md ${colorClass}`;
+            const IconComponent = isCompacting ? Loader2 : Gauge;
+            const iconClass = `w-3 h-3${isCompacting ? ' animate-spin' : ''}`;
+            const chipLabel = isCompacting ? t('chat.compacting') : usageSummaryLabel;
+
+            if (canCompact) {
+              return (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!isCompacting) onCompact?.();
+                  }}
+                  disabled={isCompacting}
+                  title={isCompacting ? t('chat.compacting') : t('chat.compactNow')}
+                  aria-label={isCompacting ? t('chat.compacting') : t('chat.compactNow')}
+                  className={`${chipBase} transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70`}
+                >
+                  <IconComponent className={iconClass} />
+                  {chipLabel}
+                </button>
+              );
+            }
+
             return (
-              <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md ${colorClass}`}>
-                <Gauge className="w-3 h-3" />
-                {usageSummaryLabel}
+              <span className={chipBase}>
+                <IconComponent className={iconClass} />
+                {chipLabel}
               </span>
             );
           })()}
@@ -254,7 +281,7 @@ export function ContextCockpit({
                   {canStartNewChat && (
                     <button
                       type="button"
-                      onClick={onStartNewChat}
+                      onClick={() => onStartNewChat?.()}
                       className="inline-flex items-center gap-1 rounded-md bg-black/10 px-2 py-1 text-[11px] font-medium transition-colors hover:bg-black/15"
                     >
                       <Plus className="h-3 w-3" />

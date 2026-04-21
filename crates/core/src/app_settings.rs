@@ -75,6 +75,16 @@ pub struct AppConfig {
     /// Whether to automatically extract memories from conversations. Default: true
     #[serde(default = "default_auto_memory_extraction")]
     pub auto_memory_extraction: bool,
+
+    /// HuggingFace mirror base URL used as fallback when `huggingface.co` is blocked.
+    /// Empty string disables the fallback. Default: `https://hf-mirror.com`.
+    #[serde(default = "default_hf_mirror_base_url")]
+    pub hf_mirror_base_url: String,
+
+    /// GitHub reverse-proxy base URL used for FFmpeg binary downloads.
+    /// Empty string disables the fallback. Default: `https://mirror.ghproxy.com`.
+    #[serde(default = "default_ghproxy_base_url")]
+    pub ghproxy_base_url: String,
 }
 
 fn default_tool_timeout() -> i64 {
@@ -110,6 +120,12 @@ fn default_mcp_call_timeout_secs() -> u64 {
 fn default_auto_memory_extraction() -> bool {
     true
 }
+fn default_hf_mirror_base_url() -> String {
+    "https://hf-mirror.com".to_string()
+}
+fn default_ghproxy_base_url() -> String {
+    "https://mirror.ghproxy.com".to_string()
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -127,6 +143,8 @@ impl Default for AppConfig {
             confirm_destructive: false,
             shell_access_mode: ShellAccessMode::Restricted,
             auto_memory_extraction: true,
+            hf_mirror_base_url: default_hf_mirror_base_url(),
+            ghproxy_base_url: default_ghproxy_base_url(),
         }
     }
 }

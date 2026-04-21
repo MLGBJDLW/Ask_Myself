@@ -326,6 +326,12 @@ export interface TranslationKeys {
   'settings.modelNotDownloaded': string;
   'settings.modelDownloading': string;
   'settings.modelDiskUsage': string;
+  'settings.networkMirrors': string;
+  'settings.networkMirrorsDesc': string;
+  'settings.hfMirrorLabel': string;
+  'settings.hfMirrorHint': string;
+  'settings.ghproxyLabel': string;
+  'settings.ghproxyHint': string;
 
   // Settings - OCR
   'settings.ocrTab': string;
@@ -610,6 +616,9 @@ export interface TranslationKeys {
   'chat.loadingMessages': string;
   'chat.dragDropHint': string;
   'chat.compact': string;
+  'chat.compactNow': string;
+  'chat.compacting': string;
+  'sidebar.moveToProject': string;
   'chat.thinkingTokens': string;
   'chat.cached': string;
   'chat.truncated': string;
@@ -865,6 +874,10 @@ export interface TranslationKeys {
   'settings.skillContentPlaceholder': string;
   'settings.skillTokenEstimate': string;
   'settings.skillUseTemplate': string;
+  'settings.skillImportMd': string;
+  'settings.skillDescriptionLabel': string;
+  'settings.skillDescriptionPlaceholder': string;
+  'settings.skillImportError': string;
   'settings.noSkills': string;
   'settings.mcpServers': string;
   'settings.mcpServersDescription': string;

@@ -345,10 +345,12 @@ mod tests {
         let skills = vec![Skill {
             id: "1".into(),
             name: "Be Concise".into(),
+            description: "Always favor brevity".into(),
             content: "Always answer briefly.".into(),
             enabled: true,
             created_at: String::new(),
             updated_at: String::new(),
+            builtin: false,
         }];
         let result = prepare_messages(
             "System prompt",

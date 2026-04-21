@@ -1043,6 +1043,7 @@ mod tests {
             thinking_budget: Some(2048),
             reasoning_effort: None,
             provider_type: None,
+            parallel_tool_calls: true,
         };
 
         let body = build_request_body(&request, None, vec![]);

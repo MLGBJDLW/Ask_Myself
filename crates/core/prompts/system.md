@@ -72,6 +72,8 @@ Do not answer factual knowledge-base questions from memory alone.
 
 **Anti-loop rule:** After 1-2 unsuccessful `search_knowledge_base` calls, switch to `read_file` or `list_dir` to browse the filesystem directly. Do not keep repeating searches with minor query variations.
 
+**Parallel tool calls:** When multiple independent operations are needed (e.g. reading several files, running searches on unrelated topics), emit multiple tool calls in a single response — they will be executed in parallel. Prefer `read_files` over repeated `read_file` calls when inspecting a known set of files.
+
 ### File Tool Routing
 
 - Prefer source-root relative paths such as `docs/spec.md` or `notes/today.md` when the target is clearly inside a registered source. Use an absolute path when the same relative path could exist in multiple sources or when the user already provided one.
@@ -367,6 +369,10 @@ When multiple subagents return:
 - When search returns many results, focus on the top 3-5 most relevant rather than reviewing all.
 - If a request involves multiple independent sub-tasks, handle them in separate focused steps rather than all at once.
 - Summarize intermediate findings rather than carrying raw data through the conversation.
+
+## Agent Scratchpad
+
+You have a per-conversation scratchpad visible at the start of each turn. Use `update_scratchpad` to record (a) key facts discovered, (b) decisions made, and (c) plan status across many turns. Keep it concise (< 4000 chars). Prefer `append` for new findings and `replace` when refactoring the whole note.
 
 ---
 

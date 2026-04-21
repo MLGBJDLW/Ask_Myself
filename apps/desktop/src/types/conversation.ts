@@ -11,6 +11,8 @@ export interface Conversation {
     sourceIds: string[];
   } | null;
   projectId?: string | null;
+  /** `true` if the title is still auto-generated. Becomes `false` after a user rename. */
+  titleIsAuto?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -146,6 +148,8 @@ export interface AppConfig {
   traceEnabled?: boolean;
   confirmDestructive?: boolean;
   shellAccessMode?: 'restricted' | 'confirm_all' | 'open';
+  hfMirrorBaseUrl?: string;
+  ghproxyBaseUrl?: string;
 }
 
 export type ProviderType =

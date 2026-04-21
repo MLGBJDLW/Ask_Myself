@@ -20,8 +20,10 @@ export interface MessageActionsProps {
   onRetry?: () => void;
   /** Whether the message is from user (enables edit button) */
   isUser?: boolean;
-  /** Message id for edit/delete */
+  /** Message id for edit/delete + message-level feedback */
   messageId?: string;
+  /** Conversation id (required for message-level feedback) */
+  conversationId?: string;
   /** Called when edit is clicked */
   onEdit?: () => void;
   /** Called when delete is confirmed */
@@ -32,7 +34,7 @@ export interface MessageActionsProps {
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function MessageActions({ text, showFeedback, chunkIds = [], queryText = '', isLastAssistant, onRetry, isUser, messageId, onEdit, onDelete }: MessageActionsProps) {
+export function MessageActions({ text, showFeedback, chunkIds = [], queryText = '', isLastAssistant, onRetry, isUser, messageId, conversationId, onEdit, onDelete }: MessageActionsProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
@@ -50,25 +52,32 @@ export function MessageActions({ text, showFeedback, chunkIds = [], queryText = 
   }, [text]);
 
   const handleFeedback = useCallback(async (type: 'up' | 'down') => {
-    if (feedback === type) {
-      setFeedback(null);
-      return;
-    }
-    if (chunkIds.length === 0 || !queryText) {
-      setFeedback(type);
-      return;
-    }
+    const clearing = feedback === type;
+    const nextFeedback: FeedbackState = clearing ? null : type;
+    const rating = clearing ? 0 : type === 'up' ? 1 : -1;
+
+    // Always persist message-level signal (backend no-ops if messageId/conversationId missing).
     setSubmitting(true);
     try {
-      const action = type === 'up' ? 'upvote' : 'downvote';
-      await Promise.all(chunkIds.map((id) => api.addFeedback(id, queryText, action)));
-      setFeedback(type);
+      const tasks: Promise<unknown>[] = [];
+      if (messageId && conversationId) {
+        tasks.push(api.setMessageFeedback(messageId, conversationId, rating));
+      }
+      // Preserve backward-compat chunk-level path when evidence is present.
+      if (!clearing && chunkIds.length > 0 && queryText) {
+        const action = type === 'up' ? 'upvote' : 'downvote';
+        tasks.push(...chunkIds.map((id) => api.addFeedback(id, queryText, action)));
+      }
+      if (tasks.length > 0) {
+        await Promise.allSettled(tasks);
+      }
+      setFeedback(nextFeedback);
     } catch {
       // Silently fail — feedback is best-effort
     } finally {
       setSubmitting(false);
     }
-  }, [feedback, chunkIds, queryText]);
+  }, [feedback, chunkIds, queryText, messageId, conversationId]);
 
   const handleDelete = useCallback(() => {
     if (!confirmingDelete) {

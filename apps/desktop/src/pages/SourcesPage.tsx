@@ -16,6 +16,7 @@ import {
   Info,
   BotMessageSquare,
   AlertTriangle,
+  ChevronDown,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { listen } from '@tauri-apps/api/event';
@@ -135,6 +136,9 @@ export function SourcesPage() {
   const [embeddingId, setEmbeddingId] = useState<string | null>(null);
   const [rebuildingEmbeddings, setRebuildingEmbeddings] = useState(false);
   const [indexingIds, setIndexingIds] = useState<Set<string>>(new Set());
+  // Progressive disclosure: remember which cards the user has manually expanded.
+  // Actively-scanning cards auto-expand in the render path regardless of this set.
+  const [expandedSourceIds, setExpandedSourceIds] = useState<Set<string>>(new Set());
 
   // Add source modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -199,6 +203,7 @@ export function SourcesPage() {
   }, [loadSources]);
 
   useEffect(() => {
+    // TODO: migrate to modelStatusCache
     api.getVideoConfig()
       .then(config => config && api.checkWhisperModel(config))
       .then(exists => setWhisperModelMissing(exists === false))
@@ -597,7 +602,22 @@ export function SourcesPage() {
           animate="show"
         >
           <AnimatePresence mode="popLayout">
-            {sources.map((source) => (
+            {sources.map((source) => {
+              const isActivelyScanning =
+                scanningId === source.id ||
+                embeddingId === source.id ||
+                indexingIds.has(source.id);
+              const isManuallyExpanded = expandedSourceIds.has(source.id);
+              const expanded = isManuallyExpanded || isActivelyScanning;
+              const toggleExpanded = () => {
+                setExpandedSourceIds((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(source.id)) next.delete(source.id);
+                  else next.add(source.id);
+                  return next;
+                });
+              };
+              return (
               <motion.div
                 key={source.id}
                 variants={listItem}
@@ -605,14 +625,27 @@ export function SourcesPage() {
                 exit={{ opacity: 0, x: -20, transition: { duration: 0.2 } }}
                 className="rounded-lg border border-border bg-surface-2 p-4 hover:border-border-hover transition-colors duration-fast"
               >
+                {/* Summary row (always visible) */}
                 <div className="flex items-start justify-between gap-3">
                   {/* Left: icon + info */}
                   <div className="flex items-start gap-3 min-w-0 flex-1">
+                    <button
+                      type="button"
+                      onClick={toggleExpanded}
+                      aria-expanded={expanded}
+                      aria-label={expanded ? t('common.collapse') : t('common.expand')}
+                      className="shrink-0 p-2 rounded-lg bg-accent-subtle text-accent mt-0.5 hover:bg-accent/20 transition-colors cursor-pointer"
+                    >
+                      <ChevronDown
+                        size={14}
+                        className={`transition-transform ${expanded ? 'rotate-180' : '-rotate-90'}`}
+                      />
+                    </button>
                     <div className="shrink-0 p-2 rounded-lg bg-accent-subtle text-accent mt-0.5">
                       {kindIcon(source.kind)}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 mb-1">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
                         <p className="truncate text-sm font-medium text-text-primary font-mono">
                           {source.rootPath}
                         </p>
@@ -623,66 +656,75 @@ export function SourcesPage() {
                             {t('sources.indexingInProgress')}
                           </Badge>
                         )}
+                        {!expanded && (
+                          <span className={`text-[11px] ${source.watchEnabled ? 'text-green-500 font-medium' : 'text-text-tertiary'}`}>
+                            {source.watchEnabled ? t('sources.watcherActive') : t('sources.watchOff')}
+                          </span>
+                        )}
                       </div>
 
-                      {/* Scan/embed progress bar */}
-                      {scanProgress && scanProgress.sourceId === source.id && (scanningId === source.id || embeddingId === source.id || indexingIds.has(source.id)) && scanProgress.total > 0 && (
-                        <div className="mb-2 mt-1 p-2 rounded-md bg-surface-1 border border-border">
-                          <div className="flex items-center justify-between text-xs text-text-secondary mb-1.5">
-                            <span className="flex items-center gap-1.5">
-                              <RefreshCw size={12} className="animate-spin text-accent" />
-                              <span className="capitalize font-medium">{scanProgress.phase}</span>
-                              <span className="text-text-tertiary">{scanProgress.current}/{scanProgress.total}</span>
-                            </span>
-                            <span className="text-[11px] font-medium text-accent">
-                              {Math.round((scanProgress.current / scanProgress.total) * 100)}%
-                            </span>
-                          </div>
-                          {scanProgress.currentFile && (
-                            <div className="text-[10px] text-text-tertiary truncate mb-1.5 max-w-xs">
-                              {scanProgress.currentFile}
+                      {expanded && (
+                        <>
+                          {/* Scan/embed progress bar */}
+                          {scanProgress && scanProgress.sourceId === source.id && isActivelyScanning && scanProgress.total > 0 && (
+                            <div className="mb-2 mt-1 p-2 rounded-md bg-surface-1 border border-border">
+                              <div className="flex items-center justify-between text-xs text-text-secondary mb-1.5">
+                                <span className="flex items-center gap-1.5">
+                                  <RefreshCw size={12} className="animate-spin text-accent" />
+                                  <span className="capitalize font-medium">{scanProgress.phase}</span>
+                                  <span className="text-text-tertiary">{scanProgress.current}/{scanProgress.total}</span>
+                                </span>
+                                <span className="text-[11px] font-medium text-accent">
+                                  {Math.round((scanProgress.current / scanProgress.total) * 100)}%
+                                </span>
+                              </div>
+                              {scanProgress.currentFile && (
+                                <div className="text-[10px] text-text-tertiary truncate mb-1.5 max-w-xs">
+                                  {scanProgress.currentFile}
+                                </div>
+                              )}
+                              <div className="w-full bg-surface-3 rounded-full h-2">
+                                <div
+                                  className="bg-accent h-2 rounded-full transition-all duration-300 ease-out"
+                                  style={{ width: `${Math.min(100, (scanProgress.current / scanProgress.total) * 100)}%` }}
+                                />
+                              </div>
                             </div>
                           )}
-                          <div className="w-full bg-surface-3 rounded-full h-2">
-                            <div
-                              className="bg-accent h-2 rounded-full transition-all duration-300 ease-out"
-                              style={{ width: `${Math.min(100, (scanProgress.current / scanProgress.total) * 100)}%` }}
+
+                          {/* Video processing progress */}
+                          {videoProcessing && (
+                            <VideoProcessingProgress
+                              phase={videoProcessing.phase}
+                              progress={videoProcessing.progress}
+                              fileName={videoProcessing.fileName}
+                              className="mb-2 mt-1"
                             />
+                          )}
+
+                          {/* Globs */}
+                          <div className="flex flex-wrap gap-1 mb-1.5">
+                            {source.includeGlobs.map((g, i) => (
+                              <Badge key={i} variant="success">{g}</Badge>
+                            ))}
+                            {source.excludeGlobs.map((g, i) => (
+                              <Badge key={`e-${i}`} variant="danger">x {g}</Badge>
+                            ))}
                           </div>
-                        </div>
+
+                          {/* Meta row */}
+                          <div className="flex items-center gap-3 text-[11px] text-text-tertiary">
+                            <span className={source.watchEnabled ? 'text-green-500 font-medium' : ''}>
+                              {t('sources.watch')}: {source.watchEnabled ? t('sources.watcherActive') : t('sources.watchOff')}
+                            </span>
+                            <span>{t('sources.addedAt')}: {new Date(source.createdAt).toLocaleDateString()}</span>
+                          </div>
+                        </>
                       )}
-
-                      {/* Video processing progress */}
-                      {videoProcessing && (
-                        <VideoProcessingProgress
-                          phase={videoProcessing.phase}
-                          progress={videoProcessing.progress}
-                          fileName={videoProcessing.fileName}
-                          className="mb-2 mt-1"
-                        />
-                      )}
-
-                      {/* Globs */}
-                      <div className="flex flex-wrap gap-1 mb-1.5">
-                        {source.includeGlobs.map((g, i) => (
-                          <Badge key={i} variant="success">{g}</Badge>
-                        ))}
-                        {source.excludeGlobs.map((g, i) => (
-                          <Badge key={`e-${i}`} variant="danger">x {g}</Badge>
-                        ))}
-                      </div>
-
-                      {/* Meta row */}
-                      <div className="flex items-center gap-3 text-[11px] text-text-tertiary">
-                        <span className={source.watchEnabled ? 'text-green-500 font-medium' : ''}>
-                          {t('sources.watch')}: {source.watchEnabled ? t('sources.watcherActive') : t('sources.watchOff')}
-                        </span>
-                        <span>{t('sources.addedAt')}: {new Date(source.createdAt).toLocaleDateString()}</span>
-                      </div>
                     </div>
                   </div>
 
-                  {/* Right: actions */}
+                  {/* Right: actions (always visible so scan/re-index/delete remain reachable) */}
                   <div className="flex shrink-0 gap-1.5">
                     <Button
                       variant="ghost"
@@ -737,7 +779,8 @@ export function SourcesPage() {
                   </div>
                 </div>
               </motion.div>
-            ))}
+              );
+            })}
           </AnimatePresence>
         </motion.div>
       )}
