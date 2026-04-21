@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { FileText, Save, X } from 'lucide-react';
+import { FileText, Save, Upload, X } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { useTranslation } from '../../i18n';
+import * as api from '../../lib/api';
 import type { Skill, SaveSkillInput } from '../../types/extensions';
 
 interface SkillEditorProps {
@@ -11,6 +12,8 @@ interface SkillEditorProps {
   onCancel: () => void;
   onDirtyChange?: (dirty: boolean) => void;
 }
+
+const DESCRIPTION_MAX = 500;
 
 function estimateTokens(text: string): number {
   if (!text) return 0;
@@ -24,18 +27,25 @@ function estimateTokens(text: string): number {
 export function SkillEditor({ skill, onSave, onCancel, onDirtyChange }: SkillEditorProps) {
   const { t } = useTranslation();
   const [name, setName] = useState(skill?.name ?? '');
+  const [description, setDescription] = useState(skill?.description ?? '');
   const [content, setContent] = useState(skill?.content ?? '');
+  const [importError, setImportError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const initialDraftRef = useRef({
     name: skill?.name ?? '',
+    description: skill?.description ?? '',
     content: skill?.content ?? '',
   });
 
   useEffect(() => {
     if (!onDirtyChange) return;
 
-    const dirty = name !== initialDraftRef.current.name || content !== initialDraftRef.current.content;
+    const dirty =
+      name !== initialDraftRef.current.name ||
+      description !== initialDraftRef.current.description ||
+      content !== initialDraftRef.current.content;
     onDirtyChange(dirty);
-  }, [content, name, onDirtyChange]);
+  }, [content, description, name, onDirtyChange]);
 
   useEffect(() => {
     if (!onDirtyChange) return;
@@ -50,6 +60,7 @@ export function SkillEditor({ skill, onSave, onCancel, onDirtyChange }: SkillEdi
     onSave({
       id: skill?.id ?? null,
       name: name.trim(),
+      description: description.trim().slice(0, DESCRIPTION_MAX),
       content: content.trim(),
       enabled: skill?.enabled ?? true,
     });
@@ -71,8 +82,51 @@ export function SkillEditor({ skill, onSave, onCancel, onDirtyChange }: SkillEdi
     setContent(SKILL_TEMPLATE);
   };
 
+  const handleImportClick = () => {
+    setImportError(null);
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const imported = await api.importSkillFromMd(text);
+      setName(imported.name);
+      setDescription(imported.description);
+      setContent(imported.content);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setImportError(t('settings.skillImportError', { message }));
+    }
+  };
+
   return (
     <div className="space-y-4">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".md,text/markdown"
+        className="hidden"
+        onChange={handleFileSelected}
+      />
+
+      {!skill && (
+        <div className="flex justify-end">
+          <Button variant="ghost" size="sm" icon={<Upload size={14} />} onClick={handleImportClick}>
+            {t('settings.skillImportMd')}
+          </Button>
+        </div>
+      )}
+
+      {importError && (
+        <div className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+          {importError}
+        </div>
+      )}
+
       <div className="space-y-2">
         <label className="text-sm font-medium text-text-primary">{t('settings.skillName')}</label>
         <Input
@@ -80,6 +134,20 @@ export function SkillEditor({ skill, onSave, onCancel, onDirtyChange }: SkillEdi
           onChange={(e) => setName(e.target.value)}
           placeholder={t('settings.skillName')}
         />
+      </div>
+
+      <div className="space-y-2">
+        <label className="text-sm font-medium text-text-primary">
+          {t('settings.skillDescriptionLabel')}
+        </label>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value.slice(0, DESCRIPTION_MAX))}
+          placeholder={t('settings.skillDescriptionPlaceholder')}
+          rows={2}
+          className="w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent resize-y"
+        />
+        <p className="text-xs text-text-tertiary">{description.length}/{DESCRIPTION_MAX}</p>
       </div>
 
       <div className="space-y-2">
