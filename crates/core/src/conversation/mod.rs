@@ -27,6 +27,10 @@ pub struct Conversation {
     pub system_prompt: String,
     pub collection_context: Option<CollectionContext>,
     pub project_id: Option<String>,
+    /// `true` when the title was set automatically (default after creation) and
+    /// may be overwritten by auto-title regeneration. Set to `false` once the
+    /// user renames the conversation manually.
+    pub title_is_auto: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -325,7 +329,7 @@ impl Database {
     pub fn list_conversations(&self) -> Result<Vec<Conversation>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, created_at, updated_at
+            "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, title_is_auto, created_at, updated_at
              FROM conversations ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -337,8 +341,9 @@ impl Database {
                 system_prompt: row.get(4)?,
                 collection_context: parse_collection_context(row.get(5)?),
                 project_id: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                title_is_auto: row.get::<_, i64>(7)? != 0,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
             })
         })?;
         let mut results = Vec::new();
@@ -352,7 +357,7 @@ impl Database {
     pub fn get_conversation(&self, id: &str) -> Result<Conversation, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, created_at, updated_at
+            "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, title_is_auto, created_at, updated_at
              FROM conversations WHERE id = ?1",
             rusqlite::params![id],
             |row| {
@@ -364,8 +369,9 @@ impl Database {
                     system_prompt: row.get(4)?,
                     collection_context: parse_collection_context(row.get(5)?),
                     project_id: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
+                    title_is_auto: row.get::<_, i64>(7)? != 0,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
                 })
             },
         )
@@ -419,10 +425,28 @@ impl Database {
     }
 
     /// Update the title of a conversation (also bumps `updated_at`).
+    ///
+    /// This is the **auto-title** path: it preserves `title_is_auto = 1` so
+    /// that subsequent auto-title regeneration remains allowed. Use
+    /// [`Self::rename_conversation_by_user`] for user-initiated renames.
     pub fn update_conversation_title(&self, id: &str, title: &str) -> Result<(), CoreError> {
         let conn = self.conn();
         let affected = conn.execute(
             "UPDATE conversations SET title = ?2, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![id, title],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!("Conversation {id}")));
+        }
+        Ok(())
+    }
+
+    /// User-initiated rename: sets `title_is_auto = 0` so subsequent auto-title
+    /// generation will skip this conversation.
+    pub fn rename_conversation_by_user(&self, id: &str, title: &str) -> Result<(), CoreError> {
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE conversations SET title = ?2, title_is_auto = 0, updated_at = datetime('now') WHERE id = ?1",
             rusqlite::params![id, title],
         )?;
         if affected == 0 {
@@ -1570,6 +1594,7 @@ pub async fn generate_title(
         thinking_budget: None,
         reasoning_effort: None,
         provider_type: None,
+        parallel_tool_calls: true,
     };
 
     match tokio::time::timeout(
