@@ -143,6 +143,15 @@ export function ChatPage() {
   );
 
   const handleNewConversation = useCallback(async (projectId?: string | null) => {
+    // Defensive guard: if a React SyntheticEvent / DOM node leaks in as projectId
+    // (e.g. onClick={handler} passes MouseEvent), drop it to avoid circular JSON.
+    if (projectId != null && typeof projectId !== 'string') {
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.warn('[ChatPage] handleNewConversation received non-string projectId; ignoring.', projectId);
+      }
+      projectId = null;
+    }
     if (!chat.agentConfig) {
       navigate('/chat');
       chat.createNewConversation();
@@ -255,15 +264,20 @@ export function ChatPage() {
     setPrefillText(text);
   }, []);
 
+  const [isCompacting, setIsCompacting] = useState(false);
   const handleCompactConversation = useCallback(async () => {
     if (!chat.activeId) return;
+    if (isCompacting) return;
+    setIsCompacting(true);
     try {
       await api.compactConversation(chat.activeId);
       await chat.reloadMessages();
     } catch (e) {
       toast.error(String(e));
+    } finally {
+      setIsCompacting(false);
     }
-  }, [chat.activeId, chat.reloadMessages]);
+  }, [chat.activeId, chat.reloadMessages, isCompacting]);
 
   const latestTurn = useMemo(
     () => (chat.turns.length > 0 ? chat.turns[chat.turns.length - 1] : null),
@@ -359,7 +373,7 @@ export function ChatPage() {
               description={t('chat.noConversationsDesc')}
               action={{
                 label: t('chat.newChat'),
-                onClick: handleNewConversation,
+                onClick: () => handleNewConversation(),
               }}
             />
           </div>
@@ -432,6 +446,7 @@ export function ChatPage() {
                 rateLimited={chat.rateLimited}
                 lastCached={chat.lastCached}
                 isStreaming={chat.isStreaming}
+                isCompacting={isCompacting}
                 onCompact={handleCompactConversation}
                 onStartNewChat={handleNewConversation}
               />
