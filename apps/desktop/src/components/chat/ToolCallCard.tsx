@@ -50,13 +50,27 @@ interface SearchResultItem {
 interface ToolCallCardProps {
   toolName?: string;
   arguments?: string;
-  status: 'running' | 'done' | 'error';
+  status: 'starting' | 'running' | 'done' | 'error';
   content?: string;
   isError?: boolean;
   artifacts?: ArtifactPayload;
   compact?: boolean;
   inline?: boolean;
   trace?: boolean;
+  /** Assembly progress of `arguments` during mid-stream streaming. */
+  argsStatus?: 'streaming' | 'ready' | 'done' | 'error';
+  /** Total characters of `arguments` received so far. */
+  argsBytes?: number;
+  /** Accumulated heartbeat notes during tool execution. */
+  progressNotes?: string[];
+}
+
+function formatByteCount(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -134,7 +148,7 @@ function getToolBriefLabel(name: string, args?: string): string {
 }
 
 function getToolBriefResult(status: string, content?: string, toolName?: string): string {
-  if (status === 'running') return '\u2026';
+  if (status === 'running' || status === 'starting') return '\u2026';
   if (status === 'error') return 'error';
   const lower = (toolName || '').toLowerCase();
   if (lower.includes('search') && content) {
@@ -181,7 +195,7 @@ function verificationStatusLabel(
 function buildSubagentRun(
   toolName: string,
   args: string | undefined,
-  status: 'running' | 'done' | 'error',
+  status: 'starting' | 'running' | 'done' | 'error',
   content: string | undefined,
   isError: boolean | undefined,
   artifacts: ArtifactPayload | undefined,
@@ -191,9 +205,10 @@ function buildSubagentRun(
   const parsedArgs = parseSubagentArguments(args);
   const task = artifact?.task ?? parsedArgs?.task;
   if (!task) return null;
+  const runStatus: 'running' | 'done' | 'error' = status === 'starting' ? 'running' : status;
   return {
     id: `${toolName}-${task}`,
-    status,
+    status: runStatus,
     task,
     role: artifact?.role ?? parsedArgs?.role ?? null,
     expectedOutput: artifact?.expectedOutput ?? parsedArgs?.expectedOutput ?? null,
@@ -280,6 +295,9 @@ export function ToolCallCard({
   compact,
   inline,
   trace,
+  argsStatus,
+  argsBytes,
+  progressNotes,
 }: ToolCallCardProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -289,6 +307,16 @@ export function ToolCallCard({
       : 'unknown_tool';
   const Icon = getToolIcon(safeToolName);
   const formattedArgs = formatArgs(args);
+  const isPending = status === 'running' || status === 'starting';
+  const argsByteLabel = formatByteCount(
+    typeof argsBytes === 'number' ? argsBytes : (args ? args.length : 0),
+  );
+  const latestProgressNote =
+    progressNotes && progressNotes.length > 0 ? progressNotes[progressNotes.length - 1] : null;
+  const streamingArgsPreview =
+    isPending && (argsStatus === 'streaming' || status === 'starting') && args
+      ? args.length > 500 ? args.slice(0, 500) + '\u2026' : args
+      : null;
   const subagentRun = useMemo(
     () => buildSubagentRun(safeToolName, args, status, content, isError, artifacts),
     [safeToolName, args, status, content, isError, artifacts],
@@ -311,10 +339,10 @@ export function ToolCallCard({
 
   // Auto-collapse when execution finishes; users can manually re-open if needed.
   useEffect(() => {
-    if (status !== 'running' && !isStructuredTaskCard) {
+    if (!isPending && !isStructuredTaskCard) {
       setExpanded(false);
     }
-  }, [status, isStructuredTaskCard]);
+  }, [isPending, isStructuredTaskCard]);
 
   useEffect(() => {
     if (isStructuredTaskCard) {
@@ -336,11 +364,12 @@ export function ToolCallCard({
   }
 
   const statusConfig = {
+    starting: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },
     running: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },
     done: { icon: CheckCircle2, text: t('chat.toolDone'), color: 'text-success', spin: false },
     error: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
   }[status];
-  const headerSummary = planArtifact
+  const baseHeaderSummary = planArtifact
     ? t('chat.planStepsCompleted', {
       completed: String(planArtifact.steps.filter(step => step.status === 'completed').length),
       total: String(planArtifact.steps.length),
@@ -354,13 +383,17 @@ export function ToolCallCard({
         : status === 'done' && content
           ? t('chat.traceOutputReady')
           : statusConfig.text;
+  const headerSummary =
+    isPending && argsByteLabel
+      ? `${baseHeaderSummary} · ${argsByteLabel}`
+      : baseHeaderSummary;
 
   const StatusIcon = statusConfig.icon;
-  const traceActive = status === 'running' && !shouldReduceMotion;
+  const traceActive = isPending && !shouldReduceMotion;
   const traceSoft = status !== 'error';
 
   if (trace) {
-    const canExpand = Boolean(formattedArgs || content || searchItems || planArtifact || verificationArtifact);
+    const canExpand = Boolean(formattedArgs || content || searchItems || planArtifact || verificationArtifact || streamingArgsPreview);
     return (
       <div className="rounded-lg border border-border/45 bg-surface-0/35">
         <button
@@ -372,9 +405,11 @@ export function ToolCallCard({
           <Icon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-[12px] font-medium text-text-primary">{safeToolName}</span>
-            {formattedArgs && (
+            {isPending && latestProgressNote ? (
+              <span className="block truncate text-[11px] text-text-tertiary/80 italic">{latestProgressNote}</span>
+            ) : formattedArgs ? (
               <span className="block truncate text-[11px] text-text-tertiary">{formattedArgs}</span>
-            )}
+            ) : null}
           </span>
           <span className={`inline-flex items-center gap-1 text-[11px] ${statusConfig.color}`}>
             <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`} />
@@ -388,7 +423,12 @@ export function ToolCallCard({
         </button>
 
         {expanded && canExpand && (
-          <div className="border-t border-border/35 px-3 py-2">
+          <div className="border-t border-border/35 px-3 py-2 space-y-2">
+            {streamingArgsPreview && (
+              <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-text-tertiary bg-surface-0/40 rounded-md px-2 py-1">
+                {streamingArgsPreview}
+              </pre>
+            )}
             {searchItems ? (
               <SearchResultCards items={searchItems} />
             ) : planArtifact ? (
@@ -584,7 +624,7 @@ export function ToolCallCard({
         <StatusIcon
           className={`h-3.5 w-3.5 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
         />
-        {content ? (
+        {(content || streamingArgsPreview) ? (
           expanded ? (
             <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
           ) : (
@@ -593,9 +633,15 @@ export function ToolCallCard({
         ) : null}
       </button>
 
+      {isPending && latestProgressNote && (
+        <div className="border-t border-border/30 bg-surface-0/30 px-3 py-1 text-[11px] italic text-text-tertiary truncate">
+          {latestProgressNote}
+        </div>
+      )}
+
       {/* Expandable result */}
       <AnimatePresence>
-        {expanded && content && (
+        {expanded && (content || streamingArgsPreview) && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
@@ -604,7 +650,14 @@ export function ToolCallCard({
             className="overflow-hidden"
           >
             <div className="border-t border-border px-3 py-2">
-              {formattedArgs && (
+              {streamingArgsPreview && (
+                <pre
+                  className="mb-2 whitespace-pre-wrap break-words rounded-md bg-surface-0/60 px-2 py-1 text-[11px] text-text-tertiary max-h-48 overflow-y-auto"
+                >
+                  {streamingArgsPreview}
+                </pre>
+              )}
+              {formattedArgs && !streamingArgsPreview && (
                 <div className="mb-2 rounded-md bg-surface-0/60 px-2 py-1 text-[11px] text-text-tertiary break-words">
                   {formattedArgs}
                 </div>
@@ -615,14 +668,14 @@ export function ToolCallCard({
                 <VerificationPanel verification={verificationArtifact} />
               ) : searchItems ? (
                 <SearchResultCards items={searchItems} />
-              ) : (
+              ) : content ? (
                 <pre
                   className={`text-xs whitespace-pre-wrap break-words max-h-48 overflow-y-auto
                     ${isError ? 'text-danger' : 'text-text-secondary'}`}
                 >
                   {content}
                 </pre>
-              )}
+              ) : null}
               {artifacts && !isStructuredTaskCard && (
                 <div className="mt-2 text-[11px] text-text-tertiary">
                   {JSON.stringify(artifacts, null, 2).slice(0, 500)}

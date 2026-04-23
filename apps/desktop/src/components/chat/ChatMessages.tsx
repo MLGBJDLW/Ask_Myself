@@ -915,6 +915,9 @@ export function ChatMessages({
                 content={event.toolCall.content}
                 isError={event.toolCall.isError}
                 artifacts={event.toolCall.artifacts}
+                argsStatus={event.toolCall.argsStatus}
+                argsBytes={event.toolCall.argsBytes}
+                progressNotes={event.toolCall.progressNotes}
                 trace={true}
               />
             ),
@@ -966,6 +969,9 @@ export function ChatMessages({
               content={tc.content}
               isError={tc.isError}
               artifacts={tc.artifacts}
+              argsStatus={tc.argsStatus}
+              argsBytes={tc.argsBytes}
+              progressNotes={tc.progressNotes}
               trace={true}
             />
           ),

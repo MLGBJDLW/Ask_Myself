@@ -416,12 +416,18 @@ impl OpenAiProvider {
     /// Create a new provider with an async reqwest client.
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let timeout = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        // SSE streams are extremely sensitive to HTTP/2 RST_STREAM frames
+        // emitted by reverse proxies (e.g. Cloudflare, nginx) that terminate
+        // long-lived idle h2 connections. Force HTTP/1.1 so the stream stays
+        // framed at the TCP level and use a short idle-pool timeout so stale
+        // keep-alive sockets are dropped before the upstream closes them.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(timeout))
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .pool_idle_timeout(std::time::Duration::from_secs(15))
             .pool_max_idle_per_host(5)
             .tcp_keepalive(std::time::Duration::from_secs(30))
+            .http1_only()
             .build()
             .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
 

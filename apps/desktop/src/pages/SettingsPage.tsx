@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useBlocker } from 'react-router-dom';
+import { useBlocker, useNavigate } from 'react-router-dom';
 import {
   Database,
   Shield,
@@ -32,6 +32,10 @@ import {
   HardDrive,
   Clock,
   BarChart3,
+  Search,
+  Download,
+  Eye,
+  RotateCcw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../lib/api';
@@ -41,6 +45,7 @@ import type { IndexStats } from '../types/index-stats';
 import type { PrivacyConfig, RedactRule } from '../types/privacy';
 import type { EmbedderConfig } from '../types/embedder';
 import type { AgentConfig, AppConfig, SaveAgentConfigInput, UserMemory } from '../types/conversation';
+import type { ApprovalPolicy, ApprovalPolicyList } from '../types';
 import type { OcrConfig } from '../types/ocr';
 import type { VideoConfig } from '../types/video';
 import type { Skill, McpServer, McpToolInfo, SaveSkillInput, SaveMcpServerInput } from '../types/extensions';
@@ -53,6 +58,7 @@ import { Badge } from '../components/ui/Badge';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { AgentConfigForm } from '../components/settings/AgentConfigForm';
 import { SkillEditor } from '../components/settings/SkillEditor';
+import { SkillMarkdownPreview } from '../components/settings/SkillMarkdownPreview';
 import { McpServerForm } from '../components/settings/McpServerForm';
 import { PROVIDER_PRESETS, type ProviderPreset } from '../lib/providerPresets';
 import { DEFAULT_SUBAGENT_TOOL_NAMES } from '../lib/subagentTools';
@@ -120,6 +126,7 @@ const TAB_STRIP_EDGE_EPSILON = 4;
 
 export function SettingsPage() {
   const { t, locale, setLocale, availableLocales } = useTranslation();
+  const navigate = useNavigate();
   const { devices: micDevices, selectedDeviceId: micDeviceId, setSelectedDeviceId: setMicDeviceId, refresh: refreshMics } = useMicrophoneDevices();
   const tabStripRef = useRef<HTMLDivElement | null>(null);
   const extensionCopy = {
@@ -447,6 +454,7 @@ export function SettingsPage() {
         mcpCallTimeoutSecs: 60,
         confirmDestructive: false,
         shellAccessMode: 'restricted',
+        toolApprovalMode: 'ask',
         hfMirrorBaseUrl: 'https://hf-mirror.com',
         ghproxyBaseUrl: 'https://mirror.ghproxy.com',
       });
@@ -467,6 +475,21 @@ export function SettingsPage() {
       toast.error(t('common.error'));
     } finally {
       setAppConfigLoading(false);
+    }
+  };
+
+  /**
+   * Reset the "wizard_completed" flag and navigate to `/wizard`.
+   * Does NOT clear any other settings (providers, sources) so the user can
+   * re-pick where they left off.
+   */
+  const handleRerunWizard = async () => {
+    try {
+      await api.resetWizard();
+      toast.success(t('wizard.rerunSuccess'));
+      navigate('/wizard');
+    } catch {
+      toast.error(t('wizard.rerunError'));
     }
   };
 
@@ -938,6 +961,9 @@ export function SettingsPage() {
   const [mcpTestLoading, setMcpTestLoading] = useState<string | null>(null);
   const [mcpToolCounts, setMcpToolCounts] = useState<Record<string, { tools: McpToolInfo[]; loading: boolean; error?: string }>>({});
   const [mcpToolsExpanded, setMcpToolsExpanded] = useState<Record<string, boolean>>({});
+  const [skillSearch, setSkillSearch] = useState('');
+  const [skillFilter, setSkillFilter] = useState<'all' | 'builtin' | 'user' | 'enabled' | 'disabled'>('all');
+  const [viewSkill, setViewSkill] = useState<Skill | null>(null);
 
   const loadSkills = useCallback(() => {
     Promise.all([api.listBuiltinSkills(), api.listSkills()])
@@ -996,6 +1022,68 @@ export function SettingsPage() {
       toast.error(t('common.error'));
     }
   };
+
+  const filteredSkills = useMemo(() => {
+    const needle = skillSearch.trim().toLowerCase();
+    return skills.filter((s) => {
+      // Filter chip.
+      if (skillFilter === 'builtin' && !s.builtin) return false;
+      if (skillFilter === 'user' && s.builtin) return false;
+      if (skillFilter === 'enabled' && !s.enabled) return false;
+      if (skillFilter === 'disabled' && s.enabled) return false;
+      // Fuzzy search on name / description / content substring.
+      if (needle) {
+        const hay = `${s.name}\n${s.description}\n${s.content}`.toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      return true;
+    });
+  }, [skills, skillSearch, skillFilter]);
+
+  /** Extract first-line trigger chips from a SKILL.md description: a comma-
+   *  separated descriptor like "Use when X, Y, Z". Returns [] when the
+   *  description is prose. Non-fatal heuristic purely for card metadata. */
+  const extractTriggers = useCallback((desc: string): string[] => {
+    const text = (desc ?? '').trim();
+    if (!text) return [];
+    // Look for "Use when …" / "Activates on …" comma lists.
+    const firstSentence = text.split(/[.。!?！？\n]/)[0]?.trim() ?? '';
+    const m = firstSentence.match(
+      /^(?:Use (?:when|for)|Activates (?:on|when)|Triggers on|When)\s*:?\s*(.+)$/i,
+    );
+    if (!m) return [];
+    return m[1]
+      .split(/[,;，；]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && s.length <= 40)
+      .slice(0, 4);
+  }, []);
+
+  const handleExportAllSkills = useCallback(async () => {
+    if (skills.length === 0) return;
+    try {
+      const chunks: string[] = [];
+      for (const s of skills) {
+        const md = await api.exportSkillToMd(s.id);
+        // Separator makes the bundle easily splittable by hand.
+        chunks.push(`${md.trimEnd()}\n\n<!-- ===== END OF SKILL: ${s.name} ===== -->\n`);
+      }
+      const blob = new Blob([chunks.join('\n')], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `skills-export-${new Date().toISOString().slice(0, 10)}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success(
+        t('settings.skillExportAllSuccess', { count: String(skills.length) }),
+      );
+    } catch {
+      toast.error(t('common.error'));
+    }
+  }, [skills, t]);
 
   const handleSaveMcpServer = async (input: SaveMcpServerInput) => {
     try {
@@ -1284,6 +1372,20 @@ export function SettingsPage() {
               </div>
             </div>
 
+            {/* Re-run setup wizard */}
+            <div className="border-t border-border pt-4 mt-4">
+              <p className="mb-2 text-sm font-medium text-text-primary">{t('wizard.rerunLabel')}</p>
+              <p className="mb-3 text-xs text-text-tertiary">{t('wizard.rerunDescription')}</p>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<RotateCcw size={14} />}
+                onClick={handleRerunWizard}
+              >
+                {t('wizard.rerunButton')}
+              </Button>
+            </div>
+
             {/* Timeout Settings */}
             <div className="space-y-4 border-t border-border pt-4 mt-4">
               <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
@@ -1534,6 +1636,11 @@ export function SettingsPage() {
                         ))}
                       </div>
                     </div>
+
+                    <ToolApprovalControl
+                      mode={appConfig.toolApprovalMode ?? 'ask'}
+                      onChange={(m) => setAppConfig({ ...appConfig, toolApprovalMode: m })}
+                    />
                   </div>
 
                   <div className="flex justify-end">
@@ -2945,19 +3052,74 @@ export function SettingsPage() {
               />
             ) : (
               <div className="space-y-4">
-                <div className="flex justify-end">
-                  <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => { setEditingSkill(null); setShowSkillForm(true); }}>
-                    {t('settings.addSkill')}
-                  </Button>
+                {/* Search + filter chips + actions */}
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative min-w-[220px] flex-1">
+                      <Search
+                        size={14}
+                        className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-tertiary"
+                      />
+                      <input
+                        type="text"
+                        value={skillSearch}
+                        onChange={(e) => setSkillSearch(e.target.value)}
+                        placeholder={t('settings.skillSearchPlaceholder')}
+                        className="w-full rounded-md border border-border bg-surface-2 py-1.5 pl-8 pr-3 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                      />
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={<Download size={14} />}
+                      onClick={handleExportAllSkills}
+                      disabled={skills.length === 0}
+                    >
+                      {t('settings.skillExportAll')}
+                    </Button>
+                    <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => { setEditingSkill(null); setShowSkillForm(true); }}>
+                      {t('settings.addSkill')}
+                    </Button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {([
+                      ['all', t('settings.skillFilterAll')],
+                      ['builtin', t('settings.skillFilterBuiltin')],
+                      ['user', t('settings.skillFilterUser')],
+                      ['enabled', t('settings.skillFilterEnabled')],
+                      ['disabled', t('settings.skillFilterDisabled')],
+                    ] as const).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setSkillFilter(id)}
+                        className={`rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
+                          skillFilter === id
+                            ? 'border-accent/50 bg-accent/15 text-accent'
+                            : 'border-border bg-surface-2 text-text-secondary hover:text-text-primary'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
+
                 {skills.length === 0 ? (
                   <div className="py-8 text-center">
                     <Blocks size={32} className="mx-auto mb-3 text-text-tertiary" />
                     <p className="text-sm text-text-secondary">{t('settings.noSkills')}</p>
                   </div>
+                ) : filteredSkills.length === 0 ? (
+                  <div className="py-8 text-center">
+                    <Search size={28} className="mx-auto mb-3 text-text-tertiary" />
+                    <p className="text-sm text-text-secondary">{t('settings.skillNoResults')}</p>
+                  </div>
                 ) : (
                   <div className="space-y-3">
-                    {skills.map((skill) => (
+                    {filteredSkills.map((skill) => {
+                      const triggers = extractTriggers(skill.description);
+                      return (
                       <motion.div
                         key={skill.id}
                         initial={{ opacity: 0, y: 20 }}
@@ -2965,7 +3127,7 @@ export function SettingsPage() {
                         className="flex items-center justify-between rounded-lg border border-border bg-surface-2 p-4 transition-colors hover:bg-surface-3/50"
                       >
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <p className="text-sm font-medium text-text-primary truncate">{skill.name}</p>
                             {skill.builtin && (
                               <Badge variant="default" className="text-[10px] shrink-0 border-accent/40 text-accent">
@@ -2975,6 +3137,11 @@ export function SettingsPage() {
                             <Badge variant="default" className="text-[10px] shrink-0">
                               ~{estimateTokens(skill.content)} tok
                             </Badge>
+                            {!skill.enabled && !skill.builtin && (
+                              <Badge variant="default" className="text-[10px] shrink-0 border-border text-text-tertiary">
+                                {t('settings.skillFilterDisabled')}
+                              </Badge>
+                            )}
                           </div>
                           {skill.description ? (
                             <p className="mt-0.5 text-xs text-text-secondary line-clamp-2">
@@ -2985,8 +3152,28 @@ export function SettingsPage() {
                               {skill.content.slice(0, 80)}{skill.content.length > 80 ? '\u2026' : ''}
                             </p>
                           )}
+                          {triggers.length > 0 && (
+                            <div className="mt-1.5 flex flex-wrap gap-1">
+                              {triggers.map((trig) => (
+                                <span
+                                  key={trig}
+                                  className="inline-flex items-center rounded-full border border-border bg-surface-3/60 px-1.5 py-0.5 text-[10px] text-text-tertiary"
+                                >
+                                  {trig}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                         <div className="flex items-center gap-1 shrink-0 ml-3">
+                          <button
+                            onClick={() => setViewSkill(skill)}
+                            className="rounded p-1.5 text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
+                            aria-label={t('settings.skillViewBtn')}
+                            title={t('settings.skillViewBtn')}
+                          >
+                            <Eye size={14} />
+                          </button>
                           {!skill.builtin && (
                             <button
                               onClick={() => handleToggleSkill(skill.id, !skill.enabled)}
@@ -3019,7 +3206,8 @@ export function SettingsPage() {
                           )}
                         </div>
                       </motion.div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -3187,6 +3375,51 @@ export function SettingsPage() {
         variant="danger"
       />
 
+      {/* Skill preview modal (inline — Modal in ui/ caps width at max-w-md,
+          which is too narrow for rendered markdown). */}
+      {viewSkill && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setViewSkill(null)}
+            aria-hidden="true"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={viewSkill.name}
+            className="relative z-10 flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-border bg-surface-2 shadow-lg"
+          >
+            <div className="flex items-center justify-between border-b border-border px-5 py-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <h2 className="truncate text-sm font-semibold text-text-primary">
+                  {viewSkill.name}
+                </h2>
+                {viewSkill.builtin && (
+                  <Badge variant="default" className="text-[10px] shrink-0 border-accent/40 text-accent">
+                    built-in
+                  </Badge>
+                )}
+              </div>
+              <button
+                onClick={() => setViewSkill(null)}
+                className="rounded-md p-1 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary"
+                aria-label={t('common.close')}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="overflow-auto px-5 py-4">
+              <SkillMarkdownPreview
+                content={viewSkill.content}
+                fallbackName={viewSkill.name}
+                fallbackDescription={viewSkill.description}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Delete MCP server confirm */}
       <ConfirmDialog
         open={!!deleteMcpTarget}
@@ -3218,6 +3451,134 @@ export function SettingsPage() {
         confirmText={t('settings.discardChanges')}
         variant="warning"
       />
+    </div>
+  );
+}
+
+/* ── Tool approval control ───────────────────────────────────────── */
+function ToolApprovalControl({
+  mode,
+  onChange,
+}: {
+  mode: 'ask' | 'allow_all' | 'deny_all';
+  onChange: (m: 'ask' | 'allow_all' | 'deny_all') => void;
+}) {
+  const [policies, setPolicies] = useState<ApprovalPolicyList>({ persisted: [], session: [] });
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await api.listToolApprovalPolicies();
+      setPolicies(list);
+    } catch (err) {
+      console.error('[approval] list policies failed', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const remove = useCallback(async (p: ApprovalPolicy, scope: 'session' | 'forever') => {
+    try {
+      await api.deleteToolApprovalPolicy(p.toolName, scope);
+      await load();
+    } catch (err) {
+      console.error('[approval] delete policy failed', err);
+      toast.error(String(err));
+    }
+  }, [load]);
+
+  const clearAll = useCallback(async () => {
+    try {
+      await api.clearToolApprovalPolicies();
+      await load();
+    } catch (err) {
+      toast.error(String(err));
+    }
+  }, [load]);
+
+  const options: Array<{ value: 'ask' | 'allow_all' | 'deny_all'; label: string; desc: string }> = [
+    { value: 'ask', label: 'Ask every time', desc: 'Prompt before each high-risk tool call (default).' },
+    { value: 'allow_all', label: 'Allow all', desc: 'Skip approvals. Use only in trusted environments.' },
+    { value: 'deny_all', label: 'Deny all', desc: 'Block every high-risk tool call silently.' },
+  ];
+
+  return (
+    <div className="space-y-2">
+      <label className="text-sm font-medium text-text-primary">Tool Approval</label>
+      <p className="text-xs text-text-tertiary">
+        Per-call confirmation for high-risk tools (shell, archive, destructive ops).
+      </p>
+      <div className="grid gap-2 md:grid-cols-3">
+        {options.map((o) => (
+          <label
+            key={o.value}
+            className={`cursor-pointer rounded-lg border p-3 transition-colors ${
+              mode === o.value ? 'border-accent bg-accent/10' : 'border-border bg-surface-2'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <input
+                type="radio"
+                name="tool-approval-mode"
+                value={o.value}
+                checked={mode === o.value}
+                onChange={() => onChange(o.value)}
+                className="mt-1"
+              />
+              <div className="space-y-1">
+                <div className="text-sm font-medium text-text-primary">{o.label}</div>
+                <div className="text-xs text-text-tertiary">{o.desc}</div>
+              </div>
+            </div>
+          </label>
+        ))}
+      </div>
+
+      <div className="mt-3 rounded-lg border border-border bg-surface-2 p-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-medium text-text-primary">Remembered decisions</div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="ghost" onClick={() => void load()} loading={loading}>Refresh</Button>
+            {(policies.persisted.length > 0 || policies.session.length > 0) && (
+              <Button size="sm" variant="ghost" onClick={() => void clearAll()}>Clear all</Button>
+            )}
+          </div>
+        </div>
+
+        {policies.persisted.length === 0 && policies.session.length === 0 ? (
+          <div className="text-xs text-text-tertiary">No remembered approvals yet.</div>
+        ) : (
+          <div className="space-y-1">
+            {policies.persisted.map((p) => (
+              <div key={`f-${p.toolName}`} className="flex items-center justify-between text-sm">
+                <div className="flex items-center gap-2">
+                  <Badge variant="default" className="text-[10px]">FOREVER</Badge>
+                  <span className="text-text-primary">{p.toolName}</span>
+                  <span className="text-xs text-text-tertiary">{p.decision}</span>
+                </div>
+                <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => void remove(p, 'forever')}>
+                  Remove
+                </Button>
+              </div>
+            ))}
+            {policies.session.map((p) => (
+              <div key={`s-${p.toolName}`} className="flex items-center justify-between text-sm">
+                <div className="flex items-center gap-2">
+                  <Badge variant="default" className="text-[10px]">SESSION</Badge>
+                  <span className="text-text-primary">{p.toolName}</span>
+                  <span className="text-xs text-text-tertiary">{p.decision}</span>
+                </div>
+                <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => void remove(p, 'session')}>
+                  Remove
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

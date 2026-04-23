@@ -3,7 +3,7 @@
  * Events are dispatched here by StreamProvider and read by useAgentStream.
  */
 
-import type { AgentFrontendEvent } from '../types';
+import type { AgentFrontendEvent, ApprovalRequest } from '../types';
 import type { ArtifactPayload } from '../types/conversation';
 
 /* ── Exported types ─────────────────────────────────────────────── */
@@ -12,10 +12,37 @@ export interface ToolCallEvent {
   callId: string;
   toolName: string;
   arguments: string;
-  status: 'running' | 'done' | 'error';
+  status: 'starting' | 'running' | 'done' | 'error';
+  /** Assembly progress of `arguments` during mid-stream streaming. */
+  argsStatus: 'streaming' | 'ready' | 'done' | 'error';
+  /** Number of characters received for `arguments` so far. */
+  argsBytes: number;
+  /** Latest up to 10 heartbeat notes accumulated during tool execution. */
+  progressNotes: string[];
   content?: string;
   isError?: boolean;
   artifacts?: ArtifactPayload;
+}
+
+const PROGRESS_NOTES_MAX = 10;
+
+function createToolCall(partial: {
+  callId: string;
+  toolName: string;
+  arguments?: string;
+  status?: ToolCallEvent['status'];
+  argsStatus?: ToolCallEvent['argsStatus'];
+}): ToolCallEvent {
+  const argumentsText = partial.arguments ?? '';
+  return {
+    callId: partial.callId,
+    toolName: partial.toolName,
+    arguments: argumentsText,
+    status: partial.status ?? 'starting',
+    argsStatus: partial.argsStatus ?? 'streaming',
+    argsBytes: argumentsText.length,
+    progressNotes: [],
+  };
 }
 
 export interface StreamRoundEvent {
@@ -75,6 +102,8 @@ export interface StreamState {
   contextOverflow: boolean;
   rateLimited: boolean;
   autoCompacted: { summary: string } | null;
+  /** High-risk tool calls awaiting GUI approval. FIFO queue. */
+  pendingApprovals: ApprovalRequest[];
 }
 
 /* ── Internal types ─────────────────────────────────────────────── */
@@ -117,12 +146,16 @@ function normalizeAgentEventType(value: unknown): AgentEventType | null {
     case 'thinking': return 'thinking';
     case 'textDelta': return 'textDelta';
     case 'toolCallStart': return 'toolCallStart';
+    case 'toolCallArgsDelta': return 'toolCallArgsDelta';
+    case 'toolCallProgress': return 'toolCallProgress';
     case 'toolCallResult': return 'toolCallResult';
     case 'status': return 'status';
     case 'done': return 'done';
     case 'error': return 'error';
     case 'autoCompacted': return 'autoCompacted';
     case 'usageUpdate': return 'usageUpdate';
+    case 'approvalRequested': return 'approvalRequested';
+    case 'approvalResolved': return 'approvalResolved';
     default: return null;
   }
 }
@@ -136,10 +169,15 @@ function finalizeToolCall(
   return {
     ...tc,
     status: isError ? 'error' : 'done',
+    argsStatus: isError ? 'error' : 'done',
     content,
     isError,
     artifacts,
   };
+}
+
+function isPendingStatus(status: ToolCallEvent['status']): boolean {
+  return status === 'running' || status === 'starting';
 }
 
 function resolveToolCallResult(
@@ -162,7 +200,7 @@ function resolveToolCallResult(
 
   let fallbackIndex = -1;
   for (let i = updated.length - 1; i >= 0; i -= 1) {
-    if (updated[i].status === 'running') {
+    if (isPendingStatus(updated[i].status)) {
       fallbackIndex = i;
       break;
     }
@@ -211,6 +249,7 @@ function createDefaultState(): InternalStreamState {
     contextOverflow: false,
     rateLimited: false,
     autoCompacted: null,
+    pendingApprovals: [],
     _toolCallSeq: 0,
     _roundSeq: 0,
     _traceSeq: 0,
@@ -226,8 +265,14 @@ function markToolCallsFinished(
   fallbackContent: string,
 ): ToolCallEvent[] {
   return toolCalls.map(tc =>
-    tc.status === 'running'
-      ? { ...tc, status, content: tc.content || fallbackContent, isError: status === 'error' }
+    isPendingStatus(tc.status)
+      ? {
+          ...tc,
+          status,
+          argsStatus: status === 'error' ? 'error' : 'done',
+          content: tc.content || fallbackContent,
+          isError: status === 'error',
+        }
       : tc,
   );
 }
@@ -374,6 +419,7 @@ class StreamStoreImpl {
       contextOverflow: s.contextOverflow,
       rateLimited: s.rateLimited,
       autoCompacted: s.autoCompacted,
+      pendingApprovals: s.pendingApprovals,
     };
   }
 
@@ -546,9 +592,13 @@ class StreamStoreImpl {
           ? argsRaw
           : (argsRaw == null ? '' : String(argsRaw));
 
-        const nextCall: ToolCallEvent = {
-          callId, toolName, arguments: argumentsText, status: 'running',
-        };
+        const nextCall: ToolCallEvent = createToolCall({
+          callId,
+          toolName,
+          arguments: argumentsText,
+          status: 'starting',
+          argsStatus: 'streaming',
+        });
 
         // If there's accumulated text, start a new round with it
         if (s.streamText.trim().length > 0) {
@@ -573,9 +623,14 @@ class StreamStoreImpl {
               const mergedThinking = roundThinking ? ((round.thinking || '') + roundThinking) : round.thinking;
               if (existingIdx >= 0) {
                 const nextToolCalls = [...round.toolCalls];
+                const prev = nextToolCalls[existingIdx];
+                const mergedArgs = argumentsText || prev.arguments;
                 nextToolCalls[existingIdx] = {
-                  ...nextToolCalls[existingIdx],
-                  toolName, arguments: argumentsText, status: 'running',
+                  ...prev,
+                  toolName,
+                  arguments: mergedArgs,
+                  argsBytes: Math.max(prev.argsBytes, mergedArgs.length),
+                  status: isPendingStatus(prev.status) ? prev.status : 'starting',
                 };
                 return { ...round, thinking: mergedThinking, toolCalls: nextToolCalls };
               }
@@ -610,7 +665,15 @@ class StreamStoreImpl {
         const existing = s.toolCalls.findIndex(tc => tc.callId === callId);
         if (existing >= 0) {
           s.toolCalls = [...s.toolCalls];
-          s.toolCalls[existing] = { ...s.toolCalls[existing], toolName, arguments: argumentsText, status: 'running' };
+          const prev = s.toolCalls[existing];
+          const mergedArgs = argumentsText || prev.arguments;
+          s.toolCalls[existing] = {
+            ...prev,
+            toolName,
+            arguments: mergedArgs,
+            argsBytes: Math.max(prev.argsBytes, mergedArgs.length),
+            status: isPendingStatus(prev.status) ? prev.status : 'starting',
+          };
           upsertToolTraceEvent(s, s.toolCalls[existing]);
         } else {
           s.toolCalls = [...s.toolCalls, nextCall];
@@ -620,9 +683,11 @@ class StreamStoreImpl {
           console.error('[streamStore] toolCallStart error, creating fallback round:', err);
           // Fallback: create a simple new round with the tool call
           const fallbackCallId = `tool-call-${Date.now()}-${s._toolCallSeq++}`;
-          const fallbackCall: ToolCallEvent = {
-            callId: fallbackCallId, toolName: 'unknown_tool', arguments: '', status: 'running',
-          };
+          const fallbackCall: ToolCallEvent = createToolCall({
+            callId: fallbackCallId,
+            toolName: 'unknown_tool',
+            status: 'starting',
+          });
           const roundId = `stream-round-${Date.now()}-${s._roundSeq++}`;
           s._activeRoundId = roundId;
           s._activeRoundAcceptingStarts = false;
@@ -633,6 +698,133 @@ class StreamStoreImpl {
           upsertToolTraceEvent(s, fallbackCall);
           s.isThinking = false;
           s.thinkingText = '';
+        }
+        break;
+      }
+
+      case 'toolCallArgsDelta': {
+        try {
+          const callId = (
+            (typeof event.callId === 'string' && event.callId)
+            || (typeof raw.call_id === 'string' ? raw.call_id : '')
+          ).trim();
+          if (!callId) break;
+          const deltaRaw = event.argumentsDelta
+            ?? (raw.arguments_delta as string | undefined)
+            ?? (raw.argumentsDelta as string | undefined)
+            ?? '';
+          const delta = typeof deltaRaw === 'string' ? deltaRaw : String(deltaRaw ?? '');
+          if (!delta) break;
+          const toolNameRaw = (typeof event.toolName === 'string' && event.toolName)
+            || (typeof raw.tool_name === 'string' ? raw.tool_name : '')
+            || 'unknown_tool';
+
+          const patchCall = (tc: ToolCallEvent): ToolCallEvent => {
+            const nextArgs = tc.arguments + delta;
+            return {
+              ...tc,
+              arguments: nextArgs,
+              argsBytes: nextArgs.length,
+              argsStatus: isPendingStatus(tc.status) ? 'streaming' : tc.argsStatus,
+            };
+          };
+
+          let foundInFlat = false;
+          s.toolCalls = s.toolCalls.map(tc => {
+            if (tc.callId !== callId) return tc;
+            foundInFlat = true;
+            return patchCall(tc);
+          });
+
+          if (!foundInFlat) {
+            // Defensive: args delta arrived before toolCallStart. Create a stub.
+            const stub = createToolCall({
+              callId,
+              toolName: toolNameRaw,
+              arguments: delta,
+              status: 'starting',
+              argsStatus: 'streaming',
+            });
+            s.toolCalls = [...s.toolCalls, stub];
+
+            // Also place it on the active round (or a new one).
+            const mergeRoundId = s._activeRoundId;
+            const targetRound = mergeRoundId ? s.streamRounds.find(r => r.id === mergeRoundId) : null;
+            if (targetRound && s._activeRoundAcceptingStarts) {
+              s.streamRounds = s.streamRounds.map(round =>
+                round.id === mergeRoundId
+                  ? { ...round, toolCalls: [...round.toolCalls, stub] }
+                  : round,
+              );
+            } else {
+              const roundId = `stream-round-${Date.now()}-${s._roundSeq++}`;
+              s._activeRoundId = roundId;
+              s._activeRoundAcceptingStarts = true;
+              s.streamRounds = [...s.streamRounds, {
+                id: roundId, reply: '', toolCalls: [stub],
+              }];
+            }
+            upsertToolTraceEvent(s, stub);
+          } else {
+            s.streamRounds = s.streamRounds.map(round => {
+              const idx = round.toolCalls.findIndex(tc => tc.callId === callId);
+              if (idx < 0) return round;
+              const nextCalls = [...round.toolCalls];
+              nextCalls[idx] = patchCall(nextCalls[idx]);
+              return { ...round, toolCalls: nextCalls };
+            });
+            const latest = s.toolCalls.find(tc => tc.callId === callId);
+            if (latest) upsertToolTraceEvent(s, latest);
+          }
+        } catch (err) {
+          console.error('[streamStore] toolCallArgsDelta error:', err);
+        }
+        break;
+      }
+
+      case 'toolCallProgress': {
+        try {
+          const callId = (
+            (typeof event.callId === 'string' && event.callId)
+            || (typeof raw.call_id === 'string' ? raw.call_id : '')
+          ).trim();
+          if (!callId) break;
+          const noteRaw = event.note
+            ?? (raw.note as string | undefined)
+            ?? '';
+          const note = typeof noteRaw === 'string' ? noteRaw.trim() : '';
+          if (!note) break;
+
+          const patchCall = (tc: ToolCallEvent): ToolCallEvent => {
+            const nextNotes = tc.progressNotes.length >= PROGRESS_NOTES_MAX
+              ? [...tc.progressNotes.slice(-(PROGRESS_NOTES_MAX - 1)), note]
+              : [...tc.progressNotes, note];
+            const nextStatus: ToolCallEvent['status'] =
+              tc.status === 'starting' ? 'running' : tc.status;
+            const nextArgsStatus: ToolCallEvent['argsStatus'] =
+              tc.argsStatus === 'streaming' ? 'ready' : tc.argsStatus;
+            return { ...tc, progressNotes: nextNotes, status: nextStatus, argsStatus: nextArgsStatus };
+          };
+
+          let matched = false;
+          s.toolCalls = s.toolCalls.map(tc => {
+            if (tc.callId !== callId) return tc;
+            matched = true;
+            return patchCall(tc);
+          });
+          if (!matched) break;
+
+          s.streamRounds = s.streamRounds.map(round => {
+            const idx = round.toolCalls.findIndex(tc => tc.callId === callId);
+            if (idx < 0) return round;
+            const nextCalls = [...round.toolCalls];
+            nextCalls[idx] = patchCall(nextCalls[idx]);
+            return { ...round, toolCalls: nextCalls };
+          });
+          const latest = s.toolCalls.find(tc => tc.callId === callId);
+          if (latest) upsertToolTraceEvent(s, latest);
+        } catch (err) {
+          console.error('[streamStore] toolCallProgress error:', err);
         }
         break;
       }
@@ -746,6 +938,25 @@ class StreamStoreImpl {
         const summary = (typeof event.summary === 'string' ? event.summary : '')
           || (typeof raw.summary === 'string' ? raw.summary : '');
         s.autoCompacted = { summary };
+        break;
+      }
+
+      case 'approvalRequested': {
+        const req = (event.request ?? raw.request) as ApprovalRequest | undefined;
+        if (req && typeof req.id === 'string' && typeof req.toolName === 'string') {
+          if (!s.pendingApprovals.some(p => p.id === req.id)) {
+            s.pendingApprovals = [...s.pendingApprovals, req];
+          }
+        }
+        break;
+      }
+
+      case 'approvalResolved': {
+        const requestId = (typeof event.requestId === 'string' ? event.requestId : undefined)
+          ?? (typeof raw.requestId === 'string' ? raw.requestId : undefined);
+        if (requestId) {
+          s.pendingApprovals = s.pendingApprovals.filter(p => p.id !== requestId);
+        }
         break;
       }
 

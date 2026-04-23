@@ -24,6 +24,11 @@ export type {
   AgentEvent,
   AgentFrontendEvent,
   Checkpoint,
+  ApprovalRequest,
+  ApprovalRisk,
+  ApprovalDecisionValue,
+  ApprovalPolicy,
+  ApprovalPolicyList,
 } from "./conversation";
 export type {
   EntityType,

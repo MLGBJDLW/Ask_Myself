@@ -12,7 +12,11 @@ use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
     CancellationToken, ConfirmationCallback,
 };
-use nexa_core::app_settings::{AppConfig, ShellAccessMode};
+use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
+use nexa_core::approval::{
+    ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
+    ToolApprovalPolicy,
+};
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
     AgentConfig as DbAgentConfig, CollectionContext, Conversation, ConversationMessage,
@@ -40,7 +44,7 @@ use nexa_core::playbook::QueryLog;
 use nexa_core::privacy::PrivacyConfig;
 use nexa_core::project::{CreateProjectInput, Project, UpdateProjectInput};
 use nexa_core::search::{self, SearchResult};
-use nexa_core::skills::{SaveSkillInput, Skill};
+use nexa_core::skills::{DiscoveredSkillBundle, SaveSkillInput, Skill};
 use nexa_core::sources::{CreateSourceInput, UpdateSourceInput};
 use nexa_core::tools::default_tool_registry;
 use nexa_core::watcher::{FileWatcher, WatcherEventKind};
@@ -73,6 +77,18 @@ pub struct McpManagerState {
 
 /// State for tracking active model download cancellation.
 pub struct DownloadCancelFlag(pub Arc<AtomicBool>);
+
+/// State for the per-call tool approval flow.
+///
+/// `pending` maps an [`ApprovalRequest`] id → a oneshot `Sender` that the
+/// Tauri `approve_tool_call_cmd` resolves once the user clicks a button
+/// in the GUI. `session_store` holds "allow for this session" grants that
+/// persist until the app is closed.
+#[derive(Default)]
+pub struct ApprovalState {
+    pub pending: Arc<TokioMutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalDecision>>>>,
+    pub session_store: SessionApprovalStore,
+}
 
 async fn sync_enabled_mcp_servers(
     db: &Database,
@@ -2159,10 +2175,12 @@ pub async fn test_agent_connection_cmd(
 // ── Agent Chat Command (streaming) ──────────────────────────────────────
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn agent_chat_cmd(
     state: tauri::State<'_, AppState>,
     agent_state: tauri::State<'_, AgentState>,
     mcp_state: tauri::State<'_, McpManagerState>,
+    approval_state: tauri::State<'_, ApprovalState>,
     app_handle: AppHandle,
     conversation_id: String,
     message: String,
@@ -2348,7 +2366,80 @@ pub async fn agent_chat_cmd(
             None
         };
 
-    // 6c. Create a separate summarization provider if configured.
+    // 6c. Build per-call approval callback (new GUI flow).
+    //
+    // Always wired — the callback itself checks the global
+    // `tool_approval_mode` and short-circuits for AllowAll/DenyAll. In
+    // `Ask` mode it consults persisted `never` policies, then the
+    // session allow-list, and finally emits an `ApprovalRequested`
+    // event and blocks on a oneshot from `approve_tool_call_cmd`.
+    let approval_cb: Option<ApprovalCallback> = {
+        let db_handle = state.db.clone();
+        let app_handle_cb = app_handle.clone();
+        let pending = approval_state.pending.clone();
+        let session_store = approval_state.session_store.clone();
+        let stream_conv_id = conversation_id.clone();
+        let approval_mode = app_cfg.tool_approval_mode;
+        Some(Arc::new(move |req: ApprovalRequest| {
+            let db = db_handle.clone();
+            let handle = app_handle_cb.clone();
+            let pending = pending.clone();
+            let store = session_store.clone();
+            let conv = stream_conv_id.clone();
+            Box::pin(async move {
+                // 0. Global mode short-circuit.
+                if let Some(d) = approval_mode.short_circuit() {
+                    return d;
+                }
+                // 1. Persistent "never" policy.
+                if let Ok(Some(pol)) = db.get_tool_approval_policy(&req.tool_name) {
+                    if pol == "never" {
+                        return ApprovalDecision::Deny;
+                    }
+                }
+                // 2. Session allow.
+                if matches!(
+                    store.get(&req.tool_name),
+                    Some(ApprovalDecision::AllowSession)
+                ) {
+                    return ApprovalDecision::AllowOnce;
+                }
+                // 3. Ask the UI — emit a synthetic frontend event
+                //    (the executor also emits one, but routing through
+                //    conversation_id makes the UI dispatcher simpler).
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                pending.lock().await.insert(req.id.clone(), tx);
+                let payload = AgentFrontendEvent {
+                    conversation_id: conv.clone(),
+                    event: AgentEvent::ApprovalRequested {
+                        request: req.clone(),
+                    },
+                };
+                emit_app_event(&handle, "agent:event", &payload);
+                // 4. Wait up to 60s for a decision; otherwise deny.
+                let decision = match tokio::time::timeout(Duration::from_secs(60), rx).await {
+                    Ok(Ok(d)) => d,
+                    _ => {
+                        pending.lock().await.remove(&req.id);
+                        ApprovalDecision::Deny
+                    }
+                };
+                // 5. Persist the decision according to scope.
+                match decision {
+                    ApprovalDecision::AllowSession => {
+                        store.set(&req.tool_name, ApprovalDecision::AllowSession);
+                    }
+                    ApprovalDecision::Never => {
+                        let _ = db.save_tool_approval_policy(&req.tool_name, "never");
+                    }
+                    _ => {}
+                }
+                decision
+            })
+        }))
+    };
+
+    // 6d. Create a separate summarization provider if configured.
     let summarization_provider: Option<Box<dyn nexa_core::llm::LlmProvider>> =
         if let Some(ref summ_provider_name) = db_config.summarization_provider {
             let summ_config = ProviderConfig {
@@ -2385,11 +2476,15 @@ pub async fn agent_chat_cmd(
         }
     }
 
+    let cancel_token = CancellationToken::new();
+    let cancel_token_clone = cancel_token.clone();
+
     let delegation_runtime = DelegationRuntime::new(
         provider_config.clone(),
         executor_config.clone(),
         db_config.subagent_allowed_tools.clone(),
         db_config.subagent_allowed_skill_ids.clone(),
+        cancel_token.clone(),
     );
     tools.register(Box::new(SubagentTool::from_runtime(
         delegation_runtime.clone(),
@@ -2574,8 +2669,6 @@ pub async fn agent_chat_cmd(
     let assistant_sort_order = next_sort_order + 1;
     let db_config_for_extraction = db_config.clone();
 
-    let cancel_token = CancellationToken::new();
-    let cancel_token_clone = cancel_token.clone();
     let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(180) as u64;
 
     const STREAM_KEEPALIVE_INTERVAL_SECS: u64 = 10;
@@ -2662,6 +2755,9 @@ pub async fn agent_chat_cmd(
             .with_cancel_token(executor_cancel_token);
         if let Some(cb) = confirmation_cb {
             executor = executor.with_confirmation_callback(cb);
+        }
+        if let Some(cb) = approval_cb {
+            executor = executor.with_approval_callback(cb);
         }
         if let Some(summ_provider) = summarization_provider {
             executor = executor.with_summarization_provider(summ_provider);
@@ -2872,6 +2968,29 @@ pub fn save_app_config_cmd(
     config: AppConfig,
 ) -> Result<(), String> {
     state.db.save_app_config(&config).map_err(|e| e.to_string())
+}
+
+// ── Setup Wizard ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_wizard_state_cmd(state: tauri::State<'_, AppState>) -> Result<WizardState, String> {
+    state.db.load_wizard_state().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_wizard_completed_cmd(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state
+        .db
+        .save_wizard_state(&WizardState { completed: true })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn reset_wizard_cmd(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state
+        .db
+        .save_wizard_state(&WizardState { completed: false })
+        .map_err(|e| e.to_string())
 }
 
 // ── OCR ─────────────────────────────────────────────────────────────
@@ -3283,8 +3402,26 @@ pub async fn import_skill_from_md_cmd(
         description: fm.description,
         content: body,
         enabled: true,
+        resource_bundle: Vec::new(),
     };
     state.db.save_skill(&input).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn discover_skills_in_directory_cmd(
+    directory: String,
+) -> Result<Vec<DiscoveredSkillBundle>, String> {
+    nexa_core::skills::discover_skills_in_directory(Path::new(&directory))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn import_skills_from_directory_cmd(
+    state: tauri::State<'_, AppState>,
+    directory: String,
+) -> Result<Vec<Skill>, String> {
+    nexa_core::skills::import_skills_from_directory(&state.db, Path::new(&directory))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3305,6 +3442,13 @@ pub async fn export_skill_to_md_cmd(
         .find(|s| s.id == skill_id)
         .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
     Ok(nexa_core::skills::export_skill_to_md(&skill))
+}
+
+#[tauri::command]
+pub async fn scan_skill_content_cmd(
+    content: String,
+) -> Result<Vec<nexa_core::skills::SkillWarning>, String> {
+    Ok(nexa_core::skills::scan_skill_content(&content))
 }
 
 // ── MCP Commands ────────────────────────────────────────────────────
@@ -3672,3 +3816,97 @@ pub fn suggest_explorations_cmd(
         .map_err(|e| e.to_string())?;
     serde_json::to_value(&suggestions).map_err(|e| e.to_string())
 }
+
+// ── Tool Approval ───────────────────────────────────────────────────
+
+/// Resolve a pending [`ApprovalRequest`] emitted by the agent executor.
+///
+/// The frontend calls this after the user clicks a button in the approval
+/// dialog. Decision strings: `allow_once`, `allow_session`, `deny`, `never`.
+#[tauri::command]
+pub async fn approve_tool_call_cmd(
+    approval_state: tauri::State<'_, ApprovalState>,
+    request_id: String,
+    decision: String,
+) -> Result<(), String> {
+    let decision = ApprovalDecision::parse(&decision)
+        .ok_or_else(|| format!("Unknown approval decision: {decision}"))?;
+    let sender = {
+        let mut pending = approval_state.pending.lock().await;
+        pending.remove(&request_id)
+    };
+    match sender {
+        Some(tx) => {
+            tx.send(decision)
+                .map_err(|_| "Approval request already resolved or expired".to_string())?;
+            Ok(())
+        }
+        None => Err(format!("Unknown approval request id: {request_id}")),
+    }
+}
+
+#[tauri::command]
+pub fn list_tool_approval_policies_cmd(
+    state: tauri::State<'_, AppState>,
+    approval_state: tauri::State<'_, ApprovalState>,
+) -> Result<serde_json::Value, String> {
+    let persisted = state
+        .db
+        .list_tool_approval_policies()
+        .map_err(|e| e.to_string())?;
+    let session: Vec<serde_json::Value> = approval_state
+        .session_store
+        .list()
+        .into_iter()
+        .map(|(tool_name, decision)| {
+            serde_json::json!({
+                "toolName": tool_name,
+                "decision": decision.as_str(),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "persisted": persisted,
+        "session": session,
+    }))
+}
+
+#[tauri::command]
+pub fn delete_tool_approval_policy_cmd(
+    state: tauri::State<'_, AppState>,
+    approval_state: tauri::State<'_, ApprovalState>,
+    tool_name: String,
+    scope: Option<String>,
+) -> Result<(), String> {
+    match scope.as_deref() {
+        Some("session") => approval_state.session_store.remove(&tool_name),
+        Some("forever") | None => state
+            .db
+            .delete_tool_approval_policy(&tool_name)
+            .map_err(|e| e.to_string())?,
+        Some(other) => return Err(format!("Unknown scope: {other}")),
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clear_tool_approval_policies_cmd(
+    state: tauri::State<'_, AppState>,
+    approval_state: tauri::State<'_, ApprovalState>,
+) -> Result<(), String> {
+    approval_state.session_store.clear();
+    state
+        .db
+        .clear_tool_approval_policies()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// Silence dead-code warnings for the re-exported type alias used by callers.
+#[allow(dead_code)]
+type _ApprovalTypeMarkers = (
+    ApprovalRequest,
+    ApprovalCallback,
+    ToolApprovalMode,
+    ToolApprovalPolicy,
+);

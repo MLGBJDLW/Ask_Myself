@@ -148,6 +148,7 @@ export interface AppConfig {
   traceEnabled?: boolean;
   confirmDestructive?: boolean;
   shellAccessMode?: 'restricted' | 'confirm_all' | 'open';
+  toolApprovalMode?: 'ask' | 'allow_all' | 'deny_all';
   hfMirrorBaseUrl?: string;
   ghproxyBaseUrl?: string;
 }
@@ -169,11 +170,30 @@ export type ProviderType =
   | 'custom';
 
 export interface AgentEvent {
-  type: 'textDelta' | 'toolCallStart' | 'toolCallResult' | 'thinking' | 'status' | 'done' | 'error' | 'autoCompacted' | 'usageUpdate';
+  type:
+    | 'textDelta'
+    | 'toolCallStart'
+    | 'toolCallArgsDelta'
+    | 'toolCallProgress'
+    | 'toolCallResult'
+    | 'thinking'
+    | 'status'
+    | 'done'
+    | 'error'
+    | 'autoCompacted'
+    | 'usageUpdate'
+    | 'approvalRequested'
+    | 'approvalResolved';
   delta?: string;
   callId?: string;
   toolName?: string;
   arguments?: string;
+  /** Appended arguments fragment for streaming tool calls. */
+  argumentsDelta?: string;
+  /** Optional ordering index for argument deltas. */
+  index?: number;
+  /** Progress heartbeat note (e.g. "running ppt_generate…"). */
+  note?: string;
   content?: string;
   tone?: 'muted' | 'success' | 'error';
   isError?: boolean;
@@ -181,6 +201,28 @@ export interface AgentEvent {
   // `Done` events carry a full ConversationMessage; `Error` events carry a plain string.
   message?: ConversationMessage | string;
   usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number; lastPromptTokens?: number };
+}
+
+export type ApprovalRisk = 'low' | 'medium' | 'high';
+export type ApprovalDecisionValue = 'allow_once' | 'allow_session' | 'deny' | 'never';
+
+export interface ApprovalRequest {
+  id: string;
+  toolName: string;
+  argumentsPreview: string;
+  riskLevel: ApprovalRisk;
+  reason: string;
+}
+
+export interface ApprovalPolicy {
+  toolName: string;
+  decision: string;
+  createdAt?: string;
+}
+
+export interface ApprovalPolicyList {
+  persisted: ApprovalPolicy[];
+  session: ApprovalPolicy[];
 }
 
 export interface AgentFrontendEvent {
@@ -191,12 +233,18 @@ export interface AgentFrontendEvent {
   callId?: string;
   toolName?: string;
   arguments?: string;
+  argumentsDelta?: string;
+  index?: number;
+  note?: string;
   content?: string;
   tone?: 'muted' | 'success' | 'error';
   isError?: boolean;
   artifacts?: ArtifactPayload;
   message?: ConversationMessage | string;
   usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number; lastPromptTokens?: number };
+  request?: ApprovalRequest;
+  requestId?: string;
+  decision?: ApprovalDecisionValue;
 }
 
 export interface ConversationStats {

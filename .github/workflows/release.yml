@@ -144,7 +144,9 @@ jobs:
           SIG_COUNT=$(find /tmp/sigs -name '*.sig' 2>/dev/null | wc -l)
           echo "Found $SIG_COUNT .sig file(s)"
           if [ "$SIG_COUNT" -eq 0 ]; then
-            echo "::warning::⚠️ WARNING: No .sig files found. Update bundles were not signed. Check that TAURI_SIGNING_PRIVATE_KEY is correctly configured."
+            echo "::error::❌ No .sig files found in release $TAG. Auto-updater requires signed bundles."
+            echo "::error::可能原因：TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD secrets 未配置或无效；或 build-release job 未成功产出 .sig 资产。"
+            exit 1
           fi
 
           # Build platform entries
@@ -182,9 +184,10 @@ jobs:
           # Validate platforms is not empty
           PLATFORM_COUNT=$(echo "$PLATFORMS" | jq 'keys | length')
           if [ "$PLATFORM_COUNT" -eq 0 ]; then
-            echo "::warning::⚠️ WARNING: latest.json has no platform entries. Auto-update will not work."
-          else
-            echo "latest.json contains $PLATFORM_COUNT platform(s)"
+            echo "::error::❌ latest.json has empty platforms={}. Refusing to ship a broken updater manifest."
+            echo "::error::可能原因：TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD secrets 未配置或无效；.sig 文件命名与预期模式 (*x64-setup.nsis.zip.sig / *amd64.AppImage.tar.gz.sig / *.app.tar.gz.sig) 不匹配。"
+            exit 1
           fi
+          echo "latest.json contains $PLATFORM_COUNT platform(s)"
 
           gh release upload "$TAG" latest.json --clobber --repo "$REPO"

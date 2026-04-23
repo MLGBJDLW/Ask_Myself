@@ -1,14 +1,13 @@
 //! Context window management for conversation history.
 
 use crate::llm::{Message, Role};
+use tiktoken_rs::{bpe_for_model, bpe_for_tokenizer, tokenizer::Tokenizer};
 
-/// Approximate token count using character-based heuristics.
-///
-/// - ASCII-heavy (English, code, JSON): ~4 chars per token
-/// - CJK-heavy: ~1.5 chars per token (most CJK chars = 1 token)
-/// - Mixed: weighted average
-/// - Adds overhead for message formatting (~4 tokens per message)
-pub fn estimate_tokens(text: &str) -> u32 {
+/// Approximate token count using tokenizer-backed counting with a heuristic
+/// fallback. The old character heuristic drifted badly on JSON/tool-heavy
+/// prompts, so we prefer OpenAI-compatible tokenizers whenever possible and
+/// only fall back to the character heuristic when no tokenizer is available.
+fn heuristic_token_count(text: &str) -> u32 {
     if text.is_empty() {
         return 0;
     }
@@ -34,8 +33,45 @@ pub fn estimate_tokens(text: &str) -> u32 {
     let cjk_tokens = (cjk_chars as f64 / 1.5).ceil() as u32;
     let other_tokens = (other_chars as f64 / 2.0).ceil() as u32;
 
-    // Add per-message overhead (role label, formatting)
-    ascii_tokens + cjk_tokens + other_tokens + 4
+    ascii_tokens + cjk_tokens + other_tokens
+}
+
+fn tokenizer_count(model_hint: Option<&str>, text: &str) -> Option<u32> {
+    if text.is_empty() {
+        return Some(0);
+    }
+
+    if let Some(model) = model_hint {
+        if let Ok(bpe) = bpe_for_model(model) {
+            return Some(bpe.count_with_special_tokens(text) as u32);
+        }
+    }
+
+    let fallback_tokenizer = if model_hint.map(model_context_window).unwrap_or(128_000) >= 200_000 {
+        Tokenizer::O200kBase
+    } else {
+        Tokenizer::Cl100kBase
+    };
+
+    bpe_for_tokenizer(fallback_tokenizer)
+        .ok()
+        .map(|bpe| bpe.count_with_special_tokens(text) as u32)
+}
+
+fn estimate_text_tokens_with_model(model_hint: Option<&str>, text: &str) -> u32 {
+    let raw = tokenizer_count(model_hint, text).unwrap_or_else(|| heuristic_token_count(text));
+    raw + 4
+}
+
+/// Approximate token count for plain text with a generic tokenizer fallback.
+pub fn estimate_tokens(text: &str) -> u32 {
+    estimate_text_tokens_with_model(None, text)
+}
+
+/// Approximate token count for plain text using a model-aware tokenizer when
+/// possible.
+pub fn estimate_tokens_for_model(model: &str, text: &str) -> u32 {
+    estimate_text_tokens_with_model(Some(model), text)
 }
 
 /// Check if a character is in the CJK Unified Ideographs range.
@@ -53,7 +89,15 @@ fn is_cjk(ch: char) -> bool {
 
 /// Estimate the total token cost of a message, including tool_calls and images.
 pub fn estimate_message_tokens(msg: &Message) -> u32 {
-    let mut tokens = estimate_tokens(&msg.text_content());
+    estimate_message_tokens_with_model(None, msg)
+}
+
+pub fn estimate_message_tokens_for_model(model: &str, msg: &Message) -> u32 {
+    estimate_message_tokens_with_model(Some(model), msg)
+}
+
+fn estimate_message_tokens_with_model(model_hint: Option<&str>, msg: &Message) -> u32 {
+    let mut tokens = estimate_text_tokens_with_model(model_hint, &msg.text_content());
 
     // Estimate tokens for image parts.
     // OpenAI vision: 85 base + 170 per 512x512 tile. Since we don't know
@@ -70,13 +114,23 @@ pub fn estimate_message_tokens(msg: &Message) -> u32 {
     if let Some(ref calls) = msg.tool_calls {
         for tc in calls {
             // Each tool call: id + name + arguments JSON
-            tokens += estimate_tokens(&tc.id);
-            tokens += estimate_tokens(&tc.name);
-            tokens += estimate_tokens(&tc.arguments);
+            tokens += estimate_text_tokens_with_model(model_hint, &tc.id);
+            tokens += estimate_text_tokens_with_model(model_hint, &tc.name);
+            tokens += estimate_text_tokens_with_model(model_hint, &tc.arguments);
             tokens += 4; // overhead per tool call
         }
     }
     tokens
+}
+
+/// Reserve a model-size-dependent buffer so trimming errs on the safe side
+/// before provider-side prompt-too-long errors occur.
+pub fn context_safety_buffer(max_tokens: u32) -> u32 {
+    if max_tokens <= 8_192 {
+        256
+    } else {
+        (max_tokens / 25).clamp(1_024, 8_192)
+    }
 }
 
 /// Known model context windows, mapped by exact API model ID.
@@ -461,21 +515,25 @@ mod tests {
 
     #[test]
     fn test_estimate_tokens() {
-        assert_eq!(estimate_tokens(""), 0);
-        // 4 ASCII chars → ceil(4/4) + 4 overhead = 5
-        assert_eq!(estimate_tokens("abcd"), 5);
-        // 5 ASCII chars → ceil(5/4) + 4 overhead = 6
-        assert_eq!(estimate_tokens("abcde"), 6);
+        let empty = estimate_tokens("");
+        let short = estimate_tokens("abcd");
+        let longer = estimate_tokens("abcde");
+
+        assert!(empty >= 4, "token estimate keeps a framing overhead");
+        assert!(short >= empty);
+        assert!(longer >= short);
     }
 
     #[test]
     fn test_estimate_tokens_cjk() {
-        // "你好世界" = 4 CJK chars → ceil(4/1.5) + 4 = 3 + 4 = 7
         let tokens = estimate_tokens("你好世界");
-        assert_eq!(tokens, 7);
         assert!(
             tokens > 4,
             "CJK should produce more tokens than naive byte/4"
+        );
+        assert!(
+            tokens >= estimate_tokens("abcd"),
+            "CJK should not undercount compared with short ASCII text"
         );
     }
 

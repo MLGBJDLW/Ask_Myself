@@ -425,7 +425,9 @@ async fn parse_ollama_ndjson_stream(
     }
 
     // Stream ended without a `done: true` message — server likely crashed or disconnected.
-    Err(CoreError::StreamIncomplete)
+    Err(CoreError::StreamIncomplete(
+        "stream ended without done marker".to_string(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -441,9 +443,14 @@ pub struct OllamaProvider {
 impl OllamaProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let timeout = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        // Ollama runs locally but we still force HTTP/1.1 + short pool TTL
+        // for consistency with the other providers; SSE framing is cleaner
+        // and there is no benefit to h2 multiplexing for sequential streams.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(timeout))
+            .pool_idle_timeout(std::time::Duration::from_secs(15))
+            .http1_only()
             .build()
             .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
 

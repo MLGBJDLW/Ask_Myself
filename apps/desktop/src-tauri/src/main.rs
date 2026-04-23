@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use commands::{AgentState, AppState, DownloadCancelFlag, McpManagerState};
+use commands::{AgentState, AppState, ApprovalState, DownloadCancelFlag, McpManagerState};
 use nexa_core::db::Database;
 use tauri::Manager;
 use tokio::sync::Mutex as TokioMutex;
@@ -129,6 +129,7 @@ fn main() {
             app.manage(McpManagerState {
                 manager: TokioMutex::new(nexa_core::mcp::McpManager::new()),
             });
+            app.manage(ApprovalState::default());
             app.manage(DownloadCancelFlag(Arc::new(AtomicBool::new(false))));
 
             // Initialise the file watcher for auto-indexing.
@@ -260,6 +261,10 @@ fn main() {
             // App Config
             commands::get_app_config_cmd,
             commands::save_app_config_cmd,
+            // Setup Wizard
+            commands::get_wizard_state_cmd,
+            commands::set_wizard_completed_cmd,
+            commands::reset_wizard_cmd,
             // OCR
             commands::get_ocr_config_cmd,
             commands::save_ocr_config_cmd,
@@ -296,6 +301,9 @@ fn main() {
             commands::list_builtin_skills_cmd,
             commands::import_skill_from_md_cmd,
             commands::export_skill_to_md_cmd,
+            commands::scan_skill_content_cmd,
+            commands::discover_skills_in_directory_cmd,
+            commands::import_skills_from_directory_cmd,
             // MCP
             commands::list_mcp_servers_cmd,
             commands::save_mcp_server_cmd,
@@ -321,6 +329,11 @@ fn main() {
             // Knowledge loop
             commands::get_knowledge_gaps_cmd,
             commands::suggest_explorations_cmd,
+            // Tool approval
+            commands::approve_tool_call_cmd,
+            commands::list_tool_approval_policies_cmd,
+            commands::delete_tool_approval_policy_cmd,
+            commands::clear_tool_approval_policies_cmd,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

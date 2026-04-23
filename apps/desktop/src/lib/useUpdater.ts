@@ -8,6 +8,17 @@ interface UpdateState {
   notes?: string;
   progress?: number;
   error?: string;
+  errorCode?: string | number | null;
+  errorDetail?: { stack?: string };
+}
+
+function extractError(e: unknown): { error: string; errorCode: string | number | null; errorDetail: { stack?: string } } {
+  const errMsg = e instanceof Error ? e.message : String(e);
+  const errCode = (e as { code?: string | number; status?: string | number } | null)?.code
+    ?? (e as { code?: string | number; status?: string | number } | null)?.status
+    ?? null;
+  const errStack = e instanceof Error ? e.stack : undefined;
+  return { error: errMsg, errorCode: errCode, errorDetail: { stack: errStack?.slice(0, 500) } };
 }
 
 export function useUpdater(checkOnMount = true) {
@@ -29,7 +40,7 @@ export function useUpdater(checkOnMount = true) {
         return null;
       }
     } catch (e) {
-      setState({ status: 'error', error: String(e) });
+      setState({ status: 'error', ...extractError(e) });
       return null;
     }
   }, []);
@@ -66,7 +77,7 @@ export function useUpdater(checkOnMount = true) {
 
       await relaunch();
     } catch (e) {
-      setState(prev => ({ ...prev, status: 'error', error: String(e) }));
+      setState(prev => ({ ...prev, status: 'error', ...extractError(e) }));
     }
   }, []);
 

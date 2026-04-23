@@ -334,7 +334,23 @@ pub async fn parse_sse_stream(
     while let Some(chunk_result) = byte_stream.next().await {
         let chunk = chunk_result.map_err(|e| {
             error!("Stream read error: {e}");
-            CoreError::Llm(format!("Stream read error: {e}"))
+            let msg = e.to_string().to_ascii_lowercase();
+            // Reqwest errors surfaced mid-stream (hyper decode error, connection
+            // RST/closed, h2 protocol, TLS shutdown) are recoverable stream
+            // interruptions — not fatal LLM errors. Map them so the agent can
+            // soft-fail and continue.
+            if msg.contains("decoding response body")
+                || msg.contains("connection")
+                || msg.contains("closed")
+                || msg.contains("reset")
+                || msg.contains("broken pipe")
+                || msg.contains("incompleted")
+                || msg.contains("eof")
+            {
+                CoreError::StreamIncomplete(format!("stream interrupted: {e}"))
+            } else {
+                CoreError::Llm(format!("Stream read error: {e}"))
+            }
         })?;
         let text = std::str::from_utf8(&chunk)
             .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in SSE stream: {e}")))?;
@@ -492,7 +508,9 @@ pub async fn parse_sse_stream(
 
     // Stream ended without [DONE] marker — server likely crashed or disconnected.
     warn!("Stream ended without [DONE] marker");
-    Err(CoreError::StreamIncomplete)
+    Err(CoreError::StreamIncomplete(
+        "stream ended without [DONE] marker".to_string(),
+    ))
 }
 
 #[cfg(test)]

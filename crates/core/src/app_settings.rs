@@ -4,6 +4,16 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 const APP_CONFIG_KEY: &str = "app_config";
+const WIZARD_STATE_KEY: &str = "wizard_state";
+
+/// First-run setup wizard state. Persisted in the `app_config` table.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WizardState {
+    /// Whether the user has completed (or explicitly finished) the wizard.
+    #[serde(default)]
+    pub completed: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +81,12 @@ pub struct AppConfig {
     /// Shell command access mode for run_shell. Default: restricted.
     #[serde(default)]
     pub shell_access_mode: ShellAccessMode,
+
+    /// Global tool-approval mode. Default: `Ask` (per-call GUI dialog for
+    /// high-risk tools). `AllowAll` bypasses the gate entirely; `DenyAll`
+    /// rejects every gated call without prompting.
+    #[serde(default)]
+    pub tool_approval_mode: crate::approval::ToolApprovalMode,
 
     /// Whether to automatically extract memories from conversations. Default: true
     #[serde(default = "default_auto_memory_extraction")]
@@ -142,6 +158,7 @@ impl Default for AppConfig {
             mcp_call_timeout_secs: default_mcp_call_timeout_secs(),
             confirm_destructive: false,
             shell_access_mode: ShellAccessMode::Restricted,
+            tool_approval_mode: crate::approval::ToolApprovalMode::default(),
             auto_memory_extraction: true,
             hf_mirror_base_url: default_hf_mirror_base_url(),
             ghproxy_base_url: default_ghproxy_base_url(),
@@ -193,5 +210,77 @@ impl Database {
             params![APP_CONFIG_KEY, &json],
         )?;
         Ok(())
+    }
+
+    /// Load the first-run wizard state. Returns `WizardState::default()` (not
+    /// completed) when no record exists or the `app_config` table hasn't been
+    /// created yet.
+    pub fn load_wizard_state(&self) -> Result<WizardState, CoreError> {
+        let conn = self.conn();
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_config')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(WizardState::default());
+        }
+        let result = conn.query_row(
+            "SELECT value FROM app_config WHERE key = ?1",
+            params![WIZARD_STATE_KEY],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(json) => Ok(serde_json::from_str(&json).unwrap_or_default()),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(WizardState::default()),
+            Err(e) => Err(CoreError::Database(e)),
+        }
+    }
+
+    /// Persist the wizard state (creates the table lazily if needed).
+    pub fn save_wizard_state(&self, state: &WizardState) -> Result<(), CoreError> {
+        let json = serde_json::to_string(state)?;
+        let conn = self.conn();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS app_config (
+                 key TEXT PRIMARY KEY NOT NULL,
+                 value TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             )",
+        )?;
+        conn.execute(
+            "INSERT INTO app_config (key, value, updated_at)
+             VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                            updated_at = excluded.updated_at",
+            params![WIZARD_STATE_KEY, &json],
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wizard_state_roundtrip() {
+        let db = Database::open_memory().expect("open_memory");
+
+        // No record → not completed.
+        let initial = db.load_wizard_state().expect("load initial");
+        assert!(!initial.completed);
+
+        // Save completed=true.
+        db.save_wizard_state(&WizardState { completed: true })
+            .expect("save completed");
+        let loaded = db.load_wizard_state().expect("load completed");
+        assert!(loaded.completed);
+
+        // Reset.
+        db.save_wizard_state(&WizardState { completed: false })
+            .expect("save reset");
+        let reset = db.load_wizard_state().expect("load reset");
+        assert!(!reset.completed);
     }
 }

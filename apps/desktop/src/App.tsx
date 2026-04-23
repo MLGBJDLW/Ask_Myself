@@ -3,22 +3,24 @@ import {
   createBrowserRouter,
   createRoutesFromElements,
   Link,
+  Navigate,
   Outlet,
   Route,
   RouterProvider,
+  useLocation,
 } from "react-router-dom";
 import { motion, MotionConfig, useReducedMotion } from "framer-motion";
 import { I18nProvider, useTranslation } from "./i18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Layout } from "./components/Layout";
 
-import { WelcomeWizard } from "./components/WelcomeWizard";
 import { SearchPage } from "./pages/SearchPage";
 import { SourcesPage } from "./pages/SourcesPage";
 import { PlaybooksPage } from "./pages/PlaybooksPage";
 import { KnowledgePage } from "./pages/KnowledgePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ChatPage } from './pages/ChatPage';
+import { WizardPage } from "./pages/WizardPage";
 import { CommandPalette } from "./components/CommandPalette";
 import { StreamProvider } from "./lib/StreamProvider";
 import { ProgressProvider } from "./lib/ProgressProvider";
@@ -62,28 +64,39 @@ function NotFoundPage() {
 }
 
 function AppShell() {
-  const [showWizard, setShowWizard] = useState<boolean | null>(null);
+  // `null` = still loading; `true`/`false` = known state.
+  const [wizardCompleted, setWizardCompleted] = useState<boolean | null>(null);
+  const location = useLocation();
 
   useAutoCompile();
   useAutoHealthCheck();
   useKnowledgeInsights();
 
   useEffect(() => {
-    api.listSources().then(sources => {
-      setShowWizard(sources.length === 0);
-    }).catch(() => {
-      setShowWizard(false);
-    });
+    api.getWizardState()
+      .then(state => setWizardCompleted(Boolean(state?.completed)))
+      .catch(() => setWizardCompleted(true)); // Fail-open: don't block on I/O errors.
   }, []);
+
+  // Re-check after the user returns from /wizard so that subsequent navigation
+  // doesn't loop back.  Cheap because the state is cached in sqlite.
+  useEffect(() => {
+    if (location.pathname === '/wizard') return;
+    if (wizardCompleted === false) {
+      api.getWizardState()
+        .then(state => setWizardCompleted(Boolean(state?.completed)))
+        .catch(() => {});
+    }
+  }, [location.pathname, wizardCompleted]);
 
   return (
     <I18nProvider>
       <MotionConfig reducedMotion="user">
         <CommandPalette />
-        {showWizard && (
-          <WelcomeWizard onComplete={() => setShowWizard(false)} />
+        {wizardCompleted === false && location.pathname !== '/wizard' && (
+          <Navigate to="/wizard" replace />
         )}
-        {showWizard === false && <Outlet />}
+        {wizardCompleted !== null && <Outlet />}
       </MotionConfig>
     </I18nProvider>
   );
@@ -92,6 +105,7 @@ function AppShell() {
 const router = createBrowserRouter(
   createRoutesFromElements(
     <Route element={<AppShell />}>
+      <Route path="/wizard" element={<WizardPage />} />
       <Route element={<Layout />}>
         <Route path="/" element={<PageTransition><SearchPage /></PageTransition>} />
         <Route path="/sources" element={<PageTransition><SourcesPage /></PageTransition>} />

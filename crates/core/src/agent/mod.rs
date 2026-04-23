@@ -1,5 +1,6 @@
 //! Agent executor — ReAct-style reasoning loop with streaming and tool dispatch.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -12,8 +13,12 @@ use tracing::{debug, error, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
 use crate::app_settings::ShellAccessMode;
+use crate::approval::{
+    classify_risk, describe_request, ApprovalCallback, ApprovalDecision, ApprovalRequest,
+};
 use crate::conversation::memory::{
-    estimate_message_tokens, estimate_tokens, model_context_window, trim_to_context_window,
+    context_safety_buffer, estimate_message_tokens_for_model, estimate_tokens_for_model,
+    model_context_window, trim_to_context_window,
 };
 use crate::conversation::summarizer;
 use crate::conversation::ConversationMessage;
@@ -36,7 +41,72 @@ pub use tokio_util::sync::CancellationToken;
 
 /// Maximum characters to keep in a tool result for LLM context.
 /// ~4K tokens ≈ 16K chars for English text.
-const MAX_TOOL_RESULT_CHARS: usize = 16_000;
+const MAX_TOOL_RESULT_CONTEXT_CHARS: usize = 4_800;
+const MAX_CONTEXT_RECOVERY_ATTEMPTS: u32 = 2;
+
+fn is_context_overflow_error(err: &CoreError) -> bool {
+    match err {
+        CoreError::ContextOverflow(..) => true,
+        CoreError::Llm(message) | CoreError::TransientLlm(message) => {
+            let lower = message.to_lowercase();
+            lower.contains("context length")
+                || lower.contains("context window")
+                || lower.contains("prompt_too_long")
+                || lower.contains("prompt is too long")
+                || lower.contains("maximum context")
+                || lower.contains("too many tokens")
+                || (lower.contains("token limit") && lower.contains("input"))
+        }
+        _ => false,
+    }
+}
+
+fn summarize_lines(text: &str, head_lines: usize, tail_lines: usize, max_chars: usize) -> String {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= head_lines + tail_lines + 3 {
+        return truncate_tool_result(text, max_chars);
+    }
+    let omitted = lines.len().saturating_sub(head_lines + tail_lines);
+    let mut compact: Vec<String> = lines
+        .iter()
+        .take(head_lines)
+        .map(|line| (*line).to_string())
+        .collect();
+    compact.push(format!("[... {} lines omitted ...]", omitted));
+    compact.extend(
+        lines
+            .iter()
+            .skip(lines.len().saturating_sub(tail_lines))
+            .map(|line| (*line).to_string()),
+    );
+    let rendered = compact.join("\n");
+    if rendered.len() <= max_chars {
+        rendered
+    } else {
+        truncate_tool_result(&rendered, max_chars)
+    }
+}
+
+fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
+    match tool_name {
+        "run_shell" | "read_file" | "fetch_url" => summarize_lines(
+            &truncate_tool_result(content, MAX_TOOL_RESULT_CONTEXT_CHARS),
+            40,
+            25,
+            MAX_TOOL_RESULT_CONTEXT_CHARS,
+        ),
+        "list_dir" | "list_documents" | "list_sources" => {
+            summarize_lines(content, 60, 10, MAX_TOOL_RESULT_CONTEXT_CHARS)
+        }
+        "retrieve_evidence" | "search_knowledge_base" | "search_playbooks" => {
+            truncate_tool_result(content, 6_000)
+        }
+        _ => truncate_tool_result(content, MAX_TOOL_RESULT_CONTEXT_CHARS),
+    }
+}
 
 /// Truncate tool result content to fit within a character budget.
 ///
@@ -228,6 +298,30 @@ pub enum AgentEvent {
         tool_name: String,
         arguments: String,
     },
+    /// Incremental fragment of tool-call arguments streamed mid-response.
+    ///
+    /// Emitted while the model is still generating the tool call (before
+    /// execution) so the UI can show progress instead of waiting for the
+    /// full SSE stream to finish.
+    ToolCallArgsDelta {
+        #[serde(rename = "callId")]
+        call_id: String,
+        #[serde(rename = "toolName")]
+        tool_name: String,
+        #[serde(rename = "argumentsDelta")]
+        arguments_delta: String,
+        /// Tool-call index when the provider streams multiple calls in parallel.
+        index: u32,
+    },
+    /// Heartbeat emitted while a long-running tool is still executing.
+    ///
+    /// Used to keep the frontend watchdog alive for tools like
+    /// `ppt_generate` / `generate_docx` that may exceed 30 seconds.
+    ToolCallProgress {
+        #[serde(rename = "callId")]
+        call_id: String,
+        note: String,
+    },
     /// Result of a tool execution.
     ToolCallResult {
         #[serde(rename = "callId")]
@@ -277,6 +371,17 @@ pub enum AgentEvent {
         /// Number of messages that were summarized.
         #[serde(rename = "evictedCount")]
         evicted_count: usize,
+    },
+    /// A high-risk tool call is waiting for user approval via the GUI.
+    ///
+    /// The UI should render a dialog and later resolve the request by
+    /// invoking the `approve_tool_call_cmd` Tauri command.
+    ApprovalRequested { request: ApprovalRequest },
+    /// A previously emitted approval request was resolved (for UI cleanup).
+    ApprovalResolved {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        decision: ApprovalDecision,
     },
 }
 
@@ -693,6 +798,7 @@ pub struct AgentExecutor {
     skills_override: Option<Vec<Skill>>,
     cancel_token: CancellationToken,
     confirmation_callback: Option<ConfirmationCallback>,
+    approval_callback: Option<ApprovalCallback>,
 }
 
 impl AgentExecutor {
@@ -706,6 +812,7 @@ impl AgentExecutor {
             skills_override: None,
             cancel_token: CancellationToken::new(),
             confirmation_callback: None,
+            approval_callback: None,
         }
     }
 
@@ -724,6 +831,18 @@ impl AgentExecutor {
     /// and a tool returns `requires_confirmation() == true`.
     pub fn with_confirmation_callback(mut self, cb: ConfirmationCallback) -> Self {
         self.confirmation_callback = Some(cb);
+        self
+    }
+
+    /// Attach a per-call approval callback for the GUI approval flow.
+    ///
+    /// Takes precedence over [`with_confirmation_callback`](Self::with_confirmation_callback)
+    /// when both are set. Invoked for any tool that either returns
+    /// `requires_confirmation() == true` or is `run_shell` under
+    /// [`ShellAccessMode::ConfirmAll`]. The callback receives a fully
+    /// populated [`ApprovalRequest`] and returns an [`ApprovalDecision`].
+    pub fn with_approval_callback(mut self, cb: ApprovalCallback) -> Self {
+        self.approval_callback = Some(cb);
         self
     }
 
@@ -997,7 +1116,7 @@ impl AgentExecutor {
                         tool_call_id: None,
                         tool_calls: vec![],
                         artifacts: None,
-                        token_count: estimate_message_tokens(&msg),
+                        token_count: estimate_message_tokens_for_model(model, &msg),
                         created_at: String::new(),
                         sort_order,
                         thinking: None,
@@ -1121,7 +1240,7 @@ impl AgentExecutor {
                             tool_call_id: None,
                             tool_calls: vec![],
                             artifacts: build_trace_artifacts(&persisted_trace_items),
-                            token_count: estimate_message_tokens(&final_msg),
+                            token_count: estimate_message_tokens_for_model(model, &final_msg),
                             created_at: String::new(),
                             sort_order,
                             thinking: None,
@@ -1195,7 +1314,7 @@ impl AgentExecutor {
                         "## Pre-fetched Knowledge Base Results\n\
                          The following evidence was automatically retrieved for the user's query. \
                          Use it to ground your answer. You may search again if needed.\n\n{}",
-                        truncate_tool_result(&result.content, MAX_TOOL_RESULT_CHARS)
+                        compact_tool_result_for_context("search_knowledge_base", &result.content)
                     );
                     messages.push(Message::text(Role::System, ctx_msg));
                     let _ = tx
@@ -1225,6 +1344,7 @@ impl AgentExecutor {
 
         // --- 4. ReAct loop ----------------------------------------------------
         let mut last_tool_calls: Option<Vec<ToolCallRequest>> = None;
+        let mut context_recovery_attempts = 0u32;
         for iteration in 0..self.config.max_iterations {
             // ── Cancellation checkpoint: before LLM call ─────────────────
             check_cancelled!(last_tool_calls);
@@ -1252,35 +1372,35 @@ impl AgentExecutor {
                 }
             }
 
-            let request = CompletionRequest {
-                model: model.to_string(),
-                messages: messages.clone(),
-                temperature: self.config.temperature,
-                max_tokens: self.config.max_tokens,
-                tools: tools_param.clone(),
-                stop: None,
-                thinking_budget: if self.config.reasoning_enabled.unwrap_or(false) {
-                    Some(self.config.thinking_budget.unwrap_or(10_000))
-                } else {
-                    None
-                },
-                reasoning_effort: if self.config.reasoning_enabled.unwrap_or(false) {
-                    self.config.reasoning_effort.clone()
-                } else {
-                    None
-                },
-                provider_type: self.config.provider_type.clone(),
-                parallel_tool_calls: true,
-            };
-
             // -- 4a. Stream LLM response (with rate-limit retry) ----------------
             const MAX_LLM_RETRIES: u32 = 3;
             let mut retry_count = 0u32;
             let mut stream = loop {
+                let request = CompletionRequest {
+                    model: model.to_string(),
+                    messages: messages.clone(),
+                    temperature: self.config.temperature,
+                    max_tokens: self.config.max_tokens,
+                    tools: tools_param.clone(),
+                    stop: None,
+                    thinking_budget: if self.config.reasoning_enabled.unwrap_or(false) {
+                        Some(self.config.thinking_budget.unwrap_or(10_000))
+                    } else {
+                        None
+                    },
+                    reasoning_effort: if self.config.reasoning_enabled.unwrap_or(false) {
+                        self.config.reasoning_effort.clone()
+                    } else {
+                        None
+                    },
+                    provider_type: self.config.provider_type.clone(),
+                    parallel_tool_calls: true,
+                };
                 info!("Initiating LLM stream, attempt {}", retry_count + 1);
                 match self.provider.stream(&request).await {
                     Ok(s) => {
                         info!("LLM stream connected");
+                        context_recovery_attempts = 0;
                         break s;
                     }
                     Err(CoreError::RateLimited { retry_after_secs }) => {
@@ -1366,6 +1486,66 @@ impl AgentExecutor {
                             .await;
                         tokio::time::sleep(Duration::from_secs(wait)).await;
                     }
+                    Err(e) if is_context_overflow_error(&e) => {
+                        if context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
+                            let message = format!(
+                                "Context compression circuit breaker opened after {} recovery attempt(s): {}",
+                                MAX_CONTEXT_RECOVERY_ATTEMPTS,
+                                e
+                            );
+                            let _ = tx.send(AgentEvent::Error { message }).await;
+                            if let Some(ref mut t) = trace {
+                                t.finish(TraceOutcome::Error, Some(e.to_string()));
+                                if let Err(te) = db.save_agent_trace(t) {
+                                    warn!("Failed to save agent trace: {te}");
+                                }
+                            }
+                            if let Some(tid) = turn_id {
+                                let trace =
+                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
+                                let _ =
+                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
+                            }
+                            return Err(e);
+                        }
+
+                        context_recovery_attempts += 1;
+                        let _ = tx
+                            .send(AgentEvent::Status {
+                                content: format!(
+                                    "Context window overflow detected. Compacting history and retrying ({}/{})",
+                                    context_recovery_attempts, MAX_CONTEXT_RECOVERY_ATTEMPTS
+                                ),
+                                tone: Some("muted".to_string()),
+                            })
+                            .await;
+                        let recovered = self
+                            .recover_context_overflow(&mut messages, model, &tx)
+                            .await?;
+                        if !recovered {
+                            let _ = tx
+                                .send(AgentEvent::Error {
+                                    message: format!(
+                                        "Context overflow could not be reduced further: {}",
+                                        e
+                                    ),
+                                })
+                                .await;
+                            if let Some(ref mut t) = trace {
+                                t.finish(TraceOutcome::Error, Some(e.to_string()));
+                                if let Err(te) = db.save_agent_trace(t) {
+                                    warn!("Failed to save agent trace: {te}");
+                                }
+                            }
+                            if let Some(tid) = turn_id {
+                                let trace =
+                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
+                                let _ =
+                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
+                            }
+                            return Err(e);
+                        }
+                    }
                     Err(e) => {
                         let _ = tx
                             .send(AgentEvent::Error {
@@ -1390,6 +1570,7 @@ impl AgentExecutor {
 
             let mut full_content = String::new();
             let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
+            let mut started_call_ids: HashSet<String> = HashSet::new();
             let mut chunk_usage: Option<Usage> = None;
             let mut iteration_thinking = String::new();
             let mut chunk_count: usize = 0;
@@ -1418,6 +1599,36 @@ impl AgentExecutor {
                         // Accumulate tool-call deltas.
                         if let Some(ref tc_delta) = chunk.tool_call_delta {
                             accumulate_tool_call(&mut tool_calls, tc_delta);
+
+                            // Emit streaming ToolCallStart / ArgsDelta events
+                            // so the UI can show progress before the SSE stream
+                            // finishes (critical for long tool-arg payloads like
+                            // ppt_generate / generate_docx).
+                            if let Some((tc_index, tc)) =
+                                resolve_delta_target(&tool_calls, tc_delta)
+                            {
+                                if !tc.name.is_empty() && started_call_ids.insert(tc.id.clone()) {
+                                    let _ = tx
+                                        .send(AgentEvent::ToolCallStart {
+                                            call_id: tc.id.clone(),
+                                            tool_name: tc.name.clone(),
+                                            arguments: String::new(),
+                                        })
+                                        .await;
+                                }
+                                if !tc_delta.arguments_delta.is_empty()
+                                    && started_call_ids.contains(&tc.id)
+                                {
+                                    let _ = tx
+                                        .send(AgentEvent::ToolCallArgsDelta {
+                                            call_id: tc.id.clone(),
+                                            tool_name: tc.name.clone(),
+                                            arguments_delta: tc_delta.arguments_delta.clone(),
+                                            index: tc_index as u32,
+                                        })
+                                        .await;
+                                }
+                            }
                         }
                         if let Some(ref fr) = chunk.finish_reason {
                             last_finish_reason = Some(format!("{:?}", fr).to_lowercase());
@@ -1426,16 +1637,15 @@ impl AgentExecutor {
                             chunk_usage = Some(u);
                         }
                     }
-                    Err(CoreError::StreamIncomplete) => {
-                        warn!("Stream incomplete — response may be truncated");
+                    Err(CoreError::StreamIncomplete(detail)) => {
+                        warn!("Stream incomplete — response may be truncated ({detail})");
                         info!(
-                            "Stream ended incomplete: {chunk_count} chunks, {} chars",
+                            "Stream ended incomplete: {chunk_count} chunks, {} chars — {detail}",
                             full_content.len()
                         );
                         let _ = tx
                             .send(AgentEvent::Error {
-                                message: "Response may be truncated (stream ended unexpectedly)"
-                                    .to_string(),
+                                message: format!("Response may be truncated ({detail})"),
                             })
                             .await;
                         break;
@@ -1495,7 +1705,9 @@ impl AgentExecutor {
                     .context_window
                     .unwrap_or_else(|| model_context_window(model));
                 let max_response = self.config.max_tokens.unwrap_or(4096);
-                let budget = ctx_window.saturating_sub(max_response);
+                let budget = ctx_window
+                    .saturating_sub(max_response)
+                    .saturating_sub(context_safety_buffer(ctx_window));
                 if budget > 0 {
                     iteration_context_pct = (u.prompt_tokens as f32 / budget as f32) * 100.0;
                     if u.prompt_tokens > (budget as f64 * 0.85) as u32 {
@@ -1563,7 +1775,7 @@ impl AgentExecutor {
                         tool_call_id: None,
                         tool_calls: assistant_msg.tool_calls.clone().unwrap_or_default(),
                         artifacts: build_trace_artifacts(&persisted_trace_items),
-                        token_count: estimate_message_tokens(&assistant_msg),
+                        token_count: estimate_message_tokens_for_model(model, &assistant_msg),
                         created_at: String::new(),
                         sort_order,
                         thinking: if iteration_thinking.is_empty() {
@@ -1641,7 +1853,7 @@ impl AgentExecutor {
                     tool_call_id: None,
                     tool_calls: tool_calls.clone(),
                     artifacts: None,
-                    token_count: estimate_message_tokens(&assistant_msg),
+                    token_count: estimate_message_tokens_for_model(model, &assistant_msg),
                     created_at: String::new(),
                     sort_order,
                     thinking: if iteration_thinking.is_empty() {
@@ -1663,15 +1875,19 @@ impl AgentExecutor {
             check_cancelled!(last_tool_calls);
 
             // -- 4e. Execute tool calls in parallel ------------------------------
-            // Emit ToolCallStart events for all tools before launching.
+            // Emit ToolCallStart events for tools that haven't yet been
+            // announced during streaming (guards against providers that skip
+            // the streaming tool-call deltas and only provide them post-stream).
             for tc in &tool_calls {
-                let _ = tx
-                    .send(AgentEvent::ToolCallStart {
-                        call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        arguments: tc.arguments.clone(),
-                    })
-                    .await;
+                if started_call_ids.insert(tc.id.clone()) {
+                    let _ = tx
+                        .send(AgentEvent::ToolCallStart {
+                            call_id: tc.id.clone(),
+                            tool_name: tc.name.clone(),
+                            arguments: tc.arguments.clone(),
+                        })
+                        .await;
+                }
             }
 
             // Build futures for all tool calls and execute concurrently.
@@ -1686,46 +1902,123 @@ impl AgentExecutor {
                     };
                     let source_scope = &source_scope;
                     let tool_span = info_span!("tool_execution", tool = %tc.name);
+                    let progress_tx = tx.clone();
+                    let approval_tx = tx.clone();
+                    let progress_call_id = tc.id.clone();
+                    let progress_tool_name = tc.name.clone();
                     async move {
                         // -- Confirmation gate for destructive tools --------
                         let parsed_args: serde_json::Value =
                             serde_json::from_str(&tc.arguments).unwrap_or_default();
-                        let needs_confirmation = if tc.name == "run_shell" {
-                            self.config.shell_access_mode.requires_confirmation()
-                        } else {
-                            self.config.require_tool_confirmation
-                                && self.tools.requires_confirmation(&tc.name, &parsed_args)
-                        };
-                        if needs_confirmation {
-                            if let Some(ref cb) = self.confirmation_callback {
-                                let message = self
-                                    .tools
-                                    .confirmation_message(&tc.name, &parsed_args)
-                                    .unwrap_or_else(|| format!("Execute tool: {}", tc.name));
-                                if !cb(message).await {
-                                    let declined = crate::tools::ToolResult {
+                        let tool_requires_confirm =
+                            self.tools.requires_confirmation(&tc.name, &parsed_args);
+                        let shell_requires_confirm = tc.name == "run_shell"
+                            && self.config.shell_access_mode.requires_confirmation();
+                        // Approval callback takes precedence — it always
+                        // fires for high-risk tools regardless of the
+                        // legacy `require_tool_confirmation` flag.
+                        if let Some(ref approval_cb) = self.approval_callback {
+                            if tool_requires_confirm || shell_requires_confirm {
+                                let risk = classify_risk(&tc.name, &parsed_args);
+                                let reason = describe_request(&tc.name, &parsed_args);
+                                let req = ApprovalRequest::new(
+                                    Uuid::new_v4().to_string(),
+                                    &tc.name,
+                                    &parsed_args,
+                                    risk,
+                                    reason,
+                                );
+                                let _ = approval_tx
+                                    .send(AgentEvent::ApprovalRequested {
+                                        request: req.clone(),
+                                    })
+                                    .await;
+                                let decision = approval_cb(req.clone()).await;
+                                let _ = approval_tx
+                                    .send(AgentEvent::ApprovalResolved {
+                                        request_id: req.id.clone(),
+                                        decision,
+                                    })
+                                    .await;
+                                if !decision.is_allowed() {
+                                    let denied = crate::tools::ToolResult {
                                         call_id: tc.id.clone(),
-                                        content: "Operation cancelled by user.".to_string(),
+                                        content: format!("User denied permission for {}.", tc.name),
                                         is_error: true,
                                         artifacts: None,
                                     };
-                                    return (tc, tool_timeout, Ok(Ok(declined)), Duration::ZERO);
+                                    return (tc, tool_timeout, Ok(Ok(denied)), Duration::ZERO);
+                                }
+                            }
+                        } else {
+                            let needs_confirmation = if tc.name == "run_shell" {
+                                shell_requires_confirm
+                            } else {
+                                self.config.require_tool_confirmation && tool_requires_confirm
+                            };
+                            if needs_confirmation {
+                                if let Some(ref cb) = self.confirmation_callback {
+                                    let message = self
+                                        .tools
+                                        .confirmation_message(&tc.name, &parsed_args)
+                                        .unwrap_or_else(|| format!("Execute tool: {}", tc.name));
+                                    if !cb(message).await {
+                                        let declined = crate::tools::ToolResult {
+                                            call_id: tc.id.clone(),
+                                            content: "Operation cancelled by user.".to_string(),
+                                            is_error: true,
+                                            artifacts: None,
+                                        };
+                                        return (
+                                            tc,
+                                            tool_timeout,
+                                            Ok(Ok(declined)),
+                                            Duration::ZERO,
+                                        );
+                                    }
                                 }
                             }
                         }
 
                         let tool_start = std::time::Instant::now();
-                        let result = tokio::time::timeout(
-                            tool_timeout,
-                            self.tools.execute_with_context(
+                        let result = tokio::time::timeout(tool_timeout, async {
+                            let exec_fut = self.tools.execute_with_context(
                                 &tc.name,
                                 &tc.id,
                                 &tc.arguments,
                                 db,
                                 source_scope,
                                 conversation_id,
-                            ),
-                        )
+                            );
+                            tokio::pin!(exec_fut);
+                            let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+                            heartbeat
+                                .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                            // Consume the immediate first tick so we don't fire
+                            // a heartbeat before any real wait has elapsed.
+                            heartbeat.tick().await;
+                            loop {
+                                tokio::select! {
+                                    biased;
+                                    r = &mut exec_fut => break r,
+                                    _ = heartbeat.tick() => {
+                                        debug!(
+                                            "tool heartbeat: {} (call_id={})",
+                                            progress_tool_name, progress_call_id,
+                                        );
+                                        let _ = progress_tx
+                                            .send(AgentEvent::ToolCallProgress {
+                                                call_id: progress_call_id.clone(),
+                                                note: format!(
+                                                    "running {}…",
+                                                    progress_tool_name
+                                                ),
+                                            })
+                                            .await;
+                                    }
+                                }
+                            }
+                        })
                         .await;
                         let tool_elapsed = tool_start.elapsed();
                         (tc, tool_timeout, result, tool_elapsed)
@@ -1819,7 +2112,7 @@ impl AgentExecutor {
                         tool_call_id: Some(tc.id.clone()),
                         tool_calls: vec![],
                         artifacts: tool_artifacts.clone(),
-                        token_count: estimate_tokens(&content),
+                        token_count: estimate_tokens_for_model(model, &content),
                         created_at: String::new(),
                         sort_order,
                         thinking: None,
@@ -1833,7 +2126,7 @@ impl AgentExecutor {
 
                 // Truncate large tool results for LLM context to prevent
                 // crowding out conversation history.
-                let context_content = truncate_tool_result(&content, MAX_TOOL_RESULT_CHARS);
+                let context_content = compact_tool_result_for_context(&tc.name, &content);
 
                 messages.push(Message::text_with_name(
                     Role::Tool,
@@ -1866,7 +2159,11 @@ impl AgentExecutor {
                 .config
                 .context_window
                 .unwrap_or_else(|| model_context_window(model));
-            messages = trim_to_context_window(&messages, max_ctx, max_response_tokens);
+            messages = trim_to_context_window(
+                &messages,
+                max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
+                max_response_tokens,
+            );
 
             // Loop back → next LLM call with tool results.
         }
@@ -1910,7 +2207,7 @@ impl AgentExecutor {
                 tool_call_id: None,
                 tool_calls: vec![],
                 artifacts: build_trace_artifacts(&persisted_trace_items),
-                token_count: estimate_message_tokens(&final_msg),
+                token_count: estimate_message_tokens_for_model(model, &final_msg),
                 created_at: String::new(),
                 sort_order,
                 thinking: None,
@@ -1986,7 +2283,10 @@ impl AgentExecutor {
         }
 
         // Estimate total tokens across the history.
-        let total_tokens: u32 = history.iter().map(estimate_message_tokens).sum();
+        let total_tokens: u32 = history
+            .iter()
+            .map(|message| estimate_message_tokens_for_model(model, message))
+            .sum();
 
         // Only trigger when history consumes >50% of available budget.
         if total_tokens <= budget / 2 {
@@ -2038,6 +2338,38 @@ impl AgentExecutor {
         ));
         new_history.extend_from_slice(&history[evict_count..]);
         new_history
+    }
+
+    async fn recover_context_overflow(
+        &self,
+        messages: &mut Vec<Message>,
+        model: &str,
+        tx: &mpsc::Sender<AgentEvent>,
+    ) -> Result<bool, CoreError> {
+        let before_tokens: u32 = messages
+            .iter()
+            .map(|message| estimate_message_tokens_for_model(model, message))
+            .sum();
+        let before_len = messages.len();
+
+        self.aggressive_compact(messages, model, tx).await?;
+
+        let max_context = self
+            .config
+            .context_window
+            .unwrap_or_else(|| model_context_window(model));
+        let extra_safety = context_safety_buffer(max_context).saturating_mul(2);
+        *messages = trim_to_context_window(
+            messages,
+            max_context.saturating_sub(extra_safety),
+            self.config.max_tokens.unwrap_or(4096),
+        );
+
+        let after_tokens: u32 = messages
+            .iter()
+            .map(|message| estimate_message_tokens_for_model(model, message))
+            .sum();
+        Ok(after_tokens < before_tokens || messages.len() < before_len)
     }
 
     // -----------------------------------------------------------------------
@@ -2243,7 +2575,7 @@ impl AgentExecutor {
             tool_call_id: None,
             tool_calls: vec![],
             artifacts: None,
-            token_count: estimate_tokens(&summary),
+            token_count: estimate_tokens_for_model(model, &summary),
             created_at: String::new(),
             sort_order: 0,
             thinking: None,
@@ -2282,6 +2614,7 @@ impl AgentExecutor {
         if user_text.is_empty() {
             return None;
         }
+        let model = self.config.model.as_deref().unwrap_or(DEFAULT_MODEL);
 
         let dispatch = self.match_direct_pattern(user_text, db)?;
 
@@ -2351,7 +2684,7 @@ impl AgentExecutor {
                         tool_call_id: None,
                         tool_calls: vec![],
                         artifacts: None,
-                        token_count: estimate_message_tokens(&msg),
+                        token_count: estimate_message_tokens_for_model(model, &msg),
                         created_at: String::new(),
                         sort_order,
                         thinking: None,
@@ -2592,6 +2925,27 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
             last.thought_signature = delta.thought_signature.clone();
         }
     }
+}
+
+/// Resolve which accumulated [`ToolCallRequest`] a streaming delta refers to.
+///
+/// Mirrors the id-vs-index fallback logic in [`accumulate_tool_call`]. Call
+/// this *after* accumulation so the caller can observe the up-to-date entry
+/// (e.g. to decide whether a `ToolCallStart` event still needs to be emitted).
+fn resolve_delta_target<'a>(
+    calls: &'a [ToolCallRequest],
+    delta: &ToolCallDelta,
+) -> Option<(usize, &'a ToolCallRequest)> {
+    if !delta.id.is_empty() {
+        return calls.iter().enumerate().find(|(_, c)| c.id == delta.id);
+    }
+    if let Some(index) = delta.index {
+        let idx = index as usize;
+        if let Some(c) = calls.get(idx) {
+            return Some((idx, c));
+        }
+    }
+    calls.last().map(|c| (calls.len() - 1, c))
 }
 
 #[cfg(test)]

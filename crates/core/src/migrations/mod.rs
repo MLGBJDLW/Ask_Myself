@@ -584,6 +584,18 @@ Every answer that uses knowledge base search results.
             'builtin-evidence-first'
         );",
     ),
+    (
+        "v046_tool_approval_policies",
+        "CREATE TABLE IF NOT EXISTS tool_approval_policies (
+            tool_name TEXT PRIMARY KEY NOT NULL,
+            decision TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    ),
+    (
+        "v047_skill_resource_bundles",
+        "ALTER TABLE skills ADD COLUMN resource_bundle_json TEXT DEFAULT NULL;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -748,5 +760,17 @@ mod tests {
             )
             .unwrap();
         assert!(has_desc, "skills.description column should exist");
+
+        let has_resource_bundle: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('skills') WHERE name = 'resource_bundle_json'",
+                [],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
+            )
+            .unwrap();
+        assert!(
+            has_resource_bundle,
+            "skills.resource_bundle_json column should exist"
+        );
     }
 }

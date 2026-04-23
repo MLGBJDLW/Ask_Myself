@@ -49,8 +49,8 @@ pub enum CoreError {
     #[error("LLM transient error (retriable): {0}")]
     TransientLlm(String),
 
-    #[error("Stream ended without completion marker — response may be truncated")]
-    StreamIncomplete,
+    #[error("Stream interrupted: {0}")]
+    StreamIncomplete(String),
 
     #[error("MCP error: {0}")]
     Mcp(String),

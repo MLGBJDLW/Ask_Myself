@@ -435,7 +435,7 @@ function buildRunFromToolCall(toolCall: ToolCallEvent): SubagentRun | null {
   const task = artifact?.task ?? parsedArgs?.task ?? 'Delegated task';
   return {
     id: toolCall.callId,
-    status: toolCall.status,
+    status: toolCall.status === 'starting' ? 'running' : toolCall.status,
     task,
     role: artifact?.role ?? parsedArgs?.role ?? null,
     expectedOutput: artifact?.expectedOutput ?? parsedArgs?.expectedOutput ?? null,

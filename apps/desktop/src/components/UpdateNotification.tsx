@@ -9,12 +9,22 @@ interface UpdateNotificationProps {
 
 export function UpdateNotification({ updater }: UpdateNotificationProps) {
   const { t } = useTranslation();
-  const { status, version, progress, downloadAndInstall, checkForUpdate } = updater;
+  const { status, version, progress, downloadAndInstall, checkForUpdate, error, errorCode, errorDetail } = updater;
   const [dismissed, setDismissed] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   if (dismissed || status === 'idle' || status === 'checking' || status === 'up-to-date') {
     return null;
   }
+
+  const errText = error ?? '';
+  const isNotFound = /404|not found/i.test(errText);
+  const isSignatureErr = /signature|\bsig\b/i.test(errText);
+  const hint = isNotFound
+    ? '可能原因：当前版本没有对应的 release 发布'
+    : isSignatureErr
+      ? '签名验证失败，可能是 GitHub Release 资产不完整'
+      : null;
 
   return (
     <div className="relative flex items-center gap-3 px-4 py-2.5 bg-accent/10 border-b border-accent/20 text-sm">
@@ -56,10 +66,33 @@ export function UpdateNotification({ updater }: UpdateNotificationProps) {
 
       {status === 'error' && (
         <>
-          <span className="text-danger text-xs">{t('update.error')}</span>
+          <div className="flex flex-col gap-1 flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-danger text-xs font-medium">{t('update.error')}</span>
+              {error && <span className="text-text-secondary text-xs truncate">{error}</span>}
+            </div>
+            {hint && <span className="text-text-tertiary text-xs">{hint}</span>}
+            {(errorCode != null || errorDetail?.stack) && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setDetailsOpen(v => !v)}
+                  className="text-text-tertiary text-xs hover:text-text-primary transition-colors"
+                >
+                  {detailsOpen ? '▼' : '▶'} 详细信息
+                </button>
+                {detailsOpen && (
+                  <pre className="mt-1 p-2 rounded bg-surface-2 text-text-tertiary text-xs whitespace-pre-wrap break-all max-h-48 overflow-auto">
+                    {errorCode != null && `code: ${errorCode}\n`}
+                    {errorDetail?.stack ?? ''}
+                  </pre>
+                )}
+              </div>
+            )}
+          </div>
           <button
             onClick={checkForUpdate}
-            className="ml-auto px-3 py-1 rounded-md bg-surface-3 text-text-primary text-xs hover:bg-surface-4 transition-colors"
+            className="ml-auto px-3 py-1 rounded-md bg-surface-3 text-text-primary text-xs hover:bg-surface-4 transition-colors shrink-0"
           >
             {t('update.checkNow')}
           </button>

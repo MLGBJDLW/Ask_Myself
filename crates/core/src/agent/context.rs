@@ -2,7 +2,9 @@
 
 use chrono::Utc;
 
-use crate::conversation::memory::{estimate_tokens, model_context_window, trim_to_context_window};
+use crate::conversation::memory::{
+    context_safety_buffer, estimate_tokens_for_model, model_context_window, trim_to_context_window,
+};
 use crate::llm::{ContentPart, Message, Role, ToolDefinition};
 use crate::skills::Skill;
 
@@ -32,8 +34,17 @@ pub fn prepare_messages(
 ) -> Vec<Message> {
     let mut messages = Vec::with_capacity(history.len() + 2);
 
+    let user_query = user_parts
+        .iter()
+        .filter_map(|part| match part {
+            ContentPart::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
     // System message — always first, with current date/time and skills appended.
-    let skills_section = crate::skills::build_skills_section(skills);
+    let skills_section = crate::skills::build_skills_section_for_query(skills, &user_query);
     let mut full_prompt = format!(
         "{}\n\nCurrent date and time: {} (UTC)",
         system_prompt,
@@ -72,8 +83,10 @@ pub fn prepare_messages(
 
     // Trim to fit context window, accounting for tool definition overhead.
     let max_context = context_window_override.unwrap_or_else(|| model_context_window(model));
-    let tool_overhead = estimate_tool_tokens(tool_definitions);
-    let effective_context = max_context.saturating_sub(tool_overhead);
+    let tool_overhead = estimate_tool_tokens_for_model(model, tool_definitions);
+    let effective_context = max_context
+        .saturating_sub(tool_overhead)
+        .saturating_sub(context_safety_buffer(max_context));
     let mut trimmed = trim_to_context_window(&messages, effective_context, max_tokens_response);
 
     // If messages were evicted, inject an extractive recap into the system prompt
@@ -175,10 +188,14 @@ pub fn build_evicted_recap_from_messages(evicted: &[Message]) -> String {
 
 /// Estimate tokens occupied by tool definitions in the LLM request.
 pub fn estimate_tool_tokens(tools: &[ToolDefinition]) -> u32 {
+    estimate_tool_tokens_for_model("gpt-4o", tools)
+}
+
+pub fn estimate_tool_tokens_for_model(model: &str, tools: &[ToolDefinition]) -> u32 {
     let mut total = 0u32;
     for tool in tools {
         let tool_text = format!("{} {} {}", tool.name, tool.description, tool.parameters);
-        total += estimate_tokens(&tool_text);
+        total += estimate_tokens_for_model(model, &tool_text);
         total += 10; // overhead per tool (formatting, type annotations)
     }
     total
@@ -351,6 +368,8 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             builtin: false,
+            resources: Vec::new(),
+            resource_bundle: Vec::new(),
         }];
         let result = prepare_messages(
             "System prompt",

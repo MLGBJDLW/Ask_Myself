@@ -1,29 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none">
-  <!-- Ribbon 1 (descending), split into two segments to create a visual gap
-       where Ribbon 2 crosses over near the center (16,16). -->
-  <path d="M 9,8 C 8.5,12.5 10,15 13,16"
+  <!-- Monochrome N monogram for system tray (auto-tinted by OS).
+       Two strokes meet at a centered node; BL and TR are the diagonal vertices. -->
+
+  <!-- Left leg + half-diagonal down to center -->
+  <path d="M 9 8 L 9 24 L 16 16"
         fill="none"
         stroke="currentColor"
-        stroke-width="3.2"
-        stroke-linecap="round"
-        stroke-linejoin="round"/>
-  <path d="M 18,16.5 C 20,19 21.5,21.5 23,24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="3.2"
+        stroke-width="3.4"
         stroke-linecap="round"
         stroke-linejoin="round"/>
 
-  <!-- Ribbon 2 (ascending), passes over Ribbon 1 -->
-  <path d="M 9,24 C 11,21.5 13.5,19 16,16 C 18.5,13 21,10.5 23,8"
+  <!-- Half-diagonal from center + right leg -->
+  <path d="M 16 16 L 23 8 L 23 24"
         fill="none"
         stroke="currentColor"
-        stroke-width="3.2"
+        stroke-width="3.4"
         stroke-linecap="round"
         stroke-linejoin="round"/>
 
-  <!-- Nodes -->
-  <circle cx="9" cy="8" r="1.6" fill="currentColor"/>
-  <circle cx="16" cy="16" r="1.6" fill="currentColor"/>
-  <circle cx="23" cy="24" r="1.6" fill="currentColor"/>
+  <!-- Three nexus nodes: BL, center (largest), TR -->
+  <circle cx="9"  cy="24" r="1.8" fill="currentColor"/>
+  <circle cx="23" cy="8"  r="1.8" fill="currentColor"/>
+  <circle cx="16" cy="16" r="2.4" fill="currentColor"/>
 </svg>

@@ -292,6 +292,18 @@ impl ToolRegistry {
         registry
     }
 
+    /// Build a filtered registry excluding the provided tool names.
+    pub fn without_names(&self, blocked_names: &[&str]) -> ToolRegistry {
+        let blocked: HashSet<&str> = blocked_names.iter().copied().collect();
+        let mut registry = ToolRegistry::new();
+        for tool in &self.tools {
+            if !blocked.contains(tool.name()) {
+                registry.register_shared(Arc::clone(tool));
+            }
+        }
+        registry
+    }
+
     /// Check if a tool requires confirmation for the given arguments.
     pub fn requires_confirmation(&self, name: &str, args: &serde_json::Value) -> bool {
         self.get(name)

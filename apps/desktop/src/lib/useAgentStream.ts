@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import * as api from './api';
 import { streamStore } from './streamStore';
-import type { ImageAttachment } from '../types/conversation';
+import type { ImageAttachment, ApprovalRequest } from '../types/conversation';
 import type { StreamState } from './streamStore';
 
 // Re-export types from streamStore for backward compatibility
@@ -17,6 +17,7 @@ type UsageTotal = import('./streamStore').UsageTotal;
 const EMPTY_ROUNDS: StreamRoundEvent[] = [];
 const EMPTY_TOOLS: ToolCallEvent[] = [];
 const EMPTY_TRACE_EVENTS: TraceEvent[] = [];
+const EMPTY_APPROVALS: ApprovalRequest[] = [];
 
 interface UseAgentStreamReturn {
   send: (conversationId: string, message: string, attachments?: ImageAttachment[]) => Promise<void>;
@@ -35,6 +36,7 @@ interface UseAgentStreamReturn {
   contextOverflow: boolean;
   rateLimited: boolean;
   autoCompacted: AutoCompactedInfo;
+  pendingApprovals: ApprovalRequest[];
   clearPreview: () => void;
   reset: () => void;
 }
@@ -90,7 +92,8 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
           prev.finishReason === next.finishReason &&
           prev.contextOverflow === next.contextOverflow &&
           prev.rateLimited === next.rateLimited &&
-          prev.autoCompacted === next.autoCompacted
+          prev.autoCompacted === next.autoCompacted &&
+          prev.pendingApprovals === next.pendingApprovals
         ) return prev;
         return next;
       });
@@ -143,6 +146,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     contextOverflow: storeState?.contextOverflow ?? false,
     rateLimited: storeState?.rateLimited ?? false,
     autoCompacted: storeState?.autoCompacted ?? null,
+    pendingApprovals: storeState?.pendingApprovals ?? EMPTY_APPROVALS,
     clearPreview,
     reset,
   };

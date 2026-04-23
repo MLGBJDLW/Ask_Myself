@@ -1,12 +1,15 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 
-use nexa_core::agent::{AgentConfig, AgentEvent, AgentExecutor};
+use nexa_core::agent::context::estimate_tool_tokens_for_model;
+use nexa_core::agent::{AgentConfig, AgentEvent, AgentExecutor, CancellationToken};
+use nexa_core::conversation::memory::estimate_tokens_for_model;
 use nexa_core::db::Database;
 use nexa_core::error::CoreError;
 use nexa_core::llm::{create_provider, CompletionRequest, ContentPart, ProviderConfig, Usage};
@@ -17,6 +20,7 @@ use nexa_core::tools::{Tool, ToolRegistry, ToolResult};
 const DESCRIPTION: &str = "Spawn a short-lived subagent to handle an isolated subtask, gather an independent perspective, or critique another result. You can call this tool multiple times in parallel, pass it explicit evidence and acceptance criteria, narrow its source scope or tool access, and then synthesize or adjudicate the returned results yourself.";
 const BATCH_DESCRIPTION: &str = "Spawn a batch of short-lived subagents for parallel fan-out research, critique, or comparison. Use this when you want several independent delegated workers launched together under one shared budget and then synthesize or adjudicate them later.";
 const JUDGE_DESCRIPTION: &str = "Adjudicate or rank multiple delegated worker results using a structured rubric. Use this after parallel subagents return when you need a separate judging pass instead of asking the main worker to merge results implicitly.";
+const MAX_SUBAGENT_DELEGATION_DEPTH: u8 = 1;
 
 struct SubagentToolSpec {
     name: &'static str,
@@ -167,6 +171,7 @@ struct BudgetSnapshot {
     remaining_calls: u32,
     token_budget: u32,
     tokens_spent: u32,
+    tokens_reserved: u32,
     remaining_tokens: u32,
 }
 
@@ -177,6 +182,7 @@ struct SubagentBudgetState {
     token_budget: u32,
     calls_started: u32,
     tokens_spent: u32,
+    tokens_reserved: u32,
 }
 
 #[derive(Clone)]
@@ -193,6 +199,8 @@ pub struct DelegationRuntime {
     allowed_skill_ids: Option<Vec<String>>,
     tool_registry: Arc<StdMutex<Option<ToolRegistry>>>,
     budget: SubagentBudgetController,
+    cancel_token: CancellationToken,
+    delegation_depth: u8,
 }
 
 impl SubagentTool {
@@ -230,11 +238,16 @@ impl SubagentBudgetController {
                 token_budget,
                 calls_started: 0,
                 tokens_spent: 0,
+                tokens_reserved: 0,
             })),
         }
     }
 
-    async fn begin_call(&self, label: &str) -> Result<OwnedSemaphorePermit, CoreError> {
+    async fn begin_call(
+        &self,
+        label: &str,
+        reserved_tokens: u32,
+    ) -> Result<OwnedSemaphorePermit, CoreError> {
         {
             let mut state = self.state.lock().await;
             if state.calls_started >= state.max_calls_per_turn {
@@ -243,12 +256,13 @@ impl SubagentBudgetController {
                     state.max_calls_per_turn
                 )));
             }
-            if state.tokens_spent >= state.token_budget {
+            if state.tokens_spent + state.tokens_reserved + reserved_tokens > state.token_budget {
                 return Err(CoreError::InvalidInput(format!(
-                    "Delegated execution token budget exhausted before starting {label}.",
+                    "Delegated execution token budget exhausted before starting {label}. Requested reserve: {reserved_tokens} tokens.",
                 )));
             }
             state.calls_started += 1;
+            state.tokens_reserved = state.tokens_reserved.saturating_add(reserved_tokens);
         }
 
         self.semaphore
@@ -258,9 +272,15 @@ impl SubagentBudgetController {
             .map_err(|_| CoreError::Internal("delegated execution semaphore closed".into()))
     }
 
-    async fn record_usage(&self, usage: &Usage) {
+    async fn finish_call(&self, reserved_tokens: u32, usage: &Usage) {
         let mut state = self.state.lock().await;
+        state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);
         state.tokens_spent = state.tokens_spent.saturating_add(usage.total_tokens);
+    }
+
+    async fn release_reservation(&self, reserved_tokens: u32) {
+        let mut state = self.state.lock().await;
+        state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);
     }
 
     async fn snapshot(&self) -> BudgetSnapshot {
@@ -272,7 +292,10 @@ impl SubagentBudgetController {
             remaining_calls: state.max_calls_per_turn.saturating_sub(state.calls_started),
             token_budget: state.token_budget,
             tokens_spent: state.tokens_spent,
-            remaining_tokens: state.token_budget.saturating_sub(state.tokens_spent),
+            tokens_reserved: state.tokens_reserved,
+            remaining_tokens: state
+                .token_budget
+                .saturating_sub(state.tokens_spent.saturating_add(state.tokens_reserved)),
         }
     }
 }
@@ -283,6 +306,7 @@ impl DelegationRuntime {
         base_config: AgentConfig,
         allowed_tools: Option<Vec<String>>,
         allowed_skill_ids: Option<Vec<String>>,
+        cancel_token: CancellationToken,
     ) -> Self {
         let budget = SubagentBudgetController::new(&base_config);
         Self {
@@ -292,6 +316,8 @@ impl DelegationRuntime {
             allowed_skill_ids,
             tool_registry: Arc::new(StdMutex::new(None)),
             budget,
+            cancel_token,
+            delegation_depth: 0,
         }
     }
 
@@ -312,6 +338,23 @@ impl DelegationRuntime {
                 CoreError::Internal("delegation runtime tool registry not initialized".into())
             })
     }
+
+    fn spawn_child_runtime(&self, cancel_token: CancellationToken) -> Self {
+        Self {
+            provider_config: self.provider_config.clone(),
+            base_config: self.base_config.clone(),
+            allowed_tools: self.allowed_tools.clone(),
+            allowed_skill_ids: self.allowed_skill_ids.clone(),
+            tool_registry: Arc::clone(&self.tool_registry),
+            budget: self.budget.clone(),
+            cancel_token,
+            delegation_depth: self.delegation_depth.saturating_add(1),
+        }
+    }
+
+    fn can_delegate_further(&self) -> bool {
+        self.delegation_depth < MAX_SUBAGENT_DELEGATION_DEPTH
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -325,6 +368,8 @@ struct SpawnSubagentArgs {
     expected_output: Option<String>,
     #[serde(default)]
     max_iterations: Option<u32>,
+    #[serde(default)]
+    timeout_secs: Option<u32>,
     #[serde(default)]
     acceptance_criteria: Option<Vec<String>>,
     #[serde(default)]
@@ -354,6 +399,8 @@ struct BatchSubagentTaskArgs {
     expected_output: Option<String>,
     #[serde(default)]
     max_iterations: Option<u32>,
+    #[serde(default)]
+    timeout_secs: Option<u32>,
     #[serde(default)]
     acceptance_criteria: Option<Vec<String>>,
     #[serde(default)]
@@ -799,6 +846,7 @@ fn normalize_spawn_args(mut args: SpawnSubagentArgs) -> Result<SpawnSubagentArgs
     args.expected_output = trim_optional(args.expected_output);
     args.parallel_group = trim_optional(args.parallel_group);
     args.deliverable_style = trim_optional(args.deliverable_style);
+    args.timeout_secs = args.timeout_secs.map(|value| value.clamp(15, 180));
     args.acceptance_criteria = normalize_string_list(args.acceptance_criteria.take(), 8);
     args.evidence_chunk_ids = normalize_string_list(args.evidence_chunk_ids.take(), 8);
     args.source_ids = normalize_string_list(args.source_ids.take(), 16);
@@ -817,6 +865,7 @@ fn normalize_batch_task_args(
         context: task.context,
         expected_output: task.expected_output,
         max_iterations: task.max_iterations,
+        timeout_secs: task.timeout_secs,
         acceptance_criteria: task.acceptance_criteria,
         evidence_chunk_ids: task.evidence_chunk_ids,
         source_ids: task.source_ids,
@@ -836,7 +885,14 @@ async fn run_subagent_once(
     worker_id: Option<String>,
     args: SpawnSubagentArgs,
 ) -> Result<SubagentRunArtifact, CoreError> {
-    let _permit = runtime.budget.begin_call(&call_label).await?;
+    if runtime.delegation_depth >= MAX_SUBAGENT_DELEGATION_DEPTH {
+        return Err(CoreError::InvalidInput(format!(
+            "Recursive delegated execution is blocked beyond depth {}.",
+            MAX_SUBAGENT_DELEGATION_DEPTH
+        )));
+    }
+
+    let worker_cancel_token = runtime.cancel_token.child_token();
 
     let provider = create_provider(runtime.provider_config.clone())
         .map_err(|e| CoreError::Llm(e.to_string()))?;
@@ -844,30 +900,42 @@ async fn run_subagent_once(
     let mut config = runtime.base_config.clone();
     config.max_iterations = args.max_iterations.unwrap_or(3).clamp(1, 6);
     config.max_tokens = Some(config.max_tokens.unwrap_or(2048).min(2048));
+    let timeout_secs = estimate_subagent_timeout_secs(&runtime, &args);
+    config.agent_timeout_secs = Some(timeout_secs as u32);
     config.system_prompt =
         build_subagent_system_prompt(&config.system_prompt, args.role.as_deref());
 
-    let available_tool_registry = runtime.get_tool_registry()?;
-    let available_tool_names = available_tool_registry.tool_names();
+    let available_tool_names = runtime.get_tool_registry()?.tool_names();
     let baseline_allowed_tools =
         normalize_allowed_tools(runtime.allowed_tools.as_deref(), &available_tool_names);
-    let effective_allowed_tools =
+    let mut effective_allowed_tools =
         resolve_allowed_tools(&baseline_allowed_tools, args.allowed_tools.as_deref());
+    if !runtime.can_delegate_further() {
+        effective_allowed_tools.retain(|name| !is_subagent_tool_name(name));
+    }
     let effective_source_scope =
         resolve_source_scope(&inherited_source_scope, args.source_ids.as_deref());
     let evidence_handoff = build_evidence_handoff(&db, args.evidence_chunk_ids.as_deref());
-    let enabled_skills = filter_enabled_skills(
-        {
-            let mut combined = nexa_core::skills::load_builtin_skills();
-            combined.extend(db.get_enabled_skills().unwrap_or_default());
-            combined
-        },
-        runtime.allowed_skill_ids.as_deref(),
+    let selected_skill_query = format!(
+        "{}\n{}",
+        args.task,
+        args.context.clone().unwrap_or_default()
+    );
+    let enabled_skills = nexa_core::skills::select_skills_from_pool(
+        filter_enabled_skills(
+            {
+                let mut combined = nexa_core::skills::load_builtin_skills();
+                combined.extend(db.get_enabled_skills().unwrap_or_default());
+                combined
+            },
+            runtime.allowed_skill_ids.as_deref(),
+        ),
+        &selected_skill_query,
+        5,
     );
     let applied_skill_refs = applied_skills(&enabled_skills);
-
-    let tools = available_tool_registry.filtered(&effective_allowed_tools);
-    let executor = AgentExecutor::new(provider, tools, config).with_skills_override(enabled_skills);
+    let tools =
+        build_subagent_executor_tools(&runtime, &effective_allowed_tools, &worker_cancel_token)?;
     let request_text = build_subagent_request(
         &args,
         &effective_source_scope,
@@ -875,6 +943,15 @@ async fn run_subagent_once(
         &applied_skill_refs,
         &evidence_handoff,
     );
+    let reserved_tokens = estimate_reserved_tokens(&config, &request_text, &tools);
+    let _permit = runtime
+        .budget
+        .begin_call(&call_label, reserved_tokens)
+        .await?;
+
+    let executor = AgentExecutor::new(provider, tools, config)
+        .with_cancel_token(worker_cancel_token.clone())
+        .with_skills_override(enabled_skills);
 
     let (tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
     let event_task = tokio::spawn(async move {
@@ -933,28 +1010,50 @@ async fn run_subagent_once(
                 }
                 AgentEvent::TextDelta { .. }
                 | AgentEvent::Error { .. }
-                | AgentEvent::AutoCompacted { .. } => {}
+                | AgentEvent::AutoCompacted { .. }
+                | AgentEvent::ToolCallArgsDelta { .. }
+                | AgentEvent::ToolCallProgress { .. }
+                | AgentEvent::ApprovalRequested { .. }
+                | AgentEvent::ApprovalResolved { .. } => {}
             }
         }
 
         capture
     });
 
-    let final_message = executor
-        .run_with_source_scope(
-            Vec::new(),
-            vec![ContentPart::Text { text: request_text }],
-            &db,
-            None,
-            None,
-            Some(effective_source_scope.clone()),
-            tx,
-            0,
-        )
-        .await?;
+    let final_result = tokio::select! {
+        _ = worker_cancel_token.cancelled() => Err(CoreError::Agent(format!(
+            "Delegated execution '{call_label}' was cancelled by the parent turn."
+        ))),
+        result = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            executor.run_with_source_scope(
+                Vec::new(),
+                vec![ContentPart::Text { text: request_text }],
+                &db,
+                None,
+                None,
+                Some(effective_source_scope.clone()),
+                tx,
+                0,
+            )
+        ) => match result {
+            Ok(run) => run,
+            Err(_) => {
+                worker_cancel_token.cancel();
+                Err(CoreError::Agent(format!(
+                    "Delegated execution '{call_label}' timed out after {timeout_secs}s."
+                )))
+            }
+        }
+    };
 
     let capture = event_task.await.unwrap_or_default();
-    runtime.budget.record_usage(&capture.usage_total).await;
+    runtime
+        .budget
+        .finish_call(reserved_tokens, &capture.usage_total)
+        .await;
+    let final_message = final_result?;
 
     let result_text = final_message.text_content().trim().to_string();
     let result_text = if result_text.is_empty() {
@@ -1169,6 +1268,81 @@ fn normalize_allowed_tools(
     }
 }
 
+fn is_subagent_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        "spawn_subagent" | "spawn_subagent_batch" | "judge_subagent_results"
+    )
+}
+
+fn resolve_delegation_timeout_secs(config: &AgentConfig, requested: Option<u32>) -> u64 {
+    requested.unwrap_or_else(|| {
+        let tool_timeout = config.tool_timeout_secs.unwrap_or(30);
+        let turn_timeout = config.agent_timeout_secs.unwrap_or(120);
+        tool_timeout
+            .saturating_mul(2)
+            .min(turn_timeout)
+            .clamp(15, 120)
+    }) as u64
+}
+
+fn estimate_subagent_timeout_secs(runtime: &DelegationRuntime, args: &SpawnSubagentArgs) -> u64 {
+    resolve_delegation_timeout_secs(&runtime.base_config, args.timeout_secs)
+}
+
+fn estimate_reserved_tokens(config: &AgentConfig, request_text: &str, tools: &ToolRegistry) -> u32 {
+    let model = config.model.as_deref().unwrap_or("gpt-4o-mini");
+    estimate_tokens_for_model(model, &config.system_prompt)
+        .saturating_add(estimate_tokens_for_model(model, request_text))
+        .saturating_add(estimate_tool_tokens_for_model(model, &tools.definitions()))
+        .saturating_add(config.max_tokens.unwrap_or(2048))
+}
+
+fn build_subagent_executor_tools(
+    runtime: &DelegationRuntime,
+    allowed_tool_names: &[String],
+    worker_cancel_token: &CancellationToken,
+) -> Result<ToolRegistry, CoreError> {
+    let filtered = runtime
+        .get_tool_registry()?
+        .filtered(allowed_tool_names)
+        .without_names(&[
+            "spawn_subagent",
+            "spawn_subagent_batch",
+            "judge_subagent_results",
+        ]);
+
+    if !runtime.can_delegate_further() {
+        return Ok(filtered);
+    }
+
+    let child_runtime = runtime.spawn_child_runtime(worker_cancel_token.child_token());
+    let mut registry = filtered;
+    if allowed_tool_names
+        .iter()
+        .any(|name| name == "spawn_subagent")
+    {
+        registry.register(Box::new(SubagentTool::from_runtime(child_runtime.clone())));
+    }
+    if allowed_tool_names
+        .iter()
+        .any(|name| name == "spawn_subagent_batch")
+    {
+        registry.register(Box::new(SubagentBatchTool::from_runtime(
+            child_runtime.clone(),
+        )));
+    }
+    if allowed_tool_names
+        .iter()
+        .any(|name| name == "judge_subagent_results")
+    {
+        registry.register(Box::new(JudgeSubagentResultsTool::from_runtime(
+            child_runtime,
+        )));
+    }
+    Ok(registry)
+}
+
 #[async_trait]
 impl Tool for SubagentTool {
     fn name(&self) -> &str {
@@ -1237,6 +1411,12 @@ impl Tool for SubagentTool {
                     "minimum": 1,
                     "maximum": 6,
                     "description": "Optional round budget for the subagent. Keep this small."
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "minimum": 15,
+                    "maximum": 180,
+                    "description": "Optional hard timeout for this delegated worker in seconds."
                 }
             },
             "required": ["task"],
@@ -1336,7 +1516,8 @@ impl Tool for SubagentBatchTool {
                             "parallel_group": { "type": "string" },
                             "deliverable_style": { "type": "string" },
                             "return_sections": { "type": "array", "items": { "type": "string" } },
-                            "max_iterations": { "type": "integer", "minimum": 1, "maximum": 6 }
+                            "max_iterations": { "type": "integer", "minimum": 1, "maximum": 6 },
+                            "timeout_secs": { "type": "integer", "minimum": 15, "maximum": 180 }
                         },
                         "required": ["task"],
                         "additionalProperties": false
@@ -1407,6 +1588,7 @@ impl Tool for SubagentBatchTool {
                     let label = worker_id
                         .clone()
                         .unwrap_or_else(|| format!("{}-{}", call_id, index + 1));
+                    let fallback_task = task_args.task.clone();
                     match run_subagent_once(
                         runtime,
                         db,
@@ -1421,7 +1603,7 @@ impl Tool for SubagentBatchTool {
                         Err(err) => SubagentRunArtifact {
                             id: label,
                             status: "error".to_string(),
-                            task: "Delegated task".to_string(),
+                            task: fallback_task,
                             role: None,
                             expected_output: None,
                             acceptance_criteria: None,
@@ -1549,30 +1731,30 @@ impl Tool for JudgeSubagentResultsTool {
         args.decision_mode = trim_optional(args.decision_mode);
         args.rubric = normalize_string_list(args.rubric.take(), 8);
 
+        let provider = create_provider(self.runtime.provider_config.clone())
+            .map_err(|e| CoreError::Llm(e.to_string()))?;
+        let model = self
+            .runtime
+            .base_config
+            .summarization_model
+            .clone()
+            .or_else(|| self.runtime.base_config.model.clone())
+            .unwrap_or_else(|| "gpt-4o-mini".to_string());
+        let system_prompt = build_judge_system_prompt(&self.runtime.base_config.system_prompt);
+        let user_prompt = build_judge_request(&args);
+        let reserved_tokens = estimate_tokens_for_model(&model, &system_prompt)
+            .saturating_add(estimate_tokens_for_model(&model, &user_prompt))
+            .saturating_add(1_200);
         let _permit = self
             .runtime
             .budget
-            .begin_call("judge_subagent_results")
+            .begin_call("judge_subagent_results", reserved_tokens)
             .await?;
-        let provider = create_provider(self.runtime.provider_config.clone())
-            .map_err(|e| CoreError::Llm(e.to_string()))?;
         let request = CompletionRequest {
-            model: self
-                .runtime
-                .base_config
-                .summarization_model
-                .clone()
-                .or_else(|| self.runtime.base_config.model.clone())
-                .unwrap_or_else(|| "gpt-4o-mini".to_string()),
+            model: model.clone(),
             messages: vec![
-                nexa_core::llm::Message::text(
-                    nexa_core::llm::Role::System,
-                    build_judge_system_prompt(&self.runtime.base_config.system_prompt),
-                ),
-                nexa_core::llm::Message::text(
-                    nexa_core::llm::Role::User,
-                    build_judge_request(&args),
-                ),
+                nexa_core::llm::Message::text(nexa_core::llm::Role::System, system_prompt),
+                nexa_core::llm::Message::text(nexa_core::llm::Role::User, user_prompt),
             ],
             temperature: Some(0.1),
             max_tokens: Some(1200),
@@ -1583,8 +1765,33 @@ impl Tool for JudgeSubagentResultsTool {
             provider_type: self.runtime.base_config.provider_type.clone(),
             parallel_tool_calls: true,
         };
-        let response = provider.complete(&request).await?;
-        self.runtime.budget.record_usage(&response.usage).await;
+        let judge_cancel_token = self.runtime.cancel_token.child_token();
+        let timeout_secs = resolve_delegation_timeout_secs(&self.runtime.base_config, None);
+        let response = tokio::select! {
+            _ = judge_cancel_token.cancelled() => {
+                self.runtime.budget.release_reservation(reserved_tokens).await;
+                return Err(CoreError::Agent(
+                    "Delegated adjudication was cancelled by the parent turn.".into()
+                ));
+            }
+            result = tokio::time::timeout(Duration::from_secs(timeout_secs), provider.complete(&request)) => match result {
+                Ok(Ok(response)) => {
+                    self.runtime.budget.finish_call(reserved_tokens, &response.usage).await;
+                    response
+                }
+                Ok(Err(err)) => {
+                    self.runtime.budget.release_reservation(reserved_tokens).await;
+                    return Err(err);
+                }
+                Err(_) => {
+                    judge_cancel_token.cancel();
+                    self.runtime.budget.release_reservation(reserved_tokens).await;
+                    return Err(CoreError::Agent(format!(
+                        "Delegated adjudication timed out after {timeout_secs}s."
+                    )));
+                }
+            }
+        };
 
         let raw_response = response.content.trim().to_string();
         let parsed = extract_json_block(&raw_response)
@@ -1641,5 +1848,80 @@ impl Tool for JudgeSubagentResultsTool {
             is_error: false,
             artifacts: Some(serde_json::to_value(artifact).unwrap_or_default()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nexa_core::llm::ProviderType;
+
+    fn test_runtime() -> DelegationRuntime {
+        DelegationRuntime::new(
+            ProviderConfig {
+                provider_type: ProviderType::OpenAi,
+                base_url: None,
+                api_key: None,
+                org_id: None,
+                timeout_secs: None,
+            },
+            AgentConfig::default(),
+            None,
+            None,
+            CancellationToken::new(),
+        )
+    }
+
+    #[test]
+    fn test_normalize_spawn_args_clamps_timeout() {
+        let args = normalize_spawn_args(SpawnSubagentArgs {
+            task: "Investigate".into(),
+            role: None,
+            context: None,
+            expected_output: None,
+            max_iterations: None,
+            timeout_secs: Some(999),
+            acceptance_criteria: None,
+            evidence_chunk_ids: None,
+            source_ids: None,
+            allowed_tools: None,
+            parallel_group: None,
+            deliverable_style: None,
+            return_sections: None,
+        })
+        .unwrap();
+
+        assert_eq!(args.timeout_secs, Some(180));
+    }
+
+    #[test]
+    fn test_child_runtime_blocks_recursive_delegation() {
+        let runtime = test_runtime();
+        assert!(runtime.can_delegate_further());
+
+        let child = runtime.spawn_child_runtime(CancellationToken::new());
+        assert!(!child.can_delegate_further());
+    }
+
+    #[tokio::test]
+    async fn test_budget_reservation_prevents_overcommit() {
+        let mut config = AgentConfig::default();
+        config.subagent_token_budget = Some(256);
+
+        let budget = SubagentBudgetController::new(&config);
+        let permit = budget.begin_call("worker-a", 220).await.unwrap();
+        let snapshot = budget.snapshot().await;
+        assert_eq!(snapshot.tokens_reserved, 220);
+        assert_eq!(snapshot.remaining_tokens, 36);
+
+        let second = budget.begin_call("worker-b", 50).await;
+        assert!(
+            second.is_err(),
+            "reservation should block over-budget fanout"
+        );
+
+        drop(permit);
+        budget.release_reservation(220).await;
+        assert_eq!(budget.snapshot().await.tokens_reserved, 0);
     }
 }

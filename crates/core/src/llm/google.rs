@@ -726,7 +726,9 @@ async fn parse_gemini_stream(
         Ok(())
     } else {
         // Stream ended without a finishReason — server likely crashed or disconnected.
-        Err(CoreError::StreamIncomplete)
+        Err(CoreError::StreamIncomplete(
+            "stream ended without finishReason".to_string(),
+        ))
     }
 }
 
@@ -743,12 +745,15 @@ pub struct GeminiProvider {
 impl GeminiProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let timeout = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        // Force HTTP/1.1 + short idle pool TTL so SSE streams are not
+        // interrupted by upstream HTTP/2 RST_STREAM frames on stale sockets.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(timeout))
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .pool_idle_timeout(std::time::Duration::from_secs(15))
             .pool_max_idle_per_host(5)
             .tcp_keepalive(std::time::Duration::from_secs(30))
+            .http1_only()
             .build()
             .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
 

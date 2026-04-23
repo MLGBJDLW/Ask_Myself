@@ -143,6 +143,13 @@ export interface UseChatSessionOptions {
   systemPrompt?: string;
   /** Optional source scope to apply when creating a new conversation */
   initialSourceIds?: string[];
+  /**
+   * Optional callback returning the *current* source scope at send-time.
+   * When provided and non-empty, this takes precedence over `initialSourceIds`
+   * during auto-create. Use this to capture live user selections from a
+   * SourceSelector that is rendered before the conversation exists.
+   */
+  getCurrentSourceScope?: () => string[] | null | undefined;
   /** Optional collection context to persist on the conversation */
   initialCollectionContext?: Conversation['collectionContext'];
 }
@@ -209,10 +216,18 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     onConversationCreated,
     systemPrompt: externalSystemPrompt,
     initialSourceIds = [],
+    getCurrentSourceScope,
     initialCollectionContext = null,
   } = options;
 
   const { t } = useTranslation();
+
+  // Ref-wrap the callback so it can be read at send-time without being part
+  // of the `send` dependency array (which would force consumers to memoize).
+  const getCurrentSourceScopeRef = useRef(getCurrentSourceScope);
+  useEffect(() => {
+    getCurrentSourceScopeRef.current = getCurrentSourceScope;
+  }, [getCurrentSourceScope]);
 
   /* ── State ──────────────────────────────────────────────────────── */
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -751,8 +766,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             customSystemPrompt || undefined,
           );
           convId = conv.id;
-          if (initialSourceIds.length > 0) {
-            await api.setConversationSources(convId, initialSourceIds);
+          // Resolve the source scope to seed the new conversation with.
+          // Priority: live selection (getCurrentSourceScope) > initialSourceIds.
+          const liveScope = getCurrentSourceScopeRef.current?.();
+          const scopeToApply =
+            liveScope && liveScope.length > 0 ? liveScope : initialSourceIds;
+          if (scopeToApply.length > 0) {
+            await api.setConversationSources(convId, scopeToApply);
           }
           const nextConversation = initialCollectionContext
             ? { ...conv, collectionContext: initialCollectionContext }

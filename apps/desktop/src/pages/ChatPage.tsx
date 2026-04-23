@@ -5,6 +5,8 @@ import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput, ActiveExtensions, ContextCockpit, InvestigationHeader, TaskBoard } from '../components/chat';
+import { ApprovalDialog } from '../components/chat/ApprovalDialog';
+import { useApprovalQueue } from '../lib/useApprovalQueue';
 import { useTranslation } from '../i18n';
 import { EmptyState } from '../components/ui/EmptyState';
 import { useChatSession } from '../lib/useChatSession';
@@ -35,11 +37,28 @@ export function ChatPage() {
     (location.state as { collectionContext?: Conversation['collectionContext'] } | null)?.collectionContext
   ) ?? null;
 
+  // Live source-scope selection made in `SourceSelector`, lifted so we can
+  // apply it when `useChatSession.send()` auto-creates a conversation from
+  // the very first message. Seeded with any `initialSourceIds` forwarded from
+  // `location.state` (e.g. HomePage → /chat hand-off).
+  const currentSourceIdsRef = useRef<string[]>(initialSourceIds);
+  useEffect(() => {
+    currentSourceIdsRef.current = initialSourceIds;
+  }, [initialSourceIds]);
+  const getCurrentSourceScope = useCallback(
+    () => currentSourceIdsRef.current,
+    [],
+  );
+  const handleSourceSelectionChange = useCallback((ids: string[]) => {
+    currentSourceIdsRef.current = ids;
+  }, []);
+
   const chat = useChatSession({
     conversationId,
     onConversationCreated,
     systemPrompt: ((location.state as { systemPrompt?: string } | null)?.systemPrompt ?? '').trim(),
     initialSourceIds,
+    getCurrentSourceScope,
     initialCollectionContext,
   });
 
@@ -414,7 +433,12 @@ export function ChatPage() {
                     </div>
                   )}
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                    <SourceSelector conversationId={chat.activeId} onStateChange={setSourceSummary} />
+                    <SourceSelector
+                      conversationId={chat.activeId}
+                      initialSelectedIds={initialSourceIds}
+                      onStateChange={setSourceSummary}
+                      onSelectionChange={handleSourceSelectionChange}
+                    />
                     <SystemPromptEditor
                       conversationId={chat.activeId}
                       systemPrompt={chat.customSystemPrompt}
@@ -487,6 +511,7 @@ export function ChatPage() {
                 await chat.reloadMessages();
               } : undefined}
             />
+            {chat.activeId && <ApprovalDialogMount conversationId={chat.activeId} />}
           </>
         )}
       </div>
@@ -495,3 +520,12 @@ export function ChatPage() {
 }
 
 export default ChatPage;
+
+/**
+ * Small wrapper that subscribes to the approval queue for the active
+ * conversation and renders the modal dialog for the head request.
+ */
+function ApprovalDialogMount({ conversationId }: { conversationId: string }) {
+  const { current, onResolved } = useApprovalQueue(conversationId);
+  return <ApprovalDialog request={current} onResolved={onResolved} />;
+}

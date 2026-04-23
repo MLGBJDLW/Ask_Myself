@@ -34,6 +34,7 @@ import type {
   McpServer,
   SaveMcpServerInput,
   McpToolInfo,
+  DiscoveredSkillBundle,
   Skill,
   SaveSkillInput,
 } from "../types/extensions";
@@ -420,6 +421,17 @@ export const getAppConfig = () =>
 export const saveAppConfig = (config: AppConfig) =>
   invoke<void>('save_app_config_cmd', { config });
 
+// ── Setup Wizard ────────────────────────────────────────────────────
+
+export const getWizardState = () =>
+  invoke<import('../types/wizard').WizardState>('get_wizard_state_cmd');
+
+export const setWizardCompleted = () =>
+  invoke<void>('set_wizard_completed_cmd');
+
+export const resetWizard = () =>
+  invoke<void>('reset_wizard_cmd');
+
 // ── Video ───────────────────────────────────────────────────────────
 
 export const getVideoConfig = () =>
@@ -471,6 +483,15 @@ export const importSkillFromMd = (content: string) =>
 
 export const exportSkillToMd = (skillId: string) =>
   invoke<string>('export_skill_to_md_cmd', { skillId });
+
+export const scanSkillContent = (content: string) =>
+  invoke<import('../types/extensions').SkillWarning[]>('scan_skill_content_cmd', { content });
+
+export const discoverSkillsInDirectory = (directory: string) =>
+  invoke<DiscoveredSkillBundle[]>('discover_skills_in_directory_cmd', { directory });
+
+export const importSkillsFromDirectory = (directory: string) =>
+  invoke<Skill[]>('import_skills_from_directory_cmd', { directory });
 
 // ── MCP Servers ─────────────────────────────────────────────────────────
 
@@ -570,3 +591,19 @@ export const getKnowledgeGaps = (minQueries?: number) =>
 
 export const suggestExplorations = (limit?: number) =>
   invoke<string[]>('suggest_explorations_cmd', { limit: limit ?? 10 });
+
+
+// ── Tool Approval ────────────────────────────────────────────────────
+import type { ApprovalDecisionValue, ApprovalPolicyList } from '../types';
+
+export const approveToolCall = (requestId: string, decision: ApprovalDecisionValue) =>
+  invoke<void>('approve_tool_call_cmd', { requestId, decision });
+
+export const listToolApprovalPolicies = () =>
+  invoke<ApprovalPolicyList>('list_tool_approval_policies_cmd');
+
+export const deleteToolApprovalPolicy = (toolName: string, scope: 'session' | 'forever') =>
+  invoke<void>('delete_tool_approval_policy_cmd', { toolName, scope });
+
+export const clearToolApprovalPolicies = () =>
+  invoke<void>('clear_tool_approval_policies_cmd');

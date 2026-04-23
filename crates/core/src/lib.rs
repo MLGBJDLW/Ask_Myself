@@ -14,6 +14,7 @@ pub const USER_AGENT: &str = "nexa/1.0";
 
 pub mod agent;
 pub mod app_settings;
+pub mod approval;
 pub mod cache;
 pub mod compile;
 pub mod conversation;

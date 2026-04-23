@@ -10,46 +10,100 @@ import type { Source } from '../../types';
 /* ------------------------------------------------------------------ */
 
 interface SourceSelectorProps {
-  conversationId: string;
+  /**
+   * Active conversation id, or `null` when the conversation has not yet been
+   * persisted (e.g. pre-first-message). When `null`, toggles are buffered
+   * locally and surfaced via `onSelectionChange`; once an id arrives the
+   * buffered selection is pushed to the new conversation.
+   */
+  conversationId: string | null;
+  /** Seed selection to use when `conversationId === null` on first mount. */
+  initialSelectedIds?: string[];
   onUpdate?: () => void;
   onStateChange?: (state: { selectedCount: number; totalCount: number; loading: boolean }) => void;
+  /** Fires on every toggle with the latest selection (ids array). */
+  onSelectionChange?: (ids: string[]) => void;
 }
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function SourceSelector({ conversationId, onUpdate, onStateChange }: SourceSelectorProps) {
+export function SourceSelector({
+  conversationId,
+  initialSelectedIds,
+  onUpdate,
+  onStateChange,
+  onSelectionChange,
+}: SourceSelectorProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [sources, setSources] = useState<Source[]>([]);
-  const [linkedIds, setLinkedIds] = useState<Set<string>>(new Set());
+  const [linkedIds, setLinkedIds] = useState<Set<string>>(
+    () => new Set(initialSelectedIds ?? []),
+  );
   const [loading, setLoading] = useState(true);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const firstSourceButtonRef = useRef<HTMLButtonElement>(null);
+  // Selection made while `conversationId === null`, waiting to be persisted
+  // once the conversation is created. Cleared after successful push.
+  const pendingLocalSelectionRef = useRef<Set<string> | null>(
+    (initialSelectedIds && initialSelectedIds.length > 0)
+      ? new Set(initialSelectedIds)
+      : null,
+  );
 
   /* ── Load sources + linked ids ──────────────────────────────────── */
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [allSources, linked] = await Promise.all([
-        api.listSources(),
-        api.getConversationSources(conversationId),
-      ]);
-      setSources(allSources);
-      setLinkedIds(new Set(linked));
-    } catch {
-      // Silently fail - sources list may just be empty
-    } finally {
-      setLoading(false);
-    }
-  }, [conversationId]);
-
   useEffect(() => {
-    load();
-  }, [load]);
+    let cancelled = false;
+    void (async () => {
+      setLoading(true);
+      try {
+        const allSources = await api.listSources();
+        if (cancelled) return;
+        setSources(allSources);
+
+        if (conversationId === null) {
+          // No conversation yet → use whatever local selection we already have.
+          // Do NOT hit the backend; any pending selection stays buffered.
+          return;
+        }
+
+        const pending = pendingLocalSelectionRef.current;
+        if (pending && pending.size > 0) {
+          // User selected sources before the conversation was created.
+          // Persist them to the new conversation and adopt as authoritative.
+          try {
+            await api.setConversationSources(conversationId, Array.from(pending));
+            if (cancelled) return;
+            setLinkedIds(new Set(pending));
+            pendingLocalSelectionRef.current = null;
+            onUpdate?.();
+          } catch {
+            // Persist failed: keep local selection so user can retry
+          }
+          return;
+        }
+
+        const linked = await api.getConversationSources(conversationId);
+        if (cancelled) return;
+        setLinkedIds(new Set(linked));
+        pendingLocalSelectionRef.current = null;
+      } catch {
+        // Silently fail - sources list may just be empty
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `onUpdate` intentionally omitted: triggering on callback identity would
+    // cause redundant refetches. It is only invoked inside the promise.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
 
   useEffect(() => {
     onStateChange?.({
@@ -108,15 +162,25 @@ export function SourceSelector({ conversationId, onUpdate, onStateChange }: Sour
         next.add(sourceId);
       }
       setLinkedIds(next);
+      const nextArray = Array.from(next);
+      onSelectionChange?.(nextArray);
+
+      if (conversationId === null) {
+        // Buffer locally; load-effect will persist when conversationId arrives.
+        pendingLocalSelectionRef.current = next;
+        return;
+      }
+
       try {
-        await api.setConversationSources(conversationId, Array.from(next));
+        await api.setConversationSources(conversationId, nextArray);
         onUpdate?.();
       } catch {
         // Revert on error
         setLinkedIds(linkedIds);
+        onSelectionChange?.(Array.from(linkedIds));
       }
     },
-    [conversationId, linkedIds, onUpdate],
+    [conversationId, linkedIds, onUpdate, onSelectionChange],
   );
 
   /* ── Derive label ───────────────────────────────────────────────── */
