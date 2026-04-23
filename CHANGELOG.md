@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.3...nexa-monorepo-v0.2.4) (2026-04-23)
+
+
+### Features
+
+* approval pipeline, onboarding wizard, and office-document-design skill ([ea168d4](https://github.com/MLGBJDLW/Nexa/commit/ea168d4b9e1384081988c57a47400abaf61acf94))
+
 ## [0.2.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.2...nexa-monorepo-v0.2.3) (2026-04-21)
 
 
