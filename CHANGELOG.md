@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.4...nexa-monorepo-v0.2.5) (2026-04-23)
+
+
+### Bug Fixes
+
+* **updater,wizard,ui:** Three bug fix ([027dabc](https://github.com/MLGBJDLW/Nexa/commit/027dabca5658abdd7741a12e1842d24cf2fff52f))
+* **updater,wizard,ui:** 三项关键 bug 修复 ([9fac5a9](https://github.com/MLGBJDLW/Nexa/commit/9fac5a99b6111b9f120931a79b9532f9564d9bf3))
+
 ## [0.2.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.3...nexa-monorepo-v0.2.4) (2026-04-23)
 
 
