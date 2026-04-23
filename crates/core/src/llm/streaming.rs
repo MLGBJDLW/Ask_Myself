@@ -352,13 +352,21 @@ pub async fn parse_sse_stream(
                 CoreError::Llm(format!("Stream read error: {e}"))
             }
         })?;
-        let text = std::str::from_utf8(&chunk)
-            .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in SSE stream: {e}")))?;
+        // Lossy UTF-8 decode: a single malformed byte (e.g. provider sending a
+        // surrogate half or mid-multibyte chunk boundary) must not abort the
+        // stream. Invalid sequences become U+FFFD; we warn once per chunk.
+        let text: std::borrow::Cow<'_, str> = match std::str::from_utf8(&chunk) {
+            Ok(s) => std::borrow::Cow::Borrowed(s),
+            Err(e) => {
+                warn!("Invalid UTF-8 in SSE stream chunk ({} bytes): {e} — decoding lossy", chunk.len());
+                std::borrow::Cow::Owned(String::from_utf8_lossy(&chunk).into_owned())
+            }
+        };
         if first_chunk {
             debug!("First SSE chunk received");
             first_chunk = false;
         }
-        buffer.push_str(text);
+        buffer.push_str(&text);
 
         // Process all complete lines currently in the buffer.
         while let Some(newline_pos) = buffer.find('\n') {
