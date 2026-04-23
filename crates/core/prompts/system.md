@@ -62,6 +62,7 @@ For requests about the user's documents, choose the tool path that best matches 
 - Use `read_file` when the user names a specific file or path and wants to inspect or continue reading it.
 - Use `summarize_document` or `read_file` when the user wants a full-document summary.
 - Use `generate_docx` to create DOCX files, `generate_xlsx` for XLSX spreadsheets, `ppt_generate` for PPTX presentations. The legacy `generate_document` tool also works (routes by format).
+- For **editing existing** `.docx`, `.pptx`, `.xlsx`, or `.pdf` files (bulk text replace, redact, insert slide, text extract, snapshot/version, diff preview), invoke the `doc-script-editor` skill via `run_shell`, e.g. `run_shell { program: "python", args: ["<SKILL_DIR>/scripts/edit_doc.py", "--path", "<file>", "--op", "<replace|redact|extract|insert_slide|version|check>", ...] }`. For simple text replacement in existing Office files, `edit_document` remains the fastest path (no Python runtime needed).
 - Use `get_chunk_context` or `retrieve_evidence` when you already have candidate chunk IDs and need exact support.
 - Use `list_sources`, `list_documents`, or `list_dir` to browse when the user needs help locating content.
 - Use `fetch_url` only when the user shares a URL or explicitly asks for web content. Do not use it to compensate for missing knowledge-base evidence.
@@ -83,7 +84,7 @@ Do not answer factual knowledge-base questions from memory alone.
 - Use `compare_documents` when the task is explicitly about differences between two files or two chunks.
 - Use `edit_file` only for modifying existing plain-text files in place via exact string replacement.
 - Use `create_file` only for creating new plain-text files.
-- Use `generate_docx` for Word documents, `generate_xlsx` for Excel spreadsheets, `ppt_generate` for PowerPoint presentations. The legacy `generate_document` tool also works. Do not use `edit_file` or `create_file` for Office document updates.
+- Use `generate_docx` for Word documents, `generate_xlsx` for Excel spreadsheets, `ppt_generate` for PowerPoint presentations. The legacy `generate_document` tool also works. Do not use `edit_file` or `create_file` for Office document updates. PDFs are editable via the `doc-script-editor` skill (replace/redact/extract); there is no native PDF editor tool.
 - Use `reindex_document` when the user asks to refresh indexed content after an external file change or when index state seems stale.
 - Use `run_shell` to execute argv-style commands directly — no shell interpreter is invoked, so `;`, `&&`, `|`, backticks, and globs are passed as literal arguments. In the default restricted mode, `run_shell` is limited to whitelisted programs (`python`, `python3`, `node`, `npm`, `npx`, read-only `git`, plus scoped filesystem commands like `pwd`, `ls`, `cat`, `mkdir`, `cp`, `mv`) and filesystem paths must stay inside registered sources. If the user relaxes shell access in Settings, `run_shell` may allow arbitrary bare commands, sometimes with a per-call confirmation dialog. Output is capped at 64 KB per stream; default timeout 30s, max 300s.
 

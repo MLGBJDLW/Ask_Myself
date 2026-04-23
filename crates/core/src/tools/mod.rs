@@ -498,6 +498,7 @@ impl ToolRegistry {
         db: &Database,
         source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
+        enforce_tool_arg_limit(name, arguments)?;
         let tool = self
             .get(name)
             .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
@@ -517,12 +518,35 @@ impl ToolRegistry {
         source_scope: &[String],
         conversation_id: Option<&str>,
     ) -> Result<ToolResult, CoreError> {
+        enforce_tool_arg_limit(name, arguments)?;
         let tool = self
             .get(name)
             .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
         tool.execute_with_context(call_id, arguments, db, source_scope, conversation_id)
             .await
     }
+}
+
+/// Generic argument-size guard shared by both execute paths.
+///
+/// `run_shell` has its own stricter per-arg + total limits, so it's skipped
+/// here. Other tools should never need more than 32 KB of JSON input; if an
+/// LLM tries to stuff file bytes into (for example) `edit_document.replacements`
+/// we reject early with a message pointing at the `doc-script-editor` skill.
+fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> {
+    const MAX_TOOL_ARG_BYTES: usize = 32 * 1024;
+    if name == "run_shell" {
+        return Ok(());
+    }
+    let arg_size = arguments.len();
+    if arg_size > MAX_TOOL_ARG_BYTES {
+        return Err(CoreError::InvalidInput(format!(
+            "Tool arguments exceed {} KB ({} bytes). For document editing with large content, use the 'run_shell' tool with the 'doc-script-editor' skill instead of passing file bytes in arguments.",
+            MAX_TOOL_ARG_BYTES / 1024,
+            arg_size
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

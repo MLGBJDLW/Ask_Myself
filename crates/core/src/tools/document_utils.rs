@@ -30,13 +30,19 @@ pub(crate) fn supports_document_fallback(path: &Path) -> bool {
 pub(crate) fn edit_guidance_for_path(path: &Path) -> Option<String> {
     if let Some(format) = generated_document_mime(path) {
         return Some(format!(
-            "Office documents are not plain-text editable with edit_file/create_file. Use edit_document to modify text in the existing file, or generate_document with format '{}' and the same path to recreate it.",
+            "Office documents are not plain-text editable with edit_file/create_file. Use edit_document to modify text in the existing file, or generate_document with format '{}' and the same path to recreate it. For advanced edits (bulk replace, redact, insert slide, extract text) the 'doc-script-editor' skill can run python scripts/edit_doc.py via the run_shell tool.",
             format
         ));
     }
 
     let mime = crate::parse::detect_mime_type(path);
-    if mime == "application/pdf" || mime.starts_with("image/") {
+    if mime == "application/pdf" {
+        return Some(
+            "PDF files are not editable via edit_file/create_file. Use the 'doc-script-editor' skill: run_shell with `python <SKILL_DIR>/scripts/edit_doc.py --path <abs-path> <replace|extract|redact>` to modify, extract text, or redact."
+                .to_string(),
+        );
+    }
+    if mime.starts_with("image/") {
         return Some(
             "This file can be inspected with read_file, but it is not editable via edit_file/create_file."
                 .to_string(),

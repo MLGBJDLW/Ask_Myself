@@ -113,6 +113,16 @@ fn main() {
             // Migrate legacy user data (ask-myself -> nexa). Safe to call every start.
             migrate_legacy_data_dir(&data_dir);
 
+            // Materialize bundled skill assets to disk so run_shell can exec them
+            // and <SKILL_DIR> placeholders in prompts resolve correctly. Degrade
+            // gracefully on failure: doc-editing fast-path still works without scripts.
+            match nexa_core::skills::materialize_skills_to_disk(&data_dir) {
+                Ok(path) => log::info!("Materialized skills to {}", path.display()),
+                Err(e) => log::warn!(
+                    "Failed to materialize skills: {e}. Doc-editing via shell scripts will be unavailable; edit_document fast-path still works."
+                ),
+            }
+
             let db_path = data_dir.join("nexa.db");
             let db = Database::new(&db_path).expect("failed to initialize database");
             let db = Arc::new(db);

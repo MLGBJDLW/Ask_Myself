@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::db::Database;
 use crate::error::CoreError;
@@ -177,7 +178,109 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
         skill_md: include_str!("../assets/skills/evidence-first/SKILL.md"),
         resources: EMPTY_BUILTIN_RESOURCES,
     },
+    BuiltinSkillBundle {
+        slug: "doc-script-editor",
+        skill_md: include_str!("../assets/skills/doc-script-editor/SKILL.md"),
+        resources: &[
+            BuiltinSkillResource {
+                path: "scripts/edit_doc.py",
+                content: include_str!(
+                    "../assets/skills/doc-script-editor/scripts/edit_doc.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/requirements.txt",
+                content: include_str!(
+                    "../assets/skills/doc-script-editor/scripts/requirements.txt"
+                ),
+            },
+        ],
+    },
 ];
+
+/// Global base directory where built-in skill bundles have been materialized to
+/// disk. Set by [`materialize_skills_to_disk`] at startup; if unset, the
+/// `<SKILL_DIR>` placeholder in bundled SKILL.md bodies is left untouched so
+/// the model can still reason about relative paths.
+static SKILLS_BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Substitute `<SKILL_DIR>` in a bundled skill body with the materialized
+/// on-disk path for that skill, if materialization has been performed.
+fn substitute_skill_dir(body: String, slug: &str) -> String {
+    if !body.contains("<SKILL_DIR>") {
+        return body;
+    }
+    match SKILLS_BASE_DIR.get() {
+        Some(base) => {
+            let skill_dir = base.join(slug);
+            body.replace("<SKILL_DIR>", &skill_dir.to_string_lossy())
+        }
+        None => body,
+    }
+}
+
+/// Materialize all bundled built-in skills (SKILL.md + scripts/references/assets)
+/// onto disk under `<app_data_dir>/skills/<slug>/`. Idempotent: skips files
+/// whose on-disk content already matches the embedded content. Per-file
+/// failures are logged but do not abort other skills.
+///
+/// Returns the base `<app_data_dir>/skills/` path on success. The base path is
+/// also stored in a process-global `OnceLock` so [`load_builtin_skills`] can
+/// substitute `<SKILL_DIR>` placeholders in skill bodies with real paths.
+pub fn materialize_skills_to_disk(app_data_dir: &Path) -> Result<PathBuf, CoreError> {
+    let base = app_data_dir.join("skills");
+    fs::create_dir_all(&base).map_err(|e| {
+        CoreError::Internal(format!(
+            "Failed to create skills base dir {}: {e}",
+            base.display()
+        ))
+    })?;
+
+    for bundle in BUILTIN_SKILLS {
+        let skill_dir = base.join(bundle.slug);
+        if let Err(e) = fs::create_dir_all(&skill_dir) {
+            tracing::warn!(skill = bundle.slug, error = %e, "Failed to create skill dir");
+            continue;
+        }
+        write_if_changed(&skill_dir.join("SKILL.md"), bundle.skill_md.as_bytes(), bundle.slug);
+        for resource in bundle.resources {
+            let target = skill_dir.join(resource.path);
+            if let Some(parent) = target.parent() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    tracing::warn!(
+                        skill = bundle.slug,
+                        path = %target.display(),
+                        error = %e,
+                        "Failed to create resource parent dir"
+                    );
+                    continue;
+                }
+            }
+            write_if_changed(&target, resource.content.as_bytes(), bundle.slug);
+        }
+    }
+
+    // Record the base dir so skill-body rendering can substitute <SKILL_DIR>.
+    // `OnceLock::set` returns Err if already set — that's fine; first call wins.
+    let _ = SKILLS_BASE_DIR.set(base.clone());
+    Ok(base)
+}
+
+fn write_if_changed(path: &Path, bytes: &[u8], skill_slug: &str) {
+    if let Ok(existing) = fs::read(path) {
+        if existing == bytes {
+            return;
+        }
+    }
+    if let Err(e) = fs::write(path, bytes) {
+        tracing::warn!(
+            skill = skill_slug,
+            path = %path.display(),
+            error = %e,
+            "Failed to write skill file"
+        );
+    }
+}
 
 /// Parse a SKILL.md file (YAML frontmatter + markdown body).
 ///
@@ -229,6 +332,7 @@ pub fn load_builtin_skills() -> Vec<Skill> {
     for bundle in BUILTIN_SKILLS {
         match parse_skill_file(bundle.skill_md) {
             Ok((fm, body)) => {
+                let body = substitute_skill_dir(body, bundle.slug);
                 let resource_bundle = bundle
                     .resources
                     .iter()
@@ -1454,7 +1558,7 @@ mod tests {
     #[test]
     fn test_load_builtin_skills() {
         let skills = load_builtin_skills();
-        assert_eq!(skills.len(), 3, "three bundled SKILL.md files must parse");
+        assert_eq!(skills.len(), 4, "four bundled SKILL.md files must parse");
         for s in &skills {
             assert!(s.builtin);
             assert!(!s.name.is_empty());
@@ -1467,6 +1571,7 @@ mod tests {
             .iter()
             .any(|s| s.id == "builtin-office-document-design"));
         assert!(skills.iter().any(|s| s.id == "builtin-evidence-first"));
+        assert!(skills.iter().any(|s| s.id == "builtin-doc-script-editor"));
     }
 
     #[test]
