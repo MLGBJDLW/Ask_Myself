@@ -570,7 +570,6 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(search_playbooks_tool::SearchPlaybooksTool));
     registry.register(Box::new(edit_file_tool::EditFileTool));
     registry.register(Box::new(create_file_tool::CreateFileTool));
-    registry.register(Box::new(generate_document_tool::GenerateDocumentTool));
     registry.register(Box::new(generate_docx_tool::GenerateDocxTool));
     registry.register(Box::new(generate_xlsx_tool::GenerateXlsxTool));
     registry.register(Box::new(ppt_generate_tool::PptGenerateTool));

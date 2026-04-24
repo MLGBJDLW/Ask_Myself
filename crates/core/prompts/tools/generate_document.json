@@ -1,6 +1,6 @@
 {
   "name": "generate_document",
-  "description": "Routing proxy: dispatches to generate_docx, generate_xlsx, or ppt_generate based on the `format` field. Prefer calling the format-specific tool directly when the format is known.",
+  "description": "Legacy compatibility router: dispatches to generate_docx, generate_xlsx, or ppt_generate based on the `format` field. Prefer Python-based Office workflows via run_shell + doc-script-editor, or call format-specific tools directly. Use this tool only as a last resort for backward compatibility.",
   "parameters": {
     "type": "object",
     "properties": {

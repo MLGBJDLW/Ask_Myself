@@ -209,6 +209,16 @@ fn is_deepseek_reasoner(model: &str) -> bool {
     m.contains("deepseek-reasoner") || m.contains("deepseek-r1")
 }
 
+/// Some code-specialized OpenAI-compatible models require tool-call
+/// `function.arguments` to be a JSON object instead of a JSON-encoded string.
+fn requires_raw_tool_arguments(model: &str, provider_type: Option<ProviderType>) -> bool {
+    if matches!(provider_type, Some(ProviderType::Qwen)) {
+        return true;
+    }
+    let model_lower = model.to_lowercase();
+    model_lower.contains("codex")
+}
+
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
@@ -342,8 +352,8 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     let include_reasoning_content = is_deepseek_provider;
     let needs_completion_tokens = is_reasoning || is_deepseek;
     let suppress_temperature = is_reasoning || is_deepseek;
-    // DashScope (Qwen) requires function arguments as a JSON object, not a string.
-    let raw_tool_args = matches!(request.provider_type, Some(ProviderType::Qwen));
+    // Some providers/models require function arguments as JSON objects, not strings.
+    let raw_tool_args = requires_raw_tool_arguments(&request.model, request.provider_type);
 
     OaiRequest {
         model: request.model.clone(),

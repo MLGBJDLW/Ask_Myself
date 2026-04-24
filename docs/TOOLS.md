@@ -91,7 +91,7 @@ Use this quick routing guide when a request is about files or documents:
 | Compare two files or indexed chunks | `compare_documents` | Text or parsed document content | yes for file paths | Use chunk IDs when you already know the exact evidence |
 | Create a new plain-text file | `create_file` | Text-based files only | yes | For new `.md`, `.txt`, `.json`, `.rs`, etc. |
 | Edit an existing plain-text file | `edit_file` | Text-based files only | yes | Exact `str_replace` only; must match once |
-| Create or replace an Office file | `generate_document` | DOCX, XLSX, PPTX | yes | Use this instead of `create_file` / `edit_file` for Office output |
+| Create or replace an Office file | `run_shell` + `doc-script-editor` (preferred), `generate_docx`/`generate_xlsx`/`ppt_generate` (fallback) | DOCX, XLSX, PPTX, PDF | yes | Avoid `generate_document` except legacy compatibility routing |
 | Refresh indexed content after file changes | `reindex_document` | File path or whole source | yes for file path | Use when external edits are not reflected in search/results yet |
 
 Path guidance:

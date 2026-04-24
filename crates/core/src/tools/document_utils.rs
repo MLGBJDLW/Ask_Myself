@@ -30,7 +30,7 @@ pub(crate) fn supports_document_fallback(path: &Path) -> bool {
 pub(crate) fn edit_guidance_for_path(path: &Path) -> Option<String> {
     if let Some(format) = generated_document_mime(path) {
         return Some(format!(
-            "Office documents are not plain-text editable with edit_file/create_file. Use edit_document to modify text in the existing file, or generate_document with format '{}' and the same path to recreate it. For advanced edits (bulk replace, redact, insert slide, extract text) the 'doc-script-editor' skill can run python scripts/edit_doc.py via the run_shell tool.",
+            "Office documents are not plain-text editable with edit_file/create_file. Prefer run_shell + doc-script-editor (python scripts/edit_doc.py) for robust create/edit flows, use edit_document for quick text replacement, or use generate_docx/generate_xlsx/ppt_generate to regenerate '{}'. Avoid generate_document except legacy compatibility routing.",
             format
         ));
     }
