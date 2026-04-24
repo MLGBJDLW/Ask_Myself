@@ -7,13 +7,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   check:
     name: Check & Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install system dependencies (Linux)
         run: |
@@ -26,7 +27,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -37,7 +38,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-nexa-v1-
 
       - name: Cache ONNX Runtime
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ort.pyke.io
           key: ${{ runner.os }}-ort-${{ hashFiles('crates/core/Cargo.toml') }}
@@ -52,9 +53,9 @@ jobs:
         run: cargo test -p nexa-core
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
