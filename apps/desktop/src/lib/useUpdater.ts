@@ -13,6 +13,9 @@ interface UpdateState {
   errorStage?: 'check' | 'download' | 'install';
 }
 
+const UPDATE_CHECK_TIMEOUT_MS = 90_000;
+const UPDATE_DOWNLOAD_TIMEOUT_MS = 600_000;
+
 function extractError(e: unknown): { error: string; errorCode: string | number | null; errorDetail: { stack?: string } } {
   const errMsg = e instanceof Error ? e.message : String(e);
   const errCode = (e as { code?: string | number; status?: string | number } | null)?.code
@@ -29,7 +32,7 @@ export function useUpdater(checkOnMount = true) {
   const checkForUpdate = useCallback(async () => {
     setState({ status: 'checking' });
     try {
-      const update = await check();
+      const update = await check({ timeout: UPDATE_CHECK_TIMEOUT_MS });
       if (update) {
         updateRef.current = update;
         setState({
@@ -60,7 +63,7 @@ export function useUpdater(checkOnMount = true) {
     let update = updateRef.current;
     if (!update) {
       try {
-        update = await check();
+        update = await check({ timeout: UPDATE_CHECK_TIMEOUT_MS });
         if (update) updateRef.current = update;
       } catch (e) {
         setState({ status: 'error', errorStage: 'check', ...extractError(e) });
@@ -83,25 +86,28 @@ export function useUpdater(checkOnMount = true) {
     let contentLength = 0;
 
     try {
-      await update.downloadAndInstall((event) => {
-        switch (event.event) {
-          case 'Started':
-            contentLength = event.data.contentLength ?? 0;
-            break;
-          case 'Progress':
-            downloaded += event.data.chunkLength;
-            if (contentLength > 0) {
-              setState(prev => ({
-                ...prev,
-                progress: Math.round((downloaded / contentLength) * 100),
-              }));
-            }
-            break;
-          case 'Finished':
-            setState(prev => ({ ...prev, status: 'ready', progress: 100 }));
-            break;
-        }
-      });
+      await update.downloadAndInstall(
+        (event) => {
+          switch (event.event) {
+            case 'Started':
+              contentLength = event.data.contentLength ?? 0;
+              break;
+            case 'Progress':
+              downloaded += event.data.chunkLength;
+              if (contentLength > 0) {
+                setState(prev => ({
+                  ...prev,
+                  progress: Math.round((downloaded / contentLength) * 100),
+                }));
+              }
+              break;
+            case 'Finished':
+              setState(prev => ({ ...prev, status: 'ready', progress: 100 }));
+              break;
+          }
+        },
+        { timeout: UPDATE_DOWNLOAD_TIMEOUT_MS },
+      );
     } catch (e) {
       setState(prev => ({
         ...prev,

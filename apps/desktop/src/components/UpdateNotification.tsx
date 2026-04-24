@@ -20,14 +20,16 @@ export function UpdateNotification({ updater }: UpdateNotificationProps) {
   const errText = error ?? '';
   const isNotFound = /404|not found/i.test(errText);
   const isSignatureErr = /signature|\bsig\b/i.test(errText);
-  const showHint = errorStage === 'download' || errorStage === 'install';
-  const hint = showHint
-    ? isNotFound
-      ? '可能原因：当前版本没有对应的 release 发布'
+  const isNetworkErr = /error sending request|timed?\s*out|timeout|failed to connect|network|dns|connection|githubusercontent\.com/i.test(errText);
+  const hint = isNetworkErr
+    ? '可能原因：GitHub Release CDN 无法访问或响应过慢，可稍后重试，或切换到可访问 GitHub Release 资产的网络/代理。'
+    : isNotFound
+      ? '可能原因：当前版本的 release 资产缺失，或 updater manifest 中的下载 URL 与实际资产名不匹配。'
       : isSignatureErr
-        ? '签名验证失败，可能是 GitHub Release 资产不完整'
-        : null
-    : null;
+        ? '签名验证失败，可能是 GitHub Release 资产不完整。'
+        : errorStage === 'download' || errorStage === 'install'
+          ? '可能原因：更新包下载或安装过程被中断。'
+          : null;
 
   const errorLabel =
     errorStage === 'download'
