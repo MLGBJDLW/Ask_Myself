@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.7...nexa-monorepo-v0.2.8) (2026-04-24)
+
+
+### Bug Fixes
+
+* push error ([f37ff71](https://github.com/MLGBJDLW/Nexa/commit/f37ff71bb74cc8701d106d1b0aed1f3f063c31b2))
+* push error ([1f235a6](https://github.com/MLGBJDLW/Nexa/commit/1f235a6d8587349052d31cc709624a21191a5135))
+
 ## [0.2.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.6...nexa-monorepo-v0.2.7) (2026-04-24)
 
 
