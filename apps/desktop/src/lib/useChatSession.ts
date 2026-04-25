@@ -329,11 +329,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const systemPromptCacheRef = useRef<Record<string, string>>({});
   const contextWindowCacheRef = useRef<Record<string, number>>({});
   const agentConfigsRef = useRef<AgentConfig[]>([]);
+  const activeAgentConfigRef = useRef<AgentConfig | null>(null);
   const defaultAgentConfigRef = useRef<AgentConfig | null>(null);
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
   const messageCacheRef = useRef(messageCache);
   messageCacheRef.current = messageCache;
+  activeAgentConfigRef.current = agentConfig;
 
   const messages = activeId ? (messageCache[activeId] ?? []) : [];
   const turns = activeId ? (turnCache[activeId] ?? []) : [];
@@ -454,6 +456,14 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   /* ── Switch agent config (called from UI model selector) ─────── */
   const switchAgentConfig = useCallback(async (config: AgentConfig) => {
+    activeAgentConfigRef.current = config;
+    setAgentConfig(config);
+    defaultAgentConfigRef.current = config;
+    agentConfigsRef.current = agentConfigsRef.current.map((candidate) => ({
+      ...candidate,
+      isDefault: candidate.id === config.id,
+    }));
+
     await api.setDefaultAgentConfig(config.id);
     let updatedSystemPrompt = customSystemPrompt;
     if (activeId) {
@@ -467,12 +477,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         ),
       );
     }
-    setAgentConfig(config);
-    defaultAgentConfigRef.current = config;
-    agentConfigsRef.current = agentConfigsRef.current.map((candidate) => ({
-      ...candidate,
-      isDefault: candidate.id === config.id,
-    }));
     const cw = await resolveContextWindowForConfig(config);
     setDefaultContextWindow(cw);
     setContextWindow(cw);
@@ -854,7 +858,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   const send = useCallback(
     async (content: string, attachments?: ImageAttachment[]) => {
-      if (!agentConfig) {
+      const configForSend = activeAgentConfigRef.current;
+      if (!configForSend) {
         toast.error(t('chat.noConfigError'));
         return;
       }
@@ -872,14 +877,14 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         try {
           const conv = initialCollectionContext
             ? await api.createConversationWithContext(
-              agentConfig.provider,
-              agentConfig.model,
+              configForSend.provider,
+              configForSend.model,
               customSystemPrompt || undefined,
               initialCollectionContext,
             )
             : await api.createConversation(
-            agentConfig.provider,
-            agentConfig.model,
+            configForSend.provider,
+            configForSend.model,
             customSystemPrompt || undefined,
           );
           convId = conv.id;
@@ -925,9 +930,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       pendingStreamConversationRef.current = convId;
       streamingConversationRef.current = convId;
 
-      await streamSend(convId, content, attachments);
+      await streamSend(convId, content, attachments, configForSend.id);
     },
-    [activeId, agentConfig, customSystemPrompt, initialCollectionContext, initialSourceIds, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
+    [activeId, customSystemPrompt, initialCollectionContext, initialSourceIds, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
   );
 
   const stop = useCallback(() => {
@@ -977,7 +982,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     pendingStreamConversationRef.current = activeId;
     streamingConversationRef.current = activeId;
 
-    await streamSend(activeId, content, attachments);
+    await streamSend(activeId, content, attachments, activeAgentConfigRef.current?.id ?? null);
   }, [activeId, messages, setMessagesForConversation, setTurnsForConversation, streamSend, turns]);
 
   /* ── Delete single message (optimistic, local only) ─────────────── */
@@ -1020,7 +1025,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     pendingStreamConversationRef.current = activeId;
     streamingConversationRef.current = activeId;
 
-    await streamSend(activeId, newContent);
+    await streamSend(activeId, newContent, undefined, activeAgentConfigRef.current?.id ?? null);
   }, [activeId, messages, setMessagesForConversation, streamSend]);
 
   /* ── Reload messages (e.g. after compaction) ────────────────────── */

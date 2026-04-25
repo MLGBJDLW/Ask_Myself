@@ -91,6 +91,7 @@ test.beforeEach(async ({ page }) => {
     const listeners = new Map<number, { event: string; handlerId: number }>();
     let callbackSeq = 1;
     let listenerSeq = 1;
+    (window as unknown as { __lastAgentChatArgs?: Record<string, unknown> | null }).__lastAgentChatArgs = null;
 
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
       switch (cmd) {
@@ -152,6 +153,9 @@ test.beforeEach(async ({ page }) => {
           return [];
         case 'compact_conversation_cmd':
           return null;
+        case 'agent_chat_cmd':
+          (window as unknown as { __lastAgentChatArgs?: Record<string, unknown> | null }).__lastAgentChatArgs = clone(args);
+          return null;
         case 'agent_stop_cmd':
           return null;
         default:
@@ -193,4 +197,14 @@ test('model selector and context usage follow the active chat model', async ({ p
   await expect(modelSelect).toHaveAttribute('title', 'open_ai / large-context');
   await expect(page.getByText('1% context used').first()).toBeVisible();
   await expect(page.getByText('61% context used')).toHaveCount(0);
+
+  await page.getByTestId('chat-input-textarea').fill('Use the selected model.');
+  await page.getByTestId('chat-send').click();
+
+  await expect.poll(async () =>
+    page.evaluate(() =>
+      (window as unknown as { __lastAgentChatArgs?: Record<string, unknown> | null })
+        .__lastAgentChatArgs?.agentConfigId,
+    ),
+  ).toBe('cfg-large');
 });

@@ -20,7 +20,12 @@ const EMPTY_TRACE_EVENTS: TraceEvent[] = [];
 const EMPTY_APPROVALS: ApprovalRequest[] = [];
 
 interface UseAgentStreamReturn {
-  send: (conversationId: string, message: string, attachments?: ImageAttachment[]) => Promise<void>;
+  send: (
+    conversationId: string,
+    message: string,
+    attachments?: ImageAttachment[],
+    agentConfigId?: string | null,
+  ) => Promise<void>;
   stop: (conversationId: string) => Promise<void>;
   isStreaming: boolean;
   streamText: string;
@@ -100,12 +105,17 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     });
   }, []);
 
-  const send = useCallback(async (conversationId: string, message: string, attachments?: ImageAttachment[]) => {
+  const send = useCallback(async (
+    conversationId: string,
+    message: string,
+    attachments?: ImageAttachment[],
+    agentConfigId?: string | null,
+  ) => {
     activeConversationRef.current = conversationId;
     streamStore.startStream(conversationId);
 
     try {
-      await api.agentChat(conversationId, message, attachments);
+      await api.agentChat(conversationId, message, attachments, agentConfigId);
     } catch (err) {
       streamStore.sendError(conversationId, String(err));
     }

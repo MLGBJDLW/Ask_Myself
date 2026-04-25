@@ -842,6 +842,46 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_thinking_history_replays_reasoning_content_with_tool_calls() {
+        let assistant = Message {
+            role: Role::Assistant,
+            parts: vec![],
+            name: None,
+            tool_calls: Some(vec![ToolCallRequest {
+                id: "call_1".to_string(),
+                name: "run_shell".to_string(),
+                arguments: "{\"program\":\"python\",\"args\":[\"-c\",\"print(1)\"]}".to_string(),
+                thought_signature: None,
+            }]),
+            reasoning_content: Some("Need to check whether python-docx is installed.".to_string()),
+        };
+        let mut tool = Message::text(Role::Tool, "python-docx 1.2.0");
+        tool.name = Some("call_1".to_string());
+        let request = CompletionRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![Message::text(Role::User, "make a docx"), assistant, tool],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: Some(ReasoningEffort::High),
+            provider_type: Some(ProviderType::DeepSeek),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(
+            body["messages"][1]["reasoning_content"],
+            "Need to check whether python-docx is installed."
+        );
+        assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(body["messages"][2]["tool_call_id"], "call_1");
+    }
+
+    #[test]
     fn deepseek_disabled_thinking_omits_reasoning_content() {
         let assistant = Message {
             role: Role::Assistant,

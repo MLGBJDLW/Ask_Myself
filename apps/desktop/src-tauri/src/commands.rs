@@ -1345,6 +1345,25 @@ fn normalize_optional_base_url(base_url: Option<String>) -> Option<String> {
     })
 }
 
+fn provider_type_for_parts(provider: &str, base_url: Option<&str>) -> ProviderType {
+    let parsed = parse_provider_type(provider);
+    if parsed == ProviderType::Custom {
+        let base_url_lower = base_url.unwrap_or_default().to_lowercase();
+        if base_url_lower.contains("deepseek") {
+            return ProviderType::DeepSeek;
+        }
+    }
+    parsed
+}
+
+fn provider_type_for_config(config: &DbAgentConfig) -> ProviderType {
+    provider_type_for_parts(&config.provider, config.base_url.as_deref())
+}
+
+fn provider_type_for_input(config: &SaveAgentConfigInput) -> ProviderType {
+    provider_type_for_parts(&config.provider, config.base_url.as_deref())
+}
+
 /// Convert a DB [`DbAgentConfig`] to a [`ProviderConfig`] suitable for
 /// [`create_provider`].
 fn db_config_to_provider_config(
@@ -1352,7 +1371,7 @@ fn db_config_to_provider_config(
     timeout_secs: Option<u64>,
 ) -> ProviderConfig {
     ProviderConfig {
-        provider_type: parse_provider_type(&config.provider),
+        provider_type: provider_type_for_config(config),
         api_key: Some(config.api_key.clone()),
         base_url: normalize_optional_base_url(config.base_url.clone()),
         org_id: None,
@@ -1363,8 +1382,21 @@ fn db_config_to_provider_config(
 fn select_agent_config_for_conversation(
     db: &Database,
     conv: &Conversation,
+    requested_config_id: Option<&str>,
 ) -> Result<DbAgentConfig, String> {
     let configs = db.list_agent_configs().map_err(|e| e.to_string())?;
+    if let Some(id) = requested_config_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if let Some(config) = configs.iter().find(|cfg| cfg.id == id).cloned() {
+            return Ok(config);
+        }
+        warn!(
+            "Requested agent config id '{}' was not found; falling back to conversation provider/model",
+            id
+        );
+    }
     let default_config = configs.iter().find(|cfg| cfg.is_default).cloned();
     let matching_config = configs
         .iter()
@@ -1393,7 +1425,7 @@ fn build_connection_probe_request(config: &SaveAgentConfigInput) -> CompletionRe
         stop: None,
         thinking_budget: None,
         reasoning_effort: None,
-        provider_type: Some(parse_provider_type(&config.provider)),
+        provider_type: Some(provider_type_for_input(config)),
         parallel_tool_calls: true,
     }
 }
@@ -1938,7 +1970,7 @@ pub async fn compact_conversation_cmd(
     }
 
     // 2. Load the config that matches this conversation's provider/model.
-    let db_config = select_agent_config_for_conversation(&state.db, &conv)?;
+    let db_config = select_agent_config_for_conversation(&state.db, &conv, None)?;
 
     let app_cfg = state.db.load_app_config().unwrap_or_default();
     let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
@@ -1954,7 +1986,7 @@ pub async fn compact_conversation_cmd(
         reasoning_enabled: None,
         thinking_budget: None,
         reasoning_effort: None,
-        provider_type: Some(parse_provider_type(&db_config.provider)),
+        provider_type: Some(provider_type_for_config(&db_config)),
         summarization_model: db_config.summarization_model.clone(),
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
@@ -2185,7 +2217,7 @@ pub async fn test_agent_connection_cmd(
 ) -> Result<Vec<String>, String> {
     let catalog_models = preset_model_ids(&config.provider, config.base_url.as_deref());
     let provider_config = ProviderConfig {
-        provider_type: parse_provider_type(&config.provider),
+        provider_type: provider_type_for_input(&config),
         api_key: Some(config.api_key.clone()),
         base_url: normalize_optional_base_url(config.base_url.clone()),
         org_id: None,
@@ -2229,16 +2261,26 @@ pub async fn agent_chat_cmd(
     conversation_id: String,
     message: String,
     attachments: Option<Vec<ImageAttachment>>,
+    agent_config_id: Option<String>,
 ) -> Result<(), String> {
     // 1. Load the conversation first so provider/model selection follows the
     // active chat, not whatever global default happened to be selected later.
-    let conv = state
+    let mut conv = state
         .db
         .get_conversation(&conversation_id)
         .map_err(|e| e.to_string())?;
 
     // 2. Resolve the best matching agent config for this conversation.
-    let db_config = select_agent_config_for_conversation(&state.db, &conv)?;
+    let db_config =
+        select_agent_config_for_conversation(&state.db, &conv, agent_config_id.as_deref())?;
+    if conv.provider != db_config.provider || conv.model != db_config.model {
+        state
+            .db
+            .update_conversation_model(&conversation_id, &db_config.provider, &db_config.model)
+            .map_err(|e| e.to_string())?;
+        conv.provider = db_config.provider.clone();
+        conv.model = db_config.model.clone();
+    }
 
     // 3. Create LLM provider.
     let app_cfg = state.db.load_app_config().unwrap_or_default();
@@ -2364,7 +2406,7 @@ pub async fn agent_chat_cmd(
                 "xhigh" => Some(ReasoningEffort::XHigh),
                 _ => None,
             }),
-        provider_type: Some(parse_provider_type(&db_config.provider)),
+        provider_type: Some(provider_type_for_config(&db_config)),
         summarization_model: db_config.summarization_model.clone(),
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
@@ -2934,7 +2976,7 @@ pub async fn agent_chat_cmd(
                         }
                     } else {
                         ProviderConfig {
-                            provider_type: parse_provider_type(&db_config_for_extraction.provider),
+                            provider_type: provider_type_for_config(&db_config_for_extraction),
                             api_key: Some(db_config_for_extraction.api_key.clone()),
                             base_url: db_config_for_extraction.base_url.clone(),
                             org_id: None,

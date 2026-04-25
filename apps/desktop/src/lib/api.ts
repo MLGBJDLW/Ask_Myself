@@ -345,8 +345,18 @@ export const removeConversationFromProject = (conversationId: string) =>
 
 // ── Agent Chat ──────────────────────────────────────────────────────────
 
-export const agentChat = (conversationId: string, message: string, attachments?: ImageAttachment[]) =>
-  invoke<void>('agent_chat_cmd', { conversationId, message, attachments: attachments ?? null });
+export const agentChat = (
+  conversationId: string,
+  message: string,
+  attachments?: ImageAttachment[],
+  agentConfigId?: string | null,
+) =>
+  invoke<void>('agent_chat_cmd', {
+    conversationId,
+    message,
+    attachments: attachments ?? null,
+    agentConfigId: agentConfigId ?? null,
+  });
 
 export const agentStop = (conversationId: string) =>
   invoke<void>('agent_stop_cmd', { conversationId });
