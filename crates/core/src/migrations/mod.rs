@@ -600,6 +600,81 @@ Every answer that uses knowledge base search results.
         "v048_remove_legacy_builtin_skill_rows",
         "DELETE FROM skills WHERE id LIKE 'builtin-%';",
     ),
+    (
+        "v049_agent_self_evolution",
+        "CREATE TABLE IF NOT EXISTS agent_procedural_memories (
+            id TEXT PRIMARY KEY NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL DEFAULT 'agent',
+            confidence REAL NOT NULL DEFAULT 0.7,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_procedural_memories_updated
+            ON agent_procedural_memories(updated_at);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS fts_agent_procedural_memories USING fts5(
+            title,
+            content,
+            tags,
+            memory_id UNINDEXED,
+            tokenize='unicode61 remove_diacritics 2'
+        );
+        CREATE TRIGGER IF NOT EXISTS agent_procedural_memories_fts_ai
+        AFTER INSERT ON agent_procedural_memories BEGIN
+            INSERT INTO fts_agent_procedural_memories(title, content, tags, memory_id)
+            VALUES (new.title, new.content, new.tags_json, new.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS agent_procedural_memories_fts_ad
+        AFTER DELETE ON agent_procedural_memories BEGIN
+            DELETE FROM fts_agent_procedural_memories WHERE memory_id = old.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS agent_procedural_memories_fts_au
+        AFTER UPDATE ON agent_procedural_memories BEGIN
+            DELETE FROM fts_agent_procedural_memories WHERE memory_id = old.id;
+            INSERT INTO fts_agent_procedural_memories(title, content, tags, memory_id)
+            VALUES (new.title, new.content, new.tags_json, new.id);
+        END;
+
+        CREATE TABLE IF NOT EXISTS skill_change_proposals (
+            id TEXT PRIMARY KEY NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('create', 'patch')),
+            skill_id TEXT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL,
+            resource_bundle_json TEXT,
+            rationale TEXT NOT NULL DEFAULT '',
+            warnings_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'applied', 'rejected')),
+            conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            applied_at TEXT,
+            rejected_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_skill_change_proposals_status
+            ON skill_change_proposals(status, created_at);
+
+        CREATE TABLE IF NOT EXISTS agent_evolution_events (
+            id TEXT PRIMARY KEY NOT NULL,
+            kind TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'info',
+            summary TEXT NOT NULL,
+            conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+            trace_id TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'open',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_evolution_events_status
+            ON agent_evolution_events(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_evolution_events_trace
+            ON agent_evolution_events(trace_id);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -719,6 +794,9 @@ mod tests {
         assert!(tables.contains(&"embeddings".to_string()));
         assert!(tables.contains(&"feedback".to_string()));
         assert!(tables.contains(&"_migrations".to_string()));
+        assert!(tables.contains(&"agent_procedural_memories".to_string()));
+        assert!(tables.contains(&"skill_change_proposals".to_string()));
+        assert!(tables.contains(&"agent_evolution_events".to_string()));
     }
 
     #[test]

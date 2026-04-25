@@ -22,6 +22,7 @@ pub mod crypto;
 pub mod db;
 pub mod embed;
 pub mod error;
+pub mod evolution;
 pub mod feedback;
 pub mod index;
 pub mod ingest;

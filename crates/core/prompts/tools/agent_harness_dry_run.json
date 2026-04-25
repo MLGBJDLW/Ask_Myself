@@ -1,0 +1,20 @@
+{
+  "name": "agent_harness_dry_run",
+  "description": "Run a read-only readiness preview for the local agent harness. Reports whether model config, skills, procedural memory, pending skill proposals, traces, and evolution events are ready, warning, or blocked.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "include_recent_events": {
+        "type": "boolean",
+        "description": "Whether to include recent evolution events in artifacts."
+      },
+      "event_limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "description": "Maximum evolution events to include."
+      }
+    },
+    "required": []
+  }
+}

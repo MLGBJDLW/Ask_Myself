@@ -64,6 +64,7 @@ impl ToolDef {
     }
 }
 
+pub mod agent_memory_tool;
 pub mod archive_output_tool;
 pub mod chunk_context_tool;
 pub mod compare_tool;
@@ -78,11 +79,13 @@ pub mod fetch_url_tool;
 pub mod file_tool;
 pub mod generate_docx_tool;
 pub mod generate_xlsx_tool;
+pub mod harness_dry_run_tool;
 pub mod health_check_tool;
 pub mod knowledge_graph_tool;
 pub mod list_dir_tool;
 pub mod list_documents_tool;
 pub mod list_sources_tool;
+pub mod manage_skill_tool;
 pub mod manage_source_tool;
 pub mod mcp_tool;
 pub mod path_utils;
@@ -96,6 +99,7 @@ pub mod run_shell_tool;
 pub mod scratchpad_tool;
 pub mod search_playbooks_tool;
 pub mod search_tool;
+pub mod session_search_tool;
 pub mod statistics_tool;
 pub mod submit_feedback_tool;
 pub mod summarize_tool;
@@ -496,6 +500,11 @@ impl ToolRegistry {
         // Knowledge / playbook
         if msg.contains("remember")
             || msg.contains("memory")
+            || msg.contains("session")
+            || msg.contains("history")
+            || msg.contains("harness")
+            || msg.contains("evolution")
+            || msg.contains("evolve")
             || msg.contains("playbook")
             || msg.contains("collection")
             || msg.contains("collections")
@@ -522,6 +531,10 @@ impl ToolRegistry {
             || msg.contains("证据")
             || msg.contains("记住")
             || msg.contains("记忆")
+            || msg.contains("会话")
+            || msg.contains("历史")
+            || msg.contains("进化")
+            || msg.contains("自我")
             || msg.contains("编译")
             || msg.contains("实体")
             || msg.contains("图谱")
@@ -682,6 +695,10 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(related_concepts_tool::RelatedConceptsTool));
     registry.register(Box::new(run_shell_tool::RunShellTool));
     registry.register(Box::new(scratchpad_tool::UpdateScratchpadTool));
+    registry.register(Box::new(session_search_tool::SessionSearchTool));
+    registry.register(Box::new(agent_memory_tool::AgentMemoryTool));
+    registry.register(Box::new(manage_skill_tool::ManageSkillTool));
+    registry.register(Box::new(harness_dry_run_tool::HarnessDryRunTool));
     registry
 }
 

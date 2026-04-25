@@ -1,0 +1,57 @@
+{
+  "name": "manage_skill",
+  "description": "Create, inspect, apply, or reject controlled skill change proposals. Use this for self-evolution when a repeated workflow lesson should become a reusable skill. Proposals are safety-scanned; applying a proposal mutates active user skills and requires confirmation.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "propose_create",
+          "propose_patch",
+          "list_proposals",
+          "view_proposal",
+          "apply_proposal",
+          "reject_proposal"
+        ],
+        "description": "Skill evolution action to perform."
+      },
+      "proposal_id": {
+        "type": "string",
+        "description": "Proposal id for view_proposal, apply_proposal, or reject_proposal."
+      },
+      "skill_id": {
+        "type": "string",
+        "description": "Existing user skill id for propose_patch. Built-in skill ids are read-only."
+      },
+      "name": {
+        "type": "string",
+        "description": "Skill name for propose_create, or replacement name for propose_patch."
+      },
+      "description": {
+        "type": "string",
+        "description": "Concise trigger description for the proposed skill."
+      },
+      "content": {
+        "type": "string",
+        "description": "Full proposed skill body. Keep it procedural, specific, and reusable."
+      },
+      "rationale": {
+        "type": "string",
+        "description": "Why this skill change is warranted, grounded in observed repeated behavior or user feedback."
+      },
+      "status": {
+        "type": "string",
+        "enum": ["pending", "applied", "rejected"],
+        "description": "Optional proposal status filter for list_proposals."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "description": "Maximum proposals to return for list_proposals."
+      }
+    },
+    "required": ["action"]
+  }
+}

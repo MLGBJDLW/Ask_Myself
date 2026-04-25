@@ -1,0 +1,20 @@
+{
+  "name": "search_sessions",
+  "description": "Search prior conversation messages across local sessions. Use this when the user refers to earlier work, prior decisions, previous failures, or when a repeated workflow lesson may already exist in chat history.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Search terms for prior conversation messages."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "description": "Maximum matching messages to return."
+      }
+    },
+    "required": ["query"]
+  }
+}

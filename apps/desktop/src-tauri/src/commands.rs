@@ -2296,6 +2296,12 @@ pub async fn agent_chat_cmd(
     let memory_section =
         nexa_core::personalization::build_memory_summary_for_query(&state.db, Some(&message))
             .unwrap_or_default();
+    let agent_memory_section =
+        nexa_core::evolution::build_agent_procedural_memory_summary_for_query(
+            &state.db,
+            Some(&message),
+        )
+        .unwrap_or_default();
     let preference_section =
         nexa_core::personalization::build_preference_summary_for_query(&state.db, Some(&message))
             .unwrap_or_default();
@@ -2328,6 +2334,7 @@ pub async fn agent_chat_cmd(
             &collection_context_section,
             &source_scope_section,
             &memory_section,
+            &agent_memory_section,
             &preference_section,
             &learned_section,
             &scratchpad_section,
@@ -2952,6 +2959,17 @@ pub async fn agent_chat_cmd(
                         _ => {}
                     }
                 }
+            }
+
+            match nexa_core::evolution::review_recent_traces_for_evolution(&db, 5) {
+                Ok(review) if review.events_created > 0 => {
+                    info!(
+                        "Agent evolution review created {} event(s) for conversation {}",
+                        review.events_created, conv_id
+                    );
+                }
+                Err(e) => warn!("Agent evolution review failed for {conv_id}: {e}"),
+                _ => {}
             }
         }
     });

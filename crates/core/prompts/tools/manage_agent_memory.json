@@ -1,0 +1,48 @@
+{
+  "name": "manage_agent_memory",
+  "description": "Record, search, list, or delete local agent procedural memories. Use this for reusable tool/workflow lessons, not for user preferences or personal facts. Memories are injected progressively when relevant and never override user instructions.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["record", "search", "list", "delete"],
+        "description": "Procedural memory action to perform."
+      },
+      "id": {
+        "type": "string",
+        "description": "Memory id for delete."
+      },
+      "title": {
+        "type": "string",
+        "description": "Short procedural memory title for record."
+      },
+      "content": {
+        "type": "string",
+        "description": "Reusable lesson, written as an actionable workflow/tool rule."
+      },
+      "tags": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional searchable tags such as tools, sqlite, search, docs."
+      },
+      "query": {
+        "type": "string",
+        "description": "Search query for procedural memories."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "description": "Maximum memories to return."
+      },
+      "confidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Confidence that this lesson is reusable."
+      }
+    },
+    "required": ["action"]
+  }
+}
