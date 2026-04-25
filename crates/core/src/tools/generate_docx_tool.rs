@@ -44,6 +44,8 @@ struct DocxContent {
     theme: Option<DocxTheme>,
     header: Option<String>,
     footer: Option<String>,
+    markdown: Option<String>,
+    #[serde(default)]
     sections: Vec<DocxSection>,
 }
 
@@ -80,6 +82,248 @@ struct DocxTable {
     column_widths: Option<Vec<usize>>,
 }
 
+#[derive(Default)]
+struct MarkdownDocx {
+    title: Option<String>,
+    sections: Vec<DocxSection>,
+}
+
+#[derive(Default)]
+struct MarkdownSectionBuilder {
+    heading: Option<String>,
+    body_lines: Vec<String>,
+    bullet_items: Vec<String>,
+    numbered_items: Vec<String>,
+    callout: Option<DocxCallout>,
+    table: Option<DocxTable>,
+}
+
+impl MarkdownSectionBuilder {
+    fn has_content(&self) -> bool {
+        self.heading
+            .as_ref()
+            .map(|h| !h.trim().is_empty())
+            .unwrap_or(false)
+            || self.body_lines.iter().any(|line| !line.trim().is_empty())
+            || !self.bullet_items.is_empty()
+            || !self.numbered_items.is_empty()
+            || self.callout.is_some()
+            || self.table.is_some()
+    }
+}
+
+fn clean_markdown_text(input: &str) -> String {
+    input
+        .trim()
+        .replace("**", "")
+        .replace("__", "")
+        .replace('`', "")
+}
+
+fn markdown_heading(line: &str) -> Option<(usize, String)> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with('#') {
+        return None;
+    }
+
+    let level = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if !(1..=6).contains(&level) || !trimmed.chars().nth(level).is_some_and(char::is_whitespace) {
+        return None;
+    }
+
+    let heading = clean_markdown_text(&trimmed[level..]);
+    if heading.is_empty() {
+        None
+    } else {
+        Some((level, heading))
+    }
+}
+
+fn numbered_item_text(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let dot_index = trimmed.find('.')?;
+    if dot_index == 0 || !trimmed[..dot_index].chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let rest = trimmed[dot_index + 1..].trim_start();
+    if rest.is_empty() {
+        None
+    } else {
+        Some(clean_markdown_text(rest))
+    }
+}
+
+fn is_markdown_table_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.matches('|').count() >= 2
+}
+
+fn markdown_table_cells(line: &str) -> Vec<String> {
+    line.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(clean_markdown_text)
+        .collect()
+}
+
+fn is_separator_row(row: &[String]) -> bool {
+    !row.is_empty()
+        && row.iter().all(|cell| {
+            let trimmed = cell.trim();
+            !trimmed.is_empty()
+                && trimmed.contains('-')
+                && trimmed
+                    .chars()
+                    .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+        })
+}
+
+fn parse_markdown_table(lines: &[&str]) -> Option<DocxTable> {
+    let rows: Vec<Vec<String>> = lines
+        .iter()
+        .map(|line| markdown_table_cells(line))
+        .filter(|row| !row.is_empty())
+        .collect();
+    if rows.len() < 2 {
+        return None;
+    }
+
+    let has_separator = rows.get(1).is_some_and(|row| is_separator_row(row));
+    let headers = if has_separator {
+        rows.first().cloned()
+    } else {
+        None
+    };
+    let start = if has_separator { 2 } else { 0 };
+    let data_rows = rows
+        .into_iter()
+        .skip(start)
+        .filter(|row| !is_separator_row(row))
+        .collect::<Vec<_>>();
+
+    Some(DocxTable {
+        title: None,
+        headers,
+        rows: data_rows,
+        column_widths: None,
+    })
+}
+
+fn flush_markdown_section(sections: &mut Vec<DocxSection>, builder: &mut MarkdownSectionBuilder) {
+    if !builder.has_content() {
+        return;
+    }
+
+    sections.push(DocxSection {
+        heading: builder.heading.take(),
+        body: if builder.body_lines.is_empty() {
+            None
+        } else {
+            Some(builder.body_lines.join("\n"))
+        },
+        bullet_items: if builder.bullet_items.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut builder.bullet_items))
+        },
+        numbered_items: if builder.numbered_items.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut builder.numbered_items))
+        },
+        links: None,
+        callout: builder.callout.take(),
+        table: builder.table.take(),
+        page_break_before: None,
+    });
+    builder.body_lines.clear();
+}
+
+fn markdown_to_docx(markdown: &str) -> MarkdownDocx {
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut parsed = MarkdownDocx::default();
+    let mut builder = MarkdownSectionBuilder::default();
+    let mut index = 0usize;
+
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed == "---" {
+            if !builder
+                .body_lines
+                .last()
+                .is_some_and(|line| line.is_empty())
+            {
+                builder.body_lines.push(String::new());
+            }
+            index += 1;
+            continue;
+        }
+
+        if let Some((level, heading)) = markdown_heading(line) {
+            if level == 1 && parsed.title.is_none() && !builder.has_content() {
+                parsed.title = Some(heading);
+            } else {
+                flush_markdown_section(&mut parsed.sections, &mut builder);
+                builder.heading = Some(heading);
+            }
+            index += 1;
+            continue;
+        }
+
+        if is_markdown_table_line(line) {
+            let start = index;
+            while index < lines.len() && is_markdown_table_line(lines[index]) {
+                index += 1;
+            }
+            if let Some(table) = parse_markdown_table(&lines[start..index]) {
+                if builder.table.is_some() {
+                    flush_markdown_section(&mut parsed.sections, &mut builder);
+                }
+                builder.table = Some(table);
+                continue;
+            }
+            index = start;
+        }
+
+        if let Some(text) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("• "))
+        {
+            builder.bullet_items.push(clean_markdown_text(text));
+            index += 1;
+            continue;
+        }
+
+        if let Some(text) = numbered_item_text(trimmed) {
+            builder.numbered_items.push(text);
+            index += 1;
+            continue;
+        }
+
+        if let Some(text) = trimmed.strip_prefix("> ") {
+            if builder.callout.is_some() {
+                flush_markdown_section(&mut parsed.sections, &mut builder);
+            }
+            builder.callout = Some(DocxCallout {
+                title: Some("Note".to_string()),
+                body: clean_markdown_text(text),
+                tone: Some("info".to_string()),
+            });
+            index += 1;
+            continue;
+        }
+
+        builder.body_lines.push(clean_markdown_text(line));
+        index += 1;
+    }
+
+    flush_markdown_section(&mut parsed.sections, &mut builder);
+    parsed
+}
+
 fn normalized_hex(input: Option<&str>, fallback: &str) -> String {
     input
         .map(str::trim)
@@ -99,8 +343,20 @@ pub(crate) fn generate_docx(
 ) -> Result<u64, String> {
     use docx_rs::*;
 
-    let content: DocxContent = serde_json::from_value(content.clone())
+    let mut content: DocxContent = serde_json::from_value(content.clone())
         .map_err(|e| format!("Invalid DOCX content: {e}"))?;
+    if content.sections.is_empty() {
+        if let Some(markdown) = content.markdown.as_deref() {
+            let parsed = markdown_to_docx(markdown);
+            if content.title.is_none() {
+                content.title = parsed.title;
+            }
+            content.sections = parsed.sections;
+        }
+    }
+    if content.sections.is_empty() {
+        return Err("DOCX content must include at least one section or non-empty markdown.".into());
+    }
 
     let theme = content.theme.clone().unwrap_or_default();
     let primary_color = normalized_hex(theme.primary_color.as_deref(), "1F4E79");
@@ -663,5 +919,48 @@ impl Tool for GenerateDocxTool {
         })
         .await
         .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_to_docx_extracts_common_blocks() {
+        let parsed = markdown_to_docx(
+            r#"# Product Plan
+
+## Overview
+This is **important**.
+- First item
+- Second item
+
+> Keep this visible.
+
+## Metrics
+| Metric | Value |
+| --- | --- |
+| ARR | 1M |
+"#,
+        );
+
+        assert_eq!(parsed.title.as_deref(), Some("Product Plan"));
+        assert_eq!(parsed.sections.len(), 2);
+        assert_eq!(parsed.sections[0].heading.as_deref(), Some("Overview"));
+        assert_eq!(
+            parsed.sections[0].bullet_items.as_deref(),
+            Some(&["First item".to_string(), "Second item".to_string()][..])
+        );
+        assert_eq!(
+            parsed.sections[0].callout.as_ref().map(|c| c.body.as_str()),
+            Some("Keep this visible.")
+        );
+        let table = parsed.sections[1].table.as_ref().expect("table");
+        assert_eq!(
+            table.headers.as_deref(),
+            Some(&["Metric".to_string(), "Value".to_string()][..])
+        );
+        assert_eq!(table.rows, vec![vec!["ARR".to_string(), "1M".to_string()]]);
     }
 }

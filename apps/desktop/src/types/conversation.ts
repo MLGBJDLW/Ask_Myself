@@ -172,6 +172,7 @@ export type ProviderType =
 export interface AgentEvent {
   type:
     | 'textDelta'
+    | 'streamReset'
     | 'toolCallStart'
     | 'toolCallArgsDelta'
     | 'toolCallProgress'
@@ -185,6 +186,7 @@ export interface AgentEvent {
     | 'approvalRequested'
     | 'approvalResolved';
   delta?: string;
+  reason?: string;
   callId?: string;
   toolName?: string;
   arguments?: string;
@@ -230,6 +232,7 @@ export interface AgentFrontendEvent {
   type: AgentEvent['type'];
   summary?: string;
   delta?: string;
+  reason?: string;
   callId?: string;
   toolName?: string;
   arguments?: string;

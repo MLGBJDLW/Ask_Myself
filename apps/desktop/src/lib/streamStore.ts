@@ -145,6 +145,7 @@ function normalizeAgentEventType(value: unknown): AgentEventType | null {
   switch (lowered) {
     case 'thinking': return 'thinking';
     case 'textDelta': return 'textDelta';
+    case 'streamReset': return 'streamReset';
     case 'toolCallStart': return 'toolCallStart';
     case 'toolCallArgsDelta': return 'toolCallArgsDelta';
     case 'toolCallProgress': return 'toolCallProgress';
@@ -568,6 +569,23 @@ class StreamStoreImpl {
         s.thinkingText = '';
         s.streamText += delta;
         appendReplyTraceEvent(s, delta);
+        break;
+      }
+
+      case 'streamReset': {
+        const reason = (typeof event.reason === 'string' ? event.reason : '')
+          || (typeof raw.reason === 'string' ? raw.reason : '')
+          || 'Stream interrupted; retrying without streaming.';
+        s.streamText = '';
+        s.streamRounds = [];
+        s.thinkingText = '';
+        s.isThinking = false;
+        s.toolCalls = [];
+        s.traceEvents = s.traceEvents.filter(trace => trace.kind === 'status');
+        s.error = null;
+        s._activeRoundId = null;
+        s._activeRoundAcceptingStarts = false;
+        appendStatusTraceEvent(s, reason, 'muted');
         break;
       }
 

@@ -1,6 +1,6 @@
 {
   "name": "generate_docx",
-  "description": "Create or replace a professional DOCX (Word) document at the specified path within a registered source directory.\n\nUse this tool when the user asks to create or update a Word document. Think carefully about audience, tone, hierarchy, and layout before calling it.\n\nCapabilities:\n- Cover page with title, subtitle, and cover note\n- Themed colors and fonts (primary, accent, title font, body font)\n- Page headers and footers\n- Sections with headings, body text, bullet lists, numbered lists, hyperlinks, callout boxes, and tables\n- Page breaks between sections\n- Body text auto-detects inline bullets (lines starting with \"- \" or \"• \")\n\nDesign tips:\n- Use `theme` to set brand colors and fonts consistently\n- Use `callout` for important highlights (info/warning/success tones)\n- Use `numbered_items` for step-by-step instructions\n- Use `links` to add clickable hyperlinks in sections\n- Set `header`/`footer` for consistent page branding\n- Use `page_break_before: true` to start major sections on fresh pages",
+  "description": "Create or replace a professional DOCX (Word) document at the specified path within a registered source directory.\n\nUse this tool when the user asks to create or update a Word document, including markdown-to-DOCX conversion. If the user already provided markdown content or asks for a business plan/report/proposal in DOCX, put the markdown directly in `content.markdown` or provide structured `sections`; do not create a .md file first and do not install packages just to convert it.\n\nCapabilities:\n- Direct markdown-to-DOCX input via `content.markdown` (headings, paragraphs, bullets, numbered lists, blockquote callouts, and pipe tables)\n- Cover page with title, subtitle, and cover note\n- Themed colors and fonts (primary, accent, title font, body font)\n- Page headers and footers\n- Sections with headings, body text, bullet lists, numbered lists, hyperlinks, callout boxes, and tables\n- Page breaks between sections\n- Body text auto-detects inline bullets (lines starting with \"- \" or \"• \")\n\nDesign tips:\n- Use `theme` to set brand colors and fonts consistently\n- Use `callout` for important highlights (info/warning/success tones)\n- Use `numbered_items` for step-by-step instructions\n- Use `links` to add clickable hyperlinks in sections\n- Set `header`/`footer` for consistent page branding\n- Use `page_break_before: true` to start major sections on fresh pages",
   "parameters": {
     "type": "object",
     "properties": {
@@ -59,9 +59,13 @@
               }
             }
           },
+          "markdown": {
+            "type": "string",
+            "description": "Optional markdown source to convert directly into DOCX sections. Supports headings, paragraphs, bullets, numbered lists, blockquotes, and pipe tables. Use this instead of creating a temporary .md file when the final user-requested artifact is DOCX."
+          },
           "sections": {
             "type": "array",
-            "description": "Array of document sections. Each section can contain multiple content elements.",
+            "description": "Array of document sections. Each section can contain multiple content elements. Optional when `markdown` is provided.",
             "items": {
               "type": "object",
               "properties": {
@@ -142,8 +146,7 @@
               }
             }
           }
-        },
-        "required": ["sections"]
+        }
       }
     },
     "required": ["path", "content"]
