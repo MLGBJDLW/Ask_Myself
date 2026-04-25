@@ -399,6 +399,7 @@ export function AgentConfigForm({
       }
     }
 
+    setContextWindow(null);
     previousProviderRef.current = provider;
   }, [baseUrl, provider, preset, useCustomModel]);
 
@@ -457,6 +458,7 @@ export function AgentConfigForm({
     }
     if (!activePreset.models.some((m) => m.id === model)) {
       setModel(activePresetDefaultModel);
+      setContextWindow(null);
     }
   }, [activePreset, activePresetDefaultModel, model, useCustomModel]);
 
@@ -653,7 +655,10 @@ export function AgentConfigForm({
         </label>
         <select
           value={provider}
-          onChange={(e) => setProvider(e.target.value as ProviderType)}
+          onChange={(e) => {
+            setProvider(e.target.value as ProviderType);
+            setContextWindow(null);
+          }}
           className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
         >
           {PROVIDER_LABEL_KEYS.map((opt) => (
@@ -712,7 +717,10 @@ export function AgentConfigForm({
           </label>
           <select
             value={model}
-            onChange={(e) => setModel(e.target.value)}
+            onChange={(e) => {
+              setModel(e.target.value);
+              setContextWindow(null);
+            }}
             className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
           >
             {activePreset.models.map((m) => (
@@ -739,7 +747,10 @@ export function AgentConfigForm({
           </label>
           <Input
             value={model}
-            onChange={(e) => setModel(e.target.value)}
+            onChange={(e) => {
+              setModel(e.target.value);
+              setContextWindow(null);
+            }}
             placeholder={
               provider === "open_ai"
                 ? "gpt-5.5"
@@ -762,6 +773,7 @@ export function AgentConfigForm({
               onClick={() => {
                 setUseCustomModel(false);
                 setModel(activePresetDefaultModel);
+                setContextWindow(null);
               }}
               className="text-xs text-text-tertiary hover:text-accent transition-colors cursor-pointer"
             >

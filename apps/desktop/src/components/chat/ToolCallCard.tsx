@@ -47,6 +47,15 @@ interface SearchResultItem {
   preview: string;
 }
 
+interface TrustBoundaryArtifact {
+  origin?: string;
+  authority?: string;
+  visibility?: string;
+  mutability?: string;
+  externality?: string;
+  canInstruct?: boolean;
+}
+
 interface ToolCallCardProps {
   toolName?: string;
   arguments?: string;
@@ -173,6 +182,16 @@ function extractPptDeckArtifact(
   const spec = obj.spec as DeckSpec;
   if (!Array.isArray(spec.slides)) return null;
   return { path: obj.path, spec };
+}
+
+function extractTrustBoundary(
+  artifacts: ArtifactPayload | undefined,
+): TrustBoundaryArtifact | null {
+  if (!artifacts || Array.isArray(artifacts) || typeof artifacts !== 'object') return null;
+  const record = artifacts as Record<string, unknown>;
+  const boundary = record.trustBoundary;
+  if (!boundary || typeof boundary !== 'object' || Array.isArray(boundary)) return null;
+  return boundary as TrustBoundaryArtifact;
 }
 
 function verificationStatusLabel(
@@ -326,6 +345,7 @@ export function ToolCallCard({
   const planArtifact = useMemo(() => extractPlanArtifact(artifacts), [artifacts]);
   const verificationArtifact = useMemo(() => extractVerificationArtifact(artifacts), [artifacts]);
   const pptDeckArtifact = useMemo(() => extractPptDeckArtifact(artifacts), [artifacts]);
+  const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
   const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact);
 
   const isSearchDone =
@@ -430,7 +450,24 @@ export function ToolCallCard({
               </pre>
             )}
             {searchItems ? (
-              <SearchResultCards items={searchItems} />
+              <>
+                {trustBoundary && (
+                  <div className="mb-2 flex flex-wrap gap-1.5 text-[10px] text-text-tertiary">
+                    <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+                      {trustBoundary.authority ?? 'evidence'}
+                    </span>
+                    <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+                      can instruct: {trustBoundary.canInstruct ? 'yes' : 'no'}
+                    </span>
+                    {trustBoundary.visibility && (
+                      <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+                        {trustBoundary.visibility}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <SearchResultCards items={searchItems} />
+              </>
             ) : planArtifact ? (
               <PlanPanel plan={planArtifact} />
             ) : verificationArtifact ? (
@@ -667,7 +704,24 @@ export function ToolCallCard({
               ) : verificationArtifact ? (
                 <VerificationPanel verification={verificationArtifact} />
               ) : searchItems ? (
-                <SearchResultCards items={searchItems} />
+                <>
+                  {trustBoundary && (
+                    <div className="mb-2 flex flex-wrap gap-1.5 text-[10px] text-text-tertiary">
+                      <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+                        {trustBoundary.authority ?? 'evidence'}
+                      </span>
+                      <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+                        can instruct: {trustBoundary.canInstruct ? 'yes' : 'no'}
+                      </span>
+                      {trustBoundary.visibility && (
+                        <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+                          {trustBoundary.visibility}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  <SearchResultCards items={searchItems} />
+                </>
               ) : content ? (
                 <pre
                   className={`text-xs whitespace-pre-wrap break-words max-h-48 overflow-y-auto

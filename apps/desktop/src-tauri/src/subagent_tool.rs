@@ -1762,7 +1762,7 @@ impl Tool for JudgeSubagentResultsTool {
             stop: None,
             thinking_budget: None,
             reasoning_effort: None,
-            provider_type: self.runtime.base_config.provider_type.clone(),
+            provider_type: self.runtime.base_config.provider_type,
             parallel_tool_calls: true,
         };
         let judge_cancel_token = self.runtime.cancel_token.child_token();

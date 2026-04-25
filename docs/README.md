@@ -1,11 +1,11 @@
 # Documentation Index
 
-This folder captures the durable product and engineering memory for Nexa.
+This folder captures the durable product and engineering memory for Nexa, which is now positioned as a local-first desktop assistant with a personal knowledge base at its core.
 
 ## Product
 
 - [PRODUCT_DIRECTION.md](./PRODUCT_DIRECTION.md)
-  Defines the product positioning, target audience, core pillars, and non-goals.
+  Defines the assistant-first product positioning, target audience, core pillars, and non-goals.
 - [ROADMAP.md](./ROADMAP.md)
   Captures the active product priorities and sequencing so the team can keep shipping in the intended direction.
 - [UX_QUALITY_BAR.md](./UX_QUALITY_BAR.md)

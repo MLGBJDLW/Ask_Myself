@@ -1,8 +1,8 @@
 # Nexa
 
-> A local-first personal knowledge and desktop assistance workspace.
+> A local-first desktop assistant and personal knowledge workspace.
 
-Nexa is a desktop application that turns your local files into a searchable, AI-augmented knowledge base and a practical desktop assistant. Point it at folders containing notes, PDFs, logs, spreadsheets, presentations, and other documents; it indexes everything locally, lets you search in natural language, grounds answers in evidence from your own data, and increasingly helps with everyday desktop tasks such as investigation, summarization, document creation, and office-style assistance.
+Nexa is a local desktop assistant built around your own files and knowledge base. Point it at folders containing notes, PDFs, logs, spreadsheets, presentations, and other documents; it indexes everything locally, lets you search in natural language, grounds answers in evidence from your own data, and helps with everyday desktop work such as investigation, summarization, document creation, comparison, and office-style assistance.
 
 Unlike cloud-native note tools, the core data path stays on your machine. Indexing, parsing, embedding, OCR, search, collections, and chat persistence all run locally. External LLM providers can be used for generation, but the app sends scoped context rather than your full document store.
 
@@ -15,7 +15,7 @@ The project has recently evolved beyond a flat chat log:
 
 ## Product Direction
 
-Nexa is no longer only a “local knowledge base chat” product.
+Nexa is no longer only a “local knowledge base chat” product. The product direction is a local-first assistant with a strong knowledge base core.
 
 The active direction is:
 

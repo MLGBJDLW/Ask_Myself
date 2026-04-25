@@ -130,6 +130,65 @@ function writeUsageCache(cache: Record<string, StoredUsageEntry>) {
   }
 }
 
+async function resolveContextWindowForConfig(config: AgentConfig | null): Promise<number> {
+  if (!config) return 0;
+  if (config.contextWindow && config.contextWindow > 0) return config.contextWindow;
+  return api.getModelContextWindow(config.model).catch(() => 0);
+}
+
+function findConfigForConversation(
+  configs: AgentConfig[],
+  conversation: Conversation,
+  fallback: AgentConfig | null,
+): AgentConfig | null {
+  return (
+    configs.find(
+      (config) =>
+        config.provider === conversation.provider &&
+        config.model === conversation.model &&
+        config.isDefault,
+    ) ??
+    configs.find(
+      (config) =>
+        config.provider === conversation.provider &&
+        config.model === conversation.model,
+    ) ??
+    fallback
+  );
+}
+
+function buildRuntimeProfile(
+  config: AgentConfig | null,
+  conversation: Conversation | null,
+  contextWindow: number,
+): RuntimeProfile | null {
+  const provider = conversation?.provider ?? config?.provider ?? '';
+  const model = conversation?.model ?? config?.model ?? '';
+  if (!provider || !model) return null;
+
+  const reasoningEnabled = Boolean(
+    config?.reasoningEnabled || config?.thinkingBudget || config?.reasoningEffort,
+  );
+  const reasoningDetail = !reasoningEnabled
+    ? 'off'
+    : config?.reasoningEffort
+      ? `effort ${config.reasoningEffort}`
+      : config?.thinkingBudget
+        ? `${config.thinkingBudget} thinking tokens`
+        : 'on';
+
+  return {
+    provider,
+    model,
+    contextWindow,
+    reasoningEnabled,
+    reasoningDetail,
+    sourceAuthority: 'KB evidence only',
+    toolPolicy: 'read/search allowed; mutation asks',
+    memoryPolicy: 'chat plus approved memory',
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
@@ -154,6 +213,17 @@ export interface UseChatSessionOptions {
   initialCollectionContext?: Conversation['collectionContext'];
 }
 
+export interface RuntimeProfile {
+  provider: string;
+  model: string;
+  contextWindow: number;
+  reasoningEnabled: boolean;
+  reasoningDetail: string;
+  sourceAuthority: string;
+  toolPolicy: string;
+  memoryPolicy: string;
+}
+
 export interface UseChatSessionReturn {
   messages: ConversationMessage[];
   turns: ConversationTurn[];
@@ -170,6 +240,7 @@ export interface UseChatSessionReturn {
   loadingConfig: boolean;
   agentConfig: AgentConfig | null;
   contextWindow: number;
+  runtimeProfile: RuntimeProfile | null;
   lastUsage: UsageTotal | null;
   tokenUsage: {
     promptTokens: number;
@@ -257,6 +328,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const streamingConversationRef = useRef<string | null>(null);
   const systemPromptCacheRef = useRef<Record<string, string>>({});
   const contextWindowCacheRef = useRef<Record<string, number>>({});
+  const agentConfigsRef = useRef<AgentConfig[]>([]);
+  const defaultAgentConfigRef = useRef<AgentConfig | null>(null);
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
   const messageCacheRef = useRef(messageCache);
@@ -382,20 +455,49 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   /* ── Switch agent config (called from UI model selector) ─────── */
   const switchAgentConfig = useCallback(async (config: AgentConfig) => {
     await api.setDefaultAgentConfig(config.id);
+    let updatedSystemPrompt = customSystemPrompt;
+    if (activeId) {
+      const updatedConversation = await api.updateConversationModel(activeId, config.provider, config.model);
+      updatedSystemPrompt = updatedConversation.systemPrompt ?? '';
+      setConversations((prev) =>
+        prev.map((conversation) =>
+          conversation.id === activeId
+            ? { ...conversation, ...updatedConversation }
+            : conversation,
+        ),
+      );
+    }
     setAgentConfig(config);
-    const cw = config.contextWindow ?? await api.getModelContextWindow(config.model).catch(() => 0);
+    defaultAgentConfigRef.current = config;
+    agentConfigsRef.current = agentConfigsRef.current.map((candidate) => ({
+      ...candidate,
+      isDefault: candidate.id === config.id,
+    }));
+    const cw = await resolveContextWindowForConfig(config);
     setDefaultContextWindow(cw);
     setContextWindow(cw);
-  }, []);
+    if (activeId) {
+      contextWindowCacheRef.current = {
+        ...contextWindowCacheRef.current,
+        [activeId]: cw,
+      };
+      systemPromptCacheRef.current = {
+        ...systemPromptCacheRef.current,
+        [activeId]: updatedSystemPrompt,
+      };
+    }
+  }, [activeId, customSystemPrompt]);
 
   /* ── Load default agent config ──────────────────────────────────── */
   const loadDefaultConfig = useCallback(async () => {
     try {
       const configs = await api.listAgentConfigs();
       const def = configs.find((c) => c.isDefault) ?? configs[0] ?? null;
+      agentConfigsRef.current = configs;
+      defaultAgentConfigRef.current = def;
       setAgentConfig(def);
       if (def) {
-        const cw = def.contextWindow ?? await api.getModelContextWindow(def.model).catch(() => 0);
+        const cw = await resolveContextWindowForConfig(def);
         setDefaultContextWindow(cw);
         setContextWindow(cw);
       } else {
@@ -403,6 +505,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         setContextWindow(0);
       }
     } catch {
+      agentConfigsRef.current = [];
+      defaultAgentConfigRef.current = null;
       setAgentConfig(null);
       setDefaultContextWindow(0);
       setContextWindow(0);
@@ -421,6 +525,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     if (!activeId) {
       setCachedUsage(null);
       setCustomSystemPrompt(externalSystemPrompt ?? '');
+      setAgentConfig(defaultAgentConfigRef.current);
       setContextWindow(defaultContextWindow);
       setLoadingMsgs(false);
       return;
@@ -477,9 +582,17 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           [activeId]: conv.systemPrompt ?? '',
         };
         setCustomSystemPrompt(conv.systemPrompt ?? '');
-        const cw = await api.getModelContextWindow(conv.model).catch(() => 0);
+        const selectedConfig = findConfigForConversation(
+          agentConfigsRef.current,
+          conv,
+          defaultAgentConfigRef.current,
+        );
+        const cw = await resolveContextWindowForConfig(selectedConfig);
         if (!cancelled) {
           const resolvedContextWindow = cw || defaultContextWindow;
+          if (selectedConfig) {
+            setAgentConfig(selectedConfig);
+          }
           contextWindowCacheRef.current = {
             ...contextWindowCacheRef.current,
             [activeId]: resolvedContextWindow,
@@ -624,6 +737,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     setInternalConversationId(null);
     setCustomSystemPrompt('');
     setCachedUsage(null);
+    setAgentConfig(defaultAgentConfigRef.current);
     setContextWindow(defaultContextWindow);
     usageConversationRef.current = null;
     pendingStreamConversationRef.current = null;
@@ -649,6 +763,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         if (activeId === id) {
           setInternalConversationId(null);
           setCachedUsage(null);
+          setAgentConfig(defaultAgentConfigRef.current);
           setContextWindow(defaultContextWindow);
           usageConversationRef.current = null;
           pendingStreamConversationRef.current = null;
@@ -680,6 +795,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         if (activeId && idSet.has(activeId)) {
           setInternalConversationId(null);
           setCachedUsage(null);
+          setAgentConfig(defaultAgentConfigRef.current);
           setContextWindow(defaultContextWindow);
           usageConversationRef.current = null;
           pendingStreamConversationRef.current = null;
@@ -703,6 +819,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       systemPromptCacheRef.current = {};
       contextWindowCacheRef.current = {};
       setCachedUsage(null);
+      setAgentConfig(defaultAgentConfigRef.current);
       setContextWindow(defaultContextWindow);
       usageConversationRef.current = null;
       pendingStreamConversationRef.current = null;
@@ -971,6 +1088,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         : null))
     : null;
 
+  const runtimeProfile = buildRuntimeProfile(agentConfig, activeConversation, contextWindow);
+
   return {
     messages,
     turns: activeTurns,
@@ -987,6 +1106,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     loadingConfig: loadingConfig || loadingConvos,
     agentConfig,
     contextWindow,
+    runtimeProfile,
     lastUsage: scopedLastUsage,
     tokenUsage,
     lastCached: scopedLastCached,

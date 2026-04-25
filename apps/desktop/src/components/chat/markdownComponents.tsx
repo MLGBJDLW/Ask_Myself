@@ -322,23 +322,37 @@ async function loadMermaid() {
   return mermaid;
 }
 
+export function normalizeMermaidChart(chart: string): string {
+  let normalized = chart
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+
+  const fenced = normalized.match(/^```(?:\s*mermaid)?[^\n]*\n([\s\S]*?)\n```\s*$/i);
+  if (fenced) {
+    normalized = fenced[1].trim();
+  }
+
+  return normalized.replace(/^\s*mermaid\s*\n/i, '').trim();
+}
+
 function MermaidBlock({ chart }: { chart: string }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const [svg, setSvg] = useState('');
-  const [error, setError] = useState<string | null>(null);
   const [rendering, setRendering] = useState(true);
   const diagramId = useId().replace(/[:]/g, '-');
+  const normalizedChart = normalizeMermaidChart(chart);
 
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(chart);
+      await navigator.clipboard.writeText(normalizedChart);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
       // ignore clipboard failures
     }
-  }, [chart]);
+  }, [normalizedChart]);
 
   useEffect(() => {
     let cancelled = false;
@@ -349,16 +363,14 @@ function MermaidBlock({ chart }: { chart: string }) {
         setRendering(true);
         const { svg: nextSvg } = await mermaid.render(
           `mermaid-${diagramId}-${Date.now()}`,
-          chart,
+          normalizedChart,
         );
         if (!cancelled) {
           setSvg(nextSvg);
-          setError(null);
         }
-      } catch (err) {
+      } catch {
         if (!cancelled) {
           setSvg('');
-          setError(err instanceof Error ? err.message : 'Mermaid render failed');
         }
       } finally {
         if (!cancelled) {
@@ -371,7 +383,7 @@ function MermaidBlock({ chart }: { chart: string }) {
     return () => {
       cancelled = true;
     };
-  }, [chart, diagramId]);
+  }, [normalizedChart, diagramId]);
 
   return (
     <div className="group/code relative my-2 overflow-hidden rounded-lg border border-border bg-surface-1/70">
@@ -410,10 +422,10 @@ function MermaidBlock({ chart }: { chart: string }) {
         ) : (
           <div className="space-y-2">
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              Mermaid render failed: {error ?? 'Unknown error'}
+              Could not render this Mermaid diagram. The source is shown below.
             </div>
             <pre className="overflow-x-auto rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-              <code>{chart}</code>
+              <code>{normalizedChart || chart}</code>
             </pre>
           </div>
         )}

@@ -1360,6 +1360,29 @@ fn db_config_to_provider_config(
     }
 }
 
+fn select_agent_config_for_conversation(
+    db: &Database,
+    conv: &Conversation,
+) -> Result<DbAgentConfig, String> {
+    let configs = db.list_agent_configs().map_err(|e| e.to_string())?;
+    let default_config = configs.iter().find(|cfg| cfg.is_default).cloned();
+    let matching_config = configs
+        .iter()
+        .filter(|cfg| cfg.provider == conv.provider && cfg.model == conv.model)
+        .find(|cfg| cfg.is_default)
+        .cloned()
+        .or_else(|| {
+            configs
+                .iter()
+                .find(|cfg| cfg.provider == conv.provider && cfg.model == conv.model)
+                .cloned()
+        });
+
+    matching_config
+        .or(default_config)
+        .ok_or_else(|| "No agent config set. Please configure an LLM provider first.".to_string())
+}
+
 fn build_connection_probe_request(config: &SaveAgentConfigInput) -> CompletionRequest {
     CompletionRequest {
         model: config.model.trim().to_string(),
@@ -1384,6 +1407,9 @@ fn conv_message_to_llm(msg: &ConversationMessage) -> Message {
     } else {
         Some(msg.tool_calls.clone())
     };
+    if msg.role == Role::Assistant {
+        m.reasoning_content = msg.thinking.clone();
+    }
     m
 }
 
@@ -1685,6 +1711,20 @@ pub async fn update_conversation_collection_context_cmd(
 }
 
 #[tauri::command]
+pub async fn update_conversation_model_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    provider: String,
+    model: String,
+) -> Result<Conversation, String> {
+    state
+        .db
+        .update_conversation_model(&id, &provider, &model)
+        .map_err(|e| e.to_string())?;
+    state.db.get_conversation(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn delete_conversation_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -1897,12 +1937,8 @@ pub async fn compact_conversation_cmd(
         return Ok(());
     }
 
-    // 2. Load default agent config for provider / model.
-    let db_config = state
-        .db
-        .get_default_agent_config()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "No default agent config set.".to_string())?;
+    // 2. Load the config that matches this conversation's provider/model.
+    let db_config = select_agent_config_for_conversation(&state.db, &conv)?;
 
     let app_cfg = state.db.load_app_config().unwrap_or_default();
     let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
@@ -2194,21 +2230,22 @@ pub async fn agent_chat_cmd(
     message: String,
     attachments: Option<Vec<ImageAttachment>>,
 ) -> Result<(), String> {
-    // 1. Get default agent config from DB.
-    let db_config = state
+    // 1. Load the conversation first so provider/model selection follows the
+    // active chat, not whatever global default happened to be selected later.
+    let conv = state
         .db
-        .get_default_agent_config()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| {
-            "No default agent config set. Please configure an LLM provider first.".to_string()
-        })?;
+        .get_conversation(&conversation_id)
+        .map_err(|e| e.to_string())?;
 
-    // 2. Create LLM provider.
+    // 2. Resolve the best matching agent config for this conversation.
+    let db_config = select_agent_config_for_conversation(&state.db, &conv)?;
+
+    // 3. Create LLM provider.
     let app_cfg = state.db.load_app_config().unwrap_or_default();
     let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
     let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
 
-    // 3. Load conversation history and convert to LLM messages.
+    // 4. Load conversation history and convert to LLM messages.
     let existing_msgs = state
         .db
         .get_messages(&conversation_id)
@@ -2217,7 +2254,7 @@ pub async fn agent_chat_cmd(
     let history = sanitize_tool_call_history(history);
     let next_sort_order = existing_msgs.len() as i64;
 
-    // 4. Save user message to DB.
+    // 5. Save user message to DB.
     let user_msg = ConversationMessage {
         id: Uuid::new_v4().to_string(),
         conversation_id: conversation_id.clone(),
@@ -2244,11 +2281,7 @@ pub async fn agent_chat_cmd(
         .create_conversation_turn(&conversation_id, &user_msg.id, None)
         .map_err(|e| e.to_string())?;
 
-    // 5. Load conversation to check for custom system prompt.
-    let conv = state
-        .db
-        .get_conversation(&conversation_id)
-        .map_err(|e| e.to_string())?;
+    // 6. Build prompt sections from conversation context.
     let source_scope_ids = state
         .db
         .get_linked_sources(&conversation_id)

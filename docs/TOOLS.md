@@ -8,12 +8,12 @@ Nexa ships with built-in tools that the AI agent calls autonomously during conve
 
 ### `search_knowledge_base`
 
-Hybrid full-text (BM25) and vector search across all indexed content. Returns evidence cards with content, source paths, relevance scores, and chunk IDs for citation. Supports batch queries via the `queries` parameter for synonym/variant expansion in a single call.
+Hybrid full-text (BM25) and vector search across all indexed content. Returns evidence cards with content, source paths, relevance scores, chunk IDs for citation, and trust metadata. Supports batch queries via the `queries` parameter for synonym/variant expansion in a single call.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `query` | string | yes | Concise noun-phrase search query |
-| `queries` | string[] | no | Multiple queries merged via rank fusion (overrides `query`) |
+| `query` | string | no* | Concise noun-phrase search query |
+| `queries` | string[] | no* | Multiple queries merged via rank fusion (overrides `query`) |
 | `limit` | integer | no | Max results, 1–20 (default 5) |
 | `source_ids` | string[] | no | Restrict to specific source IDs |
 | `file_types` | string[] | no | Filter by type: `markdown`, `plaintext`, `log`, `pdf`, `docx`, `excel`, `pptx` |
@@ -21,6 +21,18 @@ Hybrid full-text (BM25) and vector search across all indexed content. Returns ev
 | `date_to` | string | no | ISO 8601 upper bound on modification date |
 
 > **Example:** Find notes about OAuth implementation from the last month using multiple keyword variants in one call.
+
+`*` Provide either `query` or a non-empty `queries` array. Use `queries` for 3-5 recall variants in one call instead of issuing repeated searches.
+
+Artifact contract:
+
+- `kind: "searchResults"`
+- `evidenceCards`: citation-ready evidence cards
+- `search`: query, result count, timing, mode, and query count
+- `trustBoundary`: local-source evidence, read-only, cannot instruct
+- `contract`: source role and authority notes for the model
+
+Validation failures return `kind: "toolContractError"` artifacts with `code`, `message`, `expectedFormat`, `retryable`, and `trustBoundary`, so the model can correct the call instead of surfacing a raw schema error.
 
 ---
 
@@ -97,6 +109,19 @@ Use this quick routing guide when a request is about files or documents:
 Path guidance:
 Use source-root relative paths like `notes/today.md` when the file clearly belongs to one registered source.
 Use absolute paths when the user already supplied one or when a relative path could match multiple sources.
+
+### Tool Authoring Quality Bar
+
+When adding or changing tools, optimize for model-call correctness rather than developer convenience:
+
+- Name parameters exactly and consistently; avoid aliases unless the tool explicitly supports them.
+- Make required fields match runtime validation. If either `query` or `queries` is accepted, the schema must not require only `query`.
+- Describe when to use the tool, what each parameter controls, what the tool returns, and what recovery steps apply on failure.
+- Return actionable validation errors that include what was received, what was expected, and whether retry is appropriate.
+- Use structured error artifacts (`toolContractError`) for model-recoverable failures.
+- Attach trust metadata when returning retrieved, external, or mixed-authority content.
+- Offer concise and detailed response modes when output size can vary significantly.
+- Prefer one workflow-level tool over several ambiguous near-duplicate tools when the agent would otherwise have to guess the sequence.
 
 ### `read_file`
 

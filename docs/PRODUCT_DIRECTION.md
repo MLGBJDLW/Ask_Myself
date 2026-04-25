@@ -2,7 +2,7 @@
 
 ## Summary
 
-Nexa is evolving from a local-first personal knowledge recall engine into a broader local-first desktop assistant.
+Nexa has formally moved from being primarily a local-first personal knowledge recall engine to being a broader local-first desktop assistant with knowledge recall as a core capability.
 
 The assistant should still excel at evidence-first recall over the user's own files, but it should also become genuinely useful for everyday desktop work:
 

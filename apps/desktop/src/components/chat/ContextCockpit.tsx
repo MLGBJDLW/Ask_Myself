@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronDown, Clock3, Gauge, Loader2, Plus, Scissors, ShieldCheck, Zap } from 'lucide-react';
+import { AlertTriangle, BrainCircuit, ChevronDown, Clock3, Cpu, Gauge, Loader2, Plus, Scissors, ShieldCheck, Wrench, Zap } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 
 interface TokenUsage {
@@ -17,9 +17,21 @@ interface SourceSelectionSummary {
   loading: boolean;
 }
 
+interface RuntimeProfile {
+  provider: string;
+  model: string;
+  contextWindow: number;
+  reasoningEnabled: boolean;
+  reasoningDetail: string;
+  sourceAuthority: string;
+  toolPolicy: string;
+  memoryPolicy: string;
+}
+
 interface ContextCockpitProps {
   sourceSummary: SourceSelectionSummary;
   tokenUsage?: TokenUsage | null;
+  runtimeProfile?: RuntimeProfile | null;
   finishReason?: string | null;
   contextOverflow?: boolean;
   rateLimited?: boolean;
@@ -39,6 +51,7 @@ function formatTokens(n: number): string {
 export function ContextCockpit({
   sourceSummary,
   tokenUsage,
+  runtimeProfile,
   finishReason,
   contextOverflow = false,
   rateLimited = false,
@@ -118,6 +131,14 @@ export function ContextCockpit({
   const usageSummaryLabel = usage
     ? t('chat.tokenUsagePercent', { percent: usagePercentRounded })
     : t('chat.contextNoUsage');
+  const modelLabel = runtimeProfile
+    ? `${runtimeProfile.provider} / ${runtimeProfile.model}`
+    : 'No model';
+  const runtimeContextLabel = runtimeProfile?.contextWindow
+    ? formatTokens(runtimeProfile.contextWindow)
+    : usage
+      ? formatTokens(usage.contextWindow)
+      : '';
 
   return (
     <div className="shrink-0 border-b border-border/60 bg-surface-1/70 px-3 py-2 backdrop-blur">
@@ -176,6 +197,11 @@ export function ContextCockpit({
         )}
 
           <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">
+            <Cpu className="h-3 w-3 text-text-tertiary" />
+            <span className="truncate">{modelLabel}</span>
+          </span>
+
+          <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">
             <span className="truncate">{t('chat.knowledgeSources')}: {scopeSummary}</span>
           </span>
 
@@ -218,6 +244,32 @@ export function ContextCockpit({
             </div>
 
             <div className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
+              <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
+                <Cpu className="h-3.5 w-3.5" />
+                Runtime model
+              </div>
+              <div className="truncate text-sm font-medium text-text-primary" title={modelLabel}>
+                {modelLabel}
+              </div>
+              <div className="mt-1 text-[11px] text-text-secondary">
+                {runtimeContextLabel ? `Context ${runtimeContextLabel}` : 'Context window not resolved yet'}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
+              <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
+                <BrainCircuit className="h-3.5 w-3.5" />
+                Reasoning
+              </div>
+              <div className="text-sm text-text-primary">
+                {runtimeProfile?.reasoningEnabled ? 'enabled' : 'disabled'}
+              </div>
+              <div className="mt-1 truncate text-[11px] text-text-secondary" title={runtimeProfile?.reasoningDetail}>
+                {runtimeProfile?.reasoningDetail ?? 'off'}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
               <div className="mb-1 text-[11px] font-medium text-text-tertiary">
                 {t('chat.contextStatusLabel')}
               </div>
@@ -244,7 +296,8 @@ export function ContextCockpit({
             </div>
 
             <div className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
-              <div className="mb-1 text-[11px] font-medium text-text-tertiary">
+              <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
+                <ShieldCheck className="h-3.5 w-3.5" />
                 {t('chat.knowledgeSources')}
               </div>
               <div className="text-sm text-text-primary">{scopeSummary}</div>
@@ -257,6 +310,19 @@ export function ContextCockpit({
                         selected: sourceSummary.selectedCount,
                         total: sourceSummary.totalCount,
                       })}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
+              <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
+                <Wrench className="h-3.5 w-3.5" />
+                Tool policy
+              </div>
+              <div className="text-sm text-text-primary">
+                {runtimeProfile?.sourceAuthority ?? 'KB evidence only'}
+              </div>
+              <div className="mt-1 text-[11px] text-text-secondary">
+                {runtimeProfile?.toolPolicy ?? 'read/search allowed; mutation asks'}
               </div>
             </div>
           </div>

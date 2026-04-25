@@ -433,8 +433,10 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     let model_lower = request.model.to_lowercase();
     let is_deepseek_provider = matches!(request.provider_type, Some(ProviderType::DeepSeek))
         || model_lower.contains("deepseek");
+    let deepseek_thinking_requested =
+        request.thinking_budget.is_some() || request.reasoning_effort.is_some();
     let deepseek_thinking_mode = if is_deepseek_provider {
-        Some(if request.thinking_budget.is_some() {
+        Some(if deepseek_thinking_requested {
             "enabled"
         } else {
             "disabled"
@@ -443,7 +445,7 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
         None
     };
     let deepseek_thinking_enabled = deepseek_thinking_mode == Some("enabled");
-    let include_reasoning_content = is_deepseek_provider;
+    let include_reasoning_content = is_deepseek_provider && deepseek_thinking_enabled;
     let needs_completion_tokens = is_reasoning || is_deepseek || deepseek_thinking_enabled;
     let suppress_temperature = is_reasoning || is_deepseek || deepseek_thinking_enabled;
     // Some providers/models require function arguments as JSON objects, not strings.
@@ -783,6 +785,90 @@ mod tests {
 
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["reasoning_effort"], "max");
+    }
+
+    #[test]
+    fn deepseek_reasoning_effort_enables_thinking_without_budget() {
+        let request = CompletionRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: Some(ReasoningEffort::High),
+            provider_type: Some(ProviderType::DeepSeek),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["max_completion_tokens"], 100);
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn deepseek_thinking_history_replays_reasoning_content() {
+        let assistant = Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::Text {
+                text: "answer".to_string(),
+            }],
+            name: None,
+            tool_calls: None,
+            reasoning_content: Some("prior reasoning".to_string()),
+        };
+        let request = CompletionRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![Message::text(Role::User, "hello"), assistant],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: Some(ReasoningEffort::High),
+            provider_type: Some(ProviderType::DeepSeek),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["messages"][1]["reasoning_content"], "prior reasoning");
+    }
+
+    #[test]
+    fn deepseek_disabled_thinking_omits_reasoning_content() {
+        let assistant = Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::Text {
+                text: "answer".to_string(),
+            }],
+            name: None,
+            tool_calls: None,
+            reasoning_content: Some("prior reasoning".to_string()),
+        };
+        let request = CompletionRequest {
+            model: "deepseek-v4-chat".to_string(),
+            messages: vec![Message::text(Role::User, "hello"), assistant],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::DeepSeek),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(body["messages"][1].get("reasoning_content").is_none());
     }
 
     #[test]

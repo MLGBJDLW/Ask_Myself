@@ -103,6 +103,30 @@ function extractCard(item: unknown): CitationCardData | null {
   };
 }
 
+function collectArtifactItems(value: unknown, out: unknown[]) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectArtifactItems(item, out);
+    return;
+  }
+  if (typeof value !== 'object') {
+    out.push(value);
+    return;
+  }
+
+  const obj = value as Record<string, unknown>;
+  out.push(obj);
+
+  // Rich tool artifacts use named arrays such as evidenceCards. Recurse so
+  // citation lookup stays compatible with both old array artifacts and the
+  // newer contract/trust-boundary object shape.
+  for (const key of ['evidenceCards', 'cards', 'results', 'items']) {
+    if (Array.isArray(obj[key])) {
+      collectArtifactItems(obj[key], out);
+    }
+  }
+}
+
 export interface ToolCallArtifacts {
   artifacts?: import('../types/conversation').MessageArtifacts;
 }
@@ -117,7 +141,8 @@ export function buildCitationMap(
   const map = new Map<string, CitationCardData>();
   for (const tc of toolCalls) {
     if (!tc.artifacts) continue;
-    const items = Array.isArray(tc.artifacts) ? tc.artifacts : Object.values(tc.artifacts);
+    const items: unknown[] = [];
+    collectArtifactItems(tc.artifacts, items);
     for (const item of items) {
       const card = extractCard(item);
       if (card) {

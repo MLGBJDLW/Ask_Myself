@@ -318,6 +318,9 @@ export const updateConversationCollectionContext = (
   collectionContext: Conversation['collectionContext'],
 ) => invoke<void>('update_conversation_collection_context_cmd', { id, collectionContext });
 
+export const updateConversationModel = (id: string, provider: string, model: string) =>
+  invoke<Conversation>('update_conversation_model_cmd', { id, provider, model });
+
 // ── Projects ────────────────────────────────────────────────────────────
 
 export const createProject = (input: CreateProjectInput) =>

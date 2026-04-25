@@ -282,6 +282,25 @@ function extractPersistedTraceItems(
   return items.length > 0 ? items : null;
 }
 
+function collectArtifactValues(value: unknown, out: unknown[]) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectArtifactValues(item, out);
+    return;
+  }
+  if (typeof value !== "object") {
+    out.push(value);
+    return;
+  }
+  const obj = value as Record<string, unknown>;
+  out.push(obj);
+  for (const key of ["evidenceCards", "cards", "results", "items"]) {
+    if (Array.isArray(obj[key])) {
+      collectArtifactValues(obj[key], out);
+    }
+  }
+}
+
 function extractTurnTrace(
   trace: ConversationTurn["trace"],
 ): { routeKind?: string; items: PersistedTraceItem[] } | null {
@@ -359,10 +378,9 @@ export function ChatMessages({
     const ids: string[] = [];
     for (const tc of toolCalls) {
       if (tc.status !== "done" || !tc.artifacts) continue;
-      const arr = Array.isArray(tc.artifacts)
-        ? tc.artifacts
-        : Object.values(tc.artifacts);
-      for (const item of arr) {
+      const items: unknown[] = [];
+      collectArtifactValues(tc.artifacts, items);
+      for (const item of items) {
         if (
           item &&
           typeof item === "object" &&

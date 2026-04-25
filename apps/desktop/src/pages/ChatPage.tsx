@@ -417,6 +417,7 @@ export function ChatPage() {
                       <select
                         className="text-[10px] text-text-tertiary bg-surface-3 pl-1.5 pr-4 py-0.5 rounded-md cursor-pointer border-none outline-none max-w-[200px] truncate appearance-none"
                         value={chat.agentConfig.id}
+                        aria-label={t('settings.defaultModel')}
                         onChange={async (e) => {
                           const selected = agentConfigs.find(c => c.id === e.target.value);
                           if (selected) await chat.switchAgentConfig(selected);
@@ -465,6 +466,7 @@ export function ChatPage() {
               <ContextCockpit
                 sourceSummary={sourceSummary}
                 tokenUsage={chat.tokenUsage}
+                runtimeProfile={chat.runtimeProfile}
                 finishReason={chat.finishReason}
                 contextOverflow={chat.contextOverflow}
                 rateLimited={chat.rateLimited}

@@ -358,7 +358,10 @@ pub async fn parse_sse_stream(
         let text: std::borrow::Cow<'_, str> = match std::str::from_utf8(&chunk) {
             Ok(s) => std::borrow::Cow::Borrowed(s),
             Err(e) => {
-                warn!("Invalid UTF-8 in SSE stream chunk ({} bytes): {e} — decoding lossy", chunk.len());
+                warn!(
+                    "Invalid UTF-8 in SSE stream chunk ({} bytes): {e} — decoding lossy",
+                    chunk.len()
+                );
                 std::borrow::Cow::Owned(String::from_utf8_lossy(&chunk).into_owned())
             }
         };

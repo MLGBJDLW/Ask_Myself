@@ -116,6 +116,98 @@ pub struct ToolResult {
     pub artifacts: Option<serde_json::Value>,
 }
 
+/// Trust metadata attached to tool artifacts that may be injected into model
+/// context or shown in the UI. Retrieved content is normally evidence, not
+/// instruction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustBoundary {
+    pub origin: String,
+    pub authority: String,
+    pub visibility: String,
+    pub mutability: String,
+    pub externality: String,
+    pub can_instruct: bool,
+}
+
+impl TrustBoundary {
+    pub fn local_source_evidence(scope_active: bool) -> Self {
+        Self {
+            origin: "local_source".to_string(),
+            authority: "evidence".to_string(),
+            visibility: if scope_active {
+                "source_scope".to_string()
+            } else {
+                "workspace".to_string()
+            },
+            mutability: "read_only".to_string(),
+            externality: "local".to_string(),
+            can_instruct: false,
+        }
+    }
+
+    pub fn tool_error() -> Self {
+        Self {
+            origin: "tool".to_string(),
+            authority: "observation".to_string(),
+            visibility: "current_chat".to_string(),
+            mutability: "read_only".to_string(),
+            externality: "local".to_string(),
+            can_instruct: false,
+        }
+    }
+}
+
+/// Structured, retryable error payload for model-facing tool failures.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolContractError {
+    pub kind: String,
+    pub code: String,
+    pub message: String,
+    pub expected_format: serde_json::Value,
+    pub retryable: bool,
+    pub trust_boundary: TrustBoundary,
+}
+
+pub(crate) fn structured_tool_error_result(
+    call_id: &str,
+    code: impl Into<String>,
+    message: impl Into<String>,
+    expected_format: serde_json::Value,
+    retryable: bool,
+) -> ToolResult {
+    let code = code.into();
+    let message = message.into();
+    let error = ToolContractError {
+        kind: "toolContractError".to_string(),
+        code: code.clone(),
+        message: message.clone(),
+        expected_format,
+        retryable,
+        trust_boundary: TrustBoundary::tool_error(),
+    };
+    let content = format!(
+        "Error: {message}\n\nCode: {code}\nRetryable: {retryable}\nUse the expected JSON shape shown in artifacts.expectedFormat before calling the tool again."
+    );
+
+    ToolResult {
+        call_id: call_id.to_string(),
+        content,
+        is_error: true,
+        artifacts: serde_json::to_value(error).ok(),
+    }
+}
+
+pub(crate) fn tool_contract_error_result(
+    call_id: &str,
+    code: impl Into<String>,
+    message: impl Into<String>,
+    expected_format: serde_json::Value,
+) -> ToolResult {
+    structured_tool_error_result(call_id, code, message, expected_format, true)
+}
+
 pub(crate) fn scope_is_active(source_scope: &[String]) -> bool {
     !source_scope.is_empty()
 }
@@ -615,5 +707,23 @@ mod tests {
 
         assert!(names.iter().any(|name| name == "compare_documents"));
         assert!(names.iter().any(|name| name == "summarize_document"));
+    }
+
+    #[test]
+    fn search_knowledge_base_contract_accepts_single_or_batch_query() {
+        let registry = default_tool_registry();
+        let def = registry
+            .get("search_knowledge_base")
+            .expect("search tool should be registered")
+            .definition();
+        let properties = def.parameters["properties"]
+            .as_object()
+            .expect("tool parameters should be an object");
+
+        assert!(properties.contains_key("query"));
+        assert!(properties.contains_key("queries"));
+        assert_eq!(def.parameters["required"], serde_json::json!([]));
+        assert!(def.description.contains("queries"));
+        assert!(def.description.contains("SINGLE call"));
     }
 }
