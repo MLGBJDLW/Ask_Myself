@@ -833,10 +833,15 @@ export interface TranslationKeys {
   'settings.thinkingBudget': string;
   'settings.thinkingBudgetHelp': string;
   'settings.reasoningEffort': string;
+  'settings.reasoningNone': string;
+  'settings.reasoningMinimal': string;
   'settings.reasoningLow': string;
   'settings.reasoningMedium': string;
   'settings.reasoningHigh': string;
+  'settings.reasoningMax': string;
+  'settings.reasoningXHigh': string;
   'settings.reasoningEffortHelp': string;
+  'settings.reasoningUnsupported': string;
   'settings.maxIterations': string;
   'settings.maxIterationsHelp': string;
   'settings.summarizationSection': string;

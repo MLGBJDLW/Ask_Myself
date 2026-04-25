@@ -1,461 +1,121 @@
+import providerPresets from "../../../../shared/provider-presets.json";
+
+export type ReasoningEffortLevel =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "max"
+  | "xhigh";
+
+export interface ThinkingBudgetCapability {
+  enabled: boolean;
+  defaultTokens?: number;
+  minTokens?: number;
+  maxTokens?: number;
+  step?: number;
+}
+
+export interface ReasoningCapability {
+  effortLevels?: ReasoningEffortLevel[];
+  defaultEffort?: ReasoningEffortLevel;
+  thinkingBudget?: ThinkingBudgetCapability;
+}
+
+export interface ProviderCapabilities {
+  reasoning?: ReasoningCapability | null;
+}
+
+export interface ProviderModelPreset {
+  id: string;
+  name: string;
+  tagKey?: string;
+  recommended?: boolean;
+  capabilities?: ProviderCapabilities;
+}
+
 export interface ProviderPreset {
   id: string;
   name: string;
   provider: string;
   baseUrl: string;
-  models: {
-    id: string;
-    name: string;
-    tagKey?: string;
-    recommended?: boolean;
-  }[];
+  models: ProviderModelPreset[];
   requiresApiKey: boolean;
   icon: string;
   description: string;
+  capabilities?: ProviderCapabilities;
 }
 
-export const PROVIDER_PRESETS: ProviderPreset[] = [
-  {
-    id: "openai",
-    name: "OpenAI",
-    provider: "open_ai",
-    baseUrl: "https://api.openai.com/v1",
-    requiresApiKey: true,
-    icon: "🤖",
-    description: "GPT-5.4, GPT-4.1, o3/o4 series",
-    models: [
-      {
-        id: "gpt-5.4",
-        name: "GPT-5.4",
-        tagKey: "providers.tagLatest",
-        recommended: true,
-      },
-      {
-        id: "gpt-5.4-pro",
-        name: "GPT-5.4 Pro",
-        tagKey: "providers.tagMostIntelligent",
-      },
-      {
-        id: "gpt-5.3-codex",
-        name: "GPT-5.3 Codex",
-        tagKey: "providers.tagCoding",
-      },
-      { id: "gpt-5.2", name: "GPT-5.2" },
-      { id: "gpt-5-mini", name: "GPT-5 Mini" },
-      { id: "gpt-5-nano", name: "GPT-5 Nano" },
-      { id: "gpt-4.1", name: "GPT-4.1 (1M Context)" },
-      { id: "gpt-4.1-mini", name: "GPT-4.1 Mini" },
-      { id: "gpt-4.1-nano", name: "GPT-4.1 Nano" },
-      { id: "gpt-4o", name: "GPT-4o" },
-      { id: "gpt-4o-mini", name: "GPT-4o Mini" },
-      { id: "o3-pro", name: "o3-pro", tagKey: "providers.tagReasoning" },
-      { id: "o4-mini", name: "o4-mini", tagKey: "providers.tagReasoning" },
-      { id: "o3", name: "o3", tagKey: "providers.tagReasoning" },
-      { id: "o3-mini", name: "o3-mini" },
-    ],
+export const PROVIDER_PRESETS: ProviderPreset[] =
+  providerPresets as ProviderPreset[];
+
+const OPENAI_O_REASONING: ReasoningCapability = {
+  effortLevels: ["low", "medium", "high"],
+  defaultEffort: "medium",
+  thinkingBudget: { enabled: false },
+};
+
+const OPENAI_GPT55_REASONING: ReasoningCapability = {
+  effortLevels: ["none", "low", "medium", "high", "xhigh"],
+  defaultEffort: "medium",
+  thinkingBudget: { enabled: false },
+};
+
+const OPENAI_GPT5_FRONTIER_REASONING: ReasoningCapability = {
+  effortLevels: ["none", "low", "medium", "high", "xhigh"],
+  defaultEffort: "none",
+  thinkingBudget: { enabled: false },
+};
+
+const OPENAI_GPT5_PRO_REASONING: ReasoningCapability = {
+  effortLevels: ["medium", "high", "xhigh"],
+  defaultEffort: "medium",
+  thinkingBudget: { enabled: false },
+};
+
+const OPENAI_GPT51_REASONING: ReasoningCapability = {
+  effortLevels: ["none", "low", "medium", "high"],
+  defaultEffort: "none",
+  thinkingBudget: { enabled: false },
+};
+
+const OPENAI_GPT5_REASONING: ReasoningCapability = {
+  effortLevels: ["minimal", "low", "medium", "high"],
+  defaultEffort: "medium",
+  thinkingBudget: { enabled: false },
+};
+
+const OPENAI_CODEX_REASONING: ReasoningCapability = {
+  effortLevels: ["low", "medium", "high", "xhigh"],
+  defaultEffort: "high",
+  thinkingBudget: { enabled: false },
+};
+
+const DEEPSEEK_REASONING: ReasoningCapability = {
+  effortLevels: ["high", "max"],
+  defaultEffort: "high",
+  thinkingBudget: { enabled: false },
+};
+
+const ANTHROPIC_BUDGET_REASONING: ReasoningCapability = {
+  thinkingBudget: {
+    enabled: true,
+    defaultTokens: 10000,
+    minTokens: 1024,
+    step: 1024,
   },
-  {
-    id: "anthropic",
-    name: "Anthropic",
-    provider: "anthropic",
-    baseUrl: "https://api.anthropic.com/v1",
-    requiresApiKey: true,
-    icon: "🧠",
-    description: "Claude Opus 4.7/4.6, Sonnet 4.6/4.5, Haiku 4.5",
-    models: [
-      {
-        id: "claude-opus-4-7",
-        name: "Claude Opus 4.7",
-        tagKey: "providers.tagMostIntelligent",
-      },
-      {
-        id: "claude-opus-4-6",
-        name: "Claude Opus 4.6",
-        tagKey: "providers.tagLatest",
-      },
-      {
-        id: "claude-sonnet-4-6",
-        name: "Claude Sonnet 4.6",
-        tagKey: "providers.tagBestBalance",
-        recommended: true,
-      },
-      { id: "claude-opus-4-5", name: "Claude Opus 4.5" },
-      { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
-      {
-        id: "claude-haiku-4-5",
-        name: "Claude Haiku 4.5",
-        tagKey: "providers.tagFastest",
-      },
-      { id: "claude-opus-4-1-20250805", name: "Claude Opus 4.1" },
-      { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
-      { id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet" },
-      { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
-      { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku" },
-    ],
+};
+
+const GEMINI_BUDGET_REASONING: ReasoningCapability = {
+  thinkingBudget: {
+    enabled: true,
+    defaultTokens: 10000,
+    minTokens: 128,
+    maxTokens: 32768,
+    step: 128,
   },
-  {
-    id: "google",
-    name: "Google",
-    provider: "google",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-    requiresApiKey: true,
-    icon: "✨",
-    description: "Gemini 3.1 preview, Gemini 2.5 Pro/Flash",
-    models: [
-      {
-        id: "gemini-2.5-pro",
-        name: "Gemini 2.5 Pro",
-        tagKey: "providers.tagBest",
-        recommended: true,
-      },
-      {
-        id: "gemini-2.5-flash",
-        name: "Gemini 2.5 Flash",
-        tagKey: "providers.tagFast",
-      },
-      {
-        id: "gemini-2.5-flash-lite",
-        name: "Gemini 2.5 Flash Lite",
-        tagKey: "providers.tagCheapest",
-      },
-      {
-        id: "gemini-3.1-pro-preview",
-        name: "Gemini 3.1 Pro Preview",
-        tagKey: "providers.tagPreview",
-      },
-      {
-        id: "gemini-3-flash-preview",
-        name: "Gemini 3 Flash Preview",
-        tagKey: "providers.tagPreview",
-      },
-      {
-        id: "gemini-3.1-flash-lite-preview",
-        name: "Gemini 3.1 Flash-Lite Preview",
-        tagKey: "providers.tagPreview",
-      },
-      { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash" },
-      { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro (2M Context)" },
-    ],
-  },
-  {
-    id: "deepseek",
-    name: "DeepSeek",
-    provider: "deep_seek",
-    baseUrl: "https://api.deepseek.com",
-    requiresApiKey: true,
-    icon: "🔎",
-    description: "DeepSeek V3.2-Exp, Reasoner",
-    models: [
-      {
-        id: "deepseek-chat",
-        name: "DeepSeek Chat (V3.2-Exp)",
-        recommended: true,
-      },
-      {
-        id: "deepseek-reasoner",
-        name: "DeepSeek Reasoner (R1)",
-        tagKey: "providers.tagReasoning",
-      },
-    ],
-  },
-  {
-    id: "xai",
-    name: "xAI",
-    provider: "open_ai",
-    baseUrl: "https://api.x.ai/v1",
-    requiresApiKey: true,
-    icon: "🚀",
-    description: "Grok 4.1 Fast, Grok 4, Grok Code",
-    models: [
-      {
-        id: "grok-4-1-fast-reasoning",
-        name: "Grok 4.1 Fast Reasoning",
-        tagKey: "providers.tagLatest",
-        recommended: true,
-      },
-      {
-        id: "grok-4-1-fast-non-reasoning",
-        name: "Grok 4.1 Fast",
-        tagKey: "providers.tagFast",
-      },
-      { id: "grok-4-fast-reasoning", name: "Grok 4 Fast Reasoning" },
-      { id: "grok-4-fast-non-reasoning", name: "Grok 4 Fast" },
-      {
-        id: "grok-code-fast-1",
-        name: "Grok Code Fast 1",
-        tagKey: "providers.tagCode",
-      },
-      { id: "grok-4", name: "Grok 4", tagKey: "providers.tagFlagship" },
-      { id: "grok-3", name: "Grok 3" },
-      { id: "grok-3-mini", name: "Grok 3 Mini" },
-    ],
-  },
-  {
-    id: "mistral",
-    name: "Mistral",
-    provider: "open_ai",
-    baseUrl: "https://api.mistral.ai/v1",
-    requiresApiKey: true,
-    icon: "🌪️",
-    description: "Mistral Large 3, Medium 3.1, Devstral 2",
-    models: [
-      {
-        id: "mistral-large-2512",
-        name: "Mistral Large 3",
-        tagKey: "providers.tagFlagship",
-        recommended: true,
-      },
-      {
-        id: "mistral-medium-2508",
-        name: "Mistral Medium 3.1",
-        tagKey: "providers.tagBestBalance",
-      },
-      {
-        id: "mistral-small-2506",
-        name: "Mistral Small 3.2",
-        tagKey: "providers.tagFast",
-      },
-      { id: "devstral-2512", name: "Devstral 2", tagKey: "providers.tagCode" },
-      {
-        id: "codestral-2508",
-        name: "Codestral 25.08",
-        tagKey: "providers.tagCoding",
-      },
-      {
-        id: "magistral-medium-2509",
-        name: "Magistral Medium",
-        tagKey: "providers.tagReasoning",
-      },
-    ],
-  },
-  {
-    id: "ollama",
-    name: "Ollama",
-    provider: "ollama",
-    baseUrl: "http://localhost:11434",
-    requiresApiKey: false,
-    icon: "🦙",
-    description: "Local models, no API key",
-    models: [
-      {
-        id: "llama3.3:latest",
-        name: "Llama 3.3",
-        tagKey: "providers.tagRecommended",
-        recommended: true,
-      },
-      { id: "qwen2.5:latest", name: "Qwen 2.5" },
-      { id: "mistral:latest", name: "Mistral" },
-      { id: "phi4:latest", name: "Phi-4" },
-      { id: "deepseek-r1:latest", name: "DeepSeek R1" },
-      { id: "gemma2:latest", name: "Gemma 2" },
-    ],
-  },
-  {
-    id: "lmstudio",
-    name: "LM Studio",
-    provider: "lm_studio",
-    baseUrl: "http://localhost:1234/v1",
-    requiresApiKey: false,
-    icon: "💻",
-    description: "Local models via LM Studio",
-    models: [],
-  },
-  {
-    id: "zhipu",
-    name: "Zhipu (GLM)",
-    provider: "zhipu",
-    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
-    requiresApiKey: true,
-    icon: "🔵",
-    description: "GLM-5, GLM-4.7, GLM-4.6V",
-    models: [
-      {
-        id: "glm-5",
-        name: "GLM-5",
-        tagKey: "providers.tagLatest",
-        recommended: true,
-      },
-      { id: "glm-5-turbo", name: "GLM-5 Turbo", tagKey: "providers.tagFast" },
-      { id: "glm-4.7", name: "GLM-4.7", tagKey: "providers.tagBest" },
-      {
-        id: "glm-4.7-flashx",
-        name: "GLM-4.7 FlashX",
-        tagKey: "providers.tagFast",
-      },
-      { id: "glm-4.6", name: "GLM-4.6" },
-      { id: "glm-4.6v", name: "GLM-4.6V", tagKey: "providers.tagVision" },
-      {
-        id: "glm-4.1v-thinking-flashx",
-        name: "GLM-4.1V Thinking FlashX",
-        tagKey: "providers.tagVision",
-      },
-      { id: "glm-4-long", name: "GLM-4 Long (1M Context)" },
-    ],
-  },
-  {
-    id: "moonshot",
-    name: "Moonshot (Kimi)",
-    provider: "moonshot",
-    baseUrl: "https://api.moonshot.cn/v1",
-    requiresApiKey: true,
-    icon: "🌙",
-    description: "Kimi K2.5, K2 Thinking, K2",
-    models: [
-      {
-        id: "kimi-k2.5",
-        name: "Kimi K2.5",
-        tagKey: "providers.tagLatest",
-        recommended: true,
-      },
-      {
-        id: "kimi-k2-thinking",
-        name: "Kimi K2 Thinking",
-        tagKey: "providers.tagReasoning",
-      },
-      { id: "kimi-k2", name: "Kimi K2", tagKey: "providers.tagCode" },
-      { id: "kimi-latest", name: "Kimi Latest" },
-    ],
-  },
-  {
-    id: "qwen",
-    name: "Qwen",
-    provider: "qwen",
-    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    requiresApiKey: true,
-    icon: "🪶",
-    description: "Qwen3.6 Plus, Qwen3-Max, QwQ, Qwen3-VL",
-    models: [
-      {
-        id: "qwen3-max-2026-01-23",
-        name: "Qwen3 Max",
-        tagKey: "providers.tagMostIntelligent",
-      },
-      {
-        id: "qwen3.6-max-preview",
-        name: "Qwen3.6 Max Preview",
-        tagKey: "providers.tagPreview",
-      },
-      {
-        id: "qwen3-max-preview",
-        name: "Qwen3 Max Preview",
-        tagKey: "providers.tagPreview",
-      },
-      {
-        id: "qwen3.5-plus",
-        name: "Qwen3.5 Plus",
-        tagKey: "providers.tagBestBalance",
-      },
-      {
-        id: "qwen3.6-plus",
-        name: "Qwen3.6 Plus",
-        tagKey: "providers.tagLatest",
-        recommended: true,
-      },
-      {
-        id: "qwen3.5-flash",
-        name: "Qwen3.5 Flash",
-        tagKey: "providers.tagFast",
-      },
-      { id: "qwq-plus", name: "QwQ Plus", tagKey: "providers.tagReasoning" },
-      {
-        id: "qwen3-coder-next",
-        name: "Qwen3 Coder Next",
-        tagKey: "providers.tagCode",
-      },
-      {
-        id: "qwen3-coder-plus",
-        name: "Qwen3 Coder Plus",
-        tagKey: "providers.tagCoding",
-      },
-      {
-        id: "qwen3-vl-plus",
-        name: "Qwen3 VL Plus",
-        tagKey: "providers.tagVision",
-      },
-      {
-        id: "qwen3-vl-flash",
-        name: "Qwen3 VL Flash",
-        tagKey: "providers.tagVision",
-      },
-      { id: "qvq-max", name: "QVQ Max", tagKey: "providers.tagVision" },
-    ],
-  },
-  {
-    id: "doubao",
-    name: "Doubao",
-    provider: "doubao",
-    baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
-    requiresApiKey: true,
-    icon: "🫘",
-    description: "Doubao-Seed 1.6, 1.6 Thinking, 1.6 Flash",
-    models: [
-      {
-        id: "doubao-seed-1-6-251015",
-        name: "Doubao-Seed 1.6",
-        tagKey: "providers.tagLatest",
-        recommended: true,
-      },
-      {
-        id: "doubao-seed-1-6-thinking",
-        name: "Doubao-Seed 1.6 Thinking",
-        tagKey: "providers.tagReasoning",
-      },
-      {
-        id: "doubao-seed-1-6-flash-250828",
-        name: "Doubao-Seed 1.6 Flash",
-        tagKey: "providers.tagFast",
-      },
-    ],
-  },
-  {
-    id: "yi",
-    name: "Yi",
-    provider: "yi",
-    baseUrl: "https://api.lingyiwanwu.com/v1",
-    requiresApiKey: true,
-    icon: "🧊",
-    description: "01.AI Yi series",
-    models: [
-      {
-        id: "yi-large",
-        name: "Yi Large",
-        tagKey: "providers.tagBest",
-        recommended: true,
-      },
-      { id: "yi-medium", name: "Yi Medium" },
-      { id: "yi-spark", name: "Yi Spark", tagKey: "providers.tagFast" },
-      { id: "yi-large-turbo", name: "Yi Large Turbo" },
-    ],
-  },
-  {
-    id: "baichuan",
-    name: "Baichuan",
-    provider: "baichuan",
-    baseUrl: "https://api.baichuan-ai.com/v1",
-    requiresApiKey: true,
-    icon: "🌊",
-    description: "Baichuan-M3, M3-Plus, Baichuan4 Turbo",
-    models: [
-      {
-        id: "Baichuan-M3-Plus",
-        name: "Baichuan M3 Plus",
-        tagKey: "providers.tagLatest",
-        recommended: true,
-      },
-      {
-        id: "Baichuan-M3",
-        name: "Baichuan M3",
-        tagKey: "providers.tagBestBalance",
-      },
-      {
-        id: "Baichuan4-Turbo",
-        name: "Baichuan 4 Turbo",
-        tagKey: "providers.tagFast",
-      },
-      { id: "Baichuan4", name: "Baichuan 4" },
-    ],
-  },
-];
+};
 
 function normalizePresetBaseUrl(baseUrl: string | null | undefined): string {
   return (baseUrl ?? "").trim().replace(/\/+$/, "").toLowerCase();
@@ -487,4 +147,133 @@ export function findProviderPreset(input: {
   }
 
   return null;
+}
+
+function normalizeModelId(model: string | null | undefined): string {
+  return (model ?? "").trim().toLowerCase();
+}
+
+function hasExplicitReasoningCapability(
+  capabilities: ProviderCapabilities | undefined,
+): boolean {
+  return Object.prototype.hasOwnProperty.call(capabilities ?? {}, "reasoning");
+}
+
+function getExplicitReasoningCapability(
+  capabilities: ProviderCapabilities | undefined,
+): ReasoningCapability | null | undefined {
+  if (!hasExplicitReasoningCapability(capabilities)) {
+    return undefined;
+  }
+  return capabilities?.reasoning ?? null;
+}
+
+export function findProviderModelPreset(input: {
+  provider: string;
+  baseUrl?: string | null;
+  model?: string | null;
+}): ProviderModelPreset | null {
+  const preset = findProviderPreset(input);
+  const model = normalizeModelId(input.model);
+  if (!preset || !model) {
+    return null;
+  }
+  return (
+    preset.models.find((candidate) => normalizeModelId(candidate.id) === model) ??
+    null
+  );
+}
+
+function inferReasoningCapability(input: {
+  provider: string;
+  model?: string | null;
+}): ReasoningCapability | null {
+  const provider = input.provider.trim();
+  const model = normalizeModelId(input.model);
+
+  if (!model) {
+    return null;
+  }
+
+  if (model.includes("deepseek")) {
+    if (model.includes("deepseek-chat")) {
+      return null;
+    }
+    if (
+      model.includes("deepseek-v4") ||
+      model.includes("deepseek-reasoner") ||
+      model.includes("deepseek-r1")
+    ) {
+      return DEEPSEEK_REASONING;
+    }
+  }
+
+  if (
+    provider === "open_ai" ||
+    provider === "azure_open_ai" ||
+    provider === "custom"
+  ) {
+    if (/^o[134]/.test(model)) {
+      return OPENAI_O_REASONING;
+    }
+    if (/^gpt-5.*codex/.test(model)) {
+      return OPENAI_CODEX_REASONING;
+    }
+    if (model.startsWith("gpt-5.5-pro")) {
+      return null;
+    }
+    if (/^gpt-5\.(2|4).*?-pro$/.test(model)) {
+      return OPENAI_GPT5_PRO_REASONING;
+    }
+    if (model.startsWith("gpt-5.5")) {
+      return OPENAI_GPT55_REASONING;
+    }
+    if (model.startsWith("gpt-5.4") || model.startsWith("gpt-5.2")) {
+      return OPENAI_GPT5_FRONTIER_REASONING;
+    }
+    if (model.startsWith("gpt-5.1")) {
+      return OPENAI_GPT51_REASONING;
+    }
+    if (model.startsWith("gpt-5")) {
+      return OPENAI_GPT5_REASONING;
+    }
+  }
+
+  if (provider === "google") {
+    if (model.includes("gemini-2.5") || model.startsWith("gemini-3")) {
+      return GEMINI_BUDGET_REASONING;
+    }
+  }
+
+  if (provider === "anthropic") {
+    if (/^claude-(opus|sonnet|haiku)-4/.test(model) || model.includes("claude-3-7")) {
+      return ANTHROPIC_BUDGET_REASONING;
+    }
+  }
+
+  return null;
+}
+
+export function getReasoningCapability(input: {
+  provider: string;
+  baseUrl?: string | null;
+  model?: string | null;
+}): ReasoningCapability | null {
+  const preset = findProviderPreset(input);
+  const modelPreset = findProviderModelPreset(input);
+  const modelCapability = getExplicitReasoningCapability(
+    modelPreset?.capabilities,
+  );
+  if (modelCapability !== undefined) {
+    return modelCapability;
+  }
+
+  const providerCapability = getExplicitReasoningCapability(
+    preset?.capabilities,
+  );
+  if (providerCapability !== undefined) {
+    return providerCapability;
+  }
+
+  return inferReasoningCapability(input);
 }

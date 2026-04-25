@@ -91,7 +91,7 @@ Use this quick routing guide when a request is about files or documents:
 | Compare two files or indexed chunks | `compare_documents` | Text or parsed document content | yes for file paths | Use chunk IDs when you already know the exact evidence |
 | Create a new plain-text file | `create_file` | Text-based files only | yes | For new `.md`, `.txt`, `.json`, `.rs`, etc. |
 | Edit an existing plain-text file | `edit_file` | Text-based files only | yes | Exact `str_replace` only; must match once |
-| Create or replace an Office file | `run_shell` + `doc-script-editor` (preferred), `generate_docx`/`generate_xlsx`/`ppt_generate` (fallback) | DOCX, XLSX, PPTX, PDF | yes | Avoid `generate_document` except legacy compatibility routing |
+| Create or replace an Office file | `run_shell` + `doc-script-editor` (preferred), `generate_docx`/`generate_xlsx`/`ppt_generate` (fallback) | DOCX, XLSX, PPTX, PDF | yes | Use Python for fidelity-sensitive Office/PDF work |
 | Refresh indexed content after file changes | `reindex_document` | File path or whole source | yes for file path | Use when external edits are not reflected in search/results yet |
 
 Path guidance:
@@ -237,7 +237,7 @@ Edit existing plain-text files via string replacement or create new plain-text f
 | `old_str` | string | no | Exact text to find (for `str_replace`; must match once) |
 | `new_str` | string | no | Replacement text (for `str_replace`) or file content (for `create`) |
 
-Use `generate_document` instead of `edit_file` for DOCX/XLSX/PPTX creation or replacement.
+Use `run_shell` + `doc-script-editor` for Office/PDF edits that need fidelity, versioning, extraction, or redaction. Use `generate_docx`, `generate_xlsx`, or `ppt_generate` for simple new Office files.
 
 `str_replace` operates on UTF-8 char boundaries, so replacements containing multi-byte characters (CJK text, emoji, etc.) are handled safely without byte-slice panics.
 
@@ -255,23 +255,28 @@ Create a new plain-text file within a registered source directory. Paths may be 
 | `content` | string | yes | Plain-text content to write |
 | `overwrite` | boolean | no | Overwrite an existing file if true |
 
-Use `generate_document` instead of `create_file` for DOCX/XLSX/PPTX files.
+Do not use `create_file` for DOCX/XLSX/PPTX. Use `run_shell` + `doc-script-editor` for Python-backed Office work, or the format-specific generators for simple new files.
 
 > **Example:** Create a new Markdown draft under `notes/` or add a config file in a nested folder.
 
 ---
 
-### `generate_document`
+### Office generation and editing
 
-Generate or replace a professional Office document (`docx`, `xlsx`, or `pptx`) inside a registered source directory. Paths may be absolute or relative to a source root.
+For fidelity-sensitive Office/PDF work, invoke the bundled Python script through `run_shell`:
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `format` | string | yes | `docx`, `xlsx`, or `pptx` |
-| `path` | string | yes | Output path (absolute or relative to a source root) |
-| `content` | object | yes | Structured content payload for the selected Office format |
+```
+python <SKILL_DIR>/scripts/edit_doc.py check
+python <SKILL_DIR>/scripts/edit_doc.py --path /abs/report.docx replace --find "Q3" --replace "Q4" --dry-run
+```
 
-> **Example:** Replace an existing Word report or generate a new PowerPoint deck with structured sections/slides.
+For simple new files, call the format-specific native tool directly:
+
+| File type | Tool |
+|-----------|------|
+| DOCX | `generate_docx` |
+| XLSX | `generate_xlsx` |
+| PPTX | `ppt_generate` |
 
 ---
 

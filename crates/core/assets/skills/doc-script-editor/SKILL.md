@@ -1,10 +1,10 @@
 ---
 name: doc-script-editor
-description: Activate when editing existing DOCX, PPTX, PDF, or XLSX files on disk — text replace, paragraph/slide insert, text extraction, redaction, or snapshotting. Trigger on requests to modify, patch, redact, extract from, or version office documents that already exist.
+description: Activate when creating or editing DOCX, PPTX, PDF, or XLSX files on disk with Python-backed fidelity — text replace, paragraph/slide insert, text extraction, redaction, snapshotting, or format-aware document work.
 ---
 
 ## Trigger
-Editing an existing `.docx` / `.pptx` / `.pdf` / `.xlsx` file on disk via the `run_shell` tool invoking `scripts/edit_doc.py`.
+Creating or editing a `.docx` / `.pptx` / `.pdf` / `.xlsx` file on disk via the `run_shell` tool invoking `scripts/edit_doc.py` or a short Python script using the bundled requirements.
 
 ## When to use
 - Targeted text replace inside a `.docx` or `.pptx` while preserving formatting
@@ -12,10 +12,11 @@ Editing an existing `.docx` / `.pptx` / `.pdf` / `.xlsx` file on disk via the `r
 - Inserting a new slide into an existing `.pptx` at a specific position
 - Redacting sensitive substrings across a document
 - Creating a versioned snapshot before a risky edit
+- Creating a new Office document when the user cares about layout, tables, formulas, speaker notes, charts, template compatibility, or repeatable Python control
 
 ## When NOT to use
 - Plain text / source files → use `edit_file`
-- Creating a brand-new document from scratch → use `generate_docx` / `generate_xlsx` / `ppt_generate`
+- Simple brand-new Office files where `generate_docx` / `generate_xlsx` / `ppt_generate` covers the requested structure
 - Simple one-off text edits in a docx/pptx/xlsx where `edit_document` already works — that path is faster and needs no Python
 
 ## Critical rule
@@ -41,6 +42,12 @@ All commands run through `run_shell` with `python` (or `python3`):
    ```
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/memo.docx redact --find "confidential" --replace "[REDACTED]"
    ```
+5. Create a brand-new Office file when native generators are too limited:
+   ```
+   python <SKILL_DIR>/scripts/edit_doc.py check
+   python /abs/source/scripts/build_report.py
+   ```
+   Put the custom script inside an approved source/workspace path, use `python-docx`, `openpyxl`, or `python-pptx`, and write the final `.docx`/`.xlsx`/`.pptx` directly to disk.
 
 Always call `check` first in a fresh environment:
 ```
@@ -55,9 +62,9 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 - **Capability check** — `check` subcommand reports available/missing backends with exit code 2 if core deps are absent
 
 ## Dependencies
-Install before first edit (only what's needed for the target format):
+Install before first Office/PDF operation (only what's needed for the target format):
 ```
-python -m pip install python-docx python-pptx pypdf openpyxl
+python -m pip install -r <SKILL_DIR>/scripts/requirements.txt
 ```
 Optional for format conversion / PDF rendering: `libreoffice`, `pypandoc`.
 

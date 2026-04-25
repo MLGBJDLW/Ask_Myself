@@ -39,6 +39,7 @@ import type {
   SaveSkillInput,
 } from "../types/extensions";
 import type { TraceSummary, AgentTrace } from "../types/trace";
+import type { ProviderPreset } from "./providerPresets";
 
 // ── Sources ─────────────────────────────────────────────────────────────
 
@@ -270,6 +271,9 @@ export const setDefaultAgentConfig = (id: string) =>
 export const testAgentConnection = (config: SaveAgentConfigInput) =>
   invoke<string[]>('test_agent_connection_cmd', { config });
 
+export const listProviderPresets = () =>
+  invoke<ProviderPreset[]>('list_provider_presets_cmd');
+
 // ── Conversations ───────────────────────────────────────────────────────
 
 export const createConversation = (provider: string, model: string, systemPrompt?: string, projectId?: string) =>
@@ -477,6 +481,29 @@ export const toggleSkill = (id: string, enabled: boolean) =>
 
 export const listBuiltinSkills = () =>
   invoke<Skill[]>('list_builtin_skills_cmd');
+
+const isLegacyBuiltinSkillRow = (skill: Skill) =>
+  skill.builtin === true || skill.id.startsWith('builtin-');
+
+const normalizeSkillList = (skills: Skill[] | null | undefined): Skill[] =>
+  Array.isArray(skills) ? skills : [];
+
+export const listAllSkills = async () => {
+  const [builtinResult, userResult] = await Promise.all([
+    listBuiltinSkills(),
+    listSkills(),
+  ]);
+  const builtins = normalizeSkillList(builtinResult);
+  const userSkills = normalizeSkillList(userResult);
+  const builtinIds = new Set(builtins.map((skill) => skill.id));
+  const filteredUserSkills = userSkills.filter(
+    (skill) => !isLegacyBuiltinSkillRow(skill) && !builtinIds.has(skill.id),
+  );
+  return [...builtins, ...filteredUserSkills];
+};
+
+export const listActiveSkills = async () =>
+  (await listAllSkills()).filter((skill) => skill.enabled);
 
 export const importSkillFromMd = (content: string) =>
   invoke<Skill>('import_skill_from_md_cmd', { content });

@@ -145,7 +145,8 @@ pub fn model_context_window(model: &str) -> u32 {
 
     // ── Exact matches for verified model IDs (highest priority) ────
     match m {
-        // OpenAI GPT-5.4 series (1.05M)
+        // OpenAI GPT-5.5 / GPT-5.4 series (1.05M)
+        "gpt-5.5" | "gpt-5.5-2026-04-23" | "gpt-5.5-pro" | "gpt-5.5-pro-2026-04-23" => 1_050_000,
         "gpt-5.4" | "gpt-5.4-2026-03-05" | "gpt-5.4-pro" | "gpt-5.4-pro-2026-03-05" => 1_050_000,
         // OpenAI GPT-5 series (400K)
         "gpt-5.3-codex" | "gpt-5.3-codex-2025-12-19" => 400_000,
@@ -218,6 +219,7 @@ pub fn model_context_window(model: &str) -> u32 {
         "gemini-1.5-flash" | "gemini-1.5-flash-latest" => 1_048_576,
 
         // DeepSeek
+        "deepseek-v4-pro" | "deepseek-v4-flash" => 1_000_000,
         "deepseek-chat" | "deepseek-reasoner" => 128_000,
 
         // Zhipu GLM
@@ -331,6 +333,7 @@ fn prefix_model_context_window(m: &str) -> u32 {
 
     match m {
         // OpenAI
+        _ if m.starts_with("gpt-5.5") => 1_050_000,
         _ if m.starts_with("gpt-5.4") => 1_050_000,
         _ if m.starts_with("gpt-5") => 400_000,
         _ if m.starts_with("gpt-4.1") => 1_047_576,
@@ -348,6 +351,7 @@ fn prefix_model_context_window(m: &str) -> u32 {
         _ if m.contains("gemini") => 1_048_576,
 
         // DeepSeek
+        _ if m.starts_with("deepseek-v4") => 1_000_000,
         _ if m.contains("deepseek") => 128_000,
 
         // xAI Grok
@@ -558,6 +562,8 @@ mod tests {
     #[test]
     fn test_model_context_window_exact_match() {
         // OpenAI GPT-5
+        assert_eq!(model_context_window("gpt-5.5"), 1_050_000);
+        assert_eq!(model_context_window("gpt-5.5-pro"), 1_050_000);
         assert_eq!(model_context_window("gpt-5.4"), 1_050_000);
         assert_eq!(model_context_window("gpt-5.4-pro"), 1_050_000);
         assert_eq!(model_context_window("gpt-5.3-codex"), 400_000);
@@ -610,6 +616,8 @@ mod tests {
         assert_eq!(model_context_window("kimi-k2"), 256_000);
         assert_eq!(model_context_window("kimi-latest"), 128_000);
         // DeepSeek
+        assert_eq!(model_context_window("deepseek-v4-pro"), 1_000_000);
+        assert_eq!(model_context_window("deepseek-v4-flash"), 1_000_000);
         assert_eq!(model_context_window("deepseek-chat"), 128_000);
         assert_eq!(model_context_window("deepseek-reasoner"), 128_000);
         // Doubao
@@ -654,10 +662,12 @@ mod tests {
     fn test_model_context_window_prefix_fallback() {
         // These hit prefix/substring matching, not exact match
         assert_eq!(model_context_window("gpt-5-future"), 400_000);
+        assert_eq!(model_context_window("gpt-5.5-chat-latest"), 1_050_000);
         assert_eq!(model_context_window("gpt-5.4-chat-latest"), 1_050_000);
         assert_eq!(model_context_window("gpt-4o-something"), 128_000);
         assert_eq!(model_context_window("claude-3-opus"), 200_000);
         assert_eq!(model_context_window("gemini-2.5-future"), 1_048_576);
+        assert_eq!(model_context_window("deepseek-v4-future"), 1_000_000);
         assert_eq!(model_context_window("deepseek-something"), 128_000);
         assert_eq!(model_context_window("qwen3.5-plus-2026-02-15"), 1_000_000);
         assert_eq!(
@@ -677,6 +687,7 @@ mod tests {
 
     #[test]
     fn test_model_context_window_case_insensitive() {
+        assert_eq!(model_context_window("GPT-5.5"), 1_050_000);
         assert_eq!(model_context_window("GPT-5.4"), 1_050_000);
         assert_eq!(model_context_window("Claude-Opus-4-6"), 200_000);
         assert_eq!(model_context_window("GEMINI-2.5-PRO"), 1_048_576);

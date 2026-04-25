@@ -41,6 +41,7 @@ pub mod personalization;
 pub mod playbook;
 pub mod privacy;
 pub mod project;
+pub mod provider_catalog;
 pub mod search;
 pub mod skills;
 pub mod sources;

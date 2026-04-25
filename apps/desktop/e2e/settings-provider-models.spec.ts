@@ -178,6 +178,14 @@ test("settings provider form shows updated preset models for add and edit flows"
     "GLM-4.1V Thinking FlashX",
   ]);
 
+  await providerField().getByRole("combobox").selectOption("deep_seek");
+  modelSelect = modelField().getByRole("combobox");
+  await expect(modelSelect.locator("option")).toContainText([
+    "DeepSeek V4 Pro",
+    "DeepSeek V4 Flash",
+    "DeepSeek Reasoner",
+  ]);
+
   await page.getByRole("button", { name: "Cancel" }).click();
   await page.getByTitle("Edit").click();
 

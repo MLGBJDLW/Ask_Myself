@@ -268,7 +268,8 @@ mod tests {
     fn test_prepare_messages_trims_when_needed() {
         // Build a history that exceeds a small context window.
         // Alternate User/Assistant so the recap has both sides.
-        // Each message: ~220 ASCII chars ≈ 59 tokens. 200 messages ≈ 11800 tokens.
+        // Use varied words instead of repeated characters so tokenizer-backed
+        // counting cannot compress the fixture below the trim threshold.
         let history: Vec<Message> = (0..200)
             .map(|i| {
                 let role = if i % 2 == 0 {
@@ -276,7 +277,10 @@ mod tests {
                 } else {
                     Role::Assistant
                 };
-                let padding = "x".repeat(200);
+                let padding = (0..80)
+                    .map(|n| format!("token{i}_{n}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 msg(role, &format!("Message number {i} {padding}"))
             })
             .collect();

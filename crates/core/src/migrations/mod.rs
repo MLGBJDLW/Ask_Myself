@@ -596,6 +596,10 @@ Every answer that uses knowledge base search results.
         "v047_skill_resource_bundles",
         "ALTER TABLE skills ADD COLUMN resource_bundle_json TEXT DEFAULT NULL;",
     ),
+    (
+        "v048_remove_legacy_builtin_skill_rows",
+        "DELETE FROM skills WHERE id LIKE 'builtin-%';",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

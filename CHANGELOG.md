@@ -5,7 +5,6 @@
 
 ### Bug Fixes
 
-* harden release publishing workflow ([b6f353b](https://github.com/MLGBJDLW/Nexa/commit/b6f353ba58d021a5e6eb56430a2f4c6d04306fb9))
 * harden release publishing workflow ([e061ebb](https://github.com/MLGBJDLW/Nexa/commit/e061ebbd1a7bf55f35aa18c2f86cd56fdf2c39fd))
 
 ## [0.2.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.7...nexa-monorepo-v0.2.8) (2026-04-24)
@@ -13,7 +12,6 @@
 
 ### Bug Fixes
 
-* push error ([f37ff71](https://github.com/MLGBJDLW/Nexa/commit/f37ff71bb74cc8701d106d1b0aed1f3f063c31b2))
 * push error ([1f235a6](https://github.com/MLGBJDLW/Nexa/commit/1f235a6d8587349052d31cc709624a21191a5135))
 
 ## [0.2.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.6...nexa-monorepo-v0.2.7) (2026-04-24)
@@ -175,7 +173,6 @@
 * **desktop:** remove theme switcher from sidebar, keep only in settings ([ff99aea](https://github.com/MLGBJDLW/Nexa/commit/ff99aea5f469ee54aa80674ab70b978226858563))
 * document attachments, vision detection, agent search behavior, version sync ([6502ade](https://github.com/MLGBJDLW/Nexa/commit/6502ade48b3c8a824ac3d228a8b621761002da09))
 * generate all Tauri icon sizes and upgrade Linux runner ([1dc210f](https://github.com/MLGBJDLW/Nexa/commit/1dc210f4394e421021ccc9c8706be549d7412801))
-* handle models without token_type_ids input & add model management ([da84a3a](https://github.com/MLGBJDLW/Nexa/commit/da84a3a24ab378db7768dcb2f39341a9092e366c))
 * handle models without token_type_ids input & add model management ([a0b4781](https://github.com/MLGBJDLW/Nexa/commit/a0b478154b19ae9eba9b290a7b5e8e2e2d12a1b4))
 * **i18n:** replace all hardcoded UI strings with translation keys ([82a4132](https://github.com/MLGBJDLW/Nexa/commit/82a4132524d556b8b67357543aa966dd544b6ded))
 * move release-please config to repo root for manifest mode ([191e371](https://github.com/MLGBJDLW/Nexa/commit/191e3714245dc53009ad383760a19a892bc9a53d))
@@ -283,7 +280,6 @@
 
 ### Bug Fixes
 
-* handle models without token_type_ids input & add model management ([da84a3a](https://github.com/MLGBJDLW/Ask_Myself/commit/da84a3a24ab378db7768dcb2f39341a9092e366c))
 * handle models without token_type_ids input & add model management ([a0b4781](https://github.com/MLGBJDLW/Ask_Myself/commit/a0b478154b19ae9eba9b290a7b5e8e2e2d12a1b4))
 
 ## [0.1.3](https://github.com/MLGBJDLW/Ask_Myself/compare/v0.1.2...v0.1.3) (2026-04-08)

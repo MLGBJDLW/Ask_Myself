@@ -184,9 +184,7 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
         resources: &[
             BuiltinSkillResource {
                 path: "scripts/edit_doc.py",
-                content: include_str!(
-                    "../assets/skills/doc-script-editor/scripts/edit_doc.py"
-                ),
+                content: include_str!("../assets/skills/doc-script-editor/scripts/edit_doc.py"),
             },
             BuiltinSkillResource {
                 path: "scripts/requirements.txt",
@@ -242,7 +240,11 @@ pub fn materialize_skills_to_disk(app_data_dir: &Path) -> Result<PathBuf, CoreEr
             tracing::warn!(skill = bundle.slug, error = %e, "Failed to create skill dir");
             continue;
         }
-        write_if_changed(&skill_dir.join("SKILL.md"), bundle.skill_md.as_bytes(), bundle.slug);
+        write_if_changed(
+            &skill_dir.join("SKILL.md"),
+            bundle.skill_md.as_bytes(),
+            bundle.slug,
+        );
         for resource in bundle.resources {
             let target = skill_dir.join(resource.path);
             if let Some(parent) = target.parent() {
@@ -504,6 +506,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, name, description, content, enabled, created_at, updated_at, resource_bundle_json
              FROM skills
+             WHERE id NOT LIKE 'builtin-%'
              ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], skill_from_row)?;
@@ -609,7 +612,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, name, description, content, enabled, created_at, updated_at, resource_bundle_json
              FROM skills
-             WHERE enabled = 1
+             WHERE enabled = 1 AND id NOT LIKE 'builtin-%'
              ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([], skill_from_row)?;
@@ -1446,6 +1449,22 @@ mod tests {
     }
 
     #[test]
+    fn test_legacy_builtin_skill_rows_are_hidden() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO skills (id, name, description, content, enabled)
+                 VALUES ('builtin-legacy', 'Legacy Builtin', '', 'old content', 1)",
+                [],
+            )
+            .unwrap();
+
+        assert!(db.list_skills().unwrap().is_empty());
+        assert!(db.get_enabled_skills().unwrap().is_empty());
+    }
+
+    #[test]
     fn test_get_enabled_skills_filters() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
@@ -1599,7 +1618,7 @@ mod tests {
         db.conn().execute("DELETE FROM skills", []).unwrap();
 
         let active = get_active_skills_for_query(&db, "", 10).unwrap();
-        assert_eq!(active.len(), 3);
+        assert_eq!(active.len(), load_builtin_skills().len());
     }
 
     #[test]
@@ -1641,7 +1660,11 @@ mod tests {
         db.conn().execute("DELETE FROM skills", []).unwrap();
 
         let active = get_active_skills_for_query(&db, "zzzxxx qqqyyy wwwvvv", 10).unwrap();
-        assert_eq!(active.len(), 3, "fallback: return all built-ins");
+        assert_eq!(
+            active.len(),
+            load_builtin_skills().len(),
+            "fallback: return all built-ins"
+        );
     }
 
     #[test]

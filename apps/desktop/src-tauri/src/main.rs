@@ -261,6 +261,7 @@ fn main() {
             commands::delete_agent_config_cmd,
             commands::set_default_agent_config_cmd,
             commands::test_agent_connection_cmd,
+            commands::list_provider_presets_cmd,
             // Agent chat
             commands::agent_chat_cmd,
             commands::agent_stop_cmd,

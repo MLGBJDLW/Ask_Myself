@@ -23,6 +23,9 @@ import type {
 import type { Skill } from "../../types/extensions";
 import {
   findProviderPreset,
+  getReasoningCapability,
+  type ReasoningCapability,
+  type ReasoningEffortLevel,
   type ProviderPreset,
 } from "../../lib/providerPresets";
 import {
@@ -63,7 +66,7 @@ const BASE_URL_PLACEHOLDERS: Record<ProviderType, string> = {
   open_ai: "https://api.openai.com/v1",
   anthropic: "https://api.anthropic.com/v1",
   google: "https://generativelanguage.googleapis.com/v1beta",
-  deep_seek: "https://api.deepseek.com/v1",
+  deep_seek: "https://api.deepseek.com",
   zhipu: "https://open.bigmodel.cn/api/paas/v4",
   moonshot: "https://api.moonshot.cn/v1",
   qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -78,8 +81,76 @@ const BASE_URL_PLACEHOLDERS: Record<ProviderType, string> = {
 
 const LOCAL_PROVIDERS: ProviderType[] = ["ollama", "lm_studio"];
 
+const REASONING_EFFORT_LABEL_KEYS: Record<
+  ReasoningEffortLevel,
+  TranslationKey
+> = {
+  none: "settings.reasoningNone",
+  minimal: "settings.reasoningMinimal",
+  low: "settings.reasoningLow",
+  medium: "settings.reasoningMedium",
+  high: "settings.reasoningHigh",
+  max: "settings.reasoningMax",
+  xhigh: "settings.reasoningXHigh",
+};
+
 function normalizeBaseUrl(value: string | null | undefined): string {
   return (value ?? "").trim().replace(/\/+$/, "");
+}
+
+function defaultReasoningEffort(
+  capability: ReasoningCapability | null,
+): ReasoningEffortLevel | null {
+  const levels = capability?.effortLevels ?? [];
+  if (levels.length === 0) {
+    return null;
+  }
+  return capability?.defaultEffort && levels.includes(capability.defaultEffort)
+    ? capability.defaultEffort
+    : levels[0];
+}
+
+function normalizeReasoningEffort(
+  value: string | null,
+  capability: ReasoningCapability | null,
+): ReasoningEffortLevel | null {
+  const levels = capability?.effortLevels ?? [];
+  if (levels.length === 0) {
+    return null;
+  }
+  return levels.includes(value as ReasoningEffortLevel)
+    ? (value as ReasoningEffortLevel)
+    : defaultReasoningEffort(capability);
+}
+
+function defaultThinkingBudget(
+  capability: ReasoningCapability | null,
+): number | null {
+  const budget = capability?.thinkingBudget;
+  if (!budget?.enabled) {
+    return null;
+  }
+  return budget.defaultTokens ?? budget.minTokens ?? 10000;
+}
+
+function normalizeThinkingBudget(
+  value: number | null,
+  capability: ReasoningCapability | null,
+): number | null {
+  const budget = capability?.thinkingBudget;
+  if (!budget?.enabled) {
+    return null;
+  }
+
+  const fallback = defaultThinkingBudget(capability) ?? 10000;
+  let next = Number.isFinite(value) && value !== null ? value : fallback;
+  if (budget.minTokens != null) {
+    next = Math.max(next, budget.minTokens);
+  }
+  if (budget.maxTokens != null) {
+    next = Math.min(next, budget.maxTokens);
+  }
+  return Math.round(next);
 }
 
 export function AgentConfigForm({
@@ -212,6 +283,15 @@ export function AgentConfigForm({
     activePreset?.models.find((m) => m.recommended)?.id ||
     activePreset?.models[0]?.id ||
     "";
+  const reasoningCapability = useMemo(
+    () => getReasoningCapability({ provider, baseUrl, model }),
+    [provider, baseUrl, model],
+  );
+  const reasoningEffortOptions = reasoningCapability?.effortLevels ?? [];
+  const thinkingBudgetCapability = reasoningCapability?.thinkingBudget;
+  const supportsReasoning = reasoningCapability !== null;
+  const supportsThinkingBudget = thinkingBudgetCapability?.enabled === true;
+  const supportsReasoningEffort = reasoningEffortOptions.length > 0;
   const subagentToolCatalog = useMemo(
     () => mergeSubagentToolCatalog(mcpToolDescriptors),
     [mcpToolDescriptors],
@@ -329,7 +409,7 @@ export function AgentConfigForm({
       try {
         const [servers, skills] = await Promise.all([
           api.listMcpServers(),
-          api.listSkills(),
+          api.listActiveSkills(),
         ]);
 
         const enabledServerTools = await Promise.all(
@@ -353,7 +433,7 @@ export function AgentConfigForm({
         setMcpToolDescriptors(
           buildMcpSubagentToolDescriptors(enabledServerTools.flat()),
         );
-        setEnabledSkills(skills.filter((skill) => skill.enabled));
+        setEnabledSkills(skills);
       } catch {
         if (cancelled) return;
         setMcpToolDescriptors([]);
@@ -380,36 +460,96 @@ export function AgentConfigForm({
     }
   }, [activePreset, activePresetDefaultModel, model, useCustomModel]);
 
-  const buildInput = useCallback(
-    (): SaveAgentConfigInput => ({
-      id: config?.id ?? null,
-      name: name.trim(),
-      provider,
-      apiKey: isLocal ? "" : apiKey,
-      baseUrl: normalizeBaseUrl(baseUrl) || null,
-      model: model.trim(),
-      temperature,
-      maxTokens,
-      contextWindow: contextWindow,
-      isDefault,
-      reasoningEnabled,
+  useEffect(() => {
+    if (!supportsReasoning) {
+      if (reasoningEnabled !== null) {
+        setReasoningEnabled(null);
+      }
+      if (thinkingBudget !== null) {
+        setThinkingBudget(null);
+      }
+      if (reasoningEffort !== null) {
+        setReasoningEffort(null);
+      }
+      return;
+    }
+
+    if (reasoningEnabled !== true) {
+      if (thinkingBudget !== null) {
+        setThinkingBudget(null);
+      }
+      if (reasoningEffort !== null) {
+        setReasoningEffort(null);
+      }
+      return;
+    }
+
+    const nextThinkingBudget = normalizeThinkingBudget(
       thinkingBudget,
+      reasoningCapability,
+    );
+    if (thinkingBudget !== nextThinkingBudget) {
+      setThinkingBudget(nextThinkingBudget);
+    }
+
+    const nextReasoningEffort = normalizeReasoningEffort(
       reasoningEffort,
-      maxIterations,
-      summarizationModel: summarizationModel?.trim() || null,
-      summarizationProvider: summarizationProvider || null,
-      subagentAllowedTools: usesDefaultSubagentToolSelection(
-        subagentAllowedTools,
-      )
-        ? null
-        : orderToolSelection(subagentAllowedTools),
-      subagentAllowedSkillIds: usesAllEnabledSkills
-        ? null
-        : orderSkillSelection(subagentAllowedSkillIds),
-      subagentMaxParallel,
-      subagentMaxCallsPerTurn,
-      subagentTokenBudget,
-    }),
+      reasoningCapability,
+    );
+    if (reasoningEffort !== nextReasoningEffort) {
+      setReasoningEffort(nextReasoningEffort);
+    }
+  }, [
+    reasoningCapability,
+    reasoningEffort,
+    reasoningEnabled,
+    supportsReasoning,
+    thinkingBudget,
+  ]);
+
+  const buildInput = useCallback(
+    (): SaveAgentConfigInput => {
+      const normalizedReasoningEnabled =
+        supportsReasoning && reasoningEnabled === true ? true : null;
+      const normalizedThinkingBudget =
+        normalizedReasoningEnabled && supportsThinkingBudget
+          ? normalizeThinkingBudget(thinkingBudget, reasoningCapability)
+          : null;
+      const normalizedReasoningEffort =
+        normalizedReasoningEnabled && supportsReasoningEffort
+          ? normalizeReasoningEffort(reasoningEffort, reasoningCapability)
+          : null;
+
+      return {
+        id: config?.id ?? null,
+        name: name.trim(),
+        provider,
+        apiKey: isLocal ? "" : apiKey,
+        baseUrl: normalizeBaseUrl(baseUrl) || null,
+        model: model.trim(),
+        temperature,
+        maxTokens,
+        contextWindow: contextWindow,
+        isDefault,
+        reasoningEnabled: normalizedReasoningEnabled,
+        thinkingBudget: normalizedThinkingBudget,
+        reasoningEffort: normalizedReasoningEffort,
+        maxIterations,
+        summarizationModel: summarizationModel?.trim() || null,
+        summarizationProvider: summarizationProvider || null,
+        subagentAllowedTools: usesDefaultSubagentToolSelection(
+          subagentAllowedTools,
+        )
+          ? null
+          : orderToolSelection(subagentAllowedTools),
+        subagentAllowedSkillIds: usesAllEnabledSkills
+          ? null
+          : orderSkillSelection(subagentAllowedSkillIds),
+        subagentMaxParallel,
+        subagentMaxCallsPerTurn,
+        subagentTokenBudget,
+      };
+    },
     [
       config?.id,
       name,
@@ -424,6 +564,10 @@ export function AgentConfigForm({
       reasoningEnabled,
       thinkingBudget,
       reasoningEffort,
+      reasoningCapability,
+      supportsReasoning,
+      supportsReasoningEffort,
+      supportsThinkingBudget,
       maxIterations,
       summarizationModel,
       summarizationProvider,
@@ -598,13 +742,13 @@ export function AgentConfigForm({
             onChange={(e) => setModel(e.target.value)}
             placeholder={
               provider === "open_ai"
-                ? "gpt-5.4"
+                ? "gpt-5.5"
                 : provider === "anthropic"
                   ? "claude-sonnet-4-6"
                   : provider === "google"
                     ? "gemini-2.5-pro"
                     : provider === "deep_seek"
-                      ? "deepseek-chat"
+                      ? "deepseek-v4-pro"
                       : provider === "ollama"
                         ? "llama3.1"
                         : provider === "lm_studio"
@@ -708,13 +852,19 @@ export function AgentConfigForm({
           <input
             type="checkbox"
             checked={reasoningEnabled === true}
+            disabled={!supportsReasoning}
             onChange={(e) => {
+              if (!supportsReasoning) {
+                return;
+              }
               const enabled = e.target.checked;
               setReasoningEnabled(enabled ? true : null);
-              if (enabled && !thinkingBudget) {
-                setThinkingBudget(10000);
-              } else if (!enabled) {
+              if (enabled) {
+                setThinkingBudget(defaultThinkingBudget(reasoningCapability));
+                setReasoningEffort(defaultReasoningEffort(reasoningCapability));
+              } else {
                 setThinkingBudget(null);
+                setReasoningEffort(null);
               }
             }}
             className="h-4 w-4 rounded border-border text-accent focus:ring-accent/30"
@@ -723,48 +873,69 @@ export function AgentConfigForm({
             {t("settings.enableReasoning")}
           </span>
         </label>
+        {!supportsReasoning && (
+          <p className="text-xs text-text-tertiary">
+            {t("settings.reasoningUnsupported")}
+          </p>
+        )}
 
-        {reasoningEnabled && (
+        {reasoningEnabled === true && supportsReasoning && (
           <div className="space-y-4 rounded-lg border border-border bg-surface-2 p-4 ml-1">
             {/* Thinking Budget */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-text-primary">
-                {t("settings.thinkingBudget")}
-              </label>
-              <Input
-                type="number"
-                value={thinkingBudget ?? ""}
-                onChange={(e) => {
-                  const val = e.target.value.trim();
-                  setThinkingBudget(val ? parseInt(val) || null : null);
-                }}
-                placeholder="10000"
-                min={1}
-                step={1}
-              />
-              <p className="text-xs text-text-tertiary">
-                {t("settings.thinkingBudgetHelp")}
-              </p>
-            </div>
+            {supportsThinkingBudget && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-primary">
+                  {t("settings.thinkingBudget")}
+                </label>
+                <Input
+                  type="number"
+                  value={thinkingBudget ?? ""}
+                  onChange={(e) => {
+                    const val = e.target.value.trim();
+                    setThinkingBudget(val ? parseInt(val) || null : null);
+                  }}
+                  placeholder={String(
+                    defaultThinkingBudget(reasoningCapability) ?? 10000,
+                  )}
+                  min={thinkingBudgetCapability?.minTokens ?? 1}
+                  max={thinkingBudgetCapability?.maxTokens}
+                  step={thinkingBudgetCapability?.step ?? 1}
+                />
+                <p className="text-xs text-text-tertiary">
+                  {t("settings.thinkingBudgetHelp")}
+                </p>
+              </div>
+            )}
 
             {/* Reasoning Effort */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-text-primary">
-                {t("settings.reasoningEffort")}
-              </label>
-              <select
-                value={reasoningEffort ?? "medium"}
-                onChange={(e) => setReasoningEffort(e.target.value)}
-                className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
-              >
-                <option value="low">{t("settings.reasoningLow")}</option>
-                <option value="medium">{t("settings.reasoningMedium")}</option>
-                <option value="high">{t("settings.reasoningHigh")}</option>
-              </select>
-              <p className="text-xs text-text-tertiary">
-                {t("settings.reasoningEffortHelp")}
-              </p>
-            </div>
+            {supportsReasoningEffort && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-primary">
+                  {t("settings.reasoningEffort")}
+                </label>
+                <select
+                  value={
+                    normalizeReasoningEffort(
+                      reasoningEffort,
+                      reasoningCapability,
+                    ) ??
+                    reasoningEffortOptions[0] ??
+                    ""
+                  }
+                  onChange={(e) => setReasoningEffort(e.target.value)}
+                  className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
+                >
+                  {reasoningEffortOptions.map((level) => (
+                    <option key={level} value={level}>
+                      {t(REASONING_EFFORT_LABEL_KEYS[level])}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-text-tertiary">
+                  {t("settings.reasoningEffortHelp")}
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>

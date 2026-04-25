@@ -98,7 +98,7 @@ export function ActiveExtensions({ conversationId }: { conversationId?: string }
     try {
       const [allServers, allSkills] = await Promise.all([
         api.listMcpServers(),
-        api.listSkills(),
+        api.listActiveSkills(),
       ]);
 
       const enabled = allServers.filter((s) => s.enabled);
@@ -115,7 +115,7 @@ export function ActiveExtensions({ conversationId }: { conversationId?: string }
       );
 
       setServersWithTools(withTools);
-      setSkills(allSkills.filter((s) => s.enabled));
+      setSkills(allSkills);
     } catch {
       // Silently fail — extensions info is non-critical
     } finally {

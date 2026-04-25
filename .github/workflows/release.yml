@@ -24,6 +24,35 @@ jobs:
         with:
           target-branch: master
 
+      - uses: actions/checkout@v5
+        if: steps.release.outputs.release_created != 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Deduplicate release PR changelog entries
+        if: steps.release.outputs.release_created != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PR_BRANCH: release-please--branches--master--components--nexa-monorepo
+        run: |
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          PR_COUNT=$(gh pr list --state open --head "$OWNER:$RELEASE_PR_BRANCH" --json number --jq 'length')
+          if [ "$PR_COUNT" = "0" ]; then
+            exit 0
+          fi
+
+          git fetch origin "$RELEASE_PR_BRANCH"
+          git switch --detach FETCH_HEAD
+          node scripts/dedupe-release-changelog.mjs CHANGELOG.md
+
+          if ! git diff --quiet -- CHANGELOG.md; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add CHANGELOG.md
+            git commit -m "chore: dedupe release changelog entries"
+            git push origin HEAD:"$RELEASE_PR_BRANCH"
+          fi
+
       - name: Ensure release stays draft until artifacts are verified
         if: steps.release.outputs.release_created == 'true'
         env:
@@ -159,7 +188,10 @@ jobs:
           TAG="${{ needs.release-please.outputs.tag_name }}"
           VERSION="${{ needs.release-please.outputs.version }}"
           REPO="${{ github.repository }}"
-          NOTES=$(gh release view "$TAG" --json body -q .body --repo "$REPO" | head -c 5000)
+          gh release view "$TAG" --json body -q .body --repo "$REPO" > /tmp/release-notes.md
+          node scripts/dedupe-release-changelog.mjs /tmp/release-notes.md
+          gh release edit "$TAG" --notes-file /tmp/release-notes.md --repo "$REPO"
+          NOTES=$(head -c 5000 /tmp/release-notes.md)
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then

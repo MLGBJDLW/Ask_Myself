@@ -966,11 +966,8 @@ export function SettingsPage() {
   const [viewSkill, setViewSkill] = useState<Skill | null>(null);
 
   const loadSkills = useCallback(() => {
-    Promise.all([api.listBuiltinSkills(), api.listSkills()])
-      .then(([builtins, user]) => {
-        // Built-ins first, then user skills.
-        setSkills([...builtins, ...user]);
-      })
+    api.listAllSkills()
+      .then(setSkills)
       .catch(() => {
         toast.error(t('common.error'));
       });

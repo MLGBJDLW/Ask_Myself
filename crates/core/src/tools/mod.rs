@@ -76,7 +76,6 @@ pub mod edit_document_tool;
 pub mod edit_file_tool;
 pub mod fetch_url_tool;
 pub mod file_tool;
-pub mod generate_document_tool;
 pub mod generate_docx_tool;
 pub mod generate_xlsx_tool;
 pub mod health_check_tool;
