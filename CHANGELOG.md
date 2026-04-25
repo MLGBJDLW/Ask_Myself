@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.10...nexa-monorepo-v0.2.11) (2026-04-25)
+
+
+### Features
+
+* **agent:** add controlled self-evolution harness ([95b8f3d](https://github.com/MLGBJDLW/Nexa/commit/95b8f3da58906e438b064ce220bb93ddde107f9b))
+* harden agent runtime contracts ([86ca794](https://github.com/MLGBJDLW/Nexa/commit/86ca79451d0cd3441a3e2ad7ef5680df202891f8))
+* **office:** add document tools readiness setup ([6c8ef75](https://github.com/MLGBJDLW/Nexa/commit/6c8ef75f704a7f20755d03b7c009c393c1b7b9e3))
+* **office:** adopt python-first document workflows ([0cec8fc](https://github.com/MLGBJDLW/Nexa/commit/0cec8fcc5f004e30cc5ca7d111c4fd1e510f4ea3))
+* **office:** prepare optional document tools ([b020c6d](https://github.com/MLGBJDLW/Nexa/commit/b020c6d83fbdb454be27f2d259e9f0d9bc47a1e2))
+
+
+### Bug Fixes
+
+* **agent:** harden tools and provider switching ([897c52a](https://github.com/MLGBJDLW/Nexa/commit/897c52a037e2a7ee6920ddcff64593d3612376b3))
+* **agent:** recover interrupted streams and improve docx generation ([d9d9939](https://github.com/MLGBJDLW/Nexa/commit/d9d9939092dcb6d2619b900cefc0e4007f762a4f))
+
 ## [0.2.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.9...nexa-monorepo-v0.2.10) (2026-04-25)
 
 
