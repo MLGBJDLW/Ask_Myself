@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.0...nexa-monorepo-v0.3.1) (2026-04-30)
+
+
+### Features
+
+* improve agent run overview and time context ([342afd7](https://github.com/MLGBJDLW/Nexa/commit/342afd72a78952f3311dddc0ee07baee245b1856))
+
 ## [0.3.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.11...nexa-monorepo-v0.3.0) (2026-04-30)
 
 
