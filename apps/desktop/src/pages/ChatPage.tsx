@@ -4,7 +4,7 @@ import { Settings, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
-import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput, ActiveExtensions, ContextCockpit, InvestigationHeader, TaskBoard } from '../components/chat';
+import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput, ActiveExtensions, ChatRunOverview } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
 import { useApprovalQueue } from '../lib/useApprovalQueue';
 import { useTranslation } from '../i18n';
@@ -451,7 +451,7 @@ export function ChatPage() {
               </div>
             )}
             {chat.activeId && (
-              <InvestigationHeader
+              <ChatRunOverview
                 conversationTitle={chat.activeConversation?.title ?? null}
                 collectionContext={collectionContext}
                 sourceSummary={sourceSummary}
@@ -460,27 +460,19 @@ export function ChatPage() {
                 turnStatus={latestTurn?.status ?? null}
                 evidenceLevel={latestAnswerEvidence.level}
                 evidenceCount={latestAnswerEvidence.count}
-              />
-            )}
-            {chat.activeId && (
-              <ContextCockpit
-                sourceSummary={sourceSummary}
                 tokenUsage={chat.tokenUsage}
                 runtimeProfile={chat.runtimeProfile}
                 finishReason={chat.finishReason}
                 contextOverflow={chat.contextOverflow}
                 rateLimited={chat.rateLimited}
                 lastCached={chat.lastCached}
-                isStreaming={chat.isStreaming}
                 isCompacting={isCompacting}
                 onCompact={handleCompactConversation}
                 onStartNewChat={handleNewConversation}
-              />
-            )}
-            {chat.activeId && (
-              <TaskBoard
                 messages={chat.messages}
                 toolCalls={chat.toolCalls}
+                taskRun={chat.taskRun}
+                taskEvents={chat.taskEvents}
               />
             )}
             <ChatMessages

@@ -682,6 +682,45 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_agent_evolution_events_trace
             ON agent_evolution_events(trace_id);",
     ),
+    (
+        "v050_agent_task_runs",
+        "CREATE TABLE IF NOT EXISTS agent_task_runs (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            turn_id TEXT NOT NULL REFERENCES conversation_turns(id) ON DELETE CASCADE,
+            user_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'queued',
+            phase TEXT NOT NULL DEFAULT 'queued',
+            title TEXT NOT NULL DEFAULT '',
+            route_kind TEXT,
+            summary TEXT,
+            error_message TEXT,
+            provider TEXT,
+            model TEXT,
+            plan_json TEXT,
+            artifacts_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            started_at TEXT,
+            finished_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_task_runs_turn
+            ON agent_task_runs(turn_id);
+        CREATE INDEX IF NOT EXISTS idx_agent_task_runs_conversation
+            ON agent_task_runs(conversation_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS agent_task_run_events (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES agent_task_runs(id) ON DELETE CASCADE,
+            event_type TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            status TEXT,
+            payload_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_task_run_events_run
+            ON agent_task_run_events(run_id, created_at);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -804,6 +843,8 @@ mod tests {
         assert!(tables.contains(&"agent_procedural_memories".to_string()));
         assert!(tables.contains(&"skill_change_proposals".to_string()));
         assert!(tables.contains(&"agent_evolution_events".to_string()));
+        assert!(tables.contains(&"agent_task_runs".to_string()));
+        assert!(tables.contains(&"agent_task_run_events".to_string()));
     }
 
     #[test]

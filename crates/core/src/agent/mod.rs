@@ -46,6 +46,15 @@ const MAX_CONTEXT_RECOVERY_ATTEMPTS: u32 = 2;
 const MISSING_REASONING_CONTENT_PLACEHOLDER: &str =
     "[reasoning content unavailable in local history]";
 
+struct SteeringDrainContext<'a> {
+    db: &'a Database,
+    conversation_id: Option<&'a str>,
+    tx: &'a mpsc::Sender<AgentEvent>,
+    model: &'a str,
+    sort_order: &'a mut i64,
+    privacy_cfg: &'a privacy::PrivacyConfig,
+}
+
 fn is_context_overflow_error(err: &CoreError) -> bool {
     match err {
         CoreError::ContextOverflow(..) => true,
@@ -913,12 +922,7 @@ impl AgentExecutor {
     async fn drain_steering_messages(
         &self,
         messages: &mut Vec<Message>,
-        db: &Database,
-        conversation_id: Option<&str>,
-        tx: &mpsc::Sender<AgentEvent>,
-        model: &str,
-        sort_order: &mut i64,
-        privacy_cfg: &crate::privacy::PrivacyConfig,
+        ctx: &mut SteeringDrainContext<'_>,
     ) -> Vec<String> {
         let Some(rx) = &self.steering_rx else {
             return Vec::new();
@@ -936,7 +940,8 @@ impl AgentExecutor {
             return Vec::new();
         }
 
-        let _ = tx
+        let _ = ctx
+            .tx
             .send(AgentEvent::Status {
                 content: if drained.len() == 1 {
                     "Steering message received; applying it to the next agent step.".to_string()
@@ -957,7 +962,7 @@ impl AgentExecutor {
                 continue;
             }
 
-            if let Some(cid) = conversation_id {
+            if let Some(cid) = ctx.conversation_id {
                 let conv_msg = ConversationMessage {
                     id: Uuid::new_v4().to_string(),
                     conversation_id: cid.to_string(),
@@ -966,16 +971,16 @@ impl AgentExecutor {
                     tool_call_id: None,
                     tool_calls: vec![],
                     artifacts: None,
-                    token_count: estimate_tokens_for_model(model, &text),
+                    token_count: estimate_tokens_for_model(ctx.model, &text),
                     created_at: String::new(),
-                    sort_order: *sort_order,
+                    sort_order: *ctx.sort_order,
                     thinking: None,
                     image_attachments: steering.image_attachments.clone(),
                 };
-                if let Err(e) = db.add_message(&conv_msg) {
+                if let Err(e) = ctx.db.add_message(&conv_msg) {
                     warn!("Failed to save steering message: {e}");
                 } else {
-                    *sort_order += 1;
+                    *ctx.sort_order += 1;
                 }
             }
 
@@ -984,10 +989,10 @@ impl AgentExecutor {
             } else {
                 steering.parts
             };
-            if privacy_cfg.enabled {
+            if ctx.privacy_cfg.enabled {
                 for part in &mut parts {
                     if let ContentPart::Text { text } = part {
-                        *text = privacy::redact_content(text, &privacy_cfg.redact_patterns);
+                        *text = privacy::redact_content(text, &ctx.privacy_cfg.redact_patterns);
                     }
                 }
             }
@@ -1521,17 +1526,18 @@ impl AgentExecutor {
         for iteration in 0..self.config.max_iterations {
             // ── Cancellation checkpoint: before LLM call ─────────────────
             check_cancelled!(last_tool_calls);
-            let steering_texts = self
-                .drain_steering_messages(
-                    &mut messages,
+            let steering_texts = {
+                let mut steering_ctx = SteeringDrainContext {
                     db,
                     conversation_id,
-                    &tx,
+                    tx: &tx,
                     model,
-                    &mut sort_order,
-                    &privacy_cfg,
-                )
-                .await;
+                    sort_order: &mut sort_order,
+                    privacy_cfg: &privacy_cfg,
+                };
+                self.drain_steering_messages(&mut messages, &mut steering_ctx)
+                    .await
+            };
             if !steering_texts.is_empty() {
                 self.expand_tool_defs_for_steering(&mut tool_defs, &steering_texts, has_sources);
                 append_persisted_trace_status(
@@ -2032,17 +2038,18 @@ impl AgentExecutor {
 
             // -- 4d. Check termination -----------------------------------------
             if tool_calls.is_empty() {
-                let steering_texts = self
-                    .drain_steering_messages(
-                        &mut messages,
+                let steering_texts = {
+                    let mut steering_ctx = SteeringDrainContext {
                         db,
                         conversation_id,
-                        &tx,
+                        tx: &tx,
                         model,
-                        &mut sort_order,
-                        &privacy_cfg,
-                    )
-                    .await;
+                        sort_order: &mut sort_order,
+                        privacy_cfg: &privacy_cfg,
+                    };
+                    self.drain_steering_messages(&mut messages, &mut steering_ctx)
+                        .await
+                };
                 if !steering_texts.is_empty() {
                     append_persisted_trace_thinking(
                         &mut persisted_trace_items,

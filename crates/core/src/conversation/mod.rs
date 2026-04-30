@@ -156,6 +156,47 @@ pub struct ConversationTurn {
     pub finished_at: Option<String>,
 }
 
+/// A durable execution run for one user-facing agent task.
+///
+/// Today this is one-to-one with a conversation turn. Keeping it separate from
+/// `conversation_turns` gives the UI and future schedulers a stable lifecycle
+/// object with phases, events, artifacts, cancellation, and resumability hooks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskRun {
+    pub id: String,
+    pub conversation_id: String,
+    pub turn_id: String,
+    pub user_message_id: String,
+    pub status: String,
+    pub phase: String,
+    pub title: String,
+    pub route_kind: Option<String>,
+    pub summary: Option<String>,
+    pub error_message: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub plan: Option<serde_json::Value>,
+    pub artifacts: Option<serde_json::Value>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+/// Append-only event in an [`AgentTaskRun`] lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskRunEvent {
+    pub id: String,
+    pub run_id: String,
+    pub event_type: String,
+    pub label: String,
+    pub status: Option<String>,
+    pub payload: Option<serde_json::Value>,
+    pub created_at: String,
+}
+
 /// A snapshot of conversation state before compaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -255,6 +296,22 @@ fn str_to_role(s: &str) -> Role {
         "assistant" => Role::Assistant,
         "tool" => Role::Tool,
         _ => Role::User,
+    }
+}
+
+fn json_value_from_sql(
+    json: Option<String>,
+    column_index: usize,
+) -> rusqlite::Result<Option<serde_json::Value>> {
+    match json {
+        Some(value) => serde_json::from_str(&value).map(Some).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(
+                column_index,
+                rusqlite::types::Type::Text,
+                Box::new(err),
+            )
+        }),
+        None => Ok(None),
     }
 }
 
@@ -841,6 +898,346 @@ impl Database {
                 created_at: row.get(7)?,
                 updated_at: row.get(8)?,
                 finished_at: row.get(9)?,
+            })
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent task run CRUD
+// ---------------------------------------------------------------------------
+
+impl Database {
+    /// Create a durable task run for a conversation turn.
+    pub fn create_agent_task_run(
+        &self,
+        conversation_id: &str,
+        turn_id: &str,
+        user_message_id: &str,
+        title: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<AgentTaskRun, CoreError> {
+        let id = new_id();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO agent_task_runs
+             (id, conversation_id, turn_id, user_message_id, status, phase, title, provider, model)
+             VALUES (?1, ?2, ?3, ?4, 'queued', 'queued', ?5, ?6, ?7)",
+            rusqlite::params![
+                &id,
+                conversation_id,
+                turn_id,
+                user_message_id,
+                title,
+                provider,
+                model
+            ],
+        )?;
+        drop(conn);
+        self.get_agent_task_run(&id)
+    }
+
+    /// Mark a task run as actively executing.
+    pub fn mark_agent_task_run_started(&self, run_id: &str, phase: &str) -> Result<(), CoreError> {
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE agent_task_runs
+             SET status = 'running',
+                 phase = ?2,
+                 started_at = COALESCE(started_at, datetime('now')),
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![run_id, phase],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!("Agent task run {run_id}")));
+        }
+        Ok(())
+    }
+
+    /// Update task run progress without finalizing it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_agent_task_run_progress(
+        &self,
+        run_id: &str,
+        status: Option<&str>,
+        phase: Option<&str>,
+        route_kind: Option<&str>,
+        summary: Option<&str>,
+        plan: Option<&serde_json::Value>,
+        artifacts: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        let plan_json = match plan {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+        let artifacts_json = match artifacts {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE agent_task_runs
+             SET status = COALESCE(?2, status),
+                 phase = COALESCE(?3, phase),
+                 route_kind = COALESCE(?4, route_kind),
+                 summary = COALESCE(?5, summary),
+                 plan_json = COALESCE(?6, plan_json),
+                 artifacts_json = COALESCE(?7, artifacts_json),
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![
+                run_id,
+                status,
+                phase,
+                route_kind,
+                summary,
+                plan_json,
+                artifacts_json
+            ],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!("Agent task run {run_id}")));
+        }
+        Ok(())
+    }
+
+    /// Finalize a task run and preserve its final artifacts.
+    pub fn finish_agent_task_run(
+        &self,
+        run_id: &str,
+        status: &str,
+        summary: Option<&str>,
+        error_message: Option<&str>,
+        artifacts: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        let artifacts_json = match artifacts {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE agent_task_runs
+             SET status = ?2,
+                 phase = 'done',
+                 summary = COALESCE(?3, summary),
+                 error_message = COALESCE(?4, error_message),
+                 artifacts_json = COALESCE(?5, artifacts_json),
+                 finished_at = COALESCE(finished_at, datetime('now')),
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![run_id, status, summary, error_message, artifacts_json],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!("Agent task run {run_id}")));
+        }
+        Ok(())
+    }
+
+    /// Append an event to a task run lifecycle log.
+    pub fn record_agent_task_run_event(
+        &self,
+        run_id: &str,
+        event_type: &str,
+        label: &str,
+        status: Option<&str>,
+        payload: Option<&serde_json::Value>,
+    ) -> Result<AgentTaskRunEvent, CoreError> {
+        let id = new_id();
+        let payload_json = match payload {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO agent_task_run_events
+             (id, run_id, event_type, label, status, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![&id, run_id, event_type, label, status, payload_json],
+        )?;
+        drop(conn);
+        self.get_agent_task_run_event(&id)
+    }
+
+    pub fn get_agent_task_run(&self, run_id: &str) -> Result<AgentTaskRun, CoreError> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT id, conversation_id, turn_id, user_message_id, status, phase, title,
+                    route_kind, summary, error_message, provider, model, plan_json,
+                    artifacts_json, created_at, updated_at, started_at, finished_at
+             FROM agent_task_runs
+             WHERE id = ?1",
+            rusqlite::params![run_id],
+            |row| {
+                Ok(AgentTaskRun {
+                    id: row.get(0)?,
+                    conversation_id: row.get(1)?,
+                    turn_id: row.get(2)?,
+                    user_message_id: row.get(3)?,
+                    status: row.get(4)?,
+                    phase: row.get(5)?,
+                    title: row.get(6)?,
+                    route_kind: row.get(7)?,
+                    summary: row.get(8)?,
+                    error_message: row.get(9)?,
+                    provider: row.get(10)?,
+                    model: row.get(11)?,
+                    plan: json_value_from_sql(row.get(12)?, 12)?,
+                    artifacts: json_value_from_sql(row.get(13)?, 13)?,
+                    created_at: row.get(14)?,
+                    updated_at: row.get(15)?,
+                    started_at: row.get(16)?,
+                    finished_at: row.get(17)?,
+                })
+            },
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("Agent task run {run_id}"))
+            }
+            other => CoreError::Database(other),
+        })
+    }
+
+    pub fn get_agent_task_run_by_turn(
+        &self,
+        turn_id: &str,
+    ) -> Result<Option<AgentTaskRun>, CoreError> {
+        let conn = self.conn();
+        let result = conn.query_row(
+            "SELECT id, conversation_id, turn_id, user_message_id, status, phase, title,
+                    route_kind, summary, error_message, provider, model, plan_json,
+                    artifacts_json, created_at, updated_at, started_at, finished_at
+             FROM agent_task_runs
+             WHERE turn_id = ?1",
+            rusqlite::params![turn_id],
+            |row| {
+                Ok(AgentTaskRun {
+                    id: row.get(0)?,
+                    conversation_id: row.get(1)?,
+                    turn_id: row.get(2)?,
+                    user_message_id: row.get(3)?,
+                    status: row.get(4)?,
+                    phase: row.get(5)?,
+                    title: row.get(6)?,
+                    route_kind: row.get(7)?,
+                    summary: row.get(8)?,
+                    error_message: row.get(9)?,
+                    provider: row.get(10)?,
+                    model: row.get(11)?,
+                    plan: json_value_from_sql(row.get(12)?, 12)?,
+                    artifacts: json_value_from_sql(row.get(13)?, 13)?,
+                    created_at: row.get(14)?,
+                    updated_at: row.get(15)?,
+                    started_at: row.get(16)?,
+                    finished_at: row.get(17)?,
+                })
+            },
+        );
+        match result {
+            Ok(run) => Ok(Some(run)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(CoreError::Database(err)),
+        }
+    }
+
+    pub fn get_agent_task_runs_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<AgentTaskRun>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, turn_id, user_message_id, status, phase, title,
+                    route_kind, summary, error_message, provider, model, plan_json,
+                    artifacts_json, created_at, updated_at, started_at, finished_at
+             FROM agent_task_runs
+             WHERE conversation_id = ?1
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
+            Ok(AgentTaskRun {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                turn_id: row.get(2)?,
+                user_message_id: row.get(3)?,
+                status: row.get(4)?,
+                phase: row.get(5)?,
+                title: row.get(6)?,
+                route_kind: row.get(7)?,
+                summary: row.get(8)?,
+                error_message: row.get(9)?,
+                provider: row.get(10)?,
+                model: row.get(11)?,
+                plan: json_value_from_sql(row.get(12)?, 12)?,
+                artifacts: json_value_from_sql(row.get(13)?, 13)?,
+                created_at: row.get(14)?,
+                updated_at: row.get(15)?,
+                started_at: row.get(16)?,
+                finished_at: row.get(17)?,
+            })
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn get_agent_task_run_event(&self, event_id: &str) -> Result<AgentTaskRunEvent, CoreError> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT id, run_id, event_type, label, status, payload_json, created_at
+             FROM agent_task_run_events
+             WHERE id = ?1",
+            rusqlite::params![event_id],
+            |row| {
+                Ok(AgentTaskRunEvent {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    event_type: row.get(2)?,
+                    label: row.get(3)?,
+                    status: row.get(4)?,
+                    payload: json_value_from_sql(row.get(5)?, 5)?,
+                    created_at: row.get(6)?,
+                })
+            },
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("Agent task run event {event_id}"))
+            }
+            other => CoreError::Database(other),
+        })
+    }
+
+    pub fn get_agent_task_run_events(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<AgentTaskRunEvent>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, run_id, event_type, label, status, payload_json, created_at
+             FROM agent_task_run_events
+             WHERE run_id = ?1
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![run_id], |row| {
+            Ok(AgentTaskRunEvent {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                event_type: row.get(2)?,
+                label: row.get(3)?,
+                status: row.get(4)?,
+                payload: json_value_from_sql(row.get(5)?, 5)?,
+                created_at: row.get(6)?,
             })
         })?;
 
@@ -1843,6 +2240,108 @@ mod tests {
         let all = db.get_conversation_turns(&conv.id).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, turn.id);
+    }
+
+    #[test]
+    fn test_agent_task_run_lifecycle_records_progress_and_events() {
+        let db = Database::open_memory().unwrap();
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+            })
+            .unwrap();
+
+        let user_msg = ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::User,
+            content: "Build a task lifecycle.".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 5,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&user_msg).unwrap();
+        let turn = db
+            .create_conversation_turn(&conv.id, &user_msg.id, None)
+            .unwrap();
+
+        let run = db
+            .create_agent_task_run(
+                &conv.id,
+                &turn.id,
+                &user_msg.id,
+                "Build a task lifecycle.",
+                Some("openai"),
+                Some("gpt-4o"),
+            )
+            .unwrap();
+        assert_eq!(run.status, "queued");
+        assert_eq!(run.phase, "queued");
+
+        db.mark_agent_task_run_started(&run.id, "routing").unwrap();
+        let plan = serde_json::json!({
+            "steps": [
+                { "title": "Create run model", "status": "completed" },
+                { "title": "Wire UI", "status": "in_progress" }
+            ]
+        });
+        db.update_agent_task_run_progress(
+            &run.id,
+            Some("running"),
+            Some("tooling"),
+            Some("KnowledgeRetrieval"),
+            Some("Executing tools"),
+            Some(&plan),
+            None,
+        )
+        .unwrap();
+        let event = db
+            .record_agent_task_run_event(
+                &run.id,
+                "tool",
+                "search_knowledge_base",
+                Some("completed"),
+                Some(&serde_json::json!({ "callId": "call-1" })),
+            )
+            .unwrap();
+        assert_eq!(event.event_type, "tool");
+
+        let artifacts = serde_json::json!({ "turnId": turn.id, "trace": { "items": [] } });
+        db.finish_agent_task_run(
+            &run.id,
+            "completed",
+            Some("Task completed"),
+            None,
+            Some(&artifacts),
+        )
+        .unwrap();
+
+        let fetched = db.get_agent_task_run(&run.id).unwrap();
+        assert_eq!(fetched.status, "completed");
+        assert_eq!(fetched.phase, "done");
+        assert_eq!(fetched.route_kind.as_deref(), Some("KnowledgeRetrieval"));
+        assert_eq!(fetched.plan.as_ref(), Some(&plan));
+        assert!(fetched.started_at.is_some());
+        assert!(fetched.finished_at.is_some());
+
+        let by_turn = db.get_agent_task_run_by_turn(&turn.id).unwrap().unwrap();
+        assert_eq!(by_turn.id, run.id);
+
+        let runs = db.get_agent_task_runs_for_conversation(&conv.id).unwrap();
+        assert_eq!(runs.len(), 1);
+
+        let events = db.get_agent_task_run_events(&run.id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload.as_ref().unwrap()["callId"], "call-1");
     }
 
     #[test]

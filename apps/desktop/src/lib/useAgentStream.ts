@@ -18,6 +18,7 @@ const EMPTY_ROUNDS: StreamRoundEvent[] = [];
 const EMPTY_TOOLS: ToolCallEvent[] = [];
 const EMPTY_TRACE_EVENTS: TraceEvent[] = [];
 const EMPTY_APPROVALS: ApprovalRequest[] = [];
+const EMPTY_TASK_EVENTS: NonNullable<StreamState['taskEvents']> = [];
 
 interface UseAgentStreamReturn {
   send: (
@@ -42,6 +43,8 @@ interface UseAgentStreamReturn {
   rateLimited: boolean;
   autoCompacted: AutoCompactedInfo;
   pendingApprovals: ApprovalRequest[];
+  taskRun: StreamState['taskRun'];
+  taskEvents: StreamState['taskEvents'];
   clearPreview: () => void;
   reset: () => void;
 }
@@ -98,7 +101,9 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
           prev.contextOverflow === next.contextOverflow &&
           prev.rateLimited === next.rateLimited &&
           prev.autoCompacted === next.autoCompacted &&
-          prev.pendingApprovals === next.pendingApprovals
+          prev.pendingApprovals === next.pendingApprovals &&
+          prev.taskRun === next.taskRun &&
+          prev.taskEvents === next.taskEvents
         ) return prev;
         return next;
       });
@@ -157,6 +162,8 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     rateLimited: storeState?.rateLimited ?? false,
     autoCompacted: storeState?.autoCompacted ?? null,
     pendingApprovals: storeState?.pendingApprovals ?? EMPTY_APPROVALS,
+    taskRun: storeState?.taskRun ?? null,
+    taskEvents: storeState?.taskEvents ?? EMPTY_TASK_EVENTS,
     clearPreview,
     reset,
   };

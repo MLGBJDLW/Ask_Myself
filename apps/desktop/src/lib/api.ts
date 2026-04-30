@@ -24,6 +24,8 @@ import type {
   Conversation,
   ConversationMessage,
   ConversationTurn,
+  AgentTaskRun,
+  AgentTaskRunEvent,
   ConversationStats,
   ConversationSearchResult,
   ImageAttachment,
@@ -289,6 +291,12 @@ export const getConversation = (id: string) =>
 
 export const getConversationTurns = (conversationId: string) =>
   invoke<ConversationTurn[]>('get_conversation_turns_cmd', { conversationId });
+
+export const getAgentTaskRuns = (conversationId: string) =>
+  invoke<AgentTaskRun[]>('get_agent_task_runs_cmd', { conversationId });
+
+export const getAgentTaskRunEvents = (runId: string) =>
+  invoke<AgentTaskRunEvent[]>('get_agent_task_run_events_cmd', { runId });
 
 export const deleteConversation = (id: string) =>
   invoke<void>('delete_conversation_cmd', { id });

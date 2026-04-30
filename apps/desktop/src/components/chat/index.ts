@@ -6,6 +6,7 @@ export { ThinkingBlock } from './ThinkingBlock';
 export { SourceSelector } from './SourceSelector';
 export { SystemPromptEditor } from './SystemPromptEditor';
 export { ActiveExtensions } from './ActiveExtensions';
+export { ChatRunOverview } from './ChatRunOverview';
 export { ContextCockpit } from './ContextCockpit';
 export { InvestigationHeader } from './InvestigationHeader';
 export { TaskBoard } from './TaskBoard';

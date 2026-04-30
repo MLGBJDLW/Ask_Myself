@@ -49,6 +49,37 @@ export interface ConversationTurn {
   finishedAt?: string | null;
 }
 
+export interface AgentTaskRun {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  userMessageId: string;
+  status: string;
+  phase: string;
+  title: string;
+  routeKind?: string | null;
+  summary?: string | null;
+  errorMessage?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  plan?: Record<string, unknown> | unknown[] | null;
+  artifacts?: Record<string, unknown> | unknown[] | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+export interface AgentTaskRunEvent {
+  id: string;
+  runId: string;
+  eventType: string;
+  label: string;
+  status?: string | null;
+  payload?: Record<string, unknown> | unknown[] | null;
+  createdAt: string;
+}
+
 export interface ToolCallRequest {
   id: string;
   name: string;
@@ -184,7 +215,9 @@ export interface AgentEvent {
     | 'autoCompacted'
     | 'usageUpdate'
     | 'approvalRequested'
-    | 'approvalResolved';
+    | 'approvalResolved'
+    | 'taskRunUpdated'
+    | 'taskRunEvent';
   delta?: string;
   reason?: string;
   callId?: string;
@@ -203,6 +236,8 @@ export interface AgentEvent {
   // `Done` events carry a full ConversationMessage; `Error` events carry a plain string.
   message?: ConversationMessage | string;
   usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number; lastPromptTokens?: number };
+  taskRun?: AgentTaskRun;
+  taskEvent?: AgentTaskRunEvent;
 }
 
 export type ApprovalRisk = 'low' | 'medium' | 'high';
@@ -248,6 +283,8 @@ export interface AgentFrontendEvent {
   request?: ApprovalRequest;
   requestId?: string;
   decision?: ApprovalDecisionValue;
+  taskRun?: AgentTaskRun;
+  taskEvent?: AgentTaskRunEvent;
 }
 
 export interface ConversationStats {

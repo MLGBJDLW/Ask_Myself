@@ -19,9 +19,9 @@ use nexa_core::approval::{
 };
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
-    AgentConfig as DbAgentConfig, CollectionContext, Conversation, ConversationMessage,
-    ConversationStats, ConversationTurn, CreateConversationInput, ImageAttachment,
-    SaveAgentConfigInput,
+    AgentConfig as DbAgentConfig, AgentTaskRun, AgentTaskRunEvent, CollectionContext, Conversation,
+    ConversationMessage, ConversationStats, ConversationTurn, CreateConversationInput,
+    ImageAttachment, SaveAgentConfigInput,
 };
 use nexa_core::db::Database;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
@@ -35,6 +35,7 @@ use nexa_core::llm::{
 use nexa_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 
 use base64::Engine;
+use chrono::{Local, SecondsFormat, Utc};
 use log::{info, warn};
 use nexa_core::models::{
     EvidenceCard, Playbook, PlaybookCitation, SearchFilters, SearchQuery, Source,
@@ -70,6 +71,7 @@ pub struct RunningAgentTask {
     pub cancel_token: CancellationToken,
     pub task: tokio::task::JoinHandle<()>,
     pub steering_tx: tokio::sync::mpsc::UnboundedSender<AgentSteeringMessage>,
+    pub task_run_id: String,
 }
 
 pub struct AgentState {
@@ -192,6 +194,313 @@ struct AgentFrontendEvent {
     conversation_id: String,
     #[serde(flatten)]
     event: AgentEvent,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentTaskRunUpdatedEvent {
+    conversation_id: String,
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    task_run: AgentTaskRun,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentTaskRunEventEnvelope {
+    conversation_id: String,
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    task_event: AgentTaskRunEvent,
+}
+
+struct TaskEventEmitContext<'a> {
+    db: &'a Database,
+    app_handle: &'a AppHandle,
+    conversation_id: &'a str,
+    task_run_id: &'a str,
+}
+
+fn truncate_task_event_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut out = value
+        .chars()
+        .take(max_chars.saturating_sub(32))
+        .collect::<String>();
+    out.push_str("\n[truncated]");
+    out
+}
+
+fn task_title_from_message(message: &str) -> String {
+    let single_line = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.chars().count() <= 80 {
+        return single_line;
+    }
+    let mut out = single_line.chars().take(77).collect::<String>();
+    out.push_str("...");
+    out
+}
+
+fn build_current_turn_time_section() -> String {
+    let now = Local::now();
+    let utc_now = now.with_timezone(&Utc);
+    format!(
+        "## Current Turn Time\n\n\
+         The current time at the start of this user turn is:\n\
+         - Local timestamp: {}\n\
+         - UTC timestamp: {}\n\
+         - Local date: {}\n\
+         - Local time: {}\n\
+         - Weekday: {}\n\
+         - UTC offset: {}\n\n\
+         Use this as the reference point for relative dates such as today, yesterday, tomorrow, last week, and latest. For time-sensitive facts, schedules, prices, laws, releases, or other information that may have changed, prefer fresh retrieval/tool evidence instead of relying only on memory.",
+        now.to_rfc3339_opts(SecondsFormat::Secs, false),
+        utc_now.to_rfc3339_opts(SecondsFormat::Secs, true),
+        now.format("%Y-%m-%d"),
+        now.format("%H:%M:%S"),
+        now.format("%A"),
+        now.format("%:z"),
+    )
+}
+
+fn emit_agent_task_run_update(
+    db: &Database,
+    app_handle: &AppHandle,
+    conversation_id: &str,
+    task_run_id: &str,
+) {
+    match db.get_agent_task_run(task_run_id) {
+        Ok(task_run) => {
+            let payload = AgentTaskRunUpdatedEvent {
+                conversation_id: conversation_id.to_string(),
+                event_type: "taskRunUpdated",
+                task_run,
+            };
+            emit_app_event(app_handle, "agent:event", &payload);
+        }
+        Err(err) => warn!("Failed to load task run {task_run_id} for event: {err}"),
+    }
+}
+
+fn emit_agent_task_event(
+    app_handle: &AppHandle,
+    conversation_id: &str,
+    task_event: AgentTaskRunEvent,
+) {
+    let payload = AgentTaskRunEventEnvelope {
+        conversation_id: conversation_id.to_string(),
+        event_type: "taskRunEvent",
+        task_event,
+    };
+    emit_app_event(app_handle, "agent:event", &payload);
+}
+
+fn record_and_emit_task_event(
+    ctx: &TaskEventEmitContext<'_>,
+    event_type: &str,
+    label: &str,
+    status: Option<&str>,
+    payload: Option<&serde_json::Value>,
+) {
+    match ctx
+        .db
+        .record_agent_task_run_event(ctx.task_run_id, event_type, label, status, payload)
+    {
+        Ok(event) => emit_agent_task_event(ctx.app_handle, ctx.conversation_id, event),
+        Err(err) => warn!("Failed to record task event for {}: {err}", ctx.task_run_id),
+    }
+}
+
+fn record_task_progress_for_agent_event(
+    db: &Database,
+    app_handle: &AppHandle,
+    conversation_id: &str,
+    task_run_id: &str,
+    event: &AgentEvent,
+) {
+    let task_event_ctx = TaskEventEmitContext {
+        db,
+        app_handle,
+        conversation_id,
+        task_run_id,
+    };
+
+    match event {
+        AgentEvent::StreamReset { reason } => {
+            record_and_emit_task_event(&task_event_ctx, "status", reason, Some("running"), None);
+        }
+        AgentEvent::ToolCallStart {
+            call_id,
+            tool_name,
+            arguments,
+        } => {
+            let _ = db.update_agent_task_run_progress(
+                task_run_id,
+                Some("running"),
+                Some("tooling"),
+                None,
+                Some(&format!("Running {tool_name}")),
+                None,
+                None,
+            );
+            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+            let payload = serde_json::json!({
+                "callId": call_id,
+                "toolName": tool_name,
+                "arguments": truncate_task_event_text(arguments, 4000),
+            });
+            record_and_emit_task_event(
+                &task_event_ctx,
+                "tool",
+                tool_name,
+                Some("running"),
+                Some(&payload),
+            );
+        }
+        AgentEvent::ToolCallProgress { call_id, note } => {
+            let payload = serde_json::json!({ "callId": call_id, "note": note });
+            record_and_emit_task_event(
+                &task_event_ctx,
+                "toolProgress",
+                note,
+                Some("running"),
+                Some(&payload),
+            );
+        }
+        AgentEvent::ToolCallResult {
+            call_id,
+            tool_name,
+            content,
+            is_error,
+            artifacts,
+        } => {
+            let status = if *is_error { "failed" } else { "completed" };
+            let payload = serde_json::json!({
+                "callId": call_id,
+                "toolName": tool_name,
+                "isError": is_error,
+                "content": truncate_task_event_text(content, 4000),
+                "artifacts": artifacts,
+            });
+            record_and_emit_task_event(
+                &task_event_ctx,
+                "tool",
+                tool_name,
+                Some(status),
+                Some(&payload),
+            );
+        }
+        AgentEvent::Status { content, tone } => {
+            if let Some(route) = content.strip_prefix("Route selected: ") {
+                let _ = db.update_agent_task_run_progress(
+                    task_run_id,
+                    Some("running"),
+                    Some("routing"),
+                    Some(route.trim()),
+                    Some("Route selected"),
+                    None,
+                    None,
+                );
+                emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+            }
+            record_and_emit_task_event(&task_event_ctx, "status", content, tone.as_deref(), None);
+        }
+        AgentEvent::Done { finish_reason, .. } => {
+            let payload = serde_json::json!({ "finishReason": finish_reason });
+            let _ = db.update_agent_task_run_progress(
+                task_run_id,
+                Some("running"),
+                Some("finalizing"),
+                None,
+                Some("Finalizing answer"),
+                None,
+                None,
+            );
+            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+            record_and_emit_task_event(
+                &task_event_ctx,
+                "status",
+                "Final answer produced",
+                Some("completed"),
+                Some(&payload),
+            );
+        }
+        AgentEvent::Error { message } => {
+            let _ = db.update_agent_task_run_progress(
+                task_run_id,
+                Some("failed"),
+                Some("done"),
+                None,
+                Some("Agent execution failed"),
+                None,
+                None,
+            );
+            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+            record_and_emit_task_event(&task_event_ctx, "error", message, Some("failed"), None);
+        }
+        AgentEvent::AutoCompacted { evicted_count } => {
+            let payload = serde_json::json!({ "evictedCount": evicted_count });
+            record_and_emit_task_event(
+                &task_event_ctx,
+                "status",
+                "Conversation context compacted",
+                Some("completed"),
+                Some(&payload),
+            );
+        }
+        AgentEvent::ApprovalRequested { request } => {
+            let _ = db.update_agent_task_run_progress(
+                task_run_id,
+                Some("waiting_approval"),
+                Some("approval"),
+                None,
+                Some(&format!("Waiting for approval: {}", request.tool_name)),
+                None,
+                None,
+            );
+            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+            let payload = serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({}));
+            record_and_emit_task_event(
+                &task_event_ctx,
+                "approval",
+                &request.tool_name,
+                Some("pending"),
+                Some(&payload),
+            );
+        }
+        AgentEvent::ApprovalResolved {
+            request_id,
+            decision,
+        } => {
+            let _ = db.update_agent_task_run_progress(
+                task_run_id,
+                Some("running"),
+                Some("tooling"),
+                None,
+                Some("Approval resolved"),
+                None,
+                None,
+            );
+            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+            let payload = serde_json::json!({
+                "requestId": request_id,
+                "decision": decision,
+            });
+            record_and_emit_task_event(
+                &task_event_ctx,
+                "approval",
+                "Approval resolved",
+                Some("completed"),
+                Some(&payload),
+            );
+        }
+        AgentEvent::TextDelta { .. }
+        | AgentEvent::Thinking { .. }
+        | AgentEvent::ToolCallArgsDelta { .. }
+        | AgentEvent::UsageUpdate { .. } => {}
+    }
 }
 
 /// Initialise the file watcher, start watching all sources with
@@ -1703,6 +2012,28 @@ pub async fn get_conversation_turns_cmd(
 }
 
 #[tauri::command]
+pub async fn get_agent_task_runs_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Vec<AgentTaskRun>, String> {
+    state
+        .db
+        .get_agent_task_runs_for_conversation(&conversation_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_agent_task_run_events_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<AgentTaskRunEvent>, String> {
+    state
+        .db
+        .get_agent_task_run_events(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn update_conversation_collection_context_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -2294,6 +2625,28 @@ pub async fn agent_chat_cmd(
         .db
         .create_conversation_turn(&conversation_id, &user_msg.id, None)
         .map_err(|e| e.to_string())?;
+    let task_run = state
+        .db
+        .create_agent_task_run(
+            &conversation_id,
+            &turn.id,
+            &user_msg.id,
+            &task_title_from_message(&message),
+            Some(&db_config.provider),
+            Some(&db_config.model),
+        )
+        .map_err(|e| e.to_string())?;
+    let task_run_id_for_command = task_run.id.clone();
+    emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
+    if let Ok(event) = state.db.record_agent_task_run_event(
+        &task_run.id,
+        "status",
+        "Task queued",
+        Some("queued"),
+        None,
+    ) {
+        emit_agent_task_event(&app_handle, &conversation_id, event);
+    }
 
     // 6. Build prompt sections from conversation context.
     let source_scope_ids = state
@@ -2342,9 +2695,11 @@ pub async fn agent_chat_cmd(
         &state.db,
         Some(&conversation_id),
     );
+    let current_turn_time_section = build_current_turn_time_section();
     let system_prompt = build_system_prompt(
         Some(&conv.system_prompt),
         &[
+            &current_turn_time_section,
             &collection_context_section,
             &source_scope_section,
             &memory_section,
@@ -2732,6 +3087,7 @@ pub async fn agent_chat_cmd(
     let db = state.db.clone();
     let conv_id = conversation_id.clone();
     let turn_id = turn.id.clone();
+    let task_run_id = task_run.id.clone();
     let handle = app_handle.clone();
     let assistant_sort_order = next_sort_order + 1;
     let db_config_for_extraction = db_config.clone();
@@ -2740,6 +3096,21 @@ pub async fn agent_chat_cmd(
 
     const STREAM_KEEPALIVE_INTERVAL_SECS: u64 = 10;
 
+    state
+        .db
+        .mark_agent_task_run_started(&task_run.id, "initializing")
+        .map_err(|e| e.to_string())?;
+    emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
+    if let Ok(event) = state.db.record_agent_task_run_event(
+        &task_run.id,
+        "status",
+        "Agent started",
+        Some("running"),
+        None,
+    ) {
+        emit_agent_task_event(&app_handle, &conversation_id, event);
+    }
+
     let task = tokio::spawn(async move {
         let cancel_token = cancel_token_clone;
         let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
@@ -2747,9 +3118,13 @@ pub async fn agent_chat_cmd(
         // Forward events to the frontend in a separate task.
         let event_handle = handle.clone();
         let stream_conv_id = conv_id.clone();
+        let event_db = db.clone();
+        let event_task_run_id = task_run_id.clone();
         let event_forwarder = tokio::spawn(async move {
             let mut pending_text = String::new();
             let mut pending_thinking = String::new();
+            let mut reasoning_phase_recorded = false;
+            let mut generating_phase_recorded = false;
             let mut tick = tokio::time::interval(Duration::from_millis(16));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             tick.tick().await; // consume immediate first tick
@@ -2783,12 +3158,55 @@ pub async fn agent_chat_cmd(
                     maybe_event = rx.recv() => {
                         match maybe_event {
                             Some(AgentEvent::TextDelta { delta }) => {
+                                if !generating_phase_recorded {
+                                    generating_phase_recorded = true;
+                                    let _ = event_db.update_agent_task_run_progress(
+                                        &event_task_run_id,
+                                        Some("running"),
+                                        Some("generating"),
+                                        None,
+                                        Some("Generating answer"),
+                                        None,
+                                        None,
+                                    );
+                                    emit_agent_task_run_update(
+                                        &event_db,
+                                        &event_handle,
+                                        &stream_conv_id,
+                                        &event_task_run_id,
+                                    );
+                                }
                                 pending_text.push_str(&delta);
                             }
                             Some(AgentEvent::Thinking { content }) => {
+                                if !reasoning_phase_recorded {
+                                    reasoning_phase_recorded = true;
+                                    let _ = event_db.update_agent_task_run_progress(
+                                        &event_task_run_id,
+                                        Some("running"),
+                                        Some("reasoning"),
+                                        None,
+                                        Some("Reasoning"),
+                                        None,
+                                        None,
+                                    );
+                                    emit_agent_task_run_update(
+                                        &event_db,
+                                        &event_handle,
+                                        &stream_conv_id,
+                                        &event_task_run_id,
+                                    );
+                                }
                                 pending_thinking.push_str(&content);
                             }
                             Some(other) => {
+                                record_task_progress_for_agent_event(
+                                    &event_db,
+                                    &event_handle,
+                                    &stream_conv_id,
+                                    &event_task_run_id,
+                                    &other,
+                                );
                                 // Flush any buffered deltas before forwarding
                                 flush_text(&mut pending_text, &stream_conv_id, &event_handle);
                                 flush_thinking(&mut pending_thinking, &stream_conv_id, &event_handle);
@@ -2877,9 +3295,9 @@ pub async fn agent_chat_cmd(
         // Wait for event forwarder to finish.
         let _ = event_forwarder.await;
 
-        match result {
+        match &result {
             Some(Ok(_)) => {}
-            Some(Err(ref e)) => {
+            Some(Err(e)) => {
                 warn!("Agent execution failed for conversation {conv_id}: {e}");
                 let payload = AgentFrontendEvent {
                     conversation_id: conv_id.clone(),
@@ -2925,13 +3343,54 @@ pub async fn agent_chat_cmd(
             }
         }
 
+        let turn_snapshot = db.get_conversation_turn(&turn_id).ok();
+        let trace_artifacts = serde_json::json!({
+            "turnId": turn_id,
+            "turnStatus": turn_snapshot.as_ref().map(|turn| turn.status.clone()),
+            "routeKind": turn_snapshot.as_ref().and_then(|turn| turn.route_kind.clone()),
+            "trace": turn_snapshot.as_ref().and_then(|turn| turn.trace.clone()),
+        });
+        let (task_status, task_summary, task_error): (&str, &str, Option<String>) = if timed_out {
+            (
+                "timed_out",
+                "Agent execution timed out",
+                Some("Agent execution timed out.".to_string()),
+            )
+        } else if let Some(Err(err)) = &result {
+            ("failed", "Agent execution failed", Some(err.to_string()))
+        } else {
+            match turn_snapshot.as_ref().map(|turn| turn.status.as_str()) {
+                Some("cancelled") => ("cancelled", "Stopped by user", None),
+                Some("error") => ("failed", "Agent execution failed", None),
+                Some("cached") => ("completed", "Answered from cache", None),
+                _ => ("completed", "Task completed", None),
+            }
+        };
+        let _ = db.finish_agent_task_run(
+            &task_run_id,
+            task_status,
+            Some(task_summary),
+            task_error.as_deref(),
+            Some(&trace_artifacts),
+        );
+        let _ = db
+            .record_agent_task_run_event(
+                &task_run_id,
+                "status",
+                task_summary,
+                Some(task_status),
+                Some(&trace_artifacts),
+            )
+            .map(|event| emit_agent_task_event(&handle, &conv_id, event));
+        emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
+
         // Repair orphaned tool_calls in DB after timeout or error.
-        if !matches!(result, Some(Ok(_))) {
+        if !matches!(&result, Some(Ok(_))) {
             repair_orphaned_tool_calls(&db, &conv_id);
         }
 
         // Auto memory extraction (background, best-effort).
-        if matches!(result, Some(Ok(_))) {
+        if matches!(&result, Some(Ok(_))) {
             let app_cfg = db.load_app_config().unwrap_or_default();
             if app_cfg.auto_memory_extraction {
                 // Determine the model: prefer summarization model, fall back to main.
@@ -3005,6 +3464,7 @@ pub async fn agent_chat_cmd(
                 cancel_token,
                 task,
                 steering_tx,
+                task_run_id: task_run_id_for_command,
             },
         );
     }
@@ -3051,20 +3511,69 @@ pub async fn agent_steer_cmd(
 
 #[tauri::command]
 pub async fn agent_stop_cmd(
+    state: tauri::State<'_, AppState>,
     agent_state: tauri::State<'_, AgentState>,
+    app_handle: AppHandle,
     conversation_id: String,
 ) -> Result<(), String> {
     let mut running = agent_state.running.lock().await;
     if let Some(task_state) = running.remove(&conversation_id) {
+        let task_run_id = task_state.task_run_id.clone();
+        let _ = state.db.update_agent_task_run_progress(
+            &task_run_id,
+            Some("cancelling"),
+            Some("cancelling"),
+            None,
+            Some("Stop requested"),
+            None,
+            None,
+        );
+        let _ = state
+            .db
+            .record_agent_task_run_event(
+                &task_run_id,
+                "status",
+                "Stop requested",
+                Some("cancelling"),
+                None,
+            )
+            .map(|event| emit_agent_task_event(&app_handle, &conversation_id, event));
+        emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run_id);
+
         // Signal cooperative cancellation first so the agent can save
         // partial work, then abort the task as a fallback.
         task_state.cancel_token.cancel();
         // Give cooperative cancellation 2 seconds to save partial state
         // before forcibly aborting the task.
         let abort_task = task_state.task;
+        let db = state.db.clone();
+        let handle = app_handle.clone();
+        let conv_id = conversation_id.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            abort_task.abort();
+            if !abort_task.is_finished() {
+                abort_task.abort();
+                let artifacts = serde_json::json!({
+                    "reason": "aborted_after_cancel_timeout"
+                });
+                let _ = db.finish_agent_task_run(
+                    &task_run_id,
+                    "cancelled",
+                    Some("Stopped by user"),
+                    None,
+                    Some(&artifacts),
+                );
+                let _ = db
+                    .record_agent_task_run_event(
+                        &task_run_id,
+                        "status",
+                        "Stopped by user",
+                        Some("cancelled"),
+                        Some(&artifacts),
+                    )
+                    .map(|event| emit_agent_task_event(&handle, &conv_id, event));
+                emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
+            }
         });
     }
     Ok(())

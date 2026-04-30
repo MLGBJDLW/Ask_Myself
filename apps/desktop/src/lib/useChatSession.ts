@@ -4,7 +4,14 @@ import * as api from './api';
 import { useAgentStream, UsageTotal } from './useAgentStream';
 import { streamStore } from './streamStore';
 import { useTranslation } from '../i18n';
-import type { Conversation, ConversationMessage, ConversationTurn, AgentConfig, ImageAttachment } from '../types/conversation';
+import type {
+  AgentConfig,
+  AgentTaskRun,
+  Conversation,
+  ConversationMessage,
+  ConversationTurn,
+  ImageAttachment,
+} from '../types/conversation';
 import { appTimeMs } from './dateTime';
 
 /* ------------------------------------------------------------------ */
@@ -161,6 +168,7 @@ function buildRuntimeProfile(
   config: AgentConfig | null,
   conversation: Conversation | null,
   contextWindow: number,
+  t: ReturnType<typeof useTranslation>['t'],
 ): RuntimeProfile | null {
   const provider = conversation?.provider ?? config?.provider ?? '';
   const model = conversation?.model ?? config?.model ?? '';
@@ -170,12 +178,12 @@ function buildRuntimeProfile(
     config?.reasoningEnabled || config?.thinkingBudget || config?.reasoningEffort,
   );
   const reasoningDetail = !reasoningEnabled
-    ? 'off'
+    ? t('chat.contextReasoningOff')
     : config?.reasoningEffort
-      ? `effort ${config.reasoningEffort}`
+      ? t('chat.contextReasoningEffort', { effort: config.reasoningEffort })
       : config?.thinkingBudget
-        ? `${config.thinkingBudget} thinking tokens`
-        : 'on';
+        ? t('chat.contextThinkingBudget', { tokens: config.thinkingBudget })
+        : t('chat.contextReasoningOn');
 
   return {
     provider,
@@ -183,9 +191,9 @@ function buildRuntimeProfile(
     contextWindow,
     reasoningEnabled,
     reasoningDetail,
-    sourceAuthority: 'KB evidence only',
-    toolPolicy: 'read/search allowed; mutation asks',
-    memoryPolicy: 'chat plus approved memory',
+    sourceAuthority: t('chat.contextDefaultSourceAuthority'),
+    toolPolicy: t('chat.contextDefaultToolPolicy'),
+    memoryPolicy: t('chat.contextDefaultMemoryPolicy'),
   };
 }
 
@@ -227,6 +235,8 @@ export interface RuntimeProfile {
 export interface UseChatSessionReturn {
   messages: ConversationMessage[];
   turns: ConversationTurn[];
+  taskRun: AgentTaskRun | null;
+  taskEvents: ReturnType<typeof useAgentStream>['taskEvents'];
   conversations: Conversation[];
   setConversations: React.Dispatch<React.SetStateAction<Conversation[]>>;
   isStreaming: boolean;
@@ -304,6 +314,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messageCache, setMessageCache] = useState<Record<string, ConversationMessage[]>>({});
   const [turnCache, setTurnCache] = useState<Record<string, ConversationTurn[]>>({});
+  const [taskRunCache, setTaskRunCache] = useState<Record<string, AgentTaskRun[]>>({});
   const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null);
   const [customSystemPrompt, setCustomSystemPrompt] = useState<string>(externalSystemPrompt ?? '');
   const [loadingConfig, setLoadingConfig] = useState(true);
@@ -339,6 +350,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   const messages = activeId ? (messageCache[activeId] ?? []) : [];
   const turns = activeId ? (turnCache[activeId] ?? []) : [];
+  const taskRuns = activeId ? (taskRunCache[activeId] ?? []) : [];
 
   const setMessagesForConversation = useCallback((
     conversationId: string,
@@ -372,6 +384,22 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     });
   }, []);
 
+  const setTaskRunsForConversation = useCallback((
+    conversationId: string,
+    updater: AgentTaskRun[] | ((prev: AgentTaskRun[]) => AgentTaskRun[]),
+  ) => {
+    setTaskRunCache(prev => {
+      const current = prev[conversationId] ?? [];
+      const nextRuns = typeof updater === 'function'
+        ? (updater as (prev: AgentTaskRun[]) => AgentTaskRun[])(current)
+        : updater;
+      return {
+        ...prev,
+        [conversationId]: nextRuns,
+      };
+    });
+  }, []);
+
   const {
     send: streamSend,
     stop: streamStop,
@@ -389,6 +417,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     contextOverflow,
     rateLimited,
     autoCompacted,
+    taskRun: streamTaskRun,
+    taskEvents: streamTaskEvents,
     clearPreview,
     reset,
   } = useAgentStream(activeId);
@@ -564,9 +594,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
     void (async () => {
       try {
-        const [[conv, msgs], conversationTurns] = await Promise.all([
+        const [[conv, msgs], conversationTurns, agentTaskRuns] = await Promise.all([
           api.getConversation(activeId),
           api.getConversationTurns(activeId),
+          api.getAgentTaskRuns(activeId),
         ]);
         if (cancelled) return;
         // Safety net (also covers pre-Tier-B persisted rows): preserve any
@@ -574,6 +605,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         // response lacks them (e.g. optimistic temp-* ids or legacy rows).
         setMessagesForConversation(activeId, (prev) => mergeImageAttachments(prev, msgs));
         setTurnsForConversation(activeId, conversationTurns);
+        setTaskRunsForConversation(activeId, agentTaskRuns);
         setConversations((prev) => {
           const existing = prev.find((item) => item.id === conv.id);
           if (existing) {
@@ -614,7 +646,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     return () => {
       cancelled = true;
     };
-  }, [activeId, defaultContextWindow, externalSystemPrompt, isStreaming, setMessagesForConversation, setTurnsForConversation]);
+  }, [activeId, defaultContextWindow, externalSystemPrompt, isStreaming, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
 
   /* ── Reload messages when streaming completes ───────────────────── */
   useEffect(() => {
@@ -625,7 +657,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       Promise.all([
         api.getConversation(completedConversationId),
         api.getConversationTurns(completedConversationId),
-      ]).then(([[conv, msgs], conversationTurns]) => {
+        api.getAgentTaskRuns(completedConversationId),
+      ]).then(([[conv, msgs], conversationTurns, agentTaskRuns]) => {
         if (!cancelled) {
           // Safety net (also covers pre-Tier-B persisted rows): preserve any
           // imageAttachments present in prior in-memory state when the backend
@@ -634,6 +667,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             mergeImageAttachments(prev, msgs),
           );
           setTurnsForConversation(completedConversationId, conversationTurns);
+          setTaskRunsForConversation(completedConversationId, agentTaskRuns);
           setConversations((prev) => {
             const existing = prev.find((item) => item.id === conv.id);
             if (existing) {
@@ -691,7 +725,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       }
     }
     return () => { cancelled = true; };
-  }, [activeId, clearPreview, isStreaming, loadConversations, setMessagesForConversation]);
+  }, [activeId, clearPreview, isStreaming, loadConversations, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
 
   /* ── Sync stream errors to chatError ────────────────────────────── */
   useEffect(() => {
@@ -762,6 +796,16 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           delete next[id];
           return next;
         });
+        setTurnCache(prev => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        setTaskRunCache(prev => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
         delete systemPromptCacheRef.current[id];
         delete contextWindowCacheRef.current[id];
         if (activeId === id) {
@@ -796,6 +840,16 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           }
           return next;
         });
+        setTurnCache(prev => {
+          const next = { ...prev };
+          for (const id of ids) delete next[id];
+          return next;
+        });
+        setTaskRunCache(prev => {
+          const next = { ...prev };
+          for (const id of ids) delete next[id];
+          return next;
+        });
         if (activeId && idSet.has(activeId)) {
           setInternalConversationId(null);
           setCachedUsage(null);
@@ -820,6 +874,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       setConversations([]);
       setInternalConversationId(null);
       setMessageCache({});
+      setTurnCache({});
+      setTaskRunCache({});
       systemPromptCacheRef.current = {};
       contextWindowCacheRef.current = {};
       setCachedUsage(null);
@@ -1072,14 +1128,16 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const reloadMessages = useCallback(async () => {
     if (!activeId) return;
     try {
-      const [[, msgs], conversationTurns] = await Promise.all([
+      const [[, msgs], conversationTurns, agentTaskRuns] = await Promise.all([
         api.getConversation(activeId),
         api.getConversationTurns(activeId),
+        api.getAgentTaskRuns(activeId),
       ]);
       setMessagesForConversation(activeId, msgs);
       setTurnsForConversation(activeId, conversationTurns);
+      setTaskRunsForConversation(activeId, agentTaskRuns);
     } catch { /* ignore */ }
-  }, [activeId, setMessagesForConversation, setTurnsForConversation]);
+  }, [activeId, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
 
   /* ── Computed ────────────────────────────────────────────────────── */
 
@@ -1096,6 +1154,11 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const activeThinkingText = isViewingStreamingConversation ? thinkingText : '';
   const activeIsThinking = isViewingStreamingConversation ? isThinking : false;
   const activeToolCalls = isViewingStreamingConversation ? toolCalls : [];
+  const latestPersistedTaskRun = taskRuns.length > 0 ? taskRuns[taskRuns.length - 1] : null;
+  const activeTaskRun = isViewingStreamingConversation
+    ? (streamTaskRun ?? latestPersistedTaskRun)
+    : latestPersistedTaskRun;
+  const activeTaskEvents = isViewingStreamingConversation ? streamTaskEvents : [];
   const scopedLastUsage = usageConversationRef.current === activeId ? lastUsage : null;
   const scopedLastCached = usageConversationRef.current === activeId ? lastCached : false;
   const scopedFinishReason = usageConversationRef.current === activeId ? finishReason : null;
@@ -1133,11 +1196,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         : null))
     : null;
 
-  const runtimeProfile = buildRuntimeProfile(agentConfig, activeConversation, contextWindow);
+  const runtimeProfile = buildRuntimeProfile(agentConfig, activeConversation, contextWindow, t);
 
   return {
     messages,
     turns: activeTurns,
+    taskRun: activeTaskRun,
+    taskEvents: activeTaskEvents,
     conversations,
     setConversations,
     isStreaming: activeIsStreaming,

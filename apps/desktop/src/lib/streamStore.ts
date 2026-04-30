@@ -4,7 +4,7 @@
  */
 
 import type { AgentFrontendEvent, ApprovalRequest } from '../types';
-import type { ArtifactPayload } from '../types/conversation';
+import type { AgentTaskRun, AgentTaskRunEvent, ArtifactPayload } from '../types/conversation';
 
 /* ── Exported types ─────────────────────────────────────────────── */
 
@@ -104,6 +104,10 @@ export interface StreamState {
   autoCompacted: { summary: string } | null;
   /** High-risk tool calls awaiting GUI approval. FIFO queue. */
   pendingApprovals: ApprovalRequest[];
+  /** Durable task run currently associated with this stream. */
+  taskRun: AgentTaskRun | null;
+  /** Recent lifecycle events for the active task run. */
+  taskEvents: AgentTaskRunEvent[];
 }
 
 /* ── Internal types ─────────────────────────────────────────────── */
@@ -157,6 +161,8 @@ function normalizeAgentEventType(value: unknown): AgentEventType | null {
     case 'usageUpdate': return 'usageUpdate';
     case 'approvalRequested': return 'approvalRequested';
     case 'approvalResolved': return 'approvalResolved';
+    case 'taskRunUpdated': return 'taskRunUpdated';
+    case 'taskRunEvent': return 'taskRunEvent';
     default: return null;
   }
 }
@@ -251,6 +257,8 @@ function createDefaultState(): InternalStreamState {
     rateLimited: false,
     autoCompacted: null,
     pendingApprovals: [],
+    taskRun: null,
+    taskEvents: [],
     _toolCallSeq: 0,
     _roundSeq: 0,
     _traceSeq: 0,
@@ -421,6 +429,8 @@ class StreamStoreImpl {
       rateLimited: s.rateLimited,
       autoCompacted: s.autoCompacted,
       pendingApprovals: s.pendingApprovals,
+      taskRun: s.taskRun,
+      taskEvents: s.taskEvents,
     };
   }
 
@@ -530,15 +540,19 @@ class StreamStoreImpl {
   /** Process an incoming agent event. */
   dispatch(conversationId: string, event: AgentFrontendEvent): void {
     const s = this._streams[conversationId];
-    if (!s || !s.isStreaming) return;
+    if (!s) return;
 
     const raw = event as AgentFrontendEvent & Record<string, unknown>;
     const eventType = normalizeAgentEventType(raw.type);
     if (!eventType) return;
+    const isTaskLifecycleEvent = eventType === 'taskRunUpdated' || eventType === 'taskRunEvent';
+    if (!s.isStreaming && !isTaskLifecycleEvent) return;
 
     // Reset inactivity timeout on every event, including empty keepalive
     // `thinking` events emitted while the backend is still working.
-    this.resetTimeout(conversationId);
+    if (s.isStreaming) {
+      this.resetTimeout(conversationId);
+    }
 
     switch (eventType) {
       case 'thinking': {
@@ -974,6 +988,24 @@ class StreamStoreImpl {
           ?? (typeof raw.requestId === 'string' ? raw.requestId : undefined);
         if (requestId) {
           s.pendingApprovals = s.pendingApprovals.filter(p => p.id !== requestId);
+        }
+        break;
+      }
+
+      case 'taskRunUpdated': {
+        const taskRun = (event.taskRun ?? raw.taskRun) as AgentTaskRun | undefined;
+        if (taskRun && typeof taskRun.id === 'string') {
+          s.taskRun = taskRun;
+        }
+        break;
+      }
+
+      case 'taskRunEvent': {
+        const taskEvent = (event.taskEvent ?? raw.taskEvent) as AgentTaskRunEvent | undefined;
+        if (taskEvent && typeof taskEvent.id === 'string') {
+          if (!s.taskEvents.some(existing => existing.id === taskEvent.id)) {
+            s.taskEvents = [...s.taskEvents, taskEvent].slice(-50);
+          }
         }
         break;
       }

@@ -133,7 +133,7 @@ export function ContextCockpit({
     : t('chat.contextNoUsage');
   const modelLabel = runtimeProfile
     ? `${runtimeProfile.provider} / ${runtimeProfile.model}`
-    : 'No model';
+    : t('chat.contextNoModel');
   const runtimeContextLabel = runtimeProfile?.contextWindow
     ? formatTokens(runtimeProfile.contextWindow)
     : usage
@@ -246,26 +246,30 @@ export function ContextCockpit({
             <div className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
               <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
                 <Cpu className="h-3.5 w-3.5" />
-                Runtime model
+                {t('chat.contextRuntimeModel')}
               </div>
               <div className="truncate text-sm font-medium text-text-primary" title={modelLabel}>
                 {modelLabel}
               </div>
               <div className="mt-1 text-[11px] text-text-secondary">
-                {runtimeContextLabel ? `Context ${runtimeContextLabel}` : 'Context window not resolved yet'}
+                {runtimeContextLabel
+                  ? t('chat.contextWindowValue', { value: runtimeContextLabel })
+                  : t('chat.contextWindowPending')}
               </div>
             </div>
 
             <div className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
               <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
                 <BrainCircuit className="h-3.5 w-3.5" />
-                Reasoning
+                {t('chat.contextReasoningLabel')}
               </div>
               <div className="text-sm text-text-primary">
-                {runtimeProfile?.reasoningEnabled ? 'enabled' : 'disabled'}
+                {runtimeProfile?.reasoningEnabled
+                  ? t('chat.contextReasoningEnabled')
+                  : t('chat.contextReasoningDisabled')}
               </div>
               <div className="mt-1 truncate text-[11px] text-text-secondary" title={runtimeProfile?.reasoningDetail}>
-                {runtimeProfile?.reasoningDetail ?? 'off'}
+                {runtimeProfile?.reasoningDetail ?? t('chat.contextReasoningOff')}
               </div>
             </div>
 
@@ -316,13 +320,13 @@ export function ContextCockpit({
             <div className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
               <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
                 <Wrench className="h-3.5 w-3.5" />
-                Tool policy
+                {t('chat.contextToolPolicyLabel')}
               </div>
               <div className="text-sm text-text-primary">
-                {runtimeProfile?.sourceAuthority ?? 'KB evidence only'}
+                {runtimeProfile?.sourceAuthority ?? t('chat.contextDefaultSourceAuthority')}
               </div>
               <div className="mt-1 text-[11px] text-text-secondary">
-                {runtimeProfile?.toolPolicy ?? 'read/search allowed; mutation asks'}
+                {runtimeProfile?.toolPolicy ?? t('chat.contextDefaultToolPolicy')}
               </div>
             </div>
           </div>
