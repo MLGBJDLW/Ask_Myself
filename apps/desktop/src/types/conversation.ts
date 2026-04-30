@@ -194,7 +194,7 @@ export interface AgentEvent {
   argumentsDelta?: string;
   /** Optional ordering index for argument deltas. */
   index?: number;
-  /** Progress heartbeat note (e.g. "running ppt_generate…"). */
+  /** Progress heartbeat note from a long-running tool. */
   note?: string;
   content?: string;
   tone?: 'muted' | 'success' | 'error';

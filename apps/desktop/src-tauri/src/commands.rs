@@ -10,7 +10,7 @@ use crate::subagent_tool::{
 };
 use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
-    CancellationToken, ConfirmationCallback,
+    AgentSteeringMessage, CancellationToken, ConfirmationCallback,
 };
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
 use nexa_core::approval::{
@@ -66,9 +66,15 @@ pub struct AppState {
 }
 
 /// State for tracking running agent tasks (for cancellation).
+pub struct RunningAgentTask {
+    pub cancel_token: CancellationToken,
+    pub task: tokio::task::JoinHandle<()>,
+    pub steering_tx: tokio::sync::mpsc::UnboundedSender<AgentSteeringMessage>,
+}
+
 pub struct AgentState {
-    /// Map of conversation_id → (cancellation token, task handle).
-    pub running: TokioMutex<HashMap<String, (CancellationToken, tokio::task::JoinHandle<()>)>>,
+    /// Map of conversation_id → running agent task state.
+    pub running: TokioMutex<HashMap<String, RunningAgentTask>>,
 }
 
 /// State for the MCP server manager.
@@ -1200,40 +1206,6 @@ pub fn show_in_file_explorer(path: String) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-/// Save raw bytes as a PPTX file. Used by the frontend pptxgenjs renderer
-/// to persist the deck produced by the `ppt_generate` tool artifact.
-///
-/// If `path` is empty or the parent directory does not exist, returns an error
-/// and expects the caller to fall back to a save dialog. The frontend is
-/// responsible for path validation / user confirmation before calling this.
-#[tauri::command]
-pub fn save_pptx_bytes(path: String, bytes: Vec<u8>) -> Result<String, String> {
-    if path.trim().is_empty() {
-        return Err("save_pptx_bytes: empty path".to_string());
-    }
-    if !path.to_ascii_lowercase().ends_with(".pptx") {
-        return Err(format!(
-            "save_pptx_bytes: path must end with `.pptx` (got '{path}')"
-        ));
-    }
-    if path.contains("..") {
-        return Err("save_pptx_bytes: path must not contain '..' traversal sequences".to_string());
-    }
-    let p = std::path::PathBuf::from(&path);
-    if let Some(parent) = p.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!(
-                    "save_pptx_bytes: create parent directory '{}' failed: {e}",
-                    parent.display()
-                )
-            })?;
-        }
-    }
-    std::fs::write(&p, &bytes).map_err(|e| format!("save_pptx_bytes: write failed: {e}"))?;
-    Ok(p.to_string_lossy().into_owned())
 }
 
 // ── Watcher Commands ────────────────────────────────────────────────────
@@ -2572,6 +2544,7 @@ pub async fn agent_chat_cmd(
 
     let cancel_token = CancellationToken::new();
     let cancel_token_clone = cancel_token.clone();
+    let (steering_tx, steering_rx) = tokio::sync::mpsc::unbounded_channel::<AgentSteeringMessage>();
 
     let delegation_runtime = DelegationRuntime::new(
         provider_config.clone(),
@@ -2846,7 +2819,8 @@ pub async fn agent_chat_cmd(
         // using incrementing sort_order starting at `assistant_sort_order`.
         let executor_cancel_token = cancel_token.clone();
         let mut executor = AgentExecutor::new(provider, tools, executor_config)
-            .with_cancel_token(executor_cancel_token);
+            .with_cancel_token(executor_cancel_token)
+            .with_steering_receiver(steering_rx);
         if let Some(cb) = confirmation_cb {
             executor = executor.with_confirmation_callback(cb);
         }
@@ -2898,6 +2872,7 @@ pub async fn agent_chat_cmd(
 
         drop(run_future);
         drop(turn_timeout);
+        drop(executor);
 
         // Wait for event forwarder to finish.
         let _ = event_forwarder.await;
@@ -3020,11 +2995,18 @@ pub async fn agent_chat_cmd(
     {
         let mut running = agent_state.running.lock().await;
         // Cancel any existing task for this conversation.
-        if let Some((prev_token, prev_task)) = running.remove(&conversation_id) {
-            prev_token.cancel();
-            prev_task.abort();
+        if let Some(prev) = running.remove(&conversation_id) {
+            prev.cancel_token.cancel();
+            prev.task.abort();
         }
-        running.insert(conversation_id, (cancel_token, task));
+        running.insert(
+            conversation_id,
+            RunningAgentTask {
+                cancel_token,
+                task,
+                steering_tx,
+            },
+        );
     }
 
     Ok(())
@@ -3037,6 +3019,34 @@ pub fn get_model_context_window(model: String) -> u32 {
     nexa_core::conversation::memory::model_context_window(&model)
 }
 
+// ── Agent Steering Command ──────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn agent_steer_cmd(
+    agent_state: tauri::State<'_, AgentState>,
+    conversation_id: String,
+    message: String,
+) -> Result<(), String> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return Err("Steering message cannot be empty.".to_string());
+    }
+
+    let mut running = agent_state.running.lock().await;
+    let Some(task) = running.get(&conversation_id) else {
+        return Err("No running agent for this conversation.".to_string());
+    };
+
+    if task.task.is_finished() {
+        running.remove(&conversation_id);
+        return Err("No running agent for this conversation.".to_string());
+    }
+
+    task.steering_tx
+        .send(AgentSteeringMessage::text(trimmed.to_string()))
+        .map_err(|_| "Running agent is no longer accepting steering messages.".to_string())
+}
+
 // ── Agent Stop Command ──────────────────────────────────────────────────
 
 #[tauri::command]
@@ -3045,13 +3055,13 @@ pub async fn agent_stop_cmd(
     conversation_id: String,
 ) -> Result<(), String> {
     let mut running = agent_state.running.lock().await;
-    if let Some((token, task)) = running.remove(&conversation_id) {
+    if let Some(task_state) = running.remove(&conversation_id) {
         // Signal cooperative cancellation first so the agent can save
         // partial work, then abort the task as a fallback.
-        token.cancel();
+        task_state.cancel_token.cancel();
         // Give cooperative cancellation 2 seconds to save partial state
         // before forcibly aborting the task.
-        let abort_task = task;
+        let abort_task = task_state.task;
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             abort_task.abort();

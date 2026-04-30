@@ -6,6 +6,13 @@ description: Activate when creating, editing, validating, converting, rendering,
 ## Trigger
 Creating, editing, validating, converting, rendering, unpacking, or analyzing a `.docx` / `.pptx` / `.pdf` / `.xlsx` file on disk via the `run_shell` tool invoking `scripts/edit_doc.py` or a short Python script using the bundled requirements.
 
+## Pairing
+Use this skill as the execution backend. Pair it with the format skill that carries design and QA rules:
+
+- `docx-document-design` for Word/DOCX reports, memos, proposals, and template-preserving document work
+- `pptx-presentation-design` for PowerPoint decks, slides, speaker notes, and template decks
+- `xlsx-workbook-design` for Excel workbooks, spreadsheets, dashboards, formulas, and financial models
+
 ## When to use
 - Creating new DOCX, XLSX, or PPTX files with Python libraries when the result must be a real Office artifact
 - Targeted text replace inside a `.docx`, `.pptx`, or `.xlsx` while preserving formatting
@@ -22,7 +29,6 @@ Creating, editing, validating, converting, rendering, unpacking, or analyzing a 
 
 ## When NOT to use
 - Plain text / source files → use `edit_file`
-- Simple brand-new Office files only when Python is unavailable and `generate_docx` / `generate_xlsx` / `ppt_generate` covers the requested structure; these native tools are compatibility fallback, not the primary Office path
 - Simple one-off text edits in a docx/pptx/xlsx where `edit_document` already works — that path is faster and needs no Python
 
 ## Critical rule
@@ -48,7 +54,7 @@ All commands run through `run_shell` with `python` (or `python3`):
    ```
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/memo.docx redact --find "confidential" --replace "[REDACTED]"
    ```
-5. Create a brand-new Office file when native generators are too limited:
+5. Create a brand-new Office file with the Python-backed workflow:
    ```
    python <SKILL_DIR>/scripts/edit_doc.py check
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/report.docx create_docx --title "Board Report" --input-md /abs/source/report_content.md
@@ -87,10 +93,10 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 
 1. Existing Office/PDF file? Use `version` first for risky changes, then `replace`, `redact`, `insert_slide`, `extract`, `validate`, or a custom Python script.
 2. New DOCX/XLSX/PPTX and Python is available? Use `create_docx`, `create_xlsx`, or `create_pptx` first. Prefer a JSON spec for spreadsheets/decks and a markdown/body input for documents.
-3. Need template fidelity, comments, tracked changes, precise image replacement, relationship repair, or layout surgery? Use `unpack` → XML/media edit → `pack` → `validate`; do not use rigid native generators.
+3. Need template fidelity, comments, tracked changes, precise image replacement, relationship repair, or layout surgery? Use `unpack` → XML/media edit → `pack` → `validate`; do not use rigid one-shot generators.
 4. Need PDF/image preview or conversion QA? Use `render` when Poppler is available, or `convert --to pdf` with LibreOffice then inspect/extract.
 5. XLSX contains formulas? Use `recalc_xlsx` after writing formulas, then `validate` to scan for formula errors.
-6. Python/LibreOffice unavailable and the document is simple? Fall back to native `generate_docx`, `generate_xlsx`, or `ppt_generate`.
+6. Python/LibreOffice unavailable? Explain the missing runtime and what package or converter is needed; do not fall back to deleted native Office generator tools.
 
 ## Adopted Office-skill patterns
 

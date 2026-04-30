@@ -30,7 +30,7 @@ pub(crate) fn supports_document_fallback(path: &Path) -> bool {
 pub(crate) fn edit_guidance_for_path(path: &Path) -> Option<String> {
     if let Some(format) = generated_document_mime(path) {
         return Some(format!(
-            "Office documents are not plain-text editable with edit_file/create_file. Prefer run_shell + doc-script-editor (python scripts/edit_doc.py) for Office creation, validation, conversion, rendering, extraction, redaction, formula QA, OOXML/template-preserving edits, and rich existing-file work. Use edit_document for quick text replacement, or generate_docx/generate_xlsx/ppt_generate only as simple fallback generators. The legacy all-in-one Office router is not registered. Detected format: '{}'.",
+            "Office documents are not plain-text editable with edit_file/create_file. Use run_shell + doc-script-editor (python scripts/edit_doc.py) for Office creation, validation, conversion, rendering, extraction, redaction, formula QA, OOXML/template-preserving edits, and rich existing-file work. Pair it with docx-document-design, pptx-presentation-design, or xlsx-workbook-design for format-specific Office work. Use edit_document only for quick text replacement. Detected format: '{}'.",
             format
         ));
     }

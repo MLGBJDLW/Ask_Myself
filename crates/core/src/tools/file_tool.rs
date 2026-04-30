@@ -164,6 +164,7 @@ impl Tool for FileTool {
 mod tests {
     use super::*;
     use crate::sources::CreateSourceInput;
+    use std::io::Write;
     use std::path::Path;
 
     fn setup_db_with_source(root: &Path) -> Database {
@@ -286,18 +287,34 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_resolves_source_relative_docx_paths() {
-        use docx_rs::{Docx, Paragraph, Run};
-
         let dir = tempfile::tempdir().expect("create tempdir");
         let docs_dir = dir.path().join("docs");
         std::fs::create_dir_all(&docs_dir).expect("create docs dir");
         let docx_path = docs_dir.join("status.docx");
         let file = std::fs::File::create(&docx_path).expect("create docx");
-        Docx::new()
-            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("DOCX fallback works")))
-            .build()
-            .pack(file)
-            .expect("write docx");
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("[Content_Types].xml", options)
+            .expect("content types");
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#,
+        )
+        .expect("write content types");
+        zip.add_directory("_rels/", options).expect("rels dir");
+        zip.start_file("_rels/.rels", options).expect("rels file");
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#,
+        )
+        .expect("write rels");
+        zip.add_directory("word/", options).expect("word dir");
+        zip.start_file("word/document.xml", options)
+            .expect("document file");
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>DOCX fallback works</w:t></w:r></w:p></w:body></w:document>"#,
+        )
+        .expect("write document");
+        zip.finish().expect("finish docx");
 
         let db = setup_db_with_source(dir.path());
         let tool = FileTool;

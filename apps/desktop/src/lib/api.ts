@@ -221,11 +221,6 @@ export const openFileInDefaultApp = (path: string) =>
 export const showInFileExplorer = (path: string) =>
   invoke<void>('show_in_file_explorer', { path });
 
-/** Save bytes produced by pptxgenjs to disk at the given absolute path.
- *  Returns the resolved absolute path on success. */
-export const savePptxBytes = (path: string, bytes: Uint8Array) =>
-  invoke<string>('save_pptx_bytes', { path, bytes: Array.from(bytes) });
-
 // ── Index (extra) ───────────────────────────────────────────────────────
 
 export const optimizeFtsIndex = () =>
@@ -357,6 +352,9 @@ export const agentChat = (
     attachments: attachments ?? null,
     agentConfigId: agentConfigId ?? null,
   });
+
+export const agentSteer = (conversationId: string, message: string) =>
+  invoke<void>('agent_steer_cmd', { conversationId, message });
 
 export const agentStop = (conversationId: string) =>
   invoke<void>('agent_stop_cmd', { conversationId });

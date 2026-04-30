@@ -32,8 +32,6 @@ dirs = "6"
 lopdf = "0.38"
 dotext = "0.1"
 calamine = "0.26"
-docx-rs = "0.4"
-rust_xlsxwriter = "0.79"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 base64 = "0.22"
 aes-gcm = "0.10"

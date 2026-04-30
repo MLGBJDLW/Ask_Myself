@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use futures::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use tracing::{debug, error, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
@@ -21,12 +21,12 @@ use crate::conversation::memory::{
     model_context_window, trim_to_context_window,
 };
 use crate::conversation::summarizer;
-use crate::conversation::ConversationMessage;
+use crate::conversation::{ConversationMessage, ImageAttachment};
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::{
     CompletionRequest, ContentPart, LlmProvider, Message, ProviderType, ReasoningEffort, Role,
-    ToolCallDelta, ToolCallRequest, Usage,
+    ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
 };
 use crate::privacy;
 use crate::skills::Skill;
@@ -43,6 +43,8 @@ pub use tokio_util::sync::CancellationToken;
 /// ~4K tokens ≈ 16K chars for English text.
 const MAX_TOOL_RESULT_CONTEXT_CHARS: usize = 4_800;
 const MAX_CONTEXT_RECOVERY_ATTEMPTS: u32 = 2;
+const MISSING_REASONING_CONTENT_PLACEHOLDER: &str =
+    "[reasoning content unavailable in local history]";
 
 fn is_context_overflow_error(err: &CoreError) -> bool {
     match err {
@@ -317,8 +319,7 @@ pub enum AgentEvent {
     },
     /// Heartbeat emitted while a long-running tool is still executing.
     ///
-    /// Used to keep the frontend watchdog alive for tools like
-    /// `ppt_generate` / `generate_docx` that may exceed 30 seconds.
+    /// Used to keep the frontend watchdog alive for long-running tools.
     ToolCallProgress {
         #[serde(rename = "callId")]
         call_id: String,
@@ -385,6 +386,30 @@ pub enum AgentEvent {
         request_id: String,
         decision: ApprovalDecision,
     },
+}
+
+/// User input injected into an already-running agent turn.
+///
+/// Steering messages are intentionally consumed only between LLM/tool rounds,
+/// never between assistant tool-call messages and their tool results.
+#[derive(Debug, Clone)]
+pub struct AgentSteeringMessage {
+    pub content: String,
+    pub parts: Vec<ContentPart>,
+    pub image_attachments: Option<Vec<ImageAttachment>>,
+}
+
+impl AgentSteeringMessage {
+    pub fn text(content: impl Into<String>) -> Self {
+        let content = content.into();
+        Self {
+            parts: vec![ContentPart::Text {
+                text: content.clone(),
+            }],
+            content,
+            image_attachments: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -732,7 +757,7 @@ fn route_user_turn(query: &str, system_prompt: &str, has_sources: bool) -> Agent
     if file_operation {
         return AgentRoutePlan {
             kind: AgentRouteKind::FileOperation,
-            prompt_section: "## Active Routing Plan\nThis request is file-centric. Prefer reading, comparing, generating, or editing the relevant files directly before broad knowledge-base search. For requested DOCX/XLSX/PPTX/PDF work, prefer run_shell + the doc-script-editor skill for Python-backed creation, validation, conversion, rendering, extraction, redaction, formula QA, template preservation, and OOXML edits. Use generate_docx/generate_xlsx/ppt_generate only as compatibility fallbacks for very simple new files when Python is unavailable.".to_string(),
+            prompt_section: "## Active Routing Plan\nThis request is file-centric. Prefer reading, comparing, generating, or editing the relevant files directly before broad knowledge-base search. For requested DOCX/XLSX/PPTX/PDF work, use run_shell + the doc-script-editor skill for Python-backed creation, validation, conversion, rendering, extraction, redaction, formula QA, template preservation, and OOXML edits. Pair Office work with docx-document-design, pptx-presentation-design, or xlsx-workbook-design as appropriate.".to_string(),
             extra_categories: vec![ToolCategory::FileSystem, ToolCategory::DocumentAnalysis],
         };
     }
@@ -807,6 +832,7 @@ pub struct AgentExecutor {
     config: AgentConfig,
     skills_override: Option<Vec<Skill>>,
     cancel_token: CancellationToken,
+    steering_rx: Option<Arc<TokioMutex<mpsc::UnboundedReceiver<AgentSteeringMessage>>>>,
     confirmation_callback: Option<ConfirmationCallback>,
     approval_callback: Option<ApprovalCallback>,
 }
@@ -821,6 +847,7 @@ impl AgentExecutor {
             config,
             skills_override: None,
             cancel_token: CancellationToken::new(),
+            steering_rx: None,
             confirmation_callback: None,
             approval_callback: None,
         }
@@ -832,6 +859,15 @@ impl AgentExecutor {
     /// checkpoint, save any partial conversation, and return gracefully.
     pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
         self.cancel_token = token;
+        self
+    }
+
+    /// Attach a receiver for user steering messages sent while this run is active.
+    pub fn with_steering_receiver(
+        mut self,
+        rx: mpsc::UnboundedReceiver<AgentSteeringMessage>,
+    ) -> Self {
+        self.steering_rx = Some(Arc::new(TokioMutex::new(rx)));
         self
     }
 
@@ -872,6 +908,139 @@ impl AgentExecutor {
     pub fn with_skills_override(mut self, skills: Vec<Skill>) -> Self {
         self.skills_override = Some(skills);
         self
+    }
+
+    async fn drain_steering_messages(
+        &self,
+        messages: &mut Vec<Message>,
+        db: &Database,
+        conversation_id: Option<&str>,
+        tx: &mpsc::Sender<AgentEvent>,
+        model: &str,
+        sort_order: &mut i64,
+        privacy_cfg: &crate::privacy::PrivacyConfig,
+    ) -> Vec<String> {
+        let Some(rx) = &self.steering_rx else {
+            return Vec::new();
+        };
+
+        let mut drained = Vec::new();
+        {
+            let mut rx = rx.lock().await;
+            while let Ok(message) = rx.try_recv() {
+                drained.push(message);
+            }
+        }
+
+        if drained.is_empty() {
+            return Vec::new();
+        }
+
+        let _ = tx
+            .send(AgentEvent::Status {
+                content: if drained.len() == 1 {
+                    "Steering message received; applying it to the next agent step.".to_string()
+                } else {
+                    format!(
+                        "{} steering messages received; applying them to the next agent step.",
+                        drained.len()
+                    )
+                },
+                tone: Some("muted".to_string()),
+            })
+            .await;
+
+        let mut steering_texts = Vec::with_capacity(drained.len());
+        for steering in drained {
+            let text = steering.content.trim().to_string();
+            if text.is_empty() && steering.parts.is_empty() {
+                continue;
+            }
+
+            if let Some(cid) = conversation_id {
+                let conv_msg = ConversationMessage {
+                    id: Uuid::new_v4().to_string(),
+                    conversation_id: cid.to_string(),
+                    role: Role::User,
+                    content: text.clone(),
+                    tool_call_id: None,
+                    tool_calls: vec![],
+                    artifacts: None,
+                    token_count: estimate_tokens_for_model(model, &text),
+                    created_at: String::new(),
+                    sort_order: *sort_order,
+                    thinking: None,
+                    image_attachments: steering.image_attachments.clone(),
+                };
+                if let Err(e) = db.add_message(&conv_msg) {
+                    warn!("Failed to save steering message: {e}");
+                } else {
+                    *sort_order += 1;
+                }
+            }
+
+            let mut parts = if steering.parts.is_empty() {
+                vec![ContentPart::Text { text: text.clone() }]
+            } else {
+                steering.parts
+            };
+            if privacy_cfg.enabled {
+                for part in &mut parts {
+                    if let ContentPart::Text { text } = part {
+                        *text = privacy::redact_content(text, &privacy_cfg.redact_patterns);
+                    }
+                }
+            }
+            messages.push(Message {
+                role: Role::User,
+                parts,
+                name: None,
+                tool_calls: None,
+                reasoning_content: None,
+            });
+            steering_texts.push(text);
+        }
+
+        steering_texts
+    }
+
+    fn expand_tool_defs_for_steering(
+        &self,
+        tool_defs: &mut Vec<ToolDefinition>,
+        steering_texts: &[String],
+        has_sources: bool,
+    ) {
+        if !self.config.dynamic_tool_visibility {
+            return;
+        }
+
+        for text in steering_texts {
+            if text.trim().is_empty() {
+                continue;
+            }
+            let selected = self.tools.select_tools(text, has_sources);
+            if selected.is_empty() {
+                continue;
+            }
+            *tool_defs = merge_tool_definitions(std::mem::take(tool_defs), selected);
+        }
+    }
+
+    fn reasoning_content_for_iteration(
+        &self,
+        iteration_thinking: &str,
+        has_tool_calls: bool,
+    ) -> Option<String> {
+        if !iteration_thinking.is_empty() {
+            return Some(iteration_thinking.to_string());
+        }
+        if has_tool_calls
+            && self.config.reasoning_enabled.unwrap_or(false)
+            && matches!(self.config.provider_type, Some(ProviderType::DeepSeek))
+        {
+            return Some(MISSING_REASONING_CONTENT_PLACEHOLDER.to_string());
+        }
+        None
     }
 
     /// Run the agent loop for a single user turn.
@@ -1008,7 +1177,7 @@ impl AgentExecutor {
 
         debug!("Agent route selected: {:?}", route_plan.kind);
 
-        let tool_defs = if self.config.dynamic_tool_visibility {
+        let mut tool_defs = if self.config.dynamic_tool_visibility {
             let selected = self
                 .tools
                 .select_tools(&user_query_text_for_tools, has_sources);
@@ -1056,13 +1225,6 @@ impl AgentExecutor {
                 }
             }
         }
-
-        // --- 3. Prepare tool definitions -------------------------------------
-        let tools_param = if tool_defs.is_empty() {
-            None
-        } else {
-            Some(tool_defs)
-        };
 
         let mut total_usage = Usage::default();
         let mut last_prompt_tokens: u32 = 0;
@@ -1359,6 +1521,34 @@ impl AgentExecutor {
         for iteration in 0..self.config.max_iterations {
             // ── Cancellation checkpoint: before LLM call ─────────────────
             check_cancelled!(last_tool_calls);
+            let steering_texts = self
+                .drain_steering_messages(
+                    &mut messages,
+                    db,
+                    conversation_id,
+                    &tx,
+                    model,
+                    &mut sort_order,
+                    &privacy_cfg,
+                )
+                .await;
+            if !steering_texts.is_empty() {
+                self.expand_tool_defs_for_steering(&mut tool_defs, &steering_texts, has_sources);
+                append_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    "Applied user steering before the next model step.",
+                    "info",
+                );
+                let max_ctx = self
+                    .config
+                    .context_window
+                    .unwrap_or_else(|| model_context_window(model));
+                messages = trim_to_context_window(
+                    &messages,
+                    max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
+                    max_response_tokens,
+                );
+            }
             debug!(
                 "Agent iteration {}/{}",
                 iteration + 1,
@@ -1393,7 +1583,11 @@ impl AgentExecutor {
                     messages: messages.clone(),
                     temperature: self.config.temperature,
                     max_tokens: self.config.max_tokens,
-                    tools: tools_param.clone(),
+                    tools: if tool_defs.is_empty() {
+                        None
+                    } else {
+                        Some(tool_defs.clone())
+                    },
                     stop: None,
                     thinking_budget: if self.config.reasoning_enabled.unwrap_or(false) {
                         Some(self.config.thinking_budget.unwrap_or(10_000))
@@ -1617,8 +1811,7 @@ impl AgentExecutor {
 
                             // Emit streaming ToolCallStart / ArgsDelta events
                             // so the UI can show progress before the SSE stream
-                            // finishes (critical for long tool-arg payloads like
-                            // ppt_generate / generate_docx).
+                            // finishes (critical for long tool-arg payloads).
                             if let Some((tc_index, tc)) =
                                 resolve_delta_target(&tool_calls, tc_delta)
                             {
@@ -1822,6 +2015,8 @@ impl AgentExecutor {
             }
 
             // -- 4c. Build assistant message -----------------------------------
+            let assistant_reasoning_content =
+                self.reasoning_content_for_iteration(&iteration_thinking, !tool_calls.is_empty());
             let assistant_msg = Message {
                 role: Role::Assistant,
                 parts: vec![ContentPart::Text { text: full_content }],
@@ -1831,16 +2026,78 @@ impl AgentExecutor {
                 } else {
                     Some(tool_calls.clone())
                 },
-                reasoning_content: if iteration_thinking.is_empty() {
-                    None
-                } else {
-                    Some(iteration_thinking.clone())
-                },
+                reasoning_content: assistant_reasoning_content.clone(),
             };
             messages.push(assistant_msg.clone());
 
             // -- 4d. Check termination -----------------------------------------
             if tool_calls.is_empty() {
+                let steering_texts = self
+                    .drain_steering_messages(
+                        &mut messages,
+                        db,
+                        conversation_id,
+                        &tx,
+                        model,
+                        &mut sort_order,
+                        &privacy_cfg,
+                    )
+                    .await;
+                if !steering_texts.is_empty() {
+                    append_persisted_trace_thinking(
+                        &mut persisted_trace_items,
+                        &iteration_thinking,
+                    );
+                    append_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        "Applied user steering after an assistant draft and continued the turn.",
+                        "info",
+                    );
+                    if let Some(cid) = conversation_id {
+                        let conv_msg = ConversationMessage {
+                            id: Uuid::new_v4().to_string(),
+                            conversation_id: cid.to_string(),
+                            role: Role::Assistant,
+                            content: assistant_msg.text_content(),
+                            tool_call_id: None,
+                            tool_calls: vec![],
+                            artifacts: None,
+                            token_count: estimate_message_tokens_for_model(model, &assistant_msg),
+                            created_at: String::new(),
+                            sort_order,
+                            thinking: assistant_reasoning_content.clone(),
+                            image_attachments: None,
+                        };
+                        if let Err(e) = db.add_message(&conv_msg) {
+                            warn!("Failed to save steered assistant draft: {e}");
+                        } else {
+                            sort_order += 1;
+                        }
+                    }
+                    if let Some(tid) = turn_id {
+                        let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                        let _ = db.update_conversation_turn_progress(
+                            tid,
+                            Some(&format!("{:?}", route_plan.kind)),
+                            Some(&trace),
+                        );
+                    }
+                    self.expand_tool_defs_for_steering(
+                        &mut tool_defs,
+                        &steering_texts,
+                        has_sources,
+                    );
+                    let max_ctx = self
+                        .config
+                        .context_window
+                        .unwrap_or_else(|| model_context_window(model));
+                    messages = trim_to_context_window(
+                        &messages,
+                        max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
+                        max_response_tokens,
+                    );
+                    continue;
+                }
                 append_persisted_trace_thinking(&mut persisted_trace_items, &iteration_thinking);
                 // Save final assistant message to DB.
                 if let Some(cid) = conversation_id {
@@ -1856,11 +2113,7 @@ impl AgentExecutor {
                         token_count: estimate_message_tokens_for_model(model, &assistant_msg),
                         created_at: String::new(),
                         sort_order,
-                        thinking: if iteration_thinking.is_empty() {
-                            None
-                        } else {
-                            Some(iteration_thinking.clone())
-                        },
+                        thinking: assistant_reasoning_content.clone(),
                         image_attachments: None,
                     };
                     if let Err(e) = db.add_message(&conv_msg) {
@@ -1934,11 +2187,7 @@ impl AgentExecutor {
                     token_count: estimate_message_tokens_for_model(model, &assistant_msg),
                     created_at: String::new(),
                     sort_order,
-                    thinking: if iteration_thinking.is_empty() {
-                        None
-                    } else {
-                        Some(iteration_thinking.clone())
-                    },
+                    thinking: assistant_reasoning_content.clone(),
                     image_attachments: None,
                 };
                 if let Err(e) = db.add_message(&conv_msg) {

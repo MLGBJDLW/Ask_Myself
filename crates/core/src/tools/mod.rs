@@ -77,8 +77,6 @@ pub mod edit_document_tool;
 pub mod edit_file_tool;
 pub mod fetch_url_tool;
 pub mod file_tool;
-pub mod generate_docx_tool;
-pub mod generate_xlsx_tool;
 pub mod harness_dry_run_tool;
 pub mod health_check_tool;
 pub mod knowledge_graph_tool;
@@ -90,7 +88,6 @@ pub mod manage_source_tool;
 pub mod mcp_tool;
 pub mod path_utils;
 pub mod playbook_tool;
-pub mod ppt_generate_tool;
 pub mod read_files_tool;
 pub mod record_verification_tool;
 pub mod reindex_tool;
@@ -674,9 +671,6 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(search_playbooks_tool::SearchPlaybooksTool));
     registry.register(Box::new(edit_file_tool::EditFileTool));
     registry.register(Box::new(create_file_tool::CreateFileTool));
-    registry.register(Box::new(generate_docx_tool::GenerateDocxTool));
-    registry.register(Box::new(generate_xlsx_tool::GenerateXlsxTool));
-    registry.register(Box::new(ppt_generate_tool::PptGenerateTool));
     registry.register(Box::new(edit_document_tool::EditDocumentTool));
     registry.register(Box::new(submit_feedback_tool::SubmitFeedbackTool));
     registry.register(Box::new(document_info_tool::GetDocumentInfoTool));
@@ -742,5 +736,15 @@ mod tests {
         assert_eq!(def.parameters["required"], serde_json::json!([]));
         assert!(def.description.contains("queries"));
         assert!(def.description.contains("SINGLE call"));
+    }
+
+    #[test]
+    fn default_registry_does_not_offer_legacy_office_generators() {
+        let registry = default_tool_registry();
+        let names = registry.tool_names();
+
+        assert!(!names.iter().any(|name| name == "generate_docx"));
+        assert!(!names.iter().any(|name| name == "generate_xlsx"));
+        assert!(!names.iter().any(|name| name == "ppt_generate"));
     }
 }

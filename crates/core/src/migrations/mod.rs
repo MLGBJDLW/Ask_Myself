@@ -438,7 +438,7 @@ sequenceDiagram
 **Takeaway:** Login is a 3-hop flow (client → server → DB) with JWT token returned on success.', updated_at = datetime('now') WHERE id = 'builtin-visual-explanations';
 
         UPDATE skills SET content = '## Trigger
-When creating DOCX, XLSX, or PPTX files via generate_docx/generate_xlsx/ppt_generate tools.
+When creating DOCX, XLSX, or PPTX files via Python Office packages.
 
 ## Rules
 
@@ -530,10 +530,17 @@ Every answer that uses knowledge base search results.
     (
         "v041_refresh_office_skill_tools",
         "UPDATE skills
-            SET content = REPLACE(content, 'generate_pptx', 'ppt_generate'),
+            SET content = REPLACE(REPLACE(REPLACE(REPLACE(content,
+                    'generate_pptx', 'Python Office packages'),
+                    'generate_docx', 'Python Office packages'),
+                    'generate_xlsx', 'Python Office packages'),
+                    'ppt_generate', 'Python Office packages'),
                 updated_at = datetime('now')
             WHERE id = 'builtin-office-document-design'
-              AND content LIKE '%generate_pptx%';",
+              AND (content LIKE '%generate_pptx%'
+                   OR content LIKE '%generate_docx%'
+                   OR content LIKE '%generate_xlsx%'
+                   OR content LIKE '%ppt_generate%');",
     ),
     (
         "v042_conversation_title_is_auto",

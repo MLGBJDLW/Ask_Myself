@@ -872,6 +872,46 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
       let convId = activeId;
 
+      if (convId && streamingConversationRef.current === convId && isStreaming) {
+        const steeringConversationId = convId;
+        if (attachments && attachments.length > 0) {
+          toast.error('Attachments cannot be added while the agent is already running.');
+          return;
+        }
+
+        const currentMessages = messageCache[steeringConversationId] ?? [];
+        const optimisticId = `temp-steer-${Date.now()}`;
+        const optimisticMsg: ConversationMessage = {
+          id: optimisticId,
+          conversationId: steeringConversationId,
+          role: 'user',
+          content,
+          toolCallId: null,
+          toolCalls: [],
+          artifacts: null,
+          tokenCount: 0,
+          createdAt: new Date().toISOString(),
+          sortOrder: currentMessages.length,
+          thinking: null,
+          imageAttachments: null,
+        };
+        setMessagesForConversation(steeringConversationId, (prev) => [...prev, optimisticMsg]);
+        usageConversationRef.current = steeringConversationId;
+        streamingConversationRef.current = steeringConversationId;
+
+        try {
+          await api.agentSteer(steeringConversationId, content);
+        } catch (e) {
+          setMessagesForConversation(steeringConversationId, (prev) =>
+            prev.filter((m) => m.id !== optimisticId),
+          );
+          const message = String(e);
+          setChatError(message);
+          toast.error(message);
+        }
+        return;
+      }
+
       // Auto-create conversation if none active
       if (!convId) {
         try {
@@ -932,7 +972,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
       await streamSend(convId, content, attachments, configForSend.id);
     },
-    [activeId, customSystemPrompt, initialCollectionContext, initialSourceIds, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
+    [activeId, customSystemPrompt, initialCollectionContext, initialSourceIds, isStreaming, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
   );
 
   const stop = useCallback(() => {

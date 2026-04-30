@@ -217,7 +217,6 @@ fn main() {
             // File
             commands::open_file_in_default_app,
             commands::show_in_file_explorer,
-            commands::save_pptx_bytes,
             // Watcher
             commands::start_watching,
             commands::stop_watching,
@@ -271,6 +270,7 @@ fn main() {
             commands::list_provider_presets_cmd,
             // Agent chat
             commands::agent_chat_cmd,
+            commands::agent_steer_cmd,
             commands::agent_stop_cmd,
             // Model info
             commands::get_model_context_window,

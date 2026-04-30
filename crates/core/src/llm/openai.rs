@@ -18,6 +18,8 @@ use crate::error::CoreError;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
+const MISSING_REASONING_CONTENT_PLACEHOLDER: &str =
+    "[reasoning content unavailable in local history]";
 
 // ---------------------------------------------------------------------------
 // OpenAI API wire types — request
@@ -407,7 +409,13 @@ fn convert_message(
     }
 
     if include_reasoning_content && msg.role == Role::Assistant {
-        oai.reasoning_content = msg.reasoning_content.clone();
+        oai.reasoning_content = Some(
+            msg.reasoning_content
+                .as_deref()
+                .filter(|content| !content.trim().is_empty())
+                .unwrap_or(MISSING_REASONING_CONTENT_PLACEHOLDER)
+                .to_string(),
+        );
     }
 
     oai
@@ -879,6 +887,45 @@ mod tests {
         );
         assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call_1");
         assert_eq!(body["messages"][2]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn deepseek_thinking_history_replays_fallback_reasoning_for_legacy_assistant() {
+        let assistant = Message {
+            role: Role::Assistant,
+            parts: vec![],
+            name: None,
+            tool_calls: Some(vec![ToolCallRequest {
+                id: "call_legacy".to_string(),
+                name: "run_shell".to_string(),
+                arguments: "{\"program\":\"python\",\"args\":[\"-c\",\"print(1)\"]}".to_string(),
+                thought_signature: None,
+            }]),
+            reasoning_content: None,
+        };
+        let mut tool = Message::text(Role::Tool, "ok");
+        tool.name = Some("call_legacy".to_string());
+        let request = CompletionRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![Message::text(Role::User, "make a docx"), assistant, tool],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: Some(ReasoningEffort::High),
+            provider_type: Some(ProviderType::DeepSeek),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(
+            body["messages"][1]["reasoning_content"],
+            "[reasoning content unavailable in local history]"
+        );
+        assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call_legacy");
     }
 
     #[test]

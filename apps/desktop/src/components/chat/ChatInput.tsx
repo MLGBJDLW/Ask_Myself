@@ -120,12 +120,12 @@ export function ChatInput({
     (e: React.KeyboardEvent) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if (!isStreaming && !disabled) {
+        if (!disabled) {
           handleSend();
         }
       }
     },
-    [handleSend, isStreaming, disabled],
+    [handleSend, disabled],
   );
 
   const addAttachmentFromDataUrl = useCallback(
@@ -158,6 +158,7 @@ export function ChatInput({
 
   const handleFileSelect = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (isStreaming) return;
       const files = e.target.files;
       if (!files) return;
       for (const file of Array.from(files)) {
@@ -169,7 +170,7 @@ export function ChatInput({
       }
       e.target.value = "";
     },
-    [addAttachment],
+    [addAttachment, isStreaming],
   );
 
   const removeAttachment = useCallback((index: number) => {
@@ -206,6 +207,7 @@ export function ChatInput({
       e.stopPropagation();
       dragCounterRef.current = 0;
       setIsDragging(false);
+      if (isStreaming) return;
       const files = e.dataTransfer.files;
       if (!files) return;
       for (const file of Array.from(files)) {
@@ -217,11 +219,12 @@ export function ChatInput({
         }
       }
     },
-    [addAttachment],
+    [addAttachment, isStreaming],
   );
 
   const handlePaste = useCallback(
     async (e: React.ClipboardEvent) => {
+      if (isStreaming) return;
       const clipboardData = e.clipboardData;
       if (!clipboardData) return;
 
@@ -281,7 +284,7 @@ export function ChatInput({
         }
       }
     },
-    [addAttachment, addAttachmentFromDataUrl, t],
+    [addAttachment, addAttachmentFromDataUrl, isStreaming, t],
   );
 
   return (
@@ -380,7 +383,18 @@ export function ChatInput({
           disabled={disabled || isStreaming}
         />
 
-        {isStreaming ? (
+        <motion.button
+          whileTap={{ scale: 0.95 }}
+          onClick={handleSend}
+          disabled={disabled || (!value.trim() && attachments.length === 0)}
+          data-testid="chat-send"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-white transition-colors duration-fast ease-out cursor-pointer hover:bg-accent-hover disabled:pointer-events-none disabled:opacity-40"
+          aria-label={t("chat.send")}
+        >
+          <Send className="h-4 w-4" />
+        </motion.button>
+
+        {isStreaming && (
           <motion.button
             whileTap={{ scale: 0.95 }}
             onClick={onStop}
@@ -388,17 +402,6 @@ export function ChatInput({
             aria-label={t("chat.stop")}
           >
             <Square className="h-4 w-4" />
-          </motion.button>
-        ) : (
-          <motion.button
-            whileTap={{ scale: 0.95 }}
-            onClick={handleSend}
-            disabled={disabled || (!value.trim() && attachments.length === 0)}
-            data-testid="chat-send"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-white transition-colors duration-fast ease-out cursor-pointer hover:bg-accent-hover disabled:pointer-events-none disabled:opacity-40"
-            aria-label={t("chat.send")}
-          >
-            <Send className="h-4 w-4" />
           </motion.button>
         )}
       </div>
