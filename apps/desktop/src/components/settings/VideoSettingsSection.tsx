@@ -73,7 +73,18 @@ export function VideoSettingsSection({
   };
 
   return (
-    <Section icon={<Film size={20} />} title={t('settings.videoSection')} delay={0.06}>
+    <Section
+      icon={<Film size={20} />}
+      title={t('settings.videoSection')}
+      delay={0.06}
+      collapsible
+      defaultOpen={false}
+      summary={videoConfig ? (
+        <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+          {videoConfig.enabled ? t('settings.skillFilterEnabled') : t('settings.skillFilterDisabled')}
+        </span>
+      ) : undefined}
+    >
       {videoConfig ? (
         <div className="space-y-5">
           {/* Enable toggle */}

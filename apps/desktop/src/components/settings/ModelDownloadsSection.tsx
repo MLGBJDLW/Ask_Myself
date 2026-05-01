@@ -101,8 +101,14 @@ export function ModelDownloadsSection({
   const { t } = useTranslation();
 
   return (
-    <Section icon={<HardDrive size={20} />} title={t('settings.models')} delay={0.03}>
-      <p className="mb-5 text-xs text-text-tertiary">{t('settings.modelsDesc')}</p>
+    <Section
+      icon={<HardDrive size={20} />}
+      title={t('settings.models')}
+      delay={0.03}
+      description={t('settings.modelsDesc')}
+      collapsible
+      defaultOpen={false}
+    >
       <div className="space-y-4">
         {/* Embedding Model */}
         <ModelCard

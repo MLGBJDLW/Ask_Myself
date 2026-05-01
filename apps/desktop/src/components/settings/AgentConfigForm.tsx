@@ -7,7 +7,6 @@ import {
   Save,
   X,
   CheckCircle,
-  ChevronDown,
   BrainCircuit,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -35,6 +34,7 @@ import {
   mergeSubagentToolCatalog,
   usesDefaultSubagentToolSelection,
 } from "../../lib/subagentTools";
+import { CollapsiblePanel } from "./SettingsSection";
 
 interface AgentConfigFormProps {
   config?: AgentConfig;
@@ -783,18 +783,17 @@ export function AgentConfigForm({
         </div>
       )}
 
-      {/* Advanced Settings Toggle */}
-      <button
-        type="button"
-        onClick={() => setShowAdvanced(!showAdvanced)}
-        className="flex items-center gap-1 text-sm text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer"
+      <CollapsiblePanel
+        title={t("settings.advancedSettings")}
+        description="Generation limits, cost controls, and delegated worker access."
+        open={showAdvanced}
+        onOpenChange={setShowAdvanced}
+        summary={
+          <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+            {visibleSelectedToolCount}/{subagentToolCatalog.length} tools
+          </span>
+        }
       >
-        <ChevronDown
-          size={14}
-          className={`transition-transform ${showAdvanced ? "rotate-180" : ""}`}
-        />
-        {t("settings.advancedSettings")}
-      </button>
 
       {showAdvanced && (
         <div className="space-y-4 rounded-lg border border-border bg-surface-2 p-4">
@@ -1217,6 +1216,8 @@ export function AgentConfigForm({
           </div>
         </div>
       )}
+
+      </CollapsiblePanel>
 
       {/* Set as Default */}
       <label className="flex items-center gap-2 cursor-pointer">

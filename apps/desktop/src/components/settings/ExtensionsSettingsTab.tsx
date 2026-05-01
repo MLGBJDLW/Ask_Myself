@@ -128,8 +128,19 @@ export function ExtensionsSettingsTab({
 
   return (
     <>
-      <Section icon={<Blocks size={20} />} title={t('settings.skills')} delay={0.03}>
-        <p className="mb-4 text-xs text-text-tertiary">{t('settings.skillsDescription')}</p>
+      <Section
+        icon={<Blocks size={20} />}
+        title={t('settings.skills')}
+        delay={0.03}
+        description={t('settings.skillsDescription')}
+        collapsible
+        defaultOpen={showSkillForm || skills.length <= 6}
+        summary={
+          <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+            {skills.length}
+          </span>
+        }
+      >
         {showSkillForm ? (
           <SkillEditor
             skill={editingSkill ?? undefined}
@@ -300,8 +311,19 @@ export function ExtensionsSettingsTab({
         )}
       </Section>
 
-      <Section icon={<Plug size={20} />} title={t('settings.mcpServers')} delay={0.06}>
-        <p className="mb-4 text-xs text-text-tertiary">{t('settings.mcpServersDescription')}</p>
+      <Section
+        icon={<Plug size={20} />}
+        title={t('settings.mcpServers')}
+        delay={0.06}
+        description={t('settings.mcpServersDescription')}
+        collapsible
+        defaultOpen={showMcpForm || mcpServers.length <= 3}
+        summary={
+          <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+            {mcpServers.length}
+          </span>
+        }
+      >
         {showMcpForm ? (
           <McpServerForm
             server={editingMcpServer ?? undefined}

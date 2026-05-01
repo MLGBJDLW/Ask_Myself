@@ -98,7 +98,18 @@ export function DataPrivacySettingsTab({
 
   return (
     <>
-      <Section icon={<BarChart3 size={20} />} title={t('analytics.title')} delay={0.02}>
+      <Section
+        icon={<BarChart3 size={20} />}
+        title={t('analytics.title')}
+        delay={0.02}
+        collapsible
+        defaultOpen={false}
+        summary={traceSummary ? (
+          <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+            {formatCompact(traceSummary.totalSessions)} {t('analytics.totalSessions')}
+          </span>
+        ) : undefined}
+      >
         {analyticsLoading && !traceSummary ? (
           <div className="flex items-center gap-2 text-sm text-text-tertiary">
             <Loader2 size={14} className="animate-spin" />
@@ -180,7 +191,18 @@ export function DataPrivacySettingsTab({
         )}
       </Section>
 
-      <Section icon={<Database size={20} />} title={t('settings.indexSection')} delay={0.05}>
+      <Section
+        icon={<Database size={20} />}
+        title={t('settings.indexSection')}
+        delay={0.05}
+        collapsible
+        defaultOpen
+        summary={stats ? (
+          <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+            {stats.totalDocuments} {t('settings.totalDocs')}
+          </span>
+        ) : undefined}
+      >
         <div className="mb-5 grid grid-cols-3 gap-3">
           <StatCard label={t('settings.totalDocs')} value={stats?.totalDocuments ?? '—'} />
           <StatCard label={t('settings.totalChunks')} value={stats?.totalChunks ?? '—'} />
@@ -211,7 +233,18 @@ export function DataPrivacySettingsTab({
         )}
       </Section>
 
-      <Section icon={<Shield size={20} />} title={t('settings.privacySection')} delay={0.1}>
+      <Section
+        icon={<Shield size={20} />}
+        title={t('settings.privacySection')}
+        delay={0.1}
+        collapsible
+        defaultOpen={false}
+        summary={privacyConfig ? (
+          <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+            {privacyConfig.excludePatterns.length + privacyConfig.redactPatterns.length} {t('settings.redactRules')}
+          </span>
+        ) : undefined}
+      >
         {privacyConfig && (
           <div className="space-y-6">
             <div>
