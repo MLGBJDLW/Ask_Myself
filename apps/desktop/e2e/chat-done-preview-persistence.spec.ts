@@ -106,12 +106,16 @@ test.beforeEach(async ({ page }) => {
           listeners.delete(Number(args.eventId ?? 0));
           return null;
         }
+        case 'get_wizard_state_cmd':
+          return { completed: true, completedAt: nowIso };
         case 'list_agent_configs_cmd':
           return [clone(defaultAgentConfig)];
         case 'get_model_context_window':
           return 1047576;
         case 'list_conversations_cmd':
           return Object.values(conversations).map(clone);
+        case 'list_projects_cmd':
+          return [];
         case 'get_conversation_cmd': {
           const id = String(args.id ?? '');
           const payload = [clone(conversations[id]), clone(messagesByConversation[id] ?? [])] as const;
@@ -237,9 +241,6 @@ test.beforeEach(async ({ page }) => {
           messagesByConversation[conversationId] = [
             ...currentMessages,
             userMessage,
-            assistantToolMessage,
-            toolMessage,
-            finalAssistantMessage,
           ];
           conversations[conversationId].updatedAt = new Date().toISOString();
 
@@ -275,6 +276,13 @@ test.beforeEach(async ({ page }) => {
 
           setTimeout(() => {
             refreshDelayActive = true;
+            messagesByConversation[conversationId] = [
+              ...currentMessages,
+              userMessage,
+              assistantToolMessage,
+              toolMessage,
+              finalAssistantMessage,
+            ];
             emitEvent('agent:event', {
               conversationId,
               type: 'done',
@@ -295,7 +303,7 @@ test.beforeEach(async ({ page }) => {
               finishReason: 'stop',
               cached: false,
             });
-          }, 150);
+          }, 650);
 
           return null;
         }
@@ -339,7 +347,7 @@ test('keeps the live thinking and tool preview mounted until delayed persisted m
   await expect(page.getByText('Checking the retry note first.')).toBeVisible({ timeout: 50 });
   await expect(page.getByText('read_file')).toBeVisible({ timeout: 50 });
 
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(520);
   await expect(page.getByText('Final answer: keep retries bounded and show the limit.')).toBeVisible({ timeout: 50 });
 
   await expect(page.getByText('Final answer: keep retries bounded and show the limit.')).toBeVisible();

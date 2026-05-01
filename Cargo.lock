@@ -3346,7 +3346,9 @@ version = "0.2.9"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "blake3",
  "chrono",
+ "encoding_rs 0.8.35",
  "futures",
  "log",
  "nexa-core",
