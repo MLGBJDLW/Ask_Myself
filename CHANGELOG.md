@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.1...nexa-monorepo-v0.3.2) (2026-05-01)
+
+
+### Features
+
+* add behavioral evals and file checkpoints ([281e0ad](https://github.com/MLGBJDLW/Nexa/commit/281e0adc1ce4556be642bce2cfad6f6305d9891d))
+* add desktop automation and role workflows ([252ebac](https://github.com/MLGBJDLW/Nexa/commit/252ebac091ff6edb929cc9bb0ef2f8e0774d700b))
+* collapse long settings panels ([ce9d555](https://github.com/MLGBJDLW/Nexa/commit/ce9d555334555c6779fd2f58c711d0709ea1a700))
+
 ## [0.3.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.0...nexa-monorepo-v0.3.1) (2026-04-30)
 
 
