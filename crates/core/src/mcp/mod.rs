@@ -596,7 +596,7 @@ impl McpManager {
         self.managed_processes.insert(server.id.clone(), child);
 
         // Wait for the server to accept connections
-        let addr = format!("127.0.0.1:{}", port);
+        let addr = format!("localhost:{}", port);
         let timeout = std::time::Duration::from_secs(30);
         let start = std::time::Instant::now();
         loop {
@@ -658,7 +658,12 @@ impl McpManager {
             && server.transport != "stdio"
         {
             let port = self.start_managed_process(server).await?;
-            Some(format!("http://localhost:{}/mcp", port))
+            let path = if server.transport == "sse" {
+                "sse"
+            } else {
+                "mcp"
+            };
+            Some(format!("http://localhost:{port}/{path}"))
         } else {
             None
         };

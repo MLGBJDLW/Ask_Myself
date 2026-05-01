@@ -29,7 +29,6 @@ Use this skill as the execution backend. Pair it with the format skill that carr
 
 ## When NOT to use
 - Plain text / source files → use `edit_file`
-- Simple one-off text edits in a docx/pptx/xlsx where `edit_document` already works — that path is faster and needs no Python
 
 ## Critical rule
 **NEVER paste file contents, binary bytes, or base64 blobs into tool arguments.** Pass only the absolute `--path` plus operation parameters. The script reads and writes bytes on disk itself.

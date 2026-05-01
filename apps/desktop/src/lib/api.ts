@@ -225,6 +225,50 @@ export const openFileInDefaultApp = (path: string) =>
 export const showInFileExplorer = (path: string) =>
   invoke<void>('show_in_file_explorer', { path });
 
+export interface FilePreview {
+  path: string;
+  displayName: string;
+  sourceId: string;
+  sourceName: string;
+  extension: string;
+  mimeType: string;
+  kind: 'markdown' | 'text' | 'code' | 'document' | 'binary' | string;
+  language?: string | null;
+  content?: string | null;
+  encoding?: string | null;
+  editable: boolean;
+  sizeBytes: number;
+  modifiedAt?: string | null;
+  hash: string;
+  lineCount: number;
+  truncated: boolean;
+  warning?: string | null;
+}
+
+export interface FileSaveResult {
+  preview: FilePreview;
+  checkpointId: string;
+  bytesWritten: number;
+  reindexStatus: string;
+  reindexDetail?: string | null;
+}
+
+export const previewFile = (path: string) =>
+  invoke<FilePreview>('preview_file_cmd', { path });
+
+export const saveTextFile = (
+  path: string,
+  content: string,
+  expectedHash?: string | null,
+) =>
+  invoke<FileSaveResult>('save_text_file_cmd', {
+    input: {
+      path,
+      content,
+      expectedHash: expectedHash ?? null,
+    },
+  });
+
 // ── Index (extra) ───────────────────────────────────────────────────────
 
 export const optimizeFtsIndex = () =>

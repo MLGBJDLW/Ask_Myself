@@ -14,6 +14,7 @@ import { Skeleton, CardSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { undoableAction } from '../lib/undoToast';
+import { canPreviewInApp, useFilePreview } from '../lib/filePreviewContext';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -61,6 +62,7 @@ const detailVariants = {
 export function PlaybooksPage() {
   const { t, locale } = useTranslation();
   const navigate = useNavigate();
+  const { openFilePreview } = useFilePreview();
   /* 鈹€鈹€ Data state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
   const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
   const [loading, setLoading] = useState(true);
@@ -784,7 +786,13 @@ ${evidenceLines}`;
                                     <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-text-tertiary">
                                       <button
                                         type="button"
-                                        onClick={() => api.openFileInDefaultApp(evidence.documentPath)}
+                                        onClick={() => {
+                                          if (canPreviewInApp(evidence.documentPath)) {
+                                            openFilePreview(evidence.documentPath);
+                                          } else {
+                                            void api.openFileInDefaultApp(evidence.documentPath);
+                                          }
+                                        }}
                                         className="inline-flex items-center gap-1 hover:text-accent transition-colors cursor-pointer"
                                       >
                                         <ExternalLink size={12} />

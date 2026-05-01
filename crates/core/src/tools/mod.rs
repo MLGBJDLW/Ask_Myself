@@ -76,7 +76,6 @@ pub mod date_search_tool;
 pub mod desktop_automation_tool;
 pub mod document_info_tool;
 pub mod document_utils;
-pub mod edit_document_tool;
 pub mod edit_file_tool;
 pub mod fetch_url_tool;
 pub mod file_tool;
@@ -667,8 +666,8 @@ impl ToolRegistry {
 ///
 /// `run_shell` has its own stricter per-arg + total limits, so it's skipped
 /// here. Other tools should never need more than 32 KB of JSON input; if an
-/// LLM tries to stuff file bytes into (for example) `edit_document.replacements`
-/// we reject early with a message pointing at the `doc-script-editor` skill.
+/// LLM tries to stuff document bytes into tool arguments, we reject early with
+/// a message pointing at the `doc-script-editor` skill.
 fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> {
     const MAX_TOOL_ARG_BYTES: usize = 32 * 1024;
     if name == "run_shell" {
@@ -709,7 +708,6 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(search_playbooks_tool::SearchPlaybooksTool));
     registry.register(Box::new(edit_file_tool::EditFileTool));
     registry.register(Box::new(create_file_tool::CreateFileTool));
-    registry.register(Box::new(edit_document_tool::EditDocumentTool));
     registry.register(Box::new(submit_feedback_tool::SubmitFeedbackTool));
     registry.register(Box::new(document_info_tool::GetDocumentInfoTool));
     registry.register(Box::new(reindex_tool::ReindexTool));
@@ -785,6 +783,7 @@ mod tests {
         assert!(!names.iter().any(|name| name == "generate_docx"));
         assert!(!names.iter().any(|name| name == "generate_xlsx"));
         assert!(!names.iter().any(|name| name == "ppt_generate"));
+        assert!(!names.iter().any(|name| name == "edit_document"));
         assert!(names.iter().any(|name| name == "prepare_document_tools"));
     }
 

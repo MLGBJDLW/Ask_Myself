@@ -293,7 +293,7 @@ impl Database {
 pub fn classify_risk(tool_name: &str, args: &serde_json::Value) -> ApprovalRisk {
     match tool_name {
         "run_shell" => ApprovalRisk::High,
-        "edit_file" | "edit_document" => ApprovalRisk::High,
+        "edit_file" => ApprovalRisk::High,
         "create_file" => {
             if args
                 .get("overwrite")
@@ -388,15 +388,6 @@ pub fn describe_request(tool_name: &str, args: &serde_json::Value) -> String {
                 "Agent wants to edit `{path}`. A restorable file checkpoint will be saved first."
             )
         }
-        "edit_document" => {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("<unknown>");
-            format!(
-                "Agent wants to edit document `{path}`. A restorable file checkpoint will be saved first."
-            )
-        }
         "write_note" => {
             let filename = args
                 .get("filename")
@@ -415,7 +406,7 @@ fn checkpoint_preview(
     args: &serde_json::Value,
 ) -> Option<ApprovalCheckpointPreview> {
     let path_arg = match tool_name {
-        "create_file" | "edit_file" | "edit_document" => args
+        "create_file" | "edit_file" => args
             .get("path")
             .and_then(|v| v.as_str())
             .map(str::to_string),

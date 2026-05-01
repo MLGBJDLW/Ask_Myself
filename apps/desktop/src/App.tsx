@@ -24,6 +24,7 @@ import { WizardPage } from "./pages/WizardPage";
 import { CommandPalette } from "./components/CommandPalette";
 import { StreamProvider } from "./lib/StreamProvider";
 import { ProgressProvider } from "./lib/ProgressProvider";
+import { FilePreviewProvider } from "./lib/FilePreviewProvider";
 import * as api from "./lib/api";
 import { useAutoCompile } from "./lib/useAutoCompile";
 import { useAutoHealthCheck } from "./lib/useAutoHealthCheck";
@@ -94,13 +95,15 @@ function AppShell() {
   return (
     <I18nProvider>
       <MotionConfig reducedMotion="user">
-        <CommandPalette />
-        {wizardCompleted === false && location.pathname !== '/wizard' && (
-          <Navigate to="/wizard" replace />
-        )}
-        {wizardCompleted !== null && (
-          <Outlet context={{ setWizardCompleted } satisfies AppShellOutletContext} />
-        )}
+        <FilePreviewProvider>
+          <CommandPalette />
+          {wizardCompleted === false && location.pathname !== '/wizard' && (
+            <Navigate to="/wizard" replace />
+          )}
+          {wizardCompleted !== null && (
+            <Outlet context={{ setWizardCompleted } satisfies AppShellOutletContext} />
+          )}
+        </FilePreviewProvider>
       </MotionConfig>
     </I18nProvider>
   );

@@ -22,6 +22,7 @@ import { SaveToPlaybookButton } from './SaveToPlaybookButton';
 import { Tooltip } from './ui/Tooltip';
 import { useTranslation } from '../i18n';
 import { openFileInDefaultApp, showInFileExplorer } from '../lib/api';
+import { canPreviewInApp, useFilePreview } from '../lib/filePreviewContext';
 import { VideoPreviewModal } from './media/VideoPreviewModal';
 
 /* ------------------------------------------------------------------ */
@@ -143,6 +144,7 @@ export function EvidenceCardComponent({
   const [expanded, setExpanded] = useState(false);
   const [videoPreviewPath, setVideoPreviewPath] = useState<string | null>(null);
   const { t } = useTranslation();
+  const { openFilePreview } = useFilePreview();
 
   const previewText = card.snippet || card.content;
   const needsTruncation = previewText.length > TRUNCATE_LENGTH;
@@ -189,6 +191,8 @@ export function EvidenceCardComponent({
             onClick={() => {
               if (isVideo) {
                 setVideoPreviewPath(card.documentPath);
+              } else if (canPreviewInApp(card.documentPath)) {
+                openFilePreview(card.documentPath);
               } else {
                 openFileInDefaultApp(card.documentPath).catch(() =>
                   toast.error(t('card.fileNotFound')),
@@ -307,9 +311,13 @@ export function EvidenceCardComponent({
           <Tooltip content={t('card.openFile')}>
             <button
               onClick={() => {
-                openFileInDefaultApp(card.documentPath).catch(() =>
-                  toast.error(t('card.fileNotFound')),
-                );
+                if (canPreviewInApp(card.documentPath)) {
+                  openFilePreview(card.documentPath);
+                } else {
+                  openFileInDefaultApp(card.documentPath).catch(() =>
+                    toast.error(t('card.fileNotFound')),
+                  );
+                }
               }}
               className="cursor-pointer rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-secondary"
             >

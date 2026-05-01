@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { Tooltip } from './Tooltip';
 import { openFileInDefaultApp, showInFileExplorer } from '../../lib/api';
+import { canPreviewInApp, useFilePreview } from '../../lib/filePreviewContext';
 
 interface FileBadgeProps {
   path: string;
@@ -107,6 +108,7 @@ function basename(path: string): string {
 }
 
 export function FileBadge({ path, className = '' }: FileBadgeProps) {
+  const { openFilePreview } = useFilePreview();
   const dir = isDirectory(path);
   const name = basename(path);
   const { color, icon: Icon } = dir ? dirStyle : getStyleForPath(name);
@@ -116,6 +118,8 @@ export function FileBadge({ path, className = '' }: FileBadgeProps) {
     e.stopPropagation();
     if (e.altKey) {
       showInFileExplorer(path);
+    } else if (!dir && canPreviewInApp(path) && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      openFilePreview(path);
     } else {
       openFileInDefaultApp(path);
     }

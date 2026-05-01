@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -23,14 +24,18 @@ jobs:
         id: release
         with:
           target-branch: master
+          # Push runs only create the release/tag after a release PR is merged.
+          # Manual runs open or update the release PR.
+          skip-github-pull-request: ${{ github.event_name == 'push' }}
+          skip-github-release: ${{ github.event_name == 'workflow_dispatch' }}
 
       - uses: actions/checkout@v5
-        if: steps.release.outputs.release_created != 'true'
+        if: github.event_name == 'workflow_dispatch' && steps.release.outputs.release_created != 'true'
         with:
           fetch-depth: 0
 
       - name: Deduplicate release PR changelog entries
-        if: steps.release.outputs.release_created != 'true'
+        if: github.event_name == 'workflow_dispatch' && steps.release.outputs.release_created != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_PR_BRANCH: release-please--branches--master--components--nexa-monorepo
@@ -105,16 +110,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache Cargo
-        uses: actions/cache@v5
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-nexa-v1-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-release-nexa-v1-
+          key: release-${{ matrix.target }}
+          workspaces: |
+            . -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -126,10 +128,6 @@ jobs:
       - name: Install frontend dependencies
         working-directory: apps/desktop
         run: npm ci
-
-      - name: Clean stale build artifacts
-        run: cargo clean
-        working-directory: ${{ github.workspace }}
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.6.2

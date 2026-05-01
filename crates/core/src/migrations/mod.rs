@@ -758,6 +758,16 @@ Every answer that uses knowledge base search results.
             'playwright-browser'
         );",
     ),
+    (
+        "v053_fix_playwright_browser_transport",
+        "UPDATE mcp_servers
+         SET transport = 'streamable_http',
+             url = NULL,
+             updated_at = datetime('now')
+         WHERE id = 'builtin-playwright-browser'
+           AND builtin_id = 'playwright-browser'
+           AND transport != 'streamable_http';",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -947,15 +957,16 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).expect("migrations should succeed");
 
-        let (name, enabled, builtin_id, args): (String, i64, String, String) = conn
+        let (name, transport, enabled, builtin_id, args): (String, String, i64, String, String) = conn
             .query_row(
-                "SELECT name, enabled, builtin_id, args FROM mcp_servers WHERE id = 'builtin-playwright-browser'",
+                "SELECT name, transport, enabled, builtin_id, args FROM mcp_servers WHERE id = 'builtin-playwright-browser'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .unwrap();
 
         assert_eq!(name, "Browser Automation");
+        assert_eq!(transport, "streamable_http");
         assert_eq!(enabled, 0);
         assert_eq!(builtin_id, "playwright-browser");
         assert!(args.contains("@playwright/mcp@latest"));

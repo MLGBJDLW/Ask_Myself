@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { FileText, Film, Music, Clock, ExternalLink, Copy, Check, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { openFileInDefaultApp, showInFileExplorer, getEvidenceCard } from '../../lib/api';
+import { canPreviewInApp, useFilePreview } from '../../lib/filePreviewContext';
 import { VideoPreviewModal } from '../media/VideoPreviewModal';
 import { SaveToPlaybookButton } from '../SaveToPlaybookButton';
 import type { CitationCardData } from '../../lib/citationParser';
@@ -61,6 +62,7 @@ function formatScore(score: number): string {
 
 export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPopupProps) {
   const { t } = useTranslation();
+  const { openFilePreview } = useFilePreview();
   const popupRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const [videoPreviewPath, setVideoPreviewPath] = useState<string | null>(null);
@@ -86,8 +88,13 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
   }, [onClose]);
 
   const handleOpenFile = useCallback(() => {
-    if (card.documentPath) openFileInDefaultApp(card.documentPath);
-  }, [card.documentPath]);
+    if (!card.documentPath) return;
+    if (canPreviewInApp(card.documentPath)) {
+      openFilePreview(card.documentPath);
+    } else {
+      openFileInDefaultApp(card.documentPath);
+    }
+  }, [card.documentPath, openFilePreview]);
 
   const handleShowInExplorer = useCallback(() => {
     if (card.documentPath) showInFileExplorer(card.documentPath);

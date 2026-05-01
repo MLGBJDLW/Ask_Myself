@@ -302,9 +302,9 @@ fn find_program_path(
 }
 
 fn libreoffice_extra_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
     #[cfg(windows)]
     {
+        let mut paths = Vec::new();
         for env_key in ["ProgramFiles", "ProgramFiles(x86)"] {
             if let Some(root) = std::env::var_os(env_key) {
                 let root = PathBuf::from(root);
@@ -312,14 +312,18 @@ fn libreoffice_extra_paths() -> Vec<PathBuf> {
                 paths.push(root.join("LibreOffice").join("program").join("soffice.exe"));
             }
         }
+        paths
     }
     #[cfg(target_os = "macos")]
     {
-        paths.push(PathBuf::from(
+        vec![PathBuf::from(
             "/Applications/LibreOffice.app/Contents/MacOS/soffice",
-        ));
+        )]
     }
-    paths
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        Vec::new()
+    }
 }
 
 fn check_python_module(
@@ -577,6 +581,7 @@ fn run_step(cmd: &PythonCommand, args: &[&str]) -> Result<String, String> {
     }
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 fn run_system_step(program: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new(program)
         .args(args)
@@ -614,7 +619,8 @@ fn prepare_optional_office_tools(
 
 fn prepare_poppler(
     app_data_dir: &Path,
-    ghproxy_base: &str,
+    #[cfg(windows)] ghproxy_base: &str,
+    #[cfg(not(windows))] _ghproxy_base: &str,
     actions: &mut Vec<OfficePrepareAction>,
 ) {
     if tool_available(app_data_dir, &["pdftoppm", "pdftoppm.exe"], &[]) {

@@ -6,6 +6,7 @@ import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { useTranslation } from '../../i18n';
 import { openFileInDefaultApp } from '../../lib/api';
+import { canPreviewInApp, useFilePreview } from '../../lib/filePreviewContext';
 import { FileBadge } from '../ui/FileBadge';
 import { CitationChip } from './EvidenceCard';
 import type { CitationCardData } from '../../lib/citationParser';
@@ -116,6 +117,7 @@ function scrollAnchorIntoChatContainer(target: HTMLElement): boolean {
 /** Open links in the system browser via Tauri shell, or render citation chips */
 function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>) {
   const citationCtx = useContext(CitationContext);
+  const { openFilePreview } = useFilePreview();
 
   // Detect citation links: href="cite:CHUNK_ID"
   if (href && href.startsWith('cite:')) {
@@ -152,7 +154,13 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
     return (
       <button
         type="button"
-        onClick={() => openFileInDefaultApp(filePath)}
+        onClick={() => {
+          if (canPreviewInApp(filePath)) {
+            openFilePreview(filePath);
+          } else {
+            openFileInDefaultApp(filePath);
+          }
+        }}
         className="inline-flex items-center gap-0.5 px-1.5 py-0 text-[11px] font-medium
           rounded-full border cursor-pointer transition-all duration-150
           bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20
