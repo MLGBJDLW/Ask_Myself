@@ -6,11 +6,13 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
 import {
+  BotMessageSquare,
   Check,
   Copy,
   ExternalLink,
@@ -18,12 +20,16 @@ import {
   FileCode2,
   FileText,
   FolderOpen,
+  Languages,
   Loader2,
   PanelRightClose,
   RotateCcw,
   Save,
+  Scissors,
   SplitSquareHorizontal,
+  Sparkles,
   SquarePen,
+  TextCursorInput,
   TriangleAlert,
   X,
 } from 'lucide-react';
@@ -36,6 +42,21 @@ type PreviewMode = 'preview' | 'edit' | 'split';
 
 const INSTANT_TRANSITION = { duration: 0 };
 const REMARK_PLUGINS = [remarkGfm];
+const MAX_AGENT_SELECTION_CHARS = 24_000;
+
+type TextSelectionState = {
+  start: number;
+  end: number;
+  origin: 'editor' | 'preview';
+};
+
+type TextSelectionSummary = TextSelectionState & {
+  text: string;
+  startLine: number;
+  endLine: number;
+  charCount: number;
+  lineCount: number;
+};
 
 function basename(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
@@ -69,6 +90,131 @@ function formatTimestamp(value: string | null | undefined, locale: string): stri
   }).format(date);
 }
 
+function lineNumberAt(content: string, index: number): number {
+  const safeIndex = Math.max(0, Math.min(index, content.length));
+  let line = 1;
+  for (let i = 0; i < safeIndex; i += 1) {
+    if (content.charCodeAt(i) === 10) line += 1;
+  }
+  return line;
+}
+
+function getSelectionSummary(
+  content: string,
+  selection: TextSelectionState | null,
+): TextSelectionSummary | null {
+  if (!selection) return null;
+  const start = Math.max(0, Math.min(selection.start, content.length));
+  const end = Math.max(0, Math.min(selection.end, content.length));
+  if (end <= start) return null;
+
+  const text = content.slice(start, end);
+  if (!text.trim()) return null;
+
+  const startLine = lineNumberAt(content, start);
+  const endLine = lineNumberAt(content, Math.max(start, end - 1));
+
+  return {
+    ...selection,
+    start,
+    end,
+    text,
+    startLine,
+    endLine,
+    charCount: text.length,
+    lineCount: endLine - startLine + 1,
+  };
+}
+
+function codeFenceFor(text: string): string {
+  let fence = '```';
+  while (text.includes(fence)) {
+    fence += '`';
+  }
+  return fence;
+}
+
+function normalizeRenderedSelection(text: string): string {
+  return text.replace(/\r\n?/g, '\n').trim();
+}
+
+function buildAgentEditPrompt({
+  locale,
+  preview,
+  selection,
+  instruction,
+}: {
+  locale: string;
+  preview: api.FilePreview;
+  selection: TextSelectionSummary;
+  instruction: string;
+}): string {
+  const zh = locale.startsWith('zh');
+  const fallbackInstruction = zh
+    ? '请在不改变原意的前提下，优化这段文字的表达。'
+    : 'Improve this passage without changing its intent.';
+  const finalInstruction = instruction.trim() || fallbackInstruction;
+  const lineRange =
+    selection.startLine === selection.endLine
+      ? `${selection.startLine}`
+      : `${selection.startLine}-${selection.endLine}`;
+  const fence = codeFenceFor(selection.text);
+
+  if (zh) {
+    return [
+      '请直接修改下面这个已索引来源文件中的选中文本片段。',
+      '',
+      `文件: ${preview.path}`,
+      `文件名: ${preview.displayName}`,
+      `来源: ${preview.sourceName}`,
+      `行号: ${lineRange}`,
+      `预览字符范围: ${selection.start}-${selection.end}`,
+      `当前文件哈希: ${preview.hash}`,
+      '',
+      '用户修改要求:',
+      finalInstruction,
+      '',
+      '选中文本:',
+      fence,
+      selection.text,
+      fence,
+      '',
+      '执行规则:',
+      '1. 先用 read_file 验证文件内容和选中文本仍然匹配。',
+      '2. 只替换这段选中文本，除非我的修改要求明确需要扩大范围。',
+      '3. 使用 edit_file 修改文件，不要只给建议或改写稿。',
+      '4. 如果文本已经变化、无法唯一定位，或文件不在已注册来源内，请先停下来问我确认。',
+      '5. 修改后简要说明改了什么，并保留可回滚 checkpoint。',
+    ].join('\n');
+  }
+
+  return [
+    'Please directly edit the selected text in this indexed source file.',
+    '',
+    `File: ${preview.path}`,
+    `Display name: ${preview.displayName}`,
+    `Source: ${preview.sourceName}`,
+    `Line range: ${lineRange}`,
+    `Preview character range: ${selection.start}-${selection.end}`,
+    `Current file hash: ${preview.hash}`,
+    '',
+    'Requested change:',
+    finalInstruction,
+    '',
+    'Selected text:',
+    fence,
+    selection.text,
+    fence,
+    '',
+    'Execution rules:',
+    '1. Use read_file first to verify that the file and selected text still match.',
+    '2. Replace only this selected text unless the requested change explicitly requires a wider edit.',
+    '3. Use edit_file to modify the file. Do not only provide advice or a rewritten draft.',
+    '4. If the text has changed, cannot be uniquely located, or is outside a registered source, stop and ask me to confirm.',
+    '5. After editing, briefly summarize what changed and keep the rollback checkpoint available.',
+  ].join('\n');
+}
+
 function copyForLocale(locale: string) {
   const zh = locale.startsWith('zh');
   return {
@@ -100,6 +246,22 @@ function copyForLocale(locale: string) {
     source: zh ? '来源' : 'Source',
     encoding: zh ? '编码' : 'Encoding',
     discardPrompt: zh ? '当前文件有未保存修改，确定要关闭吗？' : 'This file has unsaved changes. Close anyway?',
+    agentEdit: zh ? 'Agent 修改' : 'Agent Edit',
+    selected: zh ? '已选择' : 'Selected',
+    chars: zh ? '字符' : 'chars',
+    lineRange: zh ? '行' : 'lines',
+    agentInstructionPlaceholder: zh ? '告诉 Agent 要如何修改这段文字...' : 'Tell the agent how to change this selection...',
+    askAgent: zh ? '让 Agent 修改' : 'Ask Agent to Edit',
+    copyRequest: zh ? '复制请求' : 'Copy Request',
+    requestCopied: zh ? '请求已复制' : 'Request copied',
+    agentRequestSent: zh ? '已发送给 Agent' : 'Sent to agent',
+    saveBeforeAgent: zh ? '请先保存当前草稿，再让 Agent 按磁盘文件修改。' : 'Save the current draft before asking the agent to edit the disk file.',
+    selectionTooLarge: zh ? '选区较长，Agent 会先重新读取文件再定位。' : 'Large selection. The agent will re-read the file before locating it.',
+    selectionMapFailed: zh ? '预览选区无法精确映射，请切到编辑或分屏后选择。' : 'That preview selection could not be mapped exactly. Select it in Edit or Split mode.',
+    quickRewrite: zh ? '改写更清晰' : 'Rewrite Clearly',
+    quickShorten: zh ? '压缩' : 'Shorten',
+    quickFix: zh ? '修正语法' : 'Fix Grammar',
+    quickTranslateZh: zh ? '翻译中文' : 'Translate to Chinese',
   };
 }
 
@@ -160,12 +322,16 @@ function ModeButton({
 
 export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const { locale } = useTranslation();
+  const navigate = useNavigate();
   const labels = useMemo(() => copyForLocale(locale), [locale]);
   const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [preview, setPreview] = useState<api.FilePreview | null>(null);
   const [draft, setDraft] = useState('');
+  const [textSelection, setTextSelection] = useState<TextSelectionState | null>(null);
+  const [agentInstruction, setAgentInstruction] = useState('');
+  const [copiedAgentRequest, setCopiedAgentRequest] = useState(false);
   const [mode, setMode] = useState<PreviewMode>('preview');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -186,12 +352,17 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
       const next = await api.previewFile(path);
       setPreview(next);
       setDraft(next.content ?? '');
+      setTextSelection(null);
+      setAgentInstruction('');
+      setCopiedAgentRequest(false);
       setMode(next.kind === 'markdown' ? 'preview' : next.editable ? 'edit' : 'preview');
       setActivePath(next.path);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setPreview(null);
       setDraft('');
+      setTextSelection(null);
+      setAgentInstruction('');
       setError(message);
       toast.error(`${labels.loadFailed}: ${message}`);
     } finally {
@@ -234,6 +405,125 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
       setSaving(false);
     }
   }, [dirty, draft, labels.reindexFailed, labels.saveFailed, labels.saved, preview]);
+
+  const selectedText = useMemo(
+    () => getSelectionSummary(draft, textSelection),
+    [draft, textSelection],
+  );
+
+  const quickActions = useMemo(
+    () => [
+      {
+        id: 'rewrite',
+        label: labels.quickRewrite,
+        instruction: locale.startsWith('zh')
+          ? '请把选中文本改写得更清晰、更自然，保留原意。'
+          : 'Rewrite the selected text to be clearer and more natural while preserving the intent.',
+        icon: <Sparkles size={13} />,
+      },
+      {
+        id: 'shorten',
+        label: labels.quickShorten,
+        instruction: locale.startsWith('zh')
+          ? '请压缩选中文本，保留关键信息，减少冗余。'
+          : 'Shorten the selected text, preserving the key information and removing redundancy.',
+        icon: <Scissors size={13} />,
+      },
+      {
+        id: 'fix',
+        label: labels.quickFix,
+        instruction: locale.startsWith('zh')
+          ? '请修正选中文本中的语法、错别字和不通顺表达。'
+          : 'Fix grammar, typos, and awkward phrasing in the selected text.',
+        icon: <TextCursorInput size={13} />,
+      },
+      {
+        id: 'translate-zh',
+        label: labels.quickTranslateZh,
+        instruction: locale.startsWith('zh')
+          ? '请将选中文本翻译成自然、准确的中文。'
+          : 'Translate the selected text into natural, accurate Chinese.',
+        icon: <Languages size={13} />,
+      },
+    ],
+    [labels.quickFix, labels.quickRewrite, labels.quickShorten, labels.quickTranslateZh, locale],
+  );
+
+  const updateSelectionFromEditor = useCallback((target: HTMLTextAreaElement) => {
+    const start = Math.min(target.selectionStart, target.selectionEnd);
+    const end = Math.max(target.selectionStart, target.selectionEnd);
+    if (end <= start) {
+      setTextSelection(null);
+      setCopiedAgentRequest(false);
+      return;
+    }
+    setTextSelection({ start, end, origin: 'editor' });
+    setCopiedAgentRequest(false);
+  }, []);
+
+  const captureRenderedSelection = useCallback(() => {
+    if (!preview?.editable) return;
+    const raw = window.getSelection()?.toString() ?? '';
+    const selected = normalizeRenderedSelection(raw);
+    if (!selected) return;
+
+    const start = draft.indexOf(selected);
+    if (start < 0) {
+      setTextSelection(null);
+      setCopiedAgentRequest(false);
+      toast.info(labels.selectionMapFailed);
+      return;
+    }
+
+    setTextSelection({ start, end: start + selected.length, origin: 'preview' });
+    setCopiedAgentRequest(false);
+  }, [draft, labels.selectionMapFailed, preview?.editable]);
+
+  const updateDraft = useCallback((value: string) => {
+    setDraft(value);
+    setTextSelection(null);
+    setCopiedAgentRequest(false);
+  }, []);
+
+  const buildCurrentAgentPrompt = useCallback(() => {
+    if (!preview || !selectedText) return '';
+    return buildAgentEditPrompt({
+      locale,
+      preview,
+      selection: selectedText,
+      instruction: agentInstruction,
+    });
+  }, [agentInstruction, locale, preview, selectedText]);
+
+  const copyAgentRequest = useCallback(async () => {
+    const prompt = buildCurrentAgentPrompt();
+    if (!prompt) return;
+    await navigator.clipboard.writeText(prompt);
+    setCopiedAgentRequest(true);
+    setTimeout(() => setCopiedAgentRequest(false), 1600);
+    toast.success(labels.requestCopied);
+  }, [buildCurrentAgentPrompt, labels.requestCopied]);
+
+  const sendSelectionToAgent = useCallback(() => {
+    if (!preview || !selectedText || dirty) return;
+    const prompt = buildCurrentAgentPrompt();
+    if (!prompt) return;
+    navigate('/chat', {
+      state: {
+        initialMessage: prompt,
+        sourceIds: [preview.sourceId],
+      },
+    });
+    setOpen(false);
+    toast.success(labels.agentRequestSent);
+  }, [buildCurrentAgentPrompt, dirty, labels.agentRequestSent, navigate, preview, selectedText]);
+
+  useEffect(() => {
+    if (!textSelection) return;
+    if (textSelection.start >= draft.length || textSelection.end > draft.length) {
+      setTextSelection(null);
+    }
+  }, [draft.length, textSelection]);
 
   useEffect(() => {
     if (!open) return;
@@ -356,7 +646,12 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                     <button
                       type="button"
                       disabled={!dirty || saving}
-                      onClick={() => setDraft(preview.content ?? '')}
+                      onClick={() => {
+                        setDraft(preview.content ?? '');
+                        setTextSelection(null);
+                        setAgentInstruction('');
+                        setCopiedAgentRequest(false);
+                      }}
                       className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
                     >
                       <RotateCcw size={14} />
@@ -457,16 +752,24 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                 </div>
               ) : mode === 'edit' && preview.editable ? (
                 <textarea
+                  data-testid="file-preview-editor"
                   value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
+                  onChange={(event) => updateDraft(event.target.value)}
+                  onSelect={(event) => updateSelectionFromEditor(event.currentTarget)}
+                  onKeyUp={(event) => updateSelectionFromEditor(event.currentTarget)}
+                  onMouseUp={(event) => updateSelectionFromEditor(event.currentTarget)}
                   spellCheck={false}
                   className="h-full w-full resize-none border-0 bg-surface-0 px-4 py-3 font-mono text-xs leading-5 text-text-primary outline-none placeholder:text-text-tertiary"
                 />
               ) : mode === 'split' && preview.editable && preview.kind === 'markdown' ? (
                 <div className="grid h-full grid-cols-1 md:grid-cols-2">
                   <textarea
+                    data-testid="file-preview-editor"
                     value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
+                    onChange={(event) => updateDraft(event.target.value)}
+                    onSelect={(event) => updateSelectionFromEditor(event.currentTarget)}
+                    onKeyUp={(event) => updateSelectionFromEditor(event.currentTarget)}
+                    onMouseUp={(event) => updateSelectionFromEditor(event.currentTarget)}
                     spellCheck={false}
                     className="h-full w-full resize-none border-0 border-r border-border bg-surface-0 px-4 py-3 font-mono text-xs leading-5 text-text-primary outline-none placeholder:text-text-tertiary md:border-r"
                   />
@@ -475,7 +778,10 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                   </div>
                 </div>
               ) : canShowPreview ? (
-                <div className="h-full overflow-auto">
+                <div
+                  className="h-full overflow-auto"
+                  onMouseUp={preview.editable ? captureRenderedSelection : undefined}
+                >
                   {preview.kind === 'markdown' ? (
                     <MarkdownPreview content={preview.editable ? draft : content} />
                   ) : (
@@ -488,6 +794,113 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                 </div>
               )}
             </div>
+
+            <AnimatePresence>
+              {preview?.editable && selectedText && (
+                <motion.div
+                  key="agent-selection-panel"
+                  initial={shouldReduceMotion ? false : { y: 16, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  exit={shouldReduceMotion ? { opacity: 0 } : { y: 16, opacity: 0 }}
+                  transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                  data-testid="file-preview-agent-panel"
+                  className="shrink-0 border-t border-border bg-surface-1/95 px-4 py-3 shadow-[0_-12px_28px_rgba(0,0,0,0.16)] backdrop-blur"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/25 bg-accent/10 text-accent">
+                      <BotMessageSquare size={16} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-semibold text-text-primary">{labels.agentEdit}</span>
+                        <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-text-tertiary">
+                          {labels.selected} {selectedText.charCount} {labels.chars} · {labels.lineRange}{' '}
+                          {selectedText.startLine === selectedText.endLine
+                            ? selectedText.startLine
+                            : `${selectedText.startLine}-${selectedText.endLine}`}
+                        </span>
+                      </div>
+
+                      {(dirty || selectedText.charCount > MAX_AGENT_SELECTION_CHARS) && (
+                        <p className={`mt-1 text-[11px] ${dirty ? 'text-warning' : 'text-text-tertiary'}`}>
+                          {dirty ? labels.saveBeforeAgent : labels.selectionTooLarge}
+                        </p>
+                      )}
+
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {quickActions.map((action) => (
+                          <button
+                            key={action.id}
+                            type="button"
+                            onClick={() => {
+                              setAgentInstruction(action.instruction);
+                              setCopiedAgentRequest(false);
+                            }}
+                            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface-2 px-2 text-[11px] font-medium text-text-secondary transition-colors hover:border-accent/40 hover:bg-accent/10 hover:text-text-primary"
+                          >
+                            {action.icon}
+                            <span>{action.label}</span>
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                        <input
+                          data-testid="file-preview-agent-instruction"
+                          value={agentInstruction}
+                          onChange={(event) => {
+                            setAgentInstruction(event.target.value);
+                            setCopiedAgentRequest(false);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                              event.preventDefault();
+                              sendSelectionToAgent();
+                            }
+                          }}
+                          placeholder={labels.agentInstructionPlaceholder}
+                          className="h-9 min-w-0 flex-1 rounded-md border border-border bg-surface-0 px-3 text-xs text-text-primary outline-none transition-colors placeholder:text-text-tertiary focus:border-accent/60"
+                        />
+                        <div className="flex shrink-0 gap-2">
+                          {dirty && (
+                            <button
+                              type="button"
+                              disabled={saving}
+                              onClick={save}
+                              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-surface-2 px-3 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
+                            >
+                              {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                              {labels.save}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={dirty}
+                            onClick={copyAgentRequest}
+                            data-testid="file-preview-agent-copy"
+                            className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-surface-2 px-3 text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
+                            title={labels.copyRequest}
+                            aria-label={labels.copyRequest}
+                          >
+                            {copiedAgentRequest ? <Check size={15} className="text-success" /> : <Copy size={15} />}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={dirty}
+                            onClick={sendSelectionToAgent}
+                            data-testid="file-preview-agent-send"
+                            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:pointer-events-none disabled:opacity-40"
+                          >
+                            <BotMessageSquare size={14} />
+                            {labels.askAgent}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.aside>
         )}
       </AnimatePresence>
