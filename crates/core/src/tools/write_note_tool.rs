@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
 
 use super::{Tool, ToolCategory, ToolDef, ToolResult};
 
@@ -80,7 +81,23 @@ impl Tool for WriteNoteTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::Core, ToolCategory::FileSystem]
+        &[ToolCategory::FileSystem]
+    }
+
+    fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
+        true
+    }
+
+    fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
+        let filename = args
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown>");
+        let mode = args
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("create");
+        Some(format!("Write note: {filename} ({mode})"))
     }
 
     async fn execute(
@@ -89,6 +106,30 @@ impl Tool for WriteNoteTool {
         arguments: &str,
         db: &Database,
         _source_scope: &[String],
+    ) -> Result<ToolResult, CoreError> {
+        self.execute_impl(call_id, arguments, db, None).await
+    }
+
+    async fn execute_with_context(
+        &self,
+        call_id: &str,
+        arguments: &str,
+        db: &Database,
+        _source_scope: &[String],
+        conversation_id: Option<&str>,
+    ) -> Result<ToolResult, CoreError> {
+        self.execute_impl(call_id, arguments, db, conversation_id)
+            .await
+    }
+}
+
+impl WriteNoteTool {
+    async fn execute_impl(
+        &self,
+        call_id: &str,
+        arguments: &str,
+        db: &Database,
+        conversation_id: Option<&str>,
     ) -> Result<ToolResult, CoreError> {
         let args: WriteNoteArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid write_note arguments: {e}")))?;
@@ -119,6 +160,7 @@ impl Tool for WriteNoteTool {
 
         let db = db.clone();
         let call_id = call_id.to_string();
+        let conversation_id = conversation_id.map(str::to_string);
         tokio::task::spawn_blocking(move || {
             // Resolve source directory.
             let sources = db.list_sources()?;
@@ -162,20 +204,30 @@ impl Tool for WriteNoteTool {
                 }
             }
 
+            if mode == "create" && file_path.exists() {
+                return Ok(ToolResult {
+                    call_id: call_id.clone(),
+                    content: format!(
+                        "File '{}' already exists. Use mode 'append' or 'overwrite'.",
+                        args.filename
+                    ),
+                    is_error: true,
+                    artifacts: None,
+                });
+            }
+
+            let checkpoint = db.create_file_checkpoint(CreateFileCheckpointInput {
+                conversation_id: conversation_id.as_deref(),
+                tool_call_id: &call_id,
+                tool_name: "write_note",
+                operation: &mode,
+                path: &args.filename,
+                absolute_path: &file_path,
+            })?;
+
             // Execute the write based on mode.
             match mode.as_str() {
                 "create" => {
-                    if file_path.exists() {
-                        return Ok(ToolResult {
-                            call_id: call_id.clone(),
-                            content: format!(
-                                "File '{}' already exists. Use mode 'append' or 'overwrite'.",
-                                args.filename
-                            ),
-                            is_error: true,
-                            artifacts: None,
-                        });
-                    }
                     std::fs::write(&file_path, &args.content).map_err(CoreError::Io)?;
                 }
                 "append" => {
@@ -197,21 +249,67 @@ impl Tool for WriteNoteTool {
             let size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
 
             let text = format!(
-                "Note '{}' written successfully.\nPath: {}\nSize: {} bytes\nMode: {}",
+                "Note '{}' written successfully.\nPath: {}\nSize: {} bytes\nMode: {}\nCheckpoint: {}",
                 args.filename,
                 file_path.display(),
                 size,
                 mode,
+                checkpoint.id,
             );
 
             Ok(ToolResult {
                 call_id,
                 content: text,
                 is_error: false,
-                artifacts: None,
+                artifacts: Some(checkpoint_artifact(&checkpoint, Some(size))),
             })
         })
         .await
         .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sources::CreateSourceInput;
+
+    fn setup_db_with_source(root: &std::path::Path) -> Database {
+        let db = Database::open_memory().expect("open in-memory db");
+        db.add_source(CreateSourceInput {
+            root_path: root.to_string_lossy().to_string(),
+            include_globs: vec![],
+            exclude_globs: vec![],
+            watch_enabled: false,
+        })
+        .expect("register source root");
+        db
+    }
+
+    #[tokio::test]
+    async fn write_note_creates_checkpoint_and_restore_removes_created_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = setup_db_with_source(dir.path());
+        let tool = WriteNoteTool;
+        let args = serde_json::json!({
+            "filename": "daily.md",
+            "content": "# Daily\n",
+            "mode": "create"
+        });
+
+        let result = tool
+            .execute("call-note", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+
+        let path = dir.path().join("notes").join("daily.md");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Daily\n");
+
+        let checkpoint_id = result.artifacts.as_ref().unwrap()["checkpoint"]["id"]
+            .as_str()
+            .unwrap();
+        db.restore_file_checkpoint(checkpoint_id).unwrap();
+        assert!(!path.exists());
     }
 }

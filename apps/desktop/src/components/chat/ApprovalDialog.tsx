@@ -66,6 +66,19 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
 
         <div className="space-y-3 px-5 py-4">
           <p className="text-sm text-zinc-700 dark:text-zinc-300">{request.reason}</p>
+          {request.checkpointPreview?.planned && (
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
+              <div className="font-semibold">Safety checkpoint will be saved first</div>
+              <div className="mt-1">{request.checkpointPreview.note}</div>
+              {request.checkpointPreview.targetPaths.length > 0 && (
+                <ul className="mt-1 list-inside list-disc space-y-0.5">
+                  {request.checkpointPreview.targetPaths.map(path => (
+                    <li key={path} className="break-all font-mono">{path}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
           <details className="rounded-md border border-zinc-200 dark:border-zinc-700">
             <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-zinc-600 dark:text-zinc-400">
               Arguments

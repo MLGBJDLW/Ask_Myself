@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
 
 use super::create_file_tool::resolve_and_validate;
 use super::document_utils::{
@@ -107,7 +108,7 @@ impl Tool for EditFileTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::Core, ToolCategory::FileSystem]
+        &[ToolCategory::FileSystem]
     }
 
     fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
@@ -129,12 +130,39 @@ impl Tool for EditFileTool {
         db: &Database,
         source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
+        self.execute_impl(call_id, arguments, db, source_scope, None)
+            .await
+    }
+
+    async fn execute_with_context(
+        &self,
+        call_id: &str,
+        arguments: &str,
+        db: &Database,
+        source_scope: &[String],
+        conversation_id: Option<&str>,
+    ) -> Result<ToolResult, CoreError> {
+        self.execute_impl(call_id, arguments, db, source_scope, conversation_id)
+            .await
+    }
+}
+
+impl EditFileTool {
+    async fn execute_impl(
+        &self,
+        call_id: &str,
+        arguments: &str,
+        db: &Database,
+        source_scope: &[String],
+        conversation_id: Option<&str>,
+    ) -> Result<ToolResult, CoreError> {
         let args: EditFileArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid edit_file arguments: {e}")))?;
 
         let db = db.clone();
         let call_id = call_id.to_string();
         let source_scope = source_scope.to_vec();
+        let conversation_id = conversation_id.map(str::to_string);
         tokio::task::spawn_blocking(move || {
             let sources = scoped_sources(&db, &source_scope)?;
             if sources.is_empty() {
@@ -246,6 +274,15 @@ impl Tool for EditFileTool {
                         &content[byte_offset + old_str.len()..]
                     );
 
+                    let checkpoint = db.create_file_checkpoint(CreateFileCheckpointInput {
+                        conversation_id: conversation_id.as_deref(),
+                        tool_call_id: &call_id,
+                        tool_name: "edit_file",
+                        operation: "str_replace",
+                        path: &args.path,
+                        absolute_path: &canonical,
+                    })?;
+
                     if let Err(e) = std::fs::write(&canonical, &new_content) {
                         return Ok(ToolResult {
                             call_id,
@@ -259,11 +296,14 @@ impl Tool for EditFileTool {
                     Ok(ToolResult {
                         call_id,
                         content: format!(
-                            "Successfully replaced text in '{}'.\n\nContext around edit:\n{}",
-                            args.path, snippet
+                            "Successfully replaced text in '{}'.\nCheckpoint: {}\n\nContext around edit:\n{}",
+                            args.path, checkpoint.id, snippet
                         ),
                         is_error: false,
-                        artifacts: None,
+                        artifacts: Some(checkpoint_artifact(
+                            &checkpoint,
+                            Some(new_content.len() as u64),
+                        )),
                     })
                 }
 
@@ -315,6 +355,15 @@ impl Tool for EditFileTool {
                         }
                     }
 
+                    let checkpoint = db.create_file_checkpoint(CreateFileCheckpointInput {
+                        conversation_id: conversation_id.as_deref(),
+                        tool_call_id: &call_id,
+                        tool_name: "edit_file",
+                        operation: "create",
+                        path: &args.path,
+                        absolute_path: &canonical,
+                    })?;
+
                     if let Err(e) = std::fs::write(&canonical, file_content) {
                         return Ok(ToolResult {
                             call_id,
@@ -328,11 +377,11 @@ impl Tool for EditFileTool {
                     Ok(ToolResult {
                         call_id,
                         content: format!(
-                            "Created file '{}' ({} bytes).",
-                            args.path, size
+                            "Created file '{}' ({} bytes).\nCheckpoint: {}",
+                            args.path, size, checkpoint.id
                         ),
                         is_error: false,
-                        artifacts: None,
+                        artifacts: Some(checkpoint_artifact(&checkpoint, Some(size as u64))),
                     })
                 }
 
@@ -393,6 +442,13 @@ mod tests {
 
         let content = std::fs::read_to_string(&file).unwrap();
         assert_eq!(content, "hi world\ngoodbye world\n");
+
+        let checkpoint_id = result.artifacts.as_ref().unwrap()["checkpoint"]["id"]
+            .as_str()
+            .unwrap();
+        db.restore_file_checkpoint(checkpoint_id).unwrap();
+        let restored = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(restored, "hello world\ngoodbye world\n");
     }
 
     #[tokio::test]
