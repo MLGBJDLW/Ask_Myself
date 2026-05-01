@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.2...nexa-monorepo-v0.3.3) (2026-05-01)
+
+
+### Features
+
+* add in-app file preview editor ([30af330](https://github.com/MLGBJDLW/Nexa/commit/30af3303d13038ce85a22aa4738d56f9cf137faa))
+* add selected text agent edits ([6f9482f](https://github.com/MLGBJDLW/Nexa/commit/6f9482fa21733734e3cca66700f35ef1041a2b5c))
+
+
+### Bug Fixes
+
+* harden release workflow and office clippy ([7237fb2](https://github.com/MLGBJDLW/Nexa/commit/7237fb27bd602288c17471f1ce12869efb0c1175))
+* restore release PR flow and enlarge file preview ([8923c91](https://github.com/MLGBJDLW/Nexa/commit/8923c91d6919daf9ae07ed37da041899dcf35d79))
+* restore release PR flow and enlarge file preview ([e9d94fd](https://github.com/MLGBJDLW/Nexa/commit/e9d94fdcf5b32fa97195338ba39ac9da325c4bb8))
+* route office text edits through document skills ([458de61](https://github.com/MLGBJDLW/Nexa/commit/458de611d844646dc8b1c2ec7c294cce2311a2b5))
+
 ## [0.3.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.1...nexa-monorepo-v0.3.2) (2026-05-01)
 
 
