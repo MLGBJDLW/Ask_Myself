@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
 
 use super::document_utils::{edit_guidance_for_path, generated_document_mime};
 use super::path_utils::{
@@ -59,7 +60,7 @@ impl Tool for CreateFileTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::Core, ToolCategory::FileSystem]
+        &[ToolCategory::FileSystem]
     }
 
     fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
@@ -81,6 +82,32 @@ impl Tool for CreateFileTool {
         db: &Database,
         source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
+        self.execute_impl(call_id, arguments, db, source_scope, None)
+            .await
+    }
+
+    async fn execute_with_context(
+        &self,
+        call_id: &str,
+        arguments: &str,
+        db: &Database,
+        source_scope: &[String],
+        conversation_id: Option<&str>,
+    ) -> Result<ToolResult, CoreError> {
+        self.execute_impl(call_id, arguments, db, source_scope, conversation_id)
+            .await
+    }
+}
+
+impl CreateFileTool {
+    async fn execute_impl(
+        &self,
+        call_id: &str,
+        arguments: &str,
+        db: &Database,
+        source_scope: &[String],
+        conversation_id: Option<&str>,
+    ) -> Result<ToolResult, CoreError> {
         let args: CreateFileArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid create_file arguments: {e}")))?;
 
@@ -97,6 +124,7 @@ impl Tool for CreateFileTool {
         let db = db.clone();
         let call_id = call_id.to_string();
         let source_scope = source_scope.to_vec();
+        let conversation_id = conversation_id.map(str::to_string);
         tokio::task::spawn_blocking(move || {
             let sources = scoped_sources(&db, &source_scope)?;
             if sources.is_empty() {
@@ -152,6 +180,15 @@ impl Tool for CreateFileTool {
                 }
             }
 
+            let checkpoint = db.create_file_checkpoint(CreateFileCheckpointInput {
+                conversation_id: conversation_id.as_deref(),
+                tool_call_id: &call_id,
+                tool_name: "create_file",
+                operation: if args.overwrite { "overwrite" } else { "create" },
+                path: &args.path,
+                absolute_path: &canonical,
+            })?;
+
             // Write content.
             if let Err(e) = std::fs::write(&canonical, &args.content) {
                 return Ok(ToolResult {
@@ -166,13 +203,14 @@ impl Tool for CreateFileTool {
             Ok(ToolResult {
                 call_id,
                 content: format!(
-                    "Created file '{}' ({} bytes).\nPath: {}",
+                    "Created file '{}' ({} bytes).\nPath: {}\nCheckpoint: {}",
                     args.path,
                     size,
-                    canonical.display()
+                    canonical.display(),
+                    checkpoint.id
                 ),
                 is_error: false,
-                artifacts: None,
+                artifacts: Some(checkpoint_artifact(&checkpoint, Some(size as u64))),
             })
         })
         .await
@@ -217,6 +255,12 @@ mod tests {
 
         let content = std::fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "hello world");
+
+        let checkpoint_id = result.artifacts.as_ref().unwrap()["checkpoint"]["id"]
+            .as_str()
+            .unwrap();
+        db.restore_file_checkpoint(checkpoint_id).unwrap();
+        assert!(!file_path.exists());
     }
 
     #[tokio::test]

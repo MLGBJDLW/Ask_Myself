@@ -43,6 +43,8 @@ export interface SubagentBudgetSnapshot {
 export interface SubagentArtifact {
   kind: 'subagent_result';
   task: string;
+  roleId?: string | null;
+  roleName?: string | null;
   role?: string | null;
   expectedOutput?: string | null;
   acceptanceCriteria?: string[] | null;
@@ -67,6 +69,9 @@ export interface SubagentArtifact {
 export interface SubagentBatchArtifact {
   kind: 'subagent_batch_result';
   batchGoal?: string | null;
+  workflowTemplate?: string | null;
+  workflowTemplateLabel?: string | null;
+  workflowTemplateDescription?: string | null;
   parallelGroup?: string | null;
   requestedMaxParallel?: number | null;
   effectiveMaxParallel?: number | null;
@@ -102,6 +107,7 @@ export interface SubagentJudgementArtifact {
 
 export interface PendingSubagentArgs {
   task: string;
+  roleId?: string | null;
   role?: string | null;
   context?: string | null;
   expectedOutput?: string | null;
@@ -119,6 +125,8 @@ export interface SubagentRun {
   id: string;
   status: 'running' | 'done' | 'error';
   task: string;
+  roleId?: string | null;
+  roleName?: string | null;
   role?: string | null;
   expectedOutput?: string | null;
   acceptanceCriteria?: string[] | null;
@@ -215,6 +223,7 @@ export function parseSubagentArguments(raw?: string): PendingSubagentArgs | null
     if (!task) return null;
     return {
       task,
+      roleId: typeof record.role_id === 'string' ? record.role_id.trim() : null,
       role: typeof record.role === 'string' ? record.role.trim() : null,
       context: typeof record.context === 'string' ? record.context.trim() : null,
       expectedOutput: typeof record.expected_output === 'string'
@@ -286,6 +295,8 @@ export function extractSubagentArtifact(value: unknown): SubagentArtifact | null
   return {
     kind: 'subagent_result',
     task: record.task.trim(),
+    roleId: typeof record.roleId === 'string' ? record.roleId : null,
+    roleName: typeof record.roleName === 'string' ? record.roleName : null,
     role: typeof record.role === 'string' ? record.role : null,
     expectedOutput: typeof record.expectedOutput === 'string' ? record.expectedOutput : null,
     acceptanceCriteria,
@@ -320,6 +331,8 @@ function buildRunFromArtifact(artifact: SubagentArtifact, id: string, content?: 
     id,
     status: 'done',
     task: artifact.task,
+    roleId: artifact.roleId ?? null,
+    roleName: artifact.roleName ?? null,
     role: artifact.role ?? null,
     expectedOutput: artifact.expectedOutput ?? null,
     acceptanceCriteria: artifact.acceptanceCriteria ?? null,
@@ -370,6 +383,9 @@ export function extractSubagentBatchArtifact(value: unknown): SubagentBatchArtif
   return {
     kind: 'subagent_batch_result',
     batchGoal: typeof record.batchGoal === 'string' ? record.batchGoal : null,
+    workflowTemplate: typeof record.workflowTemplate === 'string' ? record.workflowTemplate : null,
+    workflowTemplateLabel: typeof record.workflowTemplateLabel === 'string' ? record.workflowTemplateLabel : null,
+    workflowTemplateDescription: typeof record.workflowTemplateDescription === 'string' ? record.workflowTemplateDescription : null,
     parallelGroup: typeof record.parallelGroup === 'string' ? record.parallelGroup : null,
     requestedMaxParallel: asNumber(record.requestedMaxParallel),
     effectiveMaxParallel: asNumber(record.effectiveMaxParallel),
@@ -437,6 +453,8 @@ function buildRunFromToolCall(toolCall: ToolCallEvent): SubagentRun | null {
     id: toolCall.callId,
     status: toolCall.status === 'starting' ? 'running' : toolCall.status,
     task,
+    roleId: artifact?.roleId ?? parsedArgs?.roleId ?? null,
+    roleName: artifact?.roleName ?? null,
     role: artifact?.role ?? parsedArgs?.role ?? null,
     expectedOutput: artifact?.expectedOutput ?? parsedArgs?.expectedOutput ?? null,
     acceptanceCriteria: artifact?.acceptanceCriteria ?? parsedArgs?.acceptanceCriteria ?? null,

@@ -24,6 +24,8 @@ export type {
   AgentEvent,
   AgentFrontendEvent,
   Checkpoint,
+  FileCheckpoint,
+  FileCheckpointRestore,
   ApprovalRequest,
   ApprovalRisk,
   ApprovalDecisionValue,

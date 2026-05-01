@@ -284,6 +284,10 @@ fn runtime_config_changed(current: &McpServer, desired: &McpServer) -> bool {
         || current.headers_json != desired.headers_json
 }
 
+fn expand_managed_arg(arg: &str, port: u16) -> String {
+    arg.replace("${PORT}", &port.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Database CRUD
 // ---------------------------------------------------------------------------
@@ -531,7 +535,10 @@ impl McpManager {
         let args: Vec<String> = match &server.args {
             Some(a) => parse_mcp_args(a)?,
             None => Vec::new(),
-        };
+        }
+        .into_iter()
+        .map(|arg| expand_managed_arg(&arg, port))
+        .collect();
 
         // Merge environment variables, adding PORT
         let mut env_vars: HashMap<String, String> = server
@@ -646,7 +653,10 @@ impl McpManager {
         self.disconnect_server(&server.id).await.ok();
 
         // For built-in servers with a command, start managed process first
-        let effective_url = if server.builtin_id.is_some() && server.command.is_some() {
+        let effective_url = if server.builtin_id.is_some()
+            && server.command.is_some()
+            && server.transport != "stdio"
+        {
             let port = self.start_managed_process(server).await?;
             Some(format!("http://localhost:{}/mcp", port))
         } else {
@@ -1004,5 +1014,11 @@ mod tests {
             Some(r#"["-y","@modelcontextprotocol/server-filesystem","D:/vault"]"#)
         );
         assert_eq!(server.env_json.as_deref(), Some(r#"{"API_KEY":"secret"}"#));
+    }
+
+    #[test]
+    fn expand_managed_arg_replaces_port_placeholder() {
+        assert_eq!(expand_managed_arg("--port=${PORT}", 8931), "--port=8931");
+        assert_eq!(expand_managed_arg("static", 8931), "static");
     }
 }

@@ -30,6 +30,8 @@ import type {
   ConversationSearchResult,
   ImageAttachment,
   Checkpoint,
+  FileCheckpoint,
+  FileCheckpointRestore,
   UserMemory,
 } from "../types/conversation";
 import type {
@@ -407,6 +409,15 @@ export const restoreCheckpoint = (checkpointId: string) =>
 
 export const deleteCheckpoint = (checkpointId: string) =>
   invoke<void>('delete_checkpoint_cmd', { checkpointId });
+
+export const listFileCheckpoints = (conversationId?: string | null) =>
+  invoke<FileCheckpoint[]>('list_file_checkpoints_cmd', { conversationId: conversationId ?? null });
+
+export const restoreFileCheckpoint = (checkpointId: string) =>
+  invoke<FileCheckpointRestore>('restore_file_checkpoint_cmd', { checkpointId });
+
+export const deleteFileCheckpoint = (checkpointId: string) =>
+  invoke<void>('delete_file_checkpoint_cmd', { checkpointId });
 
 // ── User Memory ────────────────────────────────────────────────────────
 

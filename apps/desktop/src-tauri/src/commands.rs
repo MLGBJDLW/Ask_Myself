@@ -2398,6 +2398,41 @@ pub fn delete_checkpoint_cmd(
         .map_err(|e| e.to_string())
 }
 
+// ── File Checkpoint Commands ───────────────────────────────────────────────
+
+#[tauri::command]
+pub fn list_file_checkpoints_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: Option<String>,
+) -> Result<Vec<nexa_core::file_checkpoint::FileCheckpoint>, String> {
+    state
+        .db
+        .list_file_checkpoints(conversation_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn restore_file_checkpoint_cmd(
+    state: tauri::State<'_, AppState>,
+    checkpoint_id: String,
+) -> Result<nexa_core::file_checkpoint::FileCheckpointRestore, String> {
+    state
+        .db
+        .restore_file_checkpoint(&checkpoint_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_file_checkpoint_cmd(
+    state: tauri::State<'_, AppState>,
+    checkpoint_id: String,
+) -> Result<(), String> {
+    state
+        .db
+        .delete_file_checkpoint(&checkpoint_id)
+        .map_err(|e| e.to_string())
+}
+
 // ── Agent Config Commands ───────────────────────────────────────────────
 
 #[tauri::command]

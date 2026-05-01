@@ -214,6 +214,8 @@ function buildSubagentRun(
     id: `${toolName}-${task}`,
     status: runStatus,
     task,
+    roleId: artifact?.roleId ?? parsedArgs?.roleId ?? null,
+    roleName: artifact?.roleName ?? null,
     role: artifact?.role ?? parsedArgs?.role ?? null,
     expectedOutput: artifact?.expectedOutput ?? parsedArgs?.expectedOutput ?? null,
     acceptanceCriteria: artifact?.acceptanceCriteria ?? parsedArgs?.acceptanceCriteria ?? null,
@@ -525,6 +527,14 @@ export function ToolCallCard({
           {typeof subagentBatch.effectiveMaxParallel === 'number' && (
             <span className="rounded-full border border-border/60 bg-surface-0 px-2 py-1">
               parallel {subagentBatch.effectiveMaxParallel}
+            </span>
+          )}
+          {subagentBatch.workflowTemplateLabel && (
+            <span
+              className="rounded-full border border-border/60 bg-surface-0 px-2 py-1"
+              title={subagentBatch.workflowTemplateDescription ?? undefined}
+            >
+              {subagentBatch.workflowTemplateLabel}
             </span>
           )}
           {typeof subagentBatch.completedRuns === 'number' && (

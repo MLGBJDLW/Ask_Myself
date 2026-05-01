@@ -43,7 +43,18 @@ export function EmbeddingConfigSection({
   };
 
   return (
-    <Section icon={<Brain size={20} />} title={t('settings.embeddingSection')} delay={0.06}>
+    <Section
+      icon={<Brain size={20} />}
+      title={t('settings.embeddingSection')}
+      delay={0.06}
+      collapsible
+      defaultOpen={false}
+      summary={embedConfig ? (
+        <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+          {embedConfig.provider}
+        </span>
+      ) : undefined}
+    >
       {embedConfig && (
         <div className="space-y-5">
           {/* Provider pills */}

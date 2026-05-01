@@ -402,6 +402,31 @@ Fetch and extract text content from a web page (HTML stripped). Use when the use
 
 ---
 
+### `desktop_automation`
+
+Perform controlled local browser or desktop handoff actions. This tool is intentionally narrow: it can open a URL/search in the user's default browser, open or reveal source-scoped local paths, or wait briefly. It does not read page contents or perform raw mouse/keyboard control.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | yes | `open_url`, `web_search`, `open_path`, `reveal_path`, or `wait` |
+| `url` | string | no* | http/https URL for `open_url` |
+| `query` | string | no* | Search query for `web_search` |
+| `engine` | string | no | `google`, `bing`, `duckduckgo`, or `baidu` (default `bing`) |
+| `path` | string | no* | Absolute or source-root relative path for `open_path`/`reveal_path` |
+| `wait_ms` | integer | no | 100-10000 ms for `wait` |
+| `reason` | string | no | Brief user-facing reason for the action |
+
+\* Required for the corresponding action.
+
+Safety posture:
+- URL/search/path launch actions require user confirmation.
+- Local path actions must resolve inside a registered source and the active source scope.
+- Use `fetch_url` when the agent needs page text; use Playwright MCP when an enabled connector should interact with page elements.
+
+> **Example:** Open a confirmed dashboard URL in the user's default browser, or reveal a report file that was just generated under a registered source.
+
+---
+
 ### `run_shell`
 
 Execute a whitelisted program with explicit argv arguments inside a registered source directory. The program is spawned directly — **there is no shell interpreter**, so metacharacters like `;`, `&&`, `|`, backticks, and globs are passed literally and never interpreted.
@@ -434,3 +459,48 @@ Execute a whitelisted program with explicit argv arguments inside a registered s
 - No shell interpreter wrappers from the restricted whitelist (no `sh -c`, `bash -c`, `cmd /c`, `powershell -c`). Metacharacters do not expand unless the user explicitly relaxes Shell Access and runs a shell program themselves.
 
 > **Example:** Run `python -m pytest -q` in a project source root and capture the summary output, or run `git diff --stat HEAD~1` to preview recent changes.
+
+---
+
+## 🧭 Delegation Tools
+
+### `spawn_subagent`
+
+Spawn one short-lived worker for an isolated subtask. Subagents inherit the supervisor's source scope by default, can be narrowed further, and run under a shared per-turn budget.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task` | string | yes | Concrete delegated task |
+| `role_id` | string | no | Structured role: `researcher`, `verifier`, `critic`, `planner`, `writer`, `connector`, or `desktop_operator` |
+| `role` | string | no | Free-form role nuance; prefer `role_id` for known profiles |
+| `context` | string | no | Supervisor handoff context |
+| `expected_output` | string | no | Desired deliverable shape |
+| `acceptance_criteria` | string[] | no | Checklist the worker should satisfy |
+| `evidence_chunk_ids` | string[] | no | Exact evidence chunks to hand off |
+| `source_ids` | string[] | no | Narrower source scope |
+| `allowed_tools` | string[] | no | Narrower tool whitelist |
+| `parallel_group` | string | no | Label for sibling workers |
+| `deliverable_style` | string | no | Style hint such as critique, plan, or fact check |
+| `return_sections` | string[] | no | Ordered response section titles |
+| `max_iterations` | integer | no | 1-6 worker loop budget |
+| `timeout_secs` | integer | no | 15-180 second timeout |
+
+Role profiles set default return sections, conservative iteration/time budgets, and recommended tool subsets when the caller does not provide `allowed_tools`.
+
+### `spawn_subagent_batch`
+
+Launch several workers under one shared budget. Provide explicit `tasks`, or provide a `workflow_template` plus `batch_goal` and let Nexa expand the batch.
+
+Built-in workflow templates:
+
+| Template | Workers | Use |
+|----------|---------|-----|
+| `research_verify` | researcher, verifier, critic | Evidence gathering plus independent verification |
+| `draft_review` | writer, critic, verifier | Draft creation, critique, and fact check |
+| `connector_background` | connector, planner, verifier | Connector setup, background-task lifecycle, and safety review |
+
+Batch results include each worker's role, tool scope, evidence handoff, usage, and errors so the supervisor can synthesize or adjudicate explicitly.
+
+### `judge_subagent_results`
+
+Run a separate adjudication pass over two or more delegated results. Use it when parallel workers disagree, when a rubric matters, or when the final answer should cite why one candidate was selected.

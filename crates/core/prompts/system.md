@@ -212,6 +212,21 @@ If the search tool accepts an `engine` parameter, always specify it explicitly.
 
 ---
 
+## Controlled Desktop Automation
+
+Use `desktop_automation` only for narrow, user-visible local actions:
+
+- open an http/https URL in the default browser
+- open a browser search for a query
+- open or reveal a file/folder inside the current registered source scope
+- wait briefly during an approved automation flow
+
+`desktop_automation` is for handoff to the user's desktop, not for reading page contents. Use `fetch_url` for read-only web content extraction, and use retrieval/file tools for local content. URL, search, open-path, and reveal-path actions require confirmation; `wait` does not. Source paths must resolve inside registered sources and the active source scope.
+
+Do not claim you can see or inspect the user's screen after launching a desktop action unless a tool result actually provides that state. For full browser interaction through MCP, use an enabled browser automation connector such as Playwright MCP when available; otherwise explain the limitation and use the safer handoff actions above.
+
+---
+
 ## Planning and Verification
 
 For tasks that involve multiple actions, edits, or decision points and would benefit from a visible checklist:
@@ -363,7 +378,7 @@ After parallel workers return, use `judge_subagent_results` when you need an exp
 When delegating:
 
 1. give each subagent one concrete task
-2. assign a distinct role or perspective when useful
+2. assign a distinct `role_id` when useful: `researcher`, `verifier`, `critic`, `planner`, `writer`, `connector`, or `desktop_operator`
 3. pass only the evidence, context, and acceptance criteria that worker needs
 4. keep the worker iteration budget small
 5. after results return, explicitly synthesize, compare, or adjudicate them yourself
@@ -377,6 +392,12 @@ For non-trivial delegated work, include a compact task packet with:
 - `Expected Output`: the exact shape of the report or changed files
 
 Do not delegate trivially simple work. Do not spawn redundant workers that ask the same question in the same way.
+
+For common fan-out patterns, prefer `spawn_subagent_batch` with a `workflow_template` and `batch_goal` instead of hand-writing near-identical workers:
+
+- `research_verify` — evidence gathering, verification, and critique
+- `draft_review` — draft, critique, and factual verification
+- `connector_background` — connector option mapping, background-task design, and safety check
 
 When multiple subagents return:
 

@@ -1,0 +1,43 @@
+{
+  "name": "desktop_automation",
+  "description": "Perform controlled local browser or desktop handoff actions. Opens URLs/searches in the user's default browser, opens or reveals files that are inside registered source directories, or waits briefly during an automation flow. Use this for user-visible desktop assistance, not for extracting web content; use fetch_url for read-only page retrieval.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["open_url", "web_search", "open_path", "reveal_path", "wait"],
+        "description": "Automation action to perform. open_url and web_search launch the default browser. open_path and reveal_path are limited to registered sources. wait pauses for a short period."
+      },
+      "url": {
+        "type": "string",
+        "description": "http or https URL to open. Required for open_url."
+      },
+      "query": {
+        "type": "string",
+        "description": "Search query to open in a browser. Required for web_search."
+      },
+      "engine": {
+        "type": "string",
+        "enum": ["google", "bing", "duckduckgo", "baidu"],
+        "description": "Search engine for web_search. Defaults to bing."
+      },
+      "path": {
+        "type": "string",
+        "description": "Absolute path or source-root relative path for open_path or reveal_path. Must resolve inside a registered source directory and the current source scope."
+      },
+      "wait_ms": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 10000,
+        "description": "Milliseconds to wait for wait action. Defaults to 1000."
+      },
+      "reason": {
+        "type": "string",
+        "description": "Brief user-facing reason for the desktop/browser action."
+      }
+    },
+    "required": ["action"],
+    "additionalProperties": false
+  }
+}

@@ -30,6 +30,8 @@ pub enum ToolCategory {
     SubAgent,
     /// MCP: dynamically added MCP tools
     Mcp,
+    /// Controlled browser/desktop handoff actions
+    Automation,
 }
 
 use crate::db::Database;
@@ -71,6 +73,7 @@ pub mod compare_tool;
 pub mod compile_tool;
 pub mod create_file_tool;
 pub mod date_search_tool;
+pub mod desktop_automation_tool;
 pub mod document_info_tool;
 pub mod document_utils;
 pub mod edit_document_tool;
@@ -462,12 +465,20 @@ impl ToolRegistry {
             || msg.contains("edit")
             || msg.contains("write")
             || msg.contains("create")
+            || msg.contains("move")
+            || msg.contains("rename")
+            || msg.contains("copy")
+            || msg.contains("delete")
             || msg.contains("directory")
             || msg.contains("folder")
             || msg.contains("note")
             || msg.contains("文件")
             || msg.contains("读取")
             || msg.contains("编辑")
+            || msg.contains("移动")
+            || msg.contains("重命名")
+            || msg.contains("复制")
+            || msg.contains("删除")
             || msg.contains("目录")
             || msg.contains("笔记")
             || msg.contains("document")
@@ -555,6 +566,29 @@ impl ToolRegistry {
             || msg.contains("链接")
         {
             categories.insert(ToolCategory::Web);
+        }
+
+        // Controlled browser / desktop automation
+        if msg.contains("browser")
+            || msg.contains("desktop")
+            || msg.contains("automate")
+            || msg.contains("automation")
+            || msg.contains("open url")
+            || msg.contains("open website")
+            || msg.contains("open file")
+            || msg.contains("reveal file")
+            || msg.contains("launch")
+            || msg.contains("http://")
+            || msg.contains("https://")
+            || msg.contains("浏览器")
+            || msg.contains("桌面")
+            || msg.contains("自动化")
+            || msg.contains("打开网页")
+            || msg.contains("打开网站")
+            || msg.contains("打开文件")
+            || msg.contains("定位文件")
+        {
+            categories.insert(ToolCategory::Automation);
         }
 
         // Document analysis / comparison
@@ -683,6 +717,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(manage_source_tool::ManageSourceTool));
     registry.register(Box::new(statistics_tool::GetStatisticsTool));
     registry.register(Box::new(date_search_tool::DateSearchTool));
+    registry.register(Box::new(desktop_automation_tool::DesktopAutomationTool));
     registry.register(Box::new(summarize_tool::SummarizeDocumentTool));
     registry.register(Box::new(update_plan_tool::UpdatePlanTool));
     registry.register(Box::new(record_verification_tool::RecordVerificationTool));
@@ -751,5 +786,14 @@ mod tests {
         assert!(!names.iter().any(|name| name == "generate_xlsx"));
         assert!(!names.iter().any(|name| name == "ppt_generate"));
         assert!(names.iter().any(|name| name == "prepare_document_tools"));
+    }
+
+    #[test]
+    fn select_tools_includes_desktop_automation_for_browser_tasks() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools("Open this website in my browser", false);
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "desktop_automation"));
     }
 }

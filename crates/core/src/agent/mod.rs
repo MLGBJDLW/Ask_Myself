@@ -657,6 +657,20 @@ enum AgentRouteKind {
     SourceManagement,
 }
 
+impl AgentRouteKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            AgentRouteKind::DirectResponse => "DirectResponse",
+            AgentRouteKind::KnowledgeRetrieval => "KnowledgeRetrieval",
+            AgentRouteKind::CollectionFocused => "CollectionFocused",
+            AgentRouteKind::FileOperation => "FileOperation",
+            AgentRouteKind::SourceManagement => "SourceManagement",
+            AgentRouteKind::ConversationRecall => "ConversationRecall",
+            AgentRouteKind::WebLookup => "WebLookup",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct AgentRoutePlan {
     kind: AgentRouteKind,
@@ -708,6 +722,10 @@ fn route_user_turn(query: &str, system_prompt: &str, has_sources: bool) -> Agent
         || q.contains("edit")
         || q.contains("write")
         || q.contains("create")
+        || q.contains("move")
+        || q.contains("rename")
+        || q.contains("copy")
+        || q.contains("delete")
         || q.contains("folder")
         || q.contains("directory")
         || q.contains("document")
@@ -720,6 +738,10 @@ fn route_user_turn(query: &str, system_prompt: &str, has_sources: bool) -> Agent
         || q.contains("office")
         || q.contains("文档")
         || q.contains("文件")
+        || q.contains("移动")
+        || q.contains("重命名")
+        || q.contains("复制")
+        || q.contains("删除")
         || q.contains("幻灯片")
         || q.contains("表格");
 
@@ -800,6 +822,16 @@ fn route_user_turn(query: &str, system_prompt: &str, has_sources: bool) -> Agent
         prompt_section: "## Active Routing Plan\nAnswer the user's question. For factual questions, ALWAYS search the knowledge base first using search_knowledge_base, even if you believe you know the answer. Use tools whenever they would improve answer accuracy or completeness.".to_string(),
         extra_categories: Vec::new(),
     }
+}
+
+pub fn route_name_for_behavioral_eval(
+    query: &str,
+    system_prompt: &str,
+    has_sources: bool,
+) -> &'static str {
+    route_user_turn(query, system_prompt, has_sources)
+        .kind
+        .as_str()
 }
 
 fn merge_tool_definitions(

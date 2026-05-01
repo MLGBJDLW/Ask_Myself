@@ -29,7 +29,18 @@ export function OcrSettingsSection({
   };
 
   return (
-    <Section icon={<ScanLine size={20} />} title={t('settings.ocrSection')} delay={0.03}>
+    <Section
+      icon={<ScanLine size={20} />}
+      title={t('settings.ocrSection')}
+      delay={0.03}
+      collapsible
+      defaultOpen={false}
+      summary={ocrConfig ? (
+        <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+          {ocrConfig.enabled ? t('settings.skillFilterEnabled') : t('settings.skillFilterDisabled')}
+        </span>
+      ) : undefined}
+    >
       {ocrConfig && (
         <div className="space-y-5">
           {/* Enable toggle */}

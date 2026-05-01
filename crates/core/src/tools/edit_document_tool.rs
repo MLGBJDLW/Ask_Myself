@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
 
 use super::create_file_tool::{has_path_traversal, resolve_and_validate};
 use super::document_utils::generated_document_mime;
@@ -495,7 +496,7 @@ impl Tool for EditDocumentTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::Core, ToolCategory::FileSystem]
+        &[ToolCategory::FileSystem]
     }
 
     fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
@@ -525,6 +526,32 @@ impl Tool for EditDocumentTool {
         db: &Database,
         source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
+        self.execute_impl(call_id, arguments, db, source_scope, None)
+            .await
+    }
+
+    async fn execute_with_context(
+        &self,
+        call_id: &str,
+        arguments: &str,
+        db: &Database,
+        source_scope: &[String],
+        conversation_id: Option<&str>,
+    ) -> Result<ToolResult, CoreError> {
+        self.execute_impl(call_id, arguments, db, source_scope, conversation_id)
+            .await
+    }
+}
+
+impl EditDocumentTool {
+    async fn execute_impl(
+        &self,
+        call_id: &str,
+        arguments: &str,
+        db: &Database,
+        source_scope: &[String],
+        conversation_id: Option<&str>,
+    ) -> Result<ToolResult, CoreError> {
         let args: EditDocumentArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid edit_document arguments: {e}"))
         })?;
@@ -550,6 +577,7 @@ impl Tool for EditDocumentTool {
         let db = db.clone();
         let call_id = call_id.to_string();
         let source_scope = source_scope.to_vec();
+        let conversation_id = conversation_id.map(str::to_string);
         tokio::task::spawn_blocking(move || {
             let sources = scoped_sources(&db, &source_scope)?;
             if sources.is_empty() {
@@ -614,13 +642,25 @@ impl Tool for EditDocumentTool {
                 }
             };
 
+            let checkpoint = db.create_file_checkpoint(CreateFileCheckpointInput {
+                conversation_id: conversation_id.as_deref(),
+                tool_call_id: &call_id,
+                tool_name: "edit_document",
+                operation: "replace",
+                path: &args.path,
+                absolute_path: &canonical,
+            })?;
+
             match patch_office_file(&canonical, format, &args.replacements) {
-                Ok(summary) => Ok(ToolResult {
-                    call_id,
-                    content: summary,
-                    is_error: false,
-                    artifacts: None,
-                }),
+                Ok(summary) => {
+                    let bytes_after = std::fs::metadata(&canonical).map(|m| m.len()).ok();
+                    Ok(ToolResult {
+                        call_id,
+                        content: format!("{summary}\nCheckpoint: {}", checkpoint.id),
+                        is_error: false,
+                        artifacts: Some(checkpoint_artifact(&checkpoint, bytes_after)),
+                    })
+                }
                 Err(msg) => Ok(ToolResult {
                     call_id,
                     content: msg,

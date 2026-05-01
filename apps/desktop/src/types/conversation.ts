@@ -249,6 +249,11 @@ export interface ApprovalRequest {
   argumentsPreview: string;
   riskLevel: ApprovalRisk;
   reason: string;
+  checkpointPreview?: {
+    planned: boolean;
+    targetPaths: string[];
+    note: string;
+  } | null;
 }
 
 export interface ApprovalPolicy {
@@ -310,6 +315,26 @@ export interface Checkpoint {
   messageCount: number;
   estimatedTokens: number;
   createdAt: string;
+}
+
+export interface FileCheckpoint {
+  id: string;
+  conversationId: string | null;
+  toolCallId: string;
+  toolName: string;
+  operation: string;
+  path: string;
+  absolutePath: string;
+  existedBefore: boolean;
+  bytesBefore: number;
+  hashBefore: string | null;
+  createdAt: string;
+}
+
+export interface FileCheckpointRestore {
+  checkpoint: FileCheckpoint;
+  action: string;
+  bytesWritten: number;
 }
 
 export interface UserMemory {

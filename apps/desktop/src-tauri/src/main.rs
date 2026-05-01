@@ -253,6 +253,9 @@ fn main() {
             commands::list_checkpoints_cmd,
             commands::restore_checkpoint_cmd,
             commands::delete_checkpoint_cmd,
+            commands::list_file_checkpoints_cmd,
+            commands::restore_file_checkpoint_cmd,
+            commands::delete_file_checkpoint_cmd,
             // Conversation sources
             commands::set_conversation_sources_cmd,
             commands::get_conversation_sources_cmd,

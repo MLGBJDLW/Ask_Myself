@@ -49,6 +49,7 @@ struct HarnessDryRunReport {
     checks: Vec<HarnessCheck>,
     next_actions: Vec<String>,
     counts: HarnessCounts,
+    behavioral_eval: crate::behavioral_eval::BehavioralEvalReport,
     trace_summary: serde_json::Value,
     recent_events: Option<serde_json::Value>,
 }
@@ -108,6 +109,7 @@ impl Tool for HarnessDryRunTool {
         )?;
         let trace_summary = db.get_trace_summary()?;
         let open_events = db.list_agent_evolution_events(Some("open"), 100)?;
+        let behavioral_eval = crate::behavioral_eval::run_core_behavioral_eval();
 
         let mut checks = Vec::new();
         let mut next_actions = Vec::new();
@@ -206,6 +208,29 @@ impl Tool for HarnessDryRunTool {
             ));
         }
 
+        if behavioral_eval.failed == 0 {
+            checks.push(check(
+                "behavioral_eval",
+                "ready",
+                format!(
+                    "{} deterministic behavior case(s) passed.",
+                    behavioral_eval.total
+                ),
+            ));
+        } else {
+            checks.push(check(
+                "behavioral_eval",
+                "blocked",
+                format!(
+                    "{} of {} deterministic behavior case(s) failed.",
+                    behavioral_eval.failed, behavioral_eval.total
+                ),
+            ));
+            next_actions.push(
+                "Fix behavioral eval failures before trusting agent behavior changes.".to_string(),
+            );
+        }
+
         let status = if checks.iter().any(|c| c.status == "blocked") {
             "blocked"
         } else if checks.iter().any(|c| c.status == "warning") {
@@ -234,6 +259,7 @@ impl Tool for HarnessDryRunTool {
                 pending_skill_proposals: pending_proposals.len(),
                 open_evolution_events: open_events.len(),
             },
+            behavioral_eval,
             trace_summary: serde_json::to_value(trace_summary)?,
             recent_events,
         };

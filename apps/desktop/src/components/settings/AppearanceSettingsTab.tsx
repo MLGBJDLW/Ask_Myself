@@ -5,7 +5,7 @@ import type { AppConfig } from '../../types/conversation';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { ThemeSwitcher } from '../ui/ThemeSwitcher';
-import { Section } from './SettingsSection';
+import { CollapsiblePanel, Section } from './SettingsSection';
 import { ToolApprovalControl, type ToolApprovalMode } from './ToolApprovalControl';
 import { UpdateSettingsPanel } from './UpdateSettingsPanel';
 
@@ -90,11 +90,11 @@ export function AppearanceSettingsTab({
         </div>
 
         {/* Timeout Settings */}
-        <div className="space-y-4 border-t border-border pt-4 mt-4">
-          <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
-            <Clock size={16} />
-            {t('settings.timeout')}
-          </h3>
+        <CollapsiblePanel
+          title={t('settings.timeout')}
+          defaultOpen={false}
+          summary={<Clock size={14} className="text-text-tertiary" />}
+        >
           {appConfig && (
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
@@ -170,14 +170,14 @@ export function AppearanceSettingsTab({
               </div>
             </div>
           )}
-        </div>
+        </CollapsiblePanel>
 
         {/* Advanced Settings */}
-        <div className="space-y-4 border-t border-border pt-4 mt-4">
-          <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
-            <Settings2 size={16} />
-            {t('settings.advanced')}
-          </h3>
+        <CollapsiblePanel
+          title={t('settings.advanced')}
+          defaultOpen={false}
+          summary={<Settings2 size={14} className="text-text-tertiary" />}
+        >
           {appConfig && (
             <div className="space-y-4">
               {/* Cache & Search */}
@@ -359,7 +359,7 @@ export function AppearanceSettingsTab({
               </div>
             </div>
           )}
-        </div>
+        </CollapsiblePanel>
       </div>
     </Section>
   );

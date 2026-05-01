@@ -18,7 +18,7 @@ use nexa_core::skills::Skill;
 use nexa_core::tools::{Tool, ToolRegistry, ToolResult};
 
 const DESCRIPTION: &str = "Spawn a short-lived subagent to handle an isolated subtask, gather an independent perspective, or critique another result. You can call this tool multiple times in parallel, pass it explicit evidence and acceptance criteria, narrow its source scope or tool access, and then synthesize or adjudicate the returned results yourself.";
-const BATCH_DESCRIPTION: &str = "Spawn a batch of short-lived subagents for parallel fan-out research, critique, or comparison. Use this when you want several independent delegated workers launched together under one shared budget and then synthesize or adjudicate them later.";
+const BATCH_DESCRIPTION: &str = "Spawn a batch of short-lived subagents for parallel fan-out research, critique, comparison, or templated workflows. Provide explicit tasks, or set workflow_template plus batch_goal to expand a built-in role-based workflow under one shared budget.";
 const JUDGE_DESCRIPTION: &str = "Adjudicate or rank multiple delegated worker results using a structured rubric. Use this after parallel subagents return when you need a separate judging pass instead of asking the main worker to merge results implicitly.";
 const MAX_SUBAGENT_DELEGATION_DEPTH: u8 = 1;
 
@@ -34,6 +34,10 @@ const SUBAGENT_TOOL_SPECS: &[SubagentToolSpec] = &[
     },
     SubagentToolSpec {
         name: "read_file",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "read_files",
         enabled_by_default: true,
     },
     SubagentToolSpec {
@@ -63,6 +67,10 @@ const SUBAGENT_TOOL_SPECS: &[SubagentToolSpec] = &[
     SubagentToolSpec {
         name: "fetch_url",
         enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "desktop_automation",
+        enabled_by_default: false,
     },
     SubagentToolSpec {
         name: "write_note",
@@ -147,6 +155,301 @@ const SUBAGENT_TOOL_SPECS: &[SubagentToolSpec] = &[
     SubagentToolSpec {
         name: "get_related_concepts",
         enabled_by_default: true,
+    },
+];
+
+struct SubagentRoleProfile {
+    id: &'static str,
+    label: &'static str,
+    instructions: &'static str,
+    default_sections: &'static [&'static str],
+    recommended_tools: &'static [&'static str],
+    default_max_iterations: u32,
+    default_timeout_secs: u32,
+}
+
+const ROLE_RESEARCHER_SECTIONS: &[&str] =
+    &["Conclusion", "Evidence gathered", "Gaps or uncertainty"];
+const ROLE_VERIFIER_SECTIONS: &[&str] =
+    &["Verdict", "Checks performed", "Unverified or risky claims"];
+const ROLE_CRITIC_SECTIONS: &[&str] = &["Main concerns", "Failure modes", "Suggested fixes"];
+const ROLE_PLANNER_SECTIONS: &[&str] = &["Plan", "Dependencies", "Verification gates"];
+const ROLE_WRITER_SECTIONS: &[&str] = &["Draft", "Assumptions", "Follow-up edits"];
+const ROLE_CONNECTOR_SECTIONS: &[&str] = &["Connector options", "Setup risks", "Recommended path"];
+const ROLE_DESKTOP_OPERATOR_SECTIONS: &[&str] =
+    &["Action result", "Observed state", "Next safe action"];
+
+const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
+    SubagentRoleProfile {
+        id: "researcher",
+        label: "Researcher",
+        instructions: "Find and summarize relevant evidence. Prefer retrieval before synthesis, distinguish direct evidence from inference, and return only material useful to the supervisor.",
+        default_sections: ROLE_RESEARCHER_SECTIONS,
+        recommended_tools: &[
+            "search_knowledge_base",
+            "retrieve_evidence",
+            "read_file",
+            "read_files",
+            "list_sources",
+            "list_documents",
+            "list_dir",
+            "get_chunk_context",
+            "fetch_url",
+            "search_playbooks",
+            "get_document_info",
+            "search_by_date",
+            "summarize_document",
+            "query_knowledge_graph",
+            "get_related_concepts",
+            "record_verification",
+        ],
+        default_max_iterations: 3,
+        default_timeout_secs: 90,
+    },
+    SubagentRoleProfile {
+        id: "verifier",
+        label: "Verifier",
+        instructions: "Check whether a proposed answer or plan is supported. Look for missing evidence, stale assumptions, contradictions, and unverifiable claims. Prefer concise pass/fail findings.",
+        default_sections: ROLE_VERIFIER_SECTIONS,
+        recommended_tools: &[
+            "search_knowledge_base",
+            "retrieve_evidence",
+            "read_file",
+            "read_files",
+            "compare_documents",
+            "get_document_info",
+            "run_health_check",
+            "record_verification",
+        ],
+        default_max_iterations: 2,
+        default_timeout_secs: 75,
+    },
+    SubagentRoleProfile {
+        id: "critic",
+        label: "Critic",
+        instructions: "Stress-test the proposed approach. Identify brittle reasoning, missing edge cases, UX or trust risks, and places where the supervisor should simplify or narrow scope.",
+        default_sections: ROLE_CRITIC_SECTIONS,
+        recommended_tools: &[
+            "read_file",
+            "read_files",
+            "compare_documents",
+            "search_knowledge_base",
+            "retrieve_evidence",
+            "record_verification",
+        ],
+        default_max_iterations: 2,
+        default_timeout_secs: 60,
+    },
+    SubagentRoleProfile {
+        id: "planner",
+        label: "Planner",
+        instructions: "Turn the goal into a practical sequence with dependencies, risk controls, and verification gates. Keep the plan executable and avoid speculative work.",
+        default_sections: ROLE_PLANNER_SECTIONS,
+        recommended_tools: &[
+            "update_plan",
+            "search_playbooks",
+            "search_knowledge_base",
+            "list_sources",
+            "list_documents",
+            "record_verification",
+        ],
+        default_max_iterations: 2,
+        default_timeout_secs: 60,
+    },
+    SubagentRoleProfile {
+        id: "writer",
+        label: "Writer",
+        instructions: "Produce a clean draft or synthesis for the supervisor to adapt. Keep the output grounded in supplied context and note assumptions rather than silently inventing details.",
+        default_sections: ROLE_WRITER_SECTIONS,
+        recommended_tools: &[
+            "read_file",
+            "read_files",
+            "retrieve_evidence",
+            "search_knowledge_base",
+            "search_playbooks",
+            "record_verification",
+        ],
+        default_max_iterations: 2,
+        default_timeout_secs: 75,
+    },
+    SubagentRoleProfile {
+        id: "connector",
+        label: "Connector Specialist",
+        instructions: "Evaluate external connector or MCP options. Focus on tool availability, lifecycle, credentials, timeout behavior, and safe defaults before recommending setup.",
+        default_sections: ROLE_CONNECTOR_SECTIONS,
+        recommended_tools: &[
+            "list_sources",
+            "search_playbooks",
+            "search_knowledge_base",
+            "fetch_url",
+            "record_verification",
+        ],
+        default_max_iterations: 2,
+        default_timeout_secs: 75,
+    },
+    SubagentRoleProfile {
+        id: "desktop_operator",
+        label: "Desktop Operator",
+        instructions: "Plan and perform only narrow user-visible browser or desktop actions. Prefer one small approved action at a time, report what was launched, and never infer private screen state you cannot observe.",
+        default_sections: ROLE_DESKTOP_OPERATOR_SECTIONS,
+        recommended_tools: &[
+            "desktop_automation",
+            "fetch_url",
+            "read_file",
+            "list_dir",
+            "record_verification",
+        ],
+        default_max_iterations: 2,
+        default_timeout_secs: 60,
+    },
+];
+
+struct WorkflowTaskTemplate {
+    id: &'static str,
+    role_id: &'static str,
+    task: &'static str,
+    expected_output: &'static str,
+    deliverable_style: &'static str,
+    acceptance_criteria: &'static [&'static str],
+}
+
+struct WorkflowTemplate {
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    max_parallel: u32,
+    tasks: &'static [WorkflowTaskTemplate],
+}
+
+const RESEARCH_VERIFY_TASKS: &[WorkflowTaskTemplate] = &[
+    WorkflowTaskTemplate {
+        id: "research",
+        role_id: "researcher",
+        task: "Gather the strongest evidence and summarize what is directly supported.",
+        expected_output: "Evidence-backed findings with gaps called out.",
+        deliverable_style: "research brief",
+        acceptance_criteria: &[
+            "Use retrieval or explicit provided context before concluding.",
+            "Separate direct evidence from inference.",
+        ],
+    },
+    WorkflowTaskTemplate {
+        id: "verify",
+        role_id: "verifier",
+        task: "Verify the likely answer or plan against available evidence and identify unsupported claims.",
+        expected_output: "Verification verdict with checks and risks.",
+        deliverable_style: "verification report",
+        acceptance_criteria: &[
+            "Flag every unsupported or stale claim.",
+            "State what evidence would be needed to raise confidence.",
+        ],
+    },
+    WorkflowTaskTemplate {
+        id: "critique",
+        role_id: "critic",
+        task: "Stress-test the findings for blind spots, contradictions, or operational risks.",
+        expected_output: "Concise critique with remediation suggestions.",
+        deliverable_style: "risk critique",
+        acceptance_criteria: &[
+            "Focus on risks that would change the supervisor's final answer.",
+            "Do not repeat the researcher unless adding a distinct concern.",
+        ],
+    },
+];
+
+const DRAFT_REVIEW_TASKS: &[WorkflowTaskTemplate] = &[
+    WorkflowTaskTemplate {
+        id: "draft",
+        role_id: "writer",
+        task: "Create a concise first draft that satisfies the goal and notes assumptions.",
+        expected_output: "Draft ready for supervisor editing.",
+        deliverable_style: "draft",
+        acceptance_criteria: &[
+            "Use only supplied or retrieved facts.",
+            "Mark assumptions explicitly.",
+        ],
+    },
+    WorkflowTaskTemplate {
+        id: "review",
+        role_id: "critic",
+        task: "Review the draft for clarity, omissions, and trust or UX risks.",
+        expected_output: "Review notes and concrete improvements.",
+        deliverable_style: "editorial critique",
+        acceptance_criteria: &[
+            "Prioritize issues over praise.",
+            "Suggest specific edits the supervisor can apply.",
+        ],
+    },
+    WorkflowTaskTemplate {
+        id: "verify",
+        role_id: "verifier",
+        task: "Check that the draft's factual claims are supported.",
+        expected_output: "Claim verification summary.",
+        deliverable_style: "fact check",
+        acceptance_criteria: &[
+            "Identify claims that need citations or evidence.",
+            "Do not rewrite the full draft.",
+        ],
+    },
+];
+
+const CONNECTOR_BACKGROUND_TASKS: &[WorkflowTaskTemplate] = &[
+    WorkflowTaskTemplate {
+        id: "connector-map",
+        role_id: "connector",
+        task: "Map connector or MCP options relevant to the goal, including setup and safety constraints.",
+        expected_output: "Connector recommendation with risks.",
+        deliverable_style: "connector brief",
+        acceptance_criteria: &[
+            "Mention credentials, process lifecycle, and timeout implications.",
+            "Prefer disabled-by-default or approval-gated recommendations for high-risk tools.",
+        ],
+    },
+    WorkflowTaskTemplate {
+        id: "background-plan",
+        role_id: "planner",
+        task: "Design a background-task workflow for the goal, including triggers, cancellation, and user-visible status.",
+        expected_output: "Background task plan with gates.",
+        deliverable_style: "workflow plan",
+        acceptance_criteria: &[
+            "Include start, progress, completion, and failure states.",
+            "Include cancellation and retry behavior.",
+        ],
+    },
+    WorkflowTaskTemplate {
+        id: "safety-check",
+        role_id: "verifier",
+        task: "Check the proposed connector/background workflow for security, privacy, and prompt-injection risks.",
+        expected_output: "Safety verification summary.",
+        deliverable_style: "safety check",
+        acceptance_criteria: &[
+            "Call out any broad tool access or exfiltration risk.",
+            "Recommend the narrowest safe default.",
+        ],
+    },
+];
+
+const WORKFLOW_TEMPLATES: &[WorkflowTemplate] = &[
+    WorkflowTemplate {
+        id: "research_verify",
+        label: "Research + Verify",
+        description: "Parallel evidence gathering, verification, and critique.",
+        max_parallel: 3,
+        tasks: RESEARCH_VERIFY_TASKS,
+    },
+    WorkflowTemplate {
+        id: "draft_review",
+        label: "Draft + Review",
+        description: "Create a draft, critique it, and fact-check it.",
+        max_parallel: 3,
+        tasks: DRAFT_REVIEW_TASKS,
+    },
+    WorkflowTemplate {
+        id: "connector_background",
+        label: "Connector + Background Task",
+        description: "Assess connector setup and background-task lifecycle risks.",
+        max_parallel: 3,
+        tasks: CONNECTOR_BACKGROUND_TASKS,
     },
 ];
 
@@ -361,6 +664,8 @@ impl DelegationRuntime {
 struct SpawnSubagentArgs {
     task: String,
     #[serde(default)]
+    role_id: Option<String>,
+    #[serde(default)]
     role: Option<String>,
     #[serde(default)]
     context: Option<String>,
@@ -392,6 +697,8 @@ struct BatchSubagentTaskArgs {
     id: Option<String>,
     task: String,
     #[serde(default)]
+    role_id: Option<String>,
+    #[serde(default)]
     role: Option<String>,
     #[serde(default)]
     context: Option<String>,
@@ -419,9 +726,12 @@ struct BatchSubagentTaskArgs {
 
 #[derive(Debug, Deserialize)]
 struct SpawnSubagentBatchArgs {
+    #[serde(default)]
     tasks: Vec<BatchSubagentTaskArgs>,
     #[serde(default)]
     batch_goal: Option<String>,
+    #[serde(default)]
+    workflow_template: Option<String>,
     #[serde(default)]
     parallel_group: Option<String>,
     #[serde(default)]
@@ -487,6 +797,8 @@ struct SubagentRunArtifact {
     id: String,
     status: String,
     task: String,
+    role_id: Option<String>,
+    role_name: Option<String>,
     role: Option<String>,
     expected_output: Option<String>,
     acceptance_criteria: Option<Vec<String>>,
@@ -593,7 +905,169 @@ fn filter_enabled_skills(skills: Vec<Skill>, allowed_skill_ids: Option<&[String]
     }
 }
 
-fn build_subagent_system_prompt(base_prompt: &str, role: Option<&str>) -> String {
+fn normalize_role_id(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect::<String>()
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn role_profile_by_id(role_id: &str) -> Option<&'static SubagentRoleProfile> {
+    let normalized = normalize_role_id(role_id);
+    SUBAGENT_ROLE_PROFILES
+        .iter()
+        .find(|profile| profile.id == normalized)
+}
+
+fn infer_role_profile(role: Option<&str>) -> Option<&'static SubagentRoleProfile> {
+    let text = role?.trim().to_ascii_lowercase();
+    if text.is_empty() {
+        return None;
+    }
+    SUBAGENT_ROLE_PROFILES.iter().find(|profile| {
+        text.contains(profile.id) || text.contains(&profile.label.to_ascii_lowercase())
+    })
+}
+
+fn resolve_role_profile(
+    role_id: Option<&str>,
+    role: Option<&str>,
+) -> Result<Option<&'static SubagentRoleProfile>, CoreError> {
+    if let Some(raw_id) = role_id.map(str::trim).filter(|value| !value.is_empty()) {
+        return role_profile_by_id(raw_id).map(Some).ok_or_else(|| {
+            let allowed = SUBAGENT_ROLE_PROFILES
+                .iter()
+                .map(|profile| profile.id)
+                .collect::<Vec<_>>()
+                .join(", ");
+            CoreError::InvalidInput(format!(
+                "Unknown subagent role_id '{raw_id}'. Allowed role_id values: {allowed}."
+            ))
+        });
+    }
+    Ok(infer_role_profile(role))
+}
+
+fn role_id_values() -> Vec<&'static str> {
+    SUBAGENT_ROLE_PROFILES
+        .iter()
+        .map(|profile| profile.id)
+        .collect()
+}
+
+fn workflow_template_by_id(template_id: &str) -> Option<&'static WorkflowTemplate> {
+    let normalized = normalize_role_id(template_id);
+    WORKFLOW_TEMPLATES
+        .iter()
+        .find(|template| template.id == normalized)
+}
+
+fn workflow_template_id_values() -> Vec<&'static str> {
+    WORKFLOW_TEMPLATES
+        .iter()
+        .map(|template| template.id)
+        .collect()
+}
+
+fn normalize_workflow_template_id(value: Option<String>) -> Result<Option<String>, CoreError> {
+    let Some(raw_template) = trim_optional(value) else {
+        return Ok(None);
+    };
+    let normalized = normalize_role_id(&raw_template);
+    if workflow_template_by_id(&normalized).is_some() {
+        return Ok(Some(normalized));
+    }
+    let allowed = workflow_template_id_values().join(", ");
+    Err(CoreError::InvalidInput(format!(
+        "Unknown workflow_template '{raw_template}'. Allowed workflow_template values: {allowed}."
+    )))
+}
+
+fn expand_workflow_template_tasks(
+    template: &WorkflowTemplate,
+    batch_goal: &str,
+    parallel_group: Option<&str>,
+) -> Vec<BatchSubagentTaskArgs> {
+    let shared_context = format!(
+        "Workflow template: {} ({})\n{}\n\nOverall batch goal:\n{}",
+        template.label,
+        template.id,
+        template.description,
+        batch_goal.trim()
+    );
+    let group = parallel_group
+        .map(str::to_string)
+        .unwrap_or_else(|| template.id.to_string());
+
+    template
+        .tasks
+        .iter()
+        .map(|task_template| {
+            let profile = role_profile_by_id(task_template.role_id);
+            let mut acceptance_criteria = task_template
+                .acceptance_criteria
+                .iter()
+                .map(|item| (*item).to_string())
+                .collect::<Vec<_>>();
+            acceptance_criteria.push(
+                "Tie the result back to the overall batch goal and state unresolved uncertainty."
+                    .to_string(),
+            );
+
+            BatchSubagentTaskArgs {
+                id: Some(format!("{}-{}", template.id, task_template.id)),
+                task: format!(
+                    "Overall goal:\n{}\n\nTemplate step:\n{}",
+                    batch_goal.trim(),
+                    task_template.task
+                ),
+                role_id: Some(task_template.role_id.to_string()),
+                role: profile.map(|profile| profile.label.to_string()),
+                context: Some(shared_context.clone()),
+                expected_output: Some(task_template.expected_output.to_string()),
+                max_iterations: None,
+                timeout_secs: None,
+                acceptance_criteria: Some(acceptance_criteria),
+                evidence_chunk_ids: None,
+                source_ids: None,
+                allowed_tools: None,
+                parallel_group: Some(group.clone()),
+                deliverable_style: Some(task_template.deliverable_style.to_string()),
+                return_sections: Some(role_sections(profile)),
+            }
+        })
+        .collect()
+}
+
+fn role_sections(profile: Option<&SubagentRoleProfile>) -> Vec<String> {
+    profile
+        .map(|profile| {
+            profile
+                .default_sections
+                .iter()
+                .map(|section| (*section).to_string())
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            vec![
+                "Conclusion".to_string(),
+                "Key evidence or reasoning".to_string(),
+                "Risks or open questions".to_string(),
+            ]
+        })
+}
+
+fn build_subagent_system_prompt(
+    base_prompt: &str,
+    role: Option<&str>,
+    role_profile: Option<&SubagentRoleProfile>,
+) -> String {
     let mut prompt = base_prompt.trim().to_string();
     prompt.push_str("\n\n## Subagent Instructions\n\n");
     prompt.push_str(
@@ -603,6 +1077,19 @@ fn build_subagent_system_prompt(base_prompt: &str, role: Option<&str>) -> String
         "\n\nTreat supervisor-provided acceptance criteria as requirements. If explicit evidence handoff is provided, ground your answer in that evidence before doing broader retrieval. If you are one of several parallel workers, produce an independent result instead of speculating about what sibling workers might find.",
     );
 
+    if let Some(profile) = role_profile {
+        prompt.push_str("\n\n## Role Profile\n\n");
+        prompt.push_str("- id: ");
+        prompt.push_str(profile.id);
+        prompt.push_str("\n- label: ");
+        prompt.push_str(profile.label);
+        prompt.push_str("\n- instructions: ");
+        prompt.push_str(profile.instructions);
+        prompt.push_str(
+            "\n\nFollow this profile even when the free-form role text is vague. If the profile and free-form role conflict, prefer the profile.",
+        );
+    }
+
     if let Some(role) = role.map(str::trim).filter(|value| !value.is_empty()) {
         prompt.push_str("\n\n## Assigned Role\n\n");
         prompt.push_str(role);
@@ -611,14 +1098,12 @@ fn build_subagent_system_prompt(base_prompt: &str, role: Option<&str>) -> String
     prompt
 }
 
-fn build_return_sections(args: &SpawnSubagentArgs) -> Vec<String> {
-    normalize_string_list(args.return_sections.clone(), 8).unwrap_or_else(|| {
-        vec![
-            "Conclusion".to_string(),
-            "Key evidence or reasoning".to_string(),
-            "Risks or open questions".to_string(),
-        ]
-    })
+fn build_return_sections(
+    args: &SpawnSubagentArgs,
+    role_profile: Option<&SubagentRoleProfile>,
+) -> Vec<String> {
+    normalize_string_list(args.return_sections.clone(), 8)
+        .unwrap_or_else(|| role_sections(role_profile))
 }
 
 fn resolve_source_scope(
@@ -669,6 +1154,32 @@ fn resolve_allowed_tools(
     }
 }
 
+fn resolve_allowed_tools_for_role(
+    base_allowed_tools: &[String],
+    requested_allowed_tools: Option<&[String]>,
+    role_profile: Option<&SubagentRoleProfile>,
+) -> Vec<String> {
+    if requested_allowed_tools.is_some() {
+        return resolve_allowed_tools(base_allowed_tools, requested_allowed_tools);
+    }
+
+    let Some(profile) = role_profile else {
+        return base_allowed_tools.to_vec();
+    };
+    let base: BTreeSet<&str> = base_allowed_tools.iter().map(String::as_str).collect();
+    let narrowed: Vec<String> = profile
+        .recommended_tools
+        .iter()
+        .filter(|name| base.contains(**name))
+        .map(|name| (*name).to_string())
+        .collect();
+    if narrowed.is_empty() {
+        base_allowed_tools.to_vec()
+    } else {
+        narrowed
+    }
+}
+
 fn build_evidence_handoff(db: &Database, chunk_ids: Option<&[String]>) -> Vec<EvidenceHandoffItem> {
     chunk_ids
         .unwrap_or(&[])
@@ -688,12 +1199,13 @@ fn build_evidence_handoff(db: &Database, chunk_ids: Option<&[String]>) -> Vec<Ev
 
 fn build_subagent_request(
     args: &SpawnSubagentArgs,
+    role_profile: Option<&SubagentRoleProfile>,
     effective_source_scope: &[String],
     effective_allowed_tools: &[String],
     allowed_skills: &[AppliedSkillRef],
     evidence_handoff: &[EvidenceHandoffItem],
 ) -> String {
-    let sections = build_return_sections(args);
+    let sections = build_return_sections(args, role_profile);
     let mut request = String::from(
         "Complete the delegated task below. If information is missing, make the smallest reasonable assumption, state it briefly, and continue.\n\n## Supervisor Handoff Packet\n",
     );
@@ -701,6 +1213,8 @@ fn build_subagent_request(
     request.push_str(
         &serde_json::to_string_pretty(&serde_json::json!({
             "task": args.task.trim(),
+            "roleId": role_profile.map(|profile| profile.id),
+            "roleName": role_profile.map(|profile| profile.label),
             "role": args.role,
             "parallelGroup": args.parallel_group,
             "expectedOutput": args.expected_output,
@@ -716,6 +1230,15 @@ fn build_subagent_request(
     );
     request.push_str("\n```\n\n## Delegated Task\n");
     request.push_str(args.task.trim());
+
+    if let Some(profile) = role_profile {
+        request.push_str("\n\nAssigned role profile:\n");
+        request.push_str(profile.label);
+        request.push_str(" (");
+        request.push_str(profile.id);
+        request.push_str(")\n");
+        request.push_str(profile.instructions);
+    }
 
     if let Some(role) = args
         .role
@@ -841,6 +1364,11 @@ fn normalize_spawn_args(mut args: SpawnSubagentArgs) -> Result<SpawnSubagentArgs
         ));
     }
 
+    args.role_id = match trim_optional(args.role_id) {
+        Some(role_id) => Some(normalize_role_id(&role_id)),
+        None => None,
+    };
+    resolve_role_profile(args.role_id.as_deref(), args.role.as_deref())?;
     args.role = trim_optional(args.role);
     args.context = trim_optional(args.context);
     args.expected_output = trim_optional(args.expected_output);
@@ -861,6 +1389,7 @@ fn normalize_batch_task_args(
     let worker_id = trim_optional(task.id);
     let args = normalize_spawn_args(SpawnSubagentArgs {
         task: task.task,
+        role_id: task.role_id,
         role: task.role,
         context: task.context,
         expected_output: task.expected_output,
@@ -897,19 +1426,31 @@ async fn run_subagent_once(
     let provider = create_provider(runtime.provider_config.clone())
         .map_err(|e| CoreError::Llm(e.to_string()))?;
 
+    let role_profile = resolve_role_profile(args.role_id.as_deref(), args.role.as_deref())?;
+
     let mut config = runtime.base_config.clone();
-    config.max_iterations = args.max_iterations.unwrap_or(3).clamp(1, 6);
+    config.max_iterations = args
+        .max_iterations
+        .unwrap_or_else(|| {
+            role_profile
+                .map(|profile| profile.default_max_iterations)
+                .unwrap_or(3)
+        })
+        .clamp(1, 6);
     config.max_tokens = Some(config.max_tokens.unwrap_or(2048).min(2048));
-    let timeout_secs = estimate_subagent_timeout_secs(&runtime, &args);
+    let timeout_secs = estimate_subagent_timeout_secs(&runtime, &args, role_profile);
     config.agent_timeout_secs = Some(timeout_secs as u32);
     config.system_prompt =
-        build_subagent_system_prompt(&config.system_prompt, args.role.as_deref());
+        build_subagent_system_prompt(&config.system_prompt, args.role.as_deref(), role_profile);
 
     let available_tool_names = runtime.get_tool_registry()?.tool_names();
     let baseline_allowed_tools =
         normalize_allowed_tools(runtime.allowed_tools.as_deref(), &available_tool_names);
-    let mut effective_allowed_tools =
-        resolve_allowed_tools(&baseline_allowed_tools, args.allowed_tools.as_deref());
+    let mut effective_allowed_tools = resolve_allowed_tools_for_role(
+        &baseline_allowed_tools,
+        args.allowed_tools.as_deref(),
+        role_profile,
+    );
     if !runtime.can_delegate_further() {
         effective_allowed_tools.retain(|name| !is_subagent_tool_name(name));
     }
@@ -938,6 +1479,7 @@ async fn run_subagent_once(
         build_subagent_executor_tools(&runtime, &effective_allowed_tools, &worker_cancel_token)?;
     let request_text = build_subagent_request(
         &args,
+        role_profile,
         &effective_source_scope,
         &effective_allowed_tools,
         &applied_skill_refs,
@@ -1073,6 +1615,8 @@ async fn run_subagent_once(
         id: worker_id.unwrap_or(call_label),
         status: "done".to_string(),
         task: args.task,
+        role_id: role_profile.map(|profile| profile.id.to_string()),
+        role_name: role_profile.map(|profile| profile.label.to_string()),
         role: args.role,
         expected_output: args.expected_output,
         acceptance_criteria: args.acceptance_criteria,
@@ -1103,8 +1647,9 @@ async fn run_subagent_once(
 
 fn summarize_subagent_run(run: &SubagentRunArtifact) -> String {
     let role_suffix = run
-        .role
+        .role_name
         .as_deref()
+        .or(run.role.as_deref())
         .map(|role| format!(" ({role})"))
         .unwrap_or_default();
     format!(
@@ -1288,8 +1833,20 @@ fn resolve_delegation_timeout_secs(config: &AgentConfig, requested: Option<u32>)
     }) as u64
 }
 
-fn estimate_subagent_timeout_secs(runtime: &DelegationRuntime, args: &SpawnSubagentArgs) -> u64 {
-    resolve_delegation_timeout_secs(&runtime.base_config, args.timeout_secs)
+fn estimate_subagent_timeout_secs(
+    runtime: &DelegationRuntime,
+    args: &SpawnSubagentArgs,
+    role_profile: Option<&SubagentRoleProfile>,
+) -> u64 {
+    match args.timeout_secs {
+        Some(requested) => resolve_delegation_timeout_secs(&runtime.base_config, Some(requested)),
+        None => {
+            let base = resolve_delegation_timeout_secs(&runtime.base_config, None);
+            role_profile
+                .map(|profile| base.min(profile.default_timeout_secs as u64).max(15))
+                .unwrap_or(base)
+        }
+    }
 }
 
 fn estimate_reserved_tokens(config: &AgentConfig, request_text: &str, tools: &ToolRegistry) -> u32 {
@@ -1356,6 +1913,7 @@ impl Tool for SubagentTool {
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
+        let role_ids = role_id_values();
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -1363,9 +1921,14 @@ impl Tool for SubagentTool {
                     "type": "string",
                     "description": "The concrete subtask for the delegated agent to complete."
                 },
+                "role_id": {
+                    "type": "string",
+                    "enum": role_ids,
+                    "description": "Optional structured role profile. Use researcher, verifier, critic, planner, writer, connector, or desktop_operator when the task matches one of those responsibilities."
+                },
                 "role": {
                     "type": "string",
-                    "description": "Optional perspective or specialization, for example researcher, critic, planner, or implementer."
+                    "description": "Optional free-form perspective or specialization. Prefer role_id for known profiles, and use role for extra nuance."
                 },
                 "context": {
                     "type": "string",
@@ -1448,7 +2011,7 @@ impl Tool for SubagentTool {
         .await?;
 
         let mut content = String::from("Subagent result");
-        if let Some(role) = run.role.as_deref() {
+        if let Some(role) = run.role_name.as_deref().or(run.role.as_deref()) {
             content.push_str(&format!(" ({role})"));
         }
         content.push_str(":\n");
@@ -1461,6 +2024,8 @@ impl Tool for SubagentTool {
             artifacts: Some(serde_json::json!({
                 "kind": "subagent_result",
                 "task": run.task,
+                "roleId": run.role_id,
+                "roleName": run.role_name,
                 "role": run.role,
                 "expectedOutput": run.expected_output,
                 "acceptanceCriteria": run.acceptance_criteria,
@@ -1496,6 +2061,8 @@ impl Tool for SubagentBatchTool {
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
+        let role_ids = role_id_values();
+        let workflow_templates = workflow_template_id_values();
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -1503,12 +2070,18 @@ impl Tool for SubagentBatchTool {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 8,
+                    "description": "Explicit workers to launch. Omit this when using workflow_template with batch_goal.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "id": { "type": "string" },
                             "task": { "type": "string" },
-                            "role": { "type": "string" },
+                            "role_id": {
+                                "type": "string",
+                                "enum": role_ids,
+                                "description": "Structured role profile for this worker."
+                            },
+                            "role": { "type": "string", "description": "Optional free-form perspective for this worker." },
                             "context": { "type": "string" },
                             "expected_output": { "type": "string" },
                             "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
@@ -1526,10 +2099,14 @@ impl Tool for SubagentBatchTool {
                     }
                 },
                 "batch_goal": { "type": "string" },
+                "workflow_template": {
+                    "type": "string",
+                    "enum": workflow_templates,
+                    "description": "Optional built-in workflow to expand from batch_goal when tasks is omitted. Use research_verify, draft_review, or connector_background."
+                },
                 "parallel_group": { "type": "string" },
                 "max_parallel": { "type": "integer", "minimum": 1, "maximum": 8 }
             },
-            "required": ["tasks"],
             "additionalProperties": false
         })
     }
@@ -1546,12 +2123,38 @@ impl Tool for SubagentBatchTool {
         })?;
         args.batch_goal = trim_optional(args.batch_goal);
         args.parallel_group = trim_optional(args.parallel_group);
+        args.workflow_template = normalize_workflow_template_id(args.workflow_template)?;
+        let workflow_template = args
+            .workflow_template
+            .as_deref()
+            .and_then(workflow_template_by_id);
+
         if args.tasks.is_empty() {
-            return Err(CoreError::InvalidInput(
-                "spawn_subagent_batch requires at least one task".into(),
-            ));
+            let Some(template) = workflow_template else {
+                return Err(CoreError::InvalidInput(
+                    "spawn_subagent_batch requires either explicit tasks or workflow_template plus batch_goal".into(),
+                ));
+            };
+            let Some(batch_goal) = args.batch_goal.clone() else {
+                return Err(CoreError::InvalidInput(
+                    "spawn_subagent_batch workflow_template expansion requires a non-empty batch_goal".into(),
+                ));
+            };
+            if args.parallel_group.is_none() {
+                args.parallel_group = Some(template.id.to_string());
+            }
+            args.tasks = expand_workflow_template_tasks(
+                template,
+                &batch_goal,
+                args.parallel_group.as_deref(),
+            );
         }
 
+        let batch_goal = args.batch_goal.clone();
+        let workflow_template_id = args.workflow_template.clone();
+        let workflow_template_label = workflow_template.map(|template| template.label);
+        let workflow_template_description = workflow_template.map(|template| template.description);
+        let parallel_group = args.parallel_group.clone();
         let normalized_tasks: Vec<(Option<String>, SpawnSubagentArgs)> = args
             .tasks
             .into_iter()
@@ -1559,7 +2162,7 @@ impl Tool for SubagentBatchTool {
             .enumerate()
             .map(|(index, mut task)| {
                 if task.parallel_group.is_none() {
-                    task.parallel_group = args.parallel_group.clone();
+                    task.parallel_group = parallel_group.clone();
                 }
                 if task.id.is_none() {
                     task.id = Some(format!("{}-{}", call_id, index + 1));
@@ -1571,14 +2174,18 @@ impl Tool for SubagentBatchTool {
         let budget_before = self.runtime.budget.snapshot().await;
         let requested_parallel = args
             .max_parallel
-            .unwrap_or(budget_before.max_parallel)
+            .unwrap_or_else(|| {
+                workflow_template
+                    .map(|template| template.max_parallel)
+                    .unwrap_or(budget_before.max_parallel)
+            })
             .clamp(1, 8);
         let effective_parallel = requested_parallel.min(budget_before.max_parallel).max(1) as usize;
 
         let runtime = self.runtime.clone();
         let db = db.clone();
         let inherited_source_scope = source_scope.to_vec();
-        let batch_parallel_group = args.parallel_group.clone();
+        let batch_parallel_group = parallel_group.clone();
         let runs: Vec<SubagentRunArtifact> = stream::iter(normalized_tasks.into_iter().enumerate())
             .map(|entry: (usize, (Option<String>, SpawnSubagentArgs))| {
                 let (index, (worker_id, task_args)) = entry;
@@ -1606,6 +2213,8 @@ impl Tool for SubagentBatchTool {
                             id: label,
                             status: "error".to_string(),
                             task: fallback_task,
+                            role_id: None,
+                            role_name: None,
                             role: None,
                             expected_output: None,
                             acceptance_criteria: None,
@@ -1639,8 +2248,11 @@ impl Tool for SubagentBatchTool {
         let completed_runs = runs.iter().filter(|run| !run.is_error).count();
         let failed_runs = runs.len().saturating_sub(completed_runs);
         let mut content = format!("Completed {} delegated worker(s) in batch", runs.len());
-        if let Some(goal) = args.batch_goal.as_deref() {
+        if let Some(goal) = batch_goal.as_deref() {
             content.push_str(&format!(" for: {goal}"));
+        }
+        if let Some(template_label) = workflow_template_label {
+            content.push_str(&format!(" using {template_label}"));
         }
         content.push_str(".\n\n");
         for run in &runs {
@@ -1655,8 +2267,11 @@ impl Tool for SubagentBatchTool {
             is_error: failed_runs > 0 && completed_runs == 0,
             artifacts: Some(serde_json::json!({
                 "kind": "subagent_batch_result",
-                "batchGoal": args.batch_goal,
-                "parallelGroup": args.parallel_group,
+                "batchGoal": batch_goal,
+                "workflowTemplate": workflow_template_id,
+                "workflowTemplateLabel": workflow_template_label,
+                "workflowTemplateDescription": workflow_template_description,
+                "parallelGroup": parallel_group,
                 "requestedMaxParallel": requested_parallel,
                 "effectiveMaxParallel": effective_parallel,
                 "completedRuns": completed_runs,
@@ -1878,6 +2493,7 @@ mod tests {
     fn test_normalize_spawn_args_clamps_timeout() {
         let args = normalize_spawn_args(SpawnSubagentArgs {
             task: "Investigate".into(),
+            role_id: None,
             role: None,
             context: None,
             expected_output: None,
@@ -1894,6 +2510,104 @@ mod tests {
         .unwrap();
 
         assert_eq!(args.timeout_secs, Some(180));
+    }
+
+    #[test]
+    fn test_normalize_spawn_args_accepts_structured_role_id() {
+        let args = normalize_spawn_args(SpawnSubagentArgs {
+            task: "Check the draft".into(),
+            role_id: Some("Verifier".into()),
+            role: None,
+            context: None,
+            expected_output: None,
+            max_iterations: None,
+            timeout_secs: None,
+            acceptance_criteria: None,
+            evidence_chunk_ids: None,
+            source_ids: None,
+            allowed_tools: None,
+            parallel_group: None,
+            deliverable_style: None,
+            return_sections: None,
+        })
+        .unwrap();
+
+        assert_eq!(args.role_id.as_deref(), Some("verifier"));
+        let profile = resolve_role_profile(args.role_id.as_deref(), args.role.as_deref())
+            .unwrap()
+            .unwrap();
+        assert_eq!(profile.label, "Verifier");
+        assert_eq!(
+            build_return_sections(&args, Some(profile)),
+            vec![
+                "Verdict".to_string(),
+                "Checks performed".to_string(),
+                "Unverified or risky claims".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_unknown_role_id_is_rejected() {
+        let err = normalize_spawn_args(SpawnSubagentArgs {
+            task: "Check the draft".into(),
+            role_id: Some("wizard".into()),
+            role: None,
+            context: None,
+            expected_output: None,
+            max_iterations: None,
+            timeout_secs: None,
+            acceptance_criteria: None,
+            evidence_chunk_ids: None,
+            source_ids: None,
+            allowed_tools: None,
+            parallel_group: None,
+            deliverable_style: None,
+            return_sections: None,
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("Unknown subagent role_id"));
+    }
+
+    #[test]
+    fn test_role_profile_narrows_default_tools() {
+        let base_tools = vec![
+            "search_knowledge_base".to_string(),
+            "desktop_automation".to_string(),
+            "run_shell".to_string(),
+            "record_verification".to_string(),
+        ];
+        let verifier = role_profile_by_id("verifier").unwrap();
+        let tools = resolve_allowed_tools_for_role(&base_tools, None, Some(verifier));
+
+        assert!(tools.contains(&"search_knowledge_base".to_string()));
+        assert!(tools.contains(&"record_verification".to_string()));
+        assert!(!tools.contains(&"desktop_automation".to_string()));
+        assert!(!tools.contains(&"run_shell".to_string()));
+    }
+
+    #[test]
+    fn test_workflow_template_expands_role_based_tasks() {
+        let template = workflow_template_by_id("research_verify").unwrap();
+        let tasks = expand_workflow_template_tasks(
+            template,
+            "Decide whether the proposal is supported",
+            None,
+        );
+
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0].role_id.as_deref(), Some("researcher"));
+        assert_eq!(tasks[1].role_id.as_deref(), Some("verifier"));
+        assert_eq!(tasks[2].role_id.as_deref(), Some("critic"));
+        assert_eq!(tasks[0].parallel_group.as_deref(), Some("research_verify"));
+        assert!(tasks[0]
+            .task
+            .contains("Decide whether the proposal is supported"));
+        assert!(tasks[0]
+            .return_sections
+            .as_ref()
+            .is_some_and(|sections| sections.iter().any(|section| section == "Conclusion")));
     }
 
     #[test]

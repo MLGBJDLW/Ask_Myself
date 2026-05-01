@@ -46,6 +46,16 @@ pub struct ApprovalRequest {
     pub risk_level: ApprovalRisk,
     /// Human-readable one-line reason (falls back to tool name).
     pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_preview: Option<ApprovalCheckpointPreview>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalCheckpointPreview {
+    pub planned: bool,
+    pub target_paths: Vec<String>,
+    pub note: String,
 }
 
 impl ApprovalRequest {
@@ -56,6 +66,7 @@ impl ApprovalRequest {
         risk_level: ApprovalRisk,
         reason: impl Into<String>,
     ) -> Self {
+        let tool_name = tool_name.into();
         let preview =
             serde_json::to_string_pretty(arguments).unwrap_or_else(|_| arguments.to_string());
         let preview = if preview.len() > ARGUMENTS_PREVIEW_LIMIT {
@@ -69,10 +80,11 @@ impl ApprovalRequest {
         };
         Self {
             id: id.into(),
-            tool_name: tool_name.into(),
+            tool_name: tool_name.clone(),
             arguments_preview: preview,
             risk_level,
             reason: reason.into(),
+            checkpoint_preview: checkpoint_preview(&tool_name, arguments),
         }
     }
 }
@@ -281,6 +293,29 @@ impl Database {
 pub fn classify_risk(tool_name: &str, args: &serde_json::Value) -> ApprovalRisk {
     match tool_name {
         "run_shell" => ApprovalRisk::High,
+        "edit_file" | "edit_document" => ApprovalRisk::High,
+        "create_file" => {
+            if args
+                .get("overwrite")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                ApprovalRisk::High
+            } else {
+                ApprovalRisk::Medium
+            }
+        }
+        "write_note" => {
+            let mode = args
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("create");
+            if mode == "create" {
+                ApprovalRisk::Medium
+            } else {
+                ApprovalRisk::High
+            }
+        }
         "manage_source" => {
             if args.get("action").and_then(|v| v.as_str()) == Some("remove") {
                 ApprovalRisk::High
@@ -325,8 +360,77 @@ pub fn describe_request(tool_name: &str, args: &serde_json::Value) -> String {
                 .unwrap_or("<unknown>");
             format!("Agent wants to archive `{title}` to `{dir}`")
         }
+        "create_file" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
+            if args
+                .get("overwrite")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                format!(
+                    "Agent wants to overwrite `{path}`. A restorable file checkpoint will be saved first."
+                )
+            } else {
+                format!(
+                    "Agent wants to create `{path}`. A checkpoint will record that this file did not exist before the write."
+                )
+            }
+        }
+        "edit_file" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
+            format!(
+                "Agent wants to edit `{path}`. A restorable file checkpoint will be saved first."
+            )
+        }
+        "edit_document" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
+            format!(
+                "Agent wants to edit document `{path}`. A restorable file checkpoint will be saved first."
+            )
+        }
+        "write_note" => {
+            let filename = args
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
+            format!(
+                "Agent wants to write note `{filename}`. A restorable file checkpoint will be saved first."
+            )
+        }
         other => format!("Agent wants to invoke `{other}`"),
     }
+}
+
+fn checkpoint_preview(
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Option<ApprovalCheckpointPreview> {
+    let path_arg = match tool_name {
+        "create_file" | "edit_file" | "edit_document" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        "write_note" => args
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .map(|filename| format!("notes/{filename}")),
+        _ => None,
+    }?;
+
+    Some(ApprovalCheckpointPreview {
+        planned: true,
+        target_paths: vec![path_arg],
+        note: "A file checkpoint will be created after approval and before the write.".to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -388,6 +492,21 @@ mod tests {
             ApprovalRisk::High
         );
         assert_eq!(
+            classify_risk("edit_file", &serde_json::json!({ "path": "notes.md" })),
+            ApprovalRisk::High
+        );
+        assert_eq!(
+            classify_risk("create_file", &serde_json::json!({ "path": "notes.md" })),
+            ApprovalRisk::Medium
+        );
+        assert_eq!(
+            classify_risk(
+                "create_file",
+                &serde_json::json!({ "path": "notes.md", "overwrite": true })
+            ),
+            ApprovalRisk::High
+        );
+        assert_eq!(
             classify_risk("manage_source", &serde_json::json!({ "action": "remove" })),
             ApprovalRisk::High
         );
@@ -404,6 +523,27 @@ mod tests {
         let req = ApprovalRequest::new("req-1", "run_shell", &args, ApprovalRisk::High, "test");
         assert!(req.arguments_preview.len() <= ARGUMENTS_PREVIEW_LIMIT + 20);
         assert!(req.arguments_preview.contains("truncated"));
+    }
+
+    #[test]
+    fn file_mutation_request_includes_checkpoint_preview() {
+        let args = serde_json::json!({
+            "path": "notes/today.md",
+            "action": "str_replace",
+            "old_str": "a",
+            "new_str": "b"
+        });
+        let req = ApprovalRequest::new(
+            "req-1",
+            "edit_file",
+            &args,
+            ApprovalRisk::High,
+            describe_request("edit_file", &args),
+        );
+
+        let preview = req.checkpoint_preview.expect("checkpoint preview");
+        assert!(preview.planned);
+        assert_eq!(preview.target_paths, vec!["notes/today.md".to_string()]);
     }
 
     #[test]

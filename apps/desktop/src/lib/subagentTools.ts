@@ -30,6 +30,13 @@ export const SUBAGENT_TOOL_CATALOG: SubagentToolDescriptor[] = [
     source: 'built_in',
   },
   {
+    name: 'read_files',
+    label: 'Read Files',
+    description: 'Read several source-scoped files in one delegated call.',
+    enabledByDefault: true,
+    source: 'built_in',
+  },
+  {
     name: 'retrieve_evidence',
     label: 'Retrieve Evidence',
     description: 'Load exact evidence chunks and summarize or verify findings.',
@@ -69,6 +76,13 @@ export const SUBAGENT_TOOL_CATALOG: SubagentToolDescriptor[] = [
     label: 'Fetch URL',
     description: 'Load a web page when the delegated task needs external context.',
     enabledByDefault: true,
+    source: 'built_in',
+  },
+  {
+    name: 'desktop_automation',
+    label: 'Desktop Automation',
+    description: 'Open approved URLs, searches, or source-scoped paths on the local desktop.',
+    enabledByDefault: false,
     source: 'built_in',
   },
   {
