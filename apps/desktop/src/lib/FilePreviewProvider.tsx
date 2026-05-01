@@ -135,7 +135,11 @@ function codeFenceFor(text: string): string {
 }
 
 function normalizeRenderedSelection(text: string): string {
-  return text.replace(/\r\n?/g, '\n').trim();
+  return text.replace(/\r\n?/g, '\n');
+}
+
+function isOfficeDocumentPreview(preview: api.FilePreview): boolean {
+  return ['.docx', '.pptx', '.xlsx'].includes(preview.extension.toLowerCase());
 }
 
 function buildAgentEditPrompt({
@@ -159,8 +163,67 @@ function buildAgentEditPrompt({
       ? `${selection.startLine}`
       : `${selection.startLine}-${selection.endLine}`;
   const fence = codeFenceFor(selection.text);
+  const officeDocument = isOfficeDocumentPreview(preview);
 
   if (zh) {
+    if (officeDocument) {
+      return [
+        '请使用 Python 文档 skill 直接修改下面这个 Office 文档中的选中文本片段。',
+        '',
+        `文件: ${preview.path}`,
+        `文件名: ${preview.displayName}`,
+        `来源: ${preview.sourceName}`,
+        `提取文本行号: ${lineRange}`,
+        `预览字符范围: ${selection.start}-${selection.end}`,
+        `当前文件哈希: ${preview.hash}`,
+        '',
+        '用户修改要求:',
+        finalInstruction,
+        '',
+        '选中文本:',
+        fence,
+        selection.text,
+        fence,
+        '',
+        '执行规则:',
+        '1. 先用 read_file 验证文档的提取文本仍然包含这段选中文本。',
+        '2. 根据用户修改要求生成替换后的 new_text。',
+        '3. 使用 doc-script-editor skill，通过 run_shell 调用 `python <SKILL_DIR>/scripts/edit_doc.py` 修改文档；run_shell 的 cwd 必须设为包含该文件的已注册来源目录，必要时先用 list_sources 确认。',
+        '4. 如果运行环境不完整，先使用 prepare_document_tools 检查或准备必需依赖。',
+        '5. 先执行 replace --dry-run 预览替换，再执行实际 replace；--find 必须是上方选中文本的精确内容。',
+        '6. 不要使用 edit_file 修改 Office 二进制文档。',
+        '7. 只替换这段文本；如果无法唯一定位、文本已变化或 Python skill 无法完成，请先停下来问我确认。',
+        '8. 修改后运行 validate，并简要说明改了什么和如何回滚。',
+      ].join('\n');
+    }
+
+    if (!preview.editable) {
+      return [
+        '请处理下面这个只读提取文本中的选中片段，并在工具支持时直接修改源文件。',
+        '',
+        `文件: ${preview.path}`,
+        `文件名: ${preview.displayName}`,
+        `来源: ${preview.sourceName}`,
+        `提取文本行号: ${lineRange}`,
+        `预览字符范围: ${selection.start}-${selection.end}`,
+        `当前文件哈希: ${preview.hash}`,
+        '',
+        '用户修改要求:',
+        finalInstruction,
+        '',
+        '选中文本:',
+        fence,
+        selection.text,
+        fence,
+        '',
+        '执行规则:',
+        '1. 先用 read_file 验证源文件内容或提取文本仍然匹配。',
+        '2. 如果当前工具支持安全修改该文件格式，请直接修改源文件。',
+        '3. 如果该格式不能被当前工具安全写回，请不要用 edit_file 强行修改；请给出替换后的文本并说明需要我确认下一步。',
+        '4. 只处理这段选中文本，除非我的修改要求明确需要扩大范围。',
+      ].join('\n');
+    }
+
     return [
       '请直接修改下面这个已索引来源文件中的选中文本片段。',
       '',
@@ -185,6 +248,64 @@ function buildAgentEditPrompt({
       '3. 使用 edit_file 修改文件，不要只给建议或改写稿。',
       '4. 如果文本已经变化、无法唯一定位，或文件不在已注册来源内，请先停下来问我确认。',
       '5. 修改后简要说明改了什么，并保留可回滚 checkpoint。',
+    ].join('\n');
+  }
+
+  if (officeDocument) {
+    return [
+      'Please use the Python document skill to directly edit the selected text in this Office document.',
+      '',
+      `File: ${preview.path}`,
+      `Display name: ${preview.displayName}`,
+      `Source: ${preview.sourceName}`,
+      `Extracted text line range: ${lineRange}`,
+      `Preview character range: ${selection.start}-${selection.end}`,
+      `Current file hash: ${preview.hash}`,
+      '',
+      'Requested change:',
+      finalInstruction,
+      '',
+      'Selected text:',
+      fence,
+      selection.text,
+      fence,
+      '',
+      'Execution rules:',
+      '1. Use read_file first to verify that the extracted document text still contains this selected text.',
+      '2. Generate the replacement new_text from the requested change.',
+      '3. Use the doc-script-editor skill through run_shell by invoking `python <SKILL_DIR>/scripts/edit_doc.py`; set run_shell cwd to the registered source directory that contains this file, using list_sources first if needed.',
+      '4. If the runtime is incomplete, use prepare_document_tools to check or prepare the required dependencies first.',
+      '5. Run replace --dry-run first, then run the real replace. The --find value must be exactly the selected text above.',
+      '6. Do not use edit_file on the Office binary document.',
+      '7. Replace only this text. If it cannot be uniquely located, has changed, or the Python skill cannot complete the edit, stop and ask me to confirm.',
+      '8. After editing, run validate and briefly summarize what changed and how to roll it back.',
+    ].join('\n');
+  }
+
+  if (!preview.editable) {
+    return [
+      'Please work on the selected text from this read-only extracted preview and directly modify the source file only when the available tools safely support that format.',
+      '',
+      `File: ${preview.path}`,
+      `Display name: ${preview.displayName}`,
+      `Source: ${preview.sourceName}`,
+      `Extracted text line range: ${lineRange}`,
+      `Preview character range: ${selection.start}-${selection.end}`,
+      `Current file hash: ${preview.hash}`,
+      '',
+      'Requested change:',
+      finalInstruction,
+      '',
+      'Selected text:',
+      fence,
+      selection.text,
+      fence,
+      '',
+      'Execution rules:',
+      '1. Use read_file first to verify that the source file or extracted text still matches.',
+      '2. If the current tools safely support editing this format, directly edit the source file.',
+      '3. If the format cannot be safely written by the current tools, do not force an edit with edit_file. Provide the replacement text and ask me to confirm the next step.',
+      '4. Work only on this selected text unless the requested change explicitly requires a wider edit.',
     ].join('\n');
   }
 
@@ -462,10 +583,10 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const captureRenderedSelection = useCallback(() => {
-    if (!preview?.editable) return;
+    if (!preview || !draft) return;
     const raw = window.getSelection()?.toString() ?? '';
     const selected = normalizeRenderedSelection(raw);
-    if (!selected) return;
+    if (!selected.trim()) return;
 
     const start = draft.indexOf(selected);
     if (start < 0) {
@@ -477,7 +598,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
 
     setTextSelection({ start, end: start + selected.length, origin: 'preview' });
     setCopiedAgentRequest(false);
-  }, [draft, labels.selectionMapFailed, preview?.editable]);
+  }, [draft, labels.selectionMapFailed, preview]);
 
   const updateDraft = useCallback((value: string) => {
     setDraft(value);
@@ -779,8 +900,9 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                 </div>
               ) : canShowPreview ? (
                 <div
+                  data-testid="file-preview-readable-content"
                   className="h-full overflow-auto"
-                  onMouseUp={preview.editable ? captureRenderedSelection : undefined}
+                  onMouseUp={captureRenderedSelection}
                 >
                   {preview.kind === 'markdown' ? (
                     <MarkdownPreview content={preview.editable ? draft : content} />
@@ -796,7 +918,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
             </div>
 
             <AnimatePresence>
-              {preview?.editable && selectedText && (
+              {preview && selectedText && (
                 <motion.div
                   key="agent-selection-panel"
                   initial={shouldReduceMotion ? false : { y: 16, opacity: 0 }}

@@ -93,7 +93,7 @@ test.beforeEach(async ({ page }) => {
           id: 'm-assistant-file',
           conversationId: 'conv-agent-edit',
           role: 'assistant',
-          content: 'Open `notes/agent-edit.md` and improve the action item.',
+          content: 'Open `notes/agent-edit.md` and improve the action item. Also inspect `docs/office-proposal.docx`.',
           toolCallId: null,
           toolCalls: [],
           artifacts: null,
@@ -188,6 +188,31 @@ test.beforeEach(async ({ page }) => {
         case 'clear_answer_cache':
           return 0;
         case 'preview_file_cmd':
+          if (String(args.path ?? '').endsWith('office-proposal.docx')) {
+            return {
+              path: 'D:\\Vault\\docs\\office-proposal.docx',
+              displayName: 'office-proposal.docx',
+              sourceId: 'src-office-docs',
+              sourceName: 'Office Docs',
+              extension: '.docx',
+              mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+              kind: 'document',
+              language: null,
+              content: [
+                'Executive Summary',
+                'The team needs a softer launch statement for enterprise buyers.',
+                'Budget remains unchanged.',
+              ].join('\n'),
+              encoding: 'extracted-text',
+              editable: false,
+              sizeBytes: 114000,
+              modifiedAt: nowIso,
+              hash: 'sha256-office-proposal',
+              lineCount: 3,
+              truncated: false,
+              warning: null,
+            };
+          }
           return {
             path: 'D:\\Vault\\notes\\agent-edit.md',
             displayName: 'agent-edit.md',
@@ -321,4 +346,60 @@ test('sends an exact selected file range to the agent edit flow', async ({ page 
   await expect
     .poll(() => page.evaluate(() => window.__lastSourceIds ?? []))
     .toEqual(['src-agent-edit']);
+});
+
+test('shows the agent panel for read-only extracted Office text and routes to Python document skills', async ({ page }) => {
+  await page.goto('/chat/conv-agent-edit');
+
+  await page.getByRole('button', { name: /office-proposal\.docx/i }).click();
+  await expect(page.getByLabel('File Preview')).toBeVisible();
+  await expect(page.getByText('Read-only')).toBeVisible();
+
+  const readable = page.getByTestId('file-preview-readable-content');
+  await expect(readable).toContainText('softer launch statement');
+  await readable.evaluate((node) => {
+    const codeNodes = Array.from(node.querySelectorAll('code'));
+    const target = codeNodes.find((candidate) =>
+      candidate.textContent?.includes('softer launch statement'),
+    );
+    if (!target?.firstChild) {
+      throw new Error('target text node not found');
+    }
+    const text = target.textContent ?? '';
+    const selected = 'The team needs a softer launch statement for enterprise buyers.';
+    const start = text.indexOf(selected);
+    const range = document.createRange();
+    range.setStart(target.firstChild, start);
+    range.setEnd(target.firstChild, start + selected.length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  });
+
+  await expect(page.getByTestId('file-preview-agent-panel')).toBeVisible();
+  await page
+    .getByTestId('file-preview-agent-instruction')
+    .fill('Make this more confident but still enterprise-safe.');
+  await page.getByTestId('file-preview-agent-send').click();
+
+  await expect
+    .poll(() => page.evaluate(() => window.__lastAgentPrompt ?? ''), {
+      timeout: 10_000,
+    })
+    .toContain('doc-script-editor skill');
+
+  const prompt = await page.evaluate(() => window.__lastAgentPrompt ?? '');
+  expect(prompt).toContain('File: D:\\Vault\\docs\\office-proposal.docx');
+  expect(prompt).toContain('Extracted text line range: 2');
+  expect(prompt).toContain('The team needs a softer launch statement for enterprise buyers.');
+  expect(prompt).toContain('prepare_document_tools');
+  expect(prompt).toContain('run_shell');
+  expect(prompt).toContain('replace --dry-run');
+  expect(prompt).not.toContain('edit_document');
+  expect(prompt).not.toContain('Use edit_file to modify the file');
+
+  await expect
+    .poll(() => page.evaluate(() => window.__lastSourceIds ?? []))
+    .toEqual(['src-office-docs']);
 });

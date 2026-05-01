@@ -114,12 +114,11 @@ fn main() {
             migrate_legacy_data_dir(&data_dir);
 
             // Materialize bundled skill assets to disk so run_shell can exec them
-            // and <SKILL_DIR> placeholders in prompts resolve correctly. Degrade
-            // gracefully on failure: doc-editing fast-path still works without scripts.
+            // and <SKILL_DIR> placeholders in prompts resolve correctly.
             match nexa_core::skills::materialize_skills_to_disk(&data_dir) {
                 Ok(path) => log::info!("Materialized skills to {}", path.display()),
                 Err(e) => log::warn!(
-                    "Failed to materialize skills: {e}. Doc-editing via shell scripts will be unavailable; edit_document fast-path still works."
+                    "Failed to materialize skills: {e}. Python-backed document editing via shell scripts will be unavailable."
                 ),
             }
             if let Some(bin_dir) = nexa_core::office_runtime::configure_app_managed_python_env(&data_dir) {
