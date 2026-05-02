@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::sources::CreateSourceInput;
+use crate::sources::{CreateSourceInput, UpdateSourceInput};
 
 use super::{Tool, ToolCategory, ToolDef, ToolResult};
 
@@ -122,9 +122,47 @@ impl Tool for ManageSourceTool {
                     artifacts: None,
                 })
             }
+            "update" | "refresh_path" => {
+                let source_id = args.source_id.ok_or_else(|| {
+                    CoreError::InvalidInput(
+                        "'source_id' is required when action is 'update'".to_string(),
+                    )
+                })?;
+                let path = args.path.ok_or_else(|| {
+                    CoreError::InvalidInput(
+                        "'path' is required when action is 'update'".to_string(),
+                    )
+                })?;
+
+                let previous = db.get_source(&source_id)?;
+                let source = db.update_source(
+                    &source_id,
+                    UpdateSourceInput {
+                        root_path: Some(path),
+                        include_globs: None,
+                        exclude_globs: None,
+                        watch_enabled: None,
+                    },
+                )?;
+
+                Ok(ToolResult {
+                    call_id,
+                    content: format!(
+                        "Source path updated successfully.\n  ID: {}\n  Previous path: {}\n  New path: {}",
+                        source.id, previous.root_path, source.root_path
+                    ),
+                    is_error: false,
+                    artifacts: Some(serde_json::json!({
+                        "id": source.id,
+                        "previous_root_path": previous.root_path,
+                        "root_path": source.root_path,
+                        "kind": source.kind,
+                    })),
+                })
+            }
             other => Ok(ToolResult {
                 call_id,
-                content: format!("Unknown action '{other}'. Use 'add' or 'remove'."),
+                content: format!("Unknown action '{other}'. Use 'add', 'remove', or 'update'."),
                 is_error: true,
                 artifacts: None,
             }),
@@ -230,6 +268,45 @@ mod tests {
         // Verify empty.
         let sources = db.list_sources().expect("list_sources");
         assert!(sources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_manage_source_update_path() {
+        let db = test_db();
+        let tool = ManageSourceTool;
+        let old_dir = tempfile::tempdir().expect("old tempdir");
+        let new_dir = tempfile::tempdir().expect("new tempdir");
+
+        let add_args = serde_json::json!({
+            "action": "add",
+            "path": old_dir.path().to_string_lossy()
+        });
+        tool.execute("c1", &add_args.to_string(), &db, &[])
+            .await
+            .expect("add should succeed");
+        let source_id = db.list_sources().expect("list sources")[0].id.clone();
+
+        let update_args = serde_json::json!({
+            "action": "update",
+            "source_id": source_id,
+            "path": new_dir.path().to_string_lossy()
+        });
+        let result = tool
+            .execute("c2", &update_args.to_string(), &db, &[])
+            .await
+            .expect("update should succeed");
+
+        assert!(
+            !result.is_error,
+            "result should not be error: {}",
+            result.content
+        );
+        assert!(result.content.contains("Source path updated successfully"));
+        let sources = db.list_sources().expect("list sources");
+        assert_eq!(
+            sources[0].root_path,
+            new_dir.path().to_string_lossy().to_string()
+        );
     }
 
     #[tokio::test]

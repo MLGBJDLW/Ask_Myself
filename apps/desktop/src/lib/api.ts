@@ -184,7 +184,14 @@ export const updateSource = (
   includeGlobs: string[],
   excludeGlobs: string[],
   watchEnabled: boolean,
-) => invoke<void>('update_source', { sourceId, includeGlobs, excludeGlobs, watchEnabled });
+  rootPath?: string | null,
+) => invoke<Source>('update_source', {
+  sourceId,
+  rootPath: rootPath ?? null,
+  includeGlobs,
+  excludeGlobs,
+  watchEnabled,
+});
 
 // ── Privacy ─────────────────────────────────────────────────────────────
 

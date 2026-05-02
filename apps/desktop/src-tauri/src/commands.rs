@@ -684,20 +684,49 @@ pub fn get_source(state: tauri::State<'_, AppState>, source_id: String) -> Resul
 #[tauri::command]
 pub fn update_source(
     state: tauri::State<'_, AppState>,
+    watcher_state: tauri::State<'_, WatcherState>,
     source_id: String,
+    root_path: Option<String>,
     include_globs: Option<Vec<String>>,
     exclude_globs: Option<Vec<String>>,
     watch_enabled: Option<bool>,
 ) -> Result<Source, String> {
+    let previous = state.db.get_source(&source_id).map_err(|e| e.to_string())?;
     let input = UpdateSourceInput {
+        root_path,
         include_globs,
         exclude_globs,
         watch_enabled,
     };
-    state
+    let updated = state
         .db
         .update_source(&source_id, input)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    let root_changed = previous.root_path != updated.root_path;
+    let watch_changed = previous.watch_enabled != updated.watch_enabled;
+    if root_changed || watch_changed {
+        let was_watched = {
+            let mut watched = watcher_state.watched.lock().map_err(|e| e.to_string())?;
+            watched.remove(&source_id).is_some()
+        };
+        if was_watched {
+            let mut watcher = watcher_state.watcher.lock().map_err(|e| e.to_string())?;
+            let _ = watcher.unwatch(std::path::Path::new(&previous.root_path));
+        }
+        if updated.watch_enabled {
+            {
+                let mut watcher = watcher_state.watcher.lock().map_err(|e| e.to_string())?;
+                watcher
+                    .watch(std::path::Path::new(&updated.root_path))
+                    .map_err(|e| e.to_string())?;
+            }
+            let mut watched = watcher_state.watched.lock().map_err(|e| e.to_string())?;
+            watched.insert(source_id.clone(), updated.root_path.clone());
+        }
+    }
+
+    Ok(updated)
 }
 
 #[tauri::command]
@@ -2056,6 +2085,7 @@ pub fn start_watching(
 
     // Persist watch_enabled = true in the database.
     let input = UpdateSourceInput {
+        root_path: None,
         include_globs: None,
         exclude_globs: None,
         watch_enabled: Some(true),
@@ -2083,6 +2113,7 @@ pub fn stop_watching(
 
     // Persist watch_enabled = false in the database.
     let input = UpdateSourceInput {
+        root_path: None,
         include_globs: None,
         exclude_globs: None,
         watch_enabled: Some(false),

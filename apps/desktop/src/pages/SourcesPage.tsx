@@ -150,6 +150,7 @@ export function SourcesPage() {
 
   // Edit source modal
   const [editTarget, setEditTarget] = useState<Source | null>(null);
+  const [editRootPath, setEditRootPath] = useState('');
   const [editInclude, setEditInclude] = useState('');
   const [editExclude, setEditExclude] = useState('');
   const [editWatch, setEditWatch] = useState(false);
@@ -357,6 +358,7 @@ export function SourcesPage() {
 
   const openEditModal = (source: Source) => {
     setEditTarget(source);
+    setEditRootPath(source.rootPath);
     setEditInclude(source.includeGlobs.join(', '));
     setEditExclude(source.excludeGlobs.join(', '));
     setEditWatch(source.watchEnabled);
@@ -368,7 +370,7 @@ export function SourcesPage() {
     try {
       const includeGlobs = parseTags(editInclude);
       const excludeGlobs = parseTags(editExclude);
-      await api.updateSource(editTarget.id, includeGlobs, excludeGlobs, editWatch);
+      await api.updateSource(editTarget.id, includeGlobs, excludeGlobs, editWatch, editRootPath.trim());
       toast.success(t('sources.updated'));
       setEditTarget(null);
       await loadSources();
@@ -906,6 +908,7 @@ export function SourcesPage() {
               size="sm"
               onClick={handleEdit}
               loading={editing}
+              disabled={!editRootPath.trim()}
             >
               {t('common.save')}
             </Button>
@@ -913,10 +916,37 @@ export function SourcesPage() {
         }
       >
         <div className="space-y-4">
-          {/* Root path (read-only) */}
+          {/* Root path */}
           <div>
             <label className="block text-xs font-medium text-text-secondary mb-1.5">{t('sources.addModal.rootPath')}</label>
-            <p className="text-sm text-text-primary font-mono truncate">{editTarget?.rootPath}</p>
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <Input
+                  value={editRootPath}
+                  onChange={(e) => setEditRootPath(e.target.value)}
+                  placeholder={t('sources.pathPlaceholder')}
+                  icon={<FolderOpen size={15} />}
+                />
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="shrink-0 h-10"
+                onClick={async () => {
+                  const selected = await open({
+                    directory: true,
+                    multiple: false,
+                    title: t('sources.addModal.rootPath'),
+                  });
+                  if (selected) {
+                    setEditRootPath(typeof selected === 'string' ? selected : selected[0]);
+                  }
+                }}
+              >
+                <FolderSearch size={15} className="mr-1" />
+                {t('sources.browse')}
+              </Button>
+            </div>
           </div>
 
           {/* Include globs */}

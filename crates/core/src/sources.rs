@@ -19,6 +19,7 @@ pub struct CreateSourceInput {
 
 /// Input for updating an existing source.
 pub struct UpdateSourceInput {
+    pub root_path: Option<String>,
     pub include_globs: Option<Vec<String>>,
     pub exclude_globs: Option<Vec<String>>,
     pub watch_enabled: Option<bool>,
@@ -142,9 +143,33 @@ impl Database {
         // Ensure the source exists first.
         let existing = self.get_source(id)?;
 
+        let previous_root_path = existing.root_path.clone();
+        let root_path = input
+            .root_path
+            .unwrap_or_else(|| previous_root_path.clone());
         let include_globs = input.include_globs.unwrap_or(existing.include_globs);
         let exclude_globs = input.exclude_globs.unwrap_or(existing.exclude_globs);
         let watch_enabled = input.watch_enabled.unwrap_or(existing.watch_enabled);
+
+        let path = Path::new(&root_path);
+        if !path.exists() {
+            return Err(CoreError::InvalidInput(format!(
+                "Path does not exist: {}",
+                root_path
+            )));
+        }
+        if !path.is_dir() {
+            return Err(CoreError::InvalidInput(format!(
+                "Path is not a directory: {}",
+                root_path
+            )));
+        }
+        if root_path != previous_root_path && self.source_exists_for_path(&root_path)? {
+            return Err(CoreError::InvalidInput(format!(
+                "Source already registered for path: {}",
+                root_path
+            )));
+        }
 
         validate_globs(&include_globs)?;
         validate_globs(&exclude_globs)?;
@@ -156,9 +181,9 @@ impl Database {
         let conn = self.conn();
         conn.execute(
             "UPDATE sources
-             SET include_globs = ?1, exclude_globs = ?2, watch_enabled = ?3, updated_at = datetime('now')
-             WHERE id = ?4",
-            params![&include_json, &exclude_json, watch_int, id],
+             SET root_path = ?1, include_globs = ?2, exclude_globs = ?3, watch_enabled = ?4, updated_at = datetime('now')
+             WHERE id = ?5",
+            params![&root_path, &include_json, &exclude_json, watch_int, id],
         )?;
 
         drop(conn);
@@ -373,6 +398,7 @@ mod tests {
             .update_source(
                 &created.id,
                 UpdateSourceInput {
+                    root_path: None,
                     include_globs: Some(vec!["*.txt".to_string(), "*.log".to_string()]),
                     exclude_globs: None,
                     watch_enabled: Some(false),
@@ -385,6 +411,77 @@ mod tests {
         assert!(!updated.watch_enabled);
         // exclude_globs unchanged
         assert!(updated.exclude_globs.is_empty());
+    }
+
+    #[test]
+    fn test_update_source_root_path() {
+        let old_dir = create_test_dir();
+        let new_dir = create_test_dir();
+        let db = test_db();
+        let created = db
+            .add_source(CreateSourceInput {
+                root_path: old_dir.path().to_string_lossy().to_string(),
+                include_globs: vec!["*.md".to_string()],
+                exclude_globs: vec![],
+                watch_enabled: true,
+            })
+            .unwrap();
+
+        let updated = db
+            .update_source(
+                &created.id,
+                UpdateSourceInput {
+                    root_path: Some(new_dir.path().to_string_lossy().to_string()),
+                    include_globs: None,
+                    exclude_globs: None,
+                    watch_enabled: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.id, created.id);
+        assert_eq!(
+            updated.root_path,
+            new_dir.path().to_string_lossy().to_string()
+        );
+        assert_eq!(updated.include_globs, vec!["*.md"]);
+        assert!(updated.watch_enabled);
+    }
+
+    #[test]
+    fn test_update_source_root_path_rejects_duplicate() {
+        let first_dir = create_test_dir();
+        let second_dir = create_test_dir();
+        let db = test_db();
+        let first = db
+            .add_source(CreateSourceInput {
+                root_path: first_dir.path().to_string_lossy().to_string(),
+                include_globs: vec![],
+                exclude_globs: vec![],
+                watch_enabled: true,
+            })
+            .unwrap();
+        db.add_source(CreateSourceInput {
+            root_path: second_dir.path().to_string_lossy().to_string(),
+            include_globs: vec![],
+            exclude_globs: vec![],
+            watch_enabled: true,
+        })
+        .unwrap();
+
+        let err = db
+            .update_source(
+                &first.id,
+                UpdateSourceInput {
+                    root_path: Some(second_dir.path().to_string_lossy().to_string()),
+                    include_globs: None,
+                    exclude_globs: None,
+                    watch_enabled: None,
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, CoreError::InvalidInput(_)));
     }
 
     #[test]
