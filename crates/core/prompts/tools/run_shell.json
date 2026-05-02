@@ -1,12 +1,12 @@
 {
   "name": "run_shell",
-  "description": "Execute a program with argv arguments. Does NOT invoke a shell interpreter, so shell metacharacters like `;`, `&&`, `|` are treated as literal arguments. In the default restricted mode, only whitelisted commands are allowed: python/python3, pip/pip3 (normalized to python -m pip), node/npm/npx, read-only git, and scoped filesystem commands like pwd/ls/cat/mkdir/cp/mv. If the user loosens shell access in Settings, arbitrary bare commands may be allowed, with optional per-call confirmation. Output is capped at 64 KB per stream. Default timeout 30s, max 300s. For Windows paths in JSON strings, escape backslashes (for example \"E:\\\\Starting\\\\script.py\") or use forward slashes.",
+  "description": "Execute a program with argv arguments. Does NOT invoke a shell interpreter, so shell metacharacters like `;`, `&&`, `|` are treated as literal arguments. In the default restricted mode, only whitelisted commands are allowed: python/python3, pip/pip3 (normalized to python -m pip), node/npm/npx, read-only git, and scoped filesystem commands like pwd/ls/cat/mkdir/cp/mv. Simple filesystem commands are implemented natively by the app, so use them directly for listing, reading, creating directories, copying, and moving files instead of writing one-off Python snippets. Reserve Python for real scripts, structured document workflows, parsing/transforms, or operations that need libraries. If the user loosens shell access in Settings, arbitrary bare commands may be allowed, with optional per-call confirmation. Output is capped at 64 KB per stream. Default timeout 30s, max 300s. For Windows paths in JSON strings, escape backslashes (for example \"E:\\\\Starting\\\\script.py\") or use forward slashes.",
   "parameters": {
     "type": "object",
     "properties": {
       "program": {
         "type": "string",
-        "description": "Program to execute. In restricted mode it must be one of: python, python3, pip, pip3, node, npm, npx, git, pwd, ls, cat, mkdir, cp, mv. pip/pip3 are normalized to python/python3 -m pip. Simple aliases copy->cp and move->mv are also accepted. In less-restricted shell access modes, any bare command name may be allowed. No shell interpreter is invoked automatically."
+        "description": "Program to execute. In restricted mode it must be one of: python, python3, pip, pip3, node, npm, npx, git, pwd, ls, cat, mkdir, cp, mv. pwd/ls/cat/mkdir/cp/mv run natively inside the app and work even when the OS has no matching external binary. pip/pip3 are normalized to python/python3 -m pip. Simple aliases copy->cp and move->mv are also accepted. In less-restricted shell access modes, any bare command name may be allowed. No shell interpreter is invoked automatically."
       },
       "args": {
         "type": "array",
