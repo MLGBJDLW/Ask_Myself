@@ -651,6 +651,8 @@ export const ko: TranslationKeys = {
   'chat.errorOccurred': '오류가 발생했습니다',
   'chat.dismiss': '닫기',
   'chat.userMessage': 'User message',
+  'chat.steeringLabel': 'Steering',
+  'chat.steeringMessage': 'Steering message',
   'chat.assistantResponse': 'Assistant response',
   'chat.messageArea': 'Chat messages',
   'chat.edit': 'Edit',

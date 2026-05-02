@@ -79,7 +79,11 @@ test.beforeEach(async ({ page }) => {
       updatedAt: nowIso,
     };
 
-    const appendUserMessage = (conversationId: string, content: string) => {
+    const appendUserMessage = (
+      conversationId: string,
+      content: string,
+      artifacts: Record<string, unknown> | null = null,
+    ) => {
       messages.push({
         id: nextId('m-user'),
         conversationId,
@@ -87,7 +91,7 @@ test.beforeEach(async ({ page }) => {
         content,
         toolCallId: null,
         toolCalls: [],
-        artifacts: null,
+        artifacts,
         tokenCount: 0,
         createdAt: new Date().toISOString(),
         sortOrder: messages.length,
@@ -180,7 +184,7 @@ test.beforeEach(async ({ page }) => {
           const conversationId = String(args.conversationId ?? '');
           const message = String(args.message ?? '');
           diagnostics.steerCalls.push({ conversationId, message });
-          appendUserMessage(conversationId, message);
+          appendUserMessage(conversationId, message, { kind: 'steering' });
 
           setTimeout(() => {
             emitEvent('agent:event', {
@@ -268,6 +272,7 @@ test('sends steering while an agent stream is running without stopping it', asyn
   await textbox.fill('focus on edge cases instead');
   await page.getByTestId('chat-send').click();
 
+  await expect(page.getByText('Steering', { exact: true })).toBeVisible();
   await expect(page.getByText('focus on edge cases instead')).toBeVisible();
   await expect(page.getByText('Adjusted answer after steering.')).toBeVisible();
 

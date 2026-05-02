@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { rehypePlugins } from './markdownComponents';
-import { Check, X } from 'lucide-react';
+import { Check, CornerDownRight, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { markdownComponents, preprocessFilePaths, preprocessCitations, CitationContext } from './markdownComponents';
 import { extractChunkCitations, preprocessChunkCitations, preprocessInlineCitations } from '../../lib/citationParser';
@@ -41,6 +41,18 @@ function basename(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
   const lastSep = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
   return lastSep === -1 ? normalized : normalized.slice(lastSep + 1);
+}
+
+function isSteeringMessage(msg: ConversationMessage): boolean {
+  if (msg.role !== 'user') return false;
+  if (msg.id.startsWith('temp-steer-')) return true;
+  const artifacts = msg.artifacts;
+  return Boolean(
+    artifacts &&
+      !Array.isArray(artifacts) &&
+      typeof artifacts === 'object' &&
+      (artifacts as Record<string, unknown>).kind === 'steering',
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -160,7 +172,12 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
   }, [chunkIds, citationLookup, isUser, msg.content, t]);
 
   const timestamp = messageTimestamp(msg.createdAt, t);
-  const ariaLabel = isUser ? t('chat.userMessage') : t('chat.assistantResponse');
+  const steering = isSteeringMessage(msg);
+  const ariaLabel = steering
+    ? t('chat.steeringMessage')
+    : isUser
+      ? t('chat.userMessage')
+      : t('chat.assistantResponse');
 
   return (
     <motion.div
@@ -245,6 +262,12 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
             </div>
           ) : isUser ? (
             <>
+              {steering && (
+                <span className="mb-1 flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.12em] text-accent/80">
+                  <CornerDownRight className="h-3 w-3" />
+                  {t('chat.steeringLabel')}
+                </span>
+              )}
               <span className="whitespace-pre-wrap">{msg.content}</span>
               {msg.imageAttachments && msg.imageAttachments.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mt-1.5">

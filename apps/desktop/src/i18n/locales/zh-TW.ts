@@ -649,6 +649,8 @@ export const zhTW: TranslationKeys = {
   'chat.errorOccurred': '發生錯誤',
   'chat.dismiss': '關閉',
   'chat.userMessage': 'User message',
+  'chat.steeringLabel': '補充指令',
+  'chat.steeringMessage': '執行中補充訊息',
   'chat.assistantResponse': 'Assistant response',
   'chat.messageArea': 'Chat messages',
   'chat.edit': 'Edit',

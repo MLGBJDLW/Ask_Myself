@@ -651,6 +651,8 @@ export const pt: TranslationKeys = {
   'chat.errorOccurred': 'Ocorreu um erro',
   'chat.dismiss': 'Dispensar',
   'chat.userMessage': 'User message',
+  'chat.steeringLabel': 'Steering',
+  'chat.steeringMessage': 'Steering message',
   'chat.assistantResponse': 'Assistant response',
   'chat.messageArea': 'Chat messages',
   'chat.edit': 'Edit',

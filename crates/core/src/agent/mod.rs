@@ -1002,7 +1002,7 @@ impl AgentExecutor {
                     content: text.clone(),
                     tool_call_id: None,
                     tool_calls: vec![],
-                    artifacts: None,
+                    artifacts: Some(serde_json::json!({ "kind": "steering" })),
                     token_count: estimate_tokens_for_model(ctx.model, &text),
                     created_at: String::new(),
                     sort_order: *ctx.sort_order,

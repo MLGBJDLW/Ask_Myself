@@ -651,6 +651,8 @@ export const zhCN: TranslationKeys = {
   'chat.errorOccurred': '发生错误',
   'chat.dismiss': '关闭',
   'chat.userMessage': '用户消息',
+  'chat.steeringLabel': '补充指令',
+  'chat.steeringMessage': '运行中补充消息',
   'chat.assistantResponse': '助手回复',
   'chat.messageArea': '聊天消息',
   'chat.edit': '编辑',

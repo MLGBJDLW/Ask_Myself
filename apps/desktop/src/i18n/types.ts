@@ -651,6 +651,8 @@ export interface TranslationKeys {
   'chat.errorOccurred': string;
   'chat.dismiss': string;
   'chat.userMessage': string;
+  'chat.steeringLabel': string;
+  'chat.steeringMessage': string;
   'chat.assistantResponse': string;
   'chat.messageArea': string;
   'chat.edit': string;

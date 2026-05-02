@@ -649,6 +649,8 @@ export const ja: TranslationKeys = {
   'chat.errorOccurred': 'エラーが発生しました',
   'chat.dismiss': '閉じる',
   'chat.userMessage': 'User message',
+  'chat.steeringLabel': 'Steering',
+  'chat.steeringMessage': 'Steering message',
   'chat.assistantResponse': 'Assistant response',
   'chat.messageArea': 'Chat messages',
   'chat.edit': 'Edit',

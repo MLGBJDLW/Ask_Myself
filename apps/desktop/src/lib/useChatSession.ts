@@ -82,6 +82,44 @@ function mergeImageAttachments(
   });
 }
 
+function isSteeringMessage(message: ConversationMessage): boolean {
+  if (message.role !== 'user') return false;
+  if (message.id.startsWith('temp-steer-')) return true;
+  const artifacts = message.artifacts;
+  return Boolean(
+    artifacts &&
+      !Array.isArray(artifacts) &&
+      typeof artifacts === 'object' &&
+      (artifacts as Record<string, unknown>).kind === 'steering',
+  );
+}
+
+function mergeLocalMessageState(
+  prev: ConversationMessage[],
+  next: ConversationMessage[],
+): ConversationMessage[] {
+  const merged = mergeImageAttachments(prev, next);
+  const nextUserContent = new Set(
+    merged.filter((m) => m.role === 'user').map((m) => m.content.trim()),
+  );
+  const preservedSteering = prev.filter(
+    (m) => isSteeringMessage(m) && !nextUserContent.has(m.content.trim()),
+  );
+
+  if (preservedSteering.length === 0) {
+    return merged;
+  }
+
+  const maxSortOrder = merged.reduce((max, msg) => Math.max(max, msg.sortOrder), -1);
+  return [
+    ...merged,
+    ...preservedSteering.map((msg, index) => ({
+      ...msg,
+      sortOrder: maxSortOrder + index + 1,
+    })),
+  ];
+}
+
 function normalizeUsage(usage: UsageTotal): UsageTotal {
   const promptTokens = sanitizeNumber(usage.promptTokens);
   const completionTokens = sanitizeNumber(usage.completionTokens);
@@ -603,7 +641,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         // Safety net (also covers pre-Tier-B persisted rows): preserve any
         // imageAttachments present in prior in-memory state when the backend
         // response lacks them (e.g. optimistic temp-* ids or legacy rows).
-        setMessagesForConversation(activeId, (prev) => mergeImageAttachments(prev, msgs));
+        setMessagesForConversation(activeId, (prev) => mergeLocalMessageState(prev, msgs));
         setTurnsForConversation(activeId, conversationTurns);
         setTaskRunsForConversation(activeId, agentTaskRuns);
         setConversations((prev) => {
@@ -664,7 +702,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           // imageAttachments present in prior in-memory state when the backend
           // response lacks them (e.g. optimistic temp-* ids or legacy rows).
           setMessagesForConversation(completedConversationId, (prev) =>
-            mergeImageAttachments(prev, msgs),
+            mergeLocalMessageState(prev, msgs),
           );
           setTurnsForConversation(completedConversationId, conversationTurns);
           setTaskRunsForConversation(completedConversationId, agentTaskRuns);
@@ -944,7 +982,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           content,
           toolCallId: null,
           toolCalls: [],
-          artifacts: null,
+          artifacts: { kind: 'steering', delivery: 'pending' },
           tokenCount: 0,
           createdAt: new Date().toISOString(),
           sortOrder: currentMessages.length,
@@ -957,6 +995,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
         try {
           await api.agentSteer(steeringConversationId, content);
+          setMessagesForConversation(steeringConversationId, (prev) =>
+            prev.map((m) =>
+              m.id === optimisticId
+                ? { ...m, artifacts: { kind: 'steering', delivery: 'accepted' } }
+                : m,
+            ),
+          );
         } catch (e) {
           setMessagesForConversation(steeringConversationId, (prev) =>
             prev.filter((m) => m.id !== optimisticId),
@@ -1133,7 +1178,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         api.getConversationTurns(activeId),
         api.getAgentTaskRuns(activeId),
       ]);
-      setMessagesForConversation(activeId, msgs);
+      setMessagesForConversation(activeId, (prev) => mergeLocalMessageState(prev, msgs));
       setTurnsForConversation(activeId, conversationTurns);
       setTaskRunsForConversation(activeId, agentTaskRuns);
     } catch { /* ignore */ }
