@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.3...nexa-monorepo-v0.3.4) (2026-05-02)
+
+
+### Features
+
+* **chat:** restore compact from command palette ([c96ffcf](https://github.com/MLGBJDLW/Nexa/commit/c96ffcf0b5244af79771a279d33a8a06ac6b506a))
+* **sources:** allow refreshing source root paths ([7967fbe](https://github.com/MLGBJDLW/Nexa/commit/7967fbe4b66da8945a22f97252ee41de74aa74de))
+* **tools:** run simple filesystem commands natively ([933ec30](https://github.com/MLGBJDLW/Nexa/commit/933ec30177baebdd4d038ea28d0fdf19bf4d9964))
+
+
+### Bug Fixes
+
+* **chat:** make steering messages visible and durable ([84c4777](https://github.com/MLGBJDLW/Nexa/commit/84c47770c320b149e621a078cddce0c81d0b2dec))
+* **tools:** make edit_file tolerant of common edit shapes ([4e9b273](https://github.com/MLGBJDLW/Nexa/commit/4e9b2734fed2d15956be97e6f5baa15e53721d21))
+
 ## [0.3.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.2...nexa-monorepo-v0.3.3) (2026-05-01)
 
 
