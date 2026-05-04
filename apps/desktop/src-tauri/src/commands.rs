@@ -20,9 +20,9 @@ use nexa_core::approval::{
 };
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
-    AgentConfig as DbAgentConfig, AgentTaskRun, AgentTaskRunEvent, CollectionContext, Conversation,
-    ConversationMessage, ConversationStats, ConversationTurn, CreateConversationInput,
-    ImageAttachment, SaveAgentConfigInput,
+    AgentConfig as DbAgentConfig, AgentSubtaskRun, AgentTaskRun, AgentTaskRunEvent,
+    CollectionContext, Conversation, ConversationMessage, ConversationStats, ConversationTurn,
+    CreateConversationInput, ImageAttachment, SaveAgentConfigInput,
 };
 use nexa_core::db::Database;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
@@ -317,6 +317,36 @@ fn record_and_emit_task_event(
         Ok(event) => emit_agent_task_event(ctx.app_handle, ctx.conversation_id, event),
         Err(err) => warn!("Failed to record task event for {}: {err}", ctx.task_run_id),
     }
+}
+
+fn build_final_task_artifacts(
+    previous_artifacts: Option<serde_json::Value>,
+    trace_artifacts: serde_json::Value,
+    subtask_runs: &[AgentSubtaskRun],
+) -> serde_json::Value {
+    let mut merged = match previous_artifacts {
+        Some(serde_json::Value::Object(map)) => map,
+        Some(previous) => {
+            let mut map = serde_json::Map::new();
+            map.insert("previous".to_string(), previous);
+            map
+        }
+        None => serde_json::Map::new(),
+    };
+    merged.insert(
+        "kind".to_string(),
+        serde_json::Value::String("agentTaskArtifacts".to_string()),
+    );
+    merged.insert(
+        "version".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(1)),
+    );
+    merged.insert("trace".to_string(), trace_artifacts);
+    merged.insert(
+        "subtasks".to_string(),
+        serde_json::to_value(subtask_runs).unwrap_or_else(|_| serde_json::Value::Array(vec![])),
+    );
+    serde_json::Value::Object(merged)
 }
 
 fn record_task_progress_for_agent_event(
@@ -2709,6 +2739,17 @@ pub async fn get_agent_task_run_events_cmd(
 }
 
 #[tauri::command]
+pub async fn get_agent_subtask_runs_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<AgentSubtaskRun>, String> {
+    state
+        .db
+        .list_agent_subtask_runs(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn update_conversation_collection_context_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -3668,6 +3709,7 @@ pub async fn agent_chat_cmd(
         db_config.subagent_allowed_tools.clone(),
         db_config.subagent_allowed_skill_ids.clone(),
         cancel_token.clone(),
+        Some(task_run.id.clone()),
     );
     tools.register(Box::new(SubagentTool::from_runtime(
         delegation_runtime.clone(),
@@ -4124,11 +4166,23 @@ pub async fn agent_chat_cmd(
 
         let turn_snapshot = db.get_conversation_turn(&turn_id).ok();
         let trace_artifacts = serde_json::json!({
-            "turnId": turn_id,
+            "turnId": &turn_id,
             "turnStatus": turn_snapshot.as_ref().map(|turn| turn.status.clone()),
             "routeKind": turn_snapshot.as_ref().and_then(|turn| turn.route_kind.clone()),
             "trace": turn_snapshot.as_ref().and_then(|turn| turn.trace.clone()),
         });
+        let previous_task_artifacts = db
+            .get_agent_task_run(&task_run_id)
+            .ok()
+            .and_then(|run| run.artifacts);
+        let subtask_runs = db
+            .list_agent_subtask_runs(&task_run_id)
+            .unwrap_or_else(|err| {
+                warn!("Failed to load subtask runs for {task_run_id}: {err}");
+                Vec::new()
+            });
+        let task_artifacts =
+            build_final_task_artifacts(previous_task_artifacts, trace_artifacts, &subtask_runs);
         let (task_status, task_summary, task_error): (&str, &str, Option<String>) = if timed_out {
             (
                 "timed_out",
@@ -4150,7 +4204,7 @@ pub async fn agent_chat_cmd(
             task_status,
             Some(task_summary),
             task_error.as_deref(),
-            Some(&trace_artifacts),
+            Some(&task_artifacts),
         );
         let _ = db
             .record_agent_task_run_event(
@@ -4158,7 +4212,7 @@ pub async fn agent_chat_cmd(
                 "status",
                 task_summary,
                 Some(task_status),
-                Some(&trace_artifacts),
+                Some(&task_artifacts),
             )
             .map(|event| emit_agent_task_event(&handle, &conv_id, event));
         emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);

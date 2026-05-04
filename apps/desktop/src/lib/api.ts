@@ -26,6 +26,7 @@ import type {
   ConversationTurn,
   AgentTaskRun,
   AgentTaskRunEvent,
+  AgentSubtaskRun,
   ConversationStats,
   ConversationSearchResult,
   ImageAttachment,
@@ -442,6 +443,9 @@ export const getAgentTaskRuns = (conversationId: string) =>
 export const getAgentTaskRunEvents = (runId: string) =>
   invoke<AgentTaskRunEvent[]>('get_agent_task_run_events_cmd', { runId });
 
+export const getAgentSubtaskRuns = (runId: string) =>
+  invoke<AgentSubtaskRun[]>('get_agent_subtask_runs_cmd', { runId });
+
 export const deleteConversation = (id: string) =>
   invoke<void>('delete_conversation_cmd', { id });
 
@@ -496,6 +500,9 @@ export interface ProjectMemory {
   source: string;
   pinned: boolean;
   archived: boolean;
+  confidence?: number;
+  expiresAt?: string | null;
+  conflictStatus?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -506,6 +513,9 @@ export interface CreateProjectMemoryInput {
   content: string;
   pinned?: boolean | null;
   source?: string | null;
+  confidence?: number | null;
+  expiresAt?: string | null;
+  conflictStatus?: string | null;
 }
 
 export interface UpdateProjectMemoryInput {
@@ -514,6 +524,9 @@ export interface UpdateProjectMemoryInput {
   content?: string | null;
   pinned?: boolean | null;
   archived?: boolean | null;
+  confidence?: number | null;
+  expiresAt?: string | null;
+  conflictStatus?: string | null;
 }
 
 export const listProjectMemories = (projectId: string) =>

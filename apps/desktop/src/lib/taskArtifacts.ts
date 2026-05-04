@@ -47,20 +47,43 @@ export interface VerificationArtifact {
   updatedAt?: string | null;
 }
 
+export interface SubtaskRunArtifact {
+  id: string;
+  label: string;
+  role?: string | null;
+  status: string;
+  phase?: string | null;
+  task?: string | null;
+  result?: string | null;
+  errorMessage?: string | null;
+  tokenBudget?: number | null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
 }
 
+function asText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function normalizePlanArtifact(value: unknown): PlanArtifact | null {
   const record = asRecord(value);
-  if (!record || record.kind !== 'plan' || !Array.isArray(record.steps)) return null;
+  if (!record || !Array.isArray(record.steps)) return null;
+  const isClassicPlan = record.kind === 'plan';
+  const isTypedTaskPlan = typeof record.routeKind === 'string' && typeof record.version === 'number';
+  if (!isClassicPlan && !isTypedTaskPlan) return null;
 
   const steps: PlanStepArtifact[] = record.steps
     .map((step): PlanStepArtifact | null => {
       const item = asRecord(step);
       if (!item || typeof item.title !== 'string' || typeof item.status !== 'string') return null;
-      const status = item.status as PlanStepStatus;
+      const status = normalizePlanStepStatus(item.status);
       if (!['pending', 'in_progress', 'completed'].includes(status)) return null;
       return {
         id: typeof item.id === 'string' ? item.id : null,
@@ -89,6 +112,14 @@ function normalizePlanArtifact(value: unknown): PlanArtifact | null {
       : null,
     updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : null,
   };
+}
+
+function normalizePlanStepStatus(value: string): PlanStepStatus {
+  if (value === 'inProgress') return 'in_progress';
+  if (value === 'completed' || value === 'pending' || value === 'in_progress') {
+    return value;
+  }
+  return 'pending';
 }
 
 function normalizeVerificationArtifact(value: unknown): VerificationArtifact | null {
@@ -133,6 +164,78 @@ function normalizeVerificationArtifact(value: unknown): VerificationArtifact | n
       : null,
     updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : null,
   };
+}
+
+function normalizeSubtaskRun(value: unknown): SubtaskRunArtifact | null {
+  const record = asRecord(value);
+  if (!record) return null;
+
+  const input = asRecord(record.input);
+  const output = asRecord(record.output);
+  const outputRun = asRecord(output?.run);
+  const outputJudgement = asRecord(output?.judgement);
+  const directRun = record.kind === 'subagent_result' || record.status === 'done' ? record : null;
+  const run = outputRun ?? outputJudgement ?? directRun;
+
+  const id =
+    asText(record.id) ??
+    asText(input?.callLabel) ??
+    asText(run?.id) ??
+    asText(run?.task) ??
+    asText(record.label);
+  const label =
+    asText(record.label) ??
+    asText(input?.task) ??
+    asText(run?.task) ??
+    asText(run?.summary) ??
+    id;
+  if (!id || !label) return null;
+
+  const rawStatus =
+    asText(record.status) ??
+    asText(run?.status) ??
+    (record.isError === true || run?.isError === true ? 'failed' : null) ??
+    'completed';
+  const status = rawStatus === 'done' ? 'completed' : rawStatus === 'error' ? 'failed' : rawStatus;
+  const role =
+    asText(record.role) ??
+    asText(input?.roleName) ??
+    asText(input?.role) ??
+    asText(run?.roleName) ??
+    asText(run?.role);
+
+  return {
+    id,
+    label,
+    role,
+    status,
+    phase: asText(record.phase),
+    task: asText(input?.task) ?? asText(run?.task),
+    result: asText(run?.result) ?? asText(run?.summary),
+    errorMessage: asText(record.errorMessage) ?? asText(run?.errorMessage) ?? asText(output?.error),
+    tokenBudget: asNumber(record.tokenBudget) ?? asNumber(input?.reservedTokens),
+  };
+}
+
+function normalizeSubtaskArtifacts(value: unknown): SubtaskRunArtifact[] | null {
+  if (Array.isArray(value)) {
+    const subtasks = value
+      .map(normalizeSubtaskRun)
+      .filter((subtask): subtask is SubtaskRunArtifact => Boolean(subtask));
+    return subtasks.length ? subtasks : null;
+  }
+
+  const record = asRecord(value);
+  if (!record) return null;
+
+  if (Array.isArray(record.subtasks)) {
+    return normalizeSubtaskArtifacts(record.subtasks);
+  }
+  if (Array.isArray(record.runs)) {
+    return normalizeSubtaskArtifacts(record.runs);
+  }
+  const single = normalizeSubtaskRun(record);
+  return single ? [single] : null;
 }
 
 function extractNestedArtifact<T>(
@@ -182,10 +285,17 @@ export function extractVerificationArtifact(value: unknown): VerificationArtifac
   return extractNestedArtifact(value, normalizeVerificationArtifact);
 }
 
+export function extractSubtaskArtifacts(value: unknown): SubtaskRunArtifact[] {
+  return extractNestedArtifact(value, normalizeSubtaskArtifacts) ?? [];
+}
+
 export function findLatestPlanArtifact(
   messages: ConversationMessage[],
   toolCalls: ToolCallEvent[],
+  taskPlan?: unknown,
 ): PlanArtifact | null {
+  const taskRunPlan = extractPlanArtifact(taskPlan);
+  if (taskRunPlan) return taskRunPlan;
   for (let i = toolCalls.length - 1; i >= 0; i -= 1) {
     const artifact = extractPlanArtifact(toolCalls[i].artifacts);
     if (artifact) return artifact;
@@ -200,7 +310,10 @@ export function findLatestPlanArtifact(
 export function findLatestVerificationArtifact(
   messages: ConversationMessage[],
   toolCalls: ToolCallEvent[],
+  taskArtifacts?: unknown,
 ): VerificationArtifact | null {
+  const taskRunVerification = extractVerificationArtifact(taskArtifacts);
+  if (taskRunVerification) return taskRunVerification;
   for (let i = toolCalls.length - 1; i >= 0; i -= 1) {
     const artifact = extractVerificationArtifact(toolCalls[i].artifacts);
     if (artifact) return artifact;
@@ -210,4 +323,22 @@ export function findLatestVerificationArtifact(
     if (artifact) return artifact;
   }
   return null;
+}
+
+export function findLatestSubtaskArtifacts(
+  messages: ConversationMessage[],
+  toolCalls: ToolCallEvent[],
+  taskArtifacts?: unknown,
+): SubtaskRunArtifact[] {
+  const taskRunSubtasks = extractSubtaskArtifacts(taskArtifacts);
+  if (taskRunSubtasks.length > 0) return taskRunSubtasks;
+  for (let i = toolCalls.length - 1; i >= 0; i -= 1) {
+    const artifact = extractSubtaskArtifacts(toolCalls[i].artifacts);
+    if (artifact.length > 0) return artifact;
+  }
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const artifact = extractSubtaskArtifacts(messages[i].artifacts);
+    if (artifact.length > 0) return artifact;
+  }
+  return [];
 }

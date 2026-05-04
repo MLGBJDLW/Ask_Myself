@@ -1,7 +1,13 @@
-import { AlertTriangle, CheckCircle2, Circle, ClipboardList, Loader2, ShieldCheck, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Circle, ClipboardList, GitBranch, Loader2, ShieldCheck, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from '../../i18n';
-import type { PlanArtifact, PlanStepArtifact, VerificationArtifact, VerificationCheckArtifact } from '../../lib/taskArtifacts';
+import type {
+  PlanArtifact,
+  PlanStepArtifact,
+  SubtaskRunArtifact,
+  VerificationArtifact,
+  VerificationCheckArtifact,
+} from '../../lib/taskArtifacts';
 
 function derivePlanCounts(plan: PlanArtifact) {
   const total = plan.steps.length;
@@ -52,6 +58,31 @@ function getVerificationCounts(verification: VerificationArtifact) {
   };
 }
 
+function getSubtaskCounts(subtasks: SubtaskRunArtifact[]) {
+  return {
+    total: subtasks.length,
+    completed: subtasks.filter(subtask => subtask.status === 'completed').length,
+    failed: subtasks.filter(subtask => subtask.status === 'failed').length,
+    running: subtasks.filter(subtask => subtask.status === 'running').length,
+    queued: subtasks.filter(subtask => subtask.status === 'queued').length,
+  };
+}
+
+function subtaskStatusLabel(status: string, t: ReturnType<typeof useTranslation>['t']) {
+  switch (status) {
+    case 'queued':
+      return t('chat.taskRunQueued');
+    case 'running':
+      return t('chat.taskRunRunning');
+    case 'failed':
+      return t('chat.taskRunFailed');
+    case 'completed':
+      return t('chat.taskRunCompleted');
+    default:
+      return status;
+  }
+}
+
 function PlanStepRow({ step }: { step: PlanStepArtifact }) {
   let icon = <Circle className="h-3 w-3 text-text-tertiary" />;
   let tone = 'text-text-secondary';
@@ -98,6 +129,44 @@ function VerificationRow({ check }: { check: VerificationCheckArtifact }) {
         <div className={`text-xs ${tone}`}>{check.name}</div>
         {check.details && (
           <div className="mt-0.5 text-[11px] text-text-tertiary">{check.details}</div>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function SubtaskRow({ subtask }: { subtask: SubtaskRunArtifact }) {
+  const { t } = useTranslation();
+  let icon = <Circle className="h-3 w-3 text-text-tertiary" />;
+  let tone = 'text-text-secondary';
+
+  if (subtask.status === 'completed') {
+    icon = <CheckCircle2 className="h-3 w-3 text-success" />;
+    tone = 'text-text-primary';
+  } else if (subtask.status === 'running') {
+    icon = <Loader2 className="h-3 w-3 animate-spin text-accent" />;
+    tone = 'text-text-primary';
+  } else if (subtask.status === 'failed') {
+    icon = <XCircle className="h-3 w-3 text-danger" />;
+    tone = 'text-text-primary';
+  }
+
+  return (
+    <li className="flex items-start gap-1.5">
+      <span className="mt-0.5 shrink-0">{icon}</span>
+      <div className="min-w-0 flex-1">
+        <div className={`text-xs ${tone}`}>{subtask.task || subtask.label}</div>
+        <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-text-tertiary">
+          {subtask.role && <span>{subtask.role}</span>}
+          <span>{subtaskStatusLabel(subtask.status, t)}</span>
+          {subtask.tokenBudget != null && (
+            <span>{t('chat.subtasksTokenBudget', { count: subtask.tokenBudget.toLocaleString() })}</span>
+          )}
+        </div>
+        {(subtask.errorMessage || subtask.result) && (
+          <div className="mt-0.5 line-clamp-2 text-[11px] text-text-tertiary">
+            {subtask.errorMessage || subtask.result}
+          </div>
         )}
       </div>
     </li>
@@ -169,6 +238,79 @@ export function PlanPanel({
           onClick={() => setShowAll(prev => !prev)}
         >
           {showAll ? t('chat.showLess') : t('chat.showAllSteps', { count: String(plan.steps.length) })}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function SubtaskPanel({
+  subtasks,
+  compact = false,
+}: {
+  subtasks: SubtaskRunArtifact[];
+  compact?: boolean;
+}) {
+  const { t } = useTranslation();
+  const [showAll, setShowAll] = useState(false);
+  const counts = getSubtaskCounts(subtasks);
+
+  if (subtasks.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className={`rounded-lg border border-border/70 bg-surface-1/70 ${compact ? 'px-2 py-1.5' : 'px-3 py-2.5'}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <GitBranch className="h-3.5 w-3.5 text-accent" />
+            <span className="text-[10px] font-medium uppercase tracking-[0.16em] text-text-tertiary">
+              {t('chat.subtasksLabel')}
+            </span>
+          </div>
+          <div className="mt-0.5 text-xs font-medium text-text-primary">
+            {t('chat.subtasksDefaultSummary')}
+          </div>
+        </div>
+        <div className="shrink-0 rounded-full border border-border/70 bg-surface-0/80 px-2 py-1 text-[11px] tabular-nums text-text-secondary">
+          {counts.completed}/{counts.total}
+        </div>
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-text-tertiary">
+        <span className="rounded-full border border-border/70 bg-surface-0/80 px-2 py-1">
+          {t('chat.subtasksCompletedCount', { count: String(counts.completed) })}
+        </span>
+        {counts.running > 0 && (
+          <span className="rounded-full border border-border/70 bg-surface-0/80 px-2 py-1">
+            {t('chat.subtasksRunningCount', { count: String(counts.running) })}
+          </span>
+        )}
+        {counts.queued > 0 && (
+          <span className="rounded-full border border-border/70 bg-surface-0/80 px-2 py-1">
+            {t('chat.subtasksQueuedCount', { count: String(counts.queued) })}
+          </span>
+        )}
+        {counts.failed > 0 && (
+          <span className="rounded-full border border-danger/30 bg-danger/10 px-2 py-1 text-danger">
+            {t('chat.subtasksFailedCount', { count: String(counts.failed) })}
+          </span>
+        )}
+      </div>
+
+      <ul className="mt-2 max-h-[150px] space-y-1.5 overflow-y-auto">
+        {(showAll ? subtasks : subtasks.slice(0, 3)).map((subtask, index) => (
+          <SubtaskRow key={subtask.id || `${subtask.label}-${index}`} subtask={subtask} />
+        ))}
+      </ul>
+      {subtasks.length > 3 && (
+        <button
+          type="button"
+          className="mt-1 text-[11px] text-accent hover:underline"
+          onClick={() => setShowAll(prev => !prev)}
+        >
+          {showAll ? t('chat.showLess') : t('chat.showAllSubtasks', { count: String(subtasks.length) })}
         </button>
       )}
     </div>

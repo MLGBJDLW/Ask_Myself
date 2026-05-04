@@ -81,6 +81,23 @@ export interface AgentTaskRunEvent {
   createdAt: string;
 }
 
+export interface AgentSubtaskRun {
+  id: string;
+  parentRunId: string;
+  label: string;
+  role: string;
+  status: string;
+  phase: string;
+  input?: Record<string, unknown> | unknown[] | null;
+  output?: Record<string, unknown> | unknown[] | null;
+  errorMessage?: string | null;
+  tokenBudget?: number | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
 export interface ToolCallRequest {
   id: string;
   name: string;

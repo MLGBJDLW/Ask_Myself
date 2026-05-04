@@ -247,6 +247,7 @@ fn main() {
             commands::get_conversation_turns_cmd,
             commands::get_agent_task_runs_cmd,
             commands::get_agent_task_run_events_cmd,
+            commands::get_agent_subtask_runs_cmd,
             commands::update_conversation_collection_context_cmd,
             commands::update_conversation_persona_cmd,
             commands::update_conversation_model_cmd,

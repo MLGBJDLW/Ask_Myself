@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
+use log::warn;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 
@@ -500,6 +501,7 @@ pub struct DelegationRuntime {
     base_config: AgentConfig,
     allowed_tools: Option<Vec<String>>,
     allowed_skill_ids: Option<Vec<String>>,
+    parent_task_run_id: Option<String>,
     tool_registry: Arc<StdMutex<Option<ToolRegistry>>>,
     budget: SubagentBudgetController,
     cancel_token: CancellationToken,
@@ -610,6 +612,7 @@ impl DelegationRuntime {
         allowed_tools: Option<Vec<String>>,
         allowed_skill_ids: Option<Vec<String>>,
         cancel_token: CancellationToken,
+        parent_task_run_id: Option<String>,
     ) -> Self {
         let budget = SubagentBudgetController::new(&base_config);
         Self {
@@ -617,6 +620,7 @@ impl DelegationRuntime {
             base_config,
             allowed_tools,
             allowed_skill_ids,
+            parent_task_run_id,
             tool_registry: Arc::new(StdMutex::new(None)),
             budget,
             cancel_token,
@@ -648,6 +652,7 @@ impl DelegationRuntime {
             base_config: self.base_config.clone(),
             allowed_tools: self.allowed_tools.clone(),
             allowed_skill_ids: self.allowed_skill_ids.clone(),
+            parent_task_run_id: self.parent_task_run_id.clone(),
             tool_registry: Arc::clone(&self.tool_registry),
             budget: self.budget.clone(),
             cancel_token,
@@ -660,7 +665,7 @@ impl DelegationRuntime {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct SpawnSubagentArgs {
     task: String,
     #[serde(default)]
@@ -751,7 +756,7 @@ struct JudgeCandidateArgs {
     concerns: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct JudgeSubagentResultsArgs {
     candidates: Vec<JudgeCandidateArgs>,
     #[serde(default)]
@@ -820,6 +825,85 @@ struct SubagentRunArtifact {
     source_scope_applied: bool,
     is_error: bool,
     error_message: Option<String>,
+}
+
+fn subtask_role_label(
+    args: &SpawnSubagentArgs,
+    role_profile: Option<&SubagentRoleProfile>,
+    fallback: &str,
+) -> String {
+    role_profile
+        .map(|profile| profile.label.to_string())
+        .or_else(|| args.role.as_ref().map(|role| role.trim().to_string()))
+        .filter(|role| !role.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn subtask_input_payload(
+    kind: &str,
+    call_label: &str,
+    worker_id: Option<&str>,
+    args: &SpawnSubagentArgs,
+    role_profile: Option<&SubagentRoleProfile>,
+    effective_source_scope: &[String],
+    effective_allowed_tools: &[String],
+    applied_skill_refs: &[AppliedSkillRef],
+    reserved_tokens: u32,
+    timeout_secs: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "kind": kind,
+        "callLabel": call_label,
+        "workerId": worker_id,
+        "task": &args.task,
+        "roleId": role_profile.map(|profile| profile.id),
+        "roleName": role_profile.map(|profile| profile.label),
+        "role": &args.role,
+        "context": &args.context,
+        "expectedOutput": &args.expected_output,
+        "acceptanceCriteria": &args.acceptance_criteria,
+        "evidenceChunkIds": &args.evidence_chunk_ids,
+        "requestedSourceScope": &args.source_ids,
+        "effectiveSourceScope": effective_source_scope,
+        "requestedAllowedTools": &args.allowed_tools,
+        "allowedTools": effective_allowed_tools,
+        "allowedSkills": applied_skill_refs,
+        "parallelGroup": &args.parallel_group,
+        "deliverableStyle": &args.deliverable_style,
+        "returnSections": &args.return_sections,
+        "maxIterations": args.max_iterations,
+        "timeoutSecs": timeout_secs,
+        "reservedTokens": reserved_tokens,
+    })
+}
+
+fn record_subtask_event(
+    db: &Database,
+    parent_run_id: &str,
+    label: &str,
+    status: &str,
+    payload: Option<&serde_json::Value>,
+) {
+    if let Err(err) =
+        db.record_agent_task_run_event(parent_run_id, "subtask", label, Some(status), payload)
+    {
+        warn!("Failed to record subtask event for {parent_run_id}: {err}");
+    }
+}
+
+fn finish_subtask_run_best_effort(
+    db: &Database,
+    subtask_run_id: Option<&str>,
+    status: &str,
+    output: Option<&serde_json::Value>,
+    error_message: Option<&str>,
+) {
+    if let Some(id) = subtask_run_id {
+        if let Err(err) = db.finish_agent_subtask_run(id, status, output, error_message) {
+            warn!("Failed to finish subtask run {id}: {err}");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1486,10 +1570,103 @@ async fn run_subagent_once(
         &evidence_handoff,
     );
     let reserved_tokens = estimate_reserved_tokens(&config, &request_text, &tools);
-    let _permit = runtime
+    let subtask_input = subtask_input_payload(
+        "subagent_run",
+        &call_label,
+        worker_id.as_deref(),
+        &args,
+        role_profile,
+        &effective_source_scope,
+        &effective_allowed_tools,
+        &applied_skill_refs,
+        reserved_tokens,
+        timeout_secs,
+    );
+    let parent_task_run_id = runtime.parent_task_run_id.clone();
+    let subtask_run_id = if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+        let role_label = subtask_role_label(&args, role_profile, "Subagent");
+        let subtask = db.create_agent_subtask_run(
+            parent_run_id,
+            &call_label,
+            &role_label,
+            Some(&subtask_input),
+            Some(reserved_tokens),
+        )?;
+        record_subtask_event(
+            &db,
+            parent_run_id,
+            &format!("Subagent queued: {call_label}"),
+            "queued",
+            Some(&serde_json::json!({
+                "subtaskRunId": &subtask.id,
+                "callLabel": &call_label,
+                "role": role_label,
+                "task": &args.task,
+                "reservedTokens": reserved_tokens,
+            })),
+        );
+        Some(subtask.id)
+    } else {
+        None
+    };
+    let _permit = match runtime
         .budget
         .begin_call(&call_label, reserved_tokens)
-        .await?;
+        .await
+    {
+        Ok(permit) => {
+            if let Some(subtask_id) = subtask_run_id.as_deref() {
+                if let Err(err) = db.mark_agent_subtask_run_started(subtask_id, "running") {
+                    finish_subtask_run_best_effort(
+                        &db,
+                        Some(subtask_id),
+                        "failed",
+                        None,
+                        Some(&err.to_string()),
+                    );
+                    return Err(err);
+                }
+            }
+            if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+                record_subtask_event(
+                    &db,
+                    parent_run_id,
+                    &format!("Subagent started: {call_label}"),
+                    "running",
+                    Some(&serde_json::json!({
+                        "subtaskRunId": &subtask_run_id,
+                        "callLabel": &call_label,
+                        "reservedTokens": reserved_tokens,
+                    })),
+                );
+            }
+            permit
+        }
+        Err(err) => {
+            let output = serde_json::json!({
+                "kind": "subagent_run_error",
+                "callLabel": &call_label,
+                "error": err.to_string(),
+            });
+            finish_subtask_run_best_effort(
+                &db,
+                subtask_run_id.as_deref(),
+                "failed",
+                Some(&output),
+                Some(&err.to_string()),
+            );
+            if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+                record_subtask_event(
+                    &db,
+                    parent_run_id,
+                    &format!("Subagent failed: {call_label}"),
+                    "failed",
+                    Some(&output),
+                );
+            }
+            return Err(err);
+        }
+    };
 
     let executor = AgentExecutor::new(provider, tools, config)
         .with_cancel_token(worker_cancel_token.clone())
@@ -1597,7 +1774,35 @@ async fn run_subagent_once(
         .budget
         .finish_call(reserved_tokens, &capture.usage_total)
         .await;
-    let final_message = final_result?;
+    let final_message = match final_result {
+        Ok(message) => message,
+        Err(err) => {
+            let output = serde_json::json!({
+                "kind": "subagent_run_error",
+                "callLabel": &call_label,
+                "error": err.to_string(),
+                "usageTotal": capture.usage_total,
+                "toolEvents": capture.tool_events,
+            });
+            finish_subtask_run_best_effort(
+                &db,
+                subtask_run_id.as_deref(),
+                "failed",
+                Some(&output),
+                Some(&err.to_string()),
+            );
+            if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+                record_subtask_event(
+                    &db,
+                    parent_run_id,
+                    &format!("Subagent failed: {call_label}"),
+                    "failed",
+                    Some(&output),
+                );
+            }
+            return Err(err);
+        }
+    };
 
     let result_text = final_message.text_content().trim().to_string();
     let result_text = if result_text.is_empty() {
@@ -1611,7 +1816,7 @@ async fn run_subagent_once(
             .as_deref()
             .is_some_and(|ids| !ids.is_empty());
 
-    Ok(SubagentRunArtifact {
+    let run = SubagentRunArtifact {
         id: worker_id.unwrap_or(call_label),
         status: "done".to_string(),
         task: args.task,
@@ -1642,7 +1847,29 @@ async fn run_subagent_once(
         source_scope_applied,
         is_error: false,
         error_message: None,
-    })
+    };
+    let output = serde_json::json!({
+        "kind": "subagent_run",
+        "run": &run,
+    });
+    finish_subtask_run_best_effort(
+        &db,
+        subtask_run_id.as_deref(),
+        "completed",
+        Some(&output),
+        None,
+    );
+    if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+        record_subtask_event(
+            &db,
+            parent_run_id,
+            &format!("Subagent completed: {}", run.id),
+            "completed",
+            Some(&output),
+        );
+    }
+
+    Ok(run)
 }
 
 fn summarize_subagent_run(run: &SubagentRunArtifact) -> String {
@@ -2331,7 +2558,7 @@ impl Tool for JudgeSubagentResultsTool {
         &self,
         call_id: &str,
         arguments: &str,
-        _db: &Database,
+        db: &Database,
         _source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let mut args: JudgeSubagentResultsArgs = serde_json::from_str(arguments).map_err(|e| {
@@ -2362,11 +2589,105 @@ impl Tool for JudgeSubagentResultsTool {
         let reserved_tokens = estimate_tokens_for_model(&model, &system_prompt)
             .saturating_add(estimate_tokens_for_model(&model, &user_prompt))
             .saturating_add(1_200);
-        let _permit = self
+        let subtask_input = serde_json::json!({
+            "kind": "subagent_judgement",
+            "callLabel": call_id,
+            "task": &args.task,
+            "rubric": &args.rubric,
+            "decisionMode": &args.decision_mode,
+            "requiredWinnerCount": args.required_winner_count,
+            "expectedOutput": &args.expected_output,
+            "parallelGroup": &args.parallel_group,
+            "candidateCount": args.candidates.len(),
+            "candidateIds": args.candidates.iter().map(|candidate| candidate.id.as_str()).collect::<Vec<_>>(),
+            "model": &model,
+            "reservedTokens": reserved_tokens,
+        });
+        let parent_task_run_id = self.runtime.parent_task_run_id.clone();
+        let subtask_run_id = if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+            let subtask = db.create_agent_subtask_run(
+                parent_run_id,
+                call_id,
+                "Adjudicator",
+                Some(&subtask_input),
+                Some(reserved_tokens),
+            )?;
+            record_subtask_event(
+                db,
+                parent_run_id,
+                &format!("Subagent judge queued: {call_id}"),
+                "queued",
+                Some(&serde_json::json!({
+                    "subtaskRunId": &subtask.id,
+                    "callLabel": call_id,
+                    "candidateCount": args.candidates.len(),
+                    "reservedTokens": reserved_tokens,
+                })),
+            );
+            Some(subtask.id)
+        } else {
+            None
+        };
+        let _permit = match self
             .runtime
             .budget
             .begin_call("judge_subagent_results", reserved_tokens)
-            .await?;
+            .await
+        {
+            Ok(permit) => {
+                if let Some(subtask_id) = subtask_run_id.as_deref() {
+                    if let Err(err) = db.mark_agent_subtask_run_started(subtask_id, "adjudicating")
+                    {
+                        finish_subtask_run_best_effort(
+                            db,
+                            Some(subtask_id),
+                            "failed",
+                            None,
+                            Some(&err.to_string()),
+                        );
+                        return Err(err);
+                    }
+                }
+                if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+                    record_subtask_event(
+                        db,
+                        parent_run_id,
+                        &format!("Subagent judge started: {call_id}"),
+                        "running",
+                        Some(&serde_json::json!({
+                            "subtaskRunId": &subtask_run_id,
+                            "callLabel": call_id,
+                            "reservedTokens": reserved_tokens,
+                        })),
+                    );
+                }
+                permit
+            }
+            Err(err) => {
+                let output = serde_json::json!({
+                    "kind": "subagent_judgement_error",
+                    "callLabel": call_id,
+                    "error": err.to_string(),
+                });
+                finish_subtask_run_best_effort(
+                    db,
+                    subtask_run_id.as_deref(),
+                    "failed",
+                    Some(&output),
+                    Some(&err.to_string()),
+                );
+                if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+                    record_subtask_event(
+                        db,
+                        parent_run_id,
+                        &format!("Subagent judge failed: {call_id}"),
+                        "failed",
+                        Some(&output),
+                    );
+                }
+                return Err(err);
+            }
+        };
         let request = CompletionRequest {
             model: model.clone(),
             messages: vec![
@@ -2387,9 +2708,31 @@ impl Tool for JudgeSubagentResultsTool {
         let response = tokio::select! {
             _ = judge_cancel_token.cancelled() => {
                 self.runtime.budget.release_reservation(reserved_tokens).await;
-                return Err(CoreError::Agent(
+                let err = CoreError::Agent(
                     "Delegated adjudication was cancelled by the parent turn.".into()
-                ));
+                );
+                let output = serde_json::json!({
+                    "kind": "subagent_judgement_error",
+                    "callLabel": call_id,
+                    "error": err.to_string(),
+                });
+                finish_subtask_run_best_effort(
+                    db,
+                    subtask_run_id.as_deref(),
+                    "failed",
+                    Some(&output),
+                    Some(&err.to_string()),
+                );
+                if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+                    record_subtask_event(
+                        db,
+                        parent_run_id,
+                        &format!("Subagent judge failed: {call_id}"),
+                        "failed",
+                        Some(&output),
+                    );
+                }
+                return Err(err);
             }
             result = tokio::time::timeout(Duration::from_secs(timeout_secs), provider.complete(&request)) => match result {
                 Ok(Ok(response)) => {
@@ -2398,14 +2741,57 @@ impl Tool for JudgeSubagentResultsTool {
                 }
                 Ok(Err(err)) => {
                     self.runtime.budget.release_reservation(reserved_tokens).await;
+                    let output = serde_json::json!({
+                        "kind": "subagent_judgement_error",
+                        "callLabel": call_id,
+                        "error": err.to_string(),
+                    });
+                    finish_subtask_run_best_effort(
+                        db,
+                        subtask_run_id.as_deref(),
+                        "failed",
+                        Some(&output),
+                        Some(&err.to_string()),
+                    );
+                    if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+                        record_subtask_event(
+                            db,
+                            parent_run_id,
+                            &format!("Subagent judge failed: {call_id}"),
+                            "failed",
+                            Some(&output),
+                        );
+                    }
                     return Err(err);
                 }
                 Err(_) => {
                     judge_cancel_token.cancel();
                     self.runtime.budget.release_reservation(reserved_tokens).await;
-                    return Err(CoreError::Agent(format!(
+                    let err = CoreError::Agent(format!(
                         "Delegated adjudication timed out after {timeout_secs}s."
-                    )));
+                    ));
+                    let output = serde_json::json!({
+                        "kind": "subagent_judgement_error",
+                        "callLabel": call_id,
+                        "error": err.to_string(),
+                    });
+                    finish_subtask_run_best_effort(
+                        db,
+                        subtask_run_id.as_deref(),
+                        "failed",
+                        Some(&output),
+                        Some(&err.to_string()),
+                    );
+                    if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+                        record_subtask_event(
+                            db,
+                            parent_run_id,
+                            &format!("Subagent judge failed: {call_id}"),
+                            "failed",
+                            Some(&output),
+                        );
+                    }
+                    return Err(err);
                 }
             }
         };
@@ -2458,12 +2844,33 @@ impl Tool for JudgeSubagentResultsTool {
             usage_total: response.usage,
             budget,
         };
+        let artifact_value = serde_json::to_value(&artifact).unwrap_or_default();
+        let output = serde_json::json!({
+            "kind": "subagent_judgement",
+            "judgement": &artifact,
+        });
+        finish_subtask_run_best_effort(
+            db,
+            subtask_run_id.as_deref(),
+            "completed",
+            Some(&output),
+            None,
+        );
+        if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+            record_subtask_event(
+                db,
+                parent_run_id,
+                &format!("Subagent judge completed: {call_id}"),
+                "completed",
+                Some(&output),
+            );
+        }
 
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: summary,
             is_error: false,
-            artifacts: Some(serde_json::to_value(artifact).unwrap_or_default()),
+            artifacts: Some(artifact_value),
         })
     }
 }
@@ -2486,6 +2893,7 @@ mod tests {
             None,
             None,
             CancellationToken::new(),
+            None,
         )
     }
 
