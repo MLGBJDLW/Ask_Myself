@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   FolderOpen,
   FolderPlus,
@@ -124,6 +124,7 @@ const EXCLUDE_PRESETS = [
 
 export function SourcesPage() {
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -624,7 +625,7 @@ export function SourcesPage() {
               <motion.div
                 key={source.id}
                 variants={listItem}
-                layout
+                layout="position"
                 exit={{ opacity: 0, x: -20, transition: { duration: 0.2 } }}
                 className="rounded-lg border border-border bg-surface-2 p-4 hover:border-border-hover transition-colors duration-fast"
               >
@@ -724,119 +725,134 @@ export function SourcesPage() {
                   </div>
                 </div>
 
-                {expanded && (
-                  <div className="mt-4 overflow-hidden rounded-lg border border-border bg-surface-1/60">
-                    <div className="flex flex-col gap-2 border-b border-border bg-surface-2/80 px-3 py-2.5 lg:flex-row lg:items-center lg:justify-between">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <FolderSearch size={15} className="shrink-0 text-accent" />
-                        <div className="min-w-0">
-                          <div className="truncate text-xs font-medium text-text-primary">数据源详情</div>
-                          <div className="truncate text-[11px] text-text-tertiary">{source.rootPath}</div>
+                <AnimatePresence initial={false}>
+                  {expanded && (
+                    <motion.div
+                      key="source-detail"
+                      className="overflow-hidden"
+                      initial={shouldReduceMotion ? false : { opacity: 0, height: 0, y: -4 }}
+                      animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, height: 'auto', y: 0 }}
+                      exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, height: 0, y: -4 }}
+                      transition={shouldReduceMotion ? { duration: 0 } : {
+                        height: { duration: 0.2, ease: [0.16, 1, 0.3, 1] },
+                        opacity: { duration: 0.14, ease: 'easeOut' },
+                        y: { duration: 0.16, ease: 'easeOut' },
+                      }}
+                    >
+                      <div className="mt-4 overflow-hidden rounded-lg border border-border bg-surface-1/60">
+                        <div className="flex flex-col gap-2 border-b border-border bg-surface-2/80 px-3 py-2.5 lg:flex-row lg:items-center lg:justify-between">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <FolderSearch size={15} className="shrink-0 text-accent" />
+                            <div className="min-w-0">
+                              <div className="truncate text-xs font-medium text-text-primary">数据源详情</div>
+                              <div className="truncate text-[11px] text-text-tertiary">{source.rootPath}</div>
+                            </div>
+                          </div>
+
+                          <div className="inline-flex w-fit rounded-md border border-border bg-surface-0 p-0.5">
+                            {([
+                              ['files', '文件', FolderSearch],
+                              ['overview', '概览', Info],
+                            ] as const).map(([tab, label, Icon]) => {
+                              const selected = activeDetailTab === tab;
+                              return (
+                                <button
+                                  key={tab}
+                                  type="button"
+                                  onClick={() => setSourceDetailTabs((prev) => ({ ...prev, [source.id]: tab }))}
+                                  className={`inline-flex h-8 items-center gap-1.5 rounded px-3 text-xs transition-colors ${
+                                    selected
+                                      ? 'bg-surface-3 text-text-primary shadow-sm'
+                                      : 'text-text-tertiary hover:bg-surface-2 hover:text-text-secondary'
+                                  }`}
+                                >
+                                  <Icon size={13} />
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
 
-                      <div className="inline-flex w-fit rounded-md border border-border bg-surface-0 p-0.5">
-                        {([
-                          ['files', '文件', FolderSearch],
-                          ['overview', '概览', Info],
-                        ] as const).map(([tab, label, Icon]) => {
-                          const selected = activeDetailTab === tab;
-                          return (
-                            <button
-                              key={tab}
-                              type="button"
-                              onClick={() => setSourceDetailTabs((prev) => ({ ...prev, [source.id]: tab }))}
-                              className={`inline-flex h-8 items-center gap-1.5 rounded px-3 text-xs transition-colors ${
-                                selected
-                                  ? 'bg-surface-3 text-text-primary shadow-sm'
-                                  : 'text-text-tertiary hover:bg-surface-2 hover:text-text-secondary'
-                              }`}
-                            >
-                              <Icon size={13} />
-                              {label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {activeDetailTab === 'files' ? (
-                      <div className="p-3">
-                        <SourceFileTree sourceId={source.id} />
-                      </div>
-                    ) : (
-                      <div className="grid gap-3 p-3 lg:grid-cols-[1.2fr_0.8fr]">
-                        <div className="space-y-3">
-                          {scanProgress && scanProgress.sourceId === source.id && isActivelyScanning && scanProgress.total > 0 && (
-                            <div className="rounded-lg border border-border bg-surface-0 p-3">
-                              <div className="mb-2 flex items-center justify-between text-xs text-text-secondary">
-                                <span className="flex items-center gap-1.5">
-                                  <RefreshCw size={12} className="animate-spin text-accent" />
-                                  <span className="font-medium capitalize">{scanProgress.phase}</span>
-                                  <span className="text-text-tertiary">{scanProgress.current}/{scanProgress.total}</span>
-                                </span>
-                                <span className="text-[11px] font-medium text-accent">
-                                  {Math.round((scanProgress.current / scanProgress.total) * 100)}%
-                                </span>
-                              </div>
-                              {scanProgress.currentFile && (
-                                <div className="mb-2 truncate text-[11px] text-text-tertiary">
-                                  {scanProgress.currentFile}
+                        {activeDetailTab === 'files' ? (
+                          <div className="p-3">
+                            <SourceFileTree sourceId={source.id} />
+                          </div>
+                        ) : (
+                          <div className="grid gap-3 p-3 lg:grid-cols-[1.2fr_0.8fr]">
+                            <div className="space-y-3">
+                              {scanProgress && scanProgress.sourceId === source.id && isActivelyScanning && scanProgress.total > 0 && (
+                                <div className="rounded-lg border border-border bg-surface-0 p-3">
+                                  <div className="mb-2 flex items-center justify-between text-xs text-text-secondary">
+                                    <span className="flex items-center gap-1.5">
+                                      <RefreshCw size={12} className="animate-spin text-accent" />
+                                      <span className="font-medium capitalize">{scanProgress.phase}</span>
+                                      <span className="text-text-tertiary">{scanProgress.current}/{scanProgress.total}</span>
+                                    </span>
+                                    <span className="text-[11px] font-medium text-accent">
+                                      {Math.round((scanProgress.current / scanProgress.total) * 100)}%
+                                    </span>
+                                  </div>
+                                  {scanProgress.currentFile && (
+                                    <div className="mb-2 truncate text-[11px] text-text-tertiary">
+                                      {scanProgress.currentFile}
+                                    </div>
+                                  )}
+                                  <div className="h-2 w-full rounded-full bg-surface-3">
+                                    <div
+                                      className="h-2 rounded-full bg-accent transition-all duration-300 ease-out"
+                                      style={{ width: `${Math.min(100, (scanProgress.current / scanProgress.total) * 100)}%` }}
+                                    />
+                                  </div>
                                 </div>
                               )}
-                              <div className="h-2 w-full rounded-full bg-surface-3">
-                                <div
-                                  className="h-2 rounded-full bg-accent transition-all duration-300 ease-out"
-                                  style={{ width: `${Math.min(100, (scanProgress.current / scanProgress.total) * 100)}%` }}
+
+                              {videoProcessing && (
+                                <VideoProcessingProgress
+                                  phase={videoProcessing.phase}
+                                  progress={videoProcessing.progress}
+                                  fileName={videoProcessing.fileName}
                                 />
+                              )}
+
+                              <div className="rounded-lg border border-border bg-surface-0 p-3">
+                                <div className="mb-2 text-xs font-medium text-text-primary">索引规则</div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {source.includeGlobs.map((g, i) => (
+                                    <Badge key={i} variant="success">{g}</Badge>
+                                  ))}
+                                  {source.excludeGlobs.map((g, i) => (
+                                    <Badge key={`e-${i}`} variant="danger">x {g}</Badge>
+                                  ))}
+                                </div>
                               </div>
                             </div>
-                          )}
 
-                          {videoProcessing && (
-                            <VideoProcessingProgress
-                              phase={videoProcessing.phase}
-                              progress={videoProcessing.progress}
-                              fileName={videoProcessing.fileName}
-                            />
-                          )}
-
-                          <div className="rounded-lg border border-border bg-surface-0 p-3">
-                            <div className="mb-2 text-xs font-medium text-text-primary">索引规则</div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {source.includeGlobs.map((g, i) => (
-                                <Badge key={i} variant="success">{g}</Badge>
-                              ))}
-                              {source.excludeGlobs.map((g, i) => (
-                                <Badge key={`e-${i}`} variant="danger">x {g}</Badge>
-                              ))}
+                            <div className="rounded-lg border border-border bg-surface-0 p-3">
+                              <div className="mb-2 text-xs font-medium text-text-primary">状态</div>
+                              <div className="space-y-2 text-xs text-text-secondary">
+                                <div className="flex items-center justify-between gap-3">
+                                  <span>{t('sources.watch')}</span>
+                                  <span className={source.watchEnabled ? 'font-medium text-green-500' : 'text-text-tertiary'}>
+                                    {source.watchEnabled ? t('sources.watcherActive') : t('sources.watchOff')}
+                                  </span>
+                                </div>
+                                <div className="flex items-center justify-between gap-3">
+                                  <span>{t('sources.addedAt')}</span>
+                                  <span className="text-text-tertiary">{new Date(source.createdAt).toLocaleDateString()}</span>
+                                </div>
+                                <div className="flex items-center justify-between gap-3">
+                                  <span>类型</span>
+                                  <span className="text-text-tertiary">{kindLabel(source.kind, t)}</span>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                        </div>
-
-                        <div className="rounded-lg border border-border bg-surface-0 p-3">
-                          <div className="mb-2 text-xs font-medium text-text-primary">状态</div>
-                          <div className="space-y-2 text-xs text-text-secondary">
-                            <div className="flex items-center justify-between gap-3">
-                              <span>{t('sources.watch')}</span>
-                              <span className={source.watchEnabled ? 'font-medium text-green-500' : 'text-text-tertiary'}>
-                                {source.watchEnabled ? t('sources.watcherActive') : t('sources.watchOff')}
-                              </span>
-                            </div>
-                            <div className="flex items-center justify-between gap-3">
-                              <span>{t('sources.addedAt')}</span>
-                              <span className="text-text-tertiary">{new Date(source.createdAt).toLocaleDateString()}</span>
-                            </div>
-                            <div className="flex items-center justify-between gap-3">
-                              <span>类型</span>
-                              <span className="text-text-tertiary">{kindLabel(source.kind, t)}</span>
-                            </div>
-                          </div>
-                        </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </motion.div>
               );
             })}
