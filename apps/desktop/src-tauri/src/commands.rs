@@ -48,6 +48,7 @@ use nexa_core::project::{CreateProjectInput, Project, UpdateProjectInput};
 use nexa_core::provider_catalog::{load_provider_presets, preset_model_ids, ProviderPreset};
 use nexa_core::search::{self, SearchResult};
 use nexa_core::skills::{DiscoveredSkillBundle, SaveSkillInput, Skill};
+use nexa_core::source_tree::SourceTree;
 use nexa_core::sources::{CreateSourceInput, UpdateSourceInput};
 use nexa_core::tools::default_tool_registry;
 use nexa_core::watcher::{FileWatcher, WatcherEventKind};
@@ -679,6 +680,29 @@ pub fn list_sources(state: tauri::State<'_, AppState>) -> Result<Vec<Source>, St
 #[tauri::command]
 pub fn get_source(state: tauri::State<'_, AppState>, source_id: String) -> Result<Source, String> {
     state.db.get_source(&source_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_source_tree_cmd(
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+    relative_path: Option<String>,
+    depth: Option<usize>,
+    limit: Option<usize>,
+) -> Result<SourceTree, String> {
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        nexa_core::source_tree::list_source_tree(
+            &db,
+            &source_id,
+            relative_path.as_deref(),
+            depth,
+            limit,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

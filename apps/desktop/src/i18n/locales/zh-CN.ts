@@ -186,7 +186,7 @@ export const zhCN: TranslationKeys = {
   'sources.addIncludePattern': '添加匹配模式...',
   'sources.addExcludePattern': '添加排除模式...',
   'sources.batchConfirm.scanAll.title': '确认扫描全部数据源？',
-  'sources.batchConfirm.scanAll.message': '这会扫描所有数据源，并在更新内容后重建嵌入。数据量较大时可能需要较长时间。',
+  'sources.batchConfirm.scanAll.message': '这会扫描所有数据源的文件变化。嵌入重建保持为单独操作，由你决定何时运行。',
   'sources.batchConfirm.scanAll.confirm': '全部扫描',
   'sources.batchConfirm.rebuildEmbeddings.title': '确认重建全部嵌入？',
   'sources.batchConfirm.rebuildEmbeddings.message': '这会为已索引内容重新计算嵌入，可能耗时较长，并占用较多 CPU 资源。',

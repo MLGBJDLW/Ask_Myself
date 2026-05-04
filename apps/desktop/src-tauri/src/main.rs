@@ -159,6 +159,7 @@ fn main() {
             commands::add_source,
             commands::list_sources,
             commands::get_source,
+            commands::list_source_tree_cmd,
             commands::update_source,
             commands::delete_source,
             // Ingest

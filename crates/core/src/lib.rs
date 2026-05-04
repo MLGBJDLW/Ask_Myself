@@ -48,6 +48,7 @@ pub mod project;
 pub mod provider_catalog;
 pub mod search;
 pub mod skills;
+pub mod source_tree;
 pub mod sources;
 pub mod tools;
 pub mod trace;

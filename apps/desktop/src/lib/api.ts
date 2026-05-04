@@ -179,6 +179,42 @@ export const getMessageFeedback = (messageId: string) =>
 export const getSource = (sourceId: string) =>
   invoke<Source>('get_source', { sourceId });
 
+export interface SourceTreeNode {
+  name: string;
+  path: string;
+  relativePath: string;
+  kind: 'directory' | 'file';
+  extension?: string | null;
+  sizeBytes?: number | null;
+  modifiedAt?: string | null;
+  indexed: boolean;
+  documentId?: string | null;
+  chunkCount?: number | null;
+  children?: SourceTreeNode[] | null;
+  childrenTruncated: boolean;
+}
+
+export interface SourceTree {
+  sourceId: string;
+  rootPath: string;
+  relativePath: string;
+  nodes: SourceTreeNode[];
+  totalEntries: number;
+  truncated: boolean;
+}
+
+export const listSourceTree = (
+  sourceId: string,
+  relativePath?: string,
+  depth?: number,
+  limit?: number,
+) => invoke<SourceTree>('list_source_tree_cmd', {
+  sourceId,
+  relativePath: relativePath ?? null,
+  depth: depth ?? null,
+  limit: limit ?? null,
+});
+
 export const updateSource = (
   sourceId: string,
   includeGlobs: string[],

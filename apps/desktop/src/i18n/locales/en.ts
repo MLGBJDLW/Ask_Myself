@@ -186,7 +186,7 @@ export const en: TranslationKeys = {
   'sources.addIncludePattern': 'Add glob pattern...',
   'sources.addExcludePattern': 'Add exclude pattern...',
   'sources.batchConfirm.scanAll.title': 'Scan all sources?',
-  'sources.batchConfirm.scanAll.message': 'This will scan every source and then rebuild embeddings for the updated content. It may take a while on large libraries.',
+  'sources.batchConfirm.scanAll.message': 'This will scan every source for file changes. Embedding rebuild stays separate so you can decide when to run it.',
   'sources.batchConfirm.scanAll.confirm': 'Scan All',
   'sources.batchConfirm.rebuildEmbeddings.title': 'Rebuild all embeddings?',
   'sources.batchConfirm.rebuildEmbeddings.message': 'This will recompute embeddings across your indexed content. It may take a while and can use significant CPU resources.',

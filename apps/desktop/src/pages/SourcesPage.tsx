@@ -35,6 +35,7 @@ import { Modal } from '../components/ui/Modal';
 import { CardSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { VideoProcessingProgress } from '../components/media/VideoProcessingProgress';
+import { SourceFileTree } from '../components/sources/SourceFileTree';
 import { undoableAction } from '../lib/undoToast';
 
 /* ------------------------------------------------------------------ */
@@ -146,6 +147,7 @@ export function SourcesPage() {
   const [formInclude, setFormInclude] = useState('**/*.md');
   const [formExclude, setFormExclude] = useState('');
   const [formWatch, setFormWatch] = useState(true);
+  const [formIndexNow, setFormIndexNow] = useState(true);
   const [adding, setAdding] = useState(false);
 
   // Edit source modal
@@ -287,6 +289,7 @@ export function SourcesPage() {
     setFormInclude('**/*.md');
     setFormExclude('');
     setFormWatch(true);
+    setFormIndexNow(true);
   };
 
   const handleAdd = async () => {
@@ -296,7 +299,7 @@ export function SourcesPage() {
       const includeGlobs = parseTags(formInclude);
       const excludeGlobs = parseTags(formExclude);
       const newSource = await api.addSource(formPath.trim(), includeGlobs, excludeGlobs);
-      toast.success(t('sources.autoIndexing'));
+      toast.success(formIndexNow ? t('sources.autoIndexing') : t('sources.added'));
       resetForm();
       setShowAddModal(false);
       await loadSources();
@@ -310,7 +313,11 @@ export function SourcesPage() {
         }
       }
 
-      // Auto-index: scan + embed in background
+      if (!formIndexNow) {
+        return;
+      }
+
+      // Explicit initial index: scan + embed in background when the user opts in.
       const sourceId = newSource.id;
       setIndexingIds((prev) => new Set(prev).add(sourceId));
       try {
@@ -406,15 +413,6 @@ export function SourcesPage() {
       const updated = results.reduce((sum, r) => sum + r.filesUpdated, 0);
       toast.success(t('sources.scanAllComplete', { total, added, updated }));
       await loadSources();
-
-      // Auto-embed all sources after scan
-      toast.info(t('sources.indexingInProgress'));
-      try {
-        const embedResult = await api.rebuildEmbeddings();
-        toast.success(`${t('sources.indexingComplete')} ${formatEmbedResult(embedResult, t)}`);
-      } catch (e) {
-        toast.error(`${t('sources.embedError')}: ${String(e)}`);
-      }
     } catch (e) {
       toast.error(`${t('sources.scanAllError')}: ${String(e)}`);
     } finally {
@@ -721,6 +719,8 @@ export function SourcesPage() {
                             </span>
                             <span>{t('sources.addedAt')}: {new Date(source.createdAt).toLocaleDateString()}</span>
                           </div>
+
+                          <SourceFileTree sourceId={source.id} />
                         </>
                       )}
                     </div>
@@ -888,6 +888,19 @@ export function SourcesPage() {
             />
             <label htmlFor="add-watch" className="text-xs font-medium text-text-secondary">
               {t('sources.editModal.watch')}
+            </label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="add-index-now"
+              checked={formIndexNow}
+              onChange={(e) => setFormIndexNow(e.target.checked)}
+              className="h-4 w-4 rounded border-border text-accent focus:ring-accent/30"
+            />
+            <label htmlFor="add-index-now" className="text-xs font-medium text-text-secondary">
+              添加后立即扫描并嵌入
             </label>
           </div>
         </div>
