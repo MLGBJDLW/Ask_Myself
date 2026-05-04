@@ -11,8 +11,8 @@ use serde_json::json;
 use crate::db::Database;
 use crate::error::CoreError;
 
-use super::path_utils::resolve_existing_directory_in_sources;
-use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
+use super::path_utils::resolve_existing_directory_for_file_access;
+use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/list_dir.json");
@@ -77,8 +77,11 @@ impl Tool for ListDirTool {
         let call_id = call_id.to_string();
         let source_scope = source_scope.to_vec();
         tokio::task::spawn_blocking(move || {
-            let sources = scoped_sources(&db, &source_scope)?;
-            if sources.is_empty() {
+            let requested = Path::new(&args.path);
+            let file_policy = file_access_policy(&db, &source_scope)?;
+            if file_policy.sources.is_empty()
+                && !(file_policy.allow_unregistered_absolute_paths && requested.is_absolute())
+            {
                 return Ok(ToolResult {
                     call_id: call_id.clone(),
                     content: format!(
@@ -89,8 +92,12 @@ impl Tool for ListDirTool {
                     artifacts: None,
                 });
             }
-            let canonical = resolve_existing_directory_in_sources(Path::new(&args.path), &sources)
-                .map_err(CoreError::InvalidInput)?;
+            let canonical = resolve_existing_directory_for_file_access(
+                requested,
+                &file_policy.sources,
+                file_policy.allow_unregistered_absolute_paths,
+            )
+            .map_err(CoreError::InvalidInput)?;
 
             // Collect entries.
             let mut entries = Vec::new();
@@ -221,5 +228,49 @@ fn matches_glob_simple(pattern: &str, filename: &str) -> bool {
         true
     } else {
         filename == pattern
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_settings::{AppConfig, ShellAccessMode};
+    use crate::sources::CreateSourceInput;
+
+    fn setup_db_with_source(root: &Path) -> Database {
+        let db = Database::open_memory().expect("open in-memory db");
+        db.add_source(CreateSourceInput {
+            root_path: root.to_string_lossy().to_string(),
+            include_globs: vec![],
+            exclude_globs: vec![],
+            watch_enabled: false,
+        })
+        .expect("register source root");
+        db
+    }
+
+    fn enable_open_file_access(db: &Database) {
+        let mut config = AppConfig::default();
+        config.shell_access_mode = ShellAccessMode::Open;
+        db.save_app_config(&config).expect("save app config");
+    }
+
+    #[tokio::test]
+    async fn list_dir_open_mode_allows_absolute_path_outside_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        std::fs::write(other_dir.path().join("outside.txt"), "outside").unwrap();
+        let db = setup_db_with_source(dir.path());
+        enable_open_file_access(&db);
+        let tool = ListDirTool;
+        let args = serde_json::json!({
+            "path": other_dir.path().to_string_lossy()
+        })
+        .to_string();
+
+        let result = tool.execute("call-open", &args, &db, &[]).await.unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert!(result.content.contains("outside.txt"));
     }
 }

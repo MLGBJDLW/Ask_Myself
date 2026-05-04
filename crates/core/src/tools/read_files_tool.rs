@@ -18,8 +18,8 @@ use crate::error::CoreError;
 use crate::privacy::{self, PrivacyConfig};
 
 use super::document_utils::read_supported_file_content;
-use super::path_utils::resolve_existing_file_in_sources;
-use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
+use super::path_utils::resolve_existing_file_for_file_access;
+use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/read_files.json");
@@ -97,16 +97,23 @@ impl Tool for ReadFilesTool {
             .max(1);
 
         // Resolve sources + privacy config once, outside the per-file tasks.
-        let sources = scoped_sources(db, source_scope)?;
+        let file_policy = file_access_policy(db, source_scope)?;
         let privacy_config = db.load_privacy_config().unwrap_or_default();
 
         // If there are no sources in scope every path is inaccessible —
         // return a uniform error per path rather than failing the whole call.
         let tasks = args.paths.into_iter().map(|raw_path| {
-            let sources = sources.clone();
+            let sources = file_policy.sources.clone();
+            let allow_unregistered_absolute_paths = file_policy.allow_unregistered_absolute_paths;
             let privacy_config = privacy_config.clone();
             tokio::task::spawn_blocking(move || {
-                let outcome = read_single_file(&raw_path, &sources, &privacy_config, max_lines);
+                let outcome = read_single_file(
+                    &raw_path,
+                    &sources,
+                    allow_unregistered_absolute_paths,
+                    &privacy_config,
+                    max_lines,
+                );
                 FileReadOutcome {
                     path: raw_path,
                     result: outcome,
@@ -167,19 +174,24 @@ impl Tool for ReadFilesTool {
 fn read_single_file(
     raw_path: &str,
     sources: &[crate::models::Source],
+    allow_unregistered_absolute_paths: bool,
     privacy_config: &PrivacyConfig,
     max_lines: usize,
 ) -> Result<FileReadOk, String> {
-    if sources.is_empty() {
+    let requested = PathBuf::from(raw_path);
+    if sources.is_empty() && !(allow_unregistered_absolute_paths && requested.is_absolute()) {
         return Err(format!(
             "Access denied: '{}' is not within any directory available in the current source scope.",
             raw_path
         ));
     }
 
-    let requested = PathBuf::from(raw_path);
-    let canonical =
-        resolve_existing_file_in_sources(&requested, sources).map_err(|e| e.to_string())?;
+    let canonical = resolve_existing_file_for_file_access(
+        &requested,
+        sources,
+        allow_unregistered_absolute_paths,
+    )
+    .map_err(|e| e.to_string())?;
 
     let raw = read_supported_file_content(&canonical).map_err(|e| e.to_string())?;
 
@@ -211,6 +223,7 @@ fn read_single_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_settings::{AppConfig, ShellAccessMode};
     use crate::sources::CreateSourceInput;
     use std::path::Path;
 
@@ -224,6 +237,12 @@ mod tests {
         })
         .expect("register source root");
         db
+    }
+
+    fn enable_open_file_access(db: &Database) {
+        let mut config = AppConfig::default();
+        config.shell_access_mode = ShellAccessMode::Open;
+        db.save_app_config(&config).expect("save app config");
     }
 
     #[tokio::test]
@@ -296,6 +315,26 @@ mod tests {
             .find(|f| f["path"] == "does-not-exist.txt")
             .expect("missing entry");
         assert!(missing["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn read_files_open_mode_allows_absolute_path_outside_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        let outside = other_dir.path().join("outside.txt");
+        std::fs::write(&outside, "outside batch\n").unwrap();
+        let db = setup_db_with_source(dir.path());
+        enable_open_file_access(&db);
+        let tool = ReadFilesTool;
+        let args = json!({
+            "paths": [outside.to_string_lossy()]
+        })
+        .to_string();
+
+        let result = tool.execute("call-open", &args, &db, &[]).await.unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert!(result.content.contains("outside batch"));
     }
 
     #[tokio::test]

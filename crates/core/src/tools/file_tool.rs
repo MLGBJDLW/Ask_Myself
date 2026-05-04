@@ -11,8 +11,8 @@ use crate::error::CoreError;
 use crate::privacy;
 
 use super::document_utils::read_supported_file_content;
-use super::path_utils::resolve_existing_file_in_sources;
-use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
+use super::path_utils::resolve_existing_file_for_file_access;
+use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/read_file.json");
@@ -73,8 +73,10 @@ impl Tool for FileTool {
         tokio::task::spawn_blocking(move || {
             let requested = PathBuf::from(&args.path);
 
-            let sources = scoped_sources(&db, &source_scope)?;
-            if sources.is_empty() {
+            let file_policy = file_access_policy(&db, &source_scope)?;
+            if file_policy.sources.is_empty()
+                && !(file_policy.allow_unregistered_absolute_paths && requested.is_absolute())
+            {
                 return Ok(ToolResult {
                     call_id: call_id.clone(),
                     content: format!(
@@ -85,8 +87,12 @@ impl Tool for FileTool {
                     artifacts: None,
                 });
             }
-            let canonical = resolve_existing_file_in_sources(&requested, &sources)
-                .map_err(CoreError::InvalidInput)?;
+            let canonical = resolve_existing_file_for_file_access(
+                &requested,
+                &file_policy.sources,
+                file_policy.allow_unregistered_absolute_paths,
+            )
+            .map_err(CoreError::InvalidInput)?;
 
             // Read text files directly; for supported binary docs, parse and extract text.
             let raw = read_supported_file_content(&canonical)?;
@@ -163,6 +169,7 @@ impl Tool for FileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_settings::{AppConfig, ShellAccessMode};
     use crate::sources::CreateSourceInput;
     use std::io::Write;
     use std::path::Path;
@@ -177,6 +184,12 @@ mod tests {
         })
         .expect("register source root");
         db
+    }
+
+    fn enable_open_file_access(db: &Database) {
+        let mut config = AppConfig::default();
+        config.shell_access_mode = ShellAccessMode::Open;
+        db.save_app_config(&config).expect("save app config");
     }
 
     #[tokio::test]
@@ -283,6 +296,27 @@ mod tests {
 
         assert!(result.is_error);
         assert!(result.content.contains("current source scope"));
+    }
+
+    #[tokio::test]
+    async fn read_file_open_mode_allows_absolute_path_outside_source() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let other_dir = tempfile::tempdir().expect("create other tempdir");
+        let file_path = other_dir.path().join("outside.md");
+        std::fs::write(&file_path, "hello from outside\n").expect("write text file");
+
+        let db = setup_db_with_source(dir.path());
+        enable_open_file_access(&db);
+        let tool = FileTool;
+        let args = serde_json::json!({
+            "path": file_path.to_string_lossy().to_string()
+        })
+        .to_string();
+
+        let result = tool.execute("call-open", &args, &db, &[]).await.unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert!(result.content.contains("hello from outside"));
     }
 
     #[tokio::test]

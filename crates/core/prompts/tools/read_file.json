@@ -1,6 +1,6 @@
 {
   "name": "read_file",
-  "description": "Read a file from the knowledge base by path. The file must reside within a registered source directory and current source scope. Supports plain-text files directly, and also extracts readable text from PDF, DOCX, XLSX, PPTX, and image files when possible. Paths may be absolute or relative to a source root. Returns file metadata plus a suggested citation when available.\n\nFor large files, the output shows 'showing lines X-Y of Z total'. Use start_line to read subsequent sections (e.g., start_line=101 for the next page). Adjust max_lines for longer or shorter pages.",
+  "description": "Read a file by path. In restricted mode paths must resolve inside the current registered source scope; allow-all/non-restricted permission modes can use all registered sources, and open mode can also use absolute local paths outside registered sources. Supports plain-text files directly, and also extracts readable text from PDF, DOCX, XLSX, PPTX, and image files when possible. Paths may be absolute or relative to a source root. Returns file metadata plus a suggested citation when available.\n\nFor large files, the output shows 'showing lines X-Y of Z total'. Use start_line to read subsequent sections (e.g., start_line=101 for the next page). Adjust max_lines for longer or shorter pages.",
   "parameters": {
     "type": "object",
     "properties": {

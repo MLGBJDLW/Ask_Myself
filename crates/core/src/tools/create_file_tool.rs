@@ -12,9 +12,9 @@ use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
 
 use super::document_utils::{edit_guidance_for_path, generated_document_mime};
 use super::path_utils::{
-    has_path_traversal as has_path_traversal_impl, resolve_writable_file_in_sources,
+    has_path_traversal as has_path_traversal_impl, resolve_writable_file_for_file_access,
 };
-use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
+use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/create_file.json");
@@ -36,8 +36,9 @@ struct CreateFileArgs {
 pub(crate) fn resolve_and_validate(
     requested: &Path,
     sources: &[crate::models::Source],
+    allow_unregistered_absolute_paths: bool,
 ) -> Result<PathBuf, String> {
-    resolve_writable_file_in_sources(requested, sources)
+    resolve_writable_file_for_file_access(requested, sources, allow_unregistered_absolute_paths)
 }
 
 /// Reject paths containing traversal sequences.
@@ -126,8 +127,11 @@ impl CreateFileTool {
         let source_scope = source_scope.to_vec();
         let conversation_id = conversation_id.map(str::to_string);
         tokio::task::spawn_blocking(move || {
-            let sources = scoped_sources(&db, &source_scope)?;
-            if sources.is_empty() {
+            let file_policy = file_access_policy(&db, &source_scope)?;
+            let requested = PathBuf::from(&args.path);
+            if file_policy.sources.is_empty()
+                && !(file_policy.allow_unregistered_absolute_paths && requested.is_absolute())
+            {
                 return Ok(ToolResult {
                     call_id: call_id.clone(),
                     content: "No sources registered. Add a source directory first.".to_string(),
@@ -136,9 +140,11 @@ impl CreateFileTool {
                 });
             }
 
-            let requested = PathBuf::from(&args.path);
-
-            let canonical = match resolve_and_validate(&requested, &sources) {
+            let canonical = match resolve_and_validate(
+                &requested,
+                &file_policy.sources,
+                file_policy.allow_unregistered_absolute_paths,
+            ) {
                 Ok(p) => p,
                 Err(msg) => {
                     return Ok(ToolResult {
@@ -221,6 +227,7 @@ impl CreateFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_settings::{AppConfig, ShellAccessMode};
     use crate::sources::CreateSourceInput;
 
     fn setup_db_with_source(root: &std::path::Path) -> Database {
@@ -233,6 +240,12 @@ mod tests {
         })
         .expect("register source root");
         db
+    }
+
+    fn enable_open_file_access(db: &Database) {
+        let mut config = AppConfig::default();
+        config.shell_access_mode = ShellAccessMode::Open;
+        db.save_app_config(&config).expect("save app config");
     }
 
     #[tokio::test]
@@ -405,5 +418,27 @@ mod tests {
             .unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("Access denied"));
+    }
+
+    #[tokio::test]
+    async fn test_create_file_open_mode_allows_absolute_path_outside_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        let db = setup_db_with_source(dir.path());
+        enable_open_file_access(&db);
+        let tool = CreateFileTool;
+        let file_path = other_dir.path().join("outside.txt");
+        let args = serde_json::json!({
+            "path": file_path.to_string_lossy(),
+            "content": "allowed"
+        });
+
+        let result = tool
+            .execute("c-open", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert_eq!(std::fs::read_to_string(file_path).unwrap(), "allowed");
     }
 }

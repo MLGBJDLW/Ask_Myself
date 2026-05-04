@@ -1,12 +1,12 @@
 {
   "name": "list_dir",
-  "description": "List contents of a directory within the knowledge base. Use this to discover files and navigate the directory structure before reading specific files.",
+  "description": "List contents of a directory. Use this to discover files and navigate the directory structure before reading specific files. In restricted mode paths must resolve inside the current registered source scope; allow-all/non-restricted permission modes can use all registered sources, and open mode can also use absolute local paths outside registered sources.",
   "parameters": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
-        "description": "Directory path to list. Must be within a registered source directory."
+        "description": "Directory path to list. In open mode, absolute local paths outside registered sources are also accepted."
       },
       "recursive": {
         "type": "boolean",

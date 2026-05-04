@@ -34,6 +34,8 @@ pub enum ToolCategory {
     Automation,
 }
 
+use crate::app_settings::ShellAccessMode;
+use crate::approval::ToolApprovalMode;
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::ToolDefinition;
@@ -230,6 +232,34 @@ pub(crate) fn scoped_sources(
         sources.retain(|source| allowed.contains(source.id.as_str()));
     }
     Ok(sources)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FileAccessPolicy {
+    pub sources: Vec<Source>,
+    pub allow_unregistered_absolute_paths: bool,
+}
+
+pub(crate) fn file_access_policy(
+    db: &Database,
+    source_scope: &[String],
+) -> Result<FileAccessPolicy, CoreError> {
+    let config = db.load_app_config().unwrap_or_default();
+    let use_all_sources = !config.shell_access_mode.is_restricted()
+        || config.tool_approval_mode == ToolApprovalMode::AllowAll;
+    let sources = if use_all_sources {
+        scoped_sources(db, &[])?
+    } else {
+        scoped_sources(db, source_scope)?
+    };
+
+    Ok(FileAccessPolicy {
+        sources,
+        allow_unregistered_absolute_paths: matches!(
+            config.shell_access_mode,
+            ShellAccessMode::Open
+        ),
+    })
 }
 
 pub(crate) fn ensure_source_in_scope(

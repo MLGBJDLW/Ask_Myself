@@ -212,6 +212,26 @@ pub(crate) fn resolve_path_in_sources(
     }
 }
 
+pub(crate) fn resolve_path_for_file_access(
+    requested: &Path,
+    sources: &[Source],
+    kind: PathKind,
+    allow_missing: bool,
+    allow_unregistered_absolute_paths: bool,
+) -> Result<PathBuf, String> {
+    if requested.as_os_str().is_empty() {
+        return Err("Path must not be empty.".to_string());
+    }
+
+    if allow_unregistered_absolute_paths && requested.is_absolute() {
+        let resolved = canonicalize_with_optional_missing(requested, allow_missing)?;
+        validate_kind(&resolved, requested, kind, allow_missing)?;
+        return Ok(resolved);
+    }
+
+    resolve_path_in_sources(requested, sources, kind, allow_missing)
+}
+
 pub(crate) fn resolve_existing_file_in_sources(
     requested: &Path,
     sources: &[Source],
@@ -226,11 +246,46 @@ pub(crate) fn resolve_existing_directory_in_sources(
     resolve_path_in_sources(requested, sources, PathKind::Directory, false)
 }
 
-pub(crate) fn resolve_writable_file_in_sources(
+pub(crate) fn resolve_existing_file_for_file_access(
     requested: &Path,
     sources: &[Source],
+    allow_unregistered_absolute_paths: bool,
 ) -> Result<PathBuf, String> {
-    resolve_path_in_sources(requested, sources, PathKind::File, true)
+    resolve_path_for_file_access(
+        requested,
+        sources,
+        PathKind::File,
+        false,
+        allow_unregistered_absolute_paths,
+    )
+}
+
+pub(crate) fn resolve_existing_directory_for_file_access(
+    requested: &Path,
+    sources: &[Source],
+    allow_unregistered_absolute_paths: bool,
+) -> Result<PathBuf, String> {
+    resolve_path_for_file_access(
+        requested,
+        sources,
+        PathKind::Directory,
+        false,
+        allow_unregistered_absolute_paths,
+    )
+}
+
+pub(crate) fn resolve_writable_file_for_file_access(
+    requested: &Path,
+    sources: &[Source],
+    allow_unregistered_absolute_paths: bool,
+) -> Result<PathBuf, String> {
+    resolve_path_for_file_access(
+        requested,
+        sources,
+        PathKind::File,
+        true,
+        allow_unregistered_absolute_paths,
+    )
 }
 
 #[cfg(test)]
@@ -269,8 +324,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sources = vec![source("src-1", dir.path())];
 
-        let resolved = resolve_writable_file_in_sources(Path::new("drafts/report.md"), &sources)
-            .expect("should resolve");
+        let resolved =
+            resolve_writable_file_for_file_access(Path::new("drafts/report.md"), &sources, false)
+                .expect("should resolve");
 
         assert_eq!(
             resolved,

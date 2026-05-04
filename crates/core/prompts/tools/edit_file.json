@@ -1,12 +1,12 @@
 {
   "name": "edit_file",
-  "description": "Edit an existing plain-text file or create a new plain-text file within registered source directories. Paths may be absolute or relative to a source root. Supports exact string replacement and plain-text file creation.\n\nUse this tool when:\n- You need to modify an existing text file (use str_replace with the exact text to find and its replacement)\n- You need to create a new text file (use create with the file content)\n\nDo not use this tool for DOCX/XLSX/PPTX/PDF files. Use run_shell + doc-script-editor (Python Office libraries) for Office/PDF create/edit/validate/convert/render/recalc/unpack workflows.\n\nFor str_replace: old_str must match exactly once in the file. Include enough surrounding context to make it unique, or pass start_line/end_line to narrow the replacement. Common aliases are accepted: action 'replace' means 'str_replace', old_string means old_str, and new_string/content mean new_str. If action is omitted, the tool infers str_replace when old_str/old_string is present, otherwise create.",
+  "description": "Edit an existing plain-text file or create a new plain-text file. In restricted mode paths must resolve inside the current registered source scope; allow-all/non-restricted permission modes can use all registered sources, and open mode can also use absolute local paths outside registered sources. Paths may be absolute or relative to a source root. Supports exact string replacement and plain-text file creation.\n\nUse this tool when:\n- You need to modify an existing text file (use str_replace with the exact text to find and its replacement)\n- You need to create a new text file (use create with the file content)\n\nDo not use Python or run_shell snippets for ordinary plain-text edits. Do not use this tool for DOCX/XLSX/PPTX/PDF files. Use run_shell + doc-script-editor (Python Office libraries) for Office/PDF create/edit/validate/convert/render/recalc/unpack workflows.\n\nFor str_replace: old_str must match exactly once in the file. Include enough surrounding context to make it unique, or pass start_line/end_line to narrow the replacement. Common aliases are accepted: action 'replace' means 'str_replace', old_string means old_str, and new_string/content mean new_str. If action is omitted, the tool infers str_replace when old_str/old_string is present, otherwise create.",
   "parameters": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
-        "description": "Path to the file (absolute or relative to a source directory)"
+        "description": "Path to the file (absolute or relative to a source directory; open mode also accepts absolute local paths outside registered sources)"
       },
       "action": {
         "type": "string",

@@ -14,7 +14,7 @@ use super::create_file_tool::resolve_and_validate;
 use super::document_utils::{
     edit_guidance_for_path, generated_document_mime, is_binary_file_error,
 };
-use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
+use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/edit_file.json");
@@ -292,8 +292,11 @@ impl EditFileTool {
         let source_scope = source_scope.to_vec();
         let conversation_id = conversation_id.map(str::to_string);
         tokio::task::spawn_blocking(move || {
-            let sources = scoped_sources(&db, &source_scope)?;
-            if sources.is_empty() {
+            let file_policy = file_access_policy(&db, &source_scope)?;
+            let requested = PathBuf::from(&args.path);
+            if file_policy.sources.is_empty()
+                && !(file_policy.allow_unregistered_absolute_paths && requested.is_absolute())
+            {
                 return Ok(ToolResult {
                     call_id: call_id.clone(),
                     content: "No sources registered. Add a source directory first.".to_string(),
@@ -301,8 +304,6 @@ impl EditFileTool {
                     artifacts: None,
                 });
             }
-
-            let requested = PathBuf::from(&args.path);
 
             match normalized_action(&args) {
                 "str_replace" => {
@@ -320,7 +321,11 @@ impl EditFileTool {
                     };
                     let new_str = args.new_str.as_deref().unwrap_or("");
 
-                    let canonical = match resolve_and_validate(&requested, &sources) {
+                    let canonical = match resolve_and_validate(
+                        &requested,
+                        &file_policy.sources,
+                        file_policy.allow_unregistered_absolute_paths,
+                    ) {
                         Ok(p) => p,
                         Err(msg) => {
                             return Ok(ToolResult {
@@ -471,7 +476,11 @@ impl EditFileTool {
                 "create" => {
                     let file_content = args.new_str.as_deref().unwrap_or("");
 
-                    let canonical = match resolve_and_validate(&requested, &sources) {
+                    let canonical = match resolve_and_validate(
+                        &requested,
+                        &file_policy.sources,
+                        file_policy.allow_unregistered_absolute_paths,
+                    ) {
                         Ok(p) => {
                             // File path resolved — check it doesn't already exist.
                             if p.exists() {
@@ -565,6 +574,8 @@ impl EditFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_settings::{AppConfig, ShellAccessMode};
+    use crate::approval::ToolApprovalMode;
     use crate::sources::CreateSourceInput;
 
     fn setup_db_with_source(root: &Path) -> Database {
@@ -577,6 +588,18 @@ mod tests {
         })
         .expect("register source root");
         db
+    }
+
+    fn enable_open_file_access(db: &Database) {
+        let mut config = AppConfig::default();
+        config.shell_access_mode = ShellAccessMode::Open;
+        db.save_app_config(&config).expect("save app config");
+    }
+
+    fn enable_allow_all_tool_approval(db: &Database) {
+        let mut config = AppConfig::default();
+        config.tool_approval_mode = ToolApprovalMode::AllowAll;
+        db.save_app_config(&config).expect("save app config");
     }
 
     #[tokio::test]
@@ -1013,5 +1036,61 @@ mod tests {
         // Verify file was not modified.
         let content = std::fs::read_to_string(&file).unwrap();
         assert_eq!(content, "secret");
+    }
+
+    #[tokio::test]
+    async fn test_open_mode_allows_absolute_path_outside_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        let file = other_dir.path().join("secret.txt");
+        std::fs::write(&file, "secret").unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        enable_open_file_access(&db);
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "action": "str_replace",
+            "old_str": "secret",
+            "new_str": "updated"
+        });
+
+        let result = tool
+            .execute("c-open", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "updated");
+    }
+
+    #[tokio::test]
+    async fn test_allow_all_tool_approval_reads_all_registered_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "before").unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        enable_allow_all_tool_approval(&db);
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "action": "str_replace",
+            "old_str": "before",
+            "new_str": "after"
+        });
+
+        let result = tool
+            .execute(
+                "c-allow-all",
+                &args.to_string(),
+                &db,
+                &["unrelated-source-scope".to_string()],
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "after");
     }
 }
