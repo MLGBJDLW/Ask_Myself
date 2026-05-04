@@ -2445,6 +2445,15 @@ fn sanitize_tool_call_history(mut messages: Vec<Message>) -> Vec<Message> {
     messages
 }
 
+fn config_timeout_secs(value: Option<i64>, app_value: i64, default_value: u32) -> u32 {
+    let secs = value.unwrap_or(app_value);
+    if secs < 0 {
+        default_value
+    } else {
+        secs.min(u32::MAX as i64) as u32
+    }
+}
+
 /// After an interrupted agent execution, check for assistant messages with
 /// `tool_calls` that lack corresponding tool response messages, and insert
 /// synthetic error responses so the conversation history remains valid.
@@ -2974,18 +2983,16 @@ pub async fn compact_conversation_cmd(
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
-        tool_timeout_secs: Some(
-            db_config
-                .tool_timeout_secs
-                .map(|v| v as u32)
-                .unwrap_or(app_cfg.tool_timeout_secs as u32),
-        ),
-        agent_timeout_secs: Some(
-            db_config
-                .agent_timeout_secs
-                .map(|v| v as u32)
-                .unwrap_or(app_cfg.agent_timeout_secs as u32),
-        ),
+        tool_timeout_secs: Some(config_timeout_secs(
+            db_config.tool_timeout_secs,
+            app_cfg.tool_timeout_secs,
+            30,
+        )),
+        agent_timeout_secs: Some(config_timeout_secs(
+            db_config.agent_timeout_secs,
+            app_cfg.agent_timeout_secs,
+            180,
+        )),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
         dynamic_tool_visibility: true,
         trace_enabled: true,
@@ -3494,18 +3501,16 @@ pub async fn agent_chat_cmd(
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
-        tool_timeout_secs: Some(
-            db_config
-                .tool_timeout_secs
-                .map(|v| v as u32)
-                .unwrap_or(app_cfg.tool_timeout_secs as u32),
-        ),
-        agent_timeout_secs: Some(
-            db_config
-                .agent_timeout_secs
-                .map(|v| v as u32)
-                .unwrap_or(app_cfg.agent_timeout_secs as u32),
-        ),
+        tool_timeout_secs: Some(config_timeout_secs(
+            db_config.tool_timeout_secs,
+            app_cfg.tool_timeout_secs,
+            30,
+        )),
+        agent_timeout_secs: Some(config_timeout_secs(
+            db_config.agent_timeout_secs,
+            app_cfg.agent_timeout_secs,
+            180,
+        )),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
         dynamic_tool_visibility: true,
         trace_enabled: true,
@@ -4026,9 +4031,11 @@ pub async fn agent_chat_cmd(
 
         // Keep the frontend stream alive while the agent is still running but
         // the upstream provider is temporarily silent (reasoning, tool work,
-        // or SSE gaps). The actual hard stop remains `turn_timeout_secs`.
+        // or SSE gaps). A timeout of 0 disables the hard turn stop; users can
+        // still stop the run manually.
         let mut run_future = Box::pin(run_future);
-        let mut turn_timeout = Box::pin(tokio::time::sleep(Duration::from_secs(turn_timeout_secs)));
+        let mut turn_timeout = (turn_timeout_secs > 0)
+            .then(|| Box::pin(tokio::time::sleep(Duration::from_secs(turn_timeout_secs))));
         let mut keepalive =
             tokio::time::interval(Duration::from_secs(STREAM_KEEPALIVE_INTERVAL_SECS));
         keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -4037,7 +4044,13 @@ pub async fn agent_chat_cmd(
         let (result, timed_out) = loop {
             tokio::select! {
                 run_result = &mut run_future => break (Some(run_result), false),
-                _ = &mut turn_timeout => break (None, true),
+                _ = async {
+                    if let Some(timeout) = turn_timeout.as_mut() {
+                        timeout.as_mut().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => break (None, true),
                 _ = keepalive.tick() => {
                     let payload = AgentFrontendEvent {
                         conversation_id: conv_id.clone(),

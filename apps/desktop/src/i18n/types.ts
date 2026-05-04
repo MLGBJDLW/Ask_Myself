@@ -488,6 +488,7 @@ export interface TranslationKeys {
   'settings.toolTimeout': string;
   'settings.toolTimeoutDesc': string;
   'settings.agentTimeout': string;
+  'settings.agentTimeoutNoLimit': string;
   'settings.agentTimeoutDesc': string;
   'settings.timeout': string;
 

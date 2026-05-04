@@ -39,6 +39,7 @@ impl ShellAccessMode {
 pub struct AppConfig {
     #[serde(default = "default_tool_timeout")]
     pub tool_timeout_secs: i64,
+    /// Maximum time for an agent turn in seconds. 0 disables the hard turn timeout.
     #[serde(default = "default_agent_timeout")]
     pub agent_timeout_secs: i64,
 
