@@ -1,10 +1,7 @@
 import {
   AlertTriangle,
-  Bot,
   BrainCircuit,
-  CheckCircle2,
   ChevronDown,
-  ClipboardList,
   Cpu,
   Database,
   FolderOpen,
@@ -18,23 +15,13 @@ import {
   Wrench,
   Zap,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useTranslation } from '../../i18n';
 import type {
   AgentTaskRun,
   AgentTaskRunEvent,
   Conversation,
-  ConversationMessage,
 } from '../../types/conversation';
-import type { ToolCallEvent } from '../../lib/useAgentStream';
-import {
-  findLatestPlanArtifact,
-  findLatestVerificationArtifact,
-  type VerificationOverallStatus,
-} from '../../lib/taskArtifacts';
-import { findVisibleSubagentRuns } from '../../lib/subagentArtifacts';
-import { PlanPanel, VerificationPanel } from './TaskPanels';
-import { SubagentCard } from './SubagentCard';
 
 interface TokenUsage {
   promptTokens: number;
@@ -83,8 +70,6 @@ interface ChatRunOverviewProps {
   isCompacting?: boolean;
   onCompact?: () => void;
   onStartNewChat?: () => void;
-  messages: ConversationMessage[];
-  toolCalls: ToolCallEvent[];
   taskRun?: AgentTaskRun | null;
   taskEvents?: AgentTaskRunEvent[];
 }
@@ -265,23 +250,6 @@ function taskPhaseLabel(phase: string | null | undefined, t: ReturnType<typeof u
   }
 }
 
-function verificationStatusLabel(
-  status: VerificationOverallStatus,
-  t: ReturnType<typeof useTranslation>['t'],
-) {
-  switch (status) {
-    case 'passed':
-      return t('chat.verificationPassed');
-    case 'failed':
-      return t('chat.verificationFailed');
-    case 'partial':
-      return t('chat.verificationPartial');
-    case 'pending':
-    default:
-      return t('chat.verificationPending');
-  }
-}
-
 export function ChatRunOverview({
   conversationTitle,
   collectionContext,
@@ -300,8 +268,6 @@ export function ChatRunOverview({
   isCompacting = false,
   onCompact,
   onStartNewChat,
-  messages,
-  toolCalls,
   taskRun,
   taskEvents = [],
 }: ChatRunOverviewProps) {
@@ -309,19 +275,6 @@ export function ChatRunOverview({
   const shouldStartExpanded =
     Boolean(contextOverflow || rateLimited || taskRun?.status === 'waiting_approval');
   const [expanded, setExpanded] = useState(shouldStartExpanded);
-
-  const plan = useMemo(
-    () => findLatestPlanArtifact(messages, toolCalls),
-    [messages, toolCalls],
-  );
-  const verification = useMemo(
-    () => findLatestVerificationArtifact(messages, toolCalls),
-    [messages, toolCalls],
-  );
-  const subagents = useMemo(
-    () => findVisibleSubagentRuns(messages, toolCalls, 4),
-    [messages, toolCalls],
-  );
 
   const usage = tokenUsage && tokenUsage.contextWindow > 0 ? tokenUsage : null;
   const usagePercent = usage ? Math.min(100, (usage.promptTokens / usage.contextWindow) * 100) : 0;
@@ -361,10 +314,6 @@ export function ChatRunOverview({
     ? ['queued', 'running', 'waiting_approval', 'cancelling'].includes(taskRun.status)
     : isStreaming;
   const recentTaskEvents = taskEvents.slice(-5).reverse();
-  const runningSubagents = subagents.filter(run => run.status === 'running').length;
-  const planCompleted = plan?.steps.filter(step => step.status === 'completed').length ?? 0;
-  const planTotal = plan?.steps.length ?? 0;
-  const verificationSummary = verification?.overallStatus ?? null;
   const modelLabel = runtimeProfile
     ? `${runtimeProfile.provider} / ${runtimeProfile.model}`
     : t('chat.contextNoModel');
@@ -617,51 +566,6 @@ export function ChatRunOverview({
               </div>
             </section>
           </div>
-
-          {(subagents.length > 0 || plan || verification) && (
-            <div className="mt-2 grid max-h-[240px] gap-2 overflow-y-auto lg:grid-cols-2">
-              {subagents.length > 0 && (
-                <section className="space-y-2 rounded-lg border border-border/60 bg-surface-1/60 px-2 py-2 lg:col-span-2">
-                  <div className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-text-tertiary">
-                    <Bot className="h-3.5 w-3.5" />
-                    {runningSubagents > 0
-                      ? t('chat.helpersActive', { active: runningSubagents, total: subagents.length })
-                      : t('chat.helpersCount', { count: subagents.length })}
-                  </div>
-                  {subagents.map(run => (
-                    <SubagentCard
-                      key={run.id}
-                      run={run}
-                      compact
-                      defaultOpen={run.status === 'running'}
-                    />
-                  ))}
-                </section>
-              )}
-              {plan && (
-                <div className="min-w-0">
-                  <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-text-tertiary">
-                    <ClipboardList className="h-3.5 w-3.5" />
-                    {t('chat.planStepsCompleted', { completed: planCompleted, total: planTotal })}
-                  </div>
-                  <PlanPanel plan={plan} compact />
-                </div>
-              )}
-              {verification && (
-                <div className="min-w-0">
-                  <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-text-tertiary">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    {verificationSummary
-                      ? t('chat.verificationStatus', {
-                        status: verificationStatusLabel(verificationSummary, t),
-                      })
-                      : t('chat.verificationLabel')}
-                  </div>
-                  <VerificationPanel verification={verification} compact />
-                </div>
-              )}
-            </div>
-          )}
         </div>
       </details>
     </div>

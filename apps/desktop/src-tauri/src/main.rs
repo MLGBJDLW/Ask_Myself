@@ -223,12 +223,18 @@ fn main() {
             commands::start_watching,
             commands::stop_watching,
             commands::get_watcher_status,
+            // Personas
+            commands::list_personas_cmd,
             // Projects
             commands::create_project_cmd,
             commands::list_projects_cmd,
             commands::get_project_cmd,
             commands::update_project_cmd,
             commands::delete_project_cmd,
+            commands::list_project_memories_cmd,
+            commands::create_project_memory_cmd,
+            commands::update_project_memory_cmd,
+            commands::delete_project_memory_cmd,
             commands::move_conversation_to_project_cmd,
             commands::remove_conversation_from_project_cmd,
             // Conversations

@@ -257,6 +257,8 @@ export interface UseChatSessionOptions {
   getCurrentSourceScope?: () => string[] | null | undefined;
   /** Optional collection context to persist on the conversation */
   initialCollectionContext?: Conversation['collectionContext'];
+  /** UI-selected persona to inject for the next agent turn */
+  activePersonaId?: string | null;
 }
 
 export interface RuntimeProfile {
@@ -337,6 +339,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     initialSourceIds = [],
     getCurrentSourceScope,
     initialCollectionContext = null,
+    activePersonaId = null,
   } = options;
 
   const { t } = useTranslation();
@@ -1071,9 +1074,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       pendingStreamConversationRef.current = convId;
       streamingConversationRef.current = convId;
 
-      await streamSend(convId, content, attachments, configForSend.id);
+      await streamSend(convId, content, attachments, configForSend.id, activePersonaId);
     },
-    [activeId, customSystemPrompt, initialCollectionContext, initialSourceIds, isStreaming, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
+    [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, isStreaming, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
   );
 
   const stop = useCallback(() => {

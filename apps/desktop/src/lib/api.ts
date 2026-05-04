@@ -341,6 +341,18 @@ export const stopWatching = (sourceId: string) =>
 export const getWatcherStatus = () =>
   invoke<WatchedSourceInfo[]>('get_watcher_status');
 
+// ── Personas ─────────────────────────────────────────────────────────────
+
+export interface PersonaProfile {
+  id: string;
+  name: string;
+  description: string;
+  instructions: string;
+}
+
+export const listPersonas = () =>
+  invoke<PersonaProfile[]>('list_personas_cmd');
+
 // ── Agent Config ────────────────────────────────────────────────────────
 
 export const listAgentConfigs = () => invoke<AgentConfig[]>('list_agent_configs_cmd');
@@ -429,6 +441,47 @@ export const updateProject = (id: string, input: UpdateProjectInput) =>
 export const deleteProject = (id: string) =>
   invoke<void>('delete_project_cmd', { id });
 
+export interface ProjectMemory {
+  id: string;
+  projectId: string;
+  kind: string;
+  title: string;
+  content: string;
+  source: string;
+  pinned: boolean;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateProjectMemoryInput {
+  kind?: string | null;
+  title?: string | null;
+  content: string;
+  pinned?: boolean | null;
+  source?: string | null;
+}
+
+export interface UpdateProjectMemoryInput {
+  kind?: string | null;
+  title?: string | null;
+  content?: string | null;
+  pinned?: boolean | null;
+  archived?: boolean | null;
+}
+
+export const listProjectMemories = (projectId: string) =>
+  invoke<ProjectMemory[]>('list_project_memories_cmd', { projectId });
+
+export const createProjectMemory = (projectId: string, input: CreateProjectMemoryInput) =>
+  invoke<ProjectMemory>('create_project_memory_cmd', { projectId, input });
+
+export const updateProjectMemory = (id: string, input: UpdateProjectMemoryInput) =>
+  invoke<ProjectMemory>('update_project_memory_cmd', { id, input });
+
+export const deleteProjectMemory = (id: string) =>
+  invoke<void>('delete_project_memory_cmd', { id });
+
 export const moveConversationToProject = (conversationId: string, projectId: string) =>
   invoke<void>('move_conversation_to_project_cmd', { conversationId, projectId });
 
@@ -442,12 +495,14 @@ export const agentChat = (
   message: string,
   attachments?: ImageAttachment[],
   agentConfigId?: string | null,
+  personaId?: string | null,
 ) =>
   invoke<void>('agent_chat_cmd', {
     conversationId,
     message,
     attachments: attachments ?? null,
     agentConfigId: agentConfigId ?? null,
+    personaId: personaId ?? null,
   });
 
 export const agentSteer = (conversationId: string, message: string) =>

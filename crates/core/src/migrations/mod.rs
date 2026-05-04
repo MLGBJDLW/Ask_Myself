@@ -768,6 +768,25 @@ Every answer that uses knowledge base search results.
            AND builtin_id = 'playwright-browser'
            AND transport != 'streamable_http';",
     ),
+    (
+        "v054_project_memories",
+        "CREATE TABLE IF NOT EXISTS project_memories (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL DEFAULT 'note',
+            title TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'manual',
+            pinned INTEGER NOT NULL DEFAULT 0,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_memories_project
+            ON project_memories(project_id, archived, pinned, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_project_memories_kind
+            ON project_memories(project_id, kind);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

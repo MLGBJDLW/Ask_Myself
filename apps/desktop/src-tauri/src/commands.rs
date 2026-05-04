@@ -34,6 +34,7 @@ use nexa_core::llm::{
     ProviderConfig, ProviderType, ReasoningEffort, Role, Usage,
 };
 use nexa_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
+use nexa_core::persona::PersonaProfile;
 
 use base64::Engine;
 use chrono::{Local, SecondsFormat, Utc};
@@ -45,6 +46,9 @@ use nexa_core::ocr::extract_text_from_image;
 use nexa_core::playbook::QueryLog;
 use nexa_core::privacy::PrivacyConfig;
 use nexa_core::project::{CreateProjectInput, Project, UpdateProjectInput};
+use nexa_core::project_memory::{
+    CreateProjectMemoryInput, ProjectMemory, UpdateProjectMemoryInput,
+};
 use nexa_core::provider_catalog::{load_provider_presets, preset_model_ids, ProviderPreset};
 use nexa_core::search::{self, SearchResult};
 use nexa_core::skills::{DiscoveredSkillBundle, SaveSkillInput, Skill};
@@ -1852,7 +1856,11 @@ fn decode_preview_text(bytes: &[u8]) -> (String, String, bool) {
             if !had_errors {
                 return (text.into_owned(), "gbk".to_string(), false);
             }
-            (String::from_utf8_lossy(bytes).into_owned(), "lossy".to_string(), false)
+            (
+                String::from_utf8_lossy(bytes).into_owned(),
+                "lossy".to_string(),
+                false,
+            )
         }
     }
 }
@@ -1932,7 +1940,9 @@ fn build_file_preview(db: &Database, raw_path: &str) -> Result<FilePreview, Stri
         binary = bytes[..bytes.len().min(8192)].contains(&0);
         truncated = size_bytes > PREVIEW_TEXT_BYTES_LIMIT;
         if binary {
-            warning = Some("This looks like a binary file, so inline text preview is disabled.".to_string());
+            warning = Some(
+                "This looks like a binary file, so inline text preview is disabled.".to_string(),
+            );
         } else {
             let (text, enc, editable_encoding) = decode_preview_text(&bytes);
             content = Some(text);
@@ -1944,7 +1954,10 @@ fn build_file_preview(db: &Database, raw_path: &str) -> Result<FilePreview, Stri
                     PREVIEW_TEXT_BYTES_LIMIT / 1024 / 1024
                 ));
             } else if !encoding_editable {
-                warning = Some("Preview decoded a non-UTF-8 encoding; edit externally to preserve encoding.".to_string());
+                warning = Some(
+                    "Preview decoded a non-UTF-8 encoding; edit externally to preserve encoding."
+                        .to_string(),
+                );
             }
         }
     } else {
@@ -1957,7 +1970,11 @@ fn build_file_preview(db: &Database, raw_path: &str) -> Result<FilePreview, Stri
     let kind = preview_kind(&ext, &mime_type, binary);
     let line_count = content
         .as_deref()
-        .map(|text| text.lines().count().max(if text.is_empty() { 0 } else { 1 }))
+        .map(|text| {
+            text.lines()
+                .count()
+                .max(if text.is_empty() { 0 } else { 1 })
+        })
         .unwrap_or(0);
     let editable = content.is_some()
         && !truncated
@@ -2162,6 +2179,11 @@ pub fn get_watcher_status(
             root_path: path.clone(),
         })
         .collect())
+}
+
+#[tauri::command]
+pub fn list_personas_cmd() -> Vec<PersonaProfile> {
+    nexa_core::persona::builtin_personas().to_vec()
 }
 
 // ── Agent Helpers ───────────────────────────────────────────────────────
@@ -2505,6 +2527,52 @@ pub async fn delete_project_cmd(
     id: String,
 ) -> Result<(), String> {
     state.db.delete_project(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_project_memories_cmd(
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<ProjectMemory>, String> {
+    state
+        .db
+        .list_project_memories(&project_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_project_memory_cmd(
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    input: CreateProjectMemoryInput,
+) -> Result<ProjectMemory, String> {
+    state
+        .db
+        .create_project_memory(&project_id, &input)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_project_memory_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: UpdateProjectMemoryInput,
+) -> Result<ProjectMemory, String> {
+    state
+        .db
+        .update_project_memory(&id, &input)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_project_memory_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    state
+        .db
+        .delete_project_memory(&id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3171,6 +3239,7 @@ pub async fn agent_chat_cmd(
     message: String,
     attachments: Option<Vec<ImageAttachment>>,
     agent_config_id: Option<String>,
+    persona_id: Option<String>,
 ) -> Result<(), String> {
     // 1. Load the conversation first so provider/model selection follows the
     // active chat, not whatever global default happened to be selected later.
@@ -3269,6 +3338,12 @@ pub async fn agent_chat_cmd(
     let memory_section =
         nexa_core::personalization::build_memory_summary_for_query(&state.db, Some(&message))
             .unwrap_or_default();
+    let project_memory_section = nexa_core::project_memory::build_project_memory_summary_for_query(
+        &state.db,
+        conv.project_id.as_deref(),
+        Some(&message),
+    )
+    .unwrap_or_default();
     let agent_memory_section =
         nexa_core::evolution::build_agent_procedural_memory_summary_for_query(
             &state.db,
@@ -3301,14 +3376,17 @@ pub async fn agent_chat_cmd(
         &state.db,
         Some(&conversation_id),
     );
+    let persona_section = nexa_core::persona::build_persona_prompt_section(persona_id.as_deref());
     let current_turn_time_section = build_current_turn_time_section();
     let system_prompt = build_system_prompt(
         Some(&conv.system_prompt),
         &[
             &current_turn_time_section,
+            &persona_section,
             &collection_context_section,
             &source_scope_section,
             &memory_section,
+            &project_memory_section,
             &agent_memory_section,
             &preference_section,
             &learned_section,

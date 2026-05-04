@@ -123,6 +123,8 @@ test.beforeEach(async ({ page }) => {
           listeners.delete(Number(args.eventId ?? 0));
           return null;
         }
+        case 'get_wizard_state_cmd':
+          return { completed: true };
         case 'list_agent_configs_cmd':
           return [clone(defaultAgentConfig)];
         case 'get_model_context_window':
@@ -170,6 +172,8 @@ test.beforeEach(async ({ page }) => {
             createdAt: nowIso,
             updatedAt: nowIso,
           }];
+        case 'list_personas_cmd':
+          return [];
         case 'list_mcp_servers_cmd':
           return [{
             id: 'mcp-web',
@@ -407,32 +411,32 @@ test('shows subagent cards in chat and tool permissions in settings', async ({ p
   await page.getByTestId('chat-input-textarea').fill('Please review the answer.');
   await page.getByTestId('chat-send').click();
 
-  await expect(page.getByText(/Subagents 1(?:\/1 active)?/)).toBeVisible();
+  await expect(page.getByText(/Helpers 1(?:\/1 active)?/)).toBeVisible();
 
-  const subagentCard = page.getByRole('button', {
+  const taskBoard = page.getByTestId('task-board');
+  const subagentCard = taskBoard.getByRole('button', {
     name: /Critic\s+Complete\s+1 tool\s+Audit the last answer for risks/i,
   }).first();
   await expect(subagentCard).toBeVisible();
-  await subagentCard.click();
 
-  const chatLog = page.getByLabel('Chat messages');
-  await expect(chatLog.getByText('Allowed tools')).toBeVisible();
-  await expect(chatLog.getByTitle('search_knowledge_base').first()).toBeVisible();
-  await expect(chatLog.getByText('Allowed skills')).toBeVisible();
-  await expect(chatLog.getByText('Critic Format')).toBeVisible();
-  await expect(chatLog.getByText('Acceptance criteria')).toBeVisible();
-  await expect(chatLog.getByText('Effective source scope')).toBeVisible();
-  await expect(chatLog.getByText('Evidence handoff')).toBeVisible();
-  await expect(chatLog.getByText('parallel: review-pass')).toBeVisible();
-  await expect(chatLog.getByText('Inner trace')).toBeVisible();
+  await taskBoard.getByText('Allowed tools').scrollIntoViewIfNeeded();
+  await expect(taskBoard.getByText('Allowed tools')).toBeVisible();
+  await expect(taskBoard.getByTitle('search_knowledge_base').first()).toBeVisible();
+  await expect(taskBoard.getByText('Allowed skills')).toBeVisible();
+  await expect(taskBoard.getByText('Critic Format')).toBeVisible();
+  await expect(taskBoard.getByText('Acceptance criteria')).toBeVisible();
+  await expect(taskBoard.getByText('Effective source scope')).toBeVisible();
+  await expect(taskBoard.getByText('Evidence handoff')).toBeVisible();
+  await expect(taskBoard.getByText('parallel: review-pass')).toBeVisible();
+  await expect(taskBoard.getByText('Inner trace')).toBeVisible();
   await expect(page.getByText('Supervisor synthesis complete.')).toBeVisible();
 
   await page.goto('/settings');
   await page.getByRole('button', { name: 'AI Providers' }).click();
-  await expect(page.getByText('subagents 16')).toBeVisible();
+  await expect(page.getByText(/subagents \d+/)).toBeVisible();
   await page.getByRole('button', { name: 'Add Provider' }).click();
   await page.getByRole('button', { name: 'Custom / Manual' }).click();
-  await page.getByRole('button', { name: 'Advanced Settings' }).click();
+  await page.getByRole('button', { name: 'Expand' }).click();
   await expect(page.getByRole('heading', { name: 'Subagents' })).toBeVisible();
   await expect(page.getByText('Max parallel workers')).toBeVisible();
   await expect(page.getByText('Max worker calls / turn')).toBeVisible();

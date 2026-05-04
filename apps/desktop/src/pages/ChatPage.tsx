@@ -1,10 +1,10 @@
 import { useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Settings, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Settings, PanelLeftClose, PanelLeftOpen, UserRound } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
-import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput, ActiveExtensions, ChatRunOverview } from '../components/chat';
+import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
 import { useApprovalQueue } from '../lib/useApprovalQueue';
 import { useTranslation } from '../i18n';
@@ -53,6 +53,27 @@ export function ChatPage() {
     currentSourceIdsRef.current = ids;
   }, []);
 
+  const PERSONA_STORAGE_KEY = 'chat-active-persona-id';
+  const [activePersonaId, setActivePersonaId] = useState(() => {
+    try {
+      return localStorage.getItem(PERSONA_STORAGE_KEY) || 'default';
+    } catch {
+      return 'default';
+    }
+  });
+  const [personas, setPersonas] = useState<api.PersonaProfile[]>([]);
+  useEffect(() => {
+    api.listPersonas()
+      .then((items) => setPersonas(Array.isArray(items) ? items : []))
+      .catch(() => setPersonas([]));
+  }, []);
+  const setPersona = useCallback((id: string) => {
+    setActivePersonaId(id);
+    try {
+      localStorage.setItem(PERSONA_STORAGE_KEY, id);
+    } catch { /* ignore */ }
+  }, []);
+
   const chat = useChatSession({
     conversationId,
     onConversationCreated,
@@ -60,6 +81,7 @@ export function ChatPage() {
     initialSourceIds,
     getCurrentSourceScope,
     initialCollectionContext,
+    activePersonaId,
   });
 
   const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>([]);
@@ -453,6 +475,25 @@ export function ChatPage() {
                       <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[8px] text-text-tertiary">▾</span>
                     </div>
                   )}
+                  {personas.length > 0 && (
+                    <div className="relative">
+                      <UserRound className="pointer-events-none absolute left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-text-tertiary" />
+                      <select
+                        className="text-[10px] text-text-secondary bg-surface-3 pl-5 pr-4 py-0.5 rounded-md cursor-pointer border-none outline-none max-w-[170px] truncate appearance-none"
+                        value={activePersonaId}
+                        aria-label="Active persona"
+                        onChange={(e) => setPersona(e.target.value)}
+                        title={`Persona: ${personas.find((p) => p.id === activePersonaId)?.name ?? activePersonaId}`}
+                      >
+                        {personas.map((persona) => (
+                          <option key={persona.id} value={persona.id}>
+                            {persona.name}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[8px] text-text-tertiary">▾</span>
+                    </div>
+                  )}
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                     <SourceSelector
                       conversationId={chat.activeId}
@@ -489,8 +530,6 @@ export function ChatPage() {
                 isCompacting={isCompacting}
                 onCompact={handleCompactConversation}
                 onStartNewChat={handleNewConversation}
-                messages={chat.messages}
-                toolCalls={chat.toolCalls}
                 taskRun={chat.taskRun}
                 taskEvents={chat.taskEvents}
               />
@@ -513,6 +552,12 @@ export function ChatPage() {
               loadingMsgs={chat.loadingMsgs}
               lastCached={chat.lastCached}
               onSuggestionClick={handleSuggestionClick}
+            />
+            <TaskBoard
+              messages={chat.messages}
+              toolCalls={chat.toolCalls}
+              taskRun={chat.taskRun}
+              taskEvents={chat.taskEvents}
             />
             <ChatInput
               onSend={chat.send}

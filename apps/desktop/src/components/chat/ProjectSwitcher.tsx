@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { FolderOpen, Plus, ChevronDown, Check } from 'lucide-react';
+import { Brain, FolderOpen, Plus, ChevronDown, Check } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { Project, CreateProjectInput } from '../../types/project';
 import * as api from '../../lib/api';
+import { ProjectMemoryPanel } from './ProjectMemoryPanel';
 
 const PROJECT_STORAGE_KEY = 'active-project-id';
 
@@ -44,12 +45,13 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
+  const [showMemoryPanel, setShowMemoryPanel] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const loadProjects = useCallback(async () => {
     try {
       const list = await api.listProjects();
-      setProjects(list);
+      setProjects(Array.isArray(list) ? list : []);
     } catch {
       // silent
     }
@@ -153,6 +155,20 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
           {/* Divider */}
           <div className="border-t border-border my-1" />
 
+          {activeProjectId && (
+            <button
+              onClick={() => {
+                setShowMemoryPanel(true);
+                setOpen(false);
+              }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-surface-3 text-text-secondary
+                hover:text-text-primary transition-colors cursor-pointer"
+            >
+              <Brain className="h-3 w-3 shrink-0" />
+              <span className="flex-1 text-left">Project 记忆</span>
+            </button>
+          )}
+
           {/* Create new */}
           {creating ? (
             <div className="px-3 py-1.5">
@@ -181,6 +197,12 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
           )}
         </div>
       )}
+
+      <ProjectMemoryPanel
+        projectId={activeProjectId}
+        open={showMemoryPanel}
+        onClose={() => setShowMemoryPanel(false)}
+      />
     </div>
   );
 }

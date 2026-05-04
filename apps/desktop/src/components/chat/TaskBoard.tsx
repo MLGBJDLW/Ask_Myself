@@ -1,5 +1,5 @@
 import { Bot, CheckCircle2, ChevronDown, ClipboardList, Loader2, Route, ShieldCheck } from 'lucide-react';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from '../../i18n';
 import type { AgentTaskRun, AgentTaskRunEvent, ConversationMessage } from '../../types/conversation';
 import type { ToolCallEvent } from '../../lib/useAgentStream';
@@ -93,6 +93,7 @@ export function TaskBoard({
   taskEvents = [],
 }: TaskBoardProps) {
   const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(true);
   const plan = useMemo(
     () => findLatestPlanArtifact(messages, toolCalls),
     [messages, toolCalls],
@@ -120,8 +121,15 @@ export function TaskBoard({
   const recentTaskEvents = taskEvents.slice(-5).reverse();
 
   return (
-    <div className="shrink-0 border-b border-border/60 bg-surface-1/70 px-2 py-1.5 backdrop-blur">
-      <details className="group rounded-lg border border-border/60 bg-surface-0/75">
+    <div
+      data-testid="task-board"
+      className="shrink-0 border-t border-border/60 bg-surface-0/90 px-3 py-2 backdrop-blur"
+    >
+      <details
+        open={expanded}
+        onToggle={(event) => setExpanded(event.currentTarget.open)}
+        className="group rounded-lg border border-border/60 bg-surface-1/55"
+      >
         <summary className="flex cursor-pointer list-none items-center gap-1.5 px-2 py-1.5 text-xs text-text-secondary [&::-webkit-details-marker]:hidden">
           {subagents.length > 0 && (
             <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-primary">
@@ -230,7 +238,7 @@ export function TaskBoard({
                   key={run.id}
                   run={run}
                   compact
-                  defaultOpen={run.status === 'running'}
+                  defaultOpen={run.status === 'running' || subagents.length === 1}
                 />
               ))}
             </div>
