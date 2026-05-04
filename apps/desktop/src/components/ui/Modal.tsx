@@ -2,8 +2,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
-
-const INSTANT_TRANSITION = { duration: 0 };
+import { getSoftDropdownMotion, INSTANT_TRANSITION } from '../../lib/uiMotion';
 
 const FOCUSABLE_SELECTOR = [
   'button:not([disabled])',
@@ -127,10 +126,7 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
           />
           <motion.div
             ref={contentRef}
-            initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.95, y: 10 }}
-            animate={shouldReduceMotion ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1, scale: 1, y: 0 }}
-            exit={shouldReduceMotion ? { opacity: 0, scale: 1, y: 0 } : { opacity: 0, scale: 0.95, y: 10 }}
-            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            {...getSoftDropdownMotion(!!shouldReduceMotion, 8)}
             role="dialog"
             aria-modal="true"
             aria-label={title}

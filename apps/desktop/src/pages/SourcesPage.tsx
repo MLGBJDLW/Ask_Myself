@@ -37,6 +37,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { VideoProcessingProgress } from '../components/media/VideoProcessingProgress';
 import { SourceFileTree } from '../components/sources/SourceFileTree';
 import { undoableAction } from '../lib/undoToast';
+import { getSoftCollapseMotion } from '../lib/uiMotion';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -604,7 +605,7 @@ export function SourcesPage() {
           initial="hidden"
           animate="show"
         >
-          <AnimatePresence mode="popLayout">
+          <AnimatePresence initial={false}>
             {sources.map((source) => {
               const isActivelyScanning =
                 scanningId === source.id ||
@@ -729,15 +730,8 @@ export function SourcesPage() {
                   {expanded && (
                     <motion.div
                       key="source-detail"
+                      {...getSoftCollapseMotion(!!shouldReduceMotion)}
                       className="overflow-hidden"
-                      initial={shouldReduceMotion ? false : { opacity: 0, height: 0, y: -4 }}
-                      animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, height: 'auto', y: 0 }}
-                      exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, height: 0, y: -4 }}
-                      transition={shouldReduceMotion ? { duration: 0 } : {
-                        height: { duration: 0.2, ease: [0.16, 1, 0.3, 1] },
-                        opacity: { duration: 0.14, ease: 'easeOut' },
-                        y: { duration: 0.16, ease: 'easeOut' },
-                      }}
                     >
                       <div className="mt-4 overflow-hidden rounded-lg border border-border bg-surface-1/60">
                         <div className="flex flex-col gap-2 border-b border-border bg-surface-2/80 px-3 py-2.5 lg:flex-row lg:items-center lg:justify-between">

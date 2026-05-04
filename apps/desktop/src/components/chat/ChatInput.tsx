@@ -1,5 +1,4 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { motion } from "framer-motion";
 import { Send, Square, Paperclip, X, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "../../i18n";
@@ -337,15 +336,14 @@ export function ChatInput({
       )}
 
       <div className="flex items-end gap-2">
-        <motion.button
-          whileTap={{ scale: 0.95 }}
+        <button
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled || isStreaming}
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
           aria-label={t("chat.attachImage")}
         >
           <Paperclip className="h-4 w-4" />
-        </motion.button>
+        </button>
         <input
           ref={fileInputRef}
           type="file"
@@ -383,8 +381,7 @@ export function ChatInput({
           disabled={disabled || isStreaming}
         />
 
-        <motion.button
-          whileTap={{ scale: 0.95 }}
+        <button
           onClick={handleSend}
           disabled={disabled || (!value.trim() && attachments.length === 0)}
           data-testid="chat-send"
@@ -392,17 +389,16 @@ export function ChatInput({
           aria-label={t("chat.send")}
         >
           <Send className="h-4 w-4" />
-        </motion.button>
+        </button>
 
         {isStreaming && (
-          <motion.button
-            whileTap={{ scale: 0.95 }}
+          <button
             onClick={onStop}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-danger/10 text-danger transition-colors duration-fast ease-out cursor-pointer hover:bg-danger/20"
             aria-label={t("chat.stop")}
           >
             <Square className="h-4 w-4" />
-          </motion.button>
+          </button>
         )}
       </div>
 

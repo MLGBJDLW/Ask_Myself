@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback, lazy, Suspense } from "react";
 import { Smile } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { useTranslation } from "../../i18n";
 import { useTheme } from "../../lib/ThemeProvider";
+import { getSoftDropdownMotion } from "../../lib/uiMotion";
 
 const LazyPicker = lazy(async () => {
   const [{ default: data }, { default: Picker }] = await Promise.all([
@@ -25,6 +26,7 @@ interface EmojiPickerProps {
 export function EmojiPicker({ onEmojiSelect, disabled }: EmojiPickerProps) {
   const { t } = useTranslation();
   const { theme } = useTheme();
+  const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -49,8 +51,7 @@ export function EmojiPicker({ onEmojiSelect, disabled }: EmojiPickerProps) {
 
   return (
     <div ref={containerRef} className="relative">
-      <motion.button
-        whileTap={{ scale: 0.95 }}
+      <button
         onClick={() => setOpen((prev) => !prev)}
         disabled={disabled}
         className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
@@ -58,15 +59,12 @@ export function EmojiPicker({ onEmojiSelect, disabled }: EmojiPickerProps) {
         type="button"
       >
         <Smile className="h-4 w-4" />
-      </motion.button>
+      </button>
 
       <AnimatePresence>
         {open && (
           <motion.div
-            initial={{ opacity: 0, y: 8, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, scale: 0.95 }}
-            transition={{ duration: 0.15 }}
+            {...getSoftDropdownMotion(!!shouldReduceMotion, 6)}
             className="absolute bottom-12 right-0 z-50"
           >
             <Suspense

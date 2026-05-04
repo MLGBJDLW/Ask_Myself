@@ -1,5 +1,4 @@
 import { useState, useCallback, useEffect } from 'react';
-import { motion } from 'framer-motion';
 import { Mic, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
@@ -94,8 +93,7 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
       : t('voice.startRecording');
 
   return (
-    <motion.button
-      whileTap={{ scale: 0.95 }}
+    <button
       onClick={handleClick}
       disabled={disabled || busy}
       className={`relative flex h-10 shrink-0 items-center justify-center rounded-lg transition-colors duration-fast ease-out cursor-pointer disabled:pointer-events-none disabled:opacity-40 ${
@@ -116,6 +114,6 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
       ) : (
         <Mic className="h-4 w-4" />
       )}
-    </motion.button>
+    </button>
   );
 }

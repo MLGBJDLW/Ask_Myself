@@ -1,9 +1,10 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { FileText, Film, Music, Clock, ExternalLink, Copy, Check, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { openFileInDefaultApp, showInFileExplorer, getEvidenceCard } from '../../lib/api';
 import { canPreviewInApp, useFilePreview } from '../../lib/filePreviewContext';
+import { getSoftDropdownMotion } from '../../lib/uiMotion';
 import { VideoPreviewModal } from '../media/VideoPreviewModal';
 import { SaveToPlaybookButton } from '../SaveToPlaybookButton';
 import type { CitationCardData } from '../../lib/citationParser';
@@ -62,6 +63,7 @@ function formatScore(score: number): string {
 
 export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPopupProps) {
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
   const { openFilePreview } = useFilePreview();
   const popupRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
@@ -134,10 +136,7 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
     <AnimatePresence>
       <motion.div
         ref={popupRef}
-        initial={{ opacity: 0, y: -4, scale: 0.97 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: -4, scale: 0.97 }}
-        transition={{ duration: 0.15 }}
+        {...getSoftDropdownMotion(!!shouldReduceMotion)}
         style={style}
         className="w-[340px] max-h-[300px] rounded-lg border border-border bg-surface-1 shadow-xl overflow-hidden"
         role="dialog"

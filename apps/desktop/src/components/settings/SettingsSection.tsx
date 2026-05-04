@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from '../../i18n';
+import { getSoftCollapseMotion, INSTANT_TRANSITION } from '../../lib/uiMotion';
 
 interface SectionProps {
   icon: ReactNode;
@@ -25,6 +26,7 @@ export function Section({
   defaultOpen = true,
 }: SectionProps) {
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(defaultOpen);
 
   const header = (
@@ -41,9 +43,9 @@ export function Section({
 
   return (
     <motion.section
-      initial={{ opacity: 0, y: 12 }}
+      initial={shouldReduceMotion ? false : { opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, delay, ease: [0.16, 1, 0.3, 1] }}
+      transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.24, delay, ease: [0.16, 1, 0.3, 1] }}
       className="overflow-hidden rounded-xl border border-border bg-surface-1"
     >
       {collapsible ? (
@@ -69,21 +71,24 @@ export function Section({
         </div>
       )}
 
-      <AnimatePresence initial={false}>
-        {(!collapsible || open) && (
-          <motion.div
-            initial={collapsible ? { height: 0, opacity: 0 } : false}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={collapsible ? { height: 0, opacity: 0 } : undefined}
-            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden"
-          >
-            <div className={collapsible ? 'border-t border-border px-6 py-5' : 'px-6 pb-6'}>
-              {children}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {collapsible ? (
+        <AnimatePresence initial={false}>
+          {open && (
+            <motion.div
+              {...getSoftCollapseMotion(!!shouldReduceMotion)}
+              className="overflow-hidden"
+            >
+              <div className="border-t border-border px-6 py-5">
+                {children}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      ) : (
+        <div className="px-6 pb-6">
+          {children}
+        </div>
+      )}
     </motion.section>
   );
 }
@@ -117,6 +122,7 @@ export function CollapsiblePanel({
   onOpenChange,
 }: CollapsiblePanelProps) {
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
   const open = controlledOpen ?? internalOpen;
   const toggleOpen = () => {
@@ -153,10 +159,7 @@ export function CollapsiblePanel({
       <AnimatePresence initial={false}>
         {open && (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
           >
             <div className="border-t border-border px-4 py-4">

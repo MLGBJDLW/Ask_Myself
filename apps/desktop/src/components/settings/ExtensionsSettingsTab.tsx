@@ -1,6 +1,7 @@
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { AlertTriangle, Blocks, ChevronDown, ChevronUp, Download, Eye, Loader2, Pencil, Plug, Plus, Search, Trash2, X, Zap } from 'lucide-react';
 import { useTranslation } from '../../i18n';
+import { getSoftCollapseMotion } from '../../lib/uiMotion';
 import type { McpServer, McpToolInfo, SaveMcpServerInput, SaveSkillInput, Skill } from '../../types/extensions';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -119,6 +120,7 @@ export function ExtensionsSettingsTab({
   onConfirmDeleteMcpServer,
 }: ExtensionsSettingsTabProps) {
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
   const extensionCopy = {
     toolCount: (count: number) => t('settings.extensions.toolCount', { count }),
     connectionFailed: t('settings.extensions.connectionFailed'),
@@ -432,10 +434,7 @@ export function ExtensionsSettingsTab({
                     <AnimatePresence initial={false}>
                       {mcpToolsExpanded[server.id] && mcpToolCounts[server.id]?.tools.length > 0 && (
                         <motion.div
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                          {...getSoftCollapseMotion(!!shouldReduceMotion)}
                           className="overflow-hidden"
                         >
                           <div className="px-4 pb-3 border-t border-border/50">

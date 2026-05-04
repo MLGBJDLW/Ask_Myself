@@ -442,7 +442,7 @@ ${evidenceLines}`;
               action={{ label: t('playbooks.create'), onClick: () => setShowCreateModal(true) }}
             />
           ) : (
-            <AnimatePresence mode="popLayout">
+            <AnimatePresence initial={false}>
               {playbooks.map((pb, i) => {
                 const isActive = selectedPlaybook?.id === pb.id;
                 return (
@@ -453,7 +453,7 @@ ${evidenceLines}`;
                     initial="hidden"
                     animate="visible"
                     exit="exit"
-                    layout
+                    layout="position"
                     onClick={() => handleSelect(pb)}
                     className={`
                       w-full rounded-lg border p-3 text-left transition-colors cursor-pointer
@@ -693,7 +693,7 @@ ${evidenceLines}`;
                       </p>
                     </div>
                   ) : (
-                    <AnimatePresence mode="popLayout">
+                    <AnimatePresence initial={false}>
                       <div className="space-y-2">
                         {citations.map((cit, i) => {
                           const evidence = citationEvidence[cit.id];
@@ -709,7 +709,7 @@ ${evidenceLines}`;
                               initial="hidden"
                               animate="visible"
                               exit="exit"
-                              layout
+                              layout="position"
                               className="group rounded-md border border-border bg-surface-2 p-3 transition-colors hover:border-border-hover"
                             >
                               <div className="flex items-start justify-between gap-3">

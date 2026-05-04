@@ -35,6 +35,7 @@ import {
   buildCitationMap,
 } from "../../lib/citationParser";
 import type { CitationCardData } from "../../lib/citationParser";
+import { SOFT_FADE_TRANSITION } from "../../lib/uiMotion";
 import type {
   StreamRoundEvent,
   ToolCallEvent,
@@ -1440,8 +1441,8 @@ export function ChatMessages({
             key={item.id}
             initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
-            layout={!shouldReduceMotion}
-            transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
+            layout={shouldReduceMotion ? false : "position"}
+            transition={shouldReduceMotion ? INSTANT_TRANSITION : SOFT_FADE_TRANSITION}
           >
             {item.kind === "thinking"
               ? renderThinkingTraceNode(item.id, item.sections, item.isStreaming)
@@ -1485,8 +1486,8 @@ export function ChatMessages({
         <motion.div
           initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
-          layout={!shouldReduceMotion}
-          transition={shouldReduceMotion ? INSTANT_TRANSITION : undefined}
+          layout={shouldReduceMotion ? false : "position"}
+          transition={shouldReduceMotion ? INSTANT_TRANSITION : SOFT_FADE_TRANSITION}
           className="flex justify-start mb-3"
         >
           <div className="w-full max-w-[min(100%,72rem)]">

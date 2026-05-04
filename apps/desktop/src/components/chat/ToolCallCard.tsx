@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { FileBadge } from '../ui/FileBadge';
+import { getSoftCollapseMotion } from '../../lib/uiMotion';
 import { extractPlanArtifact, extractVerificationArtifact } from '../../lib/taskArtifacts';
 import {
   extractSubagentArtifact,
@@ -656,10 +657,7 @@ export function ToolCallCard({
       <AnimatePresence>
         {expanded && (content || streamingArgsPreview) && (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
           >
             <div className="border-t border-border px-3 py-2">

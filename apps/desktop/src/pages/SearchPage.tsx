@@ -42,14 +42,13 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { Tooltip } from '../components/ui/Tooltip';
 import { useTranslation } from '../i18n';
 import { useDebounce } from '../lib/useDebounce';
+import { getSoftCollapseMotion, INSTANT_TRANSITION } from '../lib/uiMotion';
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
 
 const PAGE_SIZE = 20;
-const INSTANT_TRANSITION = { duration: 0 };
-
 const FILE_TYPE_OPTIONS: { value: FileType; labelKey: 'search.markdown' | 'search.plaintext' | 'search.log' | 'search.pdf' | 'search.docx' | 'search.excel' | 'search.pptx' | 'search.video' | 'search.audio' }[] = [
   { value: 'markdown', labelKey: 'search.markdown' },
   { value: 'plaintext', labelKey: 'search.plaintext' },
@@ -487,10 +486,7 @@ export function SearchPage() {
           <AnimatePresence>
             {kbOpen && (
               <motion.div
-                initial={shouldReduceMotion ? false : { height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                {...getSoftCollapseMotion(!!shouldReduceMotion)}
                 className="overflow-hidden"
               >
                 <div className="px-4 pb-3 pt-1">
@@ -955,10 +951,7 @@ export function SearchPage() {
       <AnimatePresence>
         {filtersOpen && (
           <motion.div
-            initial={shouldReduceMotion ? false : { height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
           >
             <div className="mb-6 rounded-lg border border-border bg-surface-1 p-4">

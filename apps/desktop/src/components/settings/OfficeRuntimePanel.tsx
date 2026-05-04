@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import {
   AlertTriangle,
   Bot,
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { OfficeDependencyStatus, OfficeRuntimeReadiness } from '../../lib/api';
+import { getSoftCollapseMotion } from '../../lib/uiMotion';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 
@@ -31,6 +32,7 @@ export function OfficeRuntimePanel({
   onAskAiPrepare,
 }: OfficeRuntimePanelProps) {
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const status = readiness?.status ?? 'missing';
   const statusMeta = (() => {
@@ -140,10 +142,7 @@ export function OfficeRuntimePanel({
       <AnimatePresence initial={false}>
         {detailsOpen && readiness && (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
           >
             <div className="mt-4 space-y-4 border-t border-border pt-4">

@@ -4,6 +4,7 @@ import { ChevronRight, Brain } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useTranslation } from '../../i18n';
+import { getSoftCollapseMotion } from '../../lib/uiMotion';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -196,10 +197,7 @@ export function ThinkingBlock({
       <AnimatePresence initial={false}>
         {expanded && (combinedContent || effectiveSections || children) && (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
           >
             <div
@@ -242,11 +240,11 @@ export function ThinkingBlock({
                 )}
               </div>
             </div>
-          {children && (
-            <div className="ml-4 mt-1 space-y-0.5 pb-1">
-              {children}
-            </div>
-          )}
+            {children && (
+              <div className="ml-4 mt-1 space-y-0.5 pb-1">
+                {children}
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>

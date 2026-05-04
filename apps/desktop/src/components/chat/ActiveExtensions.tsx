@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Plug, Zap, AlertTriangle } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
+import { getSoftDropdownMotion } from '../../lib/uiMotion';
 import type { McpServer, McpToolInfo, Skill } from '../../types/extensions';
 
 /* ------------------------------------------------------------------ */
@@ -31,6 +32,7 @@ function ChipDropdown({
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const shouldReduceMotion = useReducedMotion();
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -62,10 +64,7 @@ function ChipDropdown({
       <AnimatePresence>
         {open && (
           <motion.div
-            initial={{ opacity: 0, y: -4, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -4, scale: 0.97 }}
-            transition={{ duration: 0.15 }}
+            {...getSoftDropdownMotion(!!shouldReduceMotion)}
             className="
               absolute left-0 top-full mt-1 z-50
               w-64 rounded-lg border border-border bg-surface-1 shadow-lg

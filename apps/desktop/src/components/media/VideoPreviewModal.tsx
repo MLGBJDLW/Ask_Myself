@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useTranslation } from '../../i18n';
 import { getVideoTranscript, getVideoMetadata } from '../../lib/api';
+import { getSoftDropdownMotion, INSTANT_TRANSITION } from '../../lib/uiMotion';
 import type { TranscriptChunk, VideoMetadata } from '../../types/video';
 import { VideoPlayer } from './VideoPlayer';
 import type { VideoPlayerHandle } from './VideoPlayer';
@@ -65,7 +66,6 @@ export function VideoPreviewModal({ open, onClose, filePath }: VideoPreviewModal
   }, [open, onClose]);
 
   const fileName = filePath.split(/[\\/]/).pop() || filePath;
-  const instant = { duration: 0 };
 
   return (
     <AnimatePresence>
@@ -75,17 +75,14 @@ export function VideoPreviewModal({ open, onClose, filePath }: VideoPreviewModal
             initial={shouldReduceMotion ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={shouldReduceMotion ? instant : { duration: 0.15 }}
+            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.15 }}
             className="absolute inset-0 bg-black/60 backdrop-blur-sm"
             onClick={onClose}
             aria-hidden="true"
           />
           <motion.div
             ref={contentRef}
-            initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.95, y: 10 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 10 }}
-            transition={shouldReduceMotion ? instant : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            {...getSoftDropdownMotion(!!shouldReduceMotion, 8)}
             role="dialog"
             aria-modal="true"
             aria-label={fileName}

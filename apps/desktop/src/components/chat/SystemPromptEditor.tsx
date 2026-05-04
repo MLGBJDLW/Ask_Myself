@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ScrollText, Check, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
+import { getSoftDropdownMotion } from '../../lib/uiMotion';
 import { toast } from 'sonner';
 
 interface SystemPromptEditorProps {
@@ -19,6 +20,7 @@ export function SystemPromptEditor({
   onSaved,
 }: SystemPromptEditorProps) {
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(systemPrompt);
   const [saving, setSaving] = useState(false);
@@ -137,10 +139,7 @@ export function SystemPromptEditor({
       <AnimatePresence>
         {open && (
           <motion.div
-            initial={{ opacity: 0, y: -4, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -4, scale: 0.97 }}
-            transition={{ duration: 0.15 }}
+            {...getSoftDropdownMotion(!!shouldReduceMotion)}
             role="dialog"
             aria-modal="false"
             aria-label={t('chat.editSystemPrompt')}

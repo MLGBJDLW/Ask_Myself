@@ -7,8 +7,7 @@ import * as api from '../lib/api';
 import type { QueryLog } from '../types';
 import { useTranslation } from '../i18n';
 import { SHORTCUTS, formatKeys } from '../lib/shortcuts';
-
-const INSTANT_TRANSITION = { duration: 0 };
+import { getSoftDropdownMotion, INSTANT_TRANSITION } from '../lib/uiMotion';
 
 type BatchAction = 'scanAll' | 'rebuildEmbeddings';
 
@@ -219,10 +218,7 @@ export function CommandPalette() {
             aria-modal="true"
             aria-label={t('nav.commandPalette')}
             tabIndex={-1}
-            initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.96, y: -8 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={shouldReduceMotion ? { opacity: 0, scale: 1, y: 0 } : { opacity: 0, scale: 0.96, y: -8 }}
-            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            {...getSoftDropdownMotion(!!shouldReduceMotion, -8)}
           >
             <Command
               className="overflow-hidden rounded-xl border border-border bg-surface-1 shadow-lg"

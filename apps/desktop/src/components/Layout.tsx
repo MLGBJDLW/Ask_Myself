@@ -168,11 +168,11 @@ function SortableNavItem({ item, label, collapsed, isCurrentPage, shouldReduceMo
               <AnimatePresence>
                 {!collapsed && (
                   <motion.span
-                    initial={shouldReduceMotion ? false : { opacity: 0, width: 0 }}
-                    animate={{ opacity: 1, width: 'auto' }}
-                    exit={{ opacity: 0, width: 0 }}
-                    transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.2 }}
-                    className="overflow-hidden whitespace-nowrap"
+                    initial={shouldReduceMotion ? false : { opacity: 0, x: -3 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={shouldReduceMotion ? { opacity: 0, x: 0 } : { opacity: 0, x: -3 }}
+                    transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.14, ease: 'easeOut' }}
+                    className="whitespace-nowrap"
                   >
                     {label}
                   </motion.span>
@@ -271,11 +271,11 @@ export function Layout() {
           <AnimatePresence>
             {!collapsed && (
               <motion.div
-                initial={shouldReduceMotion ? false : { opacity: 0, width: 0 }}
-                animate={{ opacity: 1, width: 'auto' }}
-                exit={{ opacity: 0, width: 0 }}
-                transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.2 }}
-                className="overflow-hidden whitespace-nowrap"
+                initial={shouldReduceMotion ? false : { opacity: 0, x: -3 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={shouldReduceMotion ? { opacity: 0, x: 0 } : { opacity: 0, x: -3 }}
+                transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.14, ease: 'easeOut' }}
+                className="whitespace-nowrap"
               >
                 <h1 className="text-sm font-bold tracking-tight text-text-primary">{t('app.name')}</h1>
               </motion.div>
@@ -349,18 +349,16 @@ export function Layout() {
 
       {/* Floating AI button */}
       {!location.pathname.startsWith('/chat') && (
-        <motion.button
+        <button
           onClick={() => navigate('/chat')}
           aria-label={t('chat.askAi')}
           className="fixed bottom-6 right-6 z-40 p-3 rounded-full
             bg-accent text-white shadow-lg
             hover:bg-accent-hover transition-colors duration-200 cursor-pointer"
-          whileHover={shouldReduceMotion ? undefined : { scale: 1.1 }}
-          whileTap={shouldReduceMotion ? undefined : { scale: 0.95 }}
           title={t('chat.askAi')}
         >
           <BotMessageSquare size={22} />
-        </motion.button>
+        </button>
       )}
 
       {/* Toast notifications */}
