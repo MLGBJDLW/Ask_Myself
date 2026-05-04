@@ -69,6 +69,25 @@ interface ExtensionsSettingsTabProps {
   onConfirmDeleteMcpServer: () => void;
 }
 
+interface PersonaCopy {
+  personas: string;
+  personasDescription: string;
+  addPersona: string;
+  noPersonas: string;
+  name: string;
+  description: string;
+  instructions: string;
+  enabled: string;
+  defaultSkills: string;
+  save: string;
+  saving: string;
+  cancel: string;
+  builtin: string;
+  disabled: string;
+  defaultSkillCount: (count: number) => string;
+  deleteConfirm: string;
+}
+
 function estimateTokens(text: string): number {
   if (!text) return 0;
   let tokens = 0;
@@ -105,7 +124,7 @@ function PersonaEditor({
 }: {
   persona?: PersonaProfile;
   skills: Skill[];
-  copy: Record<string, string>;
+  copy: PersonaCopy;
   onSave: (input: SavePersonaInput) => Promise<void>;
   onCancel: () => void;
   onDirtyChange: (dirty: boolean) => void;
@@ -293,43 +312,25 @@ export function ExtensionsSettingsTab({
   onToggleMcpToolsExpanded,
   onConfirmDeleteMcpServer,
 }: ExtensionsSettingsTabProps) {
-  const { t, locale } = useTranslation();
+  const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
-  const isZh = locale.startsWith('zh');
-  const personaCopy = isZh ? {
-    personas: '人格/Profile',
-    personasDescription: '创建本地可复用的人格指令，并可绑定默认启用的技能。',
-    addPersona: '添加人格',
-    noPersonas: '还没有用户自定义人格。',
-    name: '名称',
-    description: '描述',
-    instructions: '人格指令',
-    enabled: '启用',
-    defaultSkills: '默认技能',
-    save: '保存',
-    saving: '保存中...',
-    cancel: '取消',
-    builtin: '内置',
-    disabled: '已禁用',
-    defaultSkillCount: '默认技能',
-    deleteConfirm: '删除这个自定义人格后，使用它的对话会回退到默认人格。',
-  } : {
-    personas: 'Personas / Profiles',
-    personasDescription: 'Create reusable local persona instructions and bind default skills.',
-    addPersona: 'Add persona',
-    noPersonas: 'No custom personas yet.',
-    name: 'Name',
-    description: 'Description',
-    instructions: 'Instructions',
-    enabled: 'Enabled',
-    defaultSkills: 'Default skills',
-    save: 'Save',
-    saving: 'Saving...',
-    cancel: 'Cancel',
-    builtin: 'built-in',
-    disabled: 'disabled',
-    defaultSkillCount: 'default skills',
-    deleteConfirm: 'Deleting this custom persona will make conversations using it fall back to the default persona.',
+  const personaCopy: PersonaCopy = {
+    personas: t('settings.personas'),
+    personasDescription: t('settings.personasDescription'),
+    addPersona: t('settings.addPersona'),
+    noPersonas: t('settings.noPersonas'),
+    name: t('settings.personaName'),
+    description: t('settings.personaDescription'),
+    instructions: t('settings.personaInstructions'),
+    enabled: t('settings.personaEnabled'),
+    defaultSkills: t('settings.personaDefaultSkills'),
+    save: t('common.save'),
+    saving: t('settings.personaSaving'),
+    cancel: t('common.cancel'),
+    builtin: t('settings.personaBuiltIn'),
+    disabled: t('settings.personaDisabled'),
+    defaultSkillCount: (count: number) => t('settings.personaDefaultSkillCount', { count }),
+    deleteConfirm: t('settings.deletePersonaConfirm'),
   };
   const extensionCopy = {
     toolCount: (count: number) => t('settings.extensions.toolCount', { count }),
@@ -400,7 +401,7 @@ export function ExtensionsSettingsTab({
                           )}
                           {defaultSkillCount > 0 && (
                             <Badge variant="default" className="text-[10px] shrink-0">
-                              {defaultSkillCount} {personaCopy.defaultSkillCount}
+                              {personaCopy.defaultSkillCount(defaultSkillCount)}
                             </Badge>
                           )}
                         </div>

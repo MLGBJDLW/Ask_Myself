@@ -951,6 +951,20 @@ export interface TranslationKeys {
 
   // Settings - Extensions
   'settings.extensionsTab': string;
+  'settings.personas': string;
+  'settings.personasDescription': string;
+  'settings.addPersona': string;
+  'settings.noPersonas': string;
+  'settings.personaName': string;
+  'settings.personaDescription': string;
+  'settings.personaInstructions': string;
+  'settings.personaEnabled': string;
+  'settings.personaDefaultSkills': string;
+  'settings.personaSaving': string;
+  'settings.personaBuiltIn': string;
+  'settings.personaDisabled': string;
+  'settings.personaDefaultSkillCount': string;
+  'settings.deletePersonaConfirm': string;
   'settings.skills': string;
   'settings.skillsDescription': string;
   'settings.addSkill': string;
