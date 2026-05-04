@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.4...nexa-monorepo-v0.3.5) (2026-05-04)
+
+
+### Features
+
+* **chat:** add project context memory and task board ([8b40dde](https://github.com/MLGBJDLW/Nexa/commit/8b40dde1428047d2d58fec1bb07f978117e2aa27))
+* **core:** add custom personas and skill activation ([324e9db](https://github.com/MLGBJDLW/Nexa/commit/324e9db548e15c279a0f7eb58205d6b979e85fe7))
+* **desktop:** expose custom persona management ([2f1fbda](https://github.com/MLGBJDLW/Nexa/commit/2f1fbda00941c90e5206fb706427e196dc17d4b7))
+* **shell:** support stdin payloads for run_shell ([d9795cd](https://github.com/MLGBJDLW/Nexa/commit/d9795cd7a4092841ab82b57acba29e61d237d9cd))
+* **sources:** add file tree preview and manual indexing control ([3061d2e](https://github.com/MLGBJDLW/Nexa/commit/3061d2e600998b18d8f2d6a41bc6036ba9431b02))
+
+
+### Bug Fixes
+
+* **desktop:** localize persona settings copy ([9518e3b](https://github.com/MLGBJDLW/Nexa/commit/9518e3b6901f1429952549057fc942431f68e09a))
+* **sources:** promote file tree into responsive detail tab ([8e7d2be](https://github.com/MLGBJDLW/Nexa/commit/8e7d2be36d9e68fc28ba563fd70235ffbb9dce7c))
+* **sources:** soften source detail expansion animation ([55fc46a](https://github.com/MLGBJDLW/Nexa/commit/55fc46ac5b389b3892415001196a743fb6ff9a8a))
+* **ui:** soften motion effects ([3d8e089](https://github.com/MLGBJDLW/Nexa/commit/3d8e0896e74c2bea4f2d60538aa9fbcec5a9e1fb))
+
 ## [0.3.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.3...nexa-monorepo-v0.3.4) (2026-05-02)
 
 
