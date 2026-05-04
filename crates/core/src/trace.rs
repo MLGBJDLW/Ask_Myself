@@ -27,6 +27,12 @@ pub struct AgentTrace {
     pub tools_offered: u32,
     /// Whether the answer was served from cache.
     pub cache_hit: bool,
+    /// Deterministic route selected for the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_kind: Option<String>,
+    /// Typed task plan injected into the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_plan: Option<serde_json::Value>,
     /// How many times context was compacted during the session.
     pub compaction_count: u32,
     pub outcome: TraceOutcome,
@@ -93,6 +99,8 @@ impl AgentTrace {
             peak_context_usage_pct: 0.0,
             tools_offered: 0,
             cache_hit: false,
+            route_kind: None,
+            task_plan: None,
             compaction_count: 0,
             outcome: TraceOutcome::Success,
             error_message: None,

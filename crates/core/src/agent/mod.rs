@@ -24,6 +24,8 @@ use crate::conversation::summarizer;
 use crate::conversation::{ConversationMessage, ImageAttachment};
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::evidence_verifier::{audit_final_answer, EvidenceSignals};
+use crate::intelligence::{build_task_plan, TaskPlanningInput};
 use crate::llm::{
     CompletionRequest, ContentPart, LlmProvider, Message, ProviderType, ReasoningEffort, Role,
     ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
@@ -504,10 +506,70 @@ fn build_trace_artifacts(items: &[PersistedTraceItem]) -> Option<serde_json::Val
 }
 
 fn build_turn_trace(route_kind: AgentRouteKind, items: &[PersistedTraceItem]) -> serde_json::Value {
-    serde_json::json!({
+    build_turn_trace_with_verification(route_kind, items, None)
+}
+
+fn build_turn_trace_with_verification(
+    route_kind: AgentRouteKind,
+    items: &[PersistedTraceItem],
+    verification: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut trace = serde_json::json!({
         "kind": "turnTrace",
         "routeKind": format!("{route_kind:?}"),
         "items": items,
+    });
+    if let Some(verification) = verification {
+        trace["verification"] = verification.clone();
+    }
+    trace
+}
+
+fn evidence_signals_from_trace(items: &[PersistedTraceItem]) -> EvidenceSignals {
+    let mut successful_evidence_tool_calls = 0usize;
+    let mut verification_tool_recorded = false;
+
+    for item in items {
+        let PersistedTraceItem::Tool { tool_call } = item else {
+            continue;
+        };
+        let ok = tool_call.status == "done" && tool_call.is_error != Some(true);
+        if ok && is_evidence_oriented_tool(&tool_call.tool_name) {
+            successful_evidence_tool_calls += 1;
+        }
+        if ok && tool_call.tool_name == "record_verification" {
+            verification_tool_recorded = true;
+        }
+    }
+
+    EvidenceSignals {
+        successful_evidence_tool_calls,
+        verification_tool_recorded,
+    }
+}
+
+fn is_evidence_oriented_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "search_knowledge_base"
+            | "retrieve_evidence"
+            | "search_playbooks"
+            | "compare_documents"
+            | "summarize_document"
+            | "query_knowledge_graph"
+            | "fetch_url"
+            | "read_file"
+            | "read_files"
+            | "get_document_info"
+            | "search_sessions"
+    )
+}
+
+fn build_task_run_artifacts(verification: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "agentTaskArtifacts",
+        "version": 1,
+        "verification": verification,
     })
 }
 
@@ -1197,6 +1259,15 @@ impl AgentExecutor {
             &self.config.system_prompt,
             has_sources,
         );
+        let task_plan = build_task_plan(TaskPlanningInput {
+            user_query: &user_query_text_for_tools,
+            route_kind: route_plan.kind.as_str(),
+            has_sources,
+            source_scope_count: source_scope.len(),
+            collection_context: system_prompt_has_collection_context(&self.config.system_prompt),
+        });
+        let task_plan_value = serde_json::to_value(&task_plan)
+            .unwrap_or_else(|_| serde_json::json!({ "error": "serializeTaskPlan" }));
         let _ = tx
             .send(AgentEvent::Status {
                 content: format!("Route selected: {:?}", route_plan.kind),
@@ -1206,6 +1277,24 @@ impl AgentExecutor {
         if let Some(tid) = turn_id {
             let route_label = format!("{:?}", route_plan.kind);
             let _ = db.update_conversation_turn_progress(tid, Some(&route_label), None);
+            if let Ok(Some(task_run)) = db.get_agent_task_run_by_turn(tid) {
+                let _ = db.update_agent_task_run_progress(
+                    &task_run.id,
+                    Some("running"),
+                    Some("planning"),
+                    Some(route_plan.kind.as_str()),
+                    Some("Planning execution and evidence requirements"),
+                    Some(&task_plan_value),
+                    None,
+                );
+                let _ = db.record_agent_task_run_event(
+                    &task_run.id,
+                    "plan",
+                    "Typed task plan created",
+                    Some("completed"),
+                    Some(&task_plan_value),
+                );
+            }
         }
 
         debug!("Agent route selected: {:?}", route_plan.kind);
@@ -1227,6 +1316,8 @@ impl AgentExecutor {
         };
         if let Some(ref mut t) = trace {
             t.tools_offered = tool_defs.len() as u32;
+            t.route_kind = Some(route_plan.kind.as_str().to_string());
+            t.task_plan = Some(task_plan_value.clone());
         }
         let mut messages = context::prepare_messages(
             &self.config.system_prompt,
@@ -1239,11 +1330,17 @@ impl AgentExecutor {
             &tool_defs,
         );
         if !route_plan.prompt_section.trim().is_empty() {
+            let insert_at = messages.len().min(1);
             messages.insert(
-                1,
+                insert_at,
                 Message::text(Role::System, route_plan.prompt_section.clone()),
             );
         }
+        let plan_insert_at = messages.len().min(2);
+        messages.insert(
+            plan_insert_at,
+            Message::text(Role::System, task_plan.to_prompt_section()),
+        );
 
         // --- 2. Privacy redaction on outgoing user content --------------------
         let privacy_cfg = db.load_privacy_config().unwrap_or_default();
@@ -2134,6 +2231,27 @@ impl AgentExecutor {
                     continue;
                 }
                 append_persisted_trace_thinking(&mut persisted_trace_items, &iteration_thinking);
+                let final_text = assistant_msg.text_content();
+                let evidence_audit = audit_final_answer(
+                    &task_plan,
+                    &final_text,
+                    evidence_signals_from_trace(&persisted_trace_items),
+                );
+                let verification_artifact = evidence_audit.to_artifact();
+                append_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    &format!(
+                        "Evidence audit: {}.",
+                        verification_artifact["overallStatus"]
+                            .as_str()
+                            .unwrap_or("pending")
+                    ),
+                    if verification_artifact["overallStatus"].as_str() == Some("failed") {
+                        "error"
+                    } else {
+                        "info"
+                    },
+                );
                 // Save final assistant message to DB.
                 if let Some(cid) = conversation_id {
                     let assistant_message_id = Uuid::new_v4().to_string();
@@ -2141,7 +2259,7 @@ impl AgentExecutor {
                         id: assistant_message_id.clone(),
                         conversation_id: cid.to_string(),
                         role: Role::Assistant,
-                        content: assistant_msg.text_content(),
+                        content: final_text.clone(),
                         tool_call_id: None,
                         tool_calls: assistant_msg.tool_calls.clone().unwrap_or_default(),
                         artifacts: build_trace_artifacts(&persisted_trace_items),
@@ -2155,18 +2273,40 @@ impl AgentExecutor {
                         warn!("Failed to save final assistant message: {e}");
                     }
                     if let Some(tid) = turn_id {
-                        let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                        let trace = build_turn_trace_with_verification(
+                            route_plan.kind,
+                            &persisted_trace_items,
+                            Some(&verification_artifact),
+                        );
                         let _ = db.finalize_conversation_turn(
                             tid,
                             "success",
                             Some(&assistant_message_id),
                             Some(&trace),
                         );
+                        if let Ok(Some(task_run)) = db.get_agent_task_run_by_turn(tid) {
+                            let task_artifacts = build_task_run_artifacts(&verification_artifact);
+                            let _ = db.update_agent_task_run_progress(
+                                &task_run.id,
+                                Some("running"),
+                                Some("finalizing"),
+                                Some(route_plan.kind.as_str()),
+                                Some("Final evidence audit completed"),
+                                None,
+                                Some(&task_artifacts),
+                            );
+                            let _ = db.record_agent_task_run_event(
+                                &task_run.id,
+                                "verification",
+                                "Evidence audit completed",
+                                verification_artifact["overallStatus"].as_str(),
+                                Some(&verification_artifact),
+                            );
+                        }
                     }
                 }
 
                 // Cache the answer if it contains citations (used the knowledge base).
-                let final_text = assistant_msg.text_content();
                 if !final_text.is_empty() && !user_query_text.is_empty() {
                     let citations = crate::cache::extract_citations(&final_text);
                     if !citations.is_empty() {
@@ -3344,6 +3484,7 @@ mod tests {
     use futures::stream::{self, BoxStream};
 
     use super::*;
+    use crate::conversation::CreateConversationInput;
     use crate::llm::{CompletionResponse, FinishReason, StreamChunk};
     use crate::tools::{Tool, ToolResult};
 
@@ -3847,6 +3988,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_run_persists_typed_task_plan_on_task_run() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(MockTool));
+
+        let stream_calls = Arc::new(AtomicUsize::new(0));
+        let provider = MockProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        };
+
+        let executor = AgentExecutor::new(
+            Box::new(provider),
+            registry,
+            AgentConfig {
+                model: Some("mock-model".to_string()),
+                ..AgentConfig::default()
+            },
+        );
+
+        let db = Database::open_memory().expect("in-memory db");
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "mock".to_string(),
+                model: "mock-model".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let user_msg = ConversationMessage {
+            id: Uuid::new_v4().to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "Say hello in one sentence.".to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 6,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&user_msg).unwrap();
+        let turn = db
+            .create_conversation_turn(&conversation.id, &user_msg.id, None)
+            .unwrap();
+        let task_run = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &user_msg.id,
+                "Say hello in one sentence.",
+                Some("mock"),
+                Some("mock-model"),
+            )
+            .unwrap();
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let final_msg = executor
+            .run(
+                vec![],
+                vec![ContentPart::Text {
+                    text: user_msg.content.clone(),
+                }],
+                &db,
+                Some(&conversation.id),
+                Some(&turn.id),
+                tx,
+                1,
+            )
+            .await
+            .expect("run should succeed");
+        while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
+            if matches!(event, Some(AgentEvent::Done { .. }) | None) {
+                break;
+            }
+        }
+
+        assert_eq!(final_msg.text_content(), "final answer");
+        let updated = db.get_agent_task_run(&task_run.id).unwrap();
+        let plan = updated.plan.expect("task run should store typed plan");
+        assert_eq!(plan["routeKind"], "DirectResponse");
+        assert_eq!(plan["evidencePolicy"]["mode"], "notRequired");
+        let artifacts = updated
+            .artifacts
+            .expect("task run should store verification artifacts");
+        assert_eq!(artifacts["verification"]["kind"], "verification");
+
+        let events = db.get_agent_task_run_events(&task_run.id).unwrap();
+        assert!(events.iter().any(
+            |event| event.event_type == "plan" && event.status.as_deref() == Some("completed")
+        ));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "verification"));
+    }
+
+    #[tokio::test]
     async fn test_persists_only_final_iteration_thinking_on_final_assistant() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(MockTool));
@@ -3923,7 +4163,7 @@ mod tests {
             .get("items")
             .and_then(|v| v.as_array())
             .expect("trace timeline should include items");
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.len(), 4);
         assert_eq!(
             items[0].get("kind").and_then(|v| v.as_str()),
             Some("thinking")
@@ -3932,6 +4172,10 @@ mod tests {
         assert_eq!(
             items[2].get("kind").and_then(|v| v.as_str()),
             Some("thinking")
+        );
+        assert_eq!(
+            items[3].get("kind").and_then(|v| v.as_str()),
+            Some("status")
         );
     }
 
