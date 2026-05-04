@@ -1,7 +1,10 @@
+import { useEffect, useMemo, useState } from 'react';
+import type { FormEvent } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { AlertTriangle, Blocks, ChevronDown, ChevronUp, Download, Eye, Loader2, Pencil, Plug, Plus, Search, Trash2, X, Zap } from 'lucide-react';
+import { AlertTriangle, Blocks, ChevronDown, ChevronUp, Download, Eye, Loader2, Pencil, Plug, Plus, Search, Trash2, UserRound, X, Zap } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
+import type { PersonaProfile, SavePersonaInput } from '../../lib/api';
 import type { McpServer, McpToolInfo, SaveMcpServerInput, SaveSkillInput, Skill } from '../../types/extensions';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -15,8 +18,12 @@ export type SkillFilter = 'all' | 'builtin' | 'user' | 'enabled' | 'disabled';
 export type McpToolState = Record<string, { tools: McpToolInfo[]; loading: boolean; error?: string }>;
 
 interface ExtensionsSettingsTabProps {
+  personas: PersonaProfile[];
   skills: Skill[];
   filteredSkills: Skill[];
+  showPersonaForm: boolean;
+  editingPersona: PersonaProfile | null;
+  deletePersonaTarget: PersonaProfile | null;
   skillSearch: string;
   skillFilter: SkillFilter;
   showSkillForm: boolean;
@@ -30,6 +37,14 @@ interface ExtensionsSettingsTabProps {
   mcpTestLoading: string | null;
   mcpToolCounts: McpToolState;
   mcpToolsExpanded: Record<string, boolean>;
+  onAddPersona: () => void;
+  onSavePersona: (input: SavePersonaInput) => Promise<void>;
+  onCancelPersonaForm: () => void;
+  onPersonaEditorDirtyChange: (dirty: boolean) => void;
+  onTogglePersona: (id: string, enabled: boolean) => void;
+  onEditPersona: (persona: PersonaProfile) => void;
+  onDeletePersonaTargetChange: (persona: PersonaProfile | null) => void;
+  onConfirmDeletePersona: () => void;
   onSkillSearchChange: (value: string) => void;
   onSkillFilterChange: (filter: SkillFilter) => void;
   onExportAllSkills: () => void;
@@ -80,9 +95,160 @@ function extractTriggers(description: string): string[] {
     .slice(0, 4);
 }
 
+function PersonaEditor({
+  persona,
+  skills,
+  copy,
+  onSave,
+  onCancel,
+  onDirtyChange,
+}: {
+  persona?: PersonaProfile;
+  skills: Skill[];
+  copy: Record<string, string>;
+  onSave: (input: SavePersonaInput) => Promise<void>;
+  onCancel: () => void;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
+  const [name, setName] = useState(persona?.name ?? '');
+  const [description, setDescription] = useState(persona?.description ?? '');
+  const [instructions, setInstructions] = useState(persona?.instructions ?? '');
+  const [enabled, setEnabled] = useState(persona?.enabled ?? true);
+  const [defaultSkillIds, setDefaultSkillIds] = useState<string[]>(persona?.defaultSkillIds ?? []);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setName(persona?.name ?? '');
+    setDescription(persona?.description ?? '');
+    setInstructions(persona?.instructions ?? '');
+    setEnabled(persona?.enabled ?? true);
+    setDefaultSkillIds(persona?.defaultSkillIds ?? []);
+    onDirtyChange(false);
+  }, [onDirtyChange, persona]);
+
+  const selectedSkillIds = useMemo(() => new Set(defaultSkillIds), [defaultSkillIds]);
+  const update = (fn: () => void) => {
+    fn();
+    onDirtyChange(true);
+  };
+  const toggleSkill = (skillId: string) => {
+    update(() => {
+      setDefaultSkillIds((prev) =>
+        prev.includes(skillId) ? prev.filter((id) => id !== skillId) : [...prev, skillId],
+      );
+    });
+  };
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      await onSave({
+        id: persona?.id ?? null,
+        name,
+        description,
+        instructions,
+        enabled,
+        defaultSkillIds,
+      });
+      onDirtyChange(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4 rounded-lg border border-border bg-surface-2 p-4">
+      <div className="grid gap-3 md:grid-cols-2">
+        <label className="space-y-1">
+          <span className="text-xs font-medium text-text-secondary">{copy.name}</span>
+          <input
+            value={name}
+            onChange={(event) => update(() => setName(event.target.value))}
+            className="w-full rounded-md border border-border bg-surface-1 px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+            required
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="text-xs font-medium text-text-secondary">{copy.description}</span>
+          <input
+            value={description}
+            onChange={(event) => update(() => setDescription(event.target.value))}
+            className="w-full rounded-md border border-border bg-surface-1 px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+          />
+        </label>
+      </div>
+      <label className="space-y-1 block">
+        <span className="text-xs font-medium text-text-secondary">{copy.instructions}</span>
+        <textarea
+          value={instructions}
+          onChange={(event) => update(() => setInstructions(event.target.value))}
+          rows={7}
+          className="w-full resize-y rounded-md border border-border bg-surface-1 px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+          required
+        />
+      </label>
+      <div className="flex items-center justify-between rounded-md border border-border bg-surface-1 px-3 py-2">
+        <span className="text-sm text-text-secondary">{copy.enabled}</span>
+        <button
+          type="button"
+          onClick={() => update(() => setEnabled((value) => !value))}
+          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+            enabled ? 'bg-accent' : 'bg-surface-3'
+          }`}
+        >
+          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+            enabled ? 'translate-x-6' : 'translate-x-1'
+          }`} />
+        </button>
+      </div>
+      {skills.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-text-secondary">{copy.defaultSkills}</p>
+          <div className="grid max-h-52 gap-2 overflow-auto rounded-md border border-border bg-surface-1 p-2 md:grid-cols-2">
+            {skills.map((skill) => (
+              <label
+                key={skill.id}
+                className="flex min-w-0 items-start gap-2 rounded-md px-2 py-1.5 text-xs text-text-secondary hover:bg-surface-2"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedSkillIds.has(skill.id)}
+                  onChange={() => toggleSkill(skill.id)}
+                  className="mt-0.5"
+                />
+                <span className="min-w-0">
+                  <span className="block truncate text-text-primary">{skill.name}</span>
+                  {skill.description && (
+                    <span className="block truncate text-[11px] text-text-tertiary">
+                      {skill.description}
+                    </span>
+                  )}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+          {copy.cancel}
+        </Button>
+        <Button type="submit" variant="primary" size="sm" disabled={saving}>
+          {saving ? copy.saving : copy.save}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 export function ExtensionsSettingsTab({
+  personas,
   skills,
   filteredSkills,
+  showPersonaForm,
+  editingPersona,
+  deletePersonaTarget,
   skillSearch,
   skillFilter,
   showSkillForm,
@@ -96,6 +262,14 @@ export function ExtensionsSettingsTab({
   mcpTestLoading,
   mcpToolCounts,
   mcpToolsExpanded,
+  onAddPersona,
+  onSavePersona,
+  onCancelPersonaForm,
+  onPersonaEditorDirtyChange,
+  onTogglePersona,
+  onEditPersona,
+  onDeletePersonaTargetChange,
+  onConfirmDeletePersona,
   onSkillSearchChange,
   onSkillFilterChange,
   onExportAllSkills,
@@ -119,8 +293,44 @@ export function ExtensionsSettingsTab({
   onToggleMcpToolsExpanded,
   onConfirmDeleteMcpServer,
 }: ExtensionsSettingsTabProps) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
+  const isZh = locale.startsWith('zh');
+  const personaCopy = isZh ? {
+    personas: '人格/Profile',
+    personasDescription: '创建本地可复用的人格指令，并可绑定默认启用的技能。',
+    addPersona: '添加人格',
+    noPersonas: '还没有用户自定义人格。',
+    name: '名称',
+    description: '描述',
+    instructions: '人格指令',
+    enabled: '启用',
+    defaultSkills: '默认技能',
+    save: '保存',
+    saving: '保存中...',
+    cancel: '取消',
+    builtin: '内置',
+    disabled: '已禁用',
+    defaultSkillCount: '默认技能',
+    deleteConfirm: '删除这个自定义人格后，使用它的对话会回退到默认人格。',
+  } : {
+    personas: 'Personas / Profiles',
+    personasDescription: 'Create reusable local persona instructions and bind default skills.',
+    addPersona: 'Add persona',
+    noPersonas: 'No custom personas yet.',
+    name: 'Name',
+    description: 'Description',
+    instructions: 'Instructions',
+    enabled: 'Enabled',
+    defaultSkills: 'Default skills',
+    save: 'Save',
+    saving: 'Saving...',
+    cancel: 'Cancel',
+    builtin: 'built-in',
+    disabled: 'disabled',
+    defaultSkillCount: 'default skills',
+    deleteConfirm: 'Deleting this custom persona will make conversations using it fall back to the default persona.',
+  };
   const extensionCopy = {
     toolCount: (count: number) => t('settings.extensions.toolCount', { count }),
     connectionFailed: t('settings.extensions.connectionFailed'),
@@ -130,6 +340,121 @@ export function ExtensionsSettingsTab({
 
   return (
     <>
+      <Section
+        icon={<UserRound size={20} />}
+        title={personaCopy.personas}
+        delay={0.01}
+        description={personaCopy.personasDescription}
+        collapsible
+        defaultOpen={showPersonaForm || personas.length <= 6}
+        summary={
+          <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+            {personas.length}
+          </span>
+        }
+      >
+        {showPersonaForm ? (
+          <PersonaEditor
+            persona={editingPersona ?? undefined}
+            skills={skills}
+            copy={personaCopy}
+            onSave={onSavePersona}
+            onCancel={onCancelPersonaForm}
+            onDirtyChange={onPersonaEditorDirtyChange}
+          />
+        ) : (
+          <div className="space-y-4">
+            <div className="flex justify-end">
+              <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={onAddPersona}>
+                {personaCopy.addPersona}
+              </Button>
+            </div>
+            {personas.length === 0 ? (
+              <div className="py-8 text-center">
+                <UserRound size={32} className="mx-auto mb-3 text-text-tertiary" />
+                <p className="text-sm text-text-secondary">{personaCopy.noPersonas}</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {personas.map((persona) => {
+                  const defaultSkillCount = persona.defaultSkillIds?.length ?? 0;
+                  return (
+                    <motion.div
+                      key={persona.id}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="flex items-center justify-between rounded-lg border border-border bg-surface-2 p-4 transition-colors hover:bg-surface-3/50"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate text-sm font-medium text-text-primary">{persona.name}</p>
+                          {persona.builtin && (
+                            <Badge variant="default" className="text-[10px] shrink-0 border-accent/40 text-accent">
+                              {personaCopy.builtin}
+                            </Badge>
+                          )}
+                          {!persona.enabled && !persona.builtin && (
+                            <Badge variant="default" className="text-[10px] shrink-0 border-border text-text-tertiary">
+                              {personaCopy.disabled}
+                            </Badge>
+                          )}
+                          {defaultSkillCount > 0 && (
+                            <Badge variant="default" className="text-[10px] shrink-0">
+                              {defaultSkillCount} {personaCopy.defaultSkillCount}
+                            </Badge>
+                          )}
+                        </div>
+                        {persona.description ? (
+                          <p className="mt-0.5 line-clamp-2 text-xs text-text-secondary">
+                            {persona.description}
+                          </p>
+                        ) : (
+                          <p className="mt-0.5 truncate text-xs text-text-tertiary">
+                            {persona.instructions.slice(0, 100)}{persona.instructions.length > 100 ? '...' : ''}
+                          </p>
+                        )}
+                      </div>
+                      <div className="ml-3 flex shrink-0 items-center gap-1">
+                        {!persona.builtin && (
+                          <button
+                            onClick={() => onTogglePersona(persona.id, !persona.enabled)}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+                              persona.enabled ? 'bg-accent' : 'bg-surface-3'
+                            }`}
+                          >
+                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+                              persona.enabled ? 'translate-x-6' : 'translate-x-1'
+                            }`} />
+                          </button>
+                        )}
+                        {!persona.builtin && (
+                          <button
+                            onClick={() => onEditPersona(persona)}
+                            className="rounded p-1.5 text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
+                            aria-label={t('common.edit')}
+                          >
+                            <Pencil size={14} />
+                          </button>
+                        )}
+                        {!persona.builtin && (
+                          <button
+                            onClick={() => onDeletePersonaTargetChange(persona)}
+                            className="rounded p-1.5 text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                            aria-label={t('common.delete')}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </Section>
+
       <Section
         icon={<Blocks size={20} />}
         title={t('settings.skills')}
@@ -462,6 +787,16 @@ export function ExtensionsSettingsTab({
           </div>
         )}
       </Section>
+
+      <ConfirmDialog
+        open={!!deletePersonaTarget}
+        onClose={() => onDeletePersonaTargetChange(null)}
+        onConfirm={onConfirmDeletePersona}
+        title={t('common.delete')}
+        message={personaCopy.deleteConfirm}
+        confirmText={t('common.delete')}
+        variant="danger"
+      />
 
       <ConfirmDialog
         open={!!deleteSkillTarget}

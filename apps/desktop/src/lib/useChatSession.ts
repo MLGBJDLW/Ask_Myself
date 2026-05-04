@@ -1025,11 +1025,15 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
               configForSend.model,
               customSystemPrompt || undefined,
               initialCollectionContext,
+              undefined,
+              activePersonaId,
             )
             : await api.createConversation(
             configForSend.provider,
             configForSend.model,
             customSystemPrompt || undefined,
+            undefined,
+            activePersonaId,
           );
           convId = conv.id;
           // Resolve the source scope to seed the new conversation with.

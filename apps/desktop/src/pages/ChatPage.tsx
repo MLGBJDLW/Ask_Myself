@@ -67,13 +67,6 @@ export function ChatPage() {
       .then((items) => setPersonas(Array.isArray(items) ? items : []))
       .catch(() => setPersonas([]));
   }, []);
-  const setPersona = useCallback((id: string) => {
-    setActivePersonaId(id);
-    try {
-      localStorage.setItem(PERSONA_STORAGE_KEY, id);
-    } catch { /* ignore */ }
-  }, []);
-
   const chat = useChatSession({
     conversationId,
     onConversationCreated,
@@ -83,6 +76,34 @@ export function ChatPage() {
     initialCollectionContext,
     activePersonaId,
   });
+
+  useEffect(() => {
+    if (!chat.activeId) return;
+    const next = chat.activeConversation?.personaId || (() => {
+      try {
+        return localStorage.getItem(PERSONA_STORAGE_KEY) || 'default';
+      } catch {
+        return 'default';
+      }
+    })();
+    setActivePersonaId((current) => (current === next ? current : next));
+  }, [chat.activeId, chat.activeConversation?.personaId]);
+
+  const setPersona = useCallback((id: string) => {
+    setActivePersonaId(id);
+    try {
+      localStorage.setItem(PERSONA_STORAGE_KEY, id);
+    } catch { /* ignore */ }
+    if (chat.activeId) {
+      void api.updateConversationPersona(chat.activeId, id)
+        .then((updated) => {
+          chat.setConversations((prev) =>
+            prev.map((conv) => (conv.id === updated.id ? updated : conv)),
+          );
+        })
+        .catch((error) => toast.error(String(error)));
+    }
+  }, [chat.activeId, chat.setConversations]);
 
   const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>([]);
   useEffect(() => {
@@ -214,6 +235,7 @@ export function ChatPage() {
         chat.agentConfig.model,
         systemPrompt,
         projectId ?? undefined,
+        activePersonaId,
       );
       chat.setConversations((prev) => [conv, ...prev.filter((c) => c.id !== conv.id)]);
       navigate(`/chat/${conv.id}`);
@@ -227,6 +249,7 @@ export function ChatPage() {
     chat.customSystemPrompt,
     chat.setConversations,
     chat.createNewConversation,
+    activePersonaId,
     navigate,
     t,
   ]);

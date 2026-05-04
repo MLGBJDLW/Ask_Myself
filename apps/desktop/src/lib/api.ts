@@ -348,10 +348,33 @@ export interface PersonaProfile {
   name: string;
   description: string;
   instructions: string;
+  enabled: boolean;
+  builtin?: boolean;
+  defaultSkillIds?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SavePersonaInput {
+  id?: string | null;
+  name: string;
+  description: string;
+  instructions: string;
+  enabled: boolean;
+  defaultSkillIds: string[];
 }
 
 export const listPersonas = () =>
   invoke<PersonaProfile[]>('list_personas_cmd');
+
+export const savePersona = (input: SavePersonaInput) =>
+  invoke<PersonaProfile>('save_persona_cmd', { input });
+
+export const deletePersona = (id: string) =>
+  invoke<void>('delete_persona_cmd', { id });
+
+export const togglePersona = (id: string, enabled: boolean) =>
+  invoke<void>('toggle_persona_cmd', { id, enabled });
 
 // ── Agent Config ────────────────────────────────────────────────────────
 
@@ -374,8 +397,20 @@ export const listProviderPresets = () =>
 
 // ── Conversations ───────────────────────────────────────────────────────
 
-export const createConversation = (provider: string, model: string, systemPrompt?: string, projectId?: string) =>
-  invoke<Conversation>('create_conversation_cmd', { provider, model, systemPrompt, projectId });
+export const createConversation = (
+  provider: string,
+  model: string,
+  systemPrompt?: string,
+  projectId?: string,
+  personaId?: string | null,
+) =>
+  invoke<Conversation>('create_conversation_cmd', {
+    provider,
+    model,
+    systemPrompt,
+    projectId,
+    personaId: personaId ?? null,
+  });
 
 export const createConversationWithContext = (
   provider: string,
@@ -383,7 +418,15 @@ export const createConversationWithContext = (
   systemPrompt?: string,
   collectionContext?: Conversation['collectionContext'],
   projectId?: string,
-) => invoke<Conversation>('create_conversation_cmd', { provider, model, systemPrompt, collectionContext, projectId });
+  personaId?: string | null,
+) => invoke<Conversation>('create_conversation_cmd', {
+  provider,
+  model,
+  systemPrompt,
+  collectionContext,
+  projectId,
+  personaId: personaId ?? null,
+});
 
 export const listConversations = () => invoke<Conversation[]>('list_conversations_cmd');
 
@@ -421,6 +464,9 @@ export const updateConversationCollectionContext = (
   id: string,
   collectionContext: Conversation['collectionContext'],
 ) => invoke<void>('update_conversation_collection_context_cmd', { id, collectionContext });
+
+export const updateConversationPersona = (id: string, personaId?: string | null) =>
+  invoke<Conversation>('update_conversation_persona_cmd', { id, personaId: personaId ?? null });
 
 export const updateConversationModel = (id: string, provider: string, model: string) =>
   invoke<Conversation>('update_conversation_model_cmd', { id, provider, model });

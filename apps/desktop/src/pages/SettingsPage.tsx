@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../lib/api';
+import type { PersonaProfile, SavePersonaInput } from '../lib/api';
 import { useProgress, progressStore } from '../lib/progressStore';
 import { getModelStatus, invalidate as invalidateModelStatus } from '../lib/modelStatusCache';
 import type { IndexStats } from '../types/index-stats';
@@ -59,6 +60,7 @@ export function SettingsPage() {
   const [providerFormDirty, setProviderFormDirty] = useState(false);
   const [skillEditorDirty, setSkillEditorDirty] = useState(false);
   const [mcpFormDirty, setMcpFormDirty] = useState(false);
+  const [personaEditorDirty, setPersonaEditorDirty] = useState(false);
   const hasDirtyTabs = dirtyTabs.size > 0;
 
   useEffect(() => {
@@ -775,13 +777,13 @@ export function SettingsPage() {
   }, [markClean, markDirty, providerFormDirty]);
 
   useEffect(() => {
-    if (skillEditorDirty || mcpFormDirty) {
+    if (personaEditorDirty || skillEditorDirty || mcpFormDirty) {
       markDirty('extensions');
       return;
     }
 
     markClean('extensions');
-  }, [markClean, markDirty, mcpFormDirty, skillEditorDirty]);
+  }, [markClean, markDirty, mcpFormDirty, personaEditorDirty, skillEditorDirty]);
 
   const loadUserMemories = useCallback(async () => {
     try {
@@ -923,12 +925,16 @@ export function SettingsPage() {
   };
 
   /* ── Extensions state ────────────────────────────────────────────── */
+  const [personas, setPersonas] = useState<PersonaProfile[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [editingPersona, setEditingPersona] = useState<PersonaProfile | null>(null);
   const [editingSkill, setEditingSkill] = useState<Skill | null>(null);
   const [editingMcpServer, setEditingMcpServer] = useState<McpServer | null>(null);
+  const [showPersonaForm, setShowPersonaForm] = useState(false);
   const [showSkillForm, setShowSkillForm] = useState(false);
   const [showMcpForm, setShowMcpForm] = useState(false);
+  const [deletePersonaTarget, setDeletePersonaTarget] = useState<PersonaProfile | null>(null);
   const [deleteSkillTarget, setDeleteSkillTarget] = useState<Skill | null>(null);
   const [deleteMcpTarget, setDeleteMcpTarget] = useState<McpServer | null>(null);
   const [mcpTestLoading, setMcpTestLoading] = useState<string | null>(null);
@@ -937,6 +943,14 @@ export function SettingsPage() {
   const [skillSearch, setSkillSearch] = useState('');
   const [skillFilter, setSkillFilter] = useState<SkillFilter>('all');
   const [viewSkill, setViewSkill] = useState<Skill | null>(null);
+
+  const loadPersonas = useCallback(() => {
+    api.listPersonas()
+      .then(setPersonas)
+      .catch(() => {
+        toast.error(t('common.error'));
+      });
+  }, []);
 
   const loadSkills = useCallback(() => {
     api.listAllSkills()
@@ -954,10 +968,45 @@ export function SettingsPage() {
 
   useEffect(() => {
     if (activeTab === 'extensions') {
+      loadPersonas();
       loadSkills();
       loadMcpServers();
     }
-  }, [activeTab, loadSkills, loadMcpServers]);
+  }, [activeTab, loadPersonas, loadSkills, loadMcpServers]);
+
+  const handleSavePersona = async (input: SavePersonaInput) => {
+    try {
+      await api.savePersona(input);
+      toast.success(t('common.success'));
+      setPersonaEditorDirty(false);
+      setShowPersonaForm(false);
+      setEditingPersona(null);
+      loadPersonas();
+    } catch {
+      toast.error(t('common.error'));
+    }
+  };
+
+  const handleDeletePersona = async () => {
+    if (!deletePersonaTarget) return;
+    try {
+      await api.deletePersona(deletePersonaTarget.id);
+      toast.success(t('common.success'));
+      setDeletePersonaTarget(null);
+      loadPersonas();
+    } catch {
+      toast.error(t('common.error'));
+    }
+  };
+
+  const handleTogglePersona = async (id: string, enabled: boolean) => {
+    try {
+      await api.togglePersona(id, enabled);
+      setPersonas((prev) => prev.map((p) => p.id === id ? { ...p, enabled } : p));
+    } catch {
+      toast.error(t('common.error'));
+    }
+  };
 
   const handleSaveSkill = async (input: SaveSkillInput) => {
     try {
@@ -1474,8 +1523,12 @@ export function SettingsPage() {
       {/* ── Tab: Extensions ────────────────────────────────────────── */}
       {activeTab === 'extensions' && (
         <ExtensionsSettingsTab
+          personas={personas}
           skills={skills}
           filteredSkills={filteredSkills}
+          showPersonaForm={showPersonaForm}
+          editingPersona={editingPersona}
+          deletePersonaTarget={deletePersonaTarget}
           skillSearch={skillSearch}
           skillFilter={skillFilter}
           showSkillForm={showSkillForm}
@@ -1489,6 +1542,18 @@ export function SettingsPage() {
           mcpTestLoading={mcpTestLoading}
           mcpToolCounts={mcpToolCounts}
           mcpToolsExpanded={mcpToolsExpanded}
+          onAddPersona={() => { setEditingPersona(null); setShowPersonaForm(true); }}
+          onSavePersona={handleSavePersona}
+          onCancelPersonaForm={() => {
+            setPersonaEditorDirty(false);
+            setShowPersonaForm(false);
+            setEditingPersona(null);
+          }}
+          onPersonaEditorDirtyChange={setPersonaEditorDirty}
+          onTogglePersona={handleTogglePersona}
+          onEditPersona={(persona) => { setEditingPersona(persona); setShowPersonaForm(true); }}
+          onDeletePersonaTargetChange={setDeletePersonaTarget}
+          onConfirmDeletePersona={handleDeletePersona}
           onSkillSearchChange={setSkillSearch}
           onSkillFilterChange={setSkillFilter}
           onExportAllSkills={handleExportAllSkills}
