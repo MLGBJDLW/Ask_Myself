@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.6...nexa-monorepo-v0.3.7) (2026-05-06)
+
+
+### Features
+
+* **core:** add durable agent task primitives ([55fa94e](https://github.com/MLGBJDLW/Nexa/commit/55fa94e96b09ab9c31feca2d6bfb0906424170d5))
+* **desktop:** add agent task center ([1eb264b](https://github.com/MLGBJDLW/Nexa/commit/1eb264bf7a40959d36e9edccfbcdf3ea8bc3e237))
+* **desktop:** surface agent workflow controls ([d49a960](https://github.com/MLGBJDLW/Nexa/commit/d49a960b48adb36c7a21d29cf65c310332279e74))
+
+
+### Bug Fixes
+
+* restrict task board to update_plan progress ([d52ce9f](https://github.com/MLGBJDLW/Nexa/commit/d52ce9fa33c56f04a06400824e6cb7e3ed26c285))
+
 ## [0.3.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.5...nexa-monorepo-v0.3.6) (2026-05-04)
 
 
