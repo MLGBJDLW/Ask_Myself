@@ -834,6 +834,41 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_project_memories_lifecycle
             ON project_memories(project_id, archived, expires_at, conflict_status);",
     ),
+    (
+        "v058_agent_task_artifact_versions",
+        "CREATE TABLE IF NOT EXISTS agent_task_artifacts (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES agent_task_runs(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL DEFAULT 'artifact',
+            title TEXT NOT NULL DEFAULT '',
+            summary TEXT,
+            content TEXT NOT NULL DEFAULT '',
+            paths_json TEXT NOT NULL DEFAULT '[]',
+            payload_json TEXT,
+            source TEXT NOT NULL DEFAULT 'manual',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_task_artifacts_run
+            ON agent_task_artifacts(run_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_task_artifacts_kind
+            ON agent_task_artifacts(run_id, kind);
+
+        CREATE TABLE IF NOT EXISTS agent_task_artifact_versions (
+            id TEXT PRIMARY KEY,
+            artifact_id TEXT NOT NULL REFERENCES agent_task_artifacts(id) ON DELETE CASCADE,
+            version INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            summary TEXT,
+            content TEXT NOT NULL DEFAULT '',
+            paths_json TEXT NOT NULL DEFAULT '[]',
+            payload_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(artifact_id, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_task_artifact_versions_artifact
+            ON agent_task_artifact_versions(artifact_id, version DESC);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -959,6 +994,8 @@ mod tests {
         assert!(tables.contains(&"agent_task_runs".to_string()));
         assert!(tables.contains(&"agent_task_run_events".to_string()));
         assert!(tables.contains(&"agent_subtask_runs".to_string()));
+        assert!(tables.contains(&"agent_task_artifacts".to_string()));
+        assert!(tables.contains(&"agent_task_artifact_versions".to_string()));
         assert!(tables.contains(&"file_checkpoints".to_string()));
         assert!(tables.contains(&"personas".to_string()));
     }
@@ -1082,6 +1119,56 @@ mod tests {
                 )
                 .unwrap();
             assert!(exists, "project_memories.{column} should exist");
+        }
+    }
+
+    #[test]
+    fn test_agent_task_artifact_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+
+        for column in [
+            "id",
+            "run_id",
+            "kind",
+            "title",
+            "summary",
+            "content",
+            "paths_json",
+            "payload_json",
+            "source",
+            "created_at",
+            "updated_at",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('agent_task_artifacts') WHERE name = ?1",
+                    [column],
+                    |row| row.get::<_, i64>(0).map(|n| n > 0),
+                )
+                .unwrap();
+            assert!(exists, "agent_task_artifacts.{column} should exist");
+        }
+
+        for column in [
+            "id",
+            "artifact_id",
+            "version",
+            "title",
+            "summary",
+            "content",
+            "paths_json",
+            "payload_json",
+            "created_at",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('agent_task_artifact_versions') WHERE name = ?1",
+                    [column],
+                    |row| row.get::<_, i64>(0).map(|n| n > 0),
+                )
+                .unwrap();
+            assert!(exists, "agent_task_artifact_versions.{column} should exist");
         }
     }
 }
