@@ -469,6 +469,27 @@ export const en: TranslationKeys = {
   'settings.tabModelsEmbedding': 'Models & Embedding',
   'settings.tabMedia': 'Media Processing',
   'settings.tabDataPrivacy': 'Data & Privacy',
+  'settings.tabAgentQuality': 'Agent Quality',
+  'settings.agentQualityTitle': 'Agent Quality',
+  'settings.agentQualityDescription': 'Run local deterministic checks for routing, evidence policy, and checkpoint recovery.',
+  'settings.agentQualityRun': 'Run local eval',
+  'settings.agentQualityRerun': 'Run again',
+  'settings.agentQualityRunning': 'Running local eval...',
+  'settings.agentQualityCopyJson': 'Copy JSON report',
+  'settings.agentQualityCopied': 'Agent quality report copied',
+  'settings.agentQualityCopyError': 'Failed to copy report',
+  'settings.agentQualityRunError': 'Agent quality eval failed',
+  'settings.agentQualityUnavailable': 'Run this local harness to verify agent behavior before shipping changes.',
+  'settings.agentQualityPassed': 'Passed',
+  'settings.agentQualityFailed': 'Failed',
+  'settings.agentQualityNotRun': 'Not run',
+  'settings.agentQualitySuites': 'Suites',
+  'settings.agentQualityCases': 'Cases',
+  'settings.agentQualityFailedCases': 'Failed cases',
+  'settings.agentQualityChecks': 'checks',
+  'settings.agentQualityFailedChecks': 'Failed',
+  'settings.agentQualityLastRun': 'Last run',
+  'settings.agentQualityNoFailures': 'All local quality gates passed.',
 
   // Settings - Advanced
   'settings.advanced': 'Advanced',
@@ -545,6 +566,7 @@ export const en: TranslationKeys = {
   // Chat
   'nav.chat': 'Chat',
   'nav.knowledge': 'Knowledge',
+  'nav.tasks': 'Tasks',
   'chat.title': 'Chat',
   'chat.newChat': 'New Chat',
   'chat.send': 'Send',
@@ -681,9 +703,11 @@ export const en: TranslationKeys = {
   'chat.rateLimited': 'Rate limited by provider — please wait a moment',
   'chat.checkpoints': 'Checkpoints',
   'chat.restoreCheckpoint': 'Restore',
+  'chat.branchCheckpoint': 'Try as branch',
   'chat.deleteCheckpoint': 'Delete',
   'chat.noCheckpoints': 'No checkpoints yet',
   'chat.checkpointRestored': 'Checkpoint restored',
+  'chat.checkpointBranched': 'Branch created',
   'chat.autoCompacted': 'Context auto-compacted',
   'chat.confirmRestore': 'Restore to this checkpoint? Current messages after this point will be kept.',
   'chat.messagesShort': '{count} msgs',
@@ -762,6 +786,12 @@ export const en: TranslationKeys = {
   // Chat - Active Extensions
   'chat.mcpSummary': 'MCP ({servers} servers, {tools} tools)',
   'chat.skillsSummary': 'Skills ({count} active)',
+
+  // Chat - Workflows
+  'chat.workflows': 'Workflows',
+  'chat.workflowTemplateCount': '{count} templates',
+  'chat.workflowTasks': '{count} steps',
+  'chat.workflowUnavailable': 'No workflows available',
 
   // Chat Suggestions
   'chat.suggestions.search': 'Search Knowledge',

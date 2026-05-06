@@ -17,6 +17,9 @@ use nexa_core::llm::{create_provider, CompletionRequest, ContentPart, ProviderCo
 use nexa_core::search;
 use nexa_core::skills::Skill;
 use nexa_core::tools::{Tool, ToolRegistry, ToolResult};
+use nexa_core::workflow_catalog::{
+    workflow_template_by_id, workflow_template_id_values, WorkflowTemplateDefinition,
+};
 
 const DESCRIPTION: &str = "Spawn a short-lived subagent to handle an isolated subtask, gather an independent perspective, or critique another result. You can call this tool multiple times in parallel, pass it explicit evidence and acceptance criteria, narrow its source scope or tool access, and then synthesize or adjudicate the returned results yourself.";
 const BATCH_DESCRIPTION: &str = "Spawn a batch of short-lived subagents for parallel fan-out research, critique, comparison, or templated workflows. Provide explicit tasks, or set workflow_template plus batch_goal to expand a built-in role-based workflow under one shared budget.";
@@ -302,155 +305,6 @@ const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
         ],
         default_max_iterations: 2,
         default_timeout_secs: 60,
-    },
-];
-
-struct WorkflowTaskTemplate {
-    id: &'static str,
-    role_id: &'static str,
-    task: &'static str,
-    expected_output: &'static str,
-    deliverable_style: &'static str,
-    acceptance_criteria: &'static [&'static str],
-}
-
-struct WorkflowTemplate {
-    id: &'static str,
-    label: &'static str,
-    description: &'static str,
-    max_parallel: u32,
-    tasks: &'static [WorkflowTaskTemplate],
-}
-
-const RESEARCH_VERIFY_TASKS: &[WorkflowTaskTemplate] = &[
-    WorkflowTaskTemplate {
-        id: "research",
-        role_id: "researcher",
-        task: "Gather the strongest evidence and summarize what is directly supported.",
-        expected_output: "Evidence-backed findings with gaps called out.",
-        deliverable_style: "research brief",
-        acceptance_criteria: &[
-            "Use retrieval or explicit provided context before concluding.",
-            "Separate direct evidence from inference.",
-        ],
-    },
-    WorkflowTaskTemplate {
-        id: "verify",
-        role_id: "verifier",
-        task: "Verify the likely answer or plan against available evidence and identify unsupported claims.",
-        expected_output: "Verification verdict with checks and risks.",
-        deliverable_style: "verification report",
-        acceptance_criteria: &[
-            "Flag every unsupported or stale claim.",
-            "State what evidence would be needed to raise confidence.",
-        ],
-    },
-    WorkflowTaskTemplate {
-        id: "critique",
-        role_id: "critic",
-        task: "Stress-test the findings for blind spots, contradictions, or operational risks.",
-        expected_output: "Concise critique with remediation suggestions.",
-        deliverable_style: "risk critique",
-        acceptance_criteria: &[
-            "Focus on risks that would change the supervisor's final answer.",
-            "Do not repeat the researcher unless adding a distinct concern.",
-        ],
-    },
-];
-
-const DRAFT_REVIEW_TASKS: &[WorkflowTaskTemplate] = &[
-    WorkflowTaskTemplate {
-        id: "draft",
-        role_id: "writer",
-        task: "Create a concise first draft that satisfies the goal and notes assumptions.",
-        expected_output: "Draft ready for supervisor editing.",
-        deliverable_style: "draft",
-        acceptance_criteria: &[
-            "Use only supplied or retrieved facts.",
-            "Mark assumptions explicitly.",
-        ],
-    },
-    WorkflowTaskTemplate {
-        id: "review",
-        role_id: "critic",
-        task: "Review the draft for clarity, omissions, and trust or UX risks.",
-        expected_output: "Review notes and concrete improvements.",
-        deliverable_style: "editorial critique",
-        acceptance_criteria: &[
-            "Prioritize issues over praise.",
-            "Suggest specific edits the supervisor can apply.",
-        ],
-    },
-    WorkflowTaskTemplate {
-        id: "verify",
-        role_id: "verifier",
-        task: "Check that the draft's factual claims are supported.",
-        expected_output: "Claim verification summary.",
-        deliverable_style: "fact check",
-        acceptance_criteria: &[
-            "Identify claims that need citations or evidence.",
-            "Do not rewrite the full draft.",
-        ],
-    },
-];
-
-const CONNECTOR_BACKGROUND_TASKS: &[WorkflowTaskTemplate] = &[
-    WorkflowTaskTemplate {
-        id: "connector-map",
-        role_id: "connector",
-        task: "Map connector or MCP options relevant to the goal, including setup and safety constraints.",
-        expected_output: "Connector recommendation with risks.",
-        deliverable_style: "connector brief",
-        acceptance_criteria: &[
-            "Mention credentials, process lifecycle, and timeout implications.",
-            "Prefer disabled-by-default or approval-gated recommendations for high-risk tools.",
-        ],
-    },
-    WorkflowTaskTemplate {
-        id: "background-plan",
-        role_id: "planner",
-        task: "Design a background-task workflow for the goal, including triggers, cancellation, and user-visible status.",
-        expected_output: "Background task plan with gates.",
-        deliverable_style: "workflow plan",
-        acceptance_criteria: &[
-            "Include start, progress, completion, and failure states.",
-            "Include cancellation and retry behavior.",
-        ],
-    },
-    WorkflowTaskTemplate {
-        id: "safety-check",
-        role_id: "verifier",
-        task: "Check the proposed connector/background workflow for security, privacy, and prompt-injection risks.",
-        expected_output: "Safety verification summary.",
-        deliverable_style: "safety check",
-        acceptance_criteria: &[
-            "Call out any broad tool access or exfiltration risk.",
-            "Recommend the narrowest safe default.",
-        ],
-    },
-];
-
-const WORKFLOW_TEMPLATES: &[WorkflowTemplate] = &[
-    WorkflowTemplate {
-        id: "research_verify",
-        label: "Research + Verify",
-        description: "Parallel evidence gathering, verification, and critique.",
-        max_parallel: 3,
-        tasks: RESEARCH_VERIFY_TASKS,
-    },
-    WorkflowTemplate {
-        id: "draft_review",
-        label: "Draft + Review",
-        description: "Create a draft, critique it, and fact-check it.",
-        max_parallel: 3,
-        tasks: DRAFT_REVIEW_TASKS,
-    },
-    WorkflowTemplate {
-        id: "connector_background",
-        label: "Connector + Background Task",
-        description: "Assess connector setup and background-task lifecycle risks.",
-        max_parallel: 3,
-        tasks: CONNECTOR_BACKGROUND_TASKS,
     },
 ];
 
@@ -1045,20 +899,6 @@ fn role_id_values() -> Vec<&'static str> {
         .collect()
 }
 
-fn workflow_template_by_id(template_id: &str) -> Option<&'static WorkflowTemplate> {
-    let normalized = normalize_role_id(template_id);
-    WORKFLOW_TEMPLATES
-        .iter()
-        .find(|template| template.id == normalized)
-}
-
-fn workflow_template_id_values() -> Vec<&'static str> {
-    WORKFLOW_TEMPLATES
-        .iter()
-        .map(|template| template.id)
-        .collect()
-}
-
 fn normalize_workflow_template_id(value: Option<String>) -> Result<Option<String>, CoreError> {
     let Some(raw_template) = trim_optional(value) else {
         return Ok(None);
@@ -1074,7 +914,7 @@ fn normalize_workflow_template_id(value: Option<String>) -> Result<Option<String
 }
 
 fn expand_workflow_template_tasks(
-    template: &WorkflowTemplate,
+    template: &WorkflowTemplateDefinition,
     batch_goal: &str,
     parallel_group: Option<&str>,
 ) -> Vec<BatchSubagentTaskArgs> {
@@ -2329,7 +2169,7 @@ impl Tool for SubagentBatchTool {
                 "workflow_template": {
                     "type": "string",
                     "enum": workflow_templates,
-                    "description": "Optional built-in workflow to expand from batch_goal when tasks is omitted. Use research_verify, draft_review, or connector_background."
+                    "description": "Optional built-in workflow to expand from batch_goal when tasks is omitted. Choose one of the enum values."
                 },
                 "parallel_group": { "type": "string" },
                 "max_parallel": { "type": "integer", "minimum": 1, "maximum": 8 }

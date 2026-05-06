@@ -20,9 +20,11 @@ use nexa_core::approval::{
 };
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
-    AgentConfig as DbAgentConfig, AgentSubtaskRun, AgentTaskRun, AgentTaskRunEvent,
-    CollectionContext, Conversation, ConversationMessage, ConversationStats, ConversationTurn,
-    CreateConversationInput, ImageAttachment, SaveAgentConfigInput,
+    AgentConfig as DbAgentConfig, AgentExecutionGraph, AgentSubtaskRun, AgentTaskArtifact,
+    AgentTaskArtifactSummary, AgentTaskArtifactVersion, AgentTaskRun, AgentTaskRunEvent,
+    AgentTaskRunListItem, CheckpointBranch, CollectionContext, Conversation, ConversationMessage,
+    ConversationStats, ConversationTurn, CreateAgentTaskArtifactInput, CreateConversationInput,
+    ImageAttachment, SaveAgentConfigInput, UpdateAgentTaskArtifactInput,
 };
 use nexa_core::db::Database;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
@@ -56,6 +58,7 @@ use nexa_core::source_tree::SourceTree;
 use nexa_core::sources::{CreateSourceInput, UpdateSourceInput};
 use nexa_core::tools::default_tool_registry;
 use nexa_core::watcher::{FileWatcher, WatcherEventKind};
+use nexa_core::workflow_catalog::{workflow_catalog, WorkflowCatalogTemplate};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -103,6 +106,11 @@ pub struct DownloadCancelFlag(pub Arc<AtomicBool>);
 pub struct ApprovalState {
     pub pending: Arc<TokioMutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalDecision>>>>,
     pub session_store: SessionApprovalStore,
+}
+
+#[tauri::command]
+pub fn list_workflow_templates_cmd() -> Vec<WorkflowCatalogTemplate> {
+    workflow_catalog()
 }
 
 async fn sync_enabled_mcp_servers(
@@ -2728,6 +2736,17 @@ pub async fn get_agent_task_runs_cmd(
 }
 
 #[tauri::command]
+pub async fn list_recent_agent_task_runs_cmd(
+    state: tauri::State<'_, AppState>,
+    limit: Option<u32>,
+) -> Result<Vec<AgentTaskRunListItem>, String> {
+    state
+        .db
+        .list_recent_agent_task_runs(limit.unwrap_or(50))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_agent_task_run_events_cmd(
     state: tauri::State<'_, AppState>,
     run_id: String,
@@ -2747,6 +2766,79 @@ pub async fn get_agent_subtask_runs_cmd(
         .db
         .list_agent_subtask_runs(&run_id)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_agent_execution_graph_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<AgentExecutionGraph, String> {
+    state
+        .db
+        .get_agent_execution_graph(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_agent_task_artifacts_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<AgentTaskArtifactSummary>, String> {
+    state
+        .db
+        .list_agent_task_artifacts(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_persisted_agent_task_artifacts_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<AgentTaskArtifact>, String> {
+    state
+        .db
+        .list_persisted_agent_task_artifacts(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_agent_task_artifact_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+    input: CreateAgentTaskArtifactInput,
+) -> Result<AgentTaskArtifact, String> {
+    state
+        .db
+        .create_agent_task_artifact(&run_id, &input)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_agent_task_artifact_cmd(
+    state: tauri::State<'_, AppState>,
+    artifact_id: String,
+    input: UpdateAgentTaskArtifactInput,
+) -> Result<AgentTaskArtifact, String> {
+    state
+        .db
+        .update_agent_task_artifact(&artifact_id, &input)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_agent_task_artifact_versions_cmd(
+    state: tauri::State<'_, AppState>,
+    artifact_id: String,
+) -> Result<Vec<AgentTaskArtifactVersion>, String> {
+    state
+        .db
+        .list_agent_task_artifact_versions(&artifact_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_tool_access_map_cmd() -> Vec<nexa_core::tool_access::ToolAccessInfo> {
+    nexa_core::tool_access::tool_access_map()
 }
 
 #[tauri::command]
@@ -3111,7 +3203,18 @@ pub fn restore_checkpoint_cmd(
 ) -> Result<Vec<ConversationMessage>, String> {
     state
         .db
-        .restore_checkpoint(&checkpoint_id)
+        .restore_checkpoint_into_conversation(&checkpoint_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn branch_checkpoint_cmd(
+    state: tauri::State<'_, AppState>,
+    checkpoint_id: String,
+) -> Result<CheckpointBranch, String> {
+    state
+        .db
+        .branch_checkpoint(&checkpoint_id)
         .map_err(|e| e.to_string())
 }
 
@@ -5118,6 +5221,11 @@ pub fn get_recent_traces(
         .db
         .get_recent_traces(limit.unwrap_or(20))
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn run_agent_quality_eval_cmd() -> nexa_core::quality_eval::QualityEvalReport {
+    nexa_core::quality_eval::run_agent_quality_eval()
 }
 
 // ── Knowledge Compilation Commands ─────────────────────────────────────

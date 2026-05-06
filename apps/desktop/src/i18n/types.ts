@@ -467,6 +467,27 @@ export interface TranslationKeys {
   'settings.tabModelsEmbedding': string;
   'settings.tabMedia': string;
   'settings.tabDataPrivacy': string;
+  'settings.tabAgentQuality': string;
+  'settings.agentQualityTitle': string;
+  'settings.agentQualityDescription': string;
+  'settings.agentQualityRun': string;
+  'settings.agentQualityRerun': string;
+  'settings.agentQualityRunning': string;
+  'settings.agentQualityCopyJson': string;
+  'settings.agentQualityCopied': string;
+  'settings.agentQualityCopyError': string;
+  'settings.agentQualityRunError': string;
+  'settings.agentQualityUnavailable': string;
+  'settings.agentQualityPassed': string;
+  'settings.agentQualityFailed': string;
+  'settings.agentQualityNotRun': string;
+  'settings.agentQualitySuites': string;
+  'settings.agentQualityCases': string;
+  'settings.agentQualityFailedCases': string;
+  'settings.agentQualityChecks': string;
+  'settings.agentQualityFailedChecks': string;
+  'settings.agentQualityLastRun': string;
+  'settings.agentQualityNoFailures': string;
 
   // Settings - Advanced
   'settings.advanced': string;
@@ -545,6 +566,7 @@ export interface TranslationKeys {
   // Chat
   'nav.chat': string;
   'nav.knowledge': string;
+  'nav.tasks': string;
   'chat.title': string;
   'chat.newChat': string;
   'chat.send': string;
@@ -688,9 +710,11 @@ export interface TranslationKeys {
   'chat.stoppedByUser': string;
   'chat.checkpoints': string;
   'chat.restoreCheckpoint': string;
+  'chat.branchCheckpoint': string;
   'chat.deleteCheckpoint': string;
   'chat.noCheckpoints': string;
   'chat.checkpointRestored': string;
+  'chat.checkpointBranched': string;
   'chat.autoCompacted': string;
   'chat.confirmRestore': string;
   'chat.messagesShort': string;
@@ -823,6 +847,12 @@ export interface TranslationKeys {
   // Chat - Active Extensions
   'chat.mcpSummary': string;
   'chat.skillsSummary': string;
+
+  // Chat - Workflows
+  'chat.workflows': string;
+  'chat.workflowTemplateCount': string;
+  'chat.workflowTasks': string;
+  'chat.workflowUnavailable': string;
 
   // Chat Suggestions
   'chat.suggestions.search': string;

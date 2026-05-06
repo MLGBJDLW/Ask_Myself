@@ -246,8 +246,16 @@ fn main() {
             commands::get_conversation_cmd,
             commands::get_conversation_turns_cmd,
             commands::get_agent_task_runs_cmd,
+            commands::list_recent_agent_task_runs_cmd,
             commands::get_agent_task_run_events_cmd,
             commands::get_agent_subtask_runs_cmd,
+            commands::get_agent_execution_graph_cmd,
+            commands::get_agent_task_artifacts_cmd,
+            commands::list_persisted_agent_task_artifacts_cmd,
+            commands::create_agent_task_artifact_cmd,
+            commands::update_agent_task_artifact_cmd,
+            commands::list_agent_task_artifact_versions_cmd,
+            commands::list_tool_access_map_cmd,
             commands::update_conversation_collection_context_cmd,
             commands::update_conversation_persona_cmd,
             commands::update_conversation_model_cmd,
@@ -265,6 +273,7 @@ fn main() {
             // Conversation checkpoints
             commands::list_checkpoints_cmd,
             commands::restore_checkpoint_cmd,
+            commands::branch_checkpoint_cmd,
             commands::delete_checkpoint_cmd,
             commands::list_file_checkpoints_cmd,
             commands::restore_file_checkpoint_cmd,
@@ -286,6 +295,7 @@ fn main() {
             commands::set_default_agent_config_cmd,
             commands::test_agent_connection_cmd,
             commands::list_provider_presets_cmd,
+            commands::list_workflow_templates_cmd,
             // Agent chat
             commands::agent_chat_cmd,
             commands::agent_steer_cmd,
@@ -353,6 +363,7 @@ fn main() {
             // Trace analytics
             commands::get_trace_summary,
             commands::get_recent_traces,
+            commands::run_agent_quality_eval_cmd,
             // Knowledge compilation
             commands::compile_document_cmd,
             commands::compile_pending_documents_cmd,

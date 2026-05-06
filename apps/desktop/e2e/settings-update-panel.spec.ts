@@ -139,6 +139,10 @@ test("settings agent behavior controls use the selected locale", async ({ page }
   await page.goto("/settings");
   await page.getByRole("button", { name: "Appearance" }).click();
   await page.getByRole("button", { name: "简体中文" }).click();
+  await page
+    .locator("button")
+    .filter({ has: page.getByRole("heading", { name: "高级设置" }) })
+    .click();
 
   await expect(page.getByText("Shell 权限模式")).toBeVisible();
   await expect(page.getByText("工具审批")).toBeVisible();

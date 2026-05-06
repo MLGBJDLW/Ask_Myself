@@ -467,6 +467,27 @@ export const fr: TranslationKeys = {
   'settings.tabModelsEmbedding': 'Modèles et Embedding',
   'settings.tabMedia': 'Traitement média',
   'settings.tabDataPrivacy': 'Données et Confidentialité',
+  'settings.tabAgentQuality': 'Agent Quality',
+  'settings.agentQualityTitle': 'Agent Quality',
+  'settings.agentQualityDescription': 'Run local deterministic checks for routing, evidence policy, and checkpoint recovery.',
+  'settings.agentQualityRun': 'Run local eval',
+  'settings.agentQualityRerun': 'Run again',
+  'settings.agentQualityRunning': 'Running local eval...',
+  'settings.agentQualityCopyJson': 'Copy JSON report',
+  'settings.agentQualityCopied': 'Agent quality report copied',
+  'settings.agentQualityCopyError': 'Failed to copy report',
+  'settings.agentQualityRunError': 'Agent quality eval failed',
+  'settings.agentQualityUnavailable': 'Run this local harness to verify agent behavior before shipping changes.',
+  'settings.agentQualityPassed': 'Passed',
+  'settings.agentQualityFailed': 'Failed',
+  'settings.agentQualityNotRun': 'Not run',
+  'settings.agentQualitySuites': 'Suites',
+  'settings.agentQualityCases': 'Cases',
+  'settings.agentQualityFailedCases': 'Failed cases',
+  'settings.agentQualityChecks': 'checks',
+  'settings.agentQualityFailedChecks': 'Failed',
+  'settings.agentQualityLastRun': 'Last run',
+  'settings.agentQualityNoFailures': 'All local quality gates passed.',
 
   // Settings - Advanced
   'settings.advanced': 'Avancé',
@@ -543,6 +564,7 @@ export const fr: TranslationKeys = {
   // Chat
   'nav.chat': 'Chat',
   'nav.knowledge': 'Knowledge',
+  'nav.tasks': 'Tâches',
   'chat.title': 'Chat',
   'chat.newChat': 'New Chat',
   'chat.send': 'Send',
@@ -679,9 +701,11 @@ export const fr: TranslationKeys = {
   'chat.rateLimited': 'Limité par le fournisseur — veuillez patienter',
   'chat.checkpoints': 'Points de contrôle',
   'chat.restoreCheckpoint': 'Restaurer',
+  'chat.branchCheckpoint': 'Essayer en branche',
   'chat.deleteCheckpoint': 'Supprimer',
   'chat.noCheckpoints': 'Aucun point de contrôle',
   'chat.checkpointRestored': 'Point de contrôle restauré',
+  'chat.checkpointBranched': 'Branche créée',
   'chat.autoCompacted': 'Contexte auto-compacté',
   'chat.confirmRestore': 'Restaurer à ce point de contrôle ? Les messages après ce point seront conservés.',
   'chat.messagesShort': '{count} msgs',
@@ -760,6 +784,12 @@ export const fr: TranslationKeys = {
   // Chat - Active Extensions
   'chat.mcpSummary': 'MCP ({servers} serveurs, {tools} outils)',
   'chat.skillsSummary': 'Compétences ({count} actives)',
+
+  // Chat - Workflows
+  'chat.workflows': 'Workflows',
+  'chat.workflowTemplateCount': '{count} modèles',
+  'chat.workflowTasks': '{count} étapes',
+  'chat.workflowUnavailable': 'Aucun workflow disponible',
 
   // Chat Suggestions
   'chat.suggestions.search': 'Rechercher',

@@ -71,6 +71,20 @@ export interface AgentTaskRun {
   finishedAt?: string | null;
 }
 
+export interface AgentTaskRunListItem {
+  run: AgentTaskRun;
+  conversationTitle?: string | null;
+  projectId?: string | null;
+  projectName?: string | null;
+  userMessagePreview: string;
+  eventCount: number;
+  subtaskTotal: number;
+  subtaskCompleted: number;
+  subtaskFailed: number;
+  subtaskRunning: number;
+  artifactKinds: string[];
+}
+
 export interface AgentTaskRunEvent {
   id: string;
   runId: string;
@@ -96,6 +110,91 @@ export interface AgentSubtaskRun {
   updatedAt: string;
   startedAt?: string | null;
   finishedAt?: string | null;
+}
+
+export interface AgentExecutionGraph {
+  runId: string;
+  nodes: AgentExecutionGraphNode[];
+  edges: AgentExecutionGraphEdge[];
+}
+
+export interface AgentExecutionGraphNode {
+  id: string;
+  nodeType: string;
+  label: string;
+  role: string;
+  status: string;
+  phase: string;
+  summary?: string | null;
+  errorMessage?: string | null;
+  input?: Record<string, unknown> | unknown[] | null;
+  output?: Record<string, unknown> | unknown[] | null;
+  tokenBudget?: number | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+export interface AgentExecutionGraphEdge {
+  from: string;
+  to: string;
+  label: string;
+}
+
+export interface AgentTaskArtifactSummary {
+  id: string;
+  runId: string;
+  kind: string;
+  title: string;
+  summary?: string | null;
+  paths: string[];
+  source: string;
+  createdAt: string;
+  payload: Record<string, unknown> | unknown[] | string | number | boolean | null;
+}
+
+export interface AgentTaskArtifact {
+  id: string;
+  runId: string;
+  kind: string;
+  title: string;
+  summary?: string | null;
+  content: string;
+  paths: string[];
+  payload?: Record<string, unknown> | unknown[] | string | number | boolean | null;
+  source: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentTaskArtifactVersion {
+  id: string;
+  artifactId: string;
+  version: number;
+  title: string;
+  summary?: string | null;
+  content: string;
+  paths: string[];
+  payload?: Record<string, unknown> | unknown[] | string | number | boolean | null;
+  createdAt: string;
+}
+
+export interface CreateAgentTaskArtifactInput {
+  kind: string;
+  title: string;
+  summary?: string | null;
+  content: string;
+  paths: string[];
+  payload?: Record<string, unknown> | unknown[] | string | number | boolean | null;
+  source?: string | null;
+}
+
+export interface UpdateAgentTaskArtifactInput {
+  title: string;
+  summary?: string | null;
+  content: string;
+  paths: string[];
+  payload?: Record<string, unknown> | unknown[] | string | number | boolean | null;
 }
 
 export interface ToolCallRequest {
@@ -261,6 +360,18 @@ export interface AgentEvent {
 export type ApprovalRisk = 'low' | 'medium' | 'high';
 export type ApprovalDecisionValue = 'allow_once' | 'allow_session' | 'deny' | 'never';
 
+export interface ToolAccessInfo {
+  name: string;
+  category: string;
+  canRead: boolean;
+  canWrite: boolean;
+  canExecute: boolean;
+  canAccessNetwork: boolean;
+  needsApproval: boolean;
+  riskLevel: ApprovalRisk;
+  riskReason: string;
+}
+
 export interface ApprovalRequest {
   id: string;
   toolName: string;
@@ -333,6 +444,12 @@ export interface Checkpoint {
   messageCount: number;
   estimatedTokens: number;
   createdAt: string;
+}
+
+export interface CheckpointBranch {
+  conversation: Conversation;
+  sourceCheckpoint: Checkpoint;
+  messageCount: number;
 }
 
 export interface FileCheckpoint {
