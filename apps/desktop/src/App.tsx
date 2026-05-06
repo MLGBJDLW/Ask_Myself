@@ -20,6 +20,7 @@ import { PlaybooksPage } from "./pages/PlaybooksPage";
 import { KnowledgePage } from "./pages/KnowledgePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ChatPage } from './pages/ChatPage';
+import { TaskCenterPage } from './pages/TaskCenterPage';
 import { WizardPage } from "./pages/WizardPage";
 import { CommandPalette } from "./components/CommandPalette";
 import { StreamProvider } from "./lib/StreamProvider";
@@ -124,6 +125,7 @@ const router = createBrowserRouter(
         <Route path="/playbooks" element={<PageTransition><PlaybooksPage /></PageTransition>} />
         <Route path="/knowledge" element={<PageTransition><KnowledgePage /></PageTransition>} />
         <Route path="/chat/:conversationId?" element={<PageTransition><ChatPage /></PageTransition>} />
+        <Route path="/tasks" element={<PageTransition><TaskCenterPage /></PageTransition>} />
         <Route path="/settings" element={<PageTransition><SettingsPage /></PageTransition>} />
         <Route path="*" element={<PageTransition><NotFoundPage /></PageTransition>} />
       </Route>

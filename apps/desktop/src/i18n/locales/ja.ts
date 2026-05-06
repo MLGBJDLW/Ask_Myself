@@ -467,6 +467,27 @@ export const ja: TranslationKeys = {
   'settings.tabModelsEmbedding': 'モデルとエンベディング',
   'settings.tabMedia': 'メディア処理',
   'settings.tabDataPrivacy': 'データとプライバシー',
+  'settings.tabAgentQuality': 'Agent Quality',
+  'settings.agentQualityTitle': 'Agent Quality',
+  'settings.agentQualityDescription': 'Run local deterministic checks for routing, evidence policy, and checkpoint recovery.',
+  'settings.agentQualityRun': 'Run local eval',
+  'settings.agentQualityRerun': 'Run again',
+  'settings.agentQualityRunning': 'Running local eval...',
+  'settings.agentQualityCopyJson': 'Copy JSON report',
+  'settings.agentQualityCopied': 'Agent quality report copied',
+  'settings.agentQualityCopyError': 'Failed to copy report',
+  'settings.agentQualityRunError': 'Agent quality eval failed',
+  'settings.agentQualityUnavailable': 'Run this local harness to verify agent behavior before shipping changes.',
+  'settings.agentQualityPassed': 'Passed',
+  'settings.agentQualityFailed': 'Failed',
+  'settings.agentQualityNotRun': 'Not run',
+  'settings.agentQualitySuites': 'Suites',
+  'settings.agentQualityCases': 'Cases',
+  'settings.agentQualityFailedCases': 'Failed cases',
+  'settings.agentQualityChecks': 'checks',
+  'settings.agentQualityFailedChecks': 'Failed',
+  'settings.agentQualityLastRun': 'Last run',
+  'settings.agentQualityNoFailures': 'All local quality gates passed.',
 
   // Settings - Advanced
   'settings.advanced': '詳細設定',
@@ -543,6 +564,7 @@ export const ja: TranslationKeys = {
   // Chat
   'nav.chat': 'Chat',
   'nav.knowledge': 'Knowledge',
+  'nav.tasks': 'タスク',
   'chat.title': 'Chat',
   'chat.newChat': 'New Chat',
   'chat.send': 'Send',
@@ -679,9 +701,11 @@ export const ja: TranslationKeys = {
   'chat.rateLimited': 'プロバイダーによりレート制限されました — しばらくお待ちください',
   'chat.checkpoints': 'チェックポイント',
   'chat.restoreCheckpoint': '復元',
+  'chat.branchCheckpoint': '分岐として試す',
   'chat.deleteCheckpoint': '削除',
   'chat.noCheckpoints': 'チェックポイントはまだありません',
   'chat.checkpointRestored': 'チェックポイントを復元しました',
+  'chat.checkpointBranched': '分岐を作成しました',
   'chat.autoCompacted': 'コンテキストが自動圧縮されました',
   'chat.confirmRestore': 'このチェックポイントに復元しますか？この時点以降のメッセージは保持されます。',
   'chat.messagesShort': '{count} 件',
@@ -760,6 +784,12 @@ export const ja: TranslationKeys = {
   // Chat - Active Extensions
   'chat.mcpSummary': 'MCP（{servers} サーバー、{tools} ツール）',
   'chat.skillsSummary': 'スキル（{count} 件有効）',
+
+  // Chat - Workflows
+  'chat.workflows': 'ワークフロー',
+  'chat.workflowTemplateCount': '{count} 件のテンプレート',
+  'chat.workflowTasks': '{count} ステップ',
+  'chat.workflowUnavailable': '利用可能なワークフローはありません',
 
   // Chat Suggestions
   'chat.suggestions.search': 'ナレッジ検索',

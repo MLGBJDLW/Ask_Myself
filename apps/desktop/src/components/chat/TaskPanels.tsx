@@ -108,6 +108,28 @@ function PlanStepRow({ step }: { step: PlanStepArtifact }) {
   );
 }
 
+function PlanProgressStepRow({ step }: { step: PlanStepArtifact }) {
+  let icon = <Circle className="h-3 w-3 text-text-tertiary" />;
+  let tone = 'text-text-secondary';
+
+  if (step.status === 'completed') {
+    icon = <CheckCircle2 className="h-3 w-3 text-success" />;
+    tone = 'text-text-primary';
+  } else if (step.status === 'in_progress') {
+    icon = <Loader2 className="h-3 w-3 animate-spin text-accent" />;
+    tone = 'text-text-primary';
+  }
+
+  return (
+    <li className="grid grid-cols-[14px_minmax(0,1fr)] items-start gap-1.5">
+      <span className="mt-1 shrink-0">{icon}</span>
+      <span className={`min-w-0 break-words text-xs leading-5 ${tone}`}>
+        {step.title}
+      </span>
+    </li>
+  );
+}
+
 function VerificationRow({ check }: { check: VerificationCheckArtifact }) {
   let icon = <Circle className="h-3 w-3 text-text-tertiary" />;
   let tone = 'text-text-secondary';
@@ -170,6 +192,41 @@ function SubtaskRow({ subtask }: { subtask: SubtaskRunArtifact }) {
         )}
       </div>
     </li>
+  );
+}
+
+export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
+  const counts = getPlanCounts(plan);
+  const percent = counts.total > 0
+    ? Math.min(100, Math.max(0, Math.round((counts.completed / counts.total) * 100)))
+    : 0;
+
+  return (
+    <div>
+      <div
+        className="flex items-center gap-2"
+        aria-label={`Plan progress ${counts.completed} of ${counts.total}`}
+      >
+        <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-2">
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-300"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+        <span
+          data-testid="task-board-progress"
+          className="shrink-0 text-[11px] tabular-nums text-text-tertiary"
+        >
+          {counts.completed}/{counts.total}
+        </span>
+      </div>
+
+      <ol className="mt-1.5 max-h-28 space-y-1 overflow-y-auto pr-1">
+        {plan.steps.map((step, index) => (
+          <PlanProgressStepRow key={step.id || `${step.title}-${index}`} step={step} />
+        ))}
+      </ol>
+    </div>
   );
 }
 

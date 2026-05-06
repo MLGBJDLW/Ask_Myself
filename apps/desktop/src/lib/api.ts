@@ -25,12 +25,21 @@ import type {
   ConversationMessage,
   ConversationTurn,
   AgentTaskRun,
+  AgentTaskRunListItem,
   AgentTaskRunEvent,
   AgentSubtaskRun,
+  AgentExecutionGraph,
+  AgentTaskArtifact,
+  AgentTaskArtifactSummary,
+  AgentTaskArtifactVersion,
+  CreateAgentTaskArtifactInput,
+  UpdateAgentTaskArtifactInput,
+  ToolAccessInfo,
   ConversationStats,
   ConversationSearchResult,
   ImageAttachment,
   Checkpoint,
+  CheckpointBranch,
   FileCheckpoint,
   FileCheckpointRestore,
   UserMemory,
@@ -44,6 +53,7 @@ import type {
   SaveSkillInput,
 } from "../types/extensions";
 import type { TraceSummary, AgentTrace } from "../types/trace";
+import type { QualityEvalReport } from "../types/qualityEval";
 import type { ProviderPreset } from "./providerPresets";
 
 // ── Sources ─────────────────────────────────────────────────────────────
@@ -297,6 +307,25 @@ export interface FileSaveResult {
   reindexDetail?: string | null;
 }
 
+export interface WorkflowCatalogTask {
+  id: string;
+  roleId: string;
+  roleLabel: string;
+  task: string;
+  expectedOutput: string;
+  deliverableStyle: string;
+  acceptanceCriteria: string[];
+}
+
+export interface WorkflowCatalogTemplate {
+  id: string;
+  label: string;
+  description: string;
+  maxParallel: number;
+  promptTemplate: string;
+  tasks: WorkflowCatalogTask[];
+}
+
 export const previewFile = (path: string) =>
   invoke<FilePreview>('preview_file_cmd', { path });
 
@@ -396,6 +425,9 @@ export const testAgentConnection = (config: SaveAgentConfigInput) =>
 export const listProviderPresets = () =>
   invoke<ProviderPreset[]>('list_provider_presets_cmd');
 
+export const listWorkflowTemplates = () =>
+  invoke<WorkflowCatalogTemplate[]>('list_workflow_templates_cmd');
+
 // ── Conversations ───────────────────────────────────────────────────────
 
 export const createConversation = (
@@ -440,11 +472,35 @@ export const getConversationTurns = (conversationId: string) =>
 export const getAgentTaskRuns = (conversationId: string) =>
   invoke<AgentTaskRun[]>('get_agent_task_runs_cmd', { conversationId });
 
+export const listRecentAgentTaskRuns = (limit = 50) =>
+  invoke<AgentTaskRunListItem[]>('list_recent_agent_task_runs_cmd', { limit });
+
 export const getAgentTaskRunEvents = (runId: string) =>
   invoke<AgentTaskRunEvent[]>('get_agent_task_run_events_cmd', { runId });
 
 export const getAgentSubtaskRuns = (runId: string) =>
   invoke<AgentSubtaskRun[]>('get_agent_subtask_runs_cmd', { runId });
+
+export const getAgentExecutionGraph = (runId: string) =>
+  invoke<AgentExecutionGraph>('get_agent_execution_graph_cmd', { runId });
+
+export const getAgentTaskArtifacts = (runId: string) =>
+  invoke<AgentTaskArtifactSummary[]>('get_agent_task_artifacts_cmd', { runId });
+
+export const listPersistedAgentTaskArtifacts = (runId: string) =>
+  invoke<AgentTaskArtifact[]>('list_persisted_agent_task_artifacts_cmd', { runId });
+
+export const createAgentTaskArtifact = (runId: string, input: CreateAgentTaskArtifactInput) =>
+  invoke<AgentTaskArtifact>('create_agent_task_artifact_cmd', { runId, input });
+
+export const updateAgentTaskArtifact = (artifactId: string, input: UpdateAgentTaskArtifactInput) =>
+  invoke<AgentTaskArtifact>('update_agent_task_artifact_cmd', { artifactId, input });
+
+export const listAgentTaskArtifactVersions = (artifactId: string) =>
+  invoke<AgentTaskArtifactVersion[]>('list_agent_task_artifact_versions_cmd', { artifactId });
+
+export const listToolAccessMap = () =>
+  invoke<ToolAccessInfo[]>('list_tool_access_map_cmd');
 
 export const deleteConversation = (id: string) =>
   invoke<void>('delete_conversation_cmd', { id });
@@ -607,6 +663,9 @@ export const listCheckpoints = (conversationId: string) =>
 
 export const restoreCheckpoint = (checkpointId: string) =>
   invoke<ConversationMessage[]>('restore_checkpoint_cmd', { checkpointId });
+
+export const branchCheckpoint = (checkpointId: string) =>
+  invoke<CheckpointBranch>('branch_checkpoint_cmd', { checkpointId });
 
 export const deleteCheckpoint = (checkpointId: string) =>
   invoke<void>('delete_checkpoint_cmd', { checkpointId });
@@ -854,6 +913,9 @@ export const getTraceSummary = () =>
 
 export const getRecentTraces = (limit?: number) =>
   invoke<AgentTrace[]>('get_recent_traces', { limit });
+
+export const runAgentQualityEval = () =>
+  invoke<QualityEvalReport>('run_agent_quality_eval_cmd');
 
 // ── Knowledge Compilation ───────────────────────────────────────────
 

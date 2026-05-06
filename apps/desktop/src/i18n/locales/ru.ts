@@ -469,6 +469,27 @@ export const ru: TranslationKeys = {
   'settings.tabModelsEmbedding': 'Модели и эмбеддинг',
   'settings.tabMedia': 'Обработка медиа',
   'settings.tabDataPrivacy': 'Данные и приватность',
+  'settings.tabAgentQuality': 'Agent Quality',
+  'settings.agentQualityTitle': 'Agent Quality',
+  'settings.agentQualityDescription': 'Run local deterministic checks for routing, evidence policy, and checkpoint recovery.',
+  'settings.agentQualityRun': 'Run local eval',
+  'settings.agentQualityRerun': 'Run again',
+  'settings.agentQualityRunning': 'Running local eval...',
+  'settings.agentQualityCopyJson': 'Copy JSON report',
+  'settings.agentQualityCopied': 'Agent quality report copied',
+  'settings.agentQualityCopyError': 'Failed to copy report',
+  'settings.agentQualityRunError': 'Agent quality eval failed',
+  'settings.agentQualityUnavailable': 'Run this local harness to verify agent behavior before shipping changes.',
+  'settings.agentQualityPassed': 'Passed',
+  'settings.agentQualityFailed': 'Failed',
+  'settings.agentQualityNotRun': 'Not run',
+  'settings.agentQualitySuites': 'Suites',
+  'settings.agentQualityCases': 'Cases',
+  'settings.agentQualityFailedCases': 'Failed cases',
+  'settings.agentQualityChecks': 'checks',
+  'settings.agentQualityFailedChecks': 'Failed',
+  'settings.agentQualityLastRun': 'Last run',
+  'settings.agentQualityNoFailures': 'All local quality gates passed.',
 
   // Settings - Advanced
   'settings.advanced': 'Дополнительно',
@@ -545,6 +566,7 @@ export const ru: TranslationKeys = {
   // Chat
   'nav.chat': 'Chat',
   'nav.knowledge': 'Knowledge',
+  'nav.tasks': 'Задачи',
   'chat.title': 'Chat',
   'chat.newChat': 'New Chat',
   'chat.send': 'Send',
@@ -681,9 +703,11 @@ export const ru: TranslationKeys = {
   'chat.rateLimited': 'Ограничение скорости от провайдера — подождите немного',
   'chat.checkpoints': 'Контрольные точки',
   'chat.restoreCheckpoint': 'Восстановить',
+  'chat.branchCheckpoint': 'Пробовать как ветку',
   'chat.deleteCheckpoint': 'Удалить',
   'chat.noCheckpoints': 'Контрольных точек пока нет',
   'chat.checkpointRestored': 'Контрольная точка восстановлена',
+  'chat.checkpointBranched': 'Ветка создана',
   'chat.autoCompacted': 'Контекст автоматически сжат',
   'chat.confirmRestore': 'Восстановить до этой точки? Сообщения после этого момента будут сохранены.',
   'chat.messagesShort': '{count} сообщ.',
@@ -762,6 +786,12 @@ export const ru: TranslationKeys = {
   // Chat - Active Extensions
   'chat.mcpSummary': 'MCP ({servers} серверов, {tools} инструментов)',
   'chat.skillsSummary': 'Навыки ({count} активных)',
+
+  // Chat - Workflows
+  'chat.workflows': 'Сценарии',
+  'chat.workflowTemplateCount': '{count} шаблонов',
+  'chat.workflowTasks': '{count} шагов',
+  'chat.workflowUnavailable': 'Нет доступных сценариев',
 
   // Chat Suggestions
   'chat.suggestions.search': 'Поиск знаний',

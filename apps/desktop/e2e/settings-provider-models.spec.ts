@@ -66,6 +66,8 @@ test.beforeEach(async ({ page }) => {
           listeners.delete(Number(_args.eventId ?? 0));
           return null;
         }
+        case "get_wizard_state_cmd":
+          return { completed: true };
         case "list_agent_configs_cmd":
           return [clone(anthropicConfig)];
         case "list_conversations_cmd":

@@ -467,6 +467,27 @@ export const zhTW: TranslationKeys = {
   'settings.tabModelsEmbedding': '模型與嵌入',
   'settings.tabMedia': '媒體處理',
   'settings.tabDataPrivacy': '資料與隱私',
+  'settings.tabAgentQuality': 'Agent 品質',
+  'settings.agentQualityTitle': 'Agent 品質',
+  'settings.agentQualityDescription': '執行本地確定性檢查，涵蓋路由、證據策略與 checkpoint 復原。',
+  'settings.agentQualityRun': '執行本地評測',
+  'settings.agentQualityRerun': '再次執行',
+  'settings.agentQualityRunning': '正在執行本地評測...',
+  'settings.agentQualityCopyJson': '複製 JSON 報告',
+  'settings.agentQualityCopied': 'Agent 品質報告已複製',
+  'settings.agentQualityCopyError': '複製報告失敗',
+  'settings.agentQualityRunError': 'Agent 品質評測失敗',
+  'settings.agentQualityUnavailable': '執行這套本地 harness，在發布變更前驗證 agent 行為。',
+  'settings.agentQualityPassed': '已通過',
+  'settings.agentQualityFailed': '未通過',
+  'settings.agentQualityNotRun': '尚未執行',
+  'settings.agentQualitySuites': '套件',
+  'settings.agentQualityCases': '用例',
+  'settings.agentQualityFailedCases': '失敗用例',
+  'settings.agentQualityChecks': '項檢查',
+  'settings.agentQualityFailedChecks': '失敗',
+  'settings.agentQualityLastRun': '上次執行',
+  'settings.agentQualityNoFailures': '所有本地品質門檻均已通過。',
 
   // Settings - Advanced
   'settings.advanced': '進階設定',
@@ -543,6 +564,7 @@ export const zhTW: TranslationKeys = {
   // Chat
   'nav.chat': 'Chat',
   'nav.knowledge': 'Knowledge',
+  'nav.tasks': '任務',
   'chat.title': 'Chat',
   'chat.newChat': 'New Chat',
   'chat.send': 'Send',
@@ -679,9 +701,11 @@ export const zhTW: TranslationKeys = {
   'chat.rateLimited': '被服務商限流 — 請稍候',
   'chat.checkpoints': '存檔點',
   'chat.restoreCheckpoint': '恢復',
+  'chat.branchCheckpoint': '作為分支嘗試',
   'chat.deleteCheckpoint': '刪除',
   'chat.noCheckpoints': '暫無存檔點',
   'chat.checkpointRestored': '已恢復存檔點',
+  'chat.checkpointBranched': '已建立分支',
   'chat.autoCompacted': '上下文已自動壓縮',
   'chat.confirmRestore': '恢復到此存檔點？此時間點之後的訊息將保留。',
   'chat.messagesShort': '{count} 則訊息',
@@ -760,6 +784,12 @@ export const zhTW: TranslationKeys = {
   // Chat - Active Extensions
   'chat.mcpSummary': 'MCP（{servers} 個伺服器，{tools} 個工具）',
   'chat.skillsSummary': '技能（{count} 個已啟用）',
+
+  // Chat - Workflows
+  'chat.workflows': '工作流程',
+  'chat.workflowTemplateCount': '{count} 個範本',
+  'chat.workflowTasks': '{count} 步',
+  'chat.workflowUnavailable': '暫無可用工作流程',
 
   // Chat Suggestions
   'chat.suggestions.search': '搜尋知識',

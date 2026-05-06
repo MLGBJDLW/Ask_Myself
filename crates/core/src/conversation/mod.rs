@@ -3,7 +3,7 @@
 pub mod memory;
 pub mod summarizer;
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -185,6 +185,22 @@ pub struct AgentTaskRun {
     pub finished_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskRunListItem {
+    pub run: AgentTaskRun,
+    pub conversation_title: Option<String>,
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    pub user_message_preview: String,
+    pub event_count: u32,
+    pub subtask_total: u32,
+    pub subtask_completed: u32,
+    pub subtask_failed: u32,
+    pub subtask_running: u32,
+    pub artifact_kinds: Vec<String>,
+}
+
 /// Append-only event in an [`AgentTaskRun`] lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -222,6 +238,85 @@ pub struct AgentSubtaskRun {
     pub finished_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentExecutionGraph {
+    pub run_id: String,
+    pub nodes: Vec<AgentExecutionGraphNode>,
+    pub edges: Vec<AgentExecutionGraphEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentExecutionGraphNode {
+    pub id: String,
+    pub node_type: String,
+    pub label: String,
+    pub role: String,
+    pub status: String,
+    pub phase: String,
+    pub summary: Option<String>,
+    pub error_message: Option<String>,
+    pub input: Option<serde_json::Value>,
+    pub output: Option<serde_json::Value>,
+    pub token_budget: Option<u32>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentExecutionGraphEdge {
+    pub from: String,
+    pub to: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskArtifactSummary {
+    pub id: String,
+    pub run_id: String,
+    pub kind: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub paths: Vec<String>,
+    pub source: String,
+    pub created_at: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskArtifact {
+    pub id: String,
+    pub run_id: String,
+    pub kind: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub content: String,
+    pub paths: Vec<String>,
+    pub payload: Option<serde_json::Value>,
+    pub source: String,
+    pub version: u32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskArtifactVersion {
+    pub id: String,
+    pub artifact_id: String,
+    pub version: u32,
+    pub title: String,
+    pub summary: Option<String>,
+    pub content: String,
+    pub paths: Vec<String>,
+    pub payload: Option<serde_json::Value>,
+    pub created_at: String,
+}
+
 /// A snapshot of conversation state before compaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -232,6 +327,14 @@ pub struct Checkpoint {
     pub message_count: u32,
     pub estimated_tokens: u32,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointBranch {
+    pub conversation: Conversation,
+    pub source_checkpoint: Checkpoint,
+    pub message_count: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +388,30 @@ pub struct SaveAgentConfigInput {
     pub subagent_token_budget: Option<i64>,
     pub tool_timeout_secs: Option<i64>,
     pub agent_timeout_secs: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAgentTaskArtifactInput {
+    pub kind: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub content: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    pub payload: Option<serde_json::Value>,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAgentTaskArtifactInput {
+    pub title: String,
+    pub summary: Option<String>,
+    pub content: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    pub payload: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +479,26 @@ fn parse_optional_string_list(value: Option<String>) -> Option<Vec<String>> {
     value.and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
 }
 
+fn serialize_string_list(value: &[String]) -> Result<String, CoreError> {
+    let normalized = value
+        .iter()
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    Ok(serde_json::to_string(&normalized)?)
+}
+
+fn string_list_from_sql(json: String, column_index: usize) -> rusqlite::Result<Vec<String>> {
+    serde_json::from_str::<Vec<String>>(&json).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column_index,
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })
+}
+
 fn serialize_collection_context(
     value: Option<&CollectionContext>,
 ) -> Result<Option<String>, CoreError> {
@@ -375,6 +522,158 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
         end -= 1;
     }
     format!("{}…", &s[..end])
+}
+
+fn task_message_preview(message: &str) -> String {
+    let compact = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_preview(&compact, 180)
+}
+
+fn task_artifact_kinds(artifacts: &Option<serde_json::Value>) -> Vec<String> {
+    let Some(value) = artifacts else {
+        return Vec::new();
+    };
+
+    let mut kinds = BTreeSet::new();
+    collect_task_artifact_kinds(value, &mut kinds);
+    kinds.into_iter().collect()
+}
+
+fn collect_task_artifact_kinds(value: &serde_json::Value, kinds: &mut BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(kind) = map.get("kind").and_then(|value| value.as_str()) {
+                let kind = kind.trim();
+                if !kind.is_empty() {
+                    kinds.insert(kind.to_string());
+                }
+            }
+
+            for (key, value) in map {
+                if matches!(
+                    key.as_str(),
+                    "files"
+                        | "fileCheckpoints"
+                        | "judgement"
+                        | "plan"
+                        | "report"
+                        | "subtasks"
+                        | "table"
+                        | "trace"
+                        | "verification"
+                ) && !value.is_null()
+                {
+                    kinds.insert(key.to_string());
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_task_artifact_kinds(item, kinds);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_artifact_paths(value: &serde_json::Value, paths: &mut BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in ["path", "absolutePath", "filePath", "outputPath"] {
+                if let Some(path) = map.get(key).and_then(|value| value.as_str()) {
+                    let path = path.trim();
+                    if !path.is_empty() {
+                        paths.insert(path.to_string());
+                    }
+                }
+            }
+            for value in map.values() {
+                collect_artifact_paths(value, paths);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_artifact_paths(item, paths);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn artifact_paths(value: &serde_json::Value) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    collect_artifact_paths(value, &mut paths);
+    paths.into_iter().collect()
+}
+
+fn value_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn artifact_kind_for_key(key: &str, value: &serde_json::Value) -> String {
+    value_string_field(value, "kind").unwrap_or_else(|| key.to_string())
+}
+
+fn title_from_artifact_key(key: &str) -> String {
+    key.replace(['_', '-'], " ")
+        .split_whitespace()
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn artifact_summary(value: &serde_json::Value) -> Option<String> {
+    value_string_field(value, "summary")
+        .or_else(|| value_string_field(value, "description"))
+        .or_else(|| value_string_field(value, "result"))
+}
+
+fn normalize_artifact_label(value: &str, fallback: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn is_compaction_summary_message(message: &ConversationMessage) -> bool {
+    message.role == Role::System
+        && message
+            .content
+            .trim_start()
+            .starts_with("## Earlier conversation context (summarized)")
+}
+
+fn checkpoint_branch_title(source_title: &str, checkpoint_label: &str) -> String {
+    let source = source_title.trim();
+    let label = checkpoint_label.trim();
+    let base = if source.is_empty() {
+        "Recovered conversation"
+    } else {
+        source
+    };
+
+    if label.is_empty() {
+        format!("Branch: {}", truncate_preview(base, 64))
+    } else {
+        format!(
+            "Branch: {} ({})",
+            truncate_preview(base, 56),
+            truncate_preview(label, 24)
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1246,6 +1545,78 @@ impl Database {
         Ok(results)
     }
 
+    pub fn list_recent_agent_task_runs(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<AgentTaskRunListItem>, CoreError> {
+        let bounded_limit = i64::from(limit.clamp(1, 200));
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT r.id, r.conversation_id, r.turn_id, r.user_message_id, r.status, r.phase,
+                    r.title, r.route_kind, r.summary, r.error_message, r.provider, r.model,
+                    r.plan_json, r.artifacts_json, r.created_at, r.updated_at, r.started_at,
+                    r.finished_at,
+                    NULLIF(c.title, '') AS conversation_title,
+                    c.project_id,
+                    NULLIF(p.name, '') AS project_name,
+                    COALESCE(m.content, '') AS user_message_content,
+                    (SELECT COUNT(*) FROM agent_task_run_events e WHERE e.run_id = r.id) AS event_count,
+                    (SELECT COUNT(*) FROM agent_subtask_runs s WHERE s.parent_run_id = r.id) AS subtask_total,
+                    (SELECT COUNT(*) FROM agent_subtask_runs s WHERE s.parent_run_id = r.id AND s.status = 'completed') AS subtask_completed,
+                    (SELECT COUNT(*) FROM agent_subtask_runs s WHERE s.parent_run_id = r.id AND s.status = 'failed') AS subtask_failed,
+                    (SELECT COUNT(*) FROM agent_subtask_runs s WHERE s.parent_run_id = r.id AND s.status IN ('queued', 'running')) AS subtask_running
+             FROM agent_task_runs r
+             JOIN conversations c ON c.id = r.conversation_id
+             LEFT JOIN projects p ON p.id = c.project_id
+             LEFT JOIN messages m ON m.id = r.user_message_id
+             ORDER BY datetime(r.updated_at) DESC, datetime(r.created_at) DESC, r.id DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![bounded_limit], |row| {
+            let artifacts = json_value_from_sql(row.get(13)?, 13)?;
+            let run = AgentTaskRun {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                turn_id: row.get(2)?,
+                user_message_id: row.get(3)?,
+                status: row.get(4)?,
+                phase: row.get(5)?,
+                title: row.get(6)?,
+                route_kind: row.get(7)?,
+                summary: row.get(8)?,
+                error_message: row.get(9)?,
+                provider: row.get(10)?,
+                model: row.get(11)?,
+                plan: json_value_from_sql(row.get(12)?, 12)?,
+                artifacts: artifacts.clone(),
+                created_at: row.get(14)?,
+                updated_at: row.get(15)?,
+                started_at: row.get(16)?,
+                finished_at: row.get(17)?,
+            };
+            let user_message_content: String = row.get(21)?;
+            Ok(AgentTaskRunListItem {
+                run,
+                conversation_title: row.get(18)?,
+                project_id: row.get(19)?,
+                project_name: row.get(20)?,
+                user_message_preview: task_message_preview(&user_message_content),
+                event_count: row.get::<_, i64>(22)?.max(0) as u32,
+                subtask_total: row.get::<_, i64>(23)?.max(0) as u32,
+                subtask_completed: row.get::<_, i64>(24)?.max(0) as u32,
+                subtask_failed: row.get::<_, i64>(25)?.max(0) as u32,
+                subtask_running: row.get::<_, i64>(26)?.max(0) as u32,
+                artifact_kinds: task_artifact_kinds(&artifacts),
+            })
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
     pub fn get_agent_task_run_event(&self, event_id: &str) -> Result<AgentTaskRunEvent, CoreError> {
         let conn = self.conn();
         conn.query_row(
@@ -1437,6 +1808,354 @@ impl Database {
         }
         Ok(results)
     }
+
+    pub fn get_agent_execution_graph(
+        &self,
+        run_id: &str,
+    ) -> Result<AgentExecutionGraph, CoreError> {
+        let run = self.get_agent_task_run(run_id)?;
+        let subtasks = self.list_agent_subtask_runs(run_id)?;
+        let mut nodes = Vec::with_capacity(subtasks.len() + 1);
+        nodes.push(AgentExecutionGraphNode {
+            id: run.id.clone(),
+            node_type: "supervisor".to_string(),
+            label: run.title.clone(),
+            role: "Supervisor".to_string(),
+            status: run.status.clone(),
+            phase: run.phase.clone(),
+            summary: run.summary.clone(),
+            error_message: run.error_message.clone(),
+            input: None,
+            output: run.artifacts.clone(),
+            token_budget: None,
+            started_at: run.started_at.clone(),
+            finished_at: run.finished_at.clone(),
+        });
+
+        let mut edges = Vec::with_capacity(subtasks.len());
+        for subtask in subtasks {
+            edges.push(AgentExecutionGraphEdge {
+                from: run.id.clone(),
+                to: subtask.id.clone(),
+                label: "delegates".to_string(),
+            });
+            nodes.push(AgentExecutionGraphNode {
+                id: subtask.id,
+                node_type: "subtask".to_string(),
+                label: subtask.label,
+                role: subtask.role,
+                status: subtask.status,
+                phase: subtask.phase,
+                summary: subtask.output.as_ref().and_then(artifact_summary),
+                error_message: subtask.error_message,
+                input: subtask.input,
+                output: subtask.output,
+                token_budget: subtask.token_budget,
+                started_at: subtask.started_at,
+                finished_at: subtask.finished_at,
+            });
+        }
+
+        Ok(AgentExecutionGraph {
+            run_id: run.id,
+            nodes,
+            edges,
+        })
+    }
+
+    pub fn list_agent_task_artifacts(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<AgentTaskArtifactSummary>, CoreError> {
+        let run = self.get_agent_task_run(run_id)?;
+        let mut artifacts = Vec::new();
+
+        if let Some(payload) = &run.artifacts {
+            if let serde_json::Value::Object(map) = payload {
+                if let Some(kind) = value_string_field(payload, "kind") {
+                    artifacts.push(AgentTaskArtifactSummary {
+                        id: format!("{}:root", run.id),
+                        run_id: run.id.clone(),
+                        kind,
+                        title: value_string_field(payload, "title")
+                            .unwrap_or_else(|| run.title.clone()),
+                        summary: artifact_summary(payload).or_else(|| run.summary.clone()),
+                        paths: artifact_paths(payload),
+                        source: "task_run".to_string(),
+                        created_at: run.updated_at.clone(),
+                        payload: payload.clone(),
+                    });
+                }
+
+                for key in [
+                    "files",
+                    "fileCheckpoints",
+                    "judgement",
+                    "plan",
+                    "report",
+                    "subtasks",
+                    "table",
+                    "trace",
+                    "verification",
+                ] {
+                    let Some(value) = map.get(key) else {
+                        continue;
+                    };
+                    if value.is_null() {
+                        continue;
+                    }
+                    artifacts.push(AgentTaskArtifactSummary {
+                        id: format!("{}:{key}", run.id),
+                        run_id: run.id.clone(),
+                        kind: artifact_kind_for_key(key, value),
+                        title: value_string_field(value, "title")
+                            .unwrap_or_else(|| title_from_artifact_key(key)),
+                        summary: artifact_summary(value).or_else(|| {
+                            value
+                                .as_array()
+                                .map(|items| format!("{} item(s)", items.len()))
+                        }),
+                        paths: artifact_paths(value),
+                        source: "task_run".to_string(),
+                        created_at: run.updated_at.clone(),
+                        payload: value.clone(),
+                    });
+                }
+            } else {
+                artifacts.push(AgentTaskArtifactSummary {
+                    id: format!("{}:payload", run.id),
+                    run_id: run.id.clone(),
+                    kind: "artifact".to_string(),
+                    title: run.title.clone(),
+                    summary: run.summary.clone(),
+                    paths: artifact_paths(payload),
+                    source: "task_run".to_string(),
+                    created_at: run.updated_at.clone(),
+                    payload: payload.clone(),
+                });
+            }
+        }
+
+        for subtask in self.list_agent_subtask_runs(run_id)? {
+            let Some(output) = subtask.output else {
+                continue;
+            };
+            artifacts.push(AgentTaskArtifactSummary {
+                id: format!("{}:subtask:{}", run.id, subtask.id),
+                run_id: run.id.clone(),
+                kind: "subtask_output".to_string(),
+                title: format!("{}: {}", subtask.role, subtask.label),
+                summary: artifact_summary(&output).or(subtask.error_message),
+                paths: artifact_paths(&output),
+                source: subtask.id,
+                created_at: subtask.updated_at,
+                payload: output,
+            });
+        }
+
+        Ok(artifacts)
+    }
+
+    pub fn create_agent_task_artifact(
+        &self,
+        run_id: &str,
+        input: &CreateAgentTaskArtifactInput,
+    ) -> Result<AgentTaskArtifact, CoreError> {
+        let _ = self.get_agent_task_run(run_id)?;
+        let id = new_id();
+        let kind = normalize_artifact_label(&input.kind, "artifact");
+        let title = normalize_artifact_label(&input.title, &kind);
+        let source =
+            normalize_artifact_label(input.source.as_deref().unwrap_or("manual"), "manual");
+        let paths_json = serialize_string_list(&input.paths)?;
+        let payload_json = match &input.payload {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+
+        {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO agent_task_artifacts
+                    (id, run_id, kind, title, summary, content, paths_json, payload_json, source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    &id,
+                    run_id,
+                    &kind,
+                    &title,
+                    &input.summary,
+                    &input.content,
+                    &paths_json,
+                    &payload_json,
+                    &source,
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO agent_task_artifact_versions
+                    (id, artifact_id, version, title, summary, content, paths_json, payload_json)
+                 VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    new_id(),
+                    &id,
+                    &title,
+                    &input.summary,
+                    &input.content,
+                    &paths_json,
+                    &payload_json,
+                ],
+            )?;
+            tx.commit()?;
+        }
+
+        self.get_agent_task_artifact(&id)
+    }
+
+    pub fn get_agent_task_artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<AgentTaskArtifact, CoreError> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT id, run_id, kind, title, summary, content, paths_json, payload_json,
+                    source,
+                    COALESCE((
+                        SELECT MAX(version)
+                        FROM agent_task_artifact_versions v
+                        WHERE v.artifact_id = agent_task_artifacts.id
+                    ), 0) AS version,
+                    created_at, updated_at
+             FROM agent_task_artifacts
+             WHERE id = ?1",
+            rusqlite::params![artifact_id],
+            agent_task_artifact_from_row,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("Agent task artifact {artifact_id}"))
+            }
+            other => CoreError::Database(other),
+        })
+    }
+
+    pub fn list_persisted_agent_task_artifacts(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<AgentTaskArtifact>, CoreError> {
+        let _ = self.get_agent_task_run(run_id)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, run_id, kind, title, summary, content, paths_json, payload_json,
+                    source,
+                    COALESCE((
+                        SELECT MAX(version)
+                        FROM agent_task_artifact_versions v
+                        WHERE v.artifact_id = agent_task_artifacts.id
+                    ), 0) AS version,
+                    created_at, updated_at
+             FROM agent_task_artifacts
+             WHERE run_id = ?1
+             ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC, id DESC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![run_id], agent_task_artifact_from_row)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn update_agent_task_artifact(
+        &self,
+        artifact_id: &str,
+        input: &UpdateAgentTaskArtifactInput,
+    ) -> Result<AgentTaskArtifact, CoreError> {
+        let existing = self.get_agent_task_artifact(artifact_id)?;
+        let title = normalize_artifact_label(&input.title, &existing.kind);
+        let paths_json = serialize_string_list(&input.paths)?;
+        let payload_json = match &input.payload {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+
+        {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            let next_version: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(version), 0) + 1
+                 FROM agent_task_artifact_versions
+                 WHERE artifact_id = ?1",
+                rusqlite::params![artifact_id],
+                |row| row.get(0),
+            )?;
+            let affected = tx.execute(
+                "UPDATE agent_task_artifacts
+                 SET title = ?2,
+                     summary = ?3,
+                     content = ?4,
+                     paths_json = ?5,
+                     payload_json = ?6,
+                     updated_at = datetime('now')
+                 WHERE id = ?1",
+                rusqlite::params![
+                    artifact_id,
+                    &title,
+                    &input.summary,
+                    &input.content,
+                    &paths_json,
+                    &payload_json,
+                ],
+            )?;
+            if affected == 0 {
+                return Err(CoreError::NotFound(format!(
+                    "Agent task artifact {artifact_id}"
+                )));
+            }
+            tx.execute(
+                "INSERT INTO agent_task_artifact_versions
+                    (id, artifact_id, version, title, summary, content, paths_json, payload_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    new_id(),
+                    artifact_id,
+                    next_version,
+                    &title,
+                    &input.summary,
+                    &input.content,
+                    &paths_json,
+                    &payload_json,
+                ],
+            )?;
+            tx.commit()?;
+        }
+
+        self.get_agent_task_artifact(artifact_id)
+    }
+
+    pub fn list_agent_task_artifact_versions(
+        &self,
+        artifact_id: &str,
+    ) -> Result<Vec<AgentTaskArtifactVersion>, CoreError> {
+        let _ = self.get_agent_task_artifact(artifact_id)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, artifact_id, version, title, summary, content, paths_json,
+                    payload_json, created_at
+             FROM agent_task_artifact_versions
+             WHERE artifact_id = ?1
+             ORDER BY version DESC",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![artifact_id],
+            agent_task_artifact_version_from_row,
+        )?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
 }
 
 fn agent_subtask_run_from_row(row: &rusqlite::Row<'_>) -> Result<AgentSubtaskRun, rusqlite::Error> {
@@ -1455,6 +2174,41 @@ fn agent_subtask_run_from_row(row: &rusqlite::Row<'_>) -> Result<AgentSubtaskRun
         updated_at: row.get(11)?,
         started_at: row.get(12)?,
         finished_at: row.get(13)?,
+    })
+}
+
+fn agent_task_artifact_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<AgentTaskArtifact, rusqlite::Error> {
+    Ok(AgentTaskArtifact {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        kind: row.get(2)?,
+        title: row.get(3)?,
+        summary: row.get(4)?,
+        content: row.get(5)?,
+        paths: string_list_from_sql(row.get(6)?, 6)?,
+        payload: json_value_from_sql(row.get(7)?, 7)?,
+        source: row.get(8)?,
+        version: row.get::<_, i64>(9)?.max(0) as u32,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
+}
+
+fn agent_task_artifact_version_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<AgentTaskArtifactVersion, rusqlite::Error> {
+    Ok(AgentTaskArtifactVersion {
+        id: row.get(0)?,
+        artifact_id: row.get(1)?,
+        version: row.get::<_, i64>(2)?.max(0) as u32,
+        title: row.get(3)?,
+        summary: row.get(4)?,
+        content: row.get(5)?,
+        paths: string_list_from_sql(row.get(6)?, 6)?,
+        payload: json_value_from_sql(row.get(7)?, 7)?,
+        created_at: row.get(8)?,
     })
 }
 
@@ -1684,6 +2438,32 @@ impl Database {
         Ok(results)
     }
 
+    pub fn get_checkpoint(&self, checkpoint_id: &str) -> Result<Checkpoint, CoreError> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT id, conversation_id, label, message_count, estimated_tokens, created_at
+             FROM conversation_checkpoints
+             WHERE id = ?1",
+            rusqlite::params![checkpoint_id],
+            |row| {
+                Ok(Checkpoint {
+                    id: row.get(0)?,
+                    conversation_id: row.get(1)?,
+                    label: row.get(2)?,
+                    message_count: row.get(3)?,
+                    estimated_tokens: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("Checkpoint {checkpoint_id}"))
+            }
+            other => CoreError::Database(other),
+        })
+    }
+
     /// Restore archived messages from a checkpoint.
     pub fn restore_checkpoint(
         &self,
@@ -1762,6 +2542,83 @@ impl Database {
 
         let _ = conversation_id; // used for query validation
         Ok(results)
+    }
+
+    fn recover_checkpoint_messages(
+        &self,
+        checkpoint: &Checkpoint,
+    ) -> Result<Vec<ConversationMessage>, CoreError> {
+        let archived_messages = self.restore_checkpoint(&checkpoint.id)?;
+        let current_messages = self.get_messages(&checkpoint.conversation_id)?;
+
+        let mut recovered = Vec::new();
+        recovered.extend(archived_messages);
+        recovered.extend(
+            current_messages
+                .into_iter()
+                .filter(|message| !is_compaction_summary_message(message)),
+        );
+
+        if recovered.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "Checkpoint has no recoverable messages.".to_string(),
+            ));
+        }
+
+        Ok(recovered)
+    }
+
+    pub fn restore_checkpoint_into_conversation(
+        &self,
+        checkpoint_id: &str,
+    ) -> Result<Vec<ConversationMessage>, CoreError> {
+        let checkpoint = self.get_checkpoint(checkpoint_id)?;
+        let recovered = self.recover_checkpoint_messages(&checkpoint)?;
+
+        self.delete_messages(&checkpoint.conversation_id)?;
+        for (index, mut message) in recovered.into_iter().enumerate() {
+            message.id = new_id();
+            message.conversation_id = checkpoint.conversation_id.clone();
+            message.sort_order = index as i64;
+            message.created_at = String::new();
+            self.add_message(&message)?;
+        }
+
+        self.get_messages(&checkpoint.conversation_id)
+    }
+
+    pub fn branch_checkpoint(&self, checkpoint_id: &str) -> Result<CheckpointBranch, CoreError> {
+        let checkpoint = self.get_checkpoint(checkpoint_id)?;
+        let source = self.get_conversation(&checkpoint.conversation_id)?;
+        let branch_messages = self.recover_checkpoint_messages(&checkpoint)?;
+
+        let conversation = self.create_conversation(&CreateConversationInput {
+            provider: source.provider.clone(),
+            model: source.model.clone(),
+            system_prompt: Some(source.system_prompt.clone()),
+            collection_context: source.collection_context.clone(),
+            project_id: source.project_id.clone(),
+            persona_id: source.persona_id.clone(),
+        })?;
+        self.rename_conversation_by_user(
+            &conversation.id,
+            &checkpoint_branch_title(&source.title, &checkpoint.label),
+        )?;
+
+        let message_count = branch_messages.len();
+        for (index, mut message) in branch_messages.into_iter().enumerate() {
+            message.id = new_id();
+            message.conversation_id = conversation.id.clone();
+            message.sort_order = index as i64;
+            message.created_at = String::new();
+            self.add_message(&message)?;
+        }
+
+        Ok(CheckpointBranch {
+            conversation: self.get_conversation(&conversation.id)?,
+            source_checkpoint: checkpoint,
+            message_count,
+        })
     }
 
     /// Delete a checkpoint (cascade deletes archived_messages via FK).
@@ -2290,6 +3147,7 @@ fn fallback_title(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::CreateProjectInput;
     use crate::sources::CreateSourceInput;
 
     #[test]
@@ -2646,6 +3504,337 @@ mod tests {
         let children = db.list_agent_subtask_runs(&parent.id).unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].id, subtask.id);
+    }
+
+    #[test]
+    fn test_recent_agent_task_runs_include_task_center_context() {
+        let db = Database::open_memory().unwrap();
+        let project = db
+            .create_project(&CreateProjectInput {
+                name: "Launch plan".into(),
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: None,
+                source_scope: None,
+            })
+            .unwrap();
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: Some(project.id.clone()),
+                persona_id: None,
+            })
+            .unwrap();
+        db.rename_conversation_by_user(&conv.id, "Agent launch work")
+            .unwrap();
+
+        let user_msg = ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::User,
+            content: "Research, verify, and write the launch brief.".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 8,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&user_msg).unwrap();
+        let turn = db
+            .create_conversation_turn(&conv.id, &user_msg.id, Some("workflow"))
+            .unwrap();
+        let run = db
+            .create_agent_task_run(
+                &conv.id,
+                &turn.id,
+                &user_msg.id,
+                "Launch brief",
+                Some("openai"),
+                Some("gpt-4o"),
+            )
+            .unwrap();
+        db.mark_agent_task_run_started(&run.id, "tooling").unwrap();
+        db.record_agent_task_run_event(
+            &run.id,
+            "status",
+            "Researcher started",
+            Some("running"),
+            None,
+        )
+        .unwrap();
+        let researcher = db
+            .create_agent_subtask_run(
+                &run.id,
+                "Collect market facts",
+                "researcher",
+                None,
+                Some(1600),
+            )
+            .unwrap();
+        db.mark_agent_subtask_run_started(&researcher.id, "research")
+            .unwrap();
+        db.finish_agent_subtask_run(
+            &researcher.id,
+            "completed",
+            Some(&serde_json::json!({ "summary": "facts collected" })),
+            None,
+        )
+        .unwrap();
+        let critic = db
+            .create_agent_subtask_run(&run.id, "Challenge claims", "critic", None, Some(900))
+            .unwrap();
+        db.finish_agent_subtask_run(&critic.id, "failed", None, Some("Missing citations"))
+            .unwrap();
+        db.finish_agent_task_run(
+            &run.id,
+            "failed",
+            Some("Verifier blocked release"),
+            Some("Missing citations"),
+            Some(&serde_json::json!({
+                "kind": "brief",
+                "verification": { "kind": "verification" },
+                "files": [{ "path": "launch.docx" }]
+            })),
+        )
+        .unwrap();
+
+        let rows = db.list_recent_agent_task_runs(10).unwrap();
+
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.run.id, run.id);
+        assert_eq!(row.conversation_title.as_deref(), Some("Agent launch work"));
+        assert_eq!(row.project_id.as_deref(), Some(project.id.as_str()));
+        assert_eq!(row.project_name.as_deref(), Some("Launch plan"));
+        assert_eq!(
+            row.user_message_preview,
+            "Research, verify, and write the launch brief."
+        );
+        assert_eq!(row.event_count, 1);
+        assert_eq!(row.subtask_total, 2);
+        assert_eq!(row.subtask_completed, 1);
+        assert_eq!(row.subtask_failed, 1);
+        assert_eq!(row.artifact_kinds, vec!["brief", "files", "verification"]);
+    }
+
+    #[test]
+    fn test_agent_execution_graph_and_artifacts_are_structured() {
+        let db = Database::open_memory().unwrap();
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let user_msg = ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::User,
+            content: "Build a board brief with verification.".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 7,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&user_msg).unwrap();
+        let turn = db
+            .create_conversation_turn(&conv.id, &user_msg.id, Some("workflow"))
+            .unwrap();
+        let run = db
+            .create_agent_task_run(
+                &conv.id,
+                &turn.id,
+                &user_msg.id,
+                "Board brief",
+                Some("openai"),
+                Some("gpt-4o"),
+            )
+            .unwrap();
+        db.mark_agent_task_run_started(&run.id, "tooling").unwrap();
+        let researcher = db
+            .create_agent_subtask_run(
+                &run.id,
+                "Collect evidence",
+                "Researcher",
+                Some(&serde_json::json!({ "scope": "launch" })),
+                Some(1600),
+            )
+            .unwrap();
+        db.finish_agent_subtask_run(
+            &researcher.id,
+            "completed",
+            Some(&serde_json::json!({
+                "summary": "Evidence collected",
+                "artifacts": [{ "kind": "brief_section", "title": "Evidence table" }]
+            })),
+            None,
+        )
+        .unwrap();
+        let verifier = db
+            .create_agent_subtask_run(&run.id, "Verify claims", "Verifier", None, Some(900))
+            .unwrap();
+        db.finish_agent_subtask_run(
+            &verifier.id,
+            "failed",
+            Some(&serde_json::json!({ "summary": "Blocked on missing citation" })),
+            Some("Missing citation"),
+        )
+        .unwrap();
+
+        db.finish_agent_task_run(
+            &run.id,
+            "failed",
+            Some("Verifier blocked the brief"),
+            Some("Missing citation"),
+            Some(&serde_json::json!({
+                "kind": "brief",
+                "summary": "Board-ready launch brief",
+                "files": [{ "path": "board-brief.docx", "kind": "file_patch" }],
+                "verification": {
+                    "kind": "verification",
+                    "summary": "One claim needs citation"
+                },
+                "judgement": {
+                    "kind": "judge_decision",
+                    "summary": "Do not publish yet"
+                }
+            })),
+        )
+        .unwrap();
+
+        let graph = db.get_agent_execution_graph(&run.id).unwrap();
+        assert_eq!(graph.run_id, run.id);
+        assert_eq!(graph.nodes.len(), 3);
+        assert_eq!(graph.edges.len(), 2);
+        assert_eq!(graph.nodes[0].node_type, "supervisor");
+        assert_eq!(graph.nodes[1].role, "Researcher");
+        assert_eq!(
+            graph.nodes[1].summary.as_deref(),
+            Some("Evidence collected")
+        );
+        assert_eq!(graph.nodes[2].status, "failed");
+        assert_eq!(
+            graph.nodes[2].error_message.as_deref(),
+            Some("Missing citation")
+        );
+
+        let artifacts = db.list_agent_task_artifacts(&run.id).unwrap();
+        let kinds = artifacts
+            .iter()
+            .map(|artifact| artifact.kind.as_str())
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&"brief"));
+        assert!(kinds.contains(&"files"));
+        assert!(kinds.contains(&"verification"));
+        assert!(kinds.contains(&"judge_decision"));
+        assert!(kinds.contains(&"subtask_output"));
+        assert!(artifacts
+            .iter()
+            .any(|artifact| artifact.paths.iter().any(|path| path == "board-brief.docx")));
+    }
+
+    #[test]
+    fn test_agent_task_artifacts_are_editable_and_versioned() {
+        let db = Database::open_memory().unwrap();
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let user_msg = ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::User,
+            content: "Create an editable board brief.".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 5,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&user_msg).unwrap();
+        let turn = db
+            .create_conversation_turn(&conv.id, &user_msg.id, Some("workflow"))
+            .unwrap();
+        let run = db
+            .create_agent_task_run(
+                &conv.id,
+                &turn.id,
+                &user_msg.id,
+                "Board brief",
+                Some("openai"),
+                Some("gpt-4o"),
+            )
+            .unwrap();
+
+        let artifact = db
+            .create_agent_task_artifact(
+                &run.id,
+                &CreateAgentTaskArtifactInput {
+                    kind: "brief".into(),
+                    title: "Board brief".into(),
+                    summary: Some("Initial brief".into()),
+                    content: "Draft v1".into(),
+                    paths: vec!["board-brief.docx".into()],
+                    payload: Some(serde_json::json!({ "format": "docx" })),
+                    source: Some("task_center".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(artifact.run_id, run.id);
+        assert_eq!(artifact.version, 1);
+        assert_eq!(artifact.content, "Draft v1");
+
+        let updated = db
+            .update_agent_task_artifact(
+                &artifact.id,
+                &UpdateAgentTaskArtifactInput {
+                    title: "Board brief v2".into(),
+                    summary: Some("Updated brief".into()),
+                    content: "Draft v2".into(),
+                    paths: vec!["board-brief-v2.docx".into()],
+                    payload: Some(serde_json::json!({ "format": "docx", "reviewed": true })),
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.version, 2);
+        assert_eq!(updated.title, "Board brief v2");
+        assert_eq!(updated.paths, vec!["board-brief-v2.docx"]);
+
+        let listed = db.list_persisted_agent_task_artifacts(&run.id).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, artifact.id);
+        assert_eq!(listed[0].version, 2);
+
+        let versions = db.list_agent_task_artifact_versions(&artifact.id).unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].version, 2);
+        assert_eq!(versions[0].content, "Draft v2");
+        assert_eq!(versions[1].version, 1);
+        assert_eq!(versions[1].content, "Draft v1");
     }
 
     #[test]
@@ -3031,6 +4220,202 @@ mod tests {
             restored[1].artifacts.as_ref().unwrap()["kind"],
             "verification"
         );
+    }
+
+    #[test]
+    fn test_checkpoint_branch_reconstructs_recoverable_conversation() {
+        let db = Database::open_memory().unwrap();
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: Some("Stay grounded.".into()),
+                collection_context: Some(CollectionContext {
+                    title: "Case notes".into(),
+                    description: None,
+                    query_text: Some("alpha".into()),
+                    source_ids: vec!["source-1".into()],
+                }),
+                project_id: None,
+                persona_id: Some("researcher".into()),
+            })
+            .unwrap();
+        db.rename_conversation_by_user(&conv.id, "Original investigation")
+            .unwrap();
+
+        let archived = vec![
+            ConversationMessage {
+                id: new_id(),
+                conversation_id: conv.id.clone(),
+                role: Role::User,
+                content: "Old question".into(),
+                tool_call_id: None,
+                tool_calls: vec![],
+                artifacts: None,
+                token_count: 4,
+                created_at: String::new(),
+                sort_order: 0,
+                thinking: None,
+                image_attachments: None,
+            },
+            ConversationMessage {
+                id: new_id(),
+                conversation_id: conv.id.clone(),
+                role: Role::Assistant,
+                content: "Old answer".into(),
+                tool_call_id: None,
+                tool_calls: vec![],
+                artifacts: None,
+                token_count: 4,
+                created_at: String::new(),
+                sort_order: 1,
+                thinking: None,
+                image_attachments: None,
+            },
+        ];
+        for message in &archived {
+            db.add_message(message).unwrap();
+        }
+
+        let cp_id = db
+            .create_checkpoint(&conv.id, "manual", archived.len() as u32, 8)
+            .unwrap();
+        db.archive_messages(&cp_id, &conv.id, &archived).unwrap();
+
+        db.delete_messages(&conv.id).unwrap();
+        db.add_message(&ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::System,
+            content: "## Earlier conversation context (summarized)\nOld material".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 5,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        })
+        .unwrap();
+        db.add_message(&ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::User,
+            content: "Current follow-up".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 1,
+            thinking: None,
+            image_attachments: None,
+        })
+        .unwrap();
+
+        let branch = db.branch_checkpoint(&cp_id).unwrap();
+        assert_ne!(branch.conversation.id, conv.id);
+        assert_eq!(branch.message_count, 3);
+        assert_eq!(branch.conversation.provider, "openai");
+        assert_eq!(branch.conversation.model, "gpt-4o");
+        assert_eq!(branch.conversation.system_prompt, "Stay grounded.");
+        assert_eq!(
+            branch.conversation.persona_id.as_deref(),
+            Some("researcher")
+        );
+        assert!(branch.conversation.title.contains("Original investigation"));
+
+        let branch_messages = db.get_messages(&branch.conversation.id).unwrap();
+        assert_eq!(
+            branch_messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Old question", "Old answer", "Current follow-up"]
+        );
+        assert!(branch_messages
+            .iter()
+            .enumerate()
+            .all(|(index, message)| message.sort_order == index as i64
+                && message.conversation_id == branch.conversation.id));
+    }
+
+    #[test]
+    fn test_checkpoint_restore_replaces_summary_with_archived_messages() {
+        let db = Database::open_memory().unwrap();
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+
+        let archived = ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::User,
+            content: "Archived question".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 4,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&archived).unwrap();
+        let cp_id = db.create_checkpoint(&conv.id, "manual", 1, 4).unwrap();
+        db.archive_messages(&cp_id, &conv.id, &[archived]).unwrap();
+
+        db.delete_messages(&conv.id).unwrap();
+        db.add_message(&ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::System,
+            content: "## Earlier conversation context (summarized)\nArchived question".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 4,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        })
+        .unwrap();
+        db.add_message(&ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::Assistant,
+            content: "Kept response".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 1,
+            thinking: None,
+            image_attachments: None,
+        })
+        .unwrap();
+
+        let restored = db.restore_checkpoint_into_conversation(&cp_id).unwrap();
+        assert_eq!(
+            restored
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Archived question", "Kept response"]
+        );
+        assert!(restored
+            .iter()
+            .all(|message| !is_compaction_summary_message(message)));
     }
 
     #[test]

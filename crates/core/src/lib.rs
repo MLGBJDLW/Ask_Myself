@@ -50,13 +50,16 @@ pub mod privacy;
 pub mod project;
 pub mod project_memory;
 pub mod provider_catalog;
+pub mod quality_eval;
 pub mod search;
 pub mod skills;
 pub mod source_tree;
 pub mod sources;
+pub mod tool_access;
 pub mod tools;
 pub mod trace;
 #[cfg(feature = "video")]
 pub mod video;
 pub mod watcher;
 pub mod wiki;
+pub mod workflow_catalog;

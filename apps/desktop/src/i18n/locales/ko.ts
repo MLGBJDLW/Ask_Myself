@@ -469,6 +469,27 @@ export const ko: TranslationKeys = {
   'settings.tabModelsEmbedding': '모델과 임베딩',
   'settings.tabMedia': '미디어 처리',
   'settings.tabDataPrivacy': '데이터 및 개인정보',
+  'settings.tabAgentQuality': 'Agent Quality',
+  'settings.agentQualityTitle': 'Agent Quality',
+  'settings.agentQualityDescription': 'Run local deterministic checks for routing, evidence policy, and checkpoint recovery.',
+  'settings.agentQualityRun': 'Run local eval',
+  'settings.agentQualityRerun': 'Run again',
+  'settings.agentQualityRunning': 'Running local eval...',
+  'settings.agentQualityCopyJson': 'Copy JSON report',
+  'settings.agentQualityCopied': 'Agent quality report copied',
+  'settings.agentQualityCopyError': 'Failed to copy report',
+  'settings.agentQualityRunError': 'Agent quality eval failed',
+  'settings.agentQualityUnavailable': 'Run this local harness to verify agent behavior before shipping changes.',
+  'settings.agentQualityPassed': 'Passed',
+  'settings.agentQualityFailed': 'Failed',
+  'settings.agentQualityNotRun': 'Not run',
+  'settings.agentQualitySuites': 'Suites',
+  'settings.agentQualityCases': 'Cases',
+  'settings.agentQualityFailedCases': 'Failed cases',
+  'settings.agentQualityChecks': 'checks',
+  'settings.agentQualityFailedChecks': 'Failed',
+  'settings.agentQualityLastRun': 'Last run',
+  'settings.agentQualityNoFailures': 'All local quality gates passed.',
 
   // Settings - Advanced
   'settings.advanced': '고급 설정',
@@ -545,6 +566,7 @@ export const ko: TranslationKeys = {
   // Chat
   'nav.chat': 'Chat',
   'nav.knowledge': 'Knowledge',
+  'nav.tasks': '작업',
   'chat.title': 'Chat',
   'chat.newChat': 'New Chat',
   'chat.send': 'Send',
@@ -681,9 +703,11 @@ export const ko: TranslationKeys = {
   'chat.rateLimited': '제공자에 의해 속도 제한됨 — 잠시 기다려 주세요',
   'chat.checkpoints': '체크포인트',
   'chat.restoreCheckpoint': '복원',
+  'chat.branchCheckpoint': '분기로 시도',
   'chat.deleteCheckpoint': '삭제',
   'chat.noCheckpoints': '아직 체크포인트가 없습니다',
   'chat.checkpointRestored': '체크포인트가 복원되었습니다',
+  'chat.checkpointBranched': '분기가 생성되었습니다',
   'chat.autoCompacted': '컨텍스트가 자동 압축되었습니다',
   'chat.confirmRestore': '이 체크포인트로 복원하시겠습니까? 이 시점 이후의 메시지는 유지됩니다.',
   'chat.messagesShort': '{count}개 메시지',
@@ -762,6 +786,12 @@ export const ko: TranslationKeys = {
   // Chat - Active Extensions
   'chat.mcpSummary': 'MCP ({servers}개 서버, {tools}개 도구)',
   'chat.skillsSummary': '스킬 ({count}개 활성)',
+
+  // Chat - Workflows
+  'chat.workflows': '워크플로',
+  'chat.workflowTemplateCount': '{count}개 템플릿',
+  'chat.workflowTasks': '{count}단계',
+  'chat.workflowUnavailable': '사용 가능한 워크플로가 없습니다',
 
   // Chat Suggestions
   'chat.suggestions.search': '지식 검색',

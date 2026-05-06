@@ -254,6 +254,11 @@ export function ChatPage() {
     t,
   ]);
 
+  const handleCheckpointBranch = useCallback((conversation: Conversation) => {
+    chat.setConversations((prev) => [conversation, ...prev.filter((c) => c.id !== conversation.id)]);
+    navigate(`/chat/${conversation.id}`);
+  }, [chat.setConversations, navigate]);
+
   const handleDeleteConversation = useCallback(
     (id: string) => {
       const prev = chat.conversations;
@@ -579,7 +584,6 @@ export function ChatPage() {
             <TaskBoard
               messages={chat.messages}
               toolCalls={chat.toolCalls}
-              taskRun={chat.taskRun}
             />
             <ChatInput
               onSend={chat.send}
@@ -591,6 +595,7 @@ export function ChatPage() {
               onRestoreCheckpoint={chat.activeId ? async () => {
                 await chat.reloadMessages();
               } : undefined}
+              onBranchCheckpoint={handleCheckpointBranch}
             />
             {chat.activeId && <ApprovalDialogMount conversationId={chat.activeId} />}
           </>

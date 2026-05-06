@@ -469,6 +469,27 @@ export const zhCN: TranslationKeys = {
   'settings.tabModelsEmbedding': '模型与嵌入',
   'settings.tabMedia': '媒体处理',
   'settings.tabDataPrivacy': '数据与隐私',
+  'settings.tabAgentQuality': 'Agent 质量',
+  'settings.agentQualityTitle': 'Agent 质量',
+  'settings.agentQualityDescription': '运行本地确定性检查，覆盖路由、证据策略和 checkpoint 恢复。',
+  'settings.agentQualityRun': '运行本地评测',
+  'settings.agentQualityRerun': '再次运行',
+  'settings.agentQualityRunning': '正在运行本地评测...',
+  'settings.agentQualityCopyJson': '复制 JSON 报告',
+  'settings.agentQualityCopied': 'Agent 质量报告已复制',
+  'settings.agentQualityCopyError': '复制报告失败',
+  'settings.agentQualityRunError': 'Agent 质量评测失败',
+  'settings.agentQualityUnavailable': '运行这套本地 harness，在发布变更前验证 agent 行为。',
+  'settings.agentQualityPassed': '已通过',
+  'settings.agentQualityFailed': '未通过',
+  'settings.agentQualityNotRun': '尚未运行',
+  'settings.agentQualitySuites': '套件',
+  'settings.agentQualityCases': '用例',
+  'settings.agentQualityFailedCases': '失败用例',
+  'settings.agentQualityChecks': '项检查',
+  'settings.agentQualityFailedChecks': '失败',
+  'settings.agentQualityLastRun': '上次运行',
+  'settings.agentQualityNoFailures': '所有本地质量门禁均已通过。',
 
   // Settings - Advanced
   'settings.advanced': '高级设置',
@@ -545,6 +566,7 @@ export const zhCN: TranslationKeys = {
   // Chat
   'nav.chat': '对话',
   'nav.knowledge': '知识',
+  'nav.tasks': '任务',
   'chat.title': '对话',
   'chat.newChat': '新建对话',
   'chat.send': '发送',
@@ -681,9 +703,11 @@ export const zhCN: TranslationKeys = {
   'chat.rateLimited': '被服务商限流 — 请稍候',
   'chat.checkpoints': '存档点',
   'chat.restoreCheckpoint': '恢复',
+  'chat.branchCheckpoint': '作为分支尝试',
   'chat.deleteCheckpoint': '删除',
   'chat.noCheckpoints': '暂无存档点',
   'chat.checkpointRestored': '已恢复存档点',
+  'chat.checkpointBranched': '已创建分支',
   'chat.autoCompacted': '上下文已自动压缩',
   'chat.confirmRestore': '恢复到此存档点？此时间点之后的消息将保留。',
   'chat.messagesShort': '{count} 条消息',
@@ -762,6 +786,12 @@ export const zhCN: TranslationKeys = {
   // Chat - Active Extensions
   'chat.mcpSummary': 'MCP（{servers} 个服务器，{tools} 个工具）',
   'chat.skillsSummary': '技能（{count} 个已启用）',
+
+  // Chat - Workflows
+  'chat.workflows': '工作流',
+  'chat.workflowTemplateCount': '{count} 个模板',
+  'chat.workflowTasks': '{count} 步',
+  'chat.workflowUnavailable': '暂无可用工作流',
 
   // Chat Suggestions
   'chat.suggestions.search': '搜索知识',

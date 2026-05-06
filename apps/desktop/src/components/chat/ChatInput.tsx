@@ -1,8 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Square, Paperclip, X, FileText } from "lucide-react";
+import { Send, Square, Paperclip, X, FileText, Workflow, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "../../i18n";
-import type { ImageAttachment } from "../../types/conversation";
+import type { Conversation, ImageAttachment } from "../../types/conversation";
+import type { WorkflowCatalogTemplate } from "../../lib/api";
+import * as api from "../../lib/api";
 import { CheckpointMenu } from "./CheckpointMenu";
 import { VoiceInputButton } from "./VoiceInputButton";
 import { EmojiPicker } from "./EmojiPicker";
@@ -33,6 +35,7 @@ interface ChatInputProps {
   disabled: boolean;
   conversationId?: string;
   onRestoreCheckpoint?: () => void;
+  onBranchCheckpoint?: (conversation: Conversation) => void;
   prefillText?: string;
 }
 
@@ -48,6 +51,7 @@ export function ChatInput({
   disabled,
   conversationId,
   onRestoreCheckpoint,
+  onBranchCheckpoint,
   prefillText,
 }: ChatInputProps) {
   const { t } = useTranslation();
@@ -55,6 +59,9 @@ export function ChatInput({
   const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowCatalogTemplate[]>([]);
+  const [workflowCatalogOpen, setWorkflowCatalogOpen] = useState(false);
+  const [workflowCatalogLoading, setWorkflowCatalogLoading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
@@ -97,6 +104,29 @@ export function ChatInput({
   useEffect(() => {
     adjustHeight();
   }, [value, adjustHeight]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setWorkflowCatalogLoading(true);
+    api.listWorkflowTemplates()
+      .then((templates) => {
+        if (!cancelled && Array.isArray(templates)) {
+          setWorkflowTemplates(templates);
+        }
+      })
+      .catch((err) => {
+        console.warn("Failed to load workflow templates:", err);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setWorkflowCatalogLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
@@ -286,6 +316,21 @@ export function ChatInput({
     [addAttachment, addAttachmentFromDataUrl, isStreaming, t],
   );
 
+  const applyWorkflowTemplate = useCallback((template: WorkflowCatalogTemplate) => {
+    const prompt = template.promptTemplate.trimEnd();
+    setValue((currentValue) => {
+      const current = currentValue.trim();
+      const nextValue = current ? `${prompt}\n\n${current}` : prompt;
+      draftsRef.current[draftKey] = { value: nextValue, attachments };
+      return nextValue;
+    });
+    setWorkflowCatalogOpen(false);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      adjustHeight();
+    });
+  }, [adjustHeight, attachments, draftKey]);
+
   return (
     <div
       data-testid="chat-input"
@@ -302,6 +347,70 @@ export function ChatInput({
           <span className="text-sm font-medium text-accent">
             {t("chat.dragDropHint")}
           </span>
+        </div>
+      )}
+
+      {workflowCatalogOpen && (
+        <div
+          data-testid="workflow-catalog-panel"
+          className="absolute bottom-full left-4 right-4 z-30 mb-2 overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-2xl shadow-black/30"
+        >
+          <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
+            <Workflow className="h-4 w-4 text-accent" />
+            <span className="text-sm font-medium text-text-primary">{t("chat.workflows")}</span>
+            <span className="text-xs tabular-nums text-text-tertiary">
+              {workflowCatalogLoading
+                ? t("common.loading")
+                : t("chat.workflowTemplateCount", { count: String(workflowTemplates.length) })}
+            </span>
+            <button
+              type="button"
+              onClick={() => setWorkflowCatalogOpen(false)}
+              className="ml-auto flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
+              aria-label={t("common.close")}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="grid max-h-72 gap-2 overflow-y-auto p-2 sm:grid-cols-2 lg:grid-cols-3">
+            {workflowTemplates.map((template) => (
+              <button
+                key={template.id}
+                type="button"
+                onClick={() => applyWorkflowTemplate(template)}
+                className="min-h-[112px] rounded-lg border border-border/70 bg-surface-1/70 p-3 text-left transition-colors hover:border-accent/60 hover:bg-accent-subtle/40 focus:outline-none focus:ring-2 focus:ring-accent/30"
+                aria-label={`${template.label} workflow`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-sm font-medium leading-5 text-text-primary">
+                    {template.label}
+                  </span>
+                  <span className="shrink-0 rounded-md border border-border/60 bg-surface-0 px-1.5 py-0.5 text-[10px] tabular-nums text-text-tertiary">
+                    {t("chat.workflowTasks", { count: String(template.tasks.length) })}
+                  </span>
+                </div>
+                <div className="mt-1.5 line-clamp-2 text-xs leading-5 text-text-secondary">
+                  {template.description}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {template.tasks.slice(0, 3).map((task) => (
+                    <span
+                      key={task.id}
+                      className="rounded-md bg-surface-0 px-1.5 py-0.5 text-[10px] text-text-tertiary"
+                    >
+                      {task.roleLabel}
+                    </span>
+                  ))}
+                </div>
+              </button>
+            ))}
+            {!workflowCatalogLoading && workflowTemplates.length === 0 && (
+              <div className="col-span-full px-3 py-6 text-center text-sm text-text-tertiary">
+                {t("chat.workflowUnavailable")}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -336,6 +445,20 @@ export function ChatInput({
       )}
 
       <div className="flex items-end gap-2">
+        <button
+          type="button"
+          data-testid="workflow-catalog-trigger"
+          onClick={() => setWorkflowCatalogOpen((open) => !open)}
+          disabled={disabled || isStreaming}
+          className="flex h-10 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-surface-0 px-2.5 text-xs font-medium text-text-secondary transition-colors duration-fast ease-out hover:border-border-hover hover:bg-surface-2 hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
+          aria-label={t("chat.workflows")}
+          aria-expanded={workflowCatalogOpen}
+        >
+          <Workflow className="h-4 w-4" />
+          <span className="hidden sm:inline">{t("chat.workflows")}</span>
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${workflowCatalogOpen ? "rotate-180" : ""}`} />
+        </button>
+
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled || isStreaming}
@@ -407,6 +530,7 @@ export function ChatInput({
           <CheckpointMenu
             conversationId={conversationId}
             onRestore={onRestoreCheckpoint}
+            onBranch={onBranchCheckpoint}
           />
         </div>
       )}

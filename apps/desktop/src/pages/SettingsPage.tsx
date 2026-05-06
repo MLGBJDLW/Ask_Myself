@@ -9,6 +9,7 @@ import {
   Star,
   Film,
   Blocks,
+  ClipboardCheck,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
@@ -25,8 +26,10 @@ import type { OcrConfig } from '../types/ocr';
 import type { VideoConfig } from '../types/video';
 import type { Skill, McpServer, McpToolInfo, SaveSkillInput, SaveMcpServerInput } from '../types/extensions';
 import type { TraceSummary, AgentTrace } from '../types/trace';
+import type { QualityEvalReport } from '../types/qualityEval';
 import { useTranslation } from '../i18n';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { AgentQualitySettingsTab } from '../components/settings/AgentQualitySettingsTab';
 import { AppearanceSettingsTab } from '../components/settings/AppearanceSettingsTab';
 import { DataPrivacySettingsTab } from '../components/settings/DataPrivacySettingsTab';
 import { EmbeddingConfigSection } from '../components/settings/EmbeddingConfigSection';
@@ -40,7 +43,7 @@ import { useMicrophoneDevices } from '../lib/useMicrophoneDevices';
 import { useUpdater } from '../lib/useUpdater';
 
 /* ── Settings page ────────────────────────────────────────────────── */
-type SettingsTab = 'appearance' | 'models_embedding' | 'providers' | 'media' | 'data_privacy' | 'extensions';
+type SettingsTab = 'appearance' | 'models_embedding' | 'providers' | 'agent_quality' | 'media' | 'data_privacy' | 'extensions';
 const MEMORY_CHAR_LIMIT = 240;
 const TAB_STRIP_EDGE_EPSILON = 4;
 
@@ -196,6 +199,9 @@ export function SettingsPage() {
   const [traceSummary, setTraceSummary] = useState<TraceSummary | null>(null);
   const [recentTraces, setRecentTraces] = useState<AgentTrace[]>([]);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [qualityReport, setQualityReport] = useState<QualityEvalReport | null>(null);
+  const [qualityEvalLoading, setQualityEvalLoading] = useState(false);
+  const [qualityEvalLastRunAt, setQualityEvalLastRunAt] = useState<string | null>(null);
 
   /* ── Embedding state ─────────────────────────────────────────────── */
   const [embedConfig, setEmbedConfig] = useState<EmbedderConfig | null>(null);
@@ -652,6 +658,24 @@ export function SettingsPage() {
       void loadAnalytics();
     }
   }, [activeTab, loadAnalytics]);
+
+  const handleRunAgentQualityEval = useCallback(async () => {
+    setQualityEvalLoading(true);
+    try {
+      const report = await api.runAgentQualityEval();
+      setQualityReport(report);
+      setQualityEvalLastRunAt(new Date().toISOString());
+      toast.success(
+        report.failed === 0
+          ? t('settings.agentQualityPassed')
+          : t('settings.agentQualityFailed')
+      );
+    } catch {
+      toast.error(t('settings.agentQualityRunError'));
+    } finally {
+      setQualityEvalLoading(false);
+    }
+  }, [t]);
 
   const discardActiveTabChanges = useCallback(async () => {
     switch (activeTab) {
@@ -1249,6 +1273,7 @@ export function SettingsPage() {
     { id: 'appearance', label: t('settings.appearance'), icon: <Star size={16} /> },
     { id: 'models_embedding', label: t('settings.tabModelsEmbedding'), icon: <Brain size={16} /> },
     { id: 'providers', label: t('settings.aiProviders'), icon: <Bot size={16} /> },
+    { id: 'agent_quality', label: t('settings.tabAgentQuality'), icon: <ClipboardCheck size={16} /> },
     { id: 'media', label: t('settings.tabMedia'), icon: <Film size={16} /> },
     { id: 'data_privacy', label: t('settings.tabDataPrivacy'), icon: <Database size={16} /> },
     { id: 'extensions', label: t('settings.extensionsTab'), icon: <Blocks size={16} /> },
@@ -1426,6 +1451,16 @@ export function SettingsPage() {
           onSelectedPresetChange={setSelectedPreset}
           onSetDefault={handleSetDefault}
           onDeleteTargetChange={setDeleteTarget}
+        />
+      )}
+
+      {/* ── Tab: Agent Quality ─────────────────────────────────────── */}
+      {activeTab === 'agent_quality' && (
+        <AgentQualitySettingsTab
+          report={qualityReport}
+          loading={qualityEvalLoading}
+          lastRunAt={qualityEvalLastRunAt}
+          onRun={() => { void handleRunAgentQualityEval(); }}
         />
       )}
 

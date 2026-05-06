@@ -1,11 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bookmark, RotateCcw, Trash2 } from 'lucide-react';
+import { Bookmark, GitBranch, RotateCcw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
 import { appTimeMs, parseAppDate } from '../../lib/dateTime';
-import type { Checkpoint } from '../../types/conversation';
+import type { Checkpoint, Conversation } from '../../types/conversation';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -15,6 +15,7 @@ interface CheckpointMenuProps {
   conversationId: string;
   /** Called after a checkpoint is successfully restored */
   onRestore: () => void;
+  onBranch?: (conversation: Conversation) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -36,12 +37,13 @@ function formatDate(iso: string): string {
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function CheckpointMenu({ conversationId, onRestore }: CheckpointMenuProps) {
+export function CheckpointMenu({ conversationId, onRestore, onBranch }: CheckpointMenuProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [branchingId, setBranchingId] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -129,6 +131,21 @@ export function CheckpointMenu({ conversationId, onRestore }: CheckpointMenuProp
     }
   }, []);
 
+  const handleBranch = useCallback(async (checkpointId: string) => {
+    if (!onBranch) return;
+    setBranchingId(checkpointId);
+    try {
+      const result = await api.branchCheckpoint(checkpointId);
+      toast.success(t('chat.checkpointBranched'));
+      closeMenu(false);
+      onBranch(result.conversation);
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBranchingId(null);
+    }
+  }, [closeMenu, onBranch, t]);
+
   /* ── Render ─────────────────────────────────────────────────────── */
   return (
     <div ref={ref} className="relative inline-block">
@@ -136,6 +153,7 @@ export function CheckpointMenu({ conversationId, onRestore }: CheckpointMenuProp
       <button
         ref={triggerRef}
         type="button"
+        data-testid="checkpoint-menu-trigger"
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -153,6 +171,7 @@ export function CheckpointMenu({ conversationId, onRestore }: CheckpointMenuProp
         {open && (
           <motion.div
             ref={panelRef}
+            data-testid="checkpoint-menu-panel"
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
@@ -163,7 +182,7 @@ export function CheckpointMenu({ conversationId, onRestore }: CheckpointMenuProp
             tabIndex={-1}
             className="
               absolute right-0 bottom-full mb-1 z-50
-              w-72 max-h-64 overflow-y-auto
+              w-80 max-h-72 overflow-y-auto
               bg-surface-1 border border-border rounded-lg shadow-lg
             "
           >
@@ -198,6 +217,18 @@ export function CheckpointMenu({ conversationId, onRestore }: CheckpointMenuProp
                         </p>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
+                        {onBranch && (
+                          <button
+                            type="button"
+                            onClick={() => handleBranch(cp.id)}
+                            disabled={branchingId === cp.id}
+                            className="p-1 rounded text-text-tertiary hover:text-accent hover:bg-accent/10 disabled:pointer-events-none disabled:opacity-50 transition-colors cursor-pointer"
+                            title={t('chat.branchCheckpoint')}
+                            aria-label={t('chat.branchCheckpoint')}
+                          >
+                            <GitBranch size={12} />
+                          </button>
+                        )}
                         <button
                           ref={cp.id === checkpoints[0]?.id ? firstRestoreButtonRef : undefined}
                           type="button"
