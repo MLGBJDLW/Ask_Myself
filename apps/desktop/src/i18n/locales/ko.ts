@@ -464,6 +464,8 @@ export const ko: TranslationKeys = {
   'settings.appearance.theme.midnight': '미드나이트',
   'settings.appearance.language': '언어',
   'settings.appearance.language.description': '표시 언어 선택',
+  'settings.developerMode': 'Developer mode',
+  'settings.developerMode.description': 'Show internal diagnostics such as agent quality evaluation.',
 
   // Settings - Tab labels (merged)
   'settings.tabModelsEmbedding': '모델과 임베딩',
@@ -578,6 +580,9 @@ export const ko: TranslationKeys = {
   'chat.toolRunning': 'Running tool...',
   'chat.toolDone': 'Tool completed',
   'chat.toolError': 'Tool failed',
+  'chat.fileDiffCreated': 'Created',
+  'chat.fileDiffModified': 'Modified',
+  'chat.fileDiffLinesOmitted': '{count} more lines hidden',
   'chat.thinking': 'Thinking...',
   'chat.stop': 'Stop',
   'chat.retry': 'Retry',

@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { Button } from '../ui/Button';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
+import { getModelStatus, invalidate as invalidateModelStatus } from '../../lib/modelStatusCache';
 import type { ProviderPreset } from '../../lib/providerPresets';
 
 interface Step6DoneProps {
@@ -38,7 +39,7 @@ export function Step6Done({
 
   useEffect(() => {
     let cancelled = false;
-    api.checkOfficeRuntime()
+    getModelStatus('office', 'runtime', () => api.checkOfficeRuntime())
       .then((readiness) => {
         if (!cancelled) setOfficeRuntime(readiness);
       })
@@ -54,6 +55,7 @@ export function Step6Done({
     try {
       const result = await api.prepareOfficeRuntime();
       setOfficeRuntime(result.readiness);
+      invalidateModelStatus('office');
       if (result.success) {
         toast.success(t('wizard.documentToolsSetupSuccess'));
       } else {

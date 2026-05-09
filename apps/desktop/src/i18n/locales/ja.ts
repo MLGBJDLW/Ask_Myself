@@ -462,6 +462,8 @@ export const ja: TranslationKeys = {
   'settings.appearance.theme.midnight': 'ミッドナイト',
   'settings.appearance.language': '言語',
   'settings.appearance.language.description': '表示言語を選択',
+  'settings.developerMode': 'Developer mode',
+  'settings.developerMode.description': 'Show internal diagnostics such as agent quality evaluation.',
 
   // Settings - Tab labels (merged)
   'settings.tabModelsEmbedding': 'モデルとエンベディング',
@@ -576,6 +578,9 @@ export const ja: TranslationKeys = {
   'chat.toolRunning': 'Running tool...',
   'chat.toolDone': 'Tool completed',
   'chat.toolError': 'Tool failed',
+  'chat.fileDiffCreated': 'Created',
+  'chat.fileDiffModified': 'Modified',
+  'chat.fileDiffLinesOmitted': '{count} more lines hidden',
   'chat.thinking': 'Thinking...',
   'chat.stop': 'Stop',
   'chat.retry': 'Retry',

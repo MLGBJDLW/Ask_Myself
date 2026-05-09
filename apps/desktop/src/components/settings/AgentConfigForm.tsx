@@ -31,7 +31,9 @@ import {
   buildMcpSubagentToolDescriptors,
   canonicalSubagentToolName,
   DEFAULT_SUBAGENT_TOOL_NAMES,
+  getSubagentToolGroup,
   mergeSubagentToolCatalog,
+  SUBAGENT_TOOL_GROUPS,
   usesDefaultSubagentToolSelection,
 } from "../../lib/subagentTools";
 import { CollapsiblePanel } from "./SettingsSection";
@@ -296,6 +298,16 @@ export function AgentConfigForm({
     () => mergeSubagentToolCatalog(mcpToolDescriptors),
     [mcpToolDescriptors],
   );
+  const subagentToolsByGroup = useMemo(
+    () =>
+      SUBAGENT_TOOL_GROUPS.map((group) => ({
+        ...group,
+        tools: subagentToolCatalog.filter(
+          (tool) => getSubagentToolGroup(tool) === group.id,
+        ),
+      })).filter((group) => group.tools.length > 0),
+    [subagentToolCatalog],
+  );
   const availableSkillIds = useMemo(
     () => enabledSkills.map((skill) => skill.id),
     [enabledSkills],
@@ -344,6 +356,35 @@ export function AgentConfigForm({
       return [...ordered, ...extras];
     },
     [enabledSkills],
+  );
+
+  const setRecommendedSubagentTools = useCallback(() => {
+    setSubagentAllowedTools(orderToolSelection(DEFAULT_SUBAGENT_TOOL_NAMES));
+  }, [orderToolSelection]);
+
+  const setAllSubagentTools = useCallback(() => {
+    setSubagentAllowedTools(orderToolSelection(subagentToolCatalog.map((tool) => tool.name)));
+  }, [orderToolSelection, subagentToolCatalog]);
+
+  const clearSubagentTools = useCallback(() => {
+    setSubagentAllowedTools([]);
+  }, []);
+
+  const setSubagentToolGroupSelection = useCallback(
+    (toolNames: string[], enabled: boolean) => {
+      setSubagentAllowedTools((prev) => {
+        const next = new Set(prev);
+        for (const name of toolNames) {
+          if (enabled) {
+            next.add(name);
+          } else {
+            next.delete(name);
+          }
+        }
+        return orderToolSelection(Array.from(next));
+      });
+    },
+    [orderToolSelection],
   );
 
   // Reset test result when provider changes
@@ -1098,74 +1139,153 @@ export function AgentConfigForm({
             </div>
           </div>
 
-          <div className="grid gap-2 md:grid-cols-2">
-            {subagentToolCatalog.map((tool) => {
-              const checked = subagentAllowedTools.includes(tool.name);
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={setRecommendedSubagentTools}
+              >
+                Recommended
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={setAllSubagentTools}
+              >
+                Enable all
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={clearSubagentTools}
+              >
+                Disable all
+              </Button>
+            </div>
+
+            {subagentToolsByGroup.map((group) => {
+              const groupToolNames = group.tools.map((tool) => tool.name);
+              const selectedCount = groupToolNames.filter((name) =>
+                subagentAllowedTools.includes(name),
+              ).length;
+
               return (
-                <label
-                  key={tool.name}
-                  className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-3 transition-colors ${
-                    checked
-                      ? "border-accent/35 bg-accent/8"
-                      : "border-border/70 bg-surface-2 hover:border-border-hover"
-                  }`}
+                <CollapsiblePanel
+                  key={group.id}
+                  title={group.label}
+                  description={group.description}
+                  defaultOpen={group.id === "system"}
+                  summary={
+                    <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+                      {selectedCount}/{group.tools.length}
+                    </span>
+                  }
                 >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(event) => {
-                      setSubagentAllowedTools((prev) => {
-                        const next = new Set(prev);
-                        if (event.target.checked) {
-                          next.add(tool.name);
-                        } else {
-                          next.delete(tool.name);
-                        }
-                        return orderToolSelection(Array.from(next));
-                      });
-                    }}
-                    className="mt-0.5 h-4 w-4 rounded border-border text-accent focus:ring-accent/30"
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium text-text-primary">
-                      {tool.label}
-                    </span>
-                    <span className="mt-1 block text-xs text-text-tertiary">
-                      {tool.description}
-                    </span>
-                    {tool.serverName && (
-                      <span className="mt-1 block text-[11px] text-text-tertiary">
-                        MCP server: {tool.serverName}
-                      </span>
-                    )}
-                    <span className="mt-1 block font-mono text-[11px] text-text-tertiary">
-                      {tool.name}
-                    </span>
-                  </span>
-                </label>
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setSubagentToolGroupSelection(groupToolNames, true)}
+                      >
+                        Select group
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setSubagentToolGroupSelection(groupToolNames, false)}
+                      >
+                        Clear group
+                      </Button>
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      {group.tools.map((tool) => {
+                        const checked = subagentAllowedTools.includes(tool.name);
+                        return (
+                          <label
+                            key={tool.name}
+                            className={`flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-2 transition-colors ${
+                              checked
+                                ? "border-accent/35 bg-accent/8"
+                                : "border-border/70 bg-surface-2 hover:border-border-hover"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) => {
+                                setSubagentAllowedTools((prev) => {
+                                  const next = new Set(prev);
+                                  if (event.target.checked) {
+                                    next.add(tool.name);
+                                  } else {
+                                    next.delete(tool.name);
+                                  }
+                                  return orderToolSelection(Array.from(next));
+                                });
+                              }}
+                              className="mt-0.5 h-4 w-4 rounded border-border text-accent focus:ring-accent/30"
+                            />
+                            <span className="min-w-0">
+                              <span className="block text-xs font-medium text-text-primary">
+                                {tool.label}
+                              </span>
+                              <span className="mt-0.5 block line-clamp-2 text-[11px] text-text-tertiary">
+                                {tool.description}
+                              </span>
+                              {tool.serverName && (
+                                <span className="mt-0.5 block truncate text-[10px] text-text-tertiary">
+                                  MCP: {tool.serverName}
+                                </span>
+                              )}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </CollapsiblePanel>
               );
             })}
           </div>
 
-          <div className="space-y-3 border-t border-border/60 pt-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h5 className="text-sm font-semibold text-text-primary">
-                  Delegated skills
-                </h5>
-                <p className="text-xs text-text-tertiary">
-                  Enabled global skills are inherited by default. Narrow them
-                  here if a provider configuration should restrict what
-                  subagents receive.
-                </p>
-              </div>
+          <CollapsiblePanel
+            title="Delegated skills"
+            description="Enabled global skills are inherited by default. Open this only when a provider needs a narrower skill set."
+            summary={
               <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
-                {subagentAllowedSkillIds.length}/{enabledSkills.length} skills
+                {subagentAllowedSkillIds.length}/{enabledSkills.length}
               </span>
-            </div>
+            }
+          >
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSubagentAllowedSkillIds(orderSkillSelection(availableSkillIds))}
+                >
+                  Enable all
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSubagentAllowedSkillIds([])}
+                >
+                  Disable all
+                </Button>
+              </div>
 
-            {enabledSkills.length > 0 ? (
-              <div className="grid gap-2 md:grid-cols-2">
+              {enabledSkills.length > 0 ? (
+                <div className="grid gap-2 md:grid-cols-2">
                 {enabledSkills.map((skill) => {
                   const checked = subagentAllowedSkillIds.includes(skill.id);
                   return (
@@ -1207,13 +1327,14 @@ export function AgentConfigForm({
                     </label>
                   );
                 })}
-              </div>
-            ) : (
-              <div className="rounded-xl border border-dashed border-border/70 bg-surface-2 px-3 py-4 text-xs text-text-tertiary">
-                No enabled skills are currently available to delegate.
-              </div>
-            )}
-          </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-border/70 bg-surface-2 px-3 py-4 text-xs text-text-tertiary">
+                  No enabled skills are currently available to delegate.
+                </div>
+              )}
+            </div>
+          </CollapsiblePanel>
         </div>
       )}
 

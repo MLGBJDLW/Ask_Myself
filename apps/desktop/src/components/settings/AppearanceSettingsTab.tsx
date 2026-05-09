@@ -19,8 +19,10 @@ interface AppearanceSettingsTabProps {
   updater: UpdaterState;
   appConfig: AppConfig | null;
   appConfigLoading: boolean;
+  developerMode: boolean;
   onAppConfigChange: (config: AppConfig) => void;
   onAppConfigSave: () => void;
+  onDeveloperModeChange: (enabled: boolean) => void;
   onRerunWizard: () => void;
 }
 
@@ -32,8 +34,10 @@ export function AppearanceSettingsTab({
   updater,
   appConfig,
   appConfigLoading,
+  developerMode,
   onAppConfigChange,
   onAppConfigSave,
+  onDeveloperModeChange,
   onRerunWizard,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation();
@@ -75,6 +79,25 @@ export function AppearanceSettingsTab({
 
         {/* App update */}
         <UpdateSettingsPanel appVersion={appVersion} updater={updater} />
+
+        <div className="border-t border-border pt-4">
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              checked={developerMode}
+              onChange={(event) => onDeveloperModeChange(event.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-border text-accent focus:ring-accent/30"
+            />
+            <span>
+              <span className="block text-sm font-medium text-text-primary">
+                {t('settings.developerMode')}
+              </span>
+              <span className="mt-1 block text-xs leading-relaxed text-text-tertiary">
+                {t('settings.developerMode.description')}
+              </span>
+            </span>
+          </label>
+        </div>
 
         {/* Re-run setup wizard */}
         <div className="border-t border-border pt-4 mt-4">

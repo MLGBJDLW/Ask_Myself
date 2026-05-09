@@ -7,6 +7,97 @@ export interface SubagentToolDescriptor {
   serverName?: string;
 }
 
+export type SubagentToolGroupId =
+  | 'system'
+  | 'research'
+  | 'workflow'
+  | 'write'
+  | 'delegation'
+  | 'integrations';
+
+export interface SubagentToolGroup {
+  id: SubagentToolGroupId;
+  label: string;
+  description: string;
+}
+
+export const SUBAGENT_TOOL_GROUPS: SubagentToolGroup[] = [
+  {
+    id: 'system',
+    label: 'Core reading',
+    description: 'Basic source discovery and file reading tools.',
+  },
+  {
+    id: 'research',
+    label: 'Research',
+    description: 'Search, evidence retrieval, summaries, web fetches, and graph lookup.',
+  },
+  {
+    id: 'workflow',
+    label: 'Workflow',
+    description: 'Plans, verification, feedback, statistics, playbooks, and health checks.',
+  },
+  {
+    id: 'write',
+    label: 'Write and maintain',
+    description: 'Tools that can create, edit, reindex, archive, or change sources.',
+  },
+  {
+    id: 'delegation',
+    label: 'Nested delegation',
+    description: 'Allow subagents to spawn or judge other delegated workers.',
+  },
+  {
+    id: 'integrations',
+    label: 'MCP integrations',
+    description: 'Tools discovered from enabled MCP servers.',
+  },
+];
+
+const TOOL_GROUP_BY_NAME: Record<string, SubagentToolGroupId> = {
+  list_sources: 'system',
+  list_documents: 'system',
+  list_dir: 'system',
+  read_file: 'system',
+  read_files: 'system',
+  get_document_info: 'system',
+
+  search_knowledge_base: 'research',
+  retrieve_evidence: 'research',
+  get_chunk_context: 'research',
+  compare_documents: 'research',
+  summarize_document: 'research',
+  search_by_date: 'research',
+  fetch_url: 'research',
+  query_knowledge_graph: 'research',
+  get_related_concepts: 'research',
+
+  update_plan: 'workflow',
+  record_verification: 'workflow',
+  search_playbooks: 'workflow',
+  manage_playbook: 'workflow',
+  submit_feedback: 'workflow',
+  get_statistics: 'workflow',
+  run_health_check: 'workflow',
+  compile_document: 'workflow',
+
+  write_note: 'write',
+  edit_file: 'write',
+  reindex_document: 'write',
+  manage_source: 'write',
+  archive_output: 'write',
+  desktop_automation: 'write',
+
+  spawn_subagent: 'delegation',
+  spawn_subagent_batch: 'delegation',
+  judge_subagent_results: 'delegation',
+};
+
+export function getSubagentToolGroup(tool: Pick<SubagentToolDescriptor, 'name' | 'source'>): SubagentToolGroupId {
+  if (tool.source === 'mcp') return 'integrations';
+  return TOOL_GROUP_BY_NAME[tool.name] ?? 'research';
+}
+
 export const SUBAGENT_TOOL_CATALOG: SubagentToolDescriptor[] = [
   {
     name: 'search_knowledge_base',

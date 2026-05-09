@@ -7,6 +7,7 @@ import { Input } from '../ui/Input';
 import { WizardFooter } from './WizardFooter';
 import { useTranslation } from '../../i18n';
 import { PROVIDER_PRESETS, type ProviderPreset } from '../../lib/providerPresets';
+import { ProviderIcon } from '../../lib/providerIcons';
 import * as api from '../../lib/api';
 import type { SaveAgentConfigInput } from '../../types/conversation';
 import type { ConnectionTestResult } from './useWizardState';
@@ -137,8 +138,10 @@ export function Step3Provider({
                 : 'border-border bg-surface-1 text-text-secondary hover:border-border-hover'
             }`}
           >
-            <span className="mr-1.5">{p.icon}</span>
-            {p.name}
+            <span className="inline-flex items-center gap-2">
+              <ProviderIcon provider={p.provider} size="sm" />
+              {p.name}
+            </span>
           </button>
         ))}
       </div>
