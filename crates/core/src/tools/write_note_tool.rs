@@ -8,8 +8,11 @@ use serde::Deserialize;
 
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
+use crate::file_checkpoint::CreateFileCheckpointInput;
 
+use super::diff_stats::{
+    checkpoint_artifact_with_diff, create_file_diff_artifact, text_diff_artifact,
+};
 use super::{Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
@@ -216,6 +219,13 @@ impl WriteNoteTool {
                 });
             }
 
+            let existed_before = file_path.exists();
+            let old_content = if existed_before {
+                std::fs::read_to_string(&file_path).unwrap_or_default()
+            } else {
+                String::new()
+            };
+
             let checkpoint = db.create_file_checkpoint(CreateFileCheckpointInput {
                 conversation_id: conversation_id.as_deref(),
                 tool_call_id: &call_id,
@@ -247,6 +257,12 @@ impl WriteNoteTool {
             }
 
             let size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+            let new_content = std::fs::read_to_string(&file_path).unwrap_or_default();
+            let diff = if !existed_before && mode == "create" {
+                create_file_diff_artifact(&args.filename, &new_content)
+            } else {
+                text_diff_artifact(&args.filename, &mode, &old_content, &new_content)
+            };
 
             let text = format!(
                 "Note '{}' written successfully.\nPath: {}\nSize: {} bytes\nMode: {}\nCheckpoint: {}",
@@ -261,7 +277,12 @@ impl WriteNoteTool {
                 call_id,
                 content: text,
                 is_error: false,
-                artifacts: Some(checkpoint_artifact(&checkpoint, Some(size))),
+                artifacts: Some(checkpoint_artifact_with_diff(
+                    &checkpoint,
+                    Some(size),
+                    diff,
+                    Some(0),
+                )),
             })
         })
         .await
@@ -302,14 +323,48 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
+        let artifact = result.artifacts.as_ref().unwrap();
+        assert_eq!(artifact["diff"]["operation"], "create");
+        assert_eq!(artifact["diff"]["path"], "daily.md");
+        assert_eq!(artifact["diff"]["additions"], 1);
+        assert_eq!(artifact["diffStats"]["kind"], "diffStats");
 
         let path = dir.path().join("notes").join("daily.md");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Daily\n");
 
-        let checkpoint_id = result.artifacts.as_ref().unwrap()["checkpoint"]["id"]
-            .as_str()
-            .unwrap();
+        let checkpoint_id = artifact["checkpoint"]["id"].as_str().unwrap();
         db.restore_file_checkpoint(checkpoint_id).unwrap();
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn write_note_append_includes_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = setup_db_with_source(dir.path());
+        let notes_dir = dir.path().join("notes");
+        std::fs::create_dir_all(&notes_dir).unwrap();
+        let path = notes_dir.join("daily.md");
+        std::fs::write(&path, "# Daily\n").unwrap();
+
+        let tool = WriteNoteTool;
+        let args = serde_json::json!({
+            "filename": "daily.md",
+            "content": "- item\n",
+            "mode": "append"
+        });
+
+        let result = tool
+            .execute("call-note-append", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        let artifact = result.artifacts.as_ref().unwrap();
+        assert_eq!(artifact["diff"]["operation"], "append");
+        assert!(artifact["diff"]["hunks"][0]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line["type"] == "addition" && line["content"] == "- item"));
     }
 }

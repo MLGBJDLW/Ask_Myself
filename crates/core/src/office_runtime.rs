@@ -9,6 +9,8 @@ use std::ffi::OsString;
 use std::fs::File;
 #[cfg(windows)]
 use std::io::{Read, Write};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(windows)]
@@ -27,6 +29,43 @@ const DOC_SCRIPT_SKILL: &str = "doc-script-editor";
 #[cfg(windows)]
 const POPPLER_RELEASE_API: &str =
     "https://api.github.com/repos/oschwartz10612/poppler-windows/releases/latest";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const SEM_FAILCRITICALERRORS: u32 = 0x0001;
+#[cfg(windows)]
+const SEM_NOGPFAULTERRORBOX: u32 = 0x0002;
+#[cfg(windows)]
+const SEM_NOOPENFILEERRORBOX: u32 = 0x8000;
+
+#[cfg(windows)]
+extern "system" {
+    fn SetErrorMode(u_mode: u32) -> u32;
+}
+
+#[cfg(windows)]
+fn with_suppressed_process_error_dialogs<T>(f: impl FnOnce() -> T) -> T {
+    let previous = unsafe {
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX)
+    };
+    let result = f();
+    unsafe {
+        SetErrorMode(previous);
+    }
+    result
+}
+
+#[cfg(not(windows))]
+fn with_suppressed_process_error_dialogs<T>(f: impl FnOnce() -> T) -> T {
+    f()
+}
+
+fn apply_quiet_command_options(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -131,7 +170,8 @@ impl PythonCommand {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        cmd.output()
+        apply_quiet_command_options(&mut cmd);
+        with_suppressed_process_error_dialogs(|| cmd.output())
     }
 }
 
@@ -254,12 +294,13 @@ fn read_python_version(cmd: &PythonCommand) -> Option<String> {
 }
 
 fn command_status_success(program: impl AsRef<std::ffi::OsStr>, arg: &str) -> bool {
-    Command::new(program)
-        .arg(arg)
+    let mut cmd = Command::new(program);
+    cmd.arg(arg)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::null());
+    apply_quiet_command_options(&mut cmd);
+    with_suppressed_process_error_dialogs(|| cmd.status())
         .map(|s| s.success())
         .unwrap_or(false)
 }
@@ -583,12 +624,13 @@ fn run_step(cmd: &PythonCommand, args: &[&str]) -> Result<String, String> {
 
 #[cfg(any(windows, target_os = "macos"))]
 fn run_system_step(program: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+        .stderr(Stdio::piped());
+    apply_quiet_command_options(&mut cmd);
+    let output = with_suppressed_process_error_dialogs(|| cmd.output())
         .map_err(|e| format!("failed to spawn {program}: {e}"))?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();

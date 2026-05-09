@@ -1615,6 +1615,8 @@ pub fn show_in_file_explorer(path: String) -> Result<(), String> {
 
 const PREVIEW_TEXT_BYTES_LIMIT: u64 = 2 * 1024 * 1024;
 const PREVIEW_PARSE_BYTES_LIMIT: u64 = 25 * 1024 * 1024;
+const PREVIEW_RELATIVE_SEARCH_LIMIT: usize = 5_000;
+const PREVIEW_RELATIVE_SEARCH_MAX_DEPTH: usize = 8;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1662,6 +1664,79 @@ fn source_display_name(source: &Source) -> String {
         .unwrap_or_else(|| source.root_path.clone())
 }
 
+fn should_skip_preview_search_dir(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(".git")
+            | Some(".hg")
+            | Some(".svn")
+            | Some("node_modules")
+            | Some("target")
+            | Some("dist")
+            | Some("build")
+            | Some(".venv")
+            | Some("venv")
+            | Some("__pycache__")
+    )
+}
+
+fn relative_preview_candidate_matches(root: &Path, candidate: &Path, requested: &Path) -> bool {
+    let Ok(relative) = candidate.strip_prefix(root) else {
+        return false;
+    };
+    if requested.components().count() <= 1 {
+        return relative.file_name() == requested.file_name();
+    }
+    relative.ends_with(requested)
+}
+
+fn collect_relative_preview_matches(
+    root: &Path,
+    dir: &Path,
+    requested: &Path,
+    depth: usize,
+    seen: &mut usize,
+    matches: &mut Vec<PathBuf>,
+) {
+    if *seen >= PREVIEW_RELATIVE_SEARCH_LIMIT || depth > PREVIEW_RELATIVE_SEARCH_MAX_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        if *seen >= PREVIEW_RELATIVE_SEARCH_LIMIT {
+            return;
+        }
+        *seen += 1;
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if !should_skip_preview_search_dir(&path) {
+                collect_relative_preview_matches(root, &path, requested, depth + 1, seen, matches);
+            }
+            continue;
+        }
+        if file_type.is_file() && relative_preview_candidate_matches(root, &path, requested) {
+            if let Ok(canonical) = std::fs::canonicalize(&path) {
+                matches.push(canonical);
+            }
+        }
+    }
+}
+
+fn find_relative_preview_matches(root: &Path, requested: &Path) -> Vec<PathBuf> {
+    let mut seen = 0usize;
+    let mut matches = Vec::new();
+    collect_relative_preview_matches(root, root, requested, 0, &mut seen, &mut matches);
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
 fn resolve_source_file(db: &Database, raw_path: &str) -> Result<ResolvedSourceFile, String> {
     let trimmed = raw_path.trim();
     if trimmed.is_empty() {
@@ -1706,10 +1781,12 @@ fn resolve_source_file(db: &Database, raw_path: &str) -> Result<ResolvedSourceFi
     }
 
     let mut matches: Vec<ResolvedSourceFile> = Vec::new();
-    for source in sources {
+    let mut source_roots: Vec<(Source, PathBuf)> = Vec::new();
+    for source in &sources {
         let Ok(root) = std::fs::canonicalize(Path::new(&source.root_path)) else {
             continue;
         };
+        source_roots.push((source.clone(), root.clone()));
         let candidate = root.join(&requested);
         let Ok(canonical) = std::fs::canonicalize(&candidate) else {
             continue;
@@ -1718,7 +1795,26 @@ fn resolve_source_file(db: &Database, raw_path: &str) -> Result<ResolvedSourceFi
             && canonical.starts_with(&root)
             && !matches.iter().any(|entry| entry.canonical == canonical)
         {
-            matches.push(ResolvedSourceFile { canonical, source });
+            matches.push(ResolvedSourceFile {
+                canonical,
+                source: source.clone(),
+            });
+        }
+    }
+
+    if matches.is_empty() {
+        for (source, root) in &source_roots {
+            for canonical in find_relative_preview_matches(root, &requested) {
+                if canonical.is_file()
+                    && canonical.starts_with(root)
+                    && !matches.iter().any(|entry| entry.canonical == canonical)
+                {
+                    matches.push(ResolvedSourceFile {
+                        canonical,
+                        source: source.clone(),
+                    });
+                }
+            }
         }
     }
 
@@ -5536,3 +5632,41 @@ type _ApprovalTypeMarkers = (
     ToolApprovalMode,
     ToolApprovalPolicy,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("nexa-{label}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn db_with_source(root: &Path) -> Database {
+        let db = Database::open_memory().expect("open memory db");
+        db.add_source(CreateSourceInput {
+            root_path: root.to_string_lossy().to_string(),
+            include_globs: vec![],
+            exclude_globs: vec![],
+            watch_enabled: false,
+        })
+        .expect("add source");
+        db
+    }
+
+    #[test]
+    fn preview_resolves_unique_bare_filename_below_source_root() {
+        let root = unique_temp_dir("preview-source");
+        let nested = root.join("scripts").join("generated");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+        let file = nested.join("part2.py");
+        std::fs::write(&file, "print('ok')\n").expect("write file");
+        let db = db_with_source(&root);
+
+        let resolved = resolve_source_file(&db, "part2.py").expect("resolve bare filename");
+
+        assert_eq!(resolved.canonical, std::fs::canonicalize(&file).unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+}

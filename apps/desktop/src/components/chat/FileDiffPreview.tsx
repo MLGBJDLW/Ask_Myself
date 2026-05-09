@@ -1,4 +1,5 @@
-import { FilePenLine, FilePlus2 } from 'lucide-react';
+import { useState } from 'react';
+import { ChevronDown, ChevronRight, FilePenLine, FilePlus2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { ArtifactPayload } from '../../types/conversation';
 import { FileBadge } from '../ui/FileBadge';
@@ -157,22 +158,44 @@ function lineNumber(value: number | null): string {
   return value == null ? '' : String(value);
 }
 
-export function FileDiffPreview({ diff, compact = false }: { diff: FileDiffArtifact; compact?: boolean }) {
+export function FileDiffPreview({
+  diff,
+  compact = false,
+  defaultOpen = false,
+}: {
+  diff: FileDiffArtifact;
+  compact?: boolean;
+  defaultOpen?: boolean;
+}) {
   const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(defaultOpen);
   const created = diff.operation === 'create';
   const Icon = created ? FilePlus2 : FilePenLine;
   const operationLabel = created ? t('chat.fileDiffCreated') : t('chat.fileDiffModified');
   const maxHeight = compact ? 'max-h-56' : 'max-h-80';
+  const ToggleIcon = expanded ? ChevronDown : ChevronRight;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border/70 bg-surface-0/80 shadow-sm">
+    <div
+      className="overflow-hidden rounded-lg border border-border/70 bg-surface-0/80 shadow-sm"
+      data-testid="file-diff-preview"
+    >
       <div className="flex items-center gap-2 border-b border-border/60 bg-surface-1/70 px-3 py-2">
-        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/60 bg-surface-0 text-text-secondary">
-          <Icon size={14} strokeWidth={1.9} />
-        </span>
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? t('common.collapse') : t('common.expand')} ${operationLabel} ${diff.path}`}
+          className="inline-flex shrink-0 items-center gap-2 rounded-md px-1 text-left transition-colors hover:bg-surface-0/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          <ToggleIcon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/60 bg-surface-0 text-text-secondary">
+            <Icon size={14} strokeWidth={1.9} />
+          </span>
+          <span className="shrink-0 text-xs font-medium text-text-primary">{operationLabel}</span>
+        </button>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="shrink-0 text-xs font-medium text-text-primary">{operationLabel}</span>
             <FileBadge path={diff.path} className="min-w-0 max-w-full" />
           </div>
         </div>
@@ -186,42 +209,44 @@ export function FileDiffPreview({ diff, compact = false }: { diff: FileDiffArtif
         </div>
       </div>
 
-      <div className={`${maxHeight} overflow-auto bg-surface-0`}>
-        <div className="min-w-max py-1 font-mono text-[11px] leading-5">
-          {diff.hunks.map((hunk, hunkIndex) => (
-            <div key={`hunk-${hunkIndex}`}>
-              <div className="grid border-y border-border/40 bg-surface-2/70 px-2 text-[10px] text-text-tertiary">
-                <span>
-                  @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
-                </span>
-              </div>
-              {hunk.lines.map((line, lineIndex) => (
-                <div
-                  key={`line-${hunkIndex}-${lineIndex}`}
-                  className={`grid min-h-5 items-start px-2 transition-colors ${lineClassName(line.type)}`}
-                  style={{ gridTemplateColumns: '3.25rem 3.25rem 1.5rem minmax(0, 1fr)' }}
-                >
-                  <span className="select-none pr-3 text-right text-text-tertiary/70">
-                    {lineNumber(line.oldLine)}
+      {expanded ? (
+        <div className={`${maxHeight} overflow-auto bg-surface-0`}>
+          <div className="min-w-max py-1 font-mono text-[11px] leading-5">
+            {diff.hunks.map((hunk, hunkIndex) => (
+              <div key={`hunk-${hunkIndex}`}>
+                <div className="grid border-y border-border/40 bg-surface-2/70 px-2 text-[10px] text-text-tertiary">
+                  <span>
+                    @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
                   </span>
-                  <span className="select-none pr-3 text-right text-text-tertiary/70">
-                    {lineNumber(line.newLine)}
-                  </span>
-                  <span className={`select-none ${markerClassName(line.type)}`}>
-                    {marker(line.type)}
-                  </span>
-                  <span className="whitespace-pre pr-4 text-left">{line.content || ' '}</span>
                 </div>
-              ))}
-            </div>
-          ))}
-          {diff.truncated && diff.omittedLineCount ? (
-            <div className="border-t border-border/40 bg-surface-1/70 px-3 py-2 text-xs text-text-tertiary">
-              {t('chat.fileDiffLinesOmitted', { count: String(diff.omittedLineCount) })}
-            </div>
-          ) : null}
+                {hunk.lines.map((line, lineIndex) => (
+                  <div
+                    key={`line-${hunkIndex}-${lineIndex}`}
+                    className={`grid min-h-5 items-start px-2 transition-colors ${lineClassName(line.type)}`}
+                    style={{ gridTemplateColumns: '3.25rem 3.25rem 1.5rem minmax(0, 1fr)' }}
+                  >
+                    <span className="select-none pr-3 text-right text-text-tertiary/70">
+                      {lineNumber(line.oldLine)}
+                    </span>
+                    <span className="select-none pr-3 text-right text-text-tertiary/70">
+                      {lineNumber(line.newLine)}
+                    </span>
+                    <span className={`select-none ${markerClassName(line.type)}`}>
+                      {marker(line.type)}
+                    </span>
+                    <span className="whitespace-pre pr-4 text-left">{line.content || ' '}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+            {diff.truncated && diff.omittedLineCount ? (
+              <div className="border-t border-border/40 bg-surface-1/70 px-3 py-2 text-xs text-text-tertiary">
+                {t('chat.fileDiffLinesOmitted', { count: String(diff.omittedLineCount) })}
+              </div>
+            ) : null}
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }

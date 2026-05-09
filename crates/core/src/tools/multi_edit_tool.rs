@@ -11,7 +11,7 @@ use crate::db::Database;
 use crate::error::CoreError;
 use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
 
-use super::diff_stats::{changed_line_count, diff_stats_artifact};
+use super::diff_stats::{changed_line_count, diff_stats_artifact, text_diff_artifact};
 use super::document_utils::{edit_guidance_for_path, is_binary_file_error};
 use super::path_utils::resolve_existing_file_for_file_access;
 use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
@@ -238,9 +238,11 @@ impl MultiEditTool {
 
             let mut artifact = checkpoint_artifact(&checkpoint, Some(content.len() as u64));
             if let Some(object) = artifact.as_object_mut() {
+                let diff = text_diff_artifact(&args.path, "multi_edit", &original, &content);
                 object.insert("operation".to_string(), json!("multi_edit"));
                 object.insert("editCount".to_string(), json!(summaries.len()));
                 object.insert("replacementCount".to_string(), json!(total_replacements));
+                object.insert("diff".to_string(), diff);
                 object.insert(
                     "diffStats".to_string(),
                     diff_stats_artifact(
@@ -468,6 +470,17 @@ mod tests {
             result.artifacts.as_ref().unwrap()["diffStats"]["replacements"],
             2
         );
+        let diff = &result.artifacts.as_ref().unwrap()["diff"];
+        assert_eq!(diff["operation"], "multi_edit");
+        assert_eq!(diff["path"], file.to_string_lossy().as_ref());
+        assert!(diff["hunks"].as_array().unwrap().len() >= 1);
+        let rendered_lines = diff["hunks"][0]["lines"].as_array().unwrap();
+        assert!(rendered_lines
+            .iter()
+            .any(|line| line["type"] == "deletion" && line["content"] == "title: old"));
+        assert!(rendered_lines
+            .iter()
+            .any(|line| line["type"] == "addition" && line["content"] == "title: new"));
 
         let checkpoint_id = result.artifacts.as_ref().unwrap()["checkpoint"]["id"]
             .as_str()

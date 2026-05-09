@@ -8,8 +8,11 @@ use serde::Deserialize;
 
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
+use crate::file_checkpoint::CreateFileCheckpointInput;
 
+use super::diff_stats::{
+    checkpoint_artifact_with_diff, create_file_diff_artifact, text_diff_artifact,
+};
 use super::document_utils::{edit_guidance_for_path, generated_document_mime};
 use super::path_utils::{
     has_path_traversal as has_path_traversal_impl, resolve_writable_file_for_file_access,
@@ -186,11 +189,23 @@ impl CreateFileTool {
                 }
             }
 
+            let existed_before = canonical.exists();
+            let old_content = if existed_before {
+                std::fs::read_to_string(&canonical).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let operation = if existed_before && args.overwrite {
+                "overwrite"
+            } else {
+                "create"
+            };
+
             let checkpoint = db.create_file_checkpoint(CreateFileCheckpointInput {
                 conversation_id: conversation_id.as_deref(),
                 tool_call_id: &call_id,
                 tool_name: "create_file",
-                operation: if args.overwrite { "overwrite" } else { "create" },
+                operation,
                 path: &args.path,
                 absolute_path: &canonical,
             })?;
@@ -206,6 +221,11 @@ impl CreateFileTool {
             }
 
             let size = args.content.len();
+            let diff = if operation == "create" {
+                create_file_diff_artifact(&args.path, &args.content)
+            } else {
+                text_diff_artifact(&args.path, operation, &old_content, &args.content)
+            };
             Ok(ToolResult {
                 call_id,
                 content: format!(
@@ -216,7 +236,12 @@ impl CreateFileTool {
                     checkpoint.id
                 ),
                 is_error: false,
-                artifacts: Some(checkpoint_artifact(&checkpoint, Some(size as u64))),
+                artifacts: Some(checkpoint_artifact_with_diff(
+                    &checkpoint,
+                    Some(size as u64),
+                    diff,
+                    Some(0),
+                )),
             })
         })
         .await
@@ -265,13 +290,22 @@ mod tests {
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert!(result.content.contains("Created file"));
+        let artifact = result.artifacts.as_ref().unwrap();
+        assert_eq!(artifact["diff"]["operation"], "create");
+        assert_eq!(artifact["diff"]["additions"], 1);
+        assert_eq!(artifact["diff"]["deletions"], 0);
+        assert_eq!(artifact["diff"]["hunks"][0]["lines"][0]["type"], "addition");
+        assert_eq!(
+            artifact["diff"]["hunks"][0]["lines"][0]["content"],
+            "hello world"
+        );
+        assert_eq!(artifact["diffStats"]["kind"], "diffStats");
+        assert_eq!(artifact["diffStats"]["operation"], "create");
 
         let content = std::fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "hello world");
 
-        let checkpoint_id = result.artifacts.as_ref().unwrap()["checkpoint"]["id"]
-            .as_str()
-            .unwrap();
+        let checkpoint_id = artifact["checkpoint"]["id"].as_str().unwrap();
         db.restore_file_checkpoint(checkpoint_id).unwrap();
         assert!(!file_path.exists());
     }
@@ -316,6 +350,11 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
+        let artifact = result.artifacts.as_ref().unwrap();
+        assert_eq!(artifact["diff"]["operation"], "overwrite");
+        assert_eq!(artifact["diff"]["additions"], 1);
+        assert_eq!(artifact["diff"]["deletions"], 1);
+        assert_eq!(artifact["diffStats"]["operation"], "overwrite");
 
         let content = std::fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "new content");

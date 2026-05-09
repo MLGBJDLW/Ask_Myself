@@ -89,7 +89,11 @@ function formatByteCount(bytes: number): string {
 
 function isDiffLikeTool(name?: string): boolean {
   const lower = (name || '').toLowerCase();
-  return lower.includes('edit_file') || lower.includes('multi_edit') || lower.includes('apply_patch');
+  return lower.includes('edit_file')
+    || lower.includes('create_file')
+    || lower.includes('multi_edit')
+    || lower.includes('write_note')
+    || lower.includes('apply_patch');
 }
 
 function AnimatedCount({
@@ -464,6 +468,7 @@ export function ToolCallCard({
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
   const showPendingDiffStats = isPending && !diffStats && isDiffLikeTool(safeToolName);
   const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact || fileDiff || diffStats);
+  const shouldAutoOpenStructuredTaskCard = Boolean(planArtifact || verificationArtifact);
 
   const isSearchDone =
     safeToolName.toLowerCase().includes('search') && status === 'done' && !!content;
@@ -472,20 +477,20 @@ export function ToolCallCard({
     [isSearchDone, content],
   );
 
-  const [expanded, setExpanded] = useState(isStructuredTaskCard);
+  const [expanded, setExpanded] = useState(shouldAutoOpenStructuredTaskCard);
 
-  // Auto-collapse when execution finishes; users can manually re-open if needed.
+  // Auto-collapse file mutation details when execution finishes; users can manually re-open.
   useEffect(() => {
-    if (!isPending && !isStructuredTaskCard) {
+    if (!isPending && !shouldAutoOpenStructuredTaskCard) {
       setExpanded(false);
     }
-  }, [isPending, isStructuredTaskCard]);
+  }, [isPending, shouldAutoOpenStructuredTaskCard]);
 
   useEffect(() => {
-    if (isStructuredTaskCard) {
+    if (shouldAutoOpenStructuredTaskCard) {
       setExpanded(true);
     }
-  }, [isStructuredTaskCard]);
+  }, [shouldAutoOpenStructuredTaskCard]);
 
   if (inline) {
     const briefLabel = getToolBriefLabel(safeToolName, args);
