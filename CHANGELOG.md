@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.4.0...nexa-monorepo-v0.4.1) (2026-05-09)
+
+
+### Features
+
+* upgrade RAG governance and context packing ([4757e7b](https://github.com/MLGBJDLW/Nexa/commit/4757e7b1c7f71e8bacdbf6d7848ff8b6691b0731))
+
+
+### Bug Fixes
+
+* improve file diff previews and skill lookup ([d861df4](https://github.com/MLGBJDLW/Nexa/commit/d861df492224b746c86d107467d6d0b8d5e16e08))
+
 ## [0.4.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.7...nexa-monorepo-v0.4.0) (2026-05-09)
 
 
