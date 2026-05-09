@@ -24,6 +24,8 @@ import { useTranslation } from '../i18n';
 import { openFileInDefaultApp, showInFileExplorer } from '../lib/api';
 import { canPreviewInApp, useFilePreview } from '../lib/filePreviewContext';
 import { VideoPreviewModal } from './media/VideoPreviewModal';
+import { open as openExternal } from '@tauri-apps/plugin-shell';
+import { isWebUrl, sourceBasename, sourceDirectory, sourceKindLabel } from '../lib/sourceDisplay';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -158,16 +160,34 @@ export function EvidenceCardComponent({
       ? card.highlights
       : card.highlights.filter((h) => h.end <= TRUNCATE_LENGTH);
 
-  const ext = fileExtension(card.documentPath);
-  const dir = directoryPath(card.documentPath);
+  const isWebSource = isWebUrl(card.documentPath);
+  const ext = isWebSource ? '' : fileExtension(card.documentPath);
+  const dir = sourceDirectory(card.documentPath) || directoryPath(card.documentPath);
+  const displayTitle = card.documentTitle || sourceBasename(card.documentPath);
   const pct = Math.min(Math.max(card.score, 0), 1) * 100;
-  const isVideo = isVideoFile(card.documentPath);
-  const isAudio = isAudioFile(card.documentPath);
+  const isVideo = !isWebSource && isVideoFile(card.documentPath);
+  const isAudio = !isWebSource && isAudioFile(card.documentPath);
   const headingCtx = card.headingPath.length > 0 ? card.headingPath.join(' › ') : undefined;
   const timestamp = extractTimestamp(headingCtx);
 
-  const FileIcon = isVideo ? Film : isAudio ? Music : FileText;
-  const iconColor = isVideo ? 'text-violet-500' : isAudio ? 'text-amber-500' : 'text-text-tertiary';
+  const FileIcon = isWebSource ? ExternalLink : isVideo ? Film : isAudio ? Music : FileText;
+  const iconColor = isWebSource ? 'text-accent' : isVideo ? 'text-violet-500' : isAudio ? 'text-amber-500' : 'text-text-tertiary';
+
+  const handleOpenSource = () => {
+    if (isWebSource) {
+      openExternal(card.documentPath).catch(() => toast.error(t('card.fileNotFound')));
+      return;
+    }
+    if (isVideo) {
+      setVideoPreviewPath(card.documentPath);
+    } else if (canPreviewInApp(card.documentPath)) {
+      openFilePreview(card.documentPath);
+    } else {
+      openFileInDefaultApp(card.documentPath).catch(() =>
+        toast.error(t('card.fileNotFound')),
+      );
+    }
+  };
 
   return (
     <>
@@ -188,22 +208,11 @@ export function EvidenceCardComponent({
         <div className="flex min-w-0 items-center gap-2">
           <FileIcon size={14} className={`shrink-0 ${iconColor}`} />
           <button
-            onClick={() => {
-              if (isVideo) {
-                setVideoPreviewPath(card.documentPath);
-              } else if (canPreviewInApp(card.documentPath)) {
-                openFilePreview(card.documentPath);
-              } else {
-                openFileInDefaultApp(card.documentPath).catch(() =>
-                  toast.error(t('card.fileNotFound')),
-                );
-              }
-            }}
+            onClick={handleOpenSource}
             className="cursor-pointer truncate text-sm font-medium text-text-primary transition-colors hover:text-accent hover:underline"
             title={card.documentPath}
           >
-            {card.documentTitle ||
-              card.documentPath.split(/[/\\]/).pop()}
+            {displayTitle}
           </button>
           {timestamp && (isVideo || isAudio) && (
             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
@@ -284,6 +293,10 @@ export function EvidenceCardComponent({
         <div className="flex min-w-0 items-center gap-2 text-text-tertiary">
           <button
             onClick={() => {
+              if (isWebSource) {
+                openExternal(card.documentPath).catch(() => toast.error(t('card.fileNotFound')));
+                return;
+              }
               showInFileExplorer(card.documentPath).catch(() =>
                 toast.error(t('card.fileNotFound')),
               );
@@ -291,52 +304,42 @@ export function EvidenceCardComponent({
             className="flex cursor-pointer items-center gap-1 text-[11px] transition-colors hover:text-accent"
             title={dir}
           >
-            <FolderOpen size={11} className="shrink-0" />
+            {isWebSource ? <ExternalLink size={11} className="shrink-0" /> : <FolderOpen size={11} className="shrink-0" />}
             <span className="max-w-[140px] truncate">{dir}</span>
           </button>
           <span className="text-border">┊</span>
           <span className="max-w-[100px] truncate text-[11px]">
             {card.sourceName}
           </span>
-          {ext && (
-            <>
-              <span className="text-border">┊</span>
-              <Badge>{ext}</Badge>
-            </>
-          )}
+          <span className="text-border">┊</span>
+          <Badge>{ext || sourceKindLabel(card.documentPath)}</Badge>
         </div>
 
         {/* File actions */}
         <div className="flex shrink-0 items-center gap-0.5">
           <Tooltip content={t('card.openFile')}>
             <button
-              onClick={() => {
-                if (canPreviewInApp(card.documentPath)) {
-                  openFilePreview(card.documentPath);
-                } else {
-                  openFileInDefaultApp(card.documentPath).catch(() =>
-                    toast.error(t('card.fileNotFound')),
-                  );
-                }
-              }}
+              onClick={handleOpenSource}
               className="cursor-pointer rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-secondary"
             >
               <ExternalLink size={14} />
             </button>
           </Tooltip>
 
-          <Tooltip content={t('card.showInFolder')}>
-            <button
-              onClick={() => {
-                showInFileExplorer(card.documentPath).catch(() =>
-                  toast.error(t('card.fileNotFound')),
-                );
-              }}
-              className="cursor-pointer rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-secondary"
-            >
-              <FolderOpen size={14} />
-            </button>
-          </Tooltip>
+          {!isWebSource && (
+            <Tooltip content={t('card.showInFolder')}>
+              <button
+                onClick={() => {
+                  showInFileExplorer(card.documentPath).catch(() =>
+                    toast.error(t('card.fileNotFound')),
+                  );
+                }}
+                className="cursor-pointer rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-secondary"
+              >
+                <FolderOpen size={14} />
+              </button>
+            </Tooltip>
+          )}
 
           <SaveToPlaybookButton chunkId={card.chunkId} size="sm" />
 
@@ -346,7 +349,7 @@ export function EvidenceCardComponent({
             <Tooltip content={t('chat.askAboutThis')}>
               <button
                 onClick={() => {
-                  const title = card.documentTitle || card.documentPath.split(/[/\\]/).pop() || '';
+                  const title = card.documentTitle || sourceBasename(card.documentPath);
                   const heading = card.headingPath?.length ? card.headingPath.join(' > ') : '';
                   const meta = [
                     card.sourceName && `Source: ${card.sourceName}`,

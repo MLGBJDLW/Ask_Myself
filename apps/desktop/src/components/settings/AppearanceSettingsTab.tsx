@@ -60,12 +60,12 @@ export function AppearanceSettingsTab({
         <div>
           <p className="mb-2 text-sm font-medium text-text-primary">{t('settings.appearance.language')}</p>
           <p className="mb-3 text-xs text-text-tertiary">{t('settings.appearance.language.description')}</p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(6.75rem,1fr))] gap-2">
             {availableLocales.map((l) => (
               <button
                 key={l.code}
                 onClick={() => setLocale(l.code)}
-                className={`rounded-lg border px-3 py-2.5 text-sm font-medium transition-all duration-fast cursor-pointer ${
+                className={`min-h-10 rounded-lg border px-3 py-2 text-sm font-medium leading-snug transition-all duration-fast cursor-pointer ${
                   locale === l.code
                     ? 'border-accent bg-accent-subtle text-accent ring-1 ring-accent/20'
                     : 'border-border bg-surface-2 text-text-secondary hover:border-border-hover hover:bg-surface-3'

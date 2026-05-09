@@ -55,6 +55,7 @@ $null
 
 # Docs
 docs/pre/
+docs/local/
 .serena
 
 # Tauri-generated schemas (regenerated each build)

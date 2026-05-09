@@ -8,6 +8,8 @@ import { getSoftDropdownMotion } from '../../lib/uiMotion';
 import { VideoPreviewModal } from '../media/VideoPreviewModal';
 import { SaveToPlaybookButton } from '../SaveToPlaybookButton';
 import type { CitationCardData } from '../../lib/citationParser';
+import { open as openExternal } from '@tauri-apps/plugin-shell';
+import { isWebUrl, sourceBasename, sourceHost } from '../../lib/sourceDisplay';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -39,12 +41,6 @@ function extractTimestamp(headingContext: string | undefined): string | null {
   if (!headingContext) return null;
   const match = headingContext.match(/(\d{2}:\d{2}:\d{2})/);
   return match ? match[1] : null;
-}
-
-function basename(path: string): string {
-  const normalized = path.replace(/[\\/]+$/, '');
-  const lastSep = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
-  return lastSep === -1 ? normalized : normalized.slice(lastSep + 1);
 }
 
 function truncate(text: string, max: number): string {
@@ -91,6 +87,10 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
 
   const handleOpenFile = useCallback(() => {
     if (!card.documentPath) return;
+    if (isWebUrl(card.documentPath)) {
+      openExternal(card.documentPath);
+      return;
+    }
     if (canPreviewInApp(card.documentPath)) {
       openFilePreview(card.documentPath);
     } else {
@@ -99,7 +99,7 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
   }, [card.documentPath, openFilePreview]);
 
   const handleShowInExplorer = useCallback(() => {
-    if (card.documentPath) showInFileExplorer(card.documentPath);
+    if (card.documentPath && !isWebUrl(card.documentPath)) showInFileExplorer(card.documentPath);
   }, [card.documentPath]);
 
   const handleCopy = useCallback(async () => {
@@ -121,15 +121,16 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
     style.zIndex = 100;
   }
 
-  const title = card.documentTitle || basename(card.documentPath) || t('citation.evidence');
+  const isWebSource = isWebUrl(card.documentPath);
+  const title = card.documentTitle || sourceBasename(card.documentPath) || t('citation.evidence');
   const scoreLabel = formatScore(card.score);
-  const isVideo = card.documentPath ? isVideoFile(card.documentPath) : false;
-  const isAudio = card.documentPath ? isAudioFile(card.documentPath) : false;
+  const isVideo = card.documentPath && !isWebSource ? isVideoFile(card.documentPath) : false;
+  const isAudio = card.documentPath && !isWebSource ? isAudioFile(card.documentPath) : false;
   const headingCtx = card.headingPath.length > 0 ? card.headingPath.join(' › ') : undefined;
   const timestamp = extractTimestamp(headingCtx);
 
-  const FileIcon = isVideo ? Film : isAudio ? Music : FileText;
-  const iconColor = isVideo ? 'text-violet-500' : isAudio ? 'text-amber-500' : 'text-accent';
+  const FileIcon = isWebSource ? ExternalLink : isVideo ? Film : isAudio ? Music : FileText;
+  const iconColor = isWebSource ? 'text-accent' : isVideo ? 'text-violet-500' : isAudio ? 'text-amber-500' : 'text-accent';
 
   return (
     <>
@@ -174,7 +175,7 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
           <div className="px-3 py-1.5 border-b border-border/50">
             <span className="text-[10px] text-text-tertiary break-all">
               {card.sourceName ? `${card.sourceName} · ` : ''}
-              {card.documentPath}
+              {isWebSource ? sourceHost(card.documentPath) : card.documentPath}
             </span>
           </div>
         )}
@@ -206,16 +207,18 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
                   bg-accent/10 text-accent hover:bg-accent/20 transition-colors cursor-pointer"
               >
                 <ExternalLink className="h-3 w-3" />
-                {isVideo ? t('media.videoDetails') : t('citation.openFile')}
+                {isVideo ? t('media.videoDetails') : isWebSource ? sourceHost(card.documentPath) : t('citation.openFile')}
               </button>
-              <button
-                type="button"
-                onClick={handleShowInExplorer}
-                className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md
-                  bg-surface-3 text-text-tertiary hover:text-text-primary transition-colors cursor-pointer"
-              >
-                {t('citation.showInFolder')}
-              </button>
+              {!isWebSource && (
+                <button
+                  type="button"
+                  onClick={handleShowInExplorer}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md
+                    bg-surface-3 text-text-tertiary hover:text-text-primary transition-colors cursor-pointer"
+                >
+                  {t('citation.showInFolder')}
+                </button>
+              )}
             </>
           )}
           <div className="flex-1" />
@@ -308,8 +311,9 @@ export function CitationChip({ chunkId, displayText, card }: CitationChipProps) 
     setPopupOpen(false);
   }, []);
 
-  const title = resolvedCard?.documentTitle || resolvedCard?.documentPath || chunkId.slice(0, 8);
-  const tooltipText = resolvedCard ? `${resolvedCard.documentTitle || basename(resolvedCard.documentPath)}` : chunkId.slice(0, 8);
+  const title = resolvedCard?.documentTitle || sourceBasename(resolvedCard?.documentPath) || chunkId.slice(0, 8);
+  const tooltipText = resolvedCard ? `${resolvedCard.documentTitle || sourceBasename(resolvedCard.documentPath)}` : chunkId.slice(0, 8);
+  const isWebSource = isWebUrl(resolvedCard?.documentPath);
 
   return (
     <>
@@ -325,7 +329,7 @@ export function CitationChip({ chunkId, displayText, card }: CitationChipProps) 
           active:scale-95 align-baseline leading-[1.4]
           mx-0.5"
       >
-        {isVideoFile(resolvedCard?.documentPath ?? '') ? <Film className="h-2.5 w-2.5 shrink-0" /> : isAudioFile(resolvedCard?.documentPath ?? '') ? <Music className="h-2.5 w-2.5 shrink-0" /> : <FileText className="h-2.5 w-2.5 shrink-0" />}
+        {isWebSource ? <ExternalLink className="h-2.5 w-2.5 shrink-0" /> : isVideoFile(resolvedCard?.documentPath ?? '') ? <Film className="h-2.5 w-2.5 shrink-0" /> : isAudioFile(resolvedCard?.documentPath ?? '') ? <Music className="h-2.5 w-2.5 shrink-0" /> : <FileText className="h-2.5 w-2.5 shrink-0" />}
         <span className="truncate max-w-[120px]">{displayText || title}</span>
       </button>
       {popupOpen && resolvedCard && (

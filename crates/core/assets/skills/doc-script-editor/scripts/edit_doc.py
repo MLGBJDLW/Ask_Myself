@@ -35,6 +35,35 @@ EXCEL_ERRORS = ("#VALUE!", "#DIV/0!", "#REF!", "#NAME?", "#NULL!", "#NUM!", "#N/
 # Utilities
 # ---------------------------------------------------------------------------
 
+def _suppress_windows_error_dialogs() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        sem_failcriticalerrors = 0x0001
+        sem_nogpfaulterrorbox = 0x0002
+        sem_noopenfileerrorbox = 0x8000
+        kernel32.SetErrorMode(
+            sem_failcriticalerrors | sem_nogpfaulterrorbox | sem_noopenfileerrorbox
+        )
+    except Exception:
+        pass
+
+
+_suppress_windows_error_dialogs()
+
+
+def _run_subprocess(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    if os.name == "nt":
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | getattr(
+            subprocess,
+            "CREATE_NO_WINDOW",
+            0,
+        )
+    return subprocess.run(cmd, **kwargs)
+
+
 def _die(msg: str, code: int = 1) -> None:
     print(msg, file=sys.stderr)
     sys.exit(code)
@@ -189,7 +218,7 @@ def _run_soffice_convert(path: Path, to: str, outdir: Path) -> subprocess.Comple
             str(outdir),
             str(path),
         ]
-        return subprocess.run(
+        return _run_subprocess(
             cmd,
             text=True,
             capture_output=True,
@@ -903,7 +932,7 @@ def cmd_render(args: argparse.Namespace) -> int:
             str(pdf),
             str(prefix),
         ]
-        completed = subprocess.run(cmd, text=True, capture_output=True, check=False)
+        completed = _run_subprocess(cmd, text=True, capture_output=True, check=False)
     if completed.stdout:
         print(completed.stdout.strip())
     if completed.stderr:

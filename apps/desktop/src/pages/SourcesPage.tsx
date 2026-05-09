@@ -39,6 +39,7 @@ import { SourceFileTree } from '../components/sources/SourceFileTree';
 import { undoableAction } from '../lib/undoToast';
 import { getModelStatus } from '../lib/modelStatusCache';
 import { getSoftCollapseMotion } from '../lib/uiMotion';
+import { formatUserError } from '../lib/userError';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -200,7 +201,7 @@ export function SourcesPage() {
       const list = await api.listSources();
       setSources(list);
     } catch (e) {
-      toast.error(`${t('sources.loadError')}: ${String(e)}`);
+      toast.error(formatUserError(t('sources.loadError'), e));
     } finally {
       setLoading(false);
     }
@@ -280,7 +281,7 @@ export function SourcesPage() {
       }
       await loadSources();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(formatUserError(t('sources.updateError'), e));
     } finally {
       setTogglingWatch(null);
     }
@@ -313,7 +314,7 @@ export function SourcesPage() {
           await api.startWatching(newSource.id);
           toast.success(t('sources.watcherStart'));
         } catch (e) {
-          toast.error(String(e));
+          toast.error(formatUserError(t('sources.updateError'), e));
         }
       }
 
@@ -331,7 +332,7 @@ export function SourcesPage() {
         const embedResult = await api.embedSource(sourceId);
         toast.success(`${t('sources.indexingComplete')} ${formatEmbedResult(embedResult, t)}`);
       } catch (e) {
-        toast.error(`${t('sources.scanError')}: ${String(e)}`);
+        toast.error(formatUserError(t('sources.scanError'), e));
       } finally {
         setIndexingIds((prev) => {
           const next = new Set(prev);
@@ -341,7 +342,7 @@ export function SourcesPage() {
         await loadSources();
       }
     } catch (e) {
-      toast.error(`${t('sources.addError')}: ${String(e)}`);
+      toast.error(formatUserError(t('sources.addError'), e));
     } finally {
       setAdding(false);
     }
@@ -358,7 +359,7 @@ export function SourcesPage() {
         try {
           await api.deleteSource(source.id);
         } catch (e) {
-          toast.error(`${t('sources.deleteError')}: ${String(e)}`);
+          toast.error(formatUserError(t('sources.deleteError'), e));
           await loadSources();
         }
       },
@@ -386,7 +387,7 @@ export function SourcesPage() {
       setEditTarget(null);
       await loadSources();
     } catch (e) {
-      toast.error(`${t('sources.updateError')}: ${String(e)}`);
+      toast.error(formatUserError(t('sources.updateError'), e));
     } finally {
       setEditing(false);
     }
@@ -401,7 +402,7 @@ export function SourcesPage() {
       const result = await api.scanSource(sourceId);
       toast.success(formatScanResult(result, t));
     } catch (e) {
-      toast.error(`${t('sources.scanError')}: ${String(e)}`);
+      toast.error(formatUserError(t('sources.scanError'), e));
     } finally {
       setScanningId(null);
       progressStore.update('scanProgress', null);
@@ -418,7 +419,7 @@ export function SourcesPage() {
       toast.success(t('sources.scanAllComplete', { total, added, updated }));
       await loadSources();
     } catch (e) {
-      toast.error(`${t('sources.scanAllError')}: ${String(e)}`);
+      toast.error(formatUserError(t('sources.scanAllError'), e));
     } finally {
       setScanningAll(false);
       progressStore.update('batchProgress', null);
@@ -435,7 +436,7 @@ export function SourcesPage() {
       const result = await api.embedSource(sourceId);
       toast.success(formatEmbedResult(result, t));
     } catch (e) {
-      toast.error(`${t('sources.embedError')}: ${String(e)}`);
+      toast.error(formatUserError(t('sources.embedError'), e));
     } finally {
       setEmbeddingId(null);
       progressStore.update('scanProgress', null);
@@ -448,7 +449,7 @@ export function SourcesPage() {
       const result = await api.rebuildEmbeddings();
       toast.success(formatEmbedResult(result, t));
     } catch (e) {
-      toast.error(`${t('sources.rebuildEmbedError')}: ${String(e)}`);
+      toast.error(formatUserError(t('sources.rebuildEmbedError'), e));
     } finally {
       setRebuildingEmbeddings(false);
       progressStore.update('batchProgress', null);
@@ -486,7 +487,7 @@ export function SourcesPage() {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-3xl p-6 space-y-3">
+      <div className="mx-auto w-full max-w-5xl space-y-3 p-4 sm:p-6">
         <div className="flex items-center justify-between mb-6">
           <div className="h-7 w-32 bg-surface-3 rounded-md animate-pulse" />
           <div className="h-9 w-28 bg-surface-3 rounded-md animate-pulse" />
@@ -502,11 +503,11 @@ export function SourcesPage() {
 
   return (
     <div className="flex h-full">
-    <div className="mx-auto max-w-3xl p-6 flex-1 min-w-0 overflow-y-auto">
+    <div className="mx-auto w-full max-w-5xl flex-1 min-w-0 overflow-y-auto p-4 sm:p-6">
       {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-lg font-semibold text-text-primary">{t('sources.title')}</h2>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             variant="secondary"
             size="sm"
@@ -631,7 +632,7 @@ export function SourcesPage() {
                 className="rounded-lg border border-border bg-surface-2 p-4 hover:border-border-hover transition-colors duration-fast"
               >
                 {/* Summary row (always visible) */}
-                <div className="flex items-start justify-between gap-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   {/* Left: icon + info */}
                   <div className="flex items-start gap-3 min-w-0 flex-1">
                     <button
@@ -672,7 +673,7 @@ export function SourcesPage() {
                   </div>
 
                   {/* Right: actions (always visible so scan/re-index/delete remain reachable) */}
-                  <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                  <div className="flex shrink-0 flex-wrap gap-1.5 lg:justify-end">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -738,15 +739,15 @@ export function SourcesPage() {
                           <div className="flex min-w-0 items-center gap-2">
                             <FolderSearch size={15} className="shrink-0 text-accent" />
                             <div className="min-w-0">
-                              <div className="truncate text-xs font-medium text-text-primary">数据源详情</div>
+                              <div className="truncate text-xs font-medium text-text-primary">{t('sources.title')}</div>
                               <div className="truncate text-[11px] text-text-tertiary">{source.rootPath}</div>
                             </div>
                           </div>
 
                           <div className="inline-flex w-fit rounded-md border border-border bg-surface-0 p-0.5">
                             {([
-                              ['files', '文件', FolderSearch],
-                              ['overview', '概览', Info],
+                              ['files', t('sources.browse'), FolderSearch],
+                              ['overview', t('settings.advanced'), Info],
                             ] as const).map(([tab, label, Icon]) => {
                               const selected = activeDetailTab === tab;
                               return (
@@ -810,7 +811,7 @@ export function SourcesPage() {
                               )}
 
                               <div className="rounded-lg border border-border bg-surface-0 p-3">
-                                <div className="mb-2 text-xs font-medium text-text-primary">索引规则</div>
+                                <div className="mb-2 text-xs font-medium text-text-primary">{t('sources.addModal.includeGlobs')}</div>
                                 <div className="flex flex-wrap gap-1.5">
                                   {source.includeGlobs.map((g, i) => (
                                     <Badge key={i} variant="success">{g}</Badge>
@@ -823,7 +824,7 @@ export function SourcesPage() {
                             </div>
 
                             <div className="rounded-lg border border-border bg-surface-0 p-3">
-                              <div className="mb-2 text-xs font-medium text-text-primary">状态</div>
+                              <div className="mb-2 text-xs font-medium text-text-primary">{t('update.status')}</div>
                               <div className="space-y-2 text-xs text-text-secondary">
                                 <div className="flex items-center justify-between gap-3">
                                   <span>{t('sources.watch')}</span>
@@ -836,7 +837,7 @@ export function SourcesPage() {
                                   <span className="text-text-tertiary">{new Date(source.createdAt).toLocaleDateString()}</span>
                                 </div>
                                 <div className="flex items-center justify-between gap-3">
-                                  <span>类型</span>
+                                  <span>{t('sources.addModal.kind')}</span>
                                   <span className="text-text-tertiary">{kindLabel(source.kind, t)}</span>
                                 </div>
                               </div>

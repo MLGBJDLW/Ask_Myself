@@ -161,9 +161,32 @@ impl Tool for ManageSkillTool {
                         })
                     })
                     .collect::<Vec<_>>();
+                let list_text = summaries
+                    .iter()
+                    .map(|skill| {
+                        let id = skill.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let name = skill.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let enabled = skill
+                            .get("enabled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let builtin = skill
+                            .get("builtin")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let description = skill
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        format!(
+                            "- id: {id} | name: {name} | enabled: {enabled} | builtin: {builtin}\n  description: {description}"
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
-                    content: format!("Found {} skill(s).", summaries.len()),
+                    content: format!("Found {} skill(s):\n{}", summaries.len(), list_text),
                     is_error: false,
                     artifacts: Some(serde_json::json!({
                         "kind": "skillList",
@@ -177,11 +200,43 @@ impl Tool for ManageSkillTool {
                 skills.extend(db.list_skills()?);
                 let skill = skills
                     .into_iter()
-                    .find(|skill| skill.id == skill_id)
+                    .find(|skill| {
+                        skill.id == skill_id
+                            || skill.name == skill_id
+                            || skill.id.strip_prefix("builtin-") == Some(skill_id.as_str())
+                    })
                     .ok_or_else(|| CoreError::NotFound(format!("Skill {skill_id}")))?;
+                let resources = if skill.resources.is_empty() {
+                    "Resources: none".to_string()
+                } else {
+                    format!(
+                        "Resources:\n{}",
+                        skill
+                            .resources
+                            .iter()
+                            .map(|resource| {
+                                format!(
+                                    "- {} ({:?}, {} bytes)",
+                                    resource.path, resource.kind, resource.bytes
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                };
+                let content = format!(
+                    "Skill: {} ({})\nEnabled: {}\nBuiltin: {}\nDescription: {}\n{}\n\nContent:\n{}",
+                    skill.name,
+                    skill.id,
+                    skill.enabled,
+                    skill.builtin,
+                    skill.description,
+                    resources,
+                    skill.content
+                );
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
-                    content: format!("Skill: {} ({})", skill.name, skill.id),
+                    content,
                     is_error: false,
                     artifacts: Some(serde_json::json!({
                         "kind": "skill",
@@ -273,6 +328,11 @@ mod tests {
             .unwrap();
         assert!(!listed.is_error);
         assert_eq!(listed.artifacts.as_ref().unwrap()["kind"], "skillList");
+        assert!(
+            listed.content.contains("builtin-visual-explanations"),
+            "list output should include skill ids for follow-up view_skill calls: {}",
+            listed.content
+        );
 
         let view_args = serde_json::json!({
             "action": "view_skill",
@@ -288,6 +348,22 @@ mod tests {
             viewed.artifacts.as_ref().unwrap()["skill"]["id"],
             "builtin-evidence-first"
         );
+        assert!(
+            viewed.content.contains("##") || viewed.content.contains("Guidance"),
+            "view output should include skill body, not just metadata: {}",
+            viewed.content
+        );
+
+        let slug_view_args = serde_json::json!({
+            "action": "view_skill",
+            "skill_id": "doc-script-editor"
+        });
+        let slug_viewed = tool
+            .execute("call-view-slug", &slug_view_args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(!slug_viewed.is_error);
+        assert!(slug_viewed.content.contains("builtin-doc-script-editor"));
     }
 
     #[tokio::test]

@@ -11,6 +11,8 @@ export interface EvidenceCard {
   sourceName: string;
   documentPath: string;
   documentTitle: string;
+  chunkIndex?: number;
+  chunkKind?: string;
   content: string;
   headingPath: string[];
   score: number;

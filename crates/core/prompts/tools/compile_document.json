@@ -5,7 +5,7 @@
     "type": "object",
     "properties": {
       "document_id": {
-        "type": "integer",
+        "type": "string",
         "description": "Specific document ID to check compilation status for."
       },
       "compile_all": {

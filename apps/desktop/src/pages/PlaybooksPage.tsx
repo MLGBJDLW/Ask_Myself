@@ -15,6 +15,8 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { undoableAction } from '../lib/undoToast';
 import { canPreviewInApp, useFilePreview } from '../lib/filePreviewContext';
+import { open as openExternal } from '@tauri-apps/plugin-shell';
+import { isWebUrl, sourceBasename } from '../lib/sourceDisplay';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -29,6 +31,7 @@ function formatDate(iso: string, locale: string): string {
 }
 
 function basename(path: string): string {
+  if (isWebUrl(path)) return sourceBasename(path);
   const normalized = path.replace(/[\\/]+$/, '');
   const lastSep = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
   return lastSep === -1 ? normalized : normalized.slice(lastSep + 1);
@@ -787,7 +790,9 @@ ${evidenceLines}`;
                                       <button
                                         type="button"
                                         onClick={() => {
-                                          if (canPreviewInApp(evidence.documentPath)) {
+                                          if (isWebUrl(evidence.documentPath)) {
+                                            void openExternal(evidence.documentPath);
+                                          } else if (canPreviewInApp(evidence.documentPath)) {
                                             openFilePreview(evidence.documentPath);
                                           } else {
                                             void api.openFileInDefaultApp(evidence.documentPath);
@@ -801,7 +806,7 @@ ${evidenceLines}`;
                                       <button
                                         type="button"
                                         onClick={() => api.showInFileExplorer(evidence.documentPath)}
-                                        className="inline-flex items-center gap-1 hover:text-accent transition-colors cursor-pointer"
+                                        className={`inline-flex items-center gap-1 hover:text-accent transition-colors cursor-pointer ${isWebUrl(evidence.documentPath) ? 'hidden' : ''}`}
                                       >
                                         <FolderOpen size={12} />
                                         <span>{evidence.documentPath}</span>

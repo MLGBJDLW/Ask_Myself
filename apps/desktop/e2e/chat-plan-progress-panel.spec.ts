@@ -390,10 +390,17 @@ test('lower plan progress panel ignores automatic task run plans', async ({ page
 test('edit_file tool result renders a structured diff preview', async ({ page }) => {
   await page.goto('/chat/conv-plan-progress');
 
-  await expect(page.getByText('Modified')).toBeVisible();
-  await expect(page.getByText('example.ts')).toBeVisible();
-  await expect(page.getByText('+1').first()).toBeVisible();
-  await expect(page.getByText('-1').first()).toBeVisible();
-  await expect(page.getByText('const answer = 42;')).toBeVisible();
-  await expect(page.getByText('const answer = 43;')).toBeVisible();
+  const diffCard = page.getByTestId('file-diff-preview').last();
+  await expect(diffCard).toContainText('Modified');
+  await expect(diffCard).toContainText('example.ts');
+  await expect(diffCard.getByText('+1')).toBeVisible();
+  await expect(diffCard.getByText('-1')).toBeVisible();
+  await expect(diffCard.getByRole('button').first()).toHaveAttribute('aria-expanded', 'false');
+  await expect(diffCard.getByText('const answer = 42;')).toHaveCount(0);
+
+  await diffCard.getByRole('button').first().click();
+
+  await expect(diffCard.getByRole('button').first()).toHaveAttribute('aria-expanded', 'true');
+  await expect(diffCard.getByText('const answer = 42;')).toBeVisible();
+  await expect(diffCard.getByText('const answer = 43;')).toBeVisible();
 });

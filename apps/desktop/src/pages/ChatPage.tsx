@@ -14,6 +14,7 @@ import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
 import type { AgentConfig, Conversation } from '../types/conversation';
 import { extractChunkCitations } from '../lib/citationParser';
+import { formatUserError } from '../lib/userError';
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -101,9 +102,9 @@ export function ChatPage() {
             prev.map((conv) => (conv.id === updated.id ? updated : conv)),
           );
         })
-        .catch((error) => toast.error(String(error)));
+        .catch((error) => toast.error(formatUserError(t('settings.personas'), error)));
     }
-  }, [chat.activeId, chat.setConversations]);
+  }, [chat.activeId, chat.setConversations, t]);
 
   const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>([]);
   useEffect(() => {
@@ -240,7 +241,7 @@ export function ChatPage() {
       chat.setConversations((prev) => [conv, ...prev.filter((c) => c.id !== conv.id)]);
       navigate(`/chat/${conv.id}`);
     } catch (e) {
-      toast.error(`${t('chat.createError')}: ${String(e)}`);
+      toast.error(formatUserError(t('chat.createError'), e));
       navigate('/chat');
       chat.createNewConversation();
     }
@@ -272,7 +273,7 @@ export function ChatPage() {
           try {
             await api.deleteConversation(id);
           } catch (e) {
-            toast.error(`${t('chat.deleteError')}: ${String(e)}`);
+            toast.error(formatUserError(t('chat.deleteError'), e));
             if (removed) chat.setConversations((c) => [...c, removed]);
           }
         },
@@ -296,7 +297,7 @@ export function ChatPage() {
           try {
             await api.deleteConversationsBatch(ids);
           } catch (e) {
-            toast.error(`${t('chat.deleteError')}: ${String(e)}`);
+            toast.error(formatUserError(t('chat.deleteError'), e));
             chat.setConversations((c) => [...c, ...removed]);
           }
         },
@@ -316,7 +317,7 @@ export function ChatPage() {
         try {
           await api.deleteAllConversations();
         } catch (e) {
-          toast.error(`${t('chat.deleteError')}: ${String(e)}`);
+          toast.error(formatUserError(t('chat.deleteError'), e));
           chat.setConversations(prev);
         }
       },
@@ -342,7 +343,7 @@ export function ChatPage() {
       await api.compactConversation(chat.activeId);
       await chat.reloadMessages();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(formatUserError(t('chat.compact'), e));
     } finally {
       setIsCompacting(false);
     }
@@ -483,9 +484,9 @@ export function ChatPage() {
                     {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
                   </button>
                   {chat.agentConfig && agentConfigs.length > 0 && (
-                    <div className="relative">
+                    <div className="relative min-w-[150px]">
                       <select
-                        className="text-[10px] text-text-tertiary bg-surface-3 pl-1.5 pr-4 py-0.5 rounded-md cursor-pointer border-none outline-none max-w-[200px] truncate appearance-none"
+                        className="h-8 w-full max-w-[220px] cursor-pointer appearance-none rounded-md border border-border bg-surface-2 pl-2 pr-6 text-xs text-text-secondary outline-none transition-colors hover:border-border-hover focus:border-accent"
                         value={chat.agentConfig.id}
                         aria-label={t('settings.defaultModel')}
                         onChange={async (e) => {
@@ -500,16 +501,16 @@ export function ChatPage() {
                           </option>
                         ))}
                       </select>
-                      <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[8px] text-text-tertiary">▾</span>
+                      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-text-tertiary">▾</span>
                     </div>
                   )}
                   {personas.length > 0 && (
-                    <div className="relative">
-                      <UserRound className="pointer-events-none absolute left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-text-tertiary" />
+                    <div className="relative min-w-[140px]">
+                      <UserRound className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
                       <select
-                        className="text-[10px] text-text-secondary bg-surface-3 pl-5 pr-4 py-0.5 rounded-md cursor-pointer border-none outline-none max-w-[170px] truncate appearance-none"
+                        className="h-8 w-full max-w-[190px] cursor-pointer appearance-none rounded-md border border-border bg-surface-2 pl-7 pr-6 text-xs text-text-secondary outline-none transition-colors hover:border-border-hover focus:border-accent"
                         value={activePersonaId}
-                        aria-label="Active persona"
+                        aria-label={t('settings.personas')}
                         onChange={(e) => setPersona(e.target.value)}
                         title={`Persona: ${personas.find((p) => p.id === activePersonaId)?.name ?? activePersonaId}`}
                       >
@@ -519,7 +520,7 @@ export function ChatPage() {
                           </option>
                         ))}
                       </select>
-                      <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[8px] text-text-tertiary">▾</span>
+                      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-text-tertiary">▾</span>
                     </div>
                   )}
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">

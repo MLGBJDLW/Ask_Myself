@@ -32,6 +32,7 @@ import { Input } from '../components/ui/Input';
 import { Badge } from '../components/ui/Badge';
 import { CardSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
+import { formatUserError } from '../lib/userError';
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
@@ -94,11 +95,11 @@ export function KnowledgePage() {
       const s = await api.getCompileStats();
       setStats(s);
     } catch (e) {
-      toast.error(String(e));
+      toast.error(formatUserError(t('knowledge.compileStats'), e));
     } finally {
       setStatsLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const loadMap = useCallback(async () => {
     setMapLoading(true);
@@ -106,11 +107,11 @@ export function KnowledgePage() {
       const m = await api.getKnowledgeMap(100);
       setKnowledgeMap(m);
     } catch (e) {
-      toast.error(String(e));
+      toast.error(formatUserError(t('knowledge.knowledgeMap'), e));
     } finally {
       setMapLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const handleCompile = useCallback(async () => {
     setCompiling(true);
@@ -118,15 +119,15 @@ export function KnowledgePage() {
     try {
       const results = await api.compilePendingDocuments(20);
       setCompileResults(results);
-      toast.success(`Processed ${results.length} documents`);
+      toast.success(`${t('knowledge.compiledDocs')}: ${results.length}`);
       await loadStats();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(formatUserError(t('knowledge.compilePending'), e));
     } finally {
       setCompiling(false);
       progressStore.update('compileProgress', null);
     }
-  }, [loadStats]);
+  }, [loadStats, t]);
 
   const handleHealthCheck = useCallback(async () => {
     setHealthLoading(true);
@@ -134,11 +135,11 @@ export function KnowledgePage() {
       const report = await api.runKnowledgeHealthCheck();
       setHealthReport(report);
     } catch (e) {
-      toast.error(String(e));
+      toast.error(formatUserError(t('knowledge.healthCheck'), e));
     } finally {
       setHealthLoading(false);
     }
-  }, []);
+  }, [t]);
 
   /* ── Load data on tab change ───────────────────────────────────── */
 
@@ -324,12 +325,12 @@ export function KnowledgePage() {
                           <div className="flex items-center gap-2 min-w-0">
                             <CheckCircle2 size={14} className="text-success shrink-0" />
                             <span className="text-sm text-text-primary truncate">
-                              Doc #{r.documentId}
+                              {t('knowledge.documents')} {r.documentId.slice(0, 8)}
                             </span>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            <Badge variant="info">{r.entitiesFound} topics</Badge>
-                            <Badge variant="default">{r.linksCreated} connections</Badge>
+                            <Badge variant="info">{r.entitiesFound} {t('knowledge.totalEntities')}</Badge>
+                            <Badge variant="default">{r.linksCreated} {t('knowledge.totalLinks')}</Badge>
                           </div>
                         </motion.div>
                       ))}
@@ -367,14 +368,14 @@ export function KnowledgePage() {
                 <EmptyState
                   icon={<Network size={32} />}
                   title={t('knowledge.noEntities')}
-                  description=""
+                  description={t('knowledge.searchEntities')}
                 />
               ) : (
                 <div className="border border-border rounded-lg overflow-hidden">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="bg-surface-2 text-text-secondary text-left">
-                        <th className="px-4 py-2.5 font-medium">Entity</th>
+                        <th className="px-4 py-2.5 font-medium">{t('knowledge.totalEntities')}</th>
                         <th className="px-4 py-2.5 font-medium">{t('knowledge.entityType')}</th>
                         <th className="px-4 py-2.5 font-medium text-right">{t('knowledge.mentions')}</th>
                       </tr>
@@ -449,7 +450,7 @@ export function KnowledgePage() {
                   <EmptyState
                     icon={<CheckCircle2 size={32} />}
                     title={t('knowledge.noIssues')}
-                    description=""
+                    description={t('knowledge.runCheck')}
                   />
                 ) : (
                   <motion.div
