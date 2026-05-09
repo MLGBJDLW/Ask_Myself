@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.7...nexa-monorepo-v0.4.0) (2026-05-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* prepare 0.4.0 release
+
+### Features
+
+* add file search and multi-edit tools ([e76e5eb](https://github.com/MLGBJDLW/Nexa/commit/e76e5eba076af8c530a0f91caaa4cf853014be68))
+* allow custom project icon colors ([e56f06b](https://github.com/MLGBJDLW/Nexa/commit/e56f06bc8c4c6f61f7e1dfcf250aee10f97f1efe))
+* **chat:** surface task progress and file diffs ([08db148](https://github.com/MLGBJDLW/Nexa/commit/08db148b628b552c143cacb2362f950f10e596b9))
+* **desktop:** streamline settings and project controls ([716f444](https://github.com/MLGBJDLW/Nexa/commit/716f44486608d88c7b02d13d1bc121cfc27d210f))
+* prepare 0.4.0 release ([b6f18af](https://github.com/MLGBJDLW/Nexa/commit/b6f18af90d15b04f4b709d985dad1d038170335b))
+* show animated diff stats in tool cards ([510e94b](https://github.com/MLGBJDLW/Nexa/commit/510e94b9c879fd4cab043bd91acf4f372d944124))
+
+
+### Bug Fixes
+
+* align tool policy and namespacing ([a2a704a](https://github.com/MLGBJDLW/Nexa/commit/a2a704a92576c554e16273ab428e1548c65f20cf))
+* **core:** tighten retrieval and source tree ordering ([89992d3](https://github.com/MLGBJDLW/Nexa/commit/89992d3930c676590619e11def9ba51e4a09a195))
+
 ## [0.3.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.6...nexa-monorepo-v0.3.7) (2026-05-06)
 
 
