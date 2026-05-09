@@ -30,6 +30,17 @@ export interface FileDiffArtifact {
   hunks: FileDiffHunk[];
 }
 
+export interface DiffStatsArtifact {
+  kind: 'diffStats';
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  hunks: number;
+  replacements?: number;
+  operation: string;
+  paths: string[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -84,6 +95,39 @@ export function extractFileDiffArtifact(artifacts: ArtifactPayload | undefined):
     truncated: diff.truncated === true,
     omittedLineCount: numberOrZero(diff.omittedLineCount),
     hunks,
+  };
+}
+
+export function extractDiffStatsArtifact(artifacts: ArtifactPayload | undefined): DiffStatsArtifact | null {
+  if (isRecord(artifacts) && isRecord(artifacts.diffStats)) {
+    const stats = artifacts.diffStats;
+    const paths = Array.isArray(stats.paths)
+      ? stats.paths.filter((path): path is string => typeof path === 'string')
+      : [];
+    return {
+      kind: 'diffStats',
+      filesChanged: numberOrZero(stats.filesChanged),
+      additions: numberOrZero(stats.additions),
+      deletions: numberOrZero(stats.deletions),
+      hunks: numberOrZero(stats.hunks),
+      replacements: typeof stats.replacements === 'number' && Number.isFinite(stats.replacements)
+        ? stats.replacements
+        : undefined,
+      operation: typeof stats.operation === 'string' ? stats.operation : 'edit',
+      paths,
+    };
+  }
+
+  const diff = extractFileDiffArtifact(artifacts);
+  if (!diff) return null;
+  return {
+    kind: 'diffStats',
+    filesChanged: 1,
+    additions: diff.additions,
+    deletions: diff.deletions,
+    hunks: diff.hunks.length,
+    operation: diff.operation,
+    paths: [diff.path],
   };
 }
 

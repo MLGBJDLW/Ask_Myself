@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   Search,
@@ -33,7 +33,12 @@ import { PlanPanel, VerificationPanel } from './TaskPanels';
 import type { ArtifactPayload } from '../../types/conversation';
 import type { VerificationOverallStatus } from '../../lib/taskArtifacts';
 import { SubagentCard } from './SubagentCard';
-import { FileDiffPreview, extractFileDiffArtifact } from './FileDiffPreview';
+import {
+  FileDiffPreview,
+  extractDiffStatsArtifact,
+  extractFileDiffArtifact,
+  type DiffStatsArtifact,
+} from './FileDiffPreview';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -82,13 +87,134 @@ function formatByteCount(bytes: number): string {
   return `${(kb / 1024).toFixed(1)} MB`;
 }
 
+function isDiffLikeTool(name?: string): boolean {
+  const lower = (name || '').toLowerCase();
+  return lower.includes('edit_file') || lower.includes('multi_edit') || lower.includes('apply_patch');
+}
+
+function AnimatedCount({
+  value,
+  prefix = '',
+  className,
+}: {
+  value: number;
+  prefix?: string;
+  className?: string;
+}) {
+  const shouldReduceMotion = useReducedMotion();
+  const displayRef = useRef(0);
+  const [display, setDisplay] = useState(0);
+
+  useEffect(() => {
+    const target = Number.isFinite(value) ? value : 0;
+    if (shouldReduceMotion) {
+      displayRef.current = target;
+      setDisplay(target);
+      return;
+    }
+
+    const start = displayRef.current;
+    const delta = target - start;
+    if (Math.abs(delta) < 0.001) return;
+
+    let frame = 0;
+    const startedAt = performance.now();
+    const duration = Math.min(900, 320 + Math.abs(delta) * 18);
+    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const next = start + delta * easeOutCubic(progress);
+      displayRef.current = next;
+      setDisplay(next);
+      if (progress < 1) {
+        frame = requestAnimationFrame(tick);
+      } else {
+        displayRef.current = target;
+        setDisplay(target);
+      }
+    };
+
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [shouldReduceMotion, value]);
+
+  return (
+    <span className={`inline-block min-w-[1.4ch] text-right tabular-nums ${className ?? ''}`}>
+      {prefix}{Math.round(display)}
+    </span>
+  );
+}
+
+function DiffStatsTicker({ stats, compact = false }: { stats: DiffStatsArtifact; compact?: boolean }) {
+  const pillBase = compact
+    ? 'h-5 px-1.5 text-[10px]'
+    : 'h-6 px-2 text-[11px]';
+  const neutralPill = `${pillBase} inline-flex items-center gap-1 rounded-md border border-border/60 bg-surface-0/70 text-text-tertiary`;
+
+  return (
+    <div className="inline-flex shrink-0 items-center gap-1 font-mono tabular-nums">
+      <span className={`${pillBase} inline-flex items-center gap-0.5 rounded-md border border-success/20 bg-success/10 text-success`}>
+        <AnimatedCount value={stats.additions} prefix="+" />
+      </span>
+      <span className={`${pillBase} inline-flex items-center gap-0.5 rounded-md border border-danger/20 bg-danger/10 text-danger`}>
+        <AnimatedCount value={stats.deletions} prefix="-" />
+      </span>
+      {stats.filesChanged > 1 && (
+        <span className={neutralPill}>
+          <AnimatedCount value={stats.filesChanged} />
+          <span className="font-sans">files</span>
+        </span>
+      )}
+      {typeof stats.replacements === 'number' && stats.replacements > 0 && (
+        <span className={`${neutralPill} hidden sm:inline-flex`}>
+          <AnimatedCount value={stats.replacements} />
+          <span className="font-sans">rep</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+function PendingDiffTicker({ compact = false }: { compact?: boolean }) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1 rounded-md border border-accent/20 bg-accent/10 font-mono tabular-nums text-accent ${
+        compact ? 'h-5 px-1.5 text-[10px]' : 'h-6 px-2 text-[11px]'
+      }`}
+    >
+      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+      diff
+    </span>
+  );
+}
+
+function DiffStatsSummaryPanel({ stats }: { stats: DiffStatsArtifact }) {
+  const path = stats.paths[0];
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-surface-0/65 px-3 py-2">
+      <DiffStatsTicker stats={stats} />
+      {path && <FileBadge path={path} className="min-w-0 max-w-full" />}
+      {stats.hunks > 0 && (
+        <span className="rounded-md border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-tertiary">
+          {stats.hunks} hunk{stats.hunks === 1 ? '' : 's'}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
 const TOOL_ICONS: Record<string, typeof Search> = {
   search: Search,
+  grep_files: Search,
+  glob_files: FolderOpen,
   playbook: BookOpen,
+  multi_edit: PenLine,
+  edit_file: PenLine,
   file: FileText,
   summarize: List,
   list_dir: FolderOpen,
@@ -334,8 +460,10 @@ export function ToolCallCard({
   const planArtifact = useMemo(() => extractPlanArtifact(artifacts), [artifacts]);
   const verificationArtifact = useMemo(() => extractVerificationArtifact(artifacts), [artifacts]);
   const fileDiff = useMemo(() => extractFileDiffArtifact(artifacts), [artifacts]);
+  const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
-  const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact || fileDiff);
+  const showPendingDiffStats = isPending && !diffStats && isDiffLikeTool(safeToolName);
+  const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact || fileDiff || diffStats);
 
   const isSearchDone =
     safeToolName.toLowerCase().includes('search') && status === 'done' && !!content;
@@ -389,8 +517,10 @@ export function ToolCallCard({
       })
       : searchItems
         ? t('search.results', { count: String(searchItems.length) })
-        : fileDiff
-          ? `${fileDiff.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')} +${fileDiff.additions} -${fileDiff.deletions}`
+        : diffStats
+          ? `${diffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
+        : showPendingDiffStats
+          ? t('chat.fileDiffModified')
         : status === 'done' && content
           ? t('chat.traceOutputReady')
           : statusConfig.text;
@@ -414,6 +544,7 @@ export function ToolCallCard({
       planArtifact ||
       verificationArtifact ||
       fileDiff ||
+      diffStats ||
       streamingArgsPreview,
     );
     return (
@@ -437,6 +568,11 @@ export function ToolCallCard({
             <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`} />
             <span>{headerSummary}</span>
           </span>
+          {diffStats ? (
+            <DiffStatsTicker stats={diffStats} compact />
+          ) : showPendingDiffStats ? (
+            <PendingDiffTicker compact />
+          ) : null}
           {canExpand && (
             expanded
               ? <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
@@ -504,6 +640,15 @@ export function ToolCallCard({
               <VerificationPanel verification={verificationArtifact} />
             ) : fileDiff ? (
               <FileDiffPreview diff={fileDiff} compact />
+            ) : diffStats ? (
+              <>
+                <DiffStatsSummaryPanel stats={diffStats} />
+                {content && (
+                  <pre className={`whitespace-pre-wrap break-words text-[11px] leading-relaxed ${isError ? 'text-danger' : 'text-text-secondary'}`}>
+                    {content}
+                  </pre>
+                )}
+              </>
             ) : content ? (
               <pre className={`whitespace-pre-wrap break-words text-[11px] leading-relaxed ${isError ? 'text-danger' : 'text-text-secondary'}`}>
                 {content}
@@ -525,11 +670,16 @@ export function ToolCallCard({
           <Icon className="h-3 w-3 shrink-0 text-text-tertiary" />
           <span className="text-[11px] font-medium text-text-secondary truncate">{safeToolName}</span>
           <span className="text-[10px] text-text-tertiary truncate flex-1">{headerSummary}</span>
+          {diffStats ? (
+            <DiffStatsTicker stats={diffStats} compact />
+          ) : showPendingDiffStats ? (
+            <PendingDiffTicker compact />
+          ) : null}
           <StatusIcon
             className={`h-3 w-3 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
           />
         </button>
-        {expanded && (content || fileDiff) && (
+        {expanded && (content || fileDiff || diffStats) && (
           <div className="border-t border-border/30 px-2 py-1.5">
             {formattedArgs && (
               <div className="mb-1 rounded bg-surface-0/60 px-1.5 py-0.5 text-[10px] text-text-tertiary break-words">
@@ -538,6 +688,15 @@ export function ToolCallCard({
             )}
             {fileDiff ? (
               <FileDiffPreview diff={fileDiff} compact />
+            ) : diffStats ? (
+              <div className="space-y-1.5">
+                <DiffStatsSummaryPanel stats={diffStats} />
+                {content && (
+                  <pre className={`text-[11px] whitespace-pre-wrap break-words max-h-32 overflow-y-auto ${isError ? 'text-danger' : 'text-text-tertiary'}`}>
+                    {content}
+                  </pre>
+                )}
+              </div>
             ) : (
               <pre className={`text-[11px] whitespace-pre-wrap break-words max-h-32 overflow-y-auto ${isError ? 'text-danger' : 'text-text-tertiary'}`}>
                 {content}
@@ -684,10 +843,15 @@ export function ToolCallCard({
         <span className="text-[11px] text-text-tertiary truncate flex-1">
           {headerSummary}
         </span>
+        {diffStats ? (
+          <DiffStatsTicker stats={diffStats} />
+        ) : showPendingDiffStats ? (
+          <PendingDiffTicker />
+        ) : null}
         <StatusIcon
           className={`h-3.5 w-3.5 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
         />
-        {(content || streamingArgsPreview || fileDiff) ? (
+        {(content || streamingArgsPreview || fileDiff || diffStats) ? (
           expanded ? (
             <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
           ) : (
@@ -704,7 +868,7 @@ export function ToolCallCard({
 
       {/* Expandable result */}
       <AnimatePresence>
-        {expanded && (content || streamingArgsPreview || fileDiff) && (
+        {expanded && (content || streamingArgsPreview || fileDiff || diffStats) && (
           <motion.div
             {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
@@ -728,6 +892,18 @@ export function ToolCallCard({
                 <VerificationPanel verification={verificationArtifact} />
               ) : fileDiff ? (
                 <FileDiffPreview diff={fileDiff} />
+              ) : diffStats ? (
+                <div className="space-y-2">
+                  <DiffStatsSummaryPanel stats={diffStats} />
+                  {content && (
+                    <pre
+                      className={`text-xs whitespace-pre-wrap break-words max-h-48 overflow-y-auto
+                        ${isError ? 'text-danger' : 'text-text-secondary'}`}
+                    >
+                      {content}
+                    </pre>
+                  )}
+                </div>
               ) : searchItems ? (
                 <>
                   {trustBoundary && (

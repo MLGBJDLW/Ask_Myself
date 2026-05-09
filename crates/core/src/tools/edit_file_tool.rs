@@ -11,6 +11,7 @@ use crate::error::CoreError;
 use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
 
 use super::create_file_tool::resolve_and_validate;
+use super::diff_stats::diff_stats_from_diff;
 use super::document_utils::{
     edit_guidance_for_path, generated_document_mime, is_binary_file_error,
 };
@@ -190,9 +191,14 @@ fn checkpoint_artifact_with_diff(
     checkpoint: &crate::file_checkpoint::FileCheckpoint,
     bytes_after: Option<u64>,
     diff: serde_json::Value,
+    replacements: Option<usize>,
 ) -> serde_json::Value {
     let mut artifact = checkpoint_artifact(checkpoint, bytes_after);
     if let Some(object) = artifact.as_object_mut() {
+        object.insert(
+            "diffStats".to_string(),
+            diff_stats_from_diff(&diff, replacements),
+        );
         object.insert("diff".to_string(), diff);
     }
     artifact
@@ -665,6 +671,7 @@ impl EditFileTool {
                             &checkpoint,
                             Some(new_content.len() as u64),
                             diff,
+                            Some(1),
                         )),
                     })
                 }
@@ -752,6 +759,7 @@ impl EditFileTool {
                             &checkpoint,
                             Some(size as u64),
                             diff,
+                            Some(0),
                         )),
                     })
                 }
@@ -831,6 +839,12 @@ mod tests {
         assert_eq!(artifact["diff"]["deletions"], 1);
         assert_eq!(artifact["diff"]["hunks"][0]["lines"][0]["type"], "deletion");
         assert_eq!(artifact["diff"]["hunks"][0]["lines"][1]["type"], "addition");
+        assert_eq!(artifact["diffStats"]["kind"], "diffStats");
+        assert_eq!(artifact["diffStats"]["filesChanged"], 1);
+        assert_eq!(artifact["diffStats"]["additions"], 1);
+        assert_eq!(artifact["diffStats"]["deletions"], 1);
+        assert_eq!(artifact["diffStats"]["hunks"], 1);
+        assert_eq!(artifact["diffStats"]["replacements"], 1);
 
         let content = std::fs::read_to_string(&file).unwrap();
         assert_eq!(content, "hi world\ngoodbye world\n");
@@ -1016,6 +1030,10 @@ mod tests {
         assert_eq!(artifact["diff"]["operation"], "create");
         assert_eq!(artifact["diff"]["additions"], 2);
         assert_eq!(artifact["diff"]["deletions"], 0);
+        assert_eq!(artifact["diffStats"]["operation"], "create");
+        assert_eq!(artifact["diffStats"]["additions"], 2);
+        assert_eq!(artifact["diffStats"]["deletions"], 0);
+        assert_eq!(artifact["diffStats"]["replacements"], 0);
 
         let content = std::fs::read_to_string(&file).unwrap();
         assert_eq!(content, "# New File\nContent here.");
