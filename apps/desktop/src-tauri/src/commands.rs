@@ -2837,8 +2837,35 @@ pub async fn list_agent_task_artifact_versions_cmd(
 }
 
 #[tauri::command]
-pub fn list_tool_access_map_cmd() -> Vec<nexa_core::tool_access::ToolAccessInfo> {
-    nexa_core::tool_access::tool_access_map()
+pub async fn list_tool_access_map_cmd(
+    state: tauri::State<'_, AppState>,
+    mcp_state: tauri::State<'_, McpManagerState>,
+) -> Result<Vec<nexa_core::tool_access::ToolAccessInfo>, String> {
+    let mut registry = default_tool_registry();
+    {
+        let mut mcp_manager = mcp_state.manager.lock().await;
+        match sync_enabled_mcp_servers(&state.db, &mut mcp_manager).await {
+            Ok(errors) => {
+                for (server_id, error) in errors {
+                    warn!("Failed to sync MCP server {server_id} for tool access map: {error}");
+                }
+            }
+            Err(error) => {
+                warn!("Failed to refresh enabled MCP servers for tool access map: {error}")
+            }
+        }
+        if let Err(error) = mcp_manager.register_tools(&mut registry).await {
+            warn!("Failed to register MCP tools for tool access map: {error}");
+        }
+    }
+
+    let mut names = registry.tool_names();
+    names.extend([
+        "spawn_subagent".to_string(),
+        "spawn_subagent_batch".to_string(),
+        "judge_subagent_results".to_string(),
+    ]);
+    Ok(nexa_core::tool_access::tool_access_map_for_names(names))
 }
 
 #[tauri::command]
