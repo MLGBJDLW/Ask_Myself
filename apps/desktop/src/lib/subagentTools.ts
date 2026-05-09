@@ -55,9 +55,13 @@ export const SUBAGENT_TOOL_GROUPS: SubagentToolGroup[] = [
 ];
 
 const TOOL_GROUP_BY_NAME: Record<string, SubagentToolGroupId> = {
+  tool_search: 'system',
   list_sources: 'system',
   list_documents: 'system',
   list_dir: 'system',
+  glob_files: 'system',
+  search_files: 'system',
+  grep_files: 'system',
   read_file: 'system',
   read_files: 'system',
   get_document_info: 'system',
@@ -83,6 +87,7 @@ const TOOL_GROUP_BY_NAME: Record<string, SubagentToolGroupId> = {
 
   write_note: 'write',
   edit_file: 'write',
+  multi_edit: 'write',
   reindex_document: 'write',
   manage_source: 'write',
   archive_output: 'write',
@@ -99,6 +104,13 @@ export function getSubagentToolGroup(tool: Pick<SubagentToolDescriptor, 'name' |
 }
 
 export const SUBAGENT_TOOL_CATALOG: SubagentToolDescriptor[] = [
+  {
+    name: 'tool_search',
+    label: 'Tool Search',
+    description: 'Search the built-in tool catalog by name or task.',
+    enabledByDefault: true,
+    source: 'built_in',
+  },
   {
     name: 'search_knowledge_base',
     label: 'Knowledge Search',
@@ -156,6 +168,27 @@ export const SUBAGENT_TOOL_CATALOG: SubagentToolDescriptor[] = [
     source: 'built_in',
   },
   {
+    name: 'glob_files',
+    label: 'Glob Files',
+    description: 'Find source-scoped paths by glob pattern.',
+    enabledByDefault: true,
+    source: 'built_in',
+  },
+  {
+    name: 'search_files',
+    label: 'Search Files',
+    description: 'Find source-scoped text matches with line numbers.',
+    enabledByDefault: true,
+    source: 'built_in',
+  },
+  {
+    name: 'grep_files',
+    label: 'Grep Files',
+    description: 'Alias for source-scoped text search using grep/rg terminology.',
+    enabledByDefault: true,
+    source: 'built_in',
+  },
+  {
     name: 'get_chunk_context',
     label: 'Chunk Context',
     description: 'Expand truncated chunk snippets with nearby context.',
@@ -194,6 +227,13 @@ export const SUBAGENT_TOOL_CATALOG: SubagentToolDescriptor[] = [
     name: 'edit_file',
     label: 'Edit File',
     description: 'Apply text edits to files inside registered sources.',
+    enabledByDefault: false,
+    source: 'built_in',
+  },
+  {
+    name: 'multi_edit',
+    label: 'Multi Edit',
+    description: 'Apply several coordinated text replacements atomically.',
     enabledByDefault: false,
     source: 'built_in',
   },

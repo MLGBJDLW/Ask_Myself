@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -21,10 +21,58 @@ use nexa_core::workflow_catalog::{
     workflow_template_by_id, workflow_template_id_values, WorkflowTemplateDefinition,
 };
 
-const DESCRIPTION: &str = "Spawn a short-lived subagent to handle an isolated subtask, gather an independent perspective, or critique another result. You can call this tool multiple times in parallel, pass it explicit evidence and acceptance criteria, narrow its source scope or tool access, and then synthesize or adjudicate the returned results yourself.";
-const BATCH_DESCRIPTION: &str = "Spawn a batch of short-lived subagents for parallel fan-out research, critique, comparison, or templated workflows. Provide explicit tasks, or set workflow_template plus batch_goal to expand a built-in role-based workflow under one shared budget.";
-const JUDGE_DESCRIPTION: &str = "Adjudicate or rank multiple delegated worker results using a structured rubric. Use this after parallel subagents return when you need a separate judging pass instead of asking the main worker to merge results implicitly.";
+static SPAWN_SUBAGENT_DEF: OnceLock<DelegationToolDef> = OnceLock::new();
+static SPAWN_SUBAGENT_BATCH_DEF: OnceLock<DelegationToolDef> = OnceLock::new();
+static JUDGE_SUBAGENT_RESULTS_DEF: OnceLock<DelegationToolDef> = OnceLock::new();
+
+const SPAWN_SUBAGENT_JSON: &str =
+    include_str!("../../../../crates/core/prompts/tools/spawn_subagent.json");
+const SPAWN_SUBAGENT_BATCH_JSON: &str =
+    include_str!("../../../../crates/core/prompts/tools/spawn_subagent_batch.json");
+const JUDGE_SUBAGENT_RESULTS_JSON: &str =
+    include_str!("../../../../crates/core/prompts/tools/judge_subagent_results.json");
 const MAX_SUBAGENT_DELEGATION_DEPTH: u8 = 1;
+
+struct DelegationToolDef {
+    description: String,
+    parameters: serde_json::Value,
+}
+
+fn delegation_tool_def<'a>(
+    lock: &'a OnceLock<DelegationToolDef>,
+    json_str: &str,
+) -> &'a DelegationToolDef {
+    lock.get_or_init(|| {
+        let value: serde_json::Value =
+            serde_json::from_str(json_str).expect("invalid delegated tool JSON definition");
+        DelegationToolDef {
+            description: value["description"]
+                .as_str()
+                .expect("delegated tool JSON missing description")
+                .to_string(),
+            parameters: value["parameters"].clone(),
+        }
+    })
+}
+
+fn spawn_subagent_parameters_schema() -> serde_json::Value {
+    let mut schema = delegation_tool_def(&SPAWN_SUBAGENT_DEF, SPAWN_SUBAGENT_JSON)
+        .parameters
+        .clone();
+    schema["properties"]["role_id"]["enum"] = serde_json::json!(role_id_values());
+    schema
+}
+
+fn spawn_subagent_batch_parameters_schema() -> serde_json::Value {
+    let mut schema = delegation_tool_def(&SPAWN_SUBAGENT_BATCH_DEF, SPAWN_SUBAGENT_BATCH_JSON)
+        .parameters
+        .clone();
+    let role_ids = serde_json::json!(role_id_values());
+    schema["properties"]["tasks"]["items"]["properties"]["role_id"]["enum"] = role_ids;
+    schema["properties"]["workflow_template"]["enum"] =
+        serde_json::json!(workflow_template_id_values());
+    schema
+}
 
 struct SubagentToolSpec {
     name: &'static str,
@@ -34,6 +82,10 @@ struct SubagentToolSpec {
 const SUBAGENT_TOOL_SPECS: &[SubagentToolSpec] = &[
     SubagentToolSpec {
         name: "search_knowledge_base",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "tool_search",
         enabled_by_default: true,
     },
     SubagentToolSpec {
@@ -65,6 +117,18 @@ const SUBAGENT_TOOL_SPECS: &[SubagentToolSpec] = &[
         enabled_by_default: true,
     },
     SubagentToolSpec {
+        name: "glob_files",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "search_files",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "grep_files",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
         name: "get_chunk_context",
         enabled_by_default: true,
     },
@@ -86,6 +150,10 @@ const SUBAGENT_TOOL_SPECS: &[SubagentToolSpec] = &[
     },
     SubagentToolSpec {
         name: "edit_file",
+        enabled_by_default: false,
+    },
+    SubagentToolSpec {
+        name: "multi_edit",
         enabled_by_default: false,
     },
     SubagentToolSpec {
@@ -197,6 +265,9 @@ const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "list_sources",
             "list_documents",
             "list_dir",
+            "glob_files",
+            "search_files",
+            "grep_files",
             "get_chunk_context",
             "fetch_url",
             "search_playbooks",
@@ -220,6 +291,9 @@ const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "retrieve_evidence",
             "read_file",
             "read_files",
+            "glob_files",
+            "search_files",
+            "grep_files",
             "compare_documents",
             "get_document_info",
             "run_health_check",
@@ -236,6 +310,9 @@ const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
         recommended_tools: &[
             "read_file",
             "read_files",
+            "glob_files",
+            "search_files",
+            "grep_files",
             "compare_documents",
             "search_knowledge_base",
             "retrieve_evidence",
@@ -268,6 +345,9 @@ const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
         recommended_tools: &[
             "read_file",
             "read_files",
+            "glob_files",
+            "search_files",
+            "grep_files",
             "retrieve_evidence",
             "search_knowledge_base",
             "search_playbooks",
@@ -1976,84 +2056,11 @@ impl Tool for SubagentTool {
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        &delegation_tool_def(&SPAWN_SUBAGENT_DEF, SPAWN_SUBAGENT_JSON).description
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
-        let role_ids = role_id_values();
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "The concrete subtask for the delegated agent to complete."
-                },
-                "role_id": {
-                    "type": "string",
-                    "enum": role_ids,
-                    "description": "Optional structured role profile. Use researcher, verifier, critic, planner, writer, connector, or desktop_operator when the task matches one of those responsibilities."
-                },
-                "role": {
-                    "type": "string",
-                    "description": "Optional free-form perspective or specialization. Prefer role_id for known profiles, and use role for extra nuance."
-                },
-                "context": {
-                    "type": "string",
-                    "description": "Optional context from the supervisor, such as another agent's draft, constraints, or evidence to critique."
-                },
-                "expected_output": {
-                    "type": "string",
-                    "description": "Optional description of the format or deliverable you want back."
-                },
-                "acceptance_criteria": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional checklist the subagent should satisfy before returning."
-                },
-                "evidence_chunk_ids": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional chunk IDs that should be treated as handed-off evidence from the supervisor."
-                },
-                "source_ids": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional narrower source scope for this subagent. When omitted, it inherits the supervisor scope."
-                },
-                "allowed_tools": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional narrower tool whitelist for this subagent. Tool names must be from the delegated allowlist."
-                },
-                "parallel_group": {
-                    "type": "string",
-                    "description": "Optional label used when several subagents are exploring sibling branches in parallel."
-                },
-                "deliverable_style": {
-                    "type": "string",
-                    "description": "Optional style hint such as critique, plan, comparison, or verification report."
-                },
-                "return_sections": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional ordered section titles the subagent should use in its response."
-                },
-                "max_iterations": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 6,
-                    "description": "Optional round budget for the subagent. Keep this small."
-                },
-                "timeout_secs": {
-                    "type": "integer",
-                    "minimum": 15,
-                    "maximum": 180,
-                    "description": "Optional hard timeout for this delegated worker in seconds."
-                }
-            },
-            "required": ["task"],
-            "additionalProperties": false
-        })
+        spawn_subagent_parameters_schema()
     }
 
     async fn execute(
@@ -2124,58 +2131,11 @@ impl Tool for SubagentBatchTool {
     }
 
     fn description(&self) -> &str {
-        BATCH_DESCRIPTION
+        &delegation_tool_def(&SPAWN_SUBAGENT_BATCH_DEF, SPAWN_SUBAGENT_BATCH_JSON).description
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
-        let role_ids = role_id_values();
-        let workflow_templates = workflow_template_id_values();
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "tasks": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 8,
-                    "description": "Explicit workers to launch. Omit this when using workflow_template with batch_goal.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "string" },
-                            "task": { "type": "string" },
-                            "role_id": {
-                                "type": "string",
-                                "enum": role_ids,
-                                "description": "Structured role profile for this worker."
-                            },
-                            "role": { "type": "string", "description": "Optional free-form perspective for this worker." },
-                            "context": { "type": "string" },
-                            "expected_output": { "type": "string" },
-                            "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
-                            "evidence_chunk_ids": { "type": "array", "items": { "type": "string" } },
-                            "source_ids": { "type": "array", "items": { "type": "string" } },
-                            "allowed_tools": { "type": "array", "items": { "type": "string" } },
-                            "parallel_group": { "type": "string" },
-                            "deliverable_style": { "type": "string" },
-                            "return_sections": { "type": "array", "items": { "type": "string" } },
-                            "max_iterations": { "type": "integer", "minimum": 1, "maximum": 6 },
-                            "timeout_secs": { "type": "integer", "minimum": 15, "maximum": 180 }
-                        },
-                        "required": ["task"],
-                        "additionalProperties": false
-                    }
-                },
-                "batch_goal": { "type": "string" },
-                "workflow_template": {
-                    "type": "string",
-                    "enum": workflow_templates,
-                    "description": "Optional built-in workflow to expand from batch_goal when tasks is omitted. Choose one of the enum values."
-                },
-                "parallel_group": { "type": "string" },
-                "max_parallel": { "type": "integer", "minimum": 1, "maximum": 8 }
-            },
-            "additionalProperties": false
-        })
+        spawn_subagent_batch_parameters_schema()
     }
 
     async fn execute(
@@ -2358,40 +2318,13 @@ impl Tool for JudgeSubagentResultsTool {
     }
 
     fn description(&self) -> &str {
-        JUDGE_DESCRIPTION
+        &delegation_tool_def(&JUDGE_SUBAGENT_RESULTS_DEF, JUDGE_SUBAGENT_RESULTS_JSON).description
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "candidates": {
-                    "type": "array",
-                    "minItems": 2,
-                    "maxItems": 8,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "string" },
-                            "label": { "type": "string" },
-                            "result": { "type": "string" },
-                            "evidence_summary": { "type": "string" },
-                            "concerns": { "type": "array", "items": { "type": "string" } }
-                        },
-                        "required": ["id", "result"],
-                        "additionalProperties": false
-                    }
-                },
-                "task": { "type": "string" },
-                "rubric": { "type": "array", "items": { "type": "string" } },
-                "decision_mode": { "type": "string" },
-                "required_winner_count": { "type": "integer", "minimum": 1, "maximum": 4 },
-                "expected_output": { "type": "string" },
-                "parallel_group": { "type": "string" }
-            },
-            "required": ["candidates"],
-            "additionalProperties": false
-        })
+        delegation_tool_def(&JUDGE_SUBAGENT_RESULTS_DEF, JUDGE_SUBAGENT_RESULTS_JSON)
+            .parameters
+            .clone()
     }
 
     async fn execute(
