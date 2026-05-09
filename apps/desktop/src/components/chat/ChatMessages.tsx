@@ -155,7 +155,12 @@ type PersistedTraceItem =
   | { kind: "status"; text: string; tone?: "muted" | "success" | "error" };
 
 type MessageTraceGroup =
-  | { type: "anchor"; nodes: ReactNode[]; hideMessageBubble?: boolean }
+  | {
+      type: "anchor";
+      nodes: ReactNode[];
+      hideMessageBubble?: boolean;
+      memberIndexes?: number[];
+    }
   | { type: "member" };
 
 type LiveTraceTimelineItem =
@@ -914,6 +919,7 @@ export function ChatMessages({
           type: "anchor",
           nodes,
           hideMessageBubble: messages[anchorIdx].toolCalls.length > 0,
+          memberIndexes: [...currentGroup],
         });
       }
 
@@ -1262,7 +1268,14 @@ export function ChatMessages({
     return null;
   }, [messages]);
 
-  const fileDiffsByAssistant = useMemo(() => {
+  const latestUserIdx = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === "user") return i;
+    }
+    return -1;
+  }, [messages]);
+
+  const fileDiffGroups = useMemo(() => {
     const ownerByToolCallId = new Map<string, number>();
     messages.forEach((msg, idx) => {
       if (msg.role !== "assistant") return;
@@ -1271,39 +1284,67 @@ export function ChatMessages({
       }
     });
 
-    const grouped = new Map<number, FileDiffArtifact[]>();
-    for (const msg of messages) {
+    const assignedToolMessageIndexes = new Set<number>();
+    const byTurnId = new Map<string, FileDiffArtifact[]>();
+
+    for (const turn of turns) {
+      const userIdx = messageIndexById.get(turn.userMessageId);
+      if (userIdx == null) continue;
+
+      let nextUserIdx = messages.length;
+      for (let idx = userIdx + 1; idx < messages.length; idx += 1) {
+        if (messages[idx].role === "user") {
+          nextUserIdx = idx;
+          break;
+        }
+      }
+
+      const diffs: FileDiffArtifact[] = [];
+      for (let idx = userIdx + 1; idx < nextUserIdx; idx += 1) {
+        const msg = messages[idx];
+        if (msg.role !== "tool") continue;
+        const diff = extractFileDiffArtifact(msg.artifacts ?? undefined);
+        if (!diff) continue;
+        diffs.push(diff);
+        assignedToolMessageIndexes.add(idx);
+      }
+
+      if (diffs.length > 0) {
+        byTurnId.set(turn.id, diffs);
+      }
+    }
+
+    const byAssistantIdx = new Map<number, FileDiffArtifact[]>();
+    for (let idx = 0; idx < messages.length; idx += 1) {
+      if (assignedToolMessageIndexes.has(idx)) continue;
+      const msg = messages[idx];
       if (msg.role !== "tool" || !msg.toolCallId) continue;
       const ownerIdx = ownerByToolCallId.get(msg.toolCallId);
       if (ownerIdx == null) continue;
       const diff = extractFileDiffArtifact(msg.artifacts ?? undefined);
       if (!diff) continue;
-      const current = grouped.get(ownerIdx) ?? [];
+      const current = byAssistantIdx.get(ownerIdx) ?? [];
       current.push(diff);
-      grouped.set(ownerIdx, current);
+      byAssistantIdx.set(ownerIdx, current);
     }
-    return grouped;
-  }, [messages]);
 
-  const fileDiffPreviews = useMemo(
-    () => Array.from(fileDiffsByAssistant.values()).flat(),
-    [fileDiffsByAssistant],
-  );
+    return { byTurnId, byAssistantIdx };
+  }, [messageIndexById, messages, turns]);
 
   const renderFileDiffPreviews = useCallback(
-    () => {
-      if (fileDiffPreviews.length === 0) return null;
+    (diffs: FileDiffArtifact[] | undefined, keyPrefix: string) => {
+      if (!diffs || diffs.length === 0) return null;
       return (
-        <div className="my-2 flex justify-start">
+        <div className="my-2 flex justify-start" data-testid="turn-file-diff-previews">
           <div className="w-full max-w-[min(100%,72rem)] space-y-2">
-            {fileDiffPreviews.map((diff, diffIdx) => (
-              <FileDiffPreview key={`${diff.path}-${diffIdx}`} diff={diff} />
+            {diffs.map((diff, diffIdx) => (
+              <FileDiffPreview key={`${keyPrefix}-${diff.path}-${diffIdx}`} diff={diff} />
             ))}
           </div>
         </div>
       );
     },
-    [fileDiffPreviews],
+    [],
   );
 
   const shouldRenderLiveTraceTimeline = liveTraceTimeline.length > 0;
@@ -1418,6 +1459,10 @@ export function ChatMessages({
             const chunkIds = assistantMsg
               ? (chunkIdCacheRef.current.get(assistantMsg.id) ?? [])
               : [];
+            const turnDiffs =
+              isStreaming && idx === latestUserIdx
+                ? undefined
+                : fileDiffGroups.byTurnId.get(turnRender.turn.id);
 
             return (
               <div key={`turn-${turnRender.turn.id}`}>
@@ -1469,6 +1514,11 @@ export function ChatMessages({
                       onEditAndResend={onEditAndResend}
                     />
                   )}
+
+                {renderFileDiffPreviews(
+                  turnDiffs,
+                  `turn-diff-${turnRender.turn.id}`,
+                )}
               </div>
             );
           }
@@ -1488,6 +1538,21 @@ export function ChatMessages({
             msg.role !== "assistant" ||
             (msg.content.trim().length > 0 &&
               !(traceGroup?.type === "anchor" && traceGroup.hideMessageBubble));
+          const assistantDiffs = (() => {
+            if (
+              msg.role !== "assistant" ||
+              (isStreaming && latestUserIdx >= 0 && idx > latestUserIdx)
+            ) {
+              return undefined;
+            }
+            if (traceGroup?.type === "anchor" && traceGroup.memberIndexes) {
+              const diffs = traceGroup.memberIndexes.flatMap(
+                (memberIdx) => fileDiffGroups.byAssistantIdx.get(memberIdx) ?? [],
+              );
+              return diffs.length > 0 ? diffs : undefined;
+            }
+            return fileDiffGroups.byAssistantIdx.get(idx);
+          })();
 
           return (
             <div key={msg.id}>
@@ -1517,12 +1582,12 @@ export function ChatMessages({
                   onEditAndResend={onEditAndResend}
                 />
               )}
+
+              {renderFileDiffPreviews(assistantDiffs, `message-diff-${msg.id}`)}
             </div>
           );
         })}
       </AnimatePresence>
-
-      {renderFileDiffPreviews()}
 
       {/* ── Interleaved per-round rendering ─────────────────────────── */}
       {shouldRenderLiveTraceTimeline &&

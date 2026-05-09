@@ -615,7 +615,7 @@ pub struct AgentConfig {
     pub cache_ttl_hours: Option<u32>,
     /// Whether to filter tools based on context (query keywords).
     /// When `false`, all tools are sent every turn (original behaviour).
-    /// Default: `true`.
+    /// Default: `false` so the main agent has the full registered toolset.
     #[serde(default = "default_dynamic_tool_visibility")]
     pub dynamic_tool_visibility: bool,
     /// Whether to collect agent traces. Default: `true`.
@@ -635,7 +635,7 @@ fn default_trace_enabled() -> bool {
 }
 
 fn default_dynamic_tool_visibility() -> bool {
-    true
+    false
 }
 
 impl Default for AgentConfig {
@@ -658,7 +658,7 @@ impl Default for AgentConfig {
             tool_timeout_secs: None,
             agent_timeout_secs: None,
             cache_ttl_hours: None,
-            dynamic_tool_visibility: true,
+            dynamic_tool_visibility: false,
             trace_enabled: true,
             require_tool_confirmation: false,
             shell_access_mode: ShellAccessMode::Restricted,
@@ -774,6 +774,48 @@ fn route_user_turn(query: &str, system_prompt: &str, has_sources: bool) -> Agent
     let q = query.to_lowercase();
     let collection_context = system_prompt_has_collection_context(system_prompt);
 
+    let code_or_tool_operation = q.contains("run_shell")
+        || q.contains("run shell")
+        || q.contains("shell")
+        || q.contains("terminal")
+        || q.contains("command")
+        || q.contains("powershell")
+        || q.contains("cmd")
+        || q.contains("cargo")
+        || q.contains("npm")
+        || q.contains("pnpm")
+        || q.contains("node")
+        || q.contains("python")
+        || q.contains("git")
+        || q.contains("tool")
+        || q.contains("tools")
+        || q.contains("agent")
+        || q.contains("subagent")
+        || q.contains("unavailable")
+        || q.contains("available")
+        || q.contains("fix")
+        || q.contains("debug")
+        || q.contains("bug")
+        || q.contains("test")
+        || q.contains("build")
+        || q.contains("compile")
+        || q.contains("运行")
+        || q.contains("命令")
+        || q.contains("终端")
+        || q.contains("调用")
+        || q.contains("工具")
+        || q.contains("不可用")
+        || q.contains("修复")
+        || q.contains("排查")
+        || q.contains("测试")
+        || q.contains("构建")
+        || q.contains("编译")
+        || q.contains("代码")
+        || q.contains("项目")
+        || q.contains("仓库")
+        || q.contains("主agent")
+        || q.contains("子agent");
+
     let file_operation = q.contains("file")
         || q.contains("read")
         || q.contains("edit")
@@ -800,7 +842,8 @@ fn route_user_turn(query: &str, system_prompt: &str, has_sources: bool) -> Agent
         || q.contains("复制")
         || q.contains("删除")
         || q.contains("幻灯片")
-        || q.contains("表格");
+        || q.contains("表格")
+        || code_or_tool_operation;
 
     let source_management = q.contains("source")
         || q.contains("index")
@@ -3715,6 +3758,23 @@ mod tests {
 
         assert_eq!(route.kind, AgentRouteKind::FileOperation);
         assert!(route.extra_categories.contains(&ToolCategory::FileSystem));
+    }
+
+    #[test]
+    fn test_route_user_turn_treats_tool_repair_as_file_operation() {
+        let route = route_user_turn(
+            "为什么主agent没有办法调用run_shell？请仔细排查并全面修复。",
+            "",
+            false,
+        );
+
+        assert_eq!(route.kind, AgentRouteKind::FileOperation);
+        assert!(route.extra_categories.contains(&ToolCategory::FileSystem));
+    }
+
+    #[test]
+    fn test_agent_config_defaults_to_full_tool_visibility() {
+        assert!(!AgentConfig::default().dynamic_tool_visibility);
     }
 
     struct MockProvider {

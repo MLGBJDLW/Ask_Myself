@@ -462,9 +462,9 @@ impl ToolRegistry {
     /// Core and MCP tools are always included. Other categories are activated
     /// when keywords in the user message suggest they may be needed.
     ///
-    /// When dynamic tool visibility is enabled, the agent executor uses the
-    /// same selected names as the per-turn execution policy. Direct registry
-    /// calls remain available to tests and host-side code.
+    /// Dynamic visibility is an opt-in prompt compaction mode. The main agent
+    /// should normally receive the full registry; this selector exists for
+    /// constrained runs and behavioral evaluation.
     pub fn select_tools(&self, user_message: &str, has_sources: bool) -> Vec<ToolDefinition> {
         let mut categories: HashSet<ToolCategory> = HashSet::new();
 
@@ -493,6 +493,48 @@ impl ToolRegistry {
             || msg.contains("哪些")
             || msg.contains("什么")
             || msg.contains("解释");
+
+        let looks_like_code_or_tool_work = msg.contains("run_shell")
+            || msg.contains("run shell")
+            || msg.contains("shell")
+            || msg.contains("terminal")
+            || msg.contains("command")
+            || msg.contains("powershell")
+            || msg.contains("cmd")
+            || msg.contains("cargo")
+            || msg.contains("npm")
+            || msg.contains("pnpm")
+            || msg.contains("node")
+            || msg.contains("python")
+            || msg.contains("git")
+            || msg.contains("tool")
+            || msg.contains("tools")
+            || msg.contains("agent")
+            || msg.contains("subagent")
+            || msg.contains("unavailable")
+            || msg.contains("available")
+            || msg.contains("fix")
+            || msg.contains("debug")
+            || msg.contains("bug")
+            || msg.contains("test")
+            || msg.contains("build")
+            || msg.contains("compile")
+            || msg.contains("运行")
+            || msg.contains("命令")
+            || msg.contains("终端")
+            || msg.contains("调用")
+            || msg.contains("工具")
+            || msg.contains("不可用")
+            || msg.contains("修复")
+            || msg.contains("排查")
+            || msg.contains("测试")
+            || msg.contains("构建")
+            || msg.contains("编译")
+            || msg.contains("代码")
+            || msg.contains("项目")
+            || msg.contains("仓库")
+            || msg.contains("主agent")
+            || msg.contains("子agent");
 
         // File operations
         if msg.contains("file")
@@ -534,6 +576,7 @@ impl ToolRegistry {
             || msg.contains("office")
             || msg.contains("幻灯片")
             || msg.contains("表格")
+            || looks_like_code_or_tool_work
         {
             categories.insert(ToolCategory::FileSystem);
         }
@@ -843,5 +886,18 @@ mod tests {
         let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
 
         assert!(names.iter().any(|name| name == "desktop_automation"));
+    }
+
+    #[test]
+    fn select_tools_includes_shell_for_tool_repair_tasks() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools(
+            "为什么主agent没有办法调用run_shell？请仔细排查并全面修复。",
+            false,
+        );
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "run_shell"));
+        assert!(names.iter().any(|name| name == "edit_file"));
     }
 }
