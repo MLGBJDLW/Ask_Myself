@@ -44,6 +44,12 @@ pub struct EvidenceCard {
     pub source_name: String,
     pub document_path: String,
     pub document_title: String,
+    /// Position inside the source document. Summary chunks use `-1`.
+    #[serde(default)]
+    pub chunk_index: i64,
+    /// Storage kind from the chunks table, e.g. `text` or `summary`.
+    #[serde(default)]
+    pub chunk_kind: String,
     pub content: String,
     pub heading_path: Vec<String>,
     pub score: f64,

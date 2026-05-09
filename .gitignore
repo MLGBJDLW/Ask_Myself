@@ -55,7 +55,7 @@ $null
 
 # Docs
 docs/pre/
-docs/local/RAG_UPGRADE_BASELINE.md
+docs/local/
 .serena
 
 # Tauri-generated schemas (regenerated each build)

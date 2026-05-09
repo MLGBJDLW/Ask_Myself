@@ -12,6 +12,7 @@ use crate::intelligence::{
     TaskPlanningInput,
 };
 use crate::llm::Role;
+use crate::rag;
 use crate::workflow_catalog::workflow_catalog;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +60,7 @@ pub fn run_agent_quality_eval() -> QualityEvalReport {
     let suites = vec![
         behavioral_suite,
         evidence_policy_suite(),
+        rag_governance_suite(),
         workflow_catalog_suite(),
         checkpoint_recovery_suite(),
     ];
@@ -305,6 +307,105 @@ fn evidence_policy_suite() -> QualityEvalSuiteReport {
                             .iter()
                             .any(|guard| guard.contains("mutation tools")),
                         "mutation-tool safeguard is present",
+                    ),
+                ],
+            ),
+        ],
+    )
+}
+
+fn rag_governance_suite() -> QualityEvalSuiteReport {
+    let benchmark = rag::saved_rag_benchmark_suite();
+    let source_kinds = benchmark
+        .iter()
+        .map(|case| case.expected_source_kind.as_str())
+        .collect::<Vec<_>>();
+    let has_multihop = benchmark
+        .iter()
+        .any(|case| case.tags.iter().any(|tag| tag == "multi_hop"));
+    let sample_report = rag::build_rag_eval_report(&[
+        rag::RagEvalCase {
+            name: "local hit".to_string(),
+            query: Some("local".to_string()),
+            expected_chunk_ids: vec!["local-a".to_string()],
+            retrieved_chunk_ids: vec!["local-a".to_string()],
+            expected_sources: vec!["/notes/a.md".to_string()],
+            retrieved_sources: vec!["/notes/a.md".to_string()],
+            citation_supported: Some(true),
+            top_k: 5,
+            failure_notes: Vec::new(),
+        },
+        rag::RagEvalCase {
+            name: "web miss".to_string(),
+            query: Some("web".to_string()),
+            expected_chunk_ids: vec!["web-a".to_string()],
+            retrieved_chunk_ids: vec!["other".to_string()],
+            expected_sources: vec!["https://example.com/a".to_string()],
+            retrieved_sources: vec!["https://example.com/other".to_string()],
+            citation_supported: Some(false),
+            top_k: 5,
+            failure_notes: vec!["source mismatch".to_string()],
+        },
+    ]);
+
+    eval_suite(
+        "rag_governance",
+        "RAG evaluation governance",
+        vec![
+            eval_case(
+                "benchmark-suite-covers-source-kinds",
+                "RAG benchmark suite covers local, web, and multi-hop retrieval",
+                "high",
+                vec![
+                    eval_check(
+                        "localFile",
+                        source_kinds.contains(&"local_file"),
+                        "local-file benchmark case is present",
+                    ),
+                    eval_check(
+                        "webPage",
+                        source_kinds.contains(&"web_page"),
+                        "web-page benchmark case is present",
+                    ),
+                    eval_check(
+                        "multiHop",
+                        has_multihop,
+                        "multi-hop benchmark case is present",
+                    ),
+                ],
+            ),
+            eval_case(
+                "report-tracks-rag-governance-metrics",
+                "RAG eval reports track retrieval and citation governance metrics",
+                "high",
+                vec![
+                    eval_check(
+                        "hitAtK",
+                        sample_report.hit_rate_at_k >= 0.0,
+                        format!("hit@k={:.3}", sample_report.hit_rate_at_k),
+                    ),
+                    eval_check(
+                        "mrr",
+                        sample_report.mean_reciprocal_rank >= 0.0,
+                        format!("mrr={:.3}", sample_report.mean_reciprocal_rank),
+                    ),
+                    eval_check(
+                        "sourceAccuracy",
+                        sample_report.source_accuracy < 1.0,
+                        format!("sourceAccuracy={:.3}", sample_report.source_accuracy),
+                    ),
+                    eval_check(
+                        "citationSupport",
+                        sample_report.citation_support_rate < 1.0,
+                        format!(
+                            "citationSupportRate={:.3}",
+                            sample_report.citation_support_rate
+                        ),
+                    ),
+                    eval_check(
+                        "failureNotes",
+                        !sample_report.failure_notes.is_empty(),
+                        format!("failureNotes={}", sample_report.failure_notes.len()),
                     ),
                 ],
             ),
@@ -712,6 +813,7 @@ mod tests {
         );
         assert!(suite_ids.contains(&"behavioral_routing"));
         assert!(suite_ids.contains(&"evidence_policy"));
+        assert!(suite_ids.contains(&"rag_governance"));
         assert!(suite_ids.contains(&"workflow_catalog"));
         assert!(suite_ids.contains(&"checkpoint_recovery"));
         assert_eq!(report.status, "passed");

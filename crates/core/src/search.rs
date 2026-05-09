@@ -60,7 +60,11 @@ fn deduplicate_by_document(cards: Vec<EvidenceCard>) -> Vec<EvidenceCard> {
     for card in cards {
         best.entry(card.document_id)
             .and_modify(|existing| {
-                if card.score > existing.score {
+                let existing_is_summary = rag::is_supporting_summary_card(existing);
+                let card_is_summary = rag::is_supporting_summary_card(&card);
+                let should_replace = (existing_is_summary && !card_is_summary)
+                    || (existing_is_summary == card_is_summary && card.score > existing.score);
+                if should_replace {
                     *existing = card.clone();
                 }
             })
@@ -155,7 +159,7 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
     // -- build dynamic SQL ------------------------------------------------
 
     let mut sql = String::from(
-        "SELECT c.id, c.document_id, c.content, c.chunk_index, c.metadata_json,
+        "SELECT c.id, c.document_id, c.content, c.chunk_index, c.kind, c.metadata_json,
                 d.path, d.title, d.source_id, s.root_path,
                 fts.rank, COALESCE(d.metadata, '{}')
          FROM fts_chunks fts
@@ -237,14 +241,15 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
                 let chunk_id: String = row.get(0)?;
                 let document_id: String = row.get(1)?;
                 let content: String = row.get(2)?;
-                let _chunk_index: i64 = row.get(3)?;
-                let metadata_json: String = row.get(4)?;
-                let doc_path: String = row.get(5)?;
-                let doc_title: Option<String> = row.get(6)?;
-                let _source_id: String = row.get(7)?;
-                let source_root: String = row.get(8)?;
-                let rank: f64 = row.get(9)?;
-                let doc_metadata: String = row.get(10)?;
+                let chunk_index: i64 = row.get(3)?;
+                let chunk_kind: String = row.get(4)?;
+                let metadata_json: String = row.get(5)?;
+                let doc_path: String = row.get(6)?;
+                let doc_title: Option<String> = row.get(7)?;
+                let _source_id: String = row.get(8)?;
+                let source_root: String = row.get(9)?;
+                let rank: f64 = row.get(10)?;
+                let doc_metadata: String = row.get(11)?;
 
                 let heading_path = parse_heading_path(&metadata_json);
                 let source_name = extract_source_name(&source_root);
@@ -258,6 +263,8 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
                     source_name,
                     document_path: doc_path,
                     document_title: doc_title.unwrap_or_default(),
+                    chunk_index,
+                    chunk_kind,
                     content,
                     heading_path,
                     score: -rank, // negate: FTS5 BM25 is negative
@@ -373,7 +380,7 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
 pub fn get_evidence_card(db: &Database, chunk_id: &str) -> Result<EvidenceCard, CoreError> {
     let conn = db.conn();
     conn.query_row(
-        "SELECT c.id, c.document_id, c.content, c.chunk_index, c.metadata_json,
+        "SELECT c.id, c.document_id, c.content, c.chunk_index, c.kind, c.metadata_json,
                 d.path, d.title, d.source_id, s.root_path,
                 COALESCE(d.metadata, '{}')
          FROM chunks c
@@ -385,13 +392,14 @@ pub fn get_evidence_card(db: &Database, chunk_id: &str) -> Result<EvidenceCard, 
             let cid: String = row.get(0)?;
             let did: String = row.get(1)?;
             let content: String = row.get(2)?;
-            let _chunk_index: i64 = row.get(3)?;
-            let metadata_json: String = row.get(4)?;
-            let doc_path: String = row.get(5)?;
-            let doc_title: Option<String> = row.get(6)?;
-            let _source_id: String = row.get(7)?;
-            let source_root: String = row.get(8)?;
-            let doc_metadata: String = row.get(9)?;
+            let chunk_index: i64 = row.get(3)?;
+            let chunk_kind: String = row.get(4)?;
+            let metadata_json: String = row.get(5)?;
+            let doc_path: String = row.get(6)?;
+            let doc_title: Option<String> = row.get(7)?;
+            let _source_id: String = row.get(8)?;
+            let source_root: String = row.get(9)?;
+            let doc_metadata: String = row.get(10)?;
 
             let snippet = make_snippet(&content);
             Ok(EvidenceCard {
@@ -401,6 +409,8 @@ pub fn get_evidence_card(db: &Database, chunk_id: &str) -> Result<EvidenceCard, 
                 source_name: extract_source_name(&source_root),
                 document_path: doc_path,
                 document_title: doc_title.unwrap_or_default(),
+                chunk_index,
+                chunk_kind,
                 content,
                 heading_path: parse_heading_path(&metadata_json),
                 score: 0.0,
@@ -1452,6 +1462,8 @@ mod tests {
             source_name: extract_source_name(path),
             document_path: path.to_string(),
             document_title: title.to_string(),
+            chunk_index: 0,
+            chunk_kind: "text".to_string(),
             content: content.to_string(),
             heading_path: Vec::new(),
             score,
@@ -2162,6 +2174,8 @@ mod tests {
                 source_name: String::new(),
                 document_path: String::new(),
                 document_title: String::new(),
+                chunk_index: 0,
+                chunk_kind: "text".to_string(),
                 content: String::new(),
                 heading_path: Vec::new(),
                 score: 0.80,
@@ -2178,6 +2192,8 @@ mod tests {
                 source_name: String::new(),
                 document_path: String::new(),
                 document_title: String::new(),
+                chunk_index: 0,
+                chunk_kind: "text".to_string(),
                 content: String::new(),
                 heading_path: Vec::new(),
                 score: 0.50,
@@ -2194,6 +2210,8 @@ mod tests {
                 source_name: String::new(),
                 document_path: String::new(),
                 document_title: String::new(),
+                chunk_index: 0,
+                chunk_kind: "text".to_string(),
                 content: String::new(),
                 heading_path: Vec::new(),
                 score: 0.40,
@@ -2344,6 +2362,34 @@ mod tests {
 
         assert!(cards[0].document_path.starts_with("https://"));
         assert!(cards[0].score > cards[1].score);
+    }
+
+    #[test]
+    fn test_deduplicate_prefers_direct_chunk_over_summary_chunk() {
+        let document_id = Uuid::new_v4();
+        let mut summary = test_card(
+            "/tmp/rag.md",
+            "RAG Notes",
+            "Compiled summary for retrieval architecture",
+            0.95,
+        );
+        summary.document_id = document_id;
+        summary.chunk_index = -1;
+        summary.chunk_kind = "summary".to_string();
+
+        let mut direct = test_card(
+            "/tmp/rag.md",
+            "RAG Notes",
+            "Direct source chunk for retrieval architecture",
+            0.70,
+        );
+        direct.document_id = document_id;
+
+        let cards = deduplicate_by_document(vec![summary, direct.clone()]);
+
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].chunk_id, direct.chunk_id);
+        assert_eq!(cards[0].chunk_kind, "text");
     }
 
     #[test]
