@@ -75,6 +75,14 @@ pub struct AppConfig {
     #[serde(default = "default_mcp_call_timeout_secs")]
     pub mcp_call_timeout_secs: u64,
 
+    /// Whether to send only context-selected tools to the main agent. Default: false.
+    #[serde(default = "default_dynamic_tool_visibility")]
+    pub dynamic_tool_visibility: bool,
+
+    /// Whether to collect detailed agent traces. Default: true.
+    #[serde(default = "default_trace_enabled")]
+    pub trace_enabled: bool,
+
     /// Whether destructive tool calls require user confirmation. Default: false
     #[serde(default)]
     pub confirm_destructive: bool,
@@ -134,6 +142,12 @@ fn default_llm_timeout_secs() -> u64 {
 fn default_mcp_call_timeout_secs() -> u64 {
     60
 }
+fn default_dynamic_tool_visibility() -> bool {
+    false
+}
+fn default_trace_enabled() -> bool {
+    true
+}
 fn default_auto_memory_extraction() -> bool {
     true
 }
@@ -157,6 +171,8 @@ impl Default for AppConfig {
             max_audio_file_size: default_max_audio_file_size(),
             llm_timeout_secs: default_llm_timeout_secs(),
             mcp_call_timeout_secs: default_mcp_call_timeout_secs(),
+            dynamic_tool_visibility: default_dynamic_tool_visibility(),
+            trace_enabled: default_trace_enabled(),
             confirm_destructive: false,
             shell_access_mode: ShellAccessMode::Restricted,
             tool_approval_mode: crate::approval::ToolApprovalMode::default(),
@@ -283,5 +299,13 @@ mod tests {
             .expect("save reset");
         let reset = db.load_wizard_state().expect("load reset");
         assert!(!reset.completed);
+    }
+
+    #[test]
+    fn app_config_defaults_agent_behavior() {
+        let config = AppConfig::default();
+
+        assert!(!config.dynamic_tool_visibility);
+        assert!(config.trace_enabled);
     }
 }

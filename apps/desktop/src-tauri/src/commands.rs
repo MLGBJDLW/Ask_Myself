@@ -3250,8 +3250,8 @@ pub async fn compact_conversation_cmd(
             180,
         )),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
-        dynamic_tool_visibility: true,
-        trace_enabled: true,
+        dynamic_tool_visibility: app_cfg.dynamic_tool_visibility,
+        trace_enabled: app_cfg.trace_enabled,
         require_tool_confirmation: false,
         shell_access_mode: ShellAccessMode::Restricted,
     };
@@ -3779,8 +3779,8 @@ pub async fn agent_chat_cmd(
             180,
         )),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
-        dynamic_tool_visibility: true,
-        trace_enabled: true,
+        dynamic_tool_visibility: app_cfg.dynamic_tool_visibility,
+        trace_enabled: app_cfg.trace_enabled,
         require_tool_confirmation: app_cfg.confirm_destructive,
         shell_access_mode: app_cfg.shell_access_mode,
     };
