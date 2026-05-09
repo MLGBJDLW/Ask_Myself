@@ -13,12 +13,18 @@ import {
   Sparkles,
   type LucideIcon,
 } from 'lucide-react';
+import type { CSSProperties } from 'react';
 
 export interface ProjectIconOption {
   id: string;
   label: string;
   icon: LucideIcon;
   tone: string;
+}
+
+export interface ProjectColorOption {
+  label: string;
+  value: string;
 }
 
 export const PROJECT_ICON_OPTIONS: ProjectIconOption[] = [
@@ -35,6 +41,23 @@ export const PROJECT_ICON_OPTIONS: ProjectIconOption[] = [
   { id: 'shield', label: 'Security', icon: ShieldCheck, tone: 'text-teal-500 bg-teal-500/10' },
   { id: 'idea', label: 'Ideas', icon: Lightbulb, tone: 'text-yellow-500 bg-yellow-500/10' },
 ];
+
+export const PROJECT_COLOR_OPTIONS: ProjectColorOption[] = [
+  { label: 'Sky', value: '#0ea5e9' },
+  { label: 'Emerald', value: '#10b981' },
+  { label: 'Amber', value: '#f59e0b' },
+  { label: 'Violet', value: '#8b5cf6' },
+  { label: 'Cyan', value: '#06b6d4' },
+  { label: 'Orange', value: '#f97316' },
+  { label: 'Fuchsia', value: '#d946ef' },
+  { label: 'Rose', value: '#f43f5e' },
+  { label: 'Lime', value: '#84cc16' },
+  { label: 'Blue', value: '#3b82f6' },
+  { label: 'Teal', value: '#14b8a6' },
+  { label: 'Slate', value: '#64748b' },
+];
+
+export const DEFAULT_PROJECT_COLOR = PROJECT_COLOR_OPTIONS[0].value;
 
 const LEGACY_ICON_ALIASES: Record<string, string> = {
   '📁': 'folder',
@@ -60,21 +83,55 @@ export function getProjectIconOption(icon: string | null | undefined): ProjectIc
   return PROJECT_ICON_OPTIONS.find((option) => option.id === id) ?? PROJECT_ICON_OPTIONS[0];
 }
 
+function normalizeHexColor(color: string | null | undefined): string | null {
+  const trimmed = color?.trim() ?? '';
+  if (!/^#[0-9a-fA-F]{6}$/.test(trimmed)) return null;
+  return trimmed.toLowerCase();
+}
+
+export function normalizeProjectColor(
+  color: string | null | undefined,
+  fallback = DEFAULT_PROJECT_COLOR,
+): string {
+  return normalizeHexColor(color) ?? fallback;
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const normalized = normalizeHexColor(hex) ?? DEFAULT_PROJECT_COLOR;
+  const red = Number.parseInt(normalized.slice(1, 3), 16);
+  const green = Number.parseInt(normalized.slice(3, 5), 16);
+  const blue = Number.parseInt(normalized.slice(5, 7), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
 export function ProjectIcon({
   icon,
+  color,
   className = '',
   size = 14,
 }: {
   icon?: string | null;
+  color?: string | null;
   className?: string;
   size?: number;
 }) {
   const option = getProjectIconOption(icon);
   const Icon = option.icon;
+  const customColor = normalizeHexColor(color);
+  const customStyle: CSSProperties | undefined = customColor
+    ? {
+        color: customColor,
+        backgroundColor: hexToRgba(customColor, 0.14),
+        borderColor: hexToRgba(customColor, 0.24),
+      }
+    : undefined;
 
   return (
     <span
-      className={`inline-flex shrink-0 items-center justify-center rounded-md ${option.tone} ${className}`}
+      className={`inline-flex shrink-0 items-center justify-center rounded-md ${
+        customColor ? 'border' : option.tone
+      } ${className}`}
+      style={customStyle}
       title={option.label}
       aria-hidden="true"
     >

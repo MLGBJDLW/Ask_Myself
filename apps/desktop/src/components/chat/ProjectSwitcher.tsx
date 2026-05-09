@@ -4,7 +4,14 @@ import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import type { Project, CreateProjectInput, UpdateProjectInput } from '../../types/project';
 import * as api from '../../lib/api';
-import { PROJECT_ICON_OPTIONS, ProjectIcon, getProjectIconOption } from '../../lib/projectIcons';
+import {
+  DEFAULT_PROJECT_COLOR,
+  PROJECT_COLOR_OPTIONS,
+  PROJECT_ICON_OPTIONS,
+  ProjectIcon,
+  getProjectIconOption,
+  normalizeProjectColor,
+} from '../../lib/projectIcons';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { ProjectMemoryPanel } from './ProjectMemoryPanel';
 
@@ -49,9 +56,11 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [newIcon, setNewIcon] = useState(PROJECT_ICON_OPTIONS[0].id);
+  const [newColor, setNewColor] = useState(DEFAULT_PROJECT_COLOR);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editIcon, setEditIcon] = useState(PROJECT_ICON_OPTIONS[0].id);
+  const [editColor, setEditColor] = useState(DEFAULT_PROJECT_COLOR);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [projectBusy, setProjectBusy] = useState(false);
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
@@ -78,6 +87,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
         setCreating(false);
         setNewName('');
         setNewIcon(PROJECT_ICON_OPTIONS[0].id);
+        setNewColor(DEFAULT_PROJECT_COLOR);
         setEditingProjectId(null);
       }
     };
@@ -97,10 +107,11 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
     if (!trimmed) return;
     setProjectBusy(true);
     try {
-      const input: CreateProjectInput = { name: trimmed, icon: newIcon };
+      const input: CreateProjectInput = { name: trimmed, icon: newIcon, color: newColor };
       const created = await api.createProject(input);
       setNewName('');
       setNewIcon(PROJECT_ICON_OPTIONS[0].id);
+      setNewColor(DEFAULT_PROJECT_COLOR);
       setCreating(false);
       await loadProjects();
       onProjectChange(created.id);
@@ -118,18 +129,20 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
     setEditingProjectId(project.id);
     setEditName(project.name);
     setEditIcon(getProjectIconOption(project.icon).id);
+    setEditColor(normalizeProjectColor(project.color));
   };
 
   const cancelEditProject = () => {
     setEditingProjectId(null);
     setEditName('');
     setEditIcon(PROJECT_ICON_OPTIONS[0].id);
+    setEditColor(DEFAULT_PROJECT_COLOR);
   };
 
   const handleUpdateProject = async (project: Project) => {
     const trimmed = editName.trim();
     if (!trimmed) return;
-    const input: UpdateProjectInput = { name: trimmed, icon: editIcon };
+    const input: UpdateProjectInput = { name: trimmed, icon: editIcon, color: editColor };
     setProjectBusy(true);
     try {
       const updated = await api.updateProject(project.id, input);
@@ -187,6 +200,50 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
     </div>
   );
 
+  const renderColorPicker = (value: string, onChange: (color: string) => void) => {
+    const normalized = normalizeProjectColor(value);
+    return (
+      <div className="flex items-center gap-1.5">
+        <div className="grid flex-1 grid-cols-6 gap-1">
+          {PROJECT_COLOR_OPTIONS.map((option) => {
+            const selected = normalizeProjectColor(option.value) === normalized;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => onChange(option.value)}
+                className={`h-6 rounded-md border transition-all ${
+                  selected
+                    ? 'border-text-primary ring-1 ring-text-primary/30'
+                    : 'border-border/70 hover:border-border-hover'
+                }`}
+                style={{ backgroundColor: option.value }}
+                title={option.label}
+                aria-label={`Project color ${option.label}`}
+              />
+            );
+          })}
+        </div>
+        <label
+          className="relative flex h-6 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-border bg-surface-1 transition-colors hover:bg-surface-3"
+          title="Custom project color"
+          aria-label="Custom project color"
+        >
+          <span
+            className="h-3.5 w-3.5 rounded-full border border-white/30 shadow-sm"
+            style={{ backgroundColor: normalized }}
+          />
+          <input
+            type="color"
+            value={normalized}
+            onChange={(event) => onChange(normalizeProjectColor(event.target.value))}
+            className="absolute inset-0 cursor-pointer opacity-0"
+          />
+        </label>
+      </div>
+    );
+  };
+
   const renderProjectRow = (project: Project) => {
     const editing = editingProjectId === project.id;
 
@@ -204,6 +261,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
             className="w-full rounded border border-border bg-surface-0 px-2 py-1 text-xs text-text-primary outline-none placeholder:text-text-tertiary focus:border-accent"
           />
           {renderIconPicker(editIcon, setEditIcon)}
+          {renderColorPicker(editColor, setEditColor)}
           <div className="flex justify-end gap-1">
             <button
               type="button"
@@ -235,7 +293,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
           onClick={() => handleSelect(project.id)}
           className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
         >
-          <ProjectIcon icon={project.icon} className="h-5 w-5" size={12} />
+          <ProjectIcon icon={project.icon} color={project.color} className="h-5 w-5" size={12} />
           <span className="flex-1 truncate text-left">{project.name}</span>
           {project.id === activeProjectId && <Check className="h-3 w-3 shrink-0 text-accent" />}
         </button>
@@ -273,7 +331,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
         <span className="min-w-0 flex-1 truncate text-left">
           {activeProject ? (
             <span className="inline-flex min-w-0 items-center gap-1.5">
-              <ProjectIcon icon={activeProject.icon} className="h-5 w-5" size={12} />
+              <ProjectIcon icon={activeProject.icon} color={activeProject.color} className="h-5 w-5" size={12} />
               <span className="truncate">{activeProject.name}</span>
             </span>
           ) : (
@@ -324,12 +382,14 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
                     setCreating(false);
                     setNewName('');
                     setNewIcon(PROJECT_ICON_OPTIONS[0].id);
+                    setNewColor(DEFAULT_PROJECT_COLOR);
                   }
                 }}
                 placeholder={t('project.namePlaceholder')}
                 className="w-full rounded border border-border bg-surface-0 px-2 py-1 text-xs text-text-primary outline-none placeholder:text-text-tertiary focus:border-accent"
               />
               {renderIconPicker(newIcon, setNewIcon)}
+              {renderColorPicker(newColor, setNewColor)}
               <div className="flex justify-end gap-1">
                 <button
                   type="button"
@@ -337,6 +397,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
                     setCreating(false);
                     setNewName('');
                     setNewIcon(PROJECT_ICON_OPTIONS[0].id);
+                    setNewColor(DEFAULT_PROJECT_COLOR);
                   }}
                   className="rounded p-1.5 text-text-tertiary hover:bg-surface-3 hover:text-text-primary"
                   aria-label={t('common.cancel')}

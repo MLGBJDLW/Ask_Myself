@@ -303,13 +303,15 @@ mod tests {
         let input = CreateProjectInput {
             name: "Test Project".into(),
             description: Some("A test".into()),
-            icon: None,
-            color: None,
+            icon: Some("folder".into()),
+            color: Some("#0ea5e9".into()),
             system_prompt: Some("You are helpful.".into()),
             source_scope: None,
         };
         let project = db.create_project(&input).unwrap();
         assert_eq!(project.name, "Test Project");
+        assert_eq!(project.icon, "folder");
+        assert_eq!(project.color, "#0ea5e9");
         assert_eq!(project.system_prompt, "You are helpful.");
 
         // List
@@ -320,14 +322,16 @@ mod tests {
         let update = UpdateProjectInput {
             name: Some("Renamed".into()),
             description: None,
-            icon: None,
-            color: None,
+            icon: Some("rocket".into()),
+            color: Some("#f97316".into()),
             system_prompt: None,
             source_scope: None,
             archived: None,
         };
         let updated = db.update_project(&project.id, &update).unwrap();
         assert_eq!(updated.name, "Renamed");
+        assert_eq!(updated.icon, "rocket");
+        assert_eq!(updated.color, "#f97316");
 
         // Delete
         db.delete_project(&project.id).unwrap();
