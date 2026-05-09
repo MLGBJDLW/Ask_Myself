@@ -12,6 +12,7 @@ use crate::embed::{cosine_similarity, create_embedder, Embedder, TfIdfEmbedder};
 use crate::error::CoreError;
 use crate::models::{EvidenceCard, FileType, Highlight, SearchQuery};
 use crate::personalization;
+use crate::rag;
 
 // ---------------------------------------------------------------------------
 // Defaults (also exposed as AppConfig fields for configurability)
@@ -351,6 +352,7 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
     // Prefer evidence that still contains the user's own query terms after
     // feedback expansion and source boosts have widened the candidate pool.
     apply_query_relevance_adjustment(&mut cards, trimmed);
+    rag::rerank_evidence_cards(&mut cards, trimmed);
 
     // Deduplicate: keep only the highest-scored card per document.
     let cards = deduplicate_by_document(cards);
@@ -631,6 +633,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
 
     // Keep vector-only and expanded matches grounded in the visible query.
     apply_query_relevance_adjustment(&mut cards, trimmed);
+    rag::rerank_evidence_cards(&mut cards, trimmed);
 
     // Deduplicate: keep only the highest-scored card per document.
     let cards = deduplicate_by_document(cards);

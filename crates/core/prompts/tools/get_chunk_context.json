@@ -1,6 +1,6 @@
 {
   "name": "get_chunk_context",
-  "description": "Retrieve a chunk and its surrounding context chunks from the same document. Use this after search to get more context around a relevant result.",
+  "description": "Retrieve a chunk and its surrounding parent/child context window from the same document, ordered by chunk_index. Use this after search when retrieval confidence is medium/low, when contextWindow.recommended is true, or when a relevant snippet needs surrounding section context before citation.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -51,6 +51,7 @@ pub mod project;
 pub mod project_memory;
 pub mod provider_catalog;
 pub mod quality_eval;
+pub mod rag;
 pub mod search;
 pub mod skills;
 pub mod source_tree;
