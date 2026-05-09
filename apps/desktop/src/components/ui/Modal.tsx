@@ -131,9 +131,9 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
             aria-modal="true"
             aria-label={title}
             tabIndex={-1}
-            className="relative z-10 w-full max-w-md bg-surface-2 border border-border rounded-lg shadow-lg overflow-hidden"
+            className="relative z-10 flex max-h-[88vh] w-[min(92vw,32rem)] flex-col overflow-hidden rounded-lg border border-border bg-surface-2 shadow-lg"
           >
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+            <div className="flex shrink-0 items-center justify-between px-5 py-4 border-b border-border">
               <h2 className="text-sm font-semibold text-text-primary">{title}</h2>
               <button
                 onClick={onClose}
@@ -143,11 +143,11 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
                 <X size={16} />
               </button>
             </div>
-            <div className="px-5 py-4">
+            <div className="min-h-0 overflow-y-auto px-5 py-4">
               {children}
             </div>
             {footer && (
-              <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border bg-surface-1">
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 px-5 py-3 border-t border-border bg-surface-1">
                 {footer}
               </div>
             )}

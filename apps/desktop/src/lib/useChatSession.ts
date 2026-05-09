@@ -13,6 +13,7 @@ import type {
   ImageAttachment,
 } from '../types/conversation';
 import { appTimeMs } from './dateTime';
+import { formatUserError } from './userError';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -529,7 +530,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       list.sort((a, b) => appTimeMs(b.updatedAt) - appTimeMs(a.updatedAt));
       setConversations(list);
     } catch (e) {
-      toast.error(`${t('chat.loadError')}: ${String(e)}`);
+      toast.error(formatUserError(t('chat.loadError'), e));
     } finally {
       setLoadingConvos(false);
     }
@@ -869,7 +870,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           streamingConversationRef.current = null;
         }
       } catch (e) {
-        toast.error(`${t('chat.deleteError')}: ${String(e)}`);
+        toast.error(formatUserError(t('chat.deleteError'), e));
       }
     },
     [activeId, defaultContextWindow, deleteUsageCacheForConversations, t],
@@ -911,7 +912,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           streamingConversationRef.current = null;
         }
       } catch (e) {
-        toast.error(`${t('chat.deleteError')}: ${String(e)}`);
+        toast.error(formatUserError(t('chat.deleteError'), e));
       }
     },
     [activeId, defaultContextWindow, deleteUsageCacheForConversations, t],
@@ -936,7 +937,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       pendingStreamConversationRef.current = null;
       streamingConversationRef.current = null;
     } catch (e) {
-      toast.error(`${t('chat.deleteError')}: ${String(e)}`);
+      toast.error(formatUserError(t('chat.deleteError'), e));
     }
   }, [defaultContextWindow, t]);
 
@@ -948,7 +949,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           prev.map((c) => (c.id === id ? { ...c, title } : c)),
         );
       } catch (e) {
-        toast.error(`${t('chat.renameError')}: ${String(e)}`);
+        toast.error(formatUserError(t('chat.renameError'), e));
       }
     },
     [t],
@@ -1061,7 +1062,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           setInternalConversationId(convId);
           onConversationCreated?.(convId);
         } catch (e) {
-          toast.error(`${t('chat.createError')}: ${String(e)}`);
+          toast.error(formatUserError(t('chat.createError'), e));
           return;
         }
       }

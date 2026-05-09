@@ -37,6 +37,7 @@ function useAppVersion() {
 const STORAGE_KEY = 'sidebar-collapsed';
 const NAV_ORDER_KEY = 'sidebar-nav-order';
 const LAST_ROUTE_KEY = 'last-route';
+const SIDEBAR_AUTO_COLLAPSE_QUERY = '(max-width: 760px)';
 const INSTANT_TRANSITION = { duration: 0 };
 
 type NavItem = { to: string; labelKey: TranslationKey; icon: typeof Search };
@@ -205,6 +206,16 @@ export function Layout() {
   });
   const [navItems, setNavItems] = useState<NavItem[]>(() => loadOrderedNavItems());
 
+  useEffect(() => {
+    const mq = window.matchMedia(SIDEBAR_AUTO_COLLAPSE_QUERY);
+    const handleChange = (event: MediaQueryListEvent | MediaQueryList) => {
+      if (event.matches) setCollapsed(true);
+    };
+    handleChange(mq);
+    mq.addEventListener('change', handleChange);
+    return () => mq.removeEventListener('change', handleChange);
+  }, []);
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -344,7 +355,7 @@ export function Layout() {
       </motion.aside>
 
       {/* Main content */}
-      <main className="flex-1 min-h-0 overflow-y-auto">
+      <main className="flex-1 min-w-0 min-h-0 overflow-y-auto">
         <Outlet />
       </main>
 
@@ -353,7 +364,7 @@ export function Layout() {
         <button
           onClick={() => navigate('/chat')}
           aria-label={t('chat.askAi')}
-          className="fixed bottom-6 right-6 z-40 p-3 rounded-full
+          className="fixed bottom-4 right-4 z-40 p-2.5 rounded-full sm:bottom-6 sm:right-6 sm:p-3
             bg-accent text-white shadow-lg
             hover:bg-accent-hover transition-colors duration-200 cursor-pointer"
           title={t('chat.askAi')}

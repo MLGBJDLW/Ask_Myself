@@ -112,6 +112,19 @@ fn truncate_preview(content: &str, max_chars: usize) -> String {
     preview
 }
 
+fn is_web_url(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+fn source_kind(path: &str) -> &'static str {
+    if is_web_url(path) {
+        "web_page"
+    } else {
+        "local_file"
+    }
+}
+
 fn normalize_queries(args: &SearchArgs) -> Vec<String> {
     let mut queries: Vec<String> = match args.queries {
         Some(ref qs) if !qs.is_empty() => qs
@@ -153,15 +166,22 @@ fn format_search_result(
         text.push_str(&format!(
             "--- Result {} (score: {:.3}) ---\n\
              [chunk_id: {}]\n\
+             Source type: {}\n\
              Source: {}\n\
-             Path: {}\n\
+             {}: {}\n\
              Title: {}\n\
              Preview:\n{}\n\
              Next: use retrieve_evidence with this chunk_id for exact supporting text.\n\n",
             i + 1,
             card.score,
             card.chunk_id,
+            source_kind(&card.document_path),
             card.source_name,
+            if is_web_url(&card.document_path) {
+                "URL"
+            } else {
+                "Path"
+            },
             card.document_path,
             card.document_title,
             preview,

@@ -348,6 +348,10 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
     // Enrich with credibility and freshness, blend into ranking.
     apply_credibility_scoring(&mut cards);
 
+    // Prefer evidence that still contains the user's own query terms after
+    // feedback expansion and source boosts have widened the candidate pool.
+    apply_query_relevance_adjustment(&mut cards, trimmed);
+
     // Deduplicate: keep only the highest-scored card per document.
     let cards = deduplicate_by_document(cards);
 
@@ -624,6 +628,9 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
 
     // Enrich with credibility and freshness, blend into ranking.
     apply_credibility_scoring(&mut cards);
+
+    // Keep vector-only and expanded matches grounded in the visible query.
+    apply_query_relevance_adjustment(&mut cards, trimmed);
 
     // Deduplicate: keep only the highest-scored card per document.
     let cards = deduplicate_by_document(cards);
@@ -943,6 +950,80 @@ fn apply_credibility_scoring(cards: &mut [EvidenceCard]) {
 
         card.score = card.score * 0.7 + credibility * 0.2 + freshness_bonus * 0.1;
     }
+    cards.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+}
+
+fn normalized_query_terms(query_text: &str) -> Vec<String> {
+    let mut terms: Vec<String> = extract_terms(query_text)
+        .into_iter()
+        .map(|term| {
+            term.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_string()
+        })
+        .filter(|term| term.chars().count() > 1)
+        .collect();
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+fn apply_query_relevance_adjustment(cards: &mut [EvidenceCard], query_text: &str) {
+    let terms = normalized_query_terms(query_text);
+    if terms.is_empty() {
+        return;
+    }
+
+    let phrase = query_text.trim().to_lowercase();
+
+    for card in cards.iter_mut() {
+        let title_path = format!(
+            "{} {} {}",
+            card.document_title, card.document_path, card.source_name
+        )
+        .to_lowercase();
+        let haystack = format!(
+            "{} {} {} {}",
+            title_path,
+            card.heading_path.join(" "),
+            card.snippet.as_deref().unwrap_or(""),
+            card.content
+        )
+        .to_lowercase();
+
+        let matched_terms = terms
+            .iter()
+            .filter(|term| haystack.contains(term.as_str()))
+            .count();
+        let coverage = matched_terms as f64 / terms.len() as f64;
+
+        if coverage <= f64::EPSILON {
+            card.score *= 0.55;
+            continue;
+        }
+
+        if coverage < 0.34 {
+            card.score *= 0.75;
+            continue;
+        }
+
+        let phrase_bonus = if !phrase.is_empty() && haystack.contains(&phrase) {
+            0.04
+        } else {
+            0.0
+        };
+        let source_hint_bonus = if terms.iter().any(|term| title_path.contains(term.as_str())) {
+            0.02
+        } else {
+            0.0
+        };
+
+        card.score = (card.score + 0.04 * coverage + phrase_bonus + source_hint_bonus).max(0.0);
+    }
+
     cards.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -1357,6 +1438,25 @@ mod tests {
             filters: SearchFilters::default(),
             limit: 20,
             offset: 0,
+        }
+    }
+
+    fn test_card(path: &str, title: &str, content: &str, score: f64) -> EvidenceCard {
+        EvidenceCard {
+            chunk_id: Uuid::new_v4(),
+            document_id: Uuid::new_v4(),
+            source_id: Uuid::new_v4(),
+            source_name: extract_source_name(path),
+            document_path: path.to_string(),
+            document_title: title.to_string(),
+            content: content.to_string(),
+            heading_path: Vec::new(),
+            score,
+            highlights: Vec::new(),
+            snippet: make_snippet(content),
+            document_date: None,
+            credibility: None,
+            freshness_days: None,
         }
     }
 
@@ -2188,5 +2288,64 @@ mod tests {
 
         // Invalid date → 0.0
         assert!((recency_boost("not-a-date")).abs() < 1e-6, "invalid date");
+    }
+
+    #[test]
+    fn test_query_relevance_penalizes_unmatched_cards() {
+        let mut cards = vec![
+            test_card(
+                "/tmp/planning.md",
+                "Planning Notes",
+                "quarterly budget approval and forecast notes",
+                0.8,
+            ),
+            test_card(
+                "/tmp/random.md",
+                "Unrelated Notes",
+                "deployment checklist for database migration",
+                0.8,
+            ),
+        ];
+
+        apply_query_relevance_adjustment(&mut cards, "budget forecast");
+
+        assert_eq!(cards[0].document_title, "Planning Notes");
+        assert!(
+            cards[0].score > cards[1].score,
+            "matched evidence should outrank unrelated evidence"
+        );
+        assert!(
+            cards[1].score < 0.8,
+            "unmatched evidence should be penalized"
+        );
+    }
+
+    #[test]
+    fn test_query_relevance_uses_source_title_and_url() {
+        let mut cards = vec![
+            test_card(
+                "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API",
+                "Fetch API",
+                "Request and response interfaces for web applications",
+                0.5,
+            ),
+            test_card(
+                "/tmp/api-notes.md",
+                "Meeting Notes",
+                "Follow-up items from the team sync",
+                0.5,
+            ),
+        ];
+
+        apply_query_relevance_adjustment(&mut cards, "fetch api");
+
+        assert!(cards[0].document_path.starts_with("https://"));
+        assert!(cards[0].score > cards[1].score);
+    }
+
+    #[test]
+    fn test_compute_credibility_recognizes_web_urls() {
+        assert!(compute_credibility("https://developer.mozilla.org/en-US/") > 0.8);
+        assert_eq!(compute_credibility("/tmp/local-notes.md"), 0.7);
     }
 }

@@ -44,6 +44,7 @@ import { useTranslation } from '../i18n';
 import { useDebounce } from '../lib/useDebounce';
 import { getModelStatus } from '../lib/modelStatusCache';
 import { getSoftCollapseMotion, INSTANT_TRANSITION } from '../lib/uiMotion';
+import { formatUserError } from '../lib/userError';
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -141,6 +142,7 @@ export function SearchPage() {
   const [recallWhere, setRecallWhere] = useState('');
   const [recallDate, setRecallDate] = useState('');
   const [recallFileType, setRecallFileType] = useState('');
+  const [recallOpen, setRecallOpen] = useState(false);
 
   // ── Search tab ────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<'kb' | 'conversations'>('kb');
@@ -165,7 +167,7 @@ export function SearchPage() {
 
   // 鈹€鈹€ Knowledge Base stats 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const [indexStats, setIndexStats] = useState<IndexStats | null>(null);
-  const [kbOpen, setKbOpen] = useState(true);
+  const [kbOpen, setKbOpen] = useState(false);
   const activeSearchSourceNames = useMemo(
     () => sources
       .filter((source) => filters.sourceIds.includes(source.id))
@@ -339,7 +341,7 @@ export function SearchPage() {
         // non-critical
       }
     } catch (e) {
-      toast.error(`${t('search.searchError')}: ${String(e)}`);
+      toast.error(formatUserError(t('search.searchError'), e));
     } finally {
       setLoading(false);
     }
@@ -387,7 +389,7 @@ export function SearchPage() {
       const results = await api.searchConversations(q, 20);
       setConvResults(results);
     } catch (e) {
-      toast.error(`${t('search.searchError')}: ${String(e)}`);
+      toast.error(formatUserError(t('search.searchError'), e));
     } finally {
       setConvLoading(false);
     }
@@ -416,7 +418,7 @@ export function SearchPage() {
       const fb = await api.addFeedback(chunkId, result.query, action);
       setFeedbackMap((prev) => ({ ...prev, [chunkId]: fb }));
     } catch (e) {
-      toast.error(`${t('search.feedbackError')}: ${String(e)}`);
+      toast.error(formatUserError(t('search.feedbackError'), e));
     }
   };
 
@@ -454,8 +456,8 @@ export function SearchPage() {
   return (
     <div className="flex h-full">
       {/* 鈹€鈹€ Main search area 鈹€鈹€ */}
-      <div className={`flex-1 ${shouldReduceMotion ? '' : 'transition-all duration-300'}`}>
-        <div className="mx-auto max-w-3xl px-6 py-8">
+      <div className={`min-w-0 flex-1 ${shouldReduceMotion ? '' : 'transition-all duration-300'}`}>
+        <div className="mx-auto w-full max-w-5xl px-4 py-5 sm:px-6 sm:py-8">
       {/* 鈹€鈹€ Header 鈹€鈹€ */}
       <div className="mb-8">
         <h1 className="mb-1.5 text-lg font-semibold text-text-primary">{t('nav.search')}</h1>
@@ -465,6 +467,98 @@ export function SearchPage() {
             Ctrl+K
           </kbd>
         </p>
+      </div>
+
+      {/* Primary search */}
+      <div className="mb-4">
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <div className="relative min-w-0 flex-1" ref={dropdownRef}>
+          <Input
+            ref={inputRef}
+            icon={<Search size={16} />}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const trimmedQuery = query.trim();
+                if (!trimmedQuery) return;
+
+                if (trimmedQuery !== debouncedQuery.trim()) {
+                  skipDebouncedSearchRef.current = trimmedQuery;
+                }
+
+                handleSearch(trimmedQuery);
+              }
+            }}
+            onFocus={() => setInputFocused(true)}
+            onBlur={() => {
+              setTimeout(() => setInputFocused(false), 150);
+            }}
+            placeholder={t('search.placeholder')}
+            className={`h-11 ${isDebouncing ? `${shouldReduceMotion ? '' : 'animate-pulse '}!border-accent/50` : ''}`}
+          />
+
+          {showDropdown && (
+            <div className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-lg border border-border bg-surface-1 shadow-lg">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+                <span className="flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
+                  <Clock size={11} />
+                  {t('search.recentQueries')}
+                </span>
+                <button
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={clearRecentQueries}
+                  className="flex items-center gap-1 text-[11px] text-text-tertiary hover:text-text-secondary transition-colors"
+                >
+                  <Trash2 size={10} />
+                  {t('search.clearHistory')}
+                </button>
+              </div>
+              {filteredRecent.map((rq) => (
+                <button
+                  key={rq.id}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setQuery(rq.queryText);
+                    handleSearch(rq.queryText);
+                    setInputFocused(false);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-text-secondary hover:bg-surface-2 transition-colors duration-fast"
+                >
+                  <Clock size={11} className="shrink-0 text-text-tertiary" />
+                  <span className="truncate">{rq.queryText}</span>
+                  <span className="ml-auto shrink-0 text-[10px] text-text-tertiary">
+                    {t('search.resultSuffix', { count: rq.resultCount })}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          </div>
+          <Button
+            onClick={() => handleSearch()}
+            loading={loading}
+            icon={<Search size={14} />}
+            size="lg"
+            className="w-full sm:w-auto"
+          >
+            {t('nav.search')}
+          </Button>
+          <Tooltip content={`${t('chat.askAi')} (Ctrl+Shift+A)`}>
+            <Button
+              variant="ghost"
+              size="lg"
+              icon={<BotMessageSquare size={16} />}
+              onClick={() => {
+                const msg = query.trim() || '';
+                openChatWithMessage(msg, filters.sourceIds);
+              }}
+              className="w-full shrink-0 sm:w-auto"
+            >
+              {t('chat.askAi')}
+            </Button>
+          </Tooltip>
+        </div>
       </div>
 
       {/* 鈹€鈹€ Knowledge Base Overview 鈹€鈹€ */}
@@ -556,8 +650,8 @@ export function SearchPage() {
         </div>
       )}
 
-      <div className="mb-6 rounded-xl border border-border bg-surface-1 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="mb-4 rounded-lg border border-border bg-surface-1">
+        <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
           <div>
             <div className="flex items-center gap-2">
               <Sparkles size={15} className="text-accent" />
@@ -569,14 +663,30 @@ export function SearchPage() {
               {t('search.recallDesc')}
             </p>
           </div>
-          {filters.sourceIds.length > 0 && (
-            <span className="rounded-full border border-accent/25 bg-accent/10 px-2.5 py-1 text-[11px] text-accent">
-              {t('chat.knowledgeSources')}: {activeSearchSourceNames.join(', ')}
-            </span>
-          )}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {filters.sourceIds.length > 0 && (
+              <span className="rounded-full border border-accent/25 bg-accent/10 px-2.5 py-1 text-[11px] text-accent">
+                {t('chat.knowledgeSources')}: {activeSearchSourceNames.join(', ')}
+              </span>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<ChevronDown size={13} className={`${shouldReduceMotion ? '' : 'transition-transform'} ${recallOpen ? 'rotate-180' : ''}`} />}
+              onClick={() => setRecallOpen((open) => !open)}
+            >
+              {recallOpen ? t('common.collapse') : t('common.expand')}
+            </Button>
+          </div>
         </div>
 
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <AnimatePresence initial={false}>
+        {recallOpen && (
+          <motion.div
+            {...getSoftCollapseMotion(!!shouldReduceMotion)}
+            className="overflow-hidden border-t border-border"
+          >
+        <div className="grid gap-3 p-4 md:grid-cols-2">
           <div className="md:col-span-2">
             <label className="mb-1.5 block text-[11px] font-medium text-text-tertiary">
               {t('search.recallClues')}
@@ -653,7 +763,7 @@ export function SearchPage() {
           </div>
         </div>
 
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 px-4 pb-4">
           <Button
             onClick={handleRecallWithAi}
             disabled={!recallClue.trim()}
@@ -670,6 +780,9 @@ export function SearchPage() {
             {t('search.recallSearch')}
           </Button>
         </div>
+          </motion.div>
+        )}
+        </AnimatePresence>
       </div>
 
       {/* ── Embedding model warning ── */}
@@ -688,99 +801,6 @@ export function SearchPage() {
           </Button>
         </div>
       )}
-
-      {/* 鈹€鈹€ Search input 鈹€鈹€ */}
-      <div className="mb-4">
-        <div className="flex gap-2">
-          <div className="relative w-full" ref={dropdownRef}>
-          <Input
-            ref={inputRef}
-            icon={<Search size={16} />}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                const trimmedQuery = query.trim();
-                if (!trimmedQuery) return;
-
-                if (trimmedQuery !== debouncedQuery.trim()) {
-                  skipDebouncedSearchRef.current = trimmedQuery;
-                }
-
-                handleSearch(trimmedQuery);
-              }
-            }}
-            onFocus={() => setInputFocused(true)}
-            onBlur={() => {
-              // Delay to allow click on dropdown item
-              setTimeout(() => setInputFocused(false), 150);
-            }}
-            placeholder={t('search.placeholder')}
-            className={`h-11 ${isDebouncing ? `${shouldReduceMotion ? '' : 'animate-pulse '}!border-accent/50` : ''}`}
-          />
-
-          {/* Recent queries dropdown */}
-          {showDropdown && (
-            <div className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-lg border border-border bg-surface-1 shadow-lg">
-              <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-                <span className="flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
-                  <Clock size={11} />
-                  {t('search.recentQueries')}
-                </span>
-                <button
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={clearRecentQueries}
-                  className="flex items-center gap-1 text-[11px] text-text-tertiary hover:text-text-secondary transition-colors"
-                >
-                  <Trash2 size={10} />
-                  {t('search.clearHistory')}
-                </button>
-              </div>
-              {filteredRecent.map((rq) => (
-                <button
-                  key={rq.id}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    setQuery(rq.queryText);
-                    handleSearch(rq.queryText);
-                    setInputFocused(false);
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-text-secondary hover:bg-surface-2 transition-colors duration-fast"
-                >
-                  <Clock size={11} className="shrink-0 text-text-tertiary" />
-                  <span className="truncate">{rq.queryText}</span>
-                  <span className="ml-auto shrink-0 text-[10px] text-text-tertiary">
-                    {t('search.resultSuffix', { count: rq.resultCount })}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-          </div>
-          <Button
-            onClick={() => handleSearch()}
-            loading={loading}
-            icon={<Search size={14} />}
-            size="lg"
-          >
-            {t('nav.search')}
-          </Button>
-          <Tooltip content={`${t('chat.askAi')} (Ctrl+Shift+A)`}>
-            <Button
-              variant="ghost"
-              size="lg"
-              icon={<BotMessageSquare size={16} />}
-              onClick={() => {
-                const msg = query.trim() || '';
-                openChatWithMessage(msg, filters.sourceIds);
-              }}
-              className="shrink-0"
-            >
-              {t('chat.askAi')}
-            </Button>
-          </Tooltip>
-        </div>
-      </div>
 
       {/* ── Tab bar: Knowledge Base / Conversations ── */}
       {filters.sourceIds.length > 0 && (
@@ -904,7 +924,7 @@ export function SearchPage() {
       <>
 
       {/* 鈹€鈹€ Mode toggle + filters row 鈹€鈹€ */}
-      <div className="mb-6 flex items-center justify-between gap-3">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         {/* Pill toggle */}
         <div className="inline-flex rounded-full border border-border bg-surface-1 p-0.5">
           <button
