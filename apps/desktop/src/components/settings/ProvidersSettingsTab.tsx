@@ -2,6 +2,7 @@ import { Bot, Pencil, Plus, Settings2, Star, Trash2, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { DEFAULT_SUBAGENT_TOOL_NAMES } from '../../lib/subagentTools';
 import { PROVIDER_PRESETS, type ProviderPreset } from '../../lib/providerPresets';
+import { ProviderIcon } from '../../lib/providerIcons';
 import type { AgentConfig, SaveAgentConfigInput } from '../../types/conversation';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -87,7 +88,7 @@ export function ProvidersSettingsTab({
                 onClick={() => { onSelectedPresetChange(preset); onProviderViewChange('form'); }}
                 className="flex items-start gap-3 rounded-lg border border-border bg-surface-2 p-4 text-left transition-colors duration-fast hover:border-accent hover:bg-surface-3/50 cursor-pointer"
               >
-                <span className="text-2xl">{preset.icon}</span>
+                <ProviderIcon provider={preset.provider} size="lg" />
                 <div>
                   <div className="font-medium text-text-primary">{preset.name}</div>
                   <div className="text-sm text-text-tertiary">{preset.description}</div>
@@ -136,12 +137,13 @@ export function ProvidersSettingsTab({
                   className="flex items-center justify-between rounded-lg border border-border bg-surface-2 p-4 transition-colors hover:bg-surface-3/50"
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    {config.isDefault && (
-                      <Star size={14} className="shrink-0 fill-warning text-warning" />
-                    )}
+                    <ProviderIcon provider={config.provider} />
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <p className="text-sm font-medium text-text-primary truncate">{config.name}</p>
+                        {config.isDefault && (
+                          <Star size={14} className="shrink-0 fill-warning text-warning" />
+                        )}
                         <Badge variant="default" className="text-[10px] shrink-0">
                           {providerLabels[config.provider] ?? config.provider}
                         </Badge>

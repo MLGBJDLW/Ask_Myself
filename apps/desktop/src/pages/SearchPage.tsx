@@ -42,6 +42,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { Tooltip } from '../components/ui/Tooltip';
 import { useTranslation } from '../i18n';
 import { useDebounce } from '../lib/useDebounce';
+import { getModelStatus } from '../lib/modelStatusCache';
 import { getSoftCollapseMotion, INSTANT_TRANSITION } from '../lib/uiMotion';
 
 /* ------------------------------------------------------------------ */
@@ -286,10 +287,9 @@ export function SearchPage() {
 
   // ── Check embedding model status ──────────────────────────────────
   useEffect(() => {
-    // TODO: migrate to modelStatusCache
     api.getEmbedderConfig().then((cfg) => {
       if (cfg.provider === 'local') {
-        api.checkLocalModel(cfg.localModel).then((ready) => {
+        getModelStatus('embed', cfg.localModel ?? '', () => api.checkLocalModel(cfg.localModel)).then((ready) => {
           setEmbeddingModelMissing(!ready);
         }).catch(() => setEmbeddingModelMissing(true));
       } else {

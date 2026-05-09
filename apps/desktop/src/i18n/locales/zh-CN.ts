@@ -464,6 +464,8 @@ export const zhCN: TranslationKeys = {
   'settings.appearance.theme.midnight': '午夜',
   'settings.appearance.language': '语言',
   'settings.appearance.language.description': '选择显示语言',
+  'settings.developerMode': '开发者模式',
+  'settings.developerMode.description': '显示 Agent 质量评测等内部诊断选项。',
 
   // Settings - Tab labels (merged)
   'settings.tabModelsEmbedding': '模型与嵌入',
@@ -578,6 +580,9 @@ export const zhCN: TranslationKeys = {
   'chat.toolRunning': '正在运行工具...',
   'chat.toolDone': '工具执行完成',
   'chat.toolError': '工具执行失败',
+  'chat.fileDiffCreated': '已创建',
+  'chat.fileDiffModified': '已修改',
+  'chat.fileDiffLinesOmitted': '还有 {count} 行已隐藏',
   'chat.thinking': '思考中...',
   'chat.stop': '停止',
   'chat.retry': '重试',

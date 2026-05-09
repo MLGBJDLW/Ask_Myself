@@ -11,6 +11,7 @@ use crate::error::CoreError;
 use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
 
 use super::create_file_tool::resolve_and_validate;
+use super::diff_stats::diff_stats_from_diff;
 use super::document_utils::{
     edit_guidance_for_path, generated_document_mime, is_binary_file_error,
 };
@@ -21,6 +22,8 @@ const DEF_JSON: &str = include_str!("../../prompts/tools/edit_file.json");
 
 /// Maximum file size we will read (10 MB). Prevents OOM on huge files.
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+const DIFF_CONTEXT_LINES: usize = 3;
+const MAX_CREATE_DIFF_LINES: usize = 400;
 
 #[derive(Deserialize)]
 struct EditFileArgs {
@@ -154,6 +157,196 @@ fn line_range_bounds(
         line_starts[end]
     };
     Ok((start_byte, end_byte))
+}
+
+fn text_lines(content: &str) -> Vec<&str> {
+    if content.is_empty() {
+        Vec::new()
+    } else {
+        content.lines().collect()
+    }
+}
+
+fn line_index_at_start(content: &str, byte_offset: usize) -> usize {
+    let end = byte_offset.min(content.len());
+    content.as_bytes()[..end]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+}
+
+fn line_index_at_end_exclusive(content: &str, end_offset: usize) -> usize {
+    if content.is_empty() || end_offset == 0 {
+        return 0;
+    }
+    let end = end_offset.min(content.len());
+    let before_last_byte = end.saturating_sub(1);
+    content.as_bytes()[..before_last_byte]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+}
+
+fn checkpoint_artifact_with_diff(
+    checkpoint: &crate::file_checkpoint::FileCheckpoint,
+    bytes_after: Option<u64>,
+    diff: serde_json::Value,
+    replacements: Option<usize>,
+) -> serde_json::Value {
+    let mut artifact = checkpoint_artifact(checkpoint, bytes_after);
+    if let Some(object) = artifact.as_object_mut() {
+        object.insert(
+            "diffStats".to_string(),
+            diff_stats_from_diff(&diff, replacements),
+        );
+        object.insert("diff".to_string(), diff);
+    }
+    artifact
+}
+
+fn replacement_diff_artifact(
+    path: &str,
+    old_content: &str,
+    new_content: &str,
+    byte_offset: usize,
+    matched_len: usize,
+    inserted_len: usize,
+) -> serde_json::Value {
+    let old_lines = text_lines(old_content);
+    let new_lines = text_lines(new_content);
+
+    let old_start_idx = line_index_at_start(old_content, byte_offset);
+    let old_end_idx = if old_lines.is_empty() {
+        0
+    } else {
+        line_index_at_end_exclusive(old_content, byte_offset + matched_len)
+            .min(old_lines.len().saturating_sub(1))
+    };
+    let old_start_idx = old_start_idx.min(old_lines.len().saturating_sub(1));
+    let old_changed_count = if old_lines.is_empty() {
+        0
+    } else {
+        old_end_idx.saturating_sub(old_start_idx) + 1
+    };
+
+    let new_start_idx = line_index_at_start(new_content, byte_offset);
+    let new_changed_count = if inserted_len == 0 && new_content.is_empty() {
+        0
+    } else if inserted_len == 0 {
+        usize::from(!new_lines.is_empty())
+    } else if new_lines.is_empty() {
+        0
+    } else {
+        let new_end_idx = line_index_at_end_exclusive(new_content, byte_offset + inserted_len)
+            .min(new_lines.len().saturating_sub(1));
+        new_end_idx.saturating_sub(new_start_idx.min(new_lines.len().saturating_sub(1))) + 1
+    };
+    let new_start_idx = new_start_idx.min(new_lines.len().saturating_sub(1));
+
+    let context_from = old_start_idx.saturating_sub(DIFF_CONTEXT_LINES);
+    let before_count = old_start_idx.saturating_sub(context_from);
+    let after_old_start = old_start_idx.saturating_add(old_changed_count);
+    let after_new_start = new_start_idx.saturating_add(new_changed_count);
+    let after_count = old_lines
+        .len()
+        .saturating_sub(after_old_start)
+        .min(new_lines.len().saturating_sub(after_new_start))
+        .min(DIFF_CONTEXT_LINES);
+
+    let mut lines = Vec::new();
+    for idx in context_from..old_start_idx {
+        if let Some(content) = old_lines.get(idx) {
+            lines.push(serde_json::json!({
+                "type": "context",
+                "oldLine": idx + 1,
+                "newLine": idx + 1,
+                "content": content,
+            }));
+        }
+    }
+
+    for idx in old_start_idx..old_start_idx.saturating_add(old_changed_count) {
+        if let Some(content) = old_lines.get(idx) {
+            lines.push(serde_json::json!({
+                "type": "deletion",
+                "oldLine": idx + 1,
+                "newLine": null,
+                "content": content,
+            }));
+        }
+    }
+
+    for idx in new_start_idx..new_start_idx.saturating_add(new_changed_count) {
+        if let Some(content) = new_lines.get(idx) {
+            lines.push(serde_json::json!({
+                "type": "addition",
+                "oldLine": null,
+                "newLine": idx + 1,
+                "content": content,
+            }));
+        }
+    }
+
+    for offset in 0..after_count {
+        let old_idx = after_old_start + offset;
+        let new_idx = after_new_start + offset;
+        if let Some(content) = new_lines.get(new_idx) {
+            lines.push(serde_json::json!({
+                "type": "context",
+                "oldLine": old_idx + 1,
+                "newLine": new_idx + 1,
+                "content": content,
+            }));
+        }
+    }
+
+    serde_json::json!({
+        "path": path,
+        "operation": "str_replace",
+        "additions": new_changed_count,
+        "deletions": old_changed_count,
+        "hunks": [{
+            "oldStart": context_from + 1,
+            "newStart": context_from + 1,
+            "oldLines": before_count + old_changed_count + after_count,
+            "newLines": before_count + new_changed_count + after_count,
+            "lines": lines,
+        }]
+    })
+}
+
+fn create_diff_artifact(path: &str, file_content: &str) -> serde_json::Value {
+    let all_lines = text_lines(file_content);
+    let displayed_count = all_lines.len().min(MAX_CREATE_DIFF_LINES);
+    let lines: Vec<serde_json::Value> = all_lines
+        .iter()
+        .take(displayed_count)
+        .enumerate()
+        .map(|(idx, content)| {
+            serde_json::json!({
+                "type": "addition",
+                "oldLine": null,
+                "newLine": idx + 1,
+                "content": content,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "path": path,
+        "operation": "create",
+        "additions": all_lines.len(),
+        "deletions": 0,
+        "truncated": displayed_count < all_lines.len(),
+        "omittedLineCount": all_lines.len().saturating_sub(displayed_count),
+        "hunks": [{
+            "oldStart": 0,
+            "newStart": 1,
+            "oldLines": 0,
+            "newLines": all_lines.len(),
+            "lines": lines,
+        }]
+    })
 }
 
 fn normalize_line_endings_with_map(input: &str) -> (String, Vec<usize>) {
@@ -459,6 +652,14 @@ impl EditFileTool {
                     }
 
                     let snippet = snippet_around(&new_content, byte_offset, new_str.len());
+                    let diff = replacement_diff_artifact(
+                        &args.path,
+                        &content,
+                        &new_content,
+                        byte_offset,
+                        matched_len,
+                        new_str.len(),
+                    );
                     Ok(ToolResult {
                         call_id,
                         content: format!(
@@ -466,9 +667,11 @@ impl EditFileTool {
                             args.path, checkpoint.id, snippet
                         ),
                         is_error: false,
-                        artifacts: Some(checkpoint_artifact(
+                        artifacts: Some(checkpoint_artifact_with_diff(
                             &checkpoint,
                             Some(new_content.len() as u64),
+                            diff,
+                            Some(1),
                         )),
                     })
                 }
@@ -544,6 +747,7 @@ impl EditFileTool {
                     }
 
                     let size = file_content.len();
+                    let diff = create_diff_artifact(&args.path, file_content);
                     Ok(ToolResult {
                         call_id,
                         content: format!(
@@ -551,7 +755,12 @@ impl EditFileTool {
                             args.path, size, checkpoint.id
                         ),
                         is_error: false,
-                        artifacts: Some(checkpoint_artifact(&checkpoint, Some(size as u64))),
+                        artifacts: Some(checkpoint_artifact_with_diff(
+                            &checkpoint,
+                            Some(size as u64),
+                            diff,
+                            Some(0),
+                        )),
                     })
                 }
 
@@ -623,13 +832,24 @@ mod tests {
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert!(result.content.contains("Successfully replaced"));
+        let artifact = result.artifacts.as_ref().unwrap();
+        assert_eq!(artifact["diff"]["path"], file.to_string_lossy().as_ref());
+        assert_eq!(artifact["diff"]["operation"], "str_replace");
+        assert_eq!(artifact["diff"]["additions"], 1);
+        assert_eq!(artifact["diff"]["deletions"], 1);
+        assert_eq!(artifact["diff"]["hunks"][0]["lines"][0]["type"], "deletion");
+        assert_eq!(artifact["diff"]["hunks"][0]["lines"][1]["type"], "addition");
+        assert_eq!(artifact["diffStats"]["kind"], "diffStats");
+        assert_eq!(artifact["diffStats"]["filesChanged"], 1);
+        assert_eq!(artifact["diffStats"]["additions"], 1);
+        assert_eq!(artifact["diffStats"]["deletions"], 1);
+        assert_eq!(artifact["diffStats"]["hunks"], 1);
+        assert_eq!(artifact["diffStats"]["replacements"], 1);
 
         let content = std::fs::read_to_string(&file).unwrap();
         assert_eq!(content, "hi world\ngoodbye world\n");
 
-        let checkpoint_id = result.artifacts.as_ref().unwrap()["checkpoint"]["id"]
-            .as_str()
-            .unwrap();
+        let checkpoint_id = artifact["checkpoint"]["id"].as_str().unwrap();
         db.restore_file_checkpoint(checkpoint_id).unwrap();
         let restored = std::fs::read_to_string(&file).unwrap();
         assert_eq!(restored, "hello world\ngoodbye world\n");
@@ -806,6 +1026,14 @@ mod tests {
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert!(result.content.contains("Created file"));
+        let artifact = result.artifacts.as_ref().unwrap();
+        assert_eq!(artifact["diff"]["operation"], "create");
+        assert_eq!(artifact["diff"]["additions"], 2);
+        assert_eq!(artifact["diff"]["deletions"], 0);
+        assert_eq!(artifact["diffStats"]["operation"], "create");
+        assert_eq!(artifact["diffStats"]["additions"], 2);
+        assert_eq!(artifact["diffStats"]["deletions"], 0);
+        assert_eq!(artifact["diffStats"]["replacements"], 0);
 
         let content = std::fs::read_to_string(&file).unwrap();
         assert_eq!(content, "# New File\nContent here.");

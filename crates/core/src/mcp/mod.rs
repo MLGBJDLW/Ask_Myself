@@ -834,46 +834,12 @@ impl McpManager {
                 .map(|server| server.name.as_str())
                 .unwrap_or("mcp");
             for tool_info in tools {
-                let mut registry_name = tool_info.name.clone();
+                let server_slug = mcp_registry_slug(server_name, "server");
+                let tool_slug = mcp_registry_slug(&tool_info.name, "tool");
+                let mut registry_name = format!("mcp__{server_slug}__{tool_slug}");
                 if registry.contains(&registry_name) {
-                    let server_slug = server_name
-                        .chars()
-                        .map(|ch| match ch {
-                            'a'..='z' | '0'..='9' => ch,
-                            'A'..='Z' => ch.to_ascii_lowercase(),
-                            _ => '_',
-                        })
-                        .collect::<String>()
-                        .trim_matches('_')
-                        .to_string();
-                    let tool_slug = tool_info
-                        .name
-                        .chars()
-                        .map(|ch| match ch {
-                            'a'..='z' | '0'..='9' => ch,
-                            'A'..='Z' => ch.to_ascii_lowercase(),
-                            _ => '_',
-                        })
-                        .collect::<String>()
-                        .trim_matches('_')
-                        .to_string();
-                    registry_name = format!(
-                        "mcp__{}__{}",
-                        if server_slug.is_empty() {
-                            "server"
-                        } else {
-                            &server_slug
-                        },
-                        if tool_slug.is_empty() {
-                            "tool"
-                        } else {
-                            &tool_slug
-                        }
-                    );
-                    if registry.contains(&registry_name) {
-                        registry_name =
-                            format!("{registry_name}__{}", &server_id[..8.min(server_id.len())]);
-                    }
+                    registry_name =
+                        format!("{registry_name}__{}", &server_id[..8.min(server_id.len())]);
                 }
                 let mcp_tool = McpTool::new(
                     tool_info,
@@ -886,6 +852,24 @@ impl McpManager {
             }
         }
         Ok(())
+    }
+}
+
+fn mcp_registry_slug(value: &str, fallback: &str) -> String {
+    let slug = value
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | '0'..='9' => ch,
+            'A'..='Z' => ch.to_ascii_lowercase(),
+            _ => '_',
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if slug.is_empty() {
+        fallback.to_string()
+    } else {
+        slug
     }
 }
 
@@ -1019,6 +1003,13 @@ mod tests {
             Some(r#"["-y","@modelcontextprotocol/server-filesystem","D:/vault"]"#)
         );
         assert_eq!(server.env_json.as_deref(), Some(r#"{"API_KEY":"secret"}"#));
+    }
+
+    #[test]
+    fn mcp_registry_slug_normalizes_names() {
+        assert_eq!(mcp_registry_slug("Web Search", "server"), "web_search");
+        assert_eq!(mcp_registry_slug("search.query", "tool"), "search_query");
+        assert_eq!(mcp_registry_slug("!!!", "tool"), "tool");
     }
 
     #[test]

@@ -1,0 +1,34 @@
+{
+  "name": "judge_subagent_results",
+  "description": "Adjudicate or rank multiple delegated worker results using a structured rubric. Use this after parallel subagents return when you need a separate judging pass instead of asking the main worker to merge results implicitly.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "candidates": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 8,
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "label": { "type": "string" },
+            "result": { "type": "string" },
+            "evidence_summary": { "type": "string" },
+            "concerns": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["id", "result"],
+          "additionalProperties": false
+        }
+      },
+      "task": { "type": "string" },
+      "rubric": { "type": "array", "items": { "type": "string" } },
+      "decision_mode": { "type": "string" },
+      "required_winner_count": { "type": "integer", "minimum": 1, "maximum": 4 },
+      "expected_output": { "type": "string" },
+      "parallel_group": { "type": "string" }
+    },
+    "required": ["candidates"],
+    "additionalProperties": false
+  }
+}

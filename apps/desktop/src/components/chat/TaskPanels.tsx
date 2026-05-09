@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, Circle, ClipboardList, GitBranch, Loader2, ShieldCheck, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Circle, ClipboardList, GitBranch, Loader2, ShieldCheck, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from '../../i18n';
 import type {
@@ -56,6 +56,15 @@ function getVerificationCounts(verification: VerificationArtifact) {
     pending: verification.counts?.pending ?? derived.pending,
     skipped: verification.counts?.skipped ?? derived.skipped,
   };
+}
+
+function getCurrentPlanStep(plan: PlanArtifact): PlanStepArtifact | null {
+  return (
+    plan.steps.find(step => step.status === 'in_progress')
+    ?? plan.steps.find(step => step.status === 'pending')
+    ?? plan.steps[plan.steps.length - 1]
+    ?? null
+  );
 }
 
 function getSubtaskCounts(subtasks: SubtaskRunArtifact[]) {
@@ -196,22 +205,32 @@ function SubtaskRow({ subtask }: { subtask: SubtaskRunArtifact }) {
 }
 
 export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
+  const [open, setOpen] = useState(false);
   const counts = getPlanCounts(plan);
-  const percent = counts.total > 0
-    ? Math.min(100, Math.max(0, Math.round((counts.completed / counts.total) * 100)))
-    : 0;
+  const current = getCurrentPlanStep(plan);
+  let currentIcon = <Circle className="h-3 w-3 text-text-tertiary" />;
+  if (current?.status === 'completed') {
+    currentIcon = <CheckCircle2 className="h-3 w-3 text-success" />;
+  } else if (current?.status === 'in_progress') {
+    currentIcon = <Loader2 className="h-3 w-3 animate-spin text-accent" />;
+  }
 
   return (
     <div>
-      <div
-        className="flex items-center gap-2"
-        aria-label={`Plan progress ${counts.completed} of ${counts.total}`}
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-surface-1"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
       >
-        <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-2">
-          <div
-            className="h-full rounded-full bg-accent transition-[width] duration-300"
-            style={{ width: `${percent}%` }}
-          />
+        <span className="shrink-0">{currentIcon}</span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-medium text-text-primary">
+            {current?.title ?? plan.title ?? ''}
+          </div>
+          {current?.notes && (
+            <div className="mt-0.5 truncate text-[11px] text-text-tertiary">{current.notes}</div>
+          )}
         </div>
         <span
           data-testid="task-board-progress"
@@ -219,13 +238,16 @@ export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
         >
           {counts.completed}/{counts.total}
         </span>
-      </div>
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
 
-      <ol className="mt-1.5 max-h-28 space-y-1 overflow-y-auto pr-1">
-        {plan.steps.map((step, index) => (
-          <PlanProgressStepRow key={step.id || `${step.title}-${index}`} step={step} />
-        ))}
-      </ol>
+      {open && (
+        <ol className="mt-1.5 max-h-32 space-y-1 overflow-y-auto pr-1">
+          {plan.steps.map((step, index) => (
+            <PlanProgressStepRow key={step.id || `${step.title}-${index}`} step={step} />
+          ))}
+        </ol>
+      )}
     </div>
   );
 }

@@ -462,6 +462,8 @@ export const zhTW: TranslationKeys = {
   'settings.appearance.theme.midnight': '午夜',
   'settings.appearance.language': '語言',
   'settings.appearance.language.description': '選擇顯示語言',
+  'settings.developerMode': '開發者模式',
+  'settings.developerMode.description': '顯示 Agent 品質評測等內部診斷選項。',
 
   // Settings - Tab labels (merged)
   'settings.tabModelsEmbedding': '模型與嵌入',
@@ -576,6 +578,9 @@ export const zhTW: TranslationKeys = {
   'chat.toolRunning': 'Running tool...',
   'chat.toolDone': 'Tool completed',
   'chat.toolError': 'Tool failed',
+  'chat.fileDiffCreated': '已建立',
+  'chat.fileDiffModified': '已修改',
+  'chat.fileDiffLinesOmitted': '還有 {count} 行已隱藏',
   'chat.thinking': 'Thinking...',
   'chat.stop': 'Stop',
   'chat.retry': 'Retry',

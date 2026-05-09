@@ -37,6 +37,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { VideoProcessingProgress } from '../components/media/VideoProcessingProgress';
 import { SourceFileTree } from '../components/sources/SourceFileTree';
 import { undoableAction } from '../lib/undoToast';
+import { getModelStatus } from '../lib/modelStatusCache';
 import { getSoftCollapseMotion } from '../lib/uiMotion';
 
 /* ------------------------------------------------------------------ */
@@ -210,9 +211,8 @@ export function SourcesPage() {
   }, [loadSources]);
 
   useEffect(() => {
-    // TODO: migrate to modelStatusCache
     api.getVideoConfig()
-      .then(config => config && api.checkWhisperModel(config))
+      .then(config => config && getModelStatus('whisper', JSON.stringify(config), () => api.checkWhisperModel(config)))
       .then(exists => setWhisperModelMissing(exists === false))
       .catch(() => {}); // Video feature may not be compiled
   }, []);

@@ -98,6 +98,76 @@ test.beforeEach(async ({ page }) => {
         thinking: null,
         imageAttachments: null,
       },
+      {
+        id: 'm-assistant-edit-file',
+        conversationId: conversation.id,
+        role: 'assistant',
+        content: '',
+        toolCallId: null,
+        toolCalls: [{
+          id: 'call-edit-file',
+          name: 'edit_file',
+          arguments: JSON.stringify({
+            path: 'src/example.ts',
+            action: 'str_replace',
+            old_str: 'const answer = 42;',
+            new_str: 'const answer = 43;',
+          }),
+        }],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 2,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-tool-edit-file',
+        conversationId: conversation.id,
+        role: 'tool',
+        content: 'Successfully replaced text in src/example.ts',
+        toolCallId: 'call-edit-file',
+        toolCalls: [],
+        artifacts: {
+          kind: 'fileCheckpoint',
+          checkpoint: {
+            id: 'checkpoint-edit-file',
+            conversationId: conversation.id,
+            toolCallId: 'call-edit-file',
+            toolName: 'edit_file',
+            operation: 'str_replace',
+            path: 'src/example.ts',
+            absolutePath: 'D:/workspace/src/example.ts',
+            existedBefore: true,
+            bytesBefore: 18,
+            hashBefore: 'hash-before',
+            createdAt: nowIso,
+          },
+          bytesAfter: 18,
+          diff: {
+            path: 'src/example.ts',
+            operation: 'str_replace',
+            additions: 1,
+            deletions: 1,
+            hunks: [{
+              oldStart: 1,
+              newStart: 1,
+              oldLines: 2,
+              newLines: 2,
+              lines: [
+                { type: 'deletion', oldLine: 1, newLine: null, content: 'const answer = 42;' },
+                { type: 'addition', oldLine: null, newLine: 1, content: 'const answer = 43;' },
+                { type: 'context', oldLine: 2, newLine: 2, content: 'export default answer;' },
+              ],
+            }],
+          },
+        },
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 3,
+        thinking: null,
+        imageAttachments: null,
+      },
     ];
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handlerId: number }>();
@@ -293,6 +363,10 @@ test('lower plan progress panel renders only the update_plan checklist', async (
   const board = page.getByTestId('task-board');
   await expect(board).toBeVisible();
   await expect(board.getByTestId('task-board-progress')).toHaveText('1/3');
+  await expect(board).toContainText('Apply change');
+  await expect(board).not.toContainText('Verify result');
+
+  await board.getByRole('button').click();
   await expect(board).toContainText('Inspect context');
   await expect(board).toContainText('Apply change');
   await expect(board).toContainText('Verify result');
@@ -311,4 +385,15 @@ test('lower plan progress panel ignores automatic task run plans', async ({ page
 
   await expect(page.getByTestId('task-board')).toHaveCount(0);
   await expect(page.getByText('Answer directly unless a tool is clearly needed for accuracy.')).toHaveCount(0);
+});
+
+test('edit_file tool result renders a structured diff preview', async ({ page }) => {
+  await page.goto('/chat/conv-plan-progress');
+
+  await expect(page.getByText('Modified')).toBeVisible();
+  await expect(page.getByText('example.ts')).toBeVisible();
+  await expect(page.getByText('+1').first()).toBeVisible();
+  await expect(page.getByText('-1').first()).toBeVisible();
+  await expect(page.getByText('const answer = 42;')).toBeVisible();
+  await expect(page.getByText('const answer = 43;')).toBeVisible();
 });

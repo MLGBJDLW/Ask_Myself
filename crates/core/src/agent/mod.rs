@@ -114,9 +114,8 @@ fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
         "list_dir" | "list_documents" | "list_sources" => {
             summarize_lines(content, 60, 10, MAX_TOOL_RESULT_CONTEXT_CHARS)
         }
-        "retrieve_evidence" | "search_knowledge_base" | "search_playbooks" => {
-            truncate_tool_result(content, 6_000)
-        }
+        "search_knowledge_base" => truncate_tool_result(content, 3_500),
+        "retrieve_evidence" | "search_playbooks" => truncate_tool_result(content, 6_000),
         _ => truncate_tool_result(content, MAX_TOOL_RESULT_CONTEXT_CHARS),
     }
 }
@@ -2393,6 +2392,8 @@ impl AgentExecutor {
             }
 
             // Build futures for all tool calls and execute concurrently.
+            let offered_tool_names: HashSet<String> =
+                tool_defs.iter().map(|tool| tool.name.clone()).collect();
             let tool_futures: Vec<_> = tool_calls
                 .iter()
                 .map(|tc| {
@@ -2408,10 +2409,25 @@ impl AgentExecutor {
                     let approval_tx = tx.clone();
                     let progress_call_id = tc.id.clone();
                     let progress_tool_name = tc.name.clone();
+                    let offered_tool_names = &offered_tool_names;
                     async move {
                         // -- Confirmation gate for destructive tools --------
                         let parsed_args: serde_json::Value =
                             serde_json::from_str(&tc.arguments).unwrap_or_default();
+                        if self.config.dynamic_tool_visibility
+                            && !offered_tool_names.contains(&tc.name)
+                        {
+                            let blocked = crate::tools::ToolResult {
+                                call_id: tc.id.clone(),
+                                content: format!(
+                                    "Tool '{}' is not available in the current tool policy for this turn. Use an offered tool or ask the user to change the request scope.",
+                                    tc.name
+                                ),
+                                is_error: true,
+                                artifacts: None,
+                            };
+                            return (tc, tool_timeout, Ok(Ok(blocked)), Duration::ZERO);
+                        }
                         let tool_requires_confirm =
                             self.tools.requires_confirmation(&tc.name, &parsed_args);
                         let shell_requires_confirm = tc.name == "run_shell"

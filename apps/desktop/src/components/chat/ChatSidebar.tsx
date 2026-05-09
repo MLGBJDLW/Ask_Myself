@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Trash2, Pencil, MessageCircle, Check, X, Search, Star, MoreVertical, FolderOpen, FolderInput } from 'lucide-react';
+import { Plus, Trash2, Pencil, MessageCircle, Check, X, Search, Star, MoreVertical, FolderInput } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
 import { relativeTime } from '../../lib/relativeTime';
@@ -11,6 +11,7 @@ import { EmptyState } from '../ui/EmptyState';
 import { ProjectSwitcher, useActiveProject } from './ProjectSwitcher';
 import type { Project } from '../../types/project';
 import * as api from '../../lib/api';
+import { ProjectIcon } from '../../lib/projectIcons';
 
 import type { Conversation } from '../../types/conversation';
 
@@ -649,7 +650,7 @@ export function ChatSidebar({
                   hover:text-text-primary transition-colors cursor-pointer flex items-center gap-1.5"
                 onClick={() => handleMoveToProject(moveMenuConvId, p.id)}
               >
-                <FolderOpen className="h-3 w-3" />
+                <ProjectIcon icon={p.icon} color={p.color} className="h-4 w-4" size={10} />
                 {p.name}
               </button>
             ))

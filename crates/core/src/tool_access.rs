@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::approval::ApprovalRisk;
@@ -18,11 +20,39 @@ pub struct ToolAccessInfo {
 }
 
 pub fn tool_access_map() -> Vec<ToolAccessInfo> {
-    let registry = default_tool_registry();
-    let mut tools = registry
-        .tool_names()
+    tool_access_map_for_names(default_tool_registry().tool_names())
+}
+
+pub fn tool_access_map_with_extra_names<I, S>(extra_names: I) -> Vec<ToolAccessInfo>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut names = default_tool_registry().tool_names();
+    names.extend(
+        extra_names
+            .into_iter()
+            .map(|name| name.as_ref().to_string()),
+    );
+    tool_access_map_for_names(names)
+}
+
+pub fn tool_access_map_for_names<I, S>(names: I) -> Vec<ToolAccessInfo>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut seen = BTreeSet::new();
+    let mut tools = names
         .into_iter()
-        .map(|name| describe_tool_access(&name))
+        .filter_map(|name| {
+            let name = name.as_ref().to_string();
+            if seen.insert(name.clone()) {
+                Some(describe_tool_access(&name))
+            } else {
+                None
+            }
+        })
         .collect::<Vec<_>>();
     tools.sort_by(|a, b| {
         risk_rank(b.risk_level)
@@ -41,7 +71,7 @@ fn risk_rank(risk: ApprovalRisk) -> u8 {
     }
 }
 
-fn describe_tool_access(name: &str) -> ToolAccessInfo {
+pub fn describe_tool_access(name: &str) -> ToolAccessInfo {
     let (
         category,
         can_read,
@@ -62,7 +92,7 @@ fn describe_tool_access(name: &str) -> ToolAccessInfo {
             ApprovalRisk::High,
             "Executes local shell commands and can affect files, processes, and network.",
         ),
-        "edit_file" => (
+        "edit_file" | "multi_edit" => (
             "filesystem",
             true,
             true,
@@ -70,7 +100,7 @@ fn describe_tool_access(name: &str) -> ToolAccessInfo {
             false,
             true,
             ApprovalRisk::High,
-            "Modifies existing files and should pass through the write approval gate.",
+            "Modifies existing text files and should pass through the write approval gate.",
         ),
         "create_file" | "write_note" => (
             "filesystem",
@@ -92,6 +122,16 @@ fn describe_tool_access(name: &str) -> ToolAccessInfo {
             ApprovalRisk::Medium,
             "Persists agent output as a reusable local artifact.",
         ),
+        "prepare_document_tools" => (
+            "document_tooling",
+            true,
+            true,
+            true,
+            true,
+            true,
+            ApprovalRisk::Medium,
+            "Prepares local document-processing helpers and may install or verify optional tooling.",
+        ),
         "manage_source" => (
             "source_management",
             true,
@@ -102,7 +142,7 @@ fn describe_tool_access(name: &str) -> ToolAccessInfo {
             ApprovalRisk::Medium,
             "Adds, updates, or removes knowledge sources.",
         ),
-        "reindex_document" | "compile_document" => (
+        "reindex_document" => (
             "source_management",
             true,
             true,
@@ -111,6 +151,16 @@ fn describe_tool_access(name: &str) -> ToolAccessInfo {
             false,
             ApprovalRisk::Low,
             "Refreshes derived knowledge indexes without directly editing user files.",
+        ),
+        "compile_document" => (
+            "document_analysis",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads document compilation status and diagnostics.",
         ),
         "fetch_url" => (
             "web",
@@ -142,7 +192,8 @@ fn describe_tool_access(name: &str) -> ToolAccessInfo {
             ApprovalRisk::Low,
             "Reads local Office/PDF/document content for inspection and comparison.",
         ),
-        "read_file" | "read_files" | "list_dir" => (
+        "read_file" | "read_files" | "list_dir" | "glob_files" | "search_files"
+        | "grep_files" => (
             "filesystem",
             true,
             false,
@@ -152,7 +203,34 @@ fn describe_tool_access(name: &str) -> ToolAccessInfo {
             ApprovalRisk::Low,
             "Reads local files or directories.",
         ),
-        "search" | "retrieve_evidence" | "list_sources" | "list_documents" | "date_search" => (
+        "run_health_check" | "get_statistics" => (
+            "knowledge_health",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads knowledge-base diagnostics, coverage, and storage statistics.",
+        ),
+        "agent_harness_dry_run" => (
+            "agent_harness",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Runs a read-only readiness preview of local agent configuration and tool availability.",
+        ),
+        "search_knowledge_base"
+        | "retrieve_evidence"
+        | "list_sources"
+        | "list_documents"
+        | "search_by_date"
+        | "get_chunk_context"
+        | "query_knowledge_graph"
+        | "get_related_concepts" => (
             "knowledge",
             true,
             false,
@@ -162,7 +240,27 @@ fn describe_tool_access(name: &str) -> ToolAccessInfo {
             ApprovalRisk::Low,
             "Reads indexed local knowledge as evidence.",
         ),
-        "agent_memory" | "update_scratchpad" | "manage_skill" => (
+        "search_playbooks" | "search_sessions" => (
+            "memory",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads saved sessions, playbooks, or reusable local working context.",
+        ),
+        "manage_playbook" | "submit_feedback" => (
+            "memory",
+            true,
+            true,
+            false,
+            false,
+            true,
+            ApprovalRisk::Medium,
+            "Changes reusable playbooks, feedback, or knowledge-workflow records.",
+        ),
+        "manage_agent_memory" | "update_scratchpad" | "manage_skill" => (
             "memory",
             true,
             true,
@@ -172,7 +270,37 @@ fn describe_tool_access(name: &str) -> ToolAccessInfo {
             ApprovalRisk::Medium,
             "Changes persistent agent memory, skills, or working notes.",
         ),
-        "mcp_tool" => (
+        "spawn_subagent" | "spawn_subagent_batch" => (
+            "delegation",
+            true,
+            true,
+            true,
+            true,
+            true,
+            ApprovalRisk::Medium,
+            "Delegates bounded work to another agent with narrowed tool and source access.",
+        ),
+        "judge_subagent_results" => (
+            "delegation",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads and adjudicates subagent outputs without directly changing user data.",
+        ),
+        tool if is_builtin_web_search_mcp_tool(tool) => (
+            "web",
+            true,
+            false,
+            false,
+            true,
+            false,
+            ApprovalRisk::Low,
+            "Reads web search results through the built-in web search MCP server.",
+        ),
+        tool if tool == "mcp_tool" || tool.starts_with("mcp__") => (
             "mcp",
             true,
             true,
@@ -191,6 +319,16 @@ fn describe_tool_access(name: &str) -> ToolAccessInfo {
             false,
             ApprovalRisk::Low,
             "Records structured task progress or verification artifacts.",
+        ),
+        "tool_search" => (
+            "tool_catalog",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads the built-in tool catalog to choose an appropriate tool.",
         ),
         _ => (
             "core",
@@ -215,6 +353,10 @@ fn describe_tool_access(name: &str) -> ToolAccessInfo {
         risk_level,
         risk_reason: reason.to_string(),
     }
+}
+
+fn is_builtin_web_search_mcp_tool(name: &str) -> bool {
+    name == "mcp__web_search__search" || name.starts_with("mcp__web_search__")
 }
 
 #[cfg(test)]
@@ -243,9 +385,47 @@ mod tests {
         assert!(fetch.can_access_network);
         assert!(!fetch.can_write);
 
+        let search = by_name("search_knowledge_base");
+        assert_eq!(search.category, "knowledge");
+        assert!(!search.can_write);
+
+        let memory = by_name("manage_agent_memory");
+        assert_eq!(memory.category, "memory");
+        assert!(memory.can_write);
+
         let office = by_name("get_document_info");
         assert_eq!(office.category, "document_analysis");
         assert!(office.can_read);
         assert!(!office.can_write);
+    }
+
+    #[test]
+    fn extra_runtime_tools_are_classified() {
+        let map = tool_access_map_with_extra_names([
+            "spawn_subagent",
+            "judge_subagent_results",
+            "mcp__web_search__search",
+            "mcp__unknown__dangerous",
+        ]);
+        let by_name = |name: &str| {
+            map.iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("missing tool {name}"))
+        };
+
+        assert_eq!(by_name("spawn_subagent").category, "delegation");
+        assert_eq!(
+            by_name("judge_subagent_results").risk_level,
+            ApprovalRisk::Low
+        );
+
+        let web_search = by_name("mcp__web_search__search");
+        assert_eq!(web_search.category, "web");
+        assert!(web_search.can_access_network);
+        assert!(!web_search.can_write);
+
+        let unknown_mcp = by_name("mcp__unknown__dangerous");
+        assert_eq!(unknown_mcp.category, "mcp");
+        assert_eq!(unknown_mcp.risk_level, ApprovalRisk::High);
     }
 }

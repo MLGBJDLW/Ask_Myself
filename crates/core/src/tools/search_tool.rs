@@ -17,6 +17,8 @@ use super::{
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/search_knowledge_base.json");
+const MAX_QUERY_VARIANTS: usize = 2;
+const RESULT_PREVIEW_MAX_CHARS: usize = 700;
 
 /// Tool that searches the local knowledge base using full-text and vector
 /// search, returning evidence cards with content, source paths, and scores.
@@ -62,7 +64,7 @@ fn multi_query_rrf_merge(ranked_lists: &[Vec<(String, f32)>], k: f32) -> Vec<(St
 fn search_expected_format() -> serde_json::Value {
     serde_json::json!({
         "query": "single search string",
-        "queries": ["multiple search strings"],
+        "queries": ["at most two focused search strings"],
         "limit": "integer from 1 to 20",
         "source_ids": ["optional source UUIDs"],
         "file_types": ["markdown", "plaintext", "log", "pdf", "docx", "excel", "pptx"],
@@ -96,6 +98,39 @@ fn format_search_artifacts(
     })
 }
 
+fn truncate_preview(content: &str, max_chars: usize) -> String {
+    let trimmed = content.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+
+    let mut preview: String = trimmed.chars().take(max_chars).collect();
+    while preview.ends_with(char::is_whitespace) {
+        preview.pop();
+    }
+    preview.push('…');
+    preview
+}
+
+fn normalize_queries(args: &SearchArgs) -> Vec<String> {
+    let mut queries: Vec<String> = match args.queries {
+        Some(ref qs) if !qs.is_empty() => qs
+            .iter()
+            .map(|q| q.trim().to_string())
+            .filter(|q| !q.is_empty())
+            .collect(),
+        _ => args
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(|q| vec![q.to_string()])
+            .unwrap_or_default(),
+    };
+    queries.truncate(MAX_QUERY_VARIANTS);
+    queries
+}
+
 /// Format a SearchResult into a ToolResult for the LLM.
 fn format_search_result(
     call_id: &str,
@@ -109,20 +144,27 @@ fn format_search_result(
     );
 
     for (i, card) in result.evidence_cards.iter().enumerate() {
+        let preview = card
+            .snippet
+            .as_deref()
+            .filter(|snippet| !snippet.trim().is_empty())
+            .map(|snippet| snippet.trim().to_string())
+            .unwrap_or_else(|| truncate_preview(&card.content, RESULT_PREVIEW_MAX_CHARS));
         text.push_str(&format!(
             "--- Result {} (score: {:.3}) ---\n\
              [chunk_id: {}]\n\
              Source: {}\n\
              Path: {}\n\
              Title: {}\n\
-             Content:\n{}\n\n",
+             Preview:\n{}\n\
+             Next: use retrieve_evidence with this chunk_id for exact supporting text.\n\n",
             i + 1,
             card.score,
             card.chunk_id,
             card.source_name,
             card.document_path,
             card.document_title,
-            card.content,
+            preview,
         ));
     }
 
@@ -255,20 +297,7 @@ impl Tool for SearchTool {
         }
 
         // Determine which queries to run.
-        let queries: Vec<String> = match args.queries {
-            Some(ref qs) if !qs.is_empty() => qs
-                .iter()
-                .map(|q| q.trim().to_string())
-                .filter(|q| !q.is_empty())
-                .collect(),
-            _ => args
-                .query
-                .as_deref()
-                .map(str::trim)
-                .filter(|q| !q.is_empty())
-                .map(|q| vec![q.to_string()])
-                .unwrap_or_default(),
-        };
+        let queries = normalize_queries(&args);
         if queries.is_empty() {
             return Ok(tool_contract_error_result(
                 call_id,
@@ -416,6 +445,17 @@ mod tests {
             vec!["stem cell week 3", "mesenchymal stem cells"]
         );
         assert_eq!(args.limit, 10);
+    }
+
+    #[test]
+    fn search_queries_are_capped_to_two_variants() {
+        let args: SearchArgs = serde_json::from_value(serde_json::json!({
+            "queries": ["alpha", "beta", "gamma", "delta"],
+            "limit": 10
+        }))
+        .expect("arguments should deserialize");
+
+        assert_eq!(normalize_queries(&args), vec!["alpha", "beta"]);
     }
 
     #[tokio::test]

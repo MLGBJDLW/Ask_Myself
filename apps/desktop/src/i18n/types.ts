@@ -462,6 +462,8 @@ export interface TranslationKeys {
   'settings.appearance.theme.midnight': string;
   'settings.appearance.language': string;
   'settings.appearance.language.description': string;
+  'settings.developerMode': string;
+  'settings.developerMode.description': string;
 
   // Settings - Tab labels (merged)
   'settings.tabModelsEmbedding': string;
@@ -578,6 +580,9 @@ export interface TranslationKeys {
   'chat.toolRunning': string;
   'chat.toolDone': string;
   'chat.toolError': string;
+  'chat.fileDiffCreated': string;
+  'chat.fileDiffModified': string;
+  'chat.fileDiffLinesOmitted': string;
   'chat.thinking': string;
   'chat.stop': string;
   'chat.retry': string;

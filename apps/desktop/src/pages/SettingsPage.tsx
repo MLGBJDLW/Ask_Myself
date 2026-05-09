@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useBlocker, useNavigate } from 'react-router-dom';
 import { getVersion } from '@tauri-apps/api/app';
@@ -44,8 +44,30 @@ import { useUpdater } from '../lib/useUpdater';
 
 /* ── Settings page ────────────────────────────────────────────────── */
 type SettingsTab = 'appearance' | 'models_embedding' | 'providers' | 'agent_quality' | 'media' | 'data_privacy' | 'extensions';
+type SettingsTabItem = { id: SettingsTab; label: string; icon: ReactNode; developerOnly?: boolean };
 const MEMORY_CHAR_LIMIT = 240;
 const TAB_STRIP_EDGE_EPSILON = 4;
+const DEVELOPER_MODE_STORAGE_KEY = 'nexa-developer-mode';
+
+function getStoredDeveloperMode(): boolean {
+  try {
+    return localStorage.getItem(DEVELOPER_MODE_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function setStoredDeveloperMode(enabled: boolean): void {
+  try {
+    if (enabled) {
+      localStorage.setItem(DEVELOPER_MODE_STORAGE_KEY, 'true');
+    } else {
+      localStorage.removeItem(DEVELOPER_MODE_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore unavailable storage.
+  }
+}
 
 export function SettingsPage() {
   const { t, locale, setLocale, availableLocales } = useTranslation();
@@ -54,7 +76,8 @@ export function SettingsPage() {
   const [appVersion, setAppVersion] = useState('');
   const { devices: micDevices, selectedDeviceId: micDeviceId, setSelectedDeviceId: setMicDeviceId, refresh: refreshMics } = useMicrophoneDevices();
   const tabStripRef = useRef<HTMLDivElement | null>(null);
-  const [activeTab, setActiveTab] = useState<SettingsTab>('models_embedding');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('appearance');
+  const [developerMode, setDeveloperModeState] = useState(getStoredDeveloperMode);
   const [dirtyTabs, setDirtyTabs] = useState<Set<string>>(new Set());
   const [pendingTab, setPendingTab] = useState<SettingsTab | null>(null);
   const [discardingTabChanges, setDiscardingTabChanges] = useState(false);
@@ -65,6 +88,14 @@ export function SettingsPage() {
   const [mcpFormDirty, setMcpFormDirty] = useState(false);
   const [personaEditorDirty, setPersonaEditorDirty] = useState(false);
   const hasDirtyTabs = dirtyTabs.size > 0;
+
+  const setDeveloperMode = useCallback((enabled: boolean) => {
+    setDeveloperModeState(enabled);
+    setStoredDeveloperMode(enabled);
+    if (!enabled && activeTab === 'agent_quality') {
+      setActiveTab('appearance');
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(''));
@@ -267,17 +298,20 @@ export function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    void loadEmbedConfig();
-  }, [loadEmbedConfig]);
+    if (activeTab === 'models_embedding' && !embedConfig) {
+      void loadEmbedConfig();
+    }
+  }, [activeTab, embedConfig, loadEmbedConfig]);
 
   useEffect(() => {
+    if (activeTab !== 'models_embedding') return;
     if (embedConfig?.provider === 'local') {
       const key = embedConfig.localModel ?? '';
       getModelStatus('embed', key, () => api.checkLocalModel(embedConfig.localModel))
         .then(setLocalModelReady)
         .catch(() => setLocalModelReady(false));
     }
-  }, [embedConfig?.provider, embedConfig?.localModel]);
+  }, [activeTab, embedConfig?.provider, embedConfig?.localModel]);
 
   const handleDownloadModel = async () => {
     if (!embedConfig) return;
@@ -419,8 +453,10 @@ export function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    void loadOfficeRuntime();
-  }, [loadOfficeRuntime]);
+    if (activeTab === 'models_embedding') {
+      void loadOfficeRuntime();
+    }
+  }, [activeTab, loadOfficeRuntime]);
 
   const handlePrepareOfficeRuntime = async () => {
     if (officePreparing) return;
@@ -488,8 +524,10 @@ export function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    void loadOcrConfig();
-  }, [loadOcrConfig]);
+    if ((activeTab === 'models_embedding' || activeTab === 'media') && !ocrConfig) {
+      void loadOcrConfig();
+    }
+  }, [activeTab, loadOcrConfig, ocrConfig]);
 
   useEffect(() => {
     if (!ocrDownloading) {
@@ -546,8 +584,10 @@ export function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    void loadVideoConfig();
-  }, [loadVideoConfig]);
+    if ((activeTab === 'models_embedding' || activeTab === 'media') && !videoConfig) {
+      void loadVideoConfig();
+    }
+  }, [activeTab, loadVideoConfig, videoConfig]);
 
   useEffect(() => {
     if (!videoDownloading) { progressStore.update('videoDownload', null); }
@@ -1269,15 +1309,16 @@ export function SettingsPage() {
     }
   };
 
-  const tabs: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
+  const allTabs: SettingsTabItem[] = [
     { id: 'appearance', label: t('settings.appearance'), icon: <Star size={16} /> },
     { id: 'models_embedding', label: t('settings.tabModelsEmbedding'), icon: <Brain size={16} /> },
     { id: 'providers', label: t('settings.aiProviders'), icon: <Bot size={16} /> },
-    { id: 'agent_quality', label: t('settings.tabAgentQuality'), icon: <ClipboardCheck size={16} /> },
+    { id: 'agent_quality', label: t('settings.tabAgentQuality'), icon: <ClipboardCheck size={16} />, developerOnly: true },
     { id: 'media', label: t('settings.tabMedia'), icon: <Film size={16} /> },
     { id: 'data_privacy', label: t('settings.tabDataPrivacy'), icon: <Database size={16} /> },
     { id: 'extensions', label: t('settings.extensionsTab'), icon: <Blocks size={16} /> },
   ];
+  const tabs = allTabs.filter((tab) => developerMode || !tab.developerOnly);
 
   /* ── Render ──────────────────────────────────────────────────────── */
   return (
@@ -1362,8 +1403,10 @@ export function SettingsPage() {
           updater={updater}
           appConfig={appConfig}
           appConfigLoading={appConfigLoading}
+          developerMode={developerMode}
           onAppConfigChange={setAppConfig}
           onAppConfigSave={() => { void handleAppConfigSave(); }}
+          onDeveloperModeChange={setDeveloperMode}
           onRerunWizard={() => { void handleRerunWizard(); }}
         />
       )}
@@ -1413,7 +1456,10 @@ export function SettingsPage() {
               .catch(() => setWhisperModelExists(false));
           }}
           onPrepareOfficeRuntime={handlePrepareOfficeRuntime}
-          onRefreshOfficeRuntime={() => { void loadOfficeRuntime(); }}
+          onRefreshOfficeRuntime={() => {
+            invalidateModelStatus('office');
+            void loadOfficeRuntime();
+          }}
           onAskAiPrepareOfficeRuntime={handleAskAiPrepareOfficeRuntime}
           onAppConfigChange={setAppConfig}
           onAppConfigSave={() => { void handleAppConfigSave(); }}
