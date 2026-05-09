@@ -1,5 +1,6 @@
 //! Source file-tree browsing for UI previews.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -219,9 +220,14 @@ fn list_nodes(
     entries.sort_by(|a, b| {
         let a_dir = a.file_type().map(|t| t.is_dir()).unwrap_or(false);
         let b_dir = b.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        b_dir
-            .cmp(&a_dir)
-            .then_with(|| a.file_name().cmp(&b.file_name()))
+        b_dir.cmp(&a_dir).then_with(|| {
+            let a_name = a.file_name();
+            let b_name = b.file_name();
+            natural_name_cmp(
+                a_name.to_string_lossy().as_ref(),
+                b_name.to_string_lossy().as_ref(),
+            )
+        })
     });
 
     let mut nodes = Vec::new();
@@ -330,6 +336,68 @@ fn normalize_path_string(path: &str) -> String {
     path.replace('\\', "/").trim_matches('/').to_string()
 }
 
+fn natural_name_cmp(a: &str, b: &str) -> Ordering {
+    let mut a_chars = a.char_indices().peekable();
+    let mut b_chars = b.char_indices().peekable();
+
+    loop {
+        match (a_chars.peek().copied(), b_chars.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some((_, ac)), Some((_, bc))) => {
+                if ac.is_ascii_digit() && bc.is_ascii_digit() {
+                    let a_num = take_ascii_digit_run(a, &mut a_chars);
+                    let b_num = take_ascii_digit_run(b, &mut b_chars);
+                    let ord = compare_digit_runs(a_num, b_num);
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                    continue;
+                }
+
+                let a_lower = ac.to_lowercase().to_string();
+                let b_lower = bc.to_lowercase().to_string();
+                let ord = a_lower.cmp(&b_lower);
+                a_chars.next();
+                b_chars.next();
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+    }
+}
+
+fn take_ascii_digit_run<'a>(
+    input: &'a str,
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
+) -> &'a str {
+    let start = chars.peek().map(|(idx, _)| *idx).unwrap_or(input.len());
+    let mut end = start;
+    while let Some((idx, ch)) = chars.peek().copied() {
+        if !ch.is_ascii_digit() {
+            break;
+        }
+        end = idx + ch.len_utf8();
+        chars.next();
+    }
+    &input[start..end]
+}
+
+fn compare_digit_runs(a: &str, b: &str) -> Ordering {
+    let a_trimmed = a.trim_start_matches('0');
+    let b_trimmed = b.trim_start_matches('0');
+    let a_norm = if a_trimmed.is_empty() { "0" } else { a_trimmed };
+    let b_norm = if b_trimmed.is_empty() { "0" } else { b_trimmed };
+
+    a_norm
+        .len()
+        .cmp(&b_norm.len())
+        .then_with(|| a_norm.cmp(b_norm))
+        .then_with(|| a.len().cmp(&b.len()))
+}
+
 fn modified_at_iso(metadata: &std::fs::Metadata) -> Option<String> {
     let modified = metadata.modified().ok()?;
     let duration = modified.duration_since(UNIX_EPOCH).ok()?;
@@ -384,5 +452,27 @@ mod tests {
     fn source_tree_rejects_parent_traversal() {
         let err = normalize_relative_path("../outside").unwrap_err();
         assert!(matches!(err, CoreError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn source_tree_uses_natural_name_sorting() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("第11章.md"), "# 11").unwrap();
+        std::fs::write(dir.path().join("第1章.md"), "# 1").unwrap();
+        std::fs::write(dir.path().join("第2章.md"), "# 2").unwrap();
+
+        let db = Database::open_memory().unwrap();
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: dir.path().to_string_lossy().to_string(),
+                include_globs: vec!["**/*.md".to_string()],
+                exclude_globs: Vec::new(),
+                watch_enabled: false,
+            })
+            .unwrap();
+
+        let tree = list_source_tree(&db, &source.id, None, Some(1), Some(100)).unwrap();
+        let names: Vec<&str> = tree.nodes.iter().map(|node| node.name.as_str()).collect();
+        assert_eq!(names, vec!["第1章.md", "第2章.md", "第11章.md"]);
     }
 }

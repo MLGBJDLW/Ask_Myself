@@ -114,9 +114,8 @@ fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
         "list_dir" | "list_documents" | "list_sources" => {
             summarize_lines(content, 60, 10, MAX_TOOL_RESULT_CONTEXT_CHARS)
         }
-        "retrieve_evidence" | "search_knowledge_base" | "search_playbooks" => {
-            truncate_tool_result(content, 6_000)
-        }
+        "search_knowledge_base" => truncate_tool_result(content, 3_500),
+        "retrieve_evidence" | "search_playbooks" => truncate_tool_result(content, 6_000),
         _ => truncate_tool_result(content, MAX_TOOL_RESULT_CONTEXT_CHARS),
     }
 }

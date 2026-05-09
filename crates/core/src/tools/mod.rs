@@ -800,9 +800,10 @@ mod tests {
 
         assert!(properties.contains_key("query"));
         assert!(properties.contains_key("queries"));
+        assert_eq!(properties["queries"]["maxItems"], serde_json::json!(2));
         assert_eq!(def.parameters["required"], serde_json::json!([]));
         assert!(def.description.contains("queries"));
-        assert!(def.description.contains("SINGLE call"));
+        assert!(def.description.contains("at most 1-2 query variants"));
     }
 
     #[test]
