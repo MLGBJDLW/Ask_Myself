@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.4.1...nexa-monorepo-v0.4.2) (2026-05-09)
+
+
+### Bug Fixes
+
+* **agent:** restore full tool visibility by default ([5375ce1](https://github.com/MLGBJDLW/Nexa/commit/5375ce17056a31865b52aa5085f9d96b598c058e))
+* **chat:** keep file diffs attached to turns ([65be7ea](https://github.com/MLGBJDLW/Nexa/commit/65be7ead8d84cbe9fb0860ad929671eb95693b5b))
+
 ## [0.4.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.4.0...nexa-monorepo-v0.4.1) (2026-05-09)
 
 
