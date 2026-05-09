@@ -1,0 +1,36 @@
+{
+  "name": "glob_files",
+  "description": "Find files and directories by glob pattern inside registered source directories using a safe ripgrep-style traversal that respects source scope, hidden-file settings, and gitignore files. Use this when you need to locate candidate paths before reading, searching, or editing.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "description": "Glob pattern to match, such as *.md, notes/**/*.txt, or **/README.*"
+      },
+      "patterns": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional multiple glob patterns. Overrides pattern when provided."
+      },
+      "path": {
+        "type": "string",
+        "description": "Optional directory to search. If omitted, searches all directories in the current source scope."
+      },
+      "include_hidden": {
+        "type": "boolean",
+        "description": "Include dotfiles and hidden directories (default false)"
+      },
+      "include_dirs": {
+        "type": "boolean",
+        "description": "Include matching directories as well as files (default false)"
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "Maximum number of paths to return (default 100, max 500)",
+        "minimum": 1,
+        "maximum": 500
+      }
+    }
+  }
+}

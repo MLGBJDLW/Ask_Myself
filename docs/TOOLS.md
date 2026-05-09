@@ -6,6 +6,19 @@ Nexa ships with built-in tools that the AI agent calls autonomously during conve
 
 ## 🔍 Search & Retrieval
 
+### `tool_search`
+
+Search the built-in tool catalog by name and description. Use this when the appropriate local tool is unclear. This does not discover disabled MCP servers.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | yes | Natural language query or tool-name fragment |
+| `limit` | integer | no | Max matches, 1-20 (default 8) |
+
+> **Example:** Ask which built-in tool should handle source-scoped text search or document comparison.
+
+---
+
 ### `search_knowledge_base`
 
 Hybrid full-text (BM25) and vector search across all indexed content. Returns evidence cards with content, source paths, relevance scores, chunk IDs for citation, and trust metadata. Supports batch queries via the `queries` parameter for synonym/variant expansion in a single call.
@@ -98,11 +111,14 @@ Use this quick routing guide when a request is about files or documents:
 | Scenario | Preferred tool | File types / scope | Relative source-root path? | Notes |
 |-----------|----------------|--------------------|----------------------------|-------|
 | Locate a file or browse a folder | `list_dir` | Any file/folder inside a source | yes | Best first step when the exact path is unknown or ambiguous |
+| Locate files by glob | `glob_files` | Any source-scoped file path | yes | Safe ripgrep-style traversal; respects hidden settings and gitignore files |
+| Search inside local files by text or regex | `search_files` / `grep_files` | Plain-text files inside a source | yes | Safe rg-style search with line numbers; use after/beside KB search when exact file locations matter |
 | Read a named file | `read_file` | Text, PDF, DOCX, XLSX, PPTX, image text extraction | yes | Supports line windows via `start_line` and `max_lines` |
 | Inspect document metadata or index state | `get_document_info` | Indexed documents | yes | Good for source ID, chunk count, MIME type, citation info |
 | Compare two files or indexed chunks | `compare_documents` | Text or parsed document content | yes for file paths | Use chunk IDs when you already know the exact evidence |
 | Create a new plain-text file | `create_file` | Text-based files only | yes | For new `.md`, `.txt`, `.json`, `.rs`, etc. |
 | Edit an existing plain-text file | `edit_file` | Text-based files only | yes | Exact `str_replace` only; must match once |
+| Apply several coordinated text edits | `multi_edit` | Text-based files only | yes | Atomic multi-replacement with one checkpoint; all edits succeed or no file changes |
 | Create or edit an Office/PDF file | `run_shell` + `doc-script-editor` | DOCX, XLSX, PPTX, PDF | yes | Python-backed creation, extraction, redaction, templates, validation, conversion, rendering, OOXML edits, and formula QA |
 | Compatibility fallback for very simple new Office files | `generate_docx`/`generate_xlsx`/`ppt_generate` | DOCX, XLSX, PPTX | yes | Use only when Python/LibreOffice is unavailable or the schema fully covers the request |
 | Refresh indexed content after file changes | `reindex_document` | File path or whole source | yes for file path | Use when external edits are not reflected in search/results yet |
@@ -172,6 +188,45 @@ Browse directory structure with optional recursion and glob filtering.
 | `pattern` | string | no | Filename glob filter (e.g. `*.md`, `*.pdf`) |
 
 > **Example:** List all Markdown files recursively in a project folder.
+
+---
+
+### `glob_files`
+
+Find source-scoped files and directories by glob pattern. Traversal respects source scope, hidden-file settings, and gitignore files.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pattern` | string | no* | Glob pattern such as `*.md` or `**/README.*` |
+| `patterns` | string[] | no* | Multiple glob patterns; overrides `pattern` |
+| `path` | string | no | Directory to search; omitted means all current source-scope directories |
+| `include_hidden` | boolean | no | Include dotfiles and hidden directories (default false) |
+| `include_dirs` | boolean | no | Include matching directories as well as files (default false) |
+| `max_results` | integer | no | Max paths, 1-500 (default 100) |
+
+> **Example:** Find every Markdown note matching `notes/**/*.md` before selecting files to read.
+
+---
+
+### `search_files`
+
+Search plain-text files by content inside registered source directories. This is a safe rg-style search tool for exact text, phrases, or regex patterns when line numbers and local file locations matter.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | yes | Literal text or regex pattern to search for |
+| `path` | string | no | File or directory path; omitted means all current source-scope directories |
+| `regex` | boolean | no | Treat `query` as regex (default false) |
+| `case_sensitive` | boolean | no | Use case-sensitive matching (default false) |
+| `include_globs` | string[] | no | Include patterns such as `*.md` or `notes/**/*.txt` |
+| `exclude_globs` | string[] | no | Exclude patterns such as `**/archive/**` |
+| `max_results` | integer | no | Max matching lines, 1-200 (default 50) |
+| `context_lines` | integer | no | Surrounding lines before/after each match, 0-3 (default 0) |
+| `include_hidden` | boolean | no | Include dotfiles and hidden directories (default false) |
+
+> **Example:** Find every source-scoped Markdown line mentioning a project name before editing the relevant note.
+
+`grep_files` is an alias with the same parameters for users and prompts that naturally ask to grep or rg local files.
 
 ---
 
@@ -268,6 +323,26 @@ Do not use `edit_file` for Office/PDF files. Prefer `run_shell` + `doc-script-ed
 `str_replace` operates on UTF-8 char boundaries, so replacements containing multi-byte characters (CJK text, emoji, etc.) are handled safely without byte-slice panics.
 
 > **Example:** Fix a typo in an existing text document or create a new configuration file.
+
+---
+
+### `multi_edit`
+
+Apply multiple exact text replacements to one existing plain-text file in a single atomic operation. The tool validates each edit in order before writing; if any edit is missing or ambiguous, no file is changed. A restorable file checkpoint is created before the write.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | File path (absolute or relative to a source root) |
+| `edits` | object[] | yes | Ordered replacements, max 20 |
+| `edits[].old_str` | string | yes | Exact text to find; must match once unless `replace_all` is true |
+| `edits[].new_str` | string | no | Replacement text; omitted means delete the old text |
+| `edits[].replace_all` | boolean | no | Replace every occurrence for that edit (default false) |
+| `edits[].start_line` | integer | no | Optional 1-based inclusive line range start |
+| `edits[].end_line` | integer | no | Optional 1-based inclusive line range end |
+
+Do not use `multi_edit` for Office/PDF files. Prefer `run_shell` + `doc-script-editor` for those workflows.
+
+> **Example:** Update three related headings in a Markdown note with one checkpointed operation.
 
 ---
 
@@ -402,6 +477,14 @@ Fetch and extract text content from a web page (HTML stripped). Use when the use
 
 ---
 
+### Readable web search via MCP
+
+When the built-in web-search MCP server is enabled, its readable search tool is exposed as `mcp__web_search__search`. Use it to discover candidate URLs, then use `fetch_url` on the most authoritative results before citing or summarizing them.
+
+Do not treat `desktop_automation` with `action: "web_search"` as evidence retrieval. That action only opens a browser search for the user and does not return readable search results to the agent.
+
+---
+
 ### `desktop_automation`
 
 Perform controlled local browser or desktop handoff actions. This tool is intentionally narrow: it can open a URL/search in the user's default browser, open or reveal source-scoped local paths, or wait briefly. It does not read page contents or perform raw mouse/keyboard control.
@@ -421,6 +504,7 @@ Perform controlled local browser or desktop handoff actions. This tool is intent
 Safety posture:
 - URL/search/path launch actions require user confirmation.
 - Local path actions must resolve inside a registered source and the active source scope.
+- Use `mcp__web_search__search` for readable search results when the built-in web-search MCP server is enabled.
 - Use `fetch_url` when the agent needs page text; use Playwright MCP when an enabled connector should interact with page elements.
 
 > **Example:** Open a confirmed dashboard URL in the user's default browser, or reveal a report file that was just generated under a registered source.

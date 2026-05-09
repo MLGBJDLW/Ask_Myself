@@ -1,0 +1,20 @@
+{
+  "name": "tool_search",
+  "description": "Search the built-in tool catalog by name and description. Use this when you are unsure which local tool fits a task, or when a user asks what tools are available. This searches built-in tools only; enabled MCP tools are listed in the tool access map and may appear with mcp__server__tool names.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Natural language query or tool-name fragment"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum matches to return (default 8, max 20)",
+        "minimum": 1,
+        "maximum": 20
+      }
+    },
+    "required": ["query"]
+  }
+}

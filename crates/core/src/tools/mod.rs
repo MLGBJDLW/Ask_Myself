@@ -76,11 +76,13 @@ pub mod compile_tool;
 pub mod create_file_tool;
 pub mod date_search_tool;
 pub mod desktop_automation_tool;
+pub(crate) mod diff_stats;
 pub mod document_info_tool;
 pub mod document_utils;
 pub mod edit_file_tool;
 pub mod fetch_url_tool;
 pub mod file_tool;
+pub mod glob_files_tool;
 pub mod harness_dry_run_tool;
 pub mod health_check_tool;
 pub mod knowledge_graph_tool;
@@ -90,6 +92,7 @@ pub mod list_sources_tool;
 pub mod manage_skill_tool;
 pub mod manage_source_tool;
 pub mod mcp_tool;
+pub mod multi_edit_tool;
 pub mod path_utils;
 pub mod playbook_tool;
 pub mod prepare_document_tools_tool;
@@ -99,12 +102,14 @@ pub mod reindex_tool;
 pub mod related_concepts_tool;
 pub mod run_shell_tool;
 pub mod scratchpad_tool;
+pub mod search_files_tool;
 pub mod search_playbooks_tool;
 pub mod search_tool;
 pub mod session_search_tool;
 pub mod statistics_tool;
 pub mod submit_feedback_tool;
 pub mod summarize_tool;
+pub mod tool_search_tool;
 pub mod update_plan_tool;
 pub mod write_note_tool;
 
@@ -457,8 +462,9 @@ impl ToolRegistry {
     /// Core and MCP tools are always included. Other categories are activated
     /// when keywords in the user message suggest they may be needed.
     ///
-    /// Even when a tool is not advertised, it remains callable via
-    /// [`execute`](Self::execute) — this is an optimisation, not a restriction.
+    /// When dynamic tool visibility is enabled, the agent executor uses the
+    /// same selected names as the per-turn execution policy. Direct registry
+    /// calls remain available to tests and host-side code.
     pub fn select_tools(&self, user_message: &str, has_sources: bool) -> Vec<ToolDefinition> {
         let mut categories: HashSet<ToolCategory> = HashSet::new();
 
@@ -492,8 +498,12 @@ impl ToolRegistry {
         if msg.contains("file")
             || msg.contains("read")
             || msg.contains("edit")
+            || msg.contains("replace")
             || msg.contains("write")
             || msg.contains("create")
+            || msg.contains("find")
+            || msg.contains("grep")
+            || msg.contains("rg")
             || msg.contains("move")
             || msg.contains("rename")
             || msg.contains("copy")
@@ -504,6 +514,9 @@ impl ToolRegistry {
             || msg.contains("文件")
             || msg.contains("读取")
             || msg.contains("编辑")
+            || msg.contains("替换")
+            || msg.contains("查找")
+            || msg.contains("搜索文件")
             || msg.contains("移动")
             || msg.contains("重命名")
             || msg.contains("复制")
@@ -722,6 +735,10 @@ fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> 
 pub fn default_tool_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(search_tool::SearchTool));
+    registry.register(Box::new(tool_search_tool::ToolSearchTool));
+    registry.register(Box::new(glob_files_tool::GlobFilesTool));
+    registry.register(Box::new(search_files_tool::SearchFilesTool));
+    registry.register(Box::new(search_files_tool::GrepFilesTool));
     registry.register(Box::new(playbook_tool::PlaybookTool));
     registry.register(Box::new(
         prepare_document_tools_tool::PrepareDocumentToolsTool,
@@ -737,6 +754,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(write_note_tool::WriteNoteTool));
     registry.register(Box::new(search_playbooks_tool::SearchPlaybooksTool));
     registry.register(Box::new(edit_file_tool::EditFileTool));
+    registry.register(Box::new(multi_edit_tool::MultiEditTool));
     registry.register(Box::new(create_file_tool::CreateFileTool));
     registry.register(Box::new(submit_feedback_tool::SubmitFeedbackTool));
     registry.register(Box::new(document_info_tool::GetDocumentInfoTool));

@@ -1,0 +1,59 @@
+{
+  "name": "multi_edit",
+  "description": "Apply multiple exact text replacements to one existing plain-text file in a single atomic operation. In restricted mode paths must resolve inside the current registered source scope; allow-all/non-restricted permission modes can use all registered sources, and open mode can also use absolute local paths outside registered sources.\n\nUse this when several coordinated edits should succeed or fail together. The tool validates every edit against the current file content in order before writing. If any edit is missing or ambiguous, no file is changed. A restorable file checkpoint is created before the write.\n\nDo not use this tool for DOCX/XLSX/PPTX/PDF files. Use run_shell + doc-script-editor for Office/PDF create/edit/validate/convert/render/recalc/unpack workflows.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to the file (absolute or relative to a source directory; open mode also accepts absolute local paths outside registered sources)"
+      },
+      "edits": {
+        "type": "array",
+        "description": "Ordered exact text replacements. Later edits see the content produced by earlier edits.",
+        "minItems": 1,
+        "maxItems": 20,
+        "items": {
+          "type": "object",
+          "properties": {
+            "old_str": {
+              "type": "string",
+              "description": "Exact text to find. Must match exactly once unless replace_all is true."
+            },
+            "old_string": {
+              "type": "string",
+              "description": "Alias for old_str"
+            },
+            "new_str": {
+              "type": "string",
+              "description": "Replacement text"
+            },
+            "new_string": {
+              "type": "string",
+              "description": "Alias for new_str"
+            },
+            "content": {
+              "type": "string",
+              "description": "Alias for new_str"
+            },
+            "replace_all": {
+              "type": "boolean",
+              "description": "Replace every occurrence of old_str for this edit. Default false."
+            },
+            "start_line": {
+              "type": "integer",
+              "description": "Optional 1-based inclusive start line limiting where old_str is searched. Applies to the current content at this edit step.",
+              "minimum": 1
+            },
+            "end_line": {
+              "type": "integer",
+              "description": "Optional 1-based inclusive end line limiting where old_str is searched. Applies to the current content at this edit step.",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "required": ["path", "edits"]
+  }
+}
