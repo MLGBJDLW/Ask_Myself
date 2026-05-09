@@ -168,6 +168,34 @@ test.beforeEach(async ({ page }) => {
         thinking: null,
         imageAttachments: null,
       },
+      {
+        id: 'm-user-followup',
+        conversationId: conversation.id,
+        role: 'user',
+        content: 'Continue after the edit.',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 4,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-assistant-followup',
+        conversationId: conversation.id,
+        role: 'assistant',
+        content: 'Continuing with the next check.',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 5,
+        thinking: null,
+        imageAttachments: null,
+      },
     ];
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handlerId: number }>();
@@ -403,4 +431,24 @@ test('edit_file tool result renders a structured diff preview', async ({ page })
   await expect(diffCard.getByRole('button').first()).toHaveAttribute('aria-expanded', 'true');
   await expect(diffCard.getByText('const answer = 42;')).toBeVisible();
   await expect(diffCard.getByText('const answer = 43;')).toBeVisible();
+});
+
+test('file diff preview stays attached before later user messages', async ({ page }) => {
+  await page.goto('/chat/conv-plan-progress');
+
+  const log = page.getByRole('log');
+  const diffCard = log.getByTestId('file-diff-preview').last();
+  await expect(diffCard).toBeVisible();
+  await expect(log.getByText('Continue after the edit.', { exact: true })).toBeVisible();
+
+  const diffBeforeFollowup = await diffCard.evaluate((diff) => {
+    const followup = Array.from(document.querySelectorAll('[role="log"] *'))
+      .find((element) => element.textContent?.trim() === 'Continue after the edit.');
+    return Boolean(
+      followup &&
+      (diff.compareDocumentPosition(followup) & Node.DOCUMENT_POSITION_FOLLOWING),
+    );
+  });
+
+  expect(diffBeforeFollowup).toBe(true);
 });
