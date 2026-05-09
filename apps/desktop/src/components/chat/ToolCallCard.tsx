@@ -33,6 +33,7 @@ import { PlanPanel, VerificationPanel } from './TaskPanels';
 import type { ArtifactPayload } from '../../types/conversation';
 import type { VerificationOverallStatus } from '../../lib/taskArtifacts';
 import { SubagentCard } from './SubagentCard';
+import { FileDiffPreview, extractFileDiffArtifact } from './FileDiffPreview';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -332,8 +333,9 @@ export function ToolCallCard({
   const subagentJudgement = useMemo(() => extractSubagentJudgementArtifact(artifacts), [artifacts]);
   const planArtifact = useMemo(() => extractPlanArtifact(artifacts), [artifacts]);
   const verificationArtifact = useMemo(() => extractVerificationArtifact(artifacts), [artifacts]);
+  const fileDiff = useMemo(() => extractFileDiffArtifact(artifacts), [artifacts]);
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
-  const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact);
+  const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact || fileDiff);
 
   const isSearchDone =
     safeToolName.toLowerCase().includes('search') && status === 'done' && !!content;
@@ -387,6 +389,8 @@ export function ToolCallCard({
       })
       : searchItems
         ? t('search.results', { count: String(searchItems.length) })
+        : fileDiff
+          ? `${fileDiff.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')} +${fileDiff.additions} -${fileDiff.deletions}`
         : status === 'done' && content
           ? t('chat.traceOutputReady')
           : statusConfig.text;
@@ -409,6 +413,7 @@ export function ToolCallCard({
       subagentJudgement ||
       planArtifact ||
       verificationArtifact ||
+      fileDiff ||
       streamingArgsPreview,
     );
     return (
@@ -497,6 +502,8 @@ export function ToolCallCard({
               <PlanPanel plan={planArtifact} />
             ) : verificationArtifact ? (
               <VerificationPanel verification={verificationArtifact} />
+            ) : fileDiff ? (
+              <FileDiffPreview diff={fileDiff} compact />
             ) : content ? (
               <pre className={`whitespace-pre-wrap break-words text-[11px] leading-relaxed ${isError ? 'text-danger' : 'text-text-secondary'}`}>
                 {content}
@@ -522,16 +529,20 @@ export function ToolCallCard({
             className={`h-3 w-3 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
           />
         </button>
-        {expanded && content && (
+        {expanded && (content || fileDiff) && (
           <div className="border-t border-border/30 px-2 py-1.5">
             {formattedArgs && (
               <div className="mb-1 rounded bg-surface-0/60 px-1.5 py-0.5 text-[10px] text-text-tertiary break-words">
                 {formattedArgs}
               </div>
             )}
-            <pre className={`text-[11px] whitespace-pre-wrap break-words max-h-32 overflow-y-auto ${isError ? 'text-danger' : 'text-text-tertiary'}`}>
-              {content}
-            </pre>
+            {fileDiff ? (
+              <FileDiffPreview diff={fileDiff} compact />
+            ) : (
+              <pre className={`text-[11px] whitespace-pre-wrap break-words max-h-32 overflow-y-auto ${isError ? 'text-danger' : 'text-text-tertiary'}`}>
+                {content}
+              </pre>
+            )}
           </div>
         )}
       </div>
@@ -676,7 +687,7 @@ export function ToolCallCard({
         <StatusIcon
           className={`h-3.5 w-3.5 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
         />
-        {(content || streamingArgsPreview) ? (
+        {(content || streamingArgsPreview || fileDiff) ? (
           expanded ? (
             <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
           ) : (
@@ -693,7 +704,7 @@ export function ToolCallCard({
 
       {/* Expandable result */}
       <AnimatePresence>
-        {expanded && (content || streamingArgsPreview) && (
+        {expanded && (content || streamingArgsPreview || fileDiff) && (
           <motion.div
             {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
@@ -715,6 +726,8 @@ export function ToolCallCard({
                 <PlanPanel plan={planArtifact} />
               ) : verificationArtifact ? (
                 <VerificationPanel verification={verificationArtifact} />
+              ) : fileDiff ? (
+                <FileDiffPreview diff={fileDiff} />
               ) : searchItems ? (
                 <>
                   {trustBoundary && (
@@ -742,7 +755,7 @@ export function ToolCallCard({
                   {content}
                 </pre>
               ) : null}
-              {artifacts && !isStructuredTaskCard && (
+              {artifacts && !isStructuredTaskCard && !fileDiff && (
                 <div className="mt-2 text-[11px] text-text-tertiary">
                   {JSON.stringify(artifacts, null, 2).slice(0, 500)}
                 </div>

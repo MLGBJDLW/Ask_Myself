@@ -42,6 +42,11 @@ import type {
   TraceEvent,
 } from "../../lib/useAgentStream";
 import { ToolCallCard } from "./ToolCallCard";
+import {
+  FileDiffPreview,
+  extractFileDiffArtifact,
+  type FileDiffArtifact,
+} from "./FileDiffPreview";
 import { ThinkingBlock } from "./ThinkingBlock";
 import type { ThinkingSection } from "./ThinkingBlock";
 import {
@@ -1257,6 +1262,50 @@ export function ChatMessages({
     return null;
   }, [messages]);
 
+  const fileDiffsByAssistant = useMemo(() => {
+    const ownerByToolCallId = new Map<string, number>();
+    messages.forEach((msg, idx) => {
+      if (msg.role !== "assistant") return;
+      for (const toolCall of msg.toolCalls) {
+        if (toolCall.id) ownerByToolCallId.set(toolCall.id, idx);
+      }
+    });
+
+    const grouped = new Map<number, FileDiffArtifact[]>();
+    for (const msg of messages) {
+      if (msg.role !== "tool" || !msg.toolCallId) continue;
+      const ownerIdx = ownerByToolCallId.get(msg.toolCallId);
+      if (ownerIdx == null) continue;
+      const diff = extractFileDiffArtifact(msg.artifacts ?? undefined);
+      if (!diff) continue;
+      const current = grouped.get(ownerIdx) ?? [];
+      current.push(diff);
+      grouped.set(ownerIdx, current);
+    }
+    return grouped;
+  }, [messages]);
+
+  const fileDiffPreviews = useMemo(
+    () => Array.from(fileDiffsByAssistant.values()).flat(),
+    [fileDiffsByAssistant],
+  );
+
+  const renderFileDiffPreviews = useCallback(
+    () => {
+      if (fileDiffPreviews.length === 0) return null;
+      return (
+        <div className="my-2 flex justify-start">
+          <div className="w-full max-w-[min(100%,72rem)] space-y-2">
+            {fileDiffPreviews.map((diff, diffIdx) => (
+              <FileDiffPreview key={`${diff.path}-${diffIdx}`} diff={diff} />
+            ))}
+          </div>
+        </div>
+      );
+    },
+    [fileDiffPreviews],
+  );
+
   const shouldRenderLiveTraceTimeline = liveTraceTimeline.length > 0;
   const shouldRenderStreamRounds =
     !shouldRenderLiveTraceTimeline && streamRounds.length > 0;
@@ -1472,6 +1521,8 @@ export function ChatMessages({
           );
         })}
       </AnimatePresence>
+
+      {renderFileDiffPreviews()}
 
       {/* ── Interleaved per-round rendering ─────────────────────────── */}
       {shouldRenderLiveTraceTimeline &&
