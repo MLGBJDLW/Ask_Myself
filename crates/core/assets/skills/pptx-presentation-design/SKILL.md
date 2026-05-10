@@ -4,12 +4,16 @@ description: Create, edit, inspect, and validate PowerPoint PPTX presentations w
 ---
 
 ## Workflow
-1. Use `doc-script-editor` for file operations: `check`, `create_pptx`, `insert_slide`, `replace`, `extract`, `version`, `unpack`, `pack`, `render`, `convert`, and `validate`.
-2. Run `scripts/pptx_audit.py --path <file> --pretty` before adapting an existing deck/template and after generating decks that need QA.
-3. For a new deck, create a concise JSON spec or a short Python script using `python-pptx`; keep text, charts, and shapes editable.
-4. For an existing or template deck, inventory layouts/placeholders first, snapshot before edits, then preserve theme, masters, notes, and slide size.
-5. Use OOXML unpack/pack for speaker notes, media replacement, relationship repair, master/layout work, or precise template surgery.
-6. Validate after writing and render slides for visual QA when the backends are available.
+1. For source material, run `scripts/pptx_deck_planner.py --input <notes.md> --out <spec.json>` when a renderer spec is not already available.
+2. For a new editable deck, use `scripts/pptx_renderer.py --path <file> --spec <json>` or the `doc-script-editor create_pptx` compatibility command, which delegates to this renderer.
+3. Use `doc-script-editor` for cross-format file operations: `check`, `insert_slide`, `replace`, `extract`, `version`, `unpack`, `pack`, `render`, `convert`, and `validate`.
+4. For a template deck, run `scripts/pptx_template_bind.py --template <template.pptx> --spec <spec.json> --out <bound-spec.json>` before rendering; this profiles layouts/style and annotates each slide with template layout bindings.
+5. For an existing deck rewrite, run `scripts/pptx_semantic_rewriter.py --path <file> --out <spec.json>` for a new semantic story, or `scripts/pptx_rewrite_plan.py --path <file> --out-spec <spec.json>` when you also need slide-level remediation actions.
+6. Before rendering, run `scripts/pptx_asset_pack.py --spec <spec.json> --pretty` to catch missing local assets and preserve source links.
+7. After writing, run `scripts/pptx_audit.py --path <file> --pretty` and `scripts/pptx_visual_qa.py --path <file> --pretty`; if rendered slide images exist, pass `--render-dir`.
+8. Run `scripts/pptx_quality_gate.py --path <file> --visual-qa <visual.json> --pretty` on finished decks; use `--strict` or `--require-notes` for presenter-ready or production decks.
+9. For final delivery, run `scripts/pptx_delivery_pack.py --path <file> --out-dir <dir> --pretty` to save the deck, audit, visual QA, asset manifest, and quality gate result together.
+10. Use OOXML unpack/pack for speaker notes, media replacement, relationship repair, master/layout work, or precise template surgery.
 
 ## Quality Rules
 1. One idea per slide. Put the message in the title, not only the body.
@@ -23,4 +27,30 @@ description: Create, edit, inspect, and validate PowerPoint PPTX presentations w
 Read `references/pptx-playbook.md` for template workflow, slide design rules, and QA checks.
 
 ## Script
-Use `scripts/pptx_audit.py` for a deterministic PPTX JSON inventory: slide count, size, layouts, masters, themes, per-slide text, shapes, pictures, chart/image/notes relationships, empty placeholders, and warnings. It uses only Python stdlib and reads OOXML directly.
+Use `scripts/pptx_renderer.py` to create editable decks from JSON specs. Supported layouts are `title`, `agenda`, `body`, `two_column`, `stat`, `quote`, `section`, `image_full`, `table`, `timeline`, `process`, `comparison`, `matrix`, and `chart`; specs may include `theme`, `slide_size`, `footer`, slide-level `notes`, top-level `notes_per_slide`, `images`, and template reuse.
+
+Prefer advanced editable layouts for non-trivial decks: `timeline` for roadmaps, `process` for workflows, `comparison` for tradeoffs, `matrix` for prioritization, and `chart` for native editable bar/column/line/area/stacked/pie/doughnut charts. `table` accepts either `string[][]` or an object with `headers`, `rows`, `column_widths`, `number_format`, `banded_rows`, and `caption`. Slides may include `links` or `citations`; the renderer writes them as small clickable source links.
+
+Use `scripts/pptx_audit.py` for a deterministic PPTX JSON inventory: slide count, size, layouts, masters, themes, per-slide text, shapes, pictures, chart/image/notes relationships, empty placeholders, editability warnings, and speaker-note coverage. It uses only Python stdlib and reads OOXML directly.
+
+Use `scripts/pptx_visual_qa.py` after rendering or generation for geometry-based visual checks: overlap, text overflow risk, edge margin risk, low contrast, and missing rendered slide images. With `--spec` and `--out-spec`, it can split over-dense body slides and preserve full titles in notes.
+
+Use `scripts/pptx_quality_gate.py` after audit or generation to produce a pass/fail publishability signal. It checks warning budget, visual anchors, text density, empty placeholders, low-editability full-slide images, speaker notes coverage, visual QA failures, and native visual metrics; it exits non-zero when the deck fails.
+
+Use `scripts/pptx_template_profile.py` when the user supplies a template or existing deck to adapt. It inventories slide layouts, placeholder types, chart/media relationships, and recommends layout indices for title, body, section, table, chart, and comparison use.
+
+Use `scripts/pptx_style_profile.py` to learn a deck's theme colors, sampled colors, and title/body fonts, then feed its `renderer_theme` into new specs.
+
+Use `scripts/pptx_template_bind.py` to turn a normal renderer spec into a template-bound spec. It uses the template profile and style profile to add `template_layout_index`, `template_layout_name`, and `template_binding` per slide, plus reusable renderer theme tokens. Rendering that bound spec with `--template` clears template sample slides by default, fills native template placeholders, and removes unused placeholders. Set top-level `preserve_template_slides: true` only when intentionally appending to an existing deck.
+
+Use `scripts/pptx_deck_planner.py` to convert notes or source material into a renderer-ready spec with message titles, layout selection, speaker notes, and preserved source links.
+
+Use `scripts/pptx_semantic_rewriter.py` for existing PPTX files or plain source notes that need a new narrative, not only polishing. It classifies content into context, problem, evidence, options, recommendation, plan, risk, and appendix, then creates an editable decision-story spec with charts, comparisons, timelines, section breaks, notes, and preserved source links.
+
+Use `scripts/pptx_rewrite_plan.py` for existing PPTX files that need condensation, executive rewrite, or visual restructuring. It turns audit findings into slide-level actions and a semantic rewrite spec.
+
+Use `scripts/pptx_asset_pack.py` to inventory embedded media, external links, and renderer-spec image dependencies before generation or delivery.
+
+Use `scripts/pptx_regression_suite.py` to write or render canonical PPT samples for smoke testing renderer changes.
+
+Use `scripts/pptx_delivery_pack.py` to assemble a final delivery directory with the PPTX, audit, visual QA, asset manifest, quality gate output, and manifest.

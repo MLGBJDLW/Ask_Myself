@@ -387,6 +387,8 @@ Primary Office commands:
 | Unpack/pack OOXML for precise edits | `unpack` / `pack` |
 | Recalculate XLSX formulas and scan errors | `recalc_xlsx` |
 
+PPT deep-generation workflows live in the `pptx-presentation-design` skill, not as separate global tools. `create_pptx` remains a compatibility command backed by that skill's renderer; for PPT planning, template profiling, style extraction, visual QA, rewrite planning, asset inventory, regression samples, quality gates, and delivery packages, activate the PPT skill and use its bundled scripts/resources.
+
 `generate_docx`, `generate_xlsx`, and `ppt_generate` remain registered for compatibility, but they are fallback tools. Prefer the Python path because it supports validation, templates, rendering, formulas, speaker notes, and follow-up edits without passing binary content through tool arguments.
 
 Runtime readiness:

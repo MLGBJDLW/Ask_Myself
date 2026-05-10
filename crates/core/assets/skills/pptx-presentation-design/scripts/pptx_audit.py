@@ -56,7 +56,7 @@ def rel_targets(zf: zipfile.ZipFile, part_name: str) -> list[dict[str, str]]:
         rel_type = rel.attrib.get("Type", "")
         if mode != "External" and not target.startswith("/"):
             target = f"{base}/{target}"
-        out.append({"type": rel_type, "target": target, "mode": mode})
+        out.append({"type": rel_type, "target": target, "mode": mode, "target_mode": mode or "Internal"})
     return out
 
 
@@ -64,6 +64,17 @@ def slide_text(root) -> str:
     if root is None:
         return ""
     return " ".join(t.text or "" for t in root.findall(".//a:t", NS)).strip()
+
+
+def nonempty_text_paragraphs(root) -> int:
+    if root is None:
+        return 0
+    count = 0
+    for paragraph in root.findall(".//a:p", NS):
+        text = " ".join(t.text or "" for t in paragraph.findall(".//a:t", NS)).strip()
+        if text:
+            count += 1
+    return count
 
 
 def count_placeholders_without_text(root) -> int:
@@ -77,6 +88,28 @@ def count_placeholders_without_text(root) -> int:
         if not text:
             empty += 1
     return empty
+
+
+def full_slide_picture_count(root, slide_size: dict[str, int] | None) -> int:
+    if root is None or not slide_size:
+        return 0
+    count = 0
+    slide_cx = slide_size.get("cx") or 0
+    slide_cy = slide_size.get("cy") or 0
+    if not slide_cx or not slide_cy:
+        return 0
+    for pic in root.findall(".//p:pic", NS):
+        xfrm = pic.find(".//a:xfrm", NS)
+        if xfrm is None:
+            continue
+        ext = xfrm.find("a:ext", NS)
+        if ext is None:
+            continue
+        cx = int(ext.attrib.get("cx", "0") or 0)
+        cy = int(ext.attrib.get("cy", "0") or 0)
+        if cx >= slide_cx * 0.9 and cy >= slide_cy * 0.9:
+            count += 1
+    return count
 
 
 def presentation_size(zf: zipfile.ZipFile) -> dict[str, int] | None:
@@ -96,6 +129,7 @@ def audit(path: Path) -> dict:
     warnings: list[str] = []
     with zipfile.ZipFile(path) as zf:
         names = set(zf.namelist())
+        slide_size = presentation_size(zf)
         slide_names = sorted(
             [name for name in names if re.match(r"ppt/slides/slide\d+\.xml$", name)],
             key=natural_key,
@@ -112,17 +146,32 @@ def audit(path: Path) -> dict:
             chart_count = sum(1 for rel in rels if "/charts/" in rel["target"])
             image_count = sum(1 for rel in rels if "/media/" in rel["target"])
             notes_count = sum(1 for rel in rels if "notesSlide" in rel["type"])
+            external_count = sum(1 for rel in rels if rel.get("target_mode") == "External")
+            hyperlink_count = sum(1 for rel in rels if "hyperlink" in rel["type"])
             graphic_frames = len(root.findall(".//p:graphicFrame", NS)) if root is not None else 0
             pictures = len(root.findall(".//p:pic", NS)) if root is not None else 0
             shapes = len(root.findall(".//p:sp", NS)) if root is not None else 0
-            if index > 1 and not any([chart_count, image_count, graphic_frames, pictures]):
+            empty_placeholders = count_placeholders_without_text(root)
+            paragraph_count = nonempty_text_paragraphs(root)
+            full_slide_pictures = full_slide_picture_count(root, slide_size)
+            has_visual_anchor = any([chart_count, image_count, graphic_frames, pictures]) or shapes >= 5
+            if index > 1 and not has_visual_anchor:
                 warnings.append(f"slide {index} has no visual anchor")
             if index > 1 and not text:
                 warnings.append(f"slide {index} has no extractable text")
+            if text and len(text) > 900:
+                warnings.append(f"slide {index} is text dense ({len(text)} chars)")
+            if paragraph_count > 12 and len(text) > 220:
+                warnings.append(f"slide {index} has many text paragraphs ({paragraph_count})")
+            if empty_placeholders:
+                warnings.append(f"slide {index} has {empty_placeholders} empty placeholder(s)")
+            if full_slide_pictures and len(text) < 40:
+                warnings.append(f"slide {index} may be a low-editability full-slide image")
             slides.append(
                 {
                     "index": index,
                     "part": slide_name,
+                    "text": text[:1200],
                     "text_chars": len(text),
                     "shapes": shapes,
                     "pictures": pictures,
@@ -130,9 +179,17 @@ def audit(path: Path) -> dict:
                     "image_relationships": image_count,
                     "chart_relationships": chart_count,
                     "notes_relationships": notes_count,
-                    "empty_placeholders": count_placeholders_without_text(root),
+                    "external_relationships": external_count,
+                    "hyperlink_relationships": hyperlink_count,
+                    "empty_placeholders": empty_placeholders,
+                    "text_paragraphs": paragraph_count,
+                    "has_visual_anchor": has_visual_anchor,
+                    "full_slide_pictures": full_slide_pictures,
                 }
             )
+
+        if len(slides) > 3 and not any(slide["notes_relationships"] for slide in slides):
+            warnings.append("deck has no speaker notes")
 
         return {
             "path": str(path),
@@ -142,8 +199,10 @@ def audit(path: Path) -> dict:
             "layouts": len(layouts),
             "masters": len(masters),
             "themes": len(themes),
-            "slide_size": presentation_size(zf),
+            "slide_size": slide_size,
             "slide_details": slides,
+            "external_links": sum(slide["external_relationships"] for slide in slides),
+            "hyperlinks": sum(slide["hyperlink_relationships"] for slide in slides),
             "warnings": warnings,
         }
 

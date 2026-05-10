@@ -13,6 +13,8 @@ Use this skill as the execution backend. Pair it with the format skill that carr
 - `pptx-presentation-design` for PowerPoint decks, slides, speaker notes, and template decks
 - `xlsx-workbook-design` for Excel workbooks, spreadsheets, dashboards, formulas, and financial models
 
+Keep format-specific generation logic in the format skill. In particular, `create_pptx` is a backward-compatible command that delegates to `pptx-presentation-design/scripts/pptx_renderer.py`; new PPT layout, theme, and deck-quality work belongs in `pptx-presentation-design`, not this shared dispatcher.
+
 ## When to use
 - Creating new DOCX, XLSX, or PPTX files with Python libraries when the result must be a real Office artifact
 - Targeted text replace inside a `.docx`, `.pptx`, or `.xlsx` while preserving formatting
@@ -60,7 +62,7 @@ For this skill, invoke the bundled document script through `run_shell` with `pyt
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/model.xlsx create_xlsx --spec /abs/source/workbook_spec.json
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/deck.pptx create_pptx --spec /abs/source/deck_spec.json
    ```
-   For complex generation, put a short custom script inside an approved source/workspace path, use `python-docx`, `openpyxl`, or `python-pptx`, and write the final `.docx`/`.xlsx`/`.pptx` directly to disk.
+   The PPTX command is a compatibility wrapper around the PPT skill renderer. For complex generation, put a short custom script inside an approved source/workspace path, use `python-docx`, `openpyxl`, or `python-pptx`, and write the final `.docx`/`.xlsx`/`.pptx` directly to disk.
 6. Validate and convert after generation:
    ```
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/report.docx validate

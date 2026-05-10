@@ -189,6 +189,78 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
                     "../assets/skills/pptx-presentation-design/scripts/pptx_audit.py"
                 ),
             },
+            BuiltinSkillResource {
+                path: "scripts/pptx_renderer.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_renderer.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/pptx_quality_gate.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_quality_gate.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/pptx_template_profile.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_template_profile.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/pptx_template_bind.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_template_bind.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/pptx_visual_qa.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_visual_qa.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/pptx_style_profile.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_style_profile.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/pptx_deck_planner.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_deck_planner.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/pptx_rewrite_plan.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_rewrite_plan.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/pptx_semantic_rewriter.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_semantic_rewriter.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/pptx_asset_pack.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_asset_pack.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/pptx_regression_suite.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_regression_suite.py"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "scripts/pptx_delivery_pack.py",
+                content: include_str!(
+                    "../assets/skills/pptx-presentation-design/scripts/pptx_delivery_pack.py"
+                ),
+            },
         ],
     },
     BuiltinSkillBundle {
@@ -392,6 +464,148 @@ pub fn builtin_skill_dir(app_data_dir: &Path, slug: &str) -> PathBuf {
     app_data_dir.join("skills").join(slug)
 }
 
+fn safe_skill_dir_name(id: &str) -> String {
+    let safe = id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if safe.is_empty() {
+        "skill".to_string()
+    } else {
+        safe
+    }
+}
+
+/// Return the on-disk directory where a user-created skill should be
+/// materialized. User skills are stored separately from built-ins so user
+/// scripts/assets cannot collide with bundled skill resources.
+pub fn user_skill_dir(app_data_dir: &Path, skill_id: &str) -> PathBuf {
+    app_data_dir
+        .join("skills")
+        .join("user")
+        .join(safe_skill_dir_name(skill_id))
+}
+
+fn substitute_user_skill_dir(body: String, skill_id: &str) -> String {
+    if !body.contains("<SKILL_DIR>") {
+        return body;
+    }
+    if let Some(base) = SKILLS_BASE_DIR.get() {
+        let skill_dir = base.join("user").join(safe_skill_dir_name(skill_id));
+        body.replace("<SKILL_DIR>", &skill_dir.to_string_lossy())
+    } else {
+        body
+    }
+}
+
+pub fn materialize_user_skill_to_disk(
+    app_data_dir: &Path,
+    skill: &Skill,
+) -> Result<PathBuf, CoreError> {
+    if skill.builtin {
+        return Err(CoreError::InvalidInput(
+            "Built-in skills are materialized by materialize_skills_to_disk".into(),
+        ));
+    }
+
+    let skill_dir = user_skill_dir(app_data_dir, &skill.id);
+    if skill_dir.exists() {
+        fs::remove_dir_all(&skill_dir).map_err(|e| {
+            CoreError::Internal(format!(
+                "Failed to replace user skill dir {}: {e}",
+                skill_dir.display()
+            ))
+        })?;
+    }
+    fs::create_dir_all(&skill_dir).map_err(|e| {
+        CoreError::Internal(format!(
+            "Failed to create user skill dir {}: {e}",
+            skill_dir.display()
+        ))
+    })?;
+
+    fs::write(skill_dir.join("SKILL.md"), export_skill_to_md(skill)).map_err(|e| {
+        CoreError::Internal(format!(
+            "Failed to write user skill SKILL.md for {}: {e}",
+            skill.id
+        ))
+    })?;
+
+    let resources = normalize_resource_bundle(&skill.resource_bundle)?;
+    for resource in resources {
+        let target = skill_dir.join(&resource.path);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                CoreError::Internal(format!(
+                    "Failed to create user skill resource dir {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        let bytes = match resource.encoding {
+            SkillResourceEncoding::Utf8 => resource.content.into_bytes(),
+            SkillResourceEncoding::Base64 => {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD
+                    .decode(resource.content)
+                    .map_err(|e| {
+                        CoreError::InvalidInput(format!(
+                            "Invalid base64 skill resource {}: {e}",
+                            resource.path
+                        ))
+                    })?
+            }
+        };
+        fs::write(&target, bytes).map_err(|e| {
+            CoreError::Internal(format!(
+                "Failed to write user skill resource {}: {e}",
+                target.display()
+            ))
+        })?;
+    }
+
+    Ok(skill_dir)
+}
+
+pub fn materialize_user_skills_to_disk(
+    app_data_dir: &Path,
+    skills: &[Skill],
+) -> Result<(), CoreError> {
+    for skill in skills {
+        if skill.builtin {
+            continue;
+        }
+        if skill.enabled {
+            materialize_user_skill_to_disk(app_data_dir, skill)?;
+        } else {
+            remove_materialized_user_skill(app_data_dir, &skill.id)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn remove_materialized_user_skill(
+    app_data_dir: &Path,
+    skill_id: &str,
+) -> Result<(), CoreError> {
+    let skill_dir = user_skill_dir(app_data_dir, skill_id);
+    if skill_dir.exists() {
+        fs::remove_dir_all(&skill_dir).map_err(|e| {
+            CoreError::Internal(format!(
+                "Failed to remove user skill dir {}: {e}",
+                skill_dir.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 fn write_if_changed(path: &Path, bytes: &[u8], skill_slug: &str) {
     if let Ok(existing) = fs::read(path) {
         if existing == bytes {
@@ -568,15 +782,17 @@ fn deserialize_resource_bundle(raw: Option<String>) -> Result<Vec<SkillResourceF
 }
 
 fn skill_from_row(row: &rusqlite::Row<'_>) -> Result<Skill, rusqlite::Error> {
+    let id: String = row.get(0)?;
+    let content: String = row.get(3)?;
     let resource_bundle_raw: Option<String> = row.get(7)?;
     let resource_bundle = deserialize_resource_bundle(resource_bundle_raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(err))
     })?;
     Ok(Skill {
-        id: row.get(0)?,
+        id: id.clone(),
         name: row.get(1)?,
         description: row.get(2)?,
-        content: row.get(3)?,
+        content: substitute_user_skill_dir(content, &id),
         enabled: row.get::<_, i32>(4)? != 0,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
@@ -1504,6 +1720,17 @@ fn select_resource_excerpt(skill: &Skill, query: &str) -> String {
                 let fuzzy = jaro_winkler(&surface, &query_normalized) as f32;
                 lexical + fuzzy
             };
+            let score = score
+                + if resource.path.starts_with("references/") {
+                    3.0
+                } else {
+                    0.0
+                }
+                + if resource.path.contains("playbook") {
+                    2.0
+                } else {
+                    0.0
+                };
             (score, resource)
         })
         .collect();
@@ -1813,6 +2040,66 @@ mod tests {
                 SkillResourceKind::Script,
             ),
             (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_renderer.py",
+                SkillResourceKind::Script,
+            ),
+            (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_quality_gate.py",
+                SkillResourceKind::Script,
+            ),
+            (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_template_profile.py",
+                SkillResourceKind::Script,
+            ),
+            (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_template_bind.py",
+                SkillResourceKind::Script,
+            ),
+            (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_visual_qa.py",
+                SkillResourceKind::Script,
+            ),
+            (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_style_profile.py",
+                SkillResourceKind::Script,
+            ),
+            (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_deck_planner.py",
+                SkillResourceKind::Script,
+            ),
+            (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_rewrite_plan.py",
+                SkillResourceKind::Script,
+            ),
+            (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_semantic_rewriter.py",
+                SkillResourceKind::Script,
+            ),
+            (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_asset_pack.py",
+                SkillResourceKind::Script,
+            ),
+            (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_regression_suite.py",
+                SkillResourceKind::Script,
+            ),
+            (
+                "builtin-pptx-presentation-design",
+                "scripts/pptx_delivery_pack.py",
+                SkillResourceKind::Script,
+            ),
+            (
                 "builtin-xlsx-workbook-design",
                 "scripts/xlsx_audit.py",
                 SkillResourceKind::Script,
@@ -2041,6 +2328,123 @@ mod tests {
     }
 
     #[test]
+    fn test_user_skill_script_and_asset_resources_roundtrip() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Custom PPT helper".into(),
+                description: "Use for custom presentation workflows".into(),
+                content: "Run the bundled helper script when needed.".into(),
+                enabled: true,
+                resource_bundle: vec![
+                    SkillResourceFile {
+                        path: "scripts\\render.py".into(),
+                        kind: SkillResourceKind::Script,
+                        encoding: SkillResourceEncoding::Utf8,
+                        content: "print('render')\n".into(),
+                    },
+                    SkillResourceFile {
+                        path: "assets/theme.json".into(),
+                        kind: SkillResourceKind::Asset,
+                        encoding: SkillResourceEncoding::Utf8,
+                        content: "{\"primary\":\"2563EB\"}".into(),
+                    },
+                ],
+            })
+            .unwrap();
+
+        assert_eq!(saved.resources.len(), 2);
+        assert_eq!(saved.resource_bundle[0].path, "scripts/render.py");
+        assert_eq!(saved.resources[0].kind, SkillResourceKind::Script);
+        assert_eq!(saved.resources[1].path, "assets/theme.json");
+        assert_eq!(saved.resources[1].kind, SkillResourceKind::Asset);
+
+        let reloaded = db.list_skills().unwrap();
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded[0].resource_bundle.len(), 2);
+        assert_eq!(reloaded[0].resource_bundle[0].path, "scripts/render.py");
+        assert_eq!(reloaded[0].resource_bundle[0].content, "print('render')\n");
+        assert_eq!(reloaded[0].resources[0].kind, SkillResourceKind::Script);
+        assert_eq!(reloaded[0].resources[1].kind, SkillResourceKind::Asset);
+    }
+
+    #[test]
+    fn test_materialize_user_skill_writes_script_and_asset_files() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Runnable custom skill".into(),
+                description: "Use for local runnable helpers".into(),
+                content: "Run `python <SKILL_DIR>/scripts/render.py`.".into(),
+                enabled: true,
+                resource_bundle: vec![
+                    SkillResourceFile {
+                        path: "scripts/render.py".into(),
+                        kind: SkillResourceKind::Script,
+                        encoding: SkillResourceEncoding::Utf8,
+                        content: "print('ok')\n".into(),
+                    },
+                    SkillResourceFile {
+                        path: "assets/config.json".into(),
+                        kind: SkillResourceKind::Asset,
+                        encoding: SkillResourceEncoding::Utf8,
+                        content: "{}\n".into(),
+                    },
+                ],
+            })
+            .unwrap();
+
+        let skill_dir = materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
+        assert!(skill_dir.join("SKILL.md").exists());
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("scripts/render.py")).unwrap(),
+            "print('ok')\n"
+        );
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("assets/config.json")).unwrap(),
+            "{}\n"
+        );
+    }
+
+    #[test]
+    fn test_materialize_user_skills_removes_disabled_skill_dir() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Toggleable custom skill".into(),
+                description: "Use for local scripts".into(),
+                content: "Run local script.".into(),
+                enabled: true,
+                resource_bundle: vec![SkillResourceFile {
+                    path: "scripts/run.py".into(),
+                    kind: SkillResourceKind::Script,
+                    encoding: SkillResourceEncoding::Utf8,
+                    content: "print('enabled')\n".into(),
+                }],
+            })
+            .unwrap();
+        materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
+        assert!(user_skill_dir(dir.path(), &saved.id).exists());
+
+        db.toggle_skill(&saved.id, false).unwrap();
+        let disabled = db.list_skills().unwrap();
+        materialize_user_skills_to_disk(dir.path(), &disabled).unwrap();
+
+        assert!(!user_skill_dir(dir.path(), &saved.id).exists());
+    }
+
+    #[test]
     fn test_discover_skills_in_directory_recurses_and_loads_resources() {
         let dir = tempdir().unwrap();
         let nested = dir.path().join("nested/productivity");
@@ -2075,6 +2479,36 @@ mod tests {
             build_skills_section_for_query(&[pptx_skill], "make a slide deck for q3 metrics");
         assert!(section.contains("Bundled Resources"));
         assert!(section.contains("pptx-playbook.md"));
+    }
+
+    #[test]
+    fn test_materialize_pptx_skill_writes_runtime_scripts_to_disk() {
+        let dir = tempdir().unwrap();
+        let base = materialize_skills_to_disk(dir.path()).unwrap();
+        let pptx_dir = base.join("pptx-presentation-design");
+
+        for path in [
+            "SKILL.md",
+            "references/pptx-playbook.md",
+            "scripts/pptx_audit.py",
+            "scripts/pptx_renderer.py",
+            "scripts/pptx_quality_gate.py",
+            "scripts/pptx_template_profile.py",
+            "scripts/pptx_template_bind.py",
+            "scripts/pptx_visual_qa.py",
+            "scripts/pptx_style_profile.py",
+            "scripts/pptx_deck_planner.py",
+            "scripts/pptx_rewrite_plan.py",
+            "scripts/pptx_semantic_rewriter.py",
+            "scripts/pptx_asset_pack.py",
+            "scripts/pptx_regression_suite.py",
+            "scripts/pptx_delivery_pack.py",
+        ] {
+            assert!(
+                pptx_dir.join(path).exists(),
+                "expected materialized PPTX skill resource {path}"
+            );
+        }
     }
 
     #[test]
