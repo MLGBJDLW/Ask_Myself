@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.4.2...nexa-monorepo-v0.5.0) (2026-05-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* upgrade PPT skill pipeline
+
+### Features
+
+* add rich office file previews ([fd5312d](https://github.com/MLGBJDLW/Nexa/commit/fd5312d3ad7b96e19e205d23bd6bb29228be8de1))
+* **agent:** improve memory skills and source diagnostics ([3e217c2](https://github.com/MLGBJDLW/Nexa/commit/3e217c2bfef11e8844445095bbc04e7a2d26464b))
+* **chat:** show run_shell file diffs ([18a0e3b](https://github.com/MLGBJDLW/Nexa/commit/18a0e3b80e8da6081da1110d53412a2470ef58dc))
+* materialize user skill resources in desktop ([6a81ee3](https://github.com/MLGBJDLW/Nexa/commit/6a81ee3fab736f08458071c80b82d7d4f5ca6b7c))
+* **ppt:** support stdin deck specs ([b7638ed](https://github.com/MLGBJDLW/Nexa/commit/b7638ed8d1623282ca6d55753c565b9c7674b1e1))
+* upgrade PPT skill pipeline ([cf07101](https://github.com/MLGBJDLW/Nexa/commit/cf0710141e56c88d72ba3864ce2ec252a78c6b0f))
+
 ## [0.4.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.4.1...nexa-monorepo-v0.4.2) (2026-05-09)
 
 
