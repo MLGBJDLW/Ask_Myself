@@ -41,6 +41,7 @@ export function AppearanceSettingsTab({
   onRerunWizard,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation();
+  const toolTimeoutUnlimited = (appConfig?.toolTimeoutSecs ?? 30) <= 0;
   const agentTimeoutUnlimited = (appConfig?.agentTimeoutSecs ?? 180) <= 0;
 
   return (
@@ -124,14 +125,37 @@ export function AppearanceSettingsTab({
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-text-primary">{t('settings.toolTimeout')}</label>
-                  <Input
-                    type="number"
-                    value={appConfig.toolTimeoutSecs}
-                    onChange={(e) => onAppConfigChange({ ...appConfig, toolTimeoutSecs: parseInt(e.target.value) || 30 })}
-                    min={5}
-                    max={300}
-                    step={5}
-                  />
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      value={appConfig.toolTimeoutSecs}
+                      onChange={(e) => {
+                        const parsed = Number.parseInt(e.target.value, 10);
+                        onAppConfigChange({
+                          ...appConfig,
+                          toolTimeoutSecs: Number.isFinite(parsed) ? Math.max(0, parsed) : 30,
+                        });
+                      }}
+                      min={0}
+                      max={3600}
+                      step={30}
+                      disabled={toolTimeoutUnlimited}
+                    />
+                    <Button
+                      type="button"
+                      variant={toolTimeoutUnlimited ? 'primary' : 'secondary'}
+                      size="md"
+                      className="shrink-0"
+                      onClick={() =>
+                        onAppConfigChange({
+                          ...appConfig,
+                          toolTimeoutSecs: toolTimeoutUnlimited ? 30 : 0,
+                        })
+                      }
+                    >
+                      {t('settings.agentTimeoutNoLimit')}
+                    </Button>
+                  </div>
                   <p className="text-xs text-text-tertiary">
                     {t('settings.toolTimeoutDesc')}
                   </p>

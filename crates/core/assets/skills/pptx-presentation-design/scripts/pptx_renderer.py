@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -45,6 +46,118 @@ PPTX_THEME_PRESETS = {
         "title_font": "Aptos Display",
         "body_font": "Aptos",
     },
+    "consulting-clean": {
+        "primary_color": "005587",
+        "accent_color": "C41230",
+        "background_color": "F7F8FA",
+        "surface_color": "FFFFFF",
+        "muted_surface_color": "E5E7EB",
+        "text_color": "1F2937",
+        "muted_text_color": "6B7280",
+        "title_color": "111827",
+        "inverse_text_color": "FFFFFF",
+        "title_font": "Aptos Display",
+        "body_font": "Aptos",
+        "background_style": "diagonal",
+    },
+    "executive-midnight": {
+        "primary_color": "93C5FD",
+        "accent_color": "F59E0B",
+        "background_color": "0F172A",
+        "surface_color": "111827",
+        "muted_surface_color": "1E293B",
+        "text_color": "E5E7EB",
+        "muted_text_color": "CBD5E1",
+        "title_color": "F8FAFC",
+        "inverse_text_color": "0F172A",
+        "title_font": "Aptos Display",
+        "body_font": "Aptos",
+        "background_style": "gradient_mesh",
+    },
+    "editorial-ink": {
+        "primary_color": "6D2E46",
+        "accent_color": "0F766E",
+        "background_color": "FBF7F2",
+        "surface_color": "FFFFFF",
+        "muted_surface_color": "E8DED4",
+        "text_color": "2D2A26",
+        "muted_text_color": "6B625C",
+        "title_color": "231F20",
+        "inverse_text_color": "FFFFFF",
+        "title_font": "Georgia",
+        "body_font": "Aptos",
+        "background_style": "soft_geometry",
+    },
+    "product-energy": {
+        "primary_color": "2563EB",
+        "accent_color": "F97316",
+        "background_color": "F8FAFC",
+        "surface_color": "FFFFFF",
+        "muted_surface_color": "DBEAFE",
+        "text_color": "111827",
+        "muted_text_color": "475569",
+        "title_color": "0F172A",
+        "inverse_text_color": "FFFFFF",
+        "title_font": "Aptos Display",
+        "body_font": "Aptos",
+        "background_style": "gradient_mesh",
+    },
+    "healthcare-trust": {
+        "primary_color": "0F766E",
+        "accent_color": "2563EB",
+        "background_color": "F6FBFA",
+        "surface_color": "FFFFFF",
+        "muted_surface_color": "DDF3EF",
+        "text_color": "12332F",
+        "muted_text_color": "4B6965",
+        "title_color": "0B2724",
+        "inverse_text_color": "FFFFFF",
+        "title_font": "Aptos Display",
+        "body_font": "Aptos",
+        "background_style": "clinical_grid",
+    },
+    "finance-precision": {
+        "primary_color": "1E3A8A",
+        "accent_color": "16A34A",
+        "background_color": "F8FAFC",
+        "surface_color": "FFFFFF",
+        "muted_surface_color": "E2E8F0",
+        "text_color": "111827",
+        "muted_text_color": "475569",
+        "title_color": "0F172A",
+        "inverse_text_color": "FFFFFF",
+        "title_font": "Aptos Display",
+        "body_font": "Aptos",
+        "background_style": "data_grid",
+    },
+    "education-bright": {
+        "primary_color": "7C3AED",
+        "accent_color": "F59E0B",
+        "background_color": "FFFBEB",
+        "surface_color": "FFFFFF",
+        "muted_surface_color": "FDE68A",
+        "text_color": "312E24",
+        "muted_text_color": "6B6250",
+        "title_color": "1F2937",
+        "inverse_text_color": "FFFFFF",
+        "title_font": "Trebuchet MS",
+        "body_font": "Aptos",
+        "background_style": "paper_texture",
+    },
+    "industrial-contrast": {
+        "primary_color": "374151",
+        "accent_color": "F59E0B",
+        "background_color": "F3F4F6",
+        "surface_color": "FFFFFF",
+        "muted_surface_color": "D1D5DB",
+        "text_color": "111827",
+        "muted_text_color": "4B5563",
+        "title_color": "030712",
+        "inverse_text_color": "FFFFFF",
+        "title_font": "Aptos Display",
+        "body_font": "Aptos",
+        "background_style": "blueprint_grid",
+    },
 }
 
 PPTX_SUPPORTED_LAYOUTS = {
@@ -75,6 +188,24 @@ PPTX_SUPPORTED_CHART_TYPES = {
     "pie",
     "stacked_bar",
     "stacked_column",
+}
+
+PPTX_BACKGROUND_STYLES = {
+    "none",
+    "solid",
+    "flat",
+    "diagonal",
+    "section",
+    "editorial",
+    "mesh",
+    "gradient_mesh",
+    "soft_geometry",
+    "ambient",
+    "blueprint_grid",
+    "paper_texture",
+    "clinical_grid",
+    "data_grid",
+    "spotlight",
 }
 
 EMU_PER_INCH = 914400
@@ -159,7 +290,8 @@ def _normalize_theme(theme_spec: Any) -> dict[str, str]:
         key = theme_spec.strip().lower()
         key = {"light": "nexa-light", "dark": "nexa-dark"}.get(key, key)
         if key not in PPTX_THEME_PRESETS:
-            _die("ERROR: unsupported PPTX theme. Use 'nexa-light', 'nexa-dark', or a custom theme object.", 3)
+            presets = ", ".join(sorted(PPTX_THEME_PRESETS))
+            _die(f"ERROR: unsupported PPTX theme. Use one of: {presets}; or pass a custom theme object.", 3)
         return dict(PPTX_THEME_PRESETS[key])
     if not isinstance(theme_spec, dict):
         _die("ERROR: PPTX theme must be a string or object", 3)
@@ -257,6 +389,26 @@ def _set_background(slide: Any, theme: dict[str, str], color_key: str = "backgro
     fill = slide.background.fill
     fill.solid()
     fill.fore_color.rgb = _rgb(theme, color_key)
+
+
+def _rgb_from_theme_or_hex(theme: dict[str, str], value: Any, fallback_key: str):
+    if value in (None, ""):
+        return _rgb(theme, fallback_key)
+    raw = str(value).strip()
+    if raw in theme:
+        return _rgb(theme, raw)
+    return _hex_to_rgb(raw)
+
+
+def _style_shape_rgb(shape: Any, fill_rgb: Any, line_rgb: Any | None = None, transparency: int = 0) -> None:
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = fill_rgb
+    if transparency:
+        shape.fill.transparency = max(0, min(100, int(transparency)))
+    if line_rgb is not None:
+        shape.line.color.rgb = line_rgb
+    else:
+        shape.line.fill.background()
 
 
 def _style_shape(shape: Any, theme: dict[str, str], fill_key: str, line_key: str | None = None, transparency: int = 0) -> None:
@@ -460,12 +612,146 @@ def _item_detail(item: dict[str, Any]) -> str:
     return ""
 
 
+def _catalog_ref(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("path", "url", "src", "image", "image_path", "image_url", "file"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return None
+
+
+def _normalize_image_catalog(images: Any) -> dict[str, str]:
+    catalog: dict[str, str] = {}
+    if isinstance(images, dict):
+        for key, value in images.items():
+            ref = _catalog_ref(value)
+            if ref:
+                catalog[str(key).strip().lstrip("@")] = ref
+    elif isinstance(images, list):
+        for value in images:
+            if not isinstance(value, dict):
+                continue
+            alias = value.get("id") or value.get("name") or value.get("key") or value.get("alias")
+            ref = _catalog_ref(value)
+            if alias and ref:
+                catalog[str(alias).strip().lstrip("@")] = ref
+    return catalog
+
+
+def _icon_catalog_ref(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("name", "icon", "shape", "kind", "value", "path", "url", "src", "file"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return None
+
+
+def _normalize_icon_catalog(icons: Any) -> dict[str, str]:
+    catalog: dict[str, str] = {}
+    if isinstance(icons, dict):
+        for key, value in icons.items():
+            ref = _icon_catalog_ref(value)
+            if ref:
+                catalog[str(key).strip().lstrip("@")] = ref
+    elif isinstance(icons, list):
+        for value in icons:
+            if not isinstance(value, dict):
+                continue
+            alias = value.get("id") or value.get("name") or value.get("key") or value.get("alias")
+            ref = _icon_catalog_ref(value)
+            if alias and ref:
+                catalog[str(alias).strip().lstrip("@")] = ref
+    return catalog
+
+
+def _catalog_lookup(value: Any, catalog: dict[str, str]) -> Any:
+    if not isinstance(value, str):
+        return value
+    raw = value.strip()
+    key = raw[1:] if raw.startswith("@") else raw
+    return catalog.get(key, value)
+
+
+def _apply_image_catalog_to_slide(slide_spec: dict[str, Any], catalog: dict[str, str]) -> dict[str, Any]:
+    if not catalog:
+        return dict(slide_spec)
+
+    def visit(value: Any) -> Any:
+        if isinstance(value, dict):
+            resolved = {
+                str(key): visit(item) if isinstance(item, (dict, list)) else item
+                for key, item in value.items()
+            }
+            if "image_id" in resolved and not any(resolved.get(key) for key in ("image", "image_path", "image_url")):
+                resolved["image"] = _catalog_lookup(resolved["image_id"], catalog)
+            if "background_image_id" in resolved and not any(
+                resolved.get(key) for key in ("background_image", "background_image_path", "background_image_url")
+            ):
+                resolved["background_image"] = _catalog_lookup(resolved["background_image_id"], catalog)
+            for key in (
+                "image",
+                "image_path",
+                "image_url",
+                "background_image",
+                "background_image_path",
+                "background_image_url",
+            ):
+                if key in resolved:
+                    resolved[key] = _catalog_lookup(resolved[key], catalog)
+            return resolved
+        if isinstance(value, list):
+            return [visit(item) for item in value]
+        return value
+
+    return visit(slide_spec)
+
+
+def _apply_icon_catalog_to_slide(slide_spec: dict[str, Any], catalog: dict[str, str]) -> dict[str, Any]:
+    if not catalog:
+        return dict(slide_spec)
+
+    def visit(value: Any) -> Any:
+        if isinstance(value, dict):
+            resolved = {
+                str(key): visit(item) if isinstance(item, (dict, list)) else item
+                for key, item in value.items()
+            }
+            if "icon_id" in resolved and not resolved.get("icon"):
+                alias = str(resolved["icon_id"]).strip().lstrip("@")
+                resolved["icon"] = _catalog_lookup(alias, catalog)
+                resolved.setdefault("icon_label", alias)
+            elif isinstance(resolved.get("icon"), str):
+                raw = str(resolved["icon"]).strip()
+                if raw.startswith("@"):
+                    alias = raw[1:]
+                    resolved["icon"] = _catalog_lookup(raw, catalog)
+                    resolved.setdefault("icon_label", alias)
+            return resolved
+        if isinstance(value, list):
+            return [visit(item) for item in value]
+        return value
+
+    return visit(slide_spec)
+
+
 def _image_ref(slide_spec: dict[str, Any]) -> str | None:
     for key in ("image_path", "image_url", "image"):
         value = slide_spec.get(key)
         if value:
             return str(value)
     return None
+
+
+def _image_fit(slide_spec: dict[str, Any], default: str = "cover") -> str:
+    value = slide_spec.get("image_fit") or slide_spec.get("fit") or slide_spec.get("crop")
+    key = str(value or default).strip().lower()
+    return key if key in {"cover", "contain", "stretch"} else default
 
 
 def _resolve_image_reference(ref: str, temp_paths: list[Path], workspace_root: Path) -> Path:
@@ -502,6 +788,7 @@ def _add_image_or_placeholder(
     *,
     caption: Any = None,
     fill_width_only: bool = False,
+    fit: str = "cover",
 ) -> None:
     try:
         if ref:
@@ -509,7 +796,7 @@ def _add_image_or_placeholder(
             if fill_width_only:
                 slide.shapes.add_picture(str(image_path), _inches(left), _inches(top), width=_inches(width))
             else:
-                slide.shapes.add_picture(str(image_path), _inches(left), _inches(top), width=_inches(width), height=_inches(height))
+                _add_picture_with_fit(slide, image_path, left, top, width, height, fit)
             if caption:
                 _add_text(slide, caption, left, top + height + 0.05, width, 0.25, theme, size=9, color_key="muted_text_color")
             return
@@ -525,12 +812,379 @@ def _add_image_or_placeholder(
     _add_text(slide, "Image unavailable", left + 0.15, top + height / 2 - 0.15, width - 0.3, 0.3, theme, size=12, color_key="muted_text_color", align="center")
 
 
+def _safe_token(value: Any, fallback: str = "item") -> str:
+    raw = str(value or fallback).strip().lower()
+    token = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    return token or fallback
+
+
+def _looks_like_image_ref(value: str, workspace_root: Path) -> bool:
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"}:
+        return Path(parsed.path).suffix.lower() in IMAGE_SUFFIXES
+    path = Path(value)
+    if not path.is_absolute():
+        path = workspace_root / path
+    return path.suffix.lower() in IMAGE_SUFFIXES
+
+
+def _add_builtin_icon(slide: Any, icon: str, label: str, left: float, top: float, size: float, theme: dict[str, str]) -> None:
+    try:
+        from pptx.enum.shapes import MSO_SHAPE  # type: ignore
+    except ImportError:
+        _missing("python-pptx")
+
+    key = _safe_token(icon, "symbol")
+    name = f"icon-{_safe_token(label, key)}"
+    base = slide.shapes.add_shape(MSO_SHAPE.OVAL, _inches(left), _inches(top), _inches(size), _inches(size))
+    base.name = name
+    _style_shape(base, theme, "primary_color")
+
+    if key in {"shield", "risk", "security", "trust"}:
+        mark = slide.shapes.add_shape(getattr(MSO_SHAPE, "PENTAGON", MSO_SHAPE.DIAMOND), _inches(left + size * 0.28), _inches(top + size * 0.22), _inches(size * 0.44), _inches(size * 0.52))
+        mark.name = f"{name}-mark"
+        _style_shape(mark, theme, "inverse_text_color", transparency=0)
+    elif key in {"trend", "growth", "up", "signal"}:
+        mark = slide.shapes.add_shape(getattr(MSO_SHAPE, "UP_ARROW", MSO_SHAPE.RIGHT_ARROW), _inches(left + size * 0.28), _inches(top + size * 0.24), _inches(size * 0.46), _inches(size * 0.5))
+        mark.name = f"{name}-mark"
+        _style_shape(mark, theme, "inverse_text_color")
+    elif key in {"network", "workflow", "process"}:
+        for idx, (dx, dy) in enumerate([(0.26, 0.28), (0.56, 0.28), (0.41, 0.58)], start=1):
+            node = slide.shapes.add_shape(MSO_SHAPE.OVAL, _inches(left + size * dx), _inches(top + size * dy), _inches(size * 0.16), _inches(size * 0.16))
+            node.name = f"{name}-node-{idx}"
+            _style_shape(node, theme, "inverse_text_color")
+    elif key in {"spark", "idea", "insight"}:
+        mark = slide.shapes.add_shape(getattr(MSO_SHAPE, "SUN", MSO_SHAPE.DIAMOND), _inches(left + size * 0.27), _inches(top + size * 0.27), _inches(size * 0.46), _inches(size * 0.46))
+        mark.name = f"{name}-mark"
+        _style_shape(mark, theme, "inverse_text_color")
+    elif key in {"check", "done", "success"}:
+        mark = slide.shapes.add_shape(getattr(MSO_SHAPE, "CHEVRON", MSO_SHAPE.RIGHT_TRIANGLE), _inches(left + size * 0.24), _inches(top + size * 0.33), _inches(size * 0.5), _inches(size * 0.32))
+        mark.name = f"{name}-mark"
+        _style_shape(mark, theme, "inverse_text_color")
+    else:
+        mark = slide.shapes.add_shape(MSO_SHAPE.DIAMOND, _inches(left + size * 0.31), _inches(top + size * 0.31), _inches(size * 0.38), _inches(size * 0.38))
+        mark.name = f"{name}-mark"
+        _style_shape(mark, theme, "inverse_text_color")
+
+
+def _add_icon_or_image(
+    slide: Any,
+    icon: Any,
+    label: Any,
+    left: float,
+    top: float,
+    size: float,
+    theme: dict[str, str],
+    temp_paths: list[Path],
+    workspace_root: Path,
+) -> None:
+    if icon in (None, ""):
+        return
+    value = str(icon).strip()
+    name = str(label or value).strip()
+    if _looks_like_image_ref(value, workspace_root):
+        _add_image_or_placeholder(slide, value, left, top, size, size, theme, temp_paths, workspace_root, fit="contain")
+        try:
+            slide.shapes[-1].name = f"icon-{_safe_token(name)}"
+        except Exception:
+            pass
+        return
+    _add_builtin_icon(slide, value, name, left, top, size, theme)
+
+
+def _add_slide_icon(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, temp_paths: list[Path], workspace_root: Path) -> None:
+    icon = slide_spec.get("icon")
+    if not icon:
+        return
+    _add_icon_or_image(
+        slide,
+        icon,
+        slide_spec.get("icon_label") or slide_spec.get("icon_id") or icon,
+        slide_w - 1.15,
+        0.43,
+        0.48,
+        theme,
+        temp_paths,
+        workspace_root,
+    )
+
+
+def _background_dict(slide_spec: dict[str, Any]) -> dict[str, Any]:
+    value = slide_spec.get("background")
+    return value if isinstance(value, dict) else {}
+
+
+def _background_value(slide_spec: dict[str, Any], *keys: str) -> Any:
+    background = _background_dict(slide_spec)
+    for key in keys:
+        if key in background and background[key] not in (None, ""):
+            return background[key]
+        if key in slide_spec and slide_spec[key] not in (None, ""):
+            return slide_spec[key]
+    return None
+
+
+def _background_image_ref(slide_spec: dict[str, Any]) -> str | None:
+    background = _background_dict(slide_spec)
+    for key in ("image", "image_path", "image_url", "background_image", "background_image_path", "background_image_url"):
+        value = background.get(key)
+        if value:
+            return str(value)
+    for key in ("background_image", "background_image_path", "background_image_url"):
+        value = slide_spec.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _background_int(slide_spec: dict[str, Any], default: int, *keys: str) -> int:
+    value = _background_value(slide_spec, *keys)
+    if value in (None, ""):
+        return default
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _background_bool(slide_spec: dict[str, Any], default: bool, *keys: str) -> bool:
+    value = _background_value(slide_spec, *keys)
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _image_pixel_size(path: Path) -> tuple[int, int] | None:
+    try:
+        from PIL import Image  # type: ignore
+    except ImportError:
+        return None
+    try:
+        with Image.open(path) as image:
+            return image.size
+    except Exception:
+        return None
+
+
+def _add_picture_with_fit(slide: Any, image_path: Path, left: float, top: float, width: float, height: float, fit: str) -> Any:
+    size = _image_pixel_size(image_path)
+    fit_mode = str(fit or "cover").lower()
+    if fit_mode == "stretch" or not size:
+        return slide.shapes.add_picture(str(image_path), _inches(left), _inches(top), width=_inches(width), height=_inches(height))
+
+    image_w, image_h = size
+    image_ratio = image_w / image_h
+    frame_ratio = width / height
+
+    if fit_mode == "contain":
+        if image_ratio > frame_ratio:
+            pic_w = width
+            pic_h = width / image_ratio
+        else:
+            pic_h = height
+            pic_w = height * image_ratio
+        return slide.shapes.add_picture(
+            str(image_path),
+            _inches(left + (width - pic_w) / 2),
+            _inches(top + (height - pic_h) / 2),
+            width=_inches(pic_w),
+            height=_inches(pic_h),
+        )
+
+    picture = slide.shapes.add_picture(str(image_path), _inches(left), _inches(top), width=_inches(width), height=_inches(height))
+    try:
+        if image_ratio > frame_ratio:
+            visible = image_h * frame_ratio
+            crop = max(0.0, min(0.45, (image_w - visible) / image_w / 2))
+            picture.crop_left = crop
+            picture.crop_right = crop
+        elif image_ratio < frame_ratio:
+            visible = image_w / frame_ratio
+            crop = max(0.0, min(0.45, (image_h - visible) / image_h / 2))
+            picture.crop_top = crop
+            picture.crop_bottom = crop
+    except Exception:
+        pass
+    return picture
+
+
+def _add_background_picture(
+    slide: Any,
+    ref: str,
+    slide_w: float,
+    slide_h: float,
+    temp_paths: list[Path],
+    workspace_root: Path,
+    *,
+    fit: str = "cover",
+) -> bool:
+    try:
+        image_path = _resolve_image_reference(ref, temp_paths, workspace_root)
+        if image_path.suffix.lower() == ".svg":
+            print(
+                f"WARN: SVG backgrounds are not embedded directly by python-pptx: {ref}. "
+                "Use a raster preview or a template/SVG pipeline for exact SVG art.",
+                file=sys.stderr,
+            )
+            return False
+        size = _image_pixel_size(image_path)
+        if not size:
+            slide.shapes.add_picture(str(image_path), _inches(0), _inches(0), width=_inches(slide_w), height=_inches(slide_h))
+            return True
+        image_w, image_h = size
+        image_ratio = image_w / image_h
+        slide_ratio = slide_w / slide_h
+        fit_mode = str(fit or "cover").lower()
+        if fit_mode == "contain":
+            if image_ratio > slide_ratio:
+                pic_w = slide_w
+                pic_h = slide_w / image_ratio
+            else:
+                pic_h = slide_h
+                pic_w = slide_h * image_ratio
+        else:
+            if image_ratio > slide_ratio:
+                pic_h = slide_h
+                pic_w = slide_h * image_ratio
+            else:
+                pic_w = slide_w
+                pic_h = slide_w / image_ratio
+        left = (slide_w - pic_w) / 2
+        top = (slide_h - pic_h) / 2
+        slide.shapes.add_picture(str(image_path), _inches(left), _inches(top), width=_inches(pic_w), height=_inches(pic_h))
+        return True
+    except Exception as exc:
+        print(f"WARN: could not add background image {ref}: {exc}", file=sys.stderr)
+        return False
+
+
+def _add_background_art(slide: Any, style: str, theme: dict[str, str], slide_w: float, slide_h: float) -> None:
+    try:
+        from pptx.enum.shapes import MSO_SHAPE  # type: ignore
+    except ImportError:
+        _missing("python-pptx")
+
+    key = str(style or "").strip().lower()
+    if key in {"", "none", "solid", "flat"}:
+        return
+
+    if key in {"blueprint_grid", "clinical_grid", "data_grid"}:
+        spacing = 0.45 if key == "data_grid" else 0.5
+        line_key = "primary_color" if key != "clinical_grid" else "accent_color"
+        x = 0.0
+        while x <= slide_w:
+            line = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(x), _inches(0), _inches(0.006), _inches(slide_h))
+            _style_shape(line, theme, line_key, transparency=84)
+            x += spacing
+        y = 0.0
+        while y <= slide_h:
+            line = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(0), _inches(y), _inches(slide_w), _inches(0.006))
+            _style_shape(line, theme, line_key, transparency=86)
+            y += spacing
+        if key == "data_grid":
+            for idx in range(8):
+                dot = slide.shapes.add_shape(
+                    MSO_SHAPE.OVAL,
+                    _inches(0.7 + idx * 1.35),
+                    _inches(slide_h - 0.95 - (idx % 3) * 0.22),
+                    _inches(0.055),
+                    _inches(0.055),
+                )
+                _style_shape(dot, theme, "accent_color", transparency=20)
+        return
+
+    if key == "paper_texture":
+        for idx in range(14):
+            left = (idx * 1.07) % slide_w
+            top = (idx * 0.71) % slide_h
+            width = 0.55 + (idx % 3) * 0.18
+            height = 0.12 + (idx % 2) * 0.08
+            patch = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(left), _inches(top), _inches(width), _inches(height))
+            patch.rotation = -6 + (idx % 5) * 3
+            _style_shape(patch, theme, "muted_surface_color", transparency=78)
+        return
+
+    if key == "spotlight":
+        panel = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(-0.25), _inches(0.75), _inches(slide_w * 0.72), _inches(slide_h * 0.68))
+        panel.rotation = -4
+        _style_shape(panel, theme, "surface_color", transparency=16)
+        edge = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(0.7), _inches(1.02), _inches(0.08), _inches(slide_h * 0.58))
+        _style_shape(edge, theme, "accent_color")
+        return
+
+    if key in {"diagonal", "section", "editorial"}:
+        band = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(slide_w * 0.62), _inches(-0.45), _inches(slide_w * 0.5), _inches(slide_h + 0.9))
+        band.rotation = -12
+        _style_shape(band, theme, "accent_color", transparency=22)
+        veil = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(-0.2), _inches(slide_h * 0.72), _inches(slide_w * 1.2), _inches(slide_h * 0.28))
+        _style_shape(veil, theme, "muted_surface_color", transparency=55)
+        return
+
+    if key in {"mesh", "gradient_mesh", "soft_geometry", "ambient"}:
+        orb = slide.shapes.add_shape(MSO_SHAPE.OVAL, _inches(slide_w * 0.68), _inches(-0.65), _inches(slide_w * 0.42), _inches(slide_h * 0.72))
+        _style_shape(orb, theme, "primary_color", transparency=72)
+        orb2 = slide.shapes.add_shape(MSO_SHAPE.OVAL, _inches(-0.65), _inches(slide_h * 0.62), _inches(slide_w * 0.38), _inches(slide_h * 0.5))
+        _style_shape(orb2, theme, "accent_color", transparency=76)
+        rail = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(0), _inches(0), _inches(slide_w), _inches(0.08))
+        _style_shape(rail, theme, "primary_color", transparency=20)
+        return
+
+    motif = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(slide_w * 0.74), _inches(0), _inches(slide_w * 0.26), _inches(slide_h))
+    _style_shape(motif, theme, "muted_surface_color", transparency=38)
+
+
+def _apply_slide_background(
+    slide: Any,
+    slide_spec: dict[str, Any],
+    theme: dict[str, str],
+    slide_w: float,
+    slide_h: float,
+    temp_paths: list[Path],
+    workspace_root: Path,
+    *,
+    color_key: str = "background_color",
+    default_style: str = "soft_geometry",
+) -> None:
+    try:
+        from pptx.enum.shapes import MSO_SHAPE  # type: ignore
+    except ImportError:
+        _missing("python-pptx")
+
+    fill = slide.background.fill
+    fill.solid()
+    fill.fore_color.rgb = _rgb_from_theme_or_hex(
+        theme,
+        _background_value(slide_spec, "color", "background_color", "bg"),
+        color_key,
+    )
+
+    image_added = False
+    image_ref = _background_image_ref(slide_spec)
+    if image_ref:
+        fit = str(_background_value(slide_spec, "fit", "image_fit", "background_fit") or "cover")
+        image_added = _add_background_picture(slide, image_ref, slide_w, slide_h, temp_paths, workspace_root, fit=fit)
+        overlay_value = _background_value(slide_spec, "overlay_color", "background_overlay_color")
+        if image_added and overlay_value is not False and str(overlay_value).lower() != "none":
+            overlay = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(0), _inches(0), _inches(slide_w), _inches(slide_h))
+            _style_shape_rgb(
+                overlay,
+                _rgb_from_theme_or_hex(theme, overlay_value, "background_color"),
+                transparency=_background_int(slide_spec, 24, "overlay_transparency", "background_overlay_transparency"),
+            )
+
+    style = str(_background_value(slide_spec, "style", "background_style") or theme.get("background_style") or default_style)
+    if (not image_added) or _background_bool(slide_spec, False, "ornaments_over_image", "background_ornaments"):
+        _add_background_art(slide, style, theme, slide_w, slide_h)
+
+
 def _render_title_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float, temp_paths: list[Path], workspace_root: Path) -> None:
     try:
         from pptx.enum.shapes import MSO_SHAPE  # type: ignore
     except ImportError:
         _missing("python-pptx")
-    _set_background(slide, theme)
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root, default_style="diagonal")
     band = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(0), _inches(0), _inches(slide_w * 0.42), _inches(slide_h))
     _style_shape(band, theme, "primary_color")
     ref = _image_ref(slide_spec)
@@ -543,13 +1197,13 @@ def _render_title_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str,
         _add_text(slide, slide_spec["author"], 0.8, slide_h - 1.0, slide_w * 0.34, 0.35, theme, size=11, color_key="inverse_text_color")
 
 
-def _render_agenda_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float) -> None:
+def _render_agenda_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float, temp_paths: list[Path], workspace_root: Path) -> None:
     try:
         from pptx.enum.shapes import MSO_SHAPE  # type: ignore
         from pptx.enum.text import MSO_ANCHOR, PP_ALIGN  # type: ignore
     except ImportError:
         _missing("python-pptx")
-    _set_background(slide, theme)
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root)
     _add_title(slide, slide_spec.get("title") or "Agenda", theme, slide_w)
     items = slide_spec.get("items") or slide_spec.get("bullets") or []
     if not isinstance(items, list):
@@ -570,13 +1224,25 @@ def _render_agenda_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str
 
 
 def _render_body_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float, temp_paths: list[Path], workspace_root: Path) -> None:
-    _set_background(slide, theme)
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root)
     _add_title(slide, slide_spec.get("title"), theme, slide_w)
     ref = _image_ref(slide_spec)
     content_w = slide_w - 1.4
     if ref:
         content_w = slide_w * 0.54
-        _add_image_or_placeholder(slide, ref, slide_w * 0.62, 1.35, slide_w * 0.32, slide_h - 2.1, theme, temp_paths, workspace_root, caption=slide_spec.get("image_caption"))
+        _add_image_or_placeholder(
+            slide,
+            ref,
+            slide_w * 0.62,
+            1.35,
+            slide_w * 0.32,
+            slide_h - 2.1,
+            theme,
+            temp_paths,
+            workspace_root,
+            caption=slide_spec.get("image_caption"),
+            fit=_image_fit(slide_spec),
+        )
     paragraph = slide_spec.get("paragraph") or slide_spec.get("body")
     bullets = slide_spec.get("bullets") or []
     if paragraph:
@@ -609,7 +1275,7 @@ def _render_column(slide: Any, payload: dict[str, Any], left: float, top: float,
         y += 0.55
     ref = _image_ref(payload)
     if ref:
-        _add_image_or_placeholder(slide, ref, left + 0.25, y, width - 0.5, height * 0.38, theme, temp_paths, workspace_root)
+        _add_image_or_placeholder(slide, ref, left + 0.25, y, width - 0.5, height * 0.38, theme, temp_paths, workspace_root, fit=_image_fit(payload))
         y += height * 0.43
     paragraph = payload.get("paragraph") or payload.get("body")
     if paragraph:
@@ -621,7 +1287,7 @@ def _render_column(slide: Any, payload: dict[str, Any], left: float, top: float,
 
 
 def _render_two_column_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float, temp_paths: list[Path], workspace_root: Path) -> None:
-    _set_background(slide, theme)
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root)
     _add_title(slide, slide_spec.get("title"), theme, slide_w)
     gap = 0.35
     left = 0.75
@@ -632,12 +1298,12 @@ def _render_two_column_slide(slide: Any, slide_spec: dict[str, Any], theme: dict
     _render_column(slide, _column_payload(slide_spec.get("right") or {}), left + col_w + gap, top, col_w, height, theme, temp_paths, workspace_root)
 
 
-def _render_stat_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float) -> None:
+def _render_stat_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float, temp_paths: list[Path], workspace_root: Path) -> None:
     try:
         from pptx.enum.shapes import MSO_SHAPE  # type: ignore
     except ImportError:
         _missing("python-pptx")
-    _set_background(slide, theme)
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root)
     _add_title(slide, slide_spec.get("title"), theme, slide_w)
     stats = slide_spec.get("stats") or []
     if not isinstance(stats, list) or not stats:
@@ -660,12 +1326,12 @@ def _render_stat_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, 
             _add_text(slide, item["caption"], left + 0.25, top + 1.95, card_w - 0.5, 0.7, theme, size=11, color_key="muted_text_color", align="center")
 
 
-def _render_quote_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float) -> None:
+def _render_quote_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float, temp_paths: list[Path], workspace_root: Path) -> None:
     try:
         from pptx.enum.shapes import MSO_SHAPE  # type: ignore
     except ImportError:
         _missing("python-pptx")
-    _set_background(slide, theme)
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root)
     bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(0.75), _inches(1.45), _inches(0.12), _inches(slide_h - 2.8))
     _style_shape(bar, theme, "accent_color")
     quote = slide_spec.get("text") or slide_spec.get("quote") or slide_spec.get("body") or ""
@@ -674,8 +1340,8 @@ def _render_quote_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str,
         _add_text(slide, slide_spec["attribution"], 1.12, 4.25, slide_w - 2.2, 0.35, theme, size=14, color_key="muted_text_color")
 
 
-def _render_section_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float) -> None:
-    _set_background(slide, theme, "primary_color")
+def _render_section_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float, temp_paths: list[Path], workspace_root: Path) -> None:
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root, color_key="primary_color", default_style="diagonal")
     _add_text(slide, slide_spec.get("title") or "", 1.05, 2.25, slide_w - 2.1, 0.95, theme, size=36, color_key="inverse_text_color", bold=True, font_key="title_font", align="center")
     if slide_spec.get("subtitle"):
         _add_text(slide, slide_spec["subtitle"], 1.5, 3.25, slide_w - 3.0, 0.55, theme, size=17, color_key="inverse_text_color", align="center")
@@ -686,7 +1352,7 @@ def _render_image_full_slide(slide: Any, slide_spec: dict[str, Any], theme: dict
         from pptx.enum.shapes import MSO_SHAPE  # type: ignore
     except ImportError:
         _missing("python-pptx")
-    _set_background(slide, theme)
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root)
     _add_image_or_placeholder(slide, _image_ref(slide_spec), 0, 0, slide_w, slide_h, theme, temp_paths, workspace_root, fill_width_only=True)
     overlay = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, _inches(0), _inches(slide_h * 0.58), _inches(slide_w), _inches(slide_h * 0.42))
     _style_shape(overlay, theme, "background_color", transparency=18)
@@ -696,12 +1362,12 @@ def _render_image_full_slide(slide: Any, slide_spec: dict[str, Any], theme: dict
         _add_text(slide, slide_spec["caption"], 0.85, slide_h * 0.75, slide_w - 1.7, 0.5, theme, size=13, color_key="text_color")
 
 
-def _render_timeline_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float) -> None:
+def _render_timeline_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float, temp_paths: list[Path], workspace_root: Path) -> None:
     try:
         from pptx.enum.shapes import MSO_SHAPE  # type: ignore
     except ImportError:
         _missing("python-pptx")
-    _set_background(slide, theme)
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root)
     _add_title(slide, slide_spec.get("title"), theme, slide_w)
     events = _item_dicts(slide_spec.get("events") or slide_spec.get("items"))[:6]
     line_y = slide_h * 0.48
@@ -731,12 +1397,12 @@ def _render_timeline_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[s
             _add_text(slide, detail, card_left + 0.12, card_top + 0.47, card_w - 0.24, 0.48, theme, size=9.5, color_key="muted_text_color")
 
 
-def _render_process_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float) -> None:
+def _render_process_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float, temp_paths: list[Path], workspace_root: Path) -> None:
     try:
         from pptx.enum.shapes import MSO_SHAPE  # type: ignore
     except ImportError:
         _missing("python-pptx")
-    _set_background(slide, theme)
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root)
     _add_title(slide, slide_spec.get("title"), theme, slide_w)
     steps = _item_dicts(slide_spec.get("steps") or slide_spec.get("items"))[:6]
     gap = 0.18
@@ -751,6 +1417,18 @@ def _render_process_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[st
         badge = slide.shapes.add_shape(MSO_SHAPE.OVAL, _inches(x + 0.18), _inches(top + 0.2), _inches(0.42), _inches(0.42))
         _style_shape(badge, theme, "primary_color")
         _add_text(slide, idx + 1, x + 0.18, top + 0.28, 0.42, 0.16, theme, size=10, color_key="inverse_text_color", bold=True, align="center", valign="middle")
+        if step.get("icon"):
+            _add_icon_or_image(
+                slide,
+                step.get("icon"),
+                step.get("icon_label") or step.get("icon_id") or step.get("icon"),
+                x + card_w - 0.68,
+                top + 0.18,
+                0.38,
+                theme,
+                temp_paths,
+                workspace_root,
+            )
         _add_text(slide, _item_title(step, f"Step {idx + 1}"), x + 0.2, top + 0.78, card_w - 0.4, 0.48, theme, size=14, color_key="title_color", bold=True)
         detail = _item_detail(step)
         if detail:
@@ -776,7 +1454,7 @@ def _render_comparison_slide(slide: Any, slide_spec: dict[str, Any], theme: dict
         from pptx.enum.shapes import MSO_SHAPE  # type: ignore
     except ImportError:
         _missing("python-pptx")
-    _set_background(slide, theme)
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root)
     _add_title(slide, slide_spec.get("title"), theme, slide_w)
     columns = _comparison_columns(slide_spec)
     gap = 0.28
@@ -794,12 +1472,12 @@ def _render_comparison_slide(slide: Any, slide_spec: dict[str, Any], theme: dict
         _render_column(slide, _column_payload(column), x + 0.22, top + 0.28, col_w - 0.44, height - 0.5, theme, temp_paths, workspace_root)
 
 
-def _render_matrix_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float) -> None:
+def _render_matrix_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float, temp_paths: list[Path], workspace_root: Path) -> None:
     try:
         from pptx.enum.shapes import MSO_SHAPE  # type: ignore
     except ImportError:
         _missing("python-pptx")
-    _set_background(slide, theme)
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root)
     _add_title(slide, slide_spec.get("title"), theme, slide_w)
     quadrants = _item_dicts(slide_spec.get("quadrants") or slide_spec.get("items"))[:4]
     left = 1.0
@@ -895,8 +1573,8 @@ def _add_chart(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], le
             pass
 
 
-def _render_chart_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float) -> None:
-    _set_background(slide, theme)
+def _render_chart_slide(slide: Any, slide_spec: dict[str, Any], theme: dict[str, str], slide_w: float, slide_h: float, temp_paths: list[Path], workspace_root: Path) -> None:
+    _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, workspace_root)
     _add_title(slide, slide_spec.get("title"), theme, slide_w)
     _add_chart(slide, slide_spec, theme, 0.8, 1.45, slide_w - 1.6, slide_h - 2.25)
 
@@ -1110,6 +1788,9 @@ def create_pptx_from_spec(path: str, spec_path: str, template: str | None = None
     output_path = _validate_output_path(path, workspace_root=root)
     spec = _read_json(spec_path, workspace_root=root)
     slides, notes_per_slide = _validate_spec(spec)
+    image_catalog = _normalize_image_catalog(spec.get("images"))
+    icon_catalog = _normalize_icon_catalog(spec.get("icons"))
+    slides = [_apply_icon_catalog_to_slide(_apply_image_catalog_to_slide(slide_spec, image_catalog), icon_catalog) for slide_spec in slides]
     theme = _normalize_theme(spec.get("theme"))
 
     prs = Presentation(str(_validate_path(template, workspace_root=root))) if template else Presentation()
@@ -1130,33 +1811,34 @@ def create_pptx_from_spec(path: str, spec_path: str, template: str | None = None
             elif layout_name == "title":
                 _render_title_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "agenda":
-                _render_agenda_slide(slide, slide_spec, theme, slide_w)
+                _render_agenda_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "body":
                 _render_body_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "two_column":
                 _render_two_column_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "stat":
-                _render_stat_slide(slide, slide_spec, theme, slide_w)
+                _render_stat_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "quote":
-                _render_quote_slide(slide, slide_spec, theme, slide_w, slide_h)
+                _render_quote_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "section":
-                _render_section_slide(slide, slide_spec, theme, slide_w)
+                _render_section_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "image_full":
                 _render_image_full_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "table":
-                _set_background(slide, theme)
+                _apply_slide_background(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
                 _add_title(slide, slide_spec.get("title"), theme, slide_w)
                 _add_table(slide, slide_spec.get("table"), 0.7, 1.35, slide_w - 1.4, slide_h - 2.0, theme)
             elif layout_name == "timeline":
-                _render_timeline_slide(slide, slide_spec, theme, slide_w, slide_h)
+                _render_timeline_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "process":
-                _render_process_slide(slide, slide_spec, theme, slide_w, slide_h)
+                _render_process_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "comparison":
                 _render_comparison_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "matrix":
-                _render_matrix_slide(slide, slide_spec, theme, slide_w, slide_h)
+                _render_matrix_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
             elif layout_name == "chart":
-                _render_chart_slide(slide, slide_spec, theme, slide_w, slide_h)
+                _render_chart_slide(slide, slide_spec, theme, slide_w, slide_h, temp_paths, root)
+            _add_slide_icon(slide, slide_spec, theme, slide_w, temp_paths, root)
             _add_slide_links(slide, slide_spec, theme, slide_w, slide_h)
             _add_footer(slide, slide_spec, theme, slide_w, slide_h, index, len(slides))
             _apply_notes(slide, slide_spec.get("notes") or (notes_per_slide[index - 1] if notes_per_slide else None))

@@ -790,11 +790,21 @@ export interface OfficePrepareResult {
   readiness: OfficeRuntimeReadiness;
 }
 
+export type OfficeOptionalTool = 'poppler' | 'libreoffice';
+
+export interface PrepareOfficeRuntimeOptions {
+  includeOptionalTools?: boolean;
+  optionalTools?: OfficeOptionalTool[];
+}
+
 export const checkOfficeRuntime = () =>
   invoke<OfficeRuntimeReadiness>('check_office_runtime_cmd');
 
-export const prepareOfficeRuntime = () =>
-  invoke<OfficePrepareResult>('prepare_office_runtime_cmd');
+export const prepareOfficeRuntime = (options: PrepareOfficeRuntimeOptions = {}) =>
+  invoke<OfficePrepareResult>('prepare_office_runtime_cmd', {
+    includeOptionalTools: options.includeOptionalTools ?? false,
+    optionalTools: options.optionalTools ?? [],
+  });
 
 // ── Setup Wizard ────────────────────────────────────────────────────
 

@@ -109,6 +109,38 @@ class PptxUpgradePipelineTests(unittest.TestCase):
             self.assertTrue(any(issue["code"] == "shape_overlap" for issue in report["issues"]))
             self.assertEqual(2, len(repaired["slides"]))
 
+    def test_visual_qa_scores_spec_design_and_flags_flat_renders(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+
+        spec = {
+            "metadata": {"design_brief": {"industry": "finance"}},
+            "slides": [
+                {"layout": "title", "title": "Market Risk", "background_style": "spotlight", "design_role": "anchor"},
+                {"layout": "body", "title": "Drivers", "bullets": ["One", "Two"], "icon": "shield", "design_role": "dense"},
+                {"layout": "chart", "title": "Exposure", "categories": ["A"], "series": [{"name": "Value", "values": [1]}], "design_role": "breathing"},
+            ],
+        }
+        review = pptx_visual_qa.evaluate_spec_design(spec)
+
+        self.assertEqual("pass", review["status"])
+        self.assertGreaterEqual(review["score"], 80)
+        self.assertEqual(3, review["metrics"]["slides"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            deck = root / "deck.pptx"
+            render_dir = root / "renders"
+            render_dir.mkdir()
+            _write_minimal_pptx(deck, overlapping=False)
+            Image.new("RGB", (240, 135), (255, 255, 255)).save(render_dir / "slide-01.png")
+
+            report = pptx_visual_qa.analyze_pptx(deck, render_dir)
+
+            self.assertTrue(any(issue["code"] == "flat_render" for issue in report["issues"]))
+
     def test_style_profile_extracts_renderer_theme(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             deck = Path(tmp) / "theme.pptx"
@@ -130,7 +162,43 @@ Source https://example.com/report
 
         self.assertEqual("pptx_deck_planner", spec["metadata"]["source"])
         self.assertIn("https://example.com/report", spec["metadata"]["source_links"])
+        self.assertIn("visual_strategy", spec["metadata"])
+        self.assertIn("design_brief", spec["metadata"])
+        self.assertEqual("leadership", spec["metadata"]["design_brief"]["audience"])
+        self.assertEqual(8, len(spec["metadata"]["design_brief"]["decision_points"]))
+        self.assertIn(
+            spec["theme"],
+            {
+                "consulting-clean",
+                "executive-midnight",
+                "product-energy",
+                "editorial-ink",
+                "nexa-dark",
+                "nexa-light",
+                "healthcare-trust",
+                "finance-precision",
+                "education-bright",
+                "industrial-contrast",
+            },
+        )
+        self.assertTrue(all(slide.get("design_role") in {"anchor", "breathing", "dense"} for slide in spec["slides"]))
+        self.assertTrue(all(slide.get("background_style") for slide in spec["slides"]))
         self.assertTrue(any(slide["layout"] in {"chart", "timeline"} for slide in spec["slides"]))
+
+    def test_deck_planner_infers_industry_visual_language(self) -> None:
+        text = """Patient Access Plan
+Healthcare teams need safer intake workflows
+Patient wait time decreased 15%
+Clinical quality should improve without more manual work
+"""
+        spec = pptx_deck_planner.plan_deck(text, audience="hospital executives", target_slides=5)
+        brief = spec["metadata"]["design_brief"]
+
+        self.assertEqual("healthcare", brief["industry"])
+        self.assertEqual("healthcare-trust", spec["theme"])
+        self.assertIn("clinical_grid", brief["visual_language"]["background_presets"])
+        self.assertIn("trust", brief["visual_language"]["tone"])
+        self.assertTrue(any(slide.get("icon") for slide in spec["slides"]))
 
     def test_asset_pack_inventories_media_links_and_missing_spec_assets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -146,6 +214,67 @@ Source https://example.com/report
             self.assertEqual(1, pptx_assets["media_count"])
             self.assertEqual(1, pptx_assets["external_link_count"])
             self.assertEqual("fail", spec_assets["status"])
+
+    def test_asset_pack_resolves_renderer_image_catalog_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image = root / "hero.png"
+            image.write_bytes(b"fake image")
+            spec = root / "spec.json"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "images": {"hero": "hero.png"},
+                        "slides": [
+                            {"layout": "title", "background_image_id": "hero"},
+                            {"layout": "body", "image": "@hero"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            spec_assets = pptx_asset_pack.validate_spec_assets(spec, root)
+
+            self.assertEqual("pass", spec_assets["status"])
+            self.assertEqual(1, len(spec_assets["local_assets"]))
+
+    def test_asset_pack_reports_image_semantics_for_catalog(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hero = root / "hero.png"
+            portrait = root / "portrait.png"
+            Image.new("RGB", (1600, 900), (24, 48, 92)).save(hero)
+            Image.new("RGB", (600, 1200), (220, 120, 40)).save(portrait)
+            spec = root / "spec.json"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "images": {
+                            "hero": {"path": "hero.png", "role": "background"},
+                            "speaker": {"path": "portrait.png"},
+                        },
+                        "slides": [
+                            {"layout": "title", "background_image_id": "hero"},
+                            {"layout": "body", "image_id": "speaker"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            spec_assets = pptx_asset_pack.validate_spec_assets(spec, root)
+            by_alias = {item["alias"]: item for item in spec_assets["image_catalog"]}
+
+            self.assertEqual("landscape", by_alias["hero"]["orientation"])
+            self.assertEqual("background", by_alias["hero"]["recommended_usage"])
+            self.assertEqual("portrait", by_alias["speaker"]["orientation"])
+            self.assertEqual("inline_portrait", by_alias["speaker"]["recommended_usage"])
 
     def test_rewrite_plan_and_regression_samples_are_renderer_ready(self) -> None:
         report = {

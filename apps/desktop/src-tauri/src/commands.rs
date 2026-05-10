@@ -5171,6 +5171,8 @@ pub fn check_office_runtime_cmd(
 pub async fn prepare_office_runtime_cmd(
     app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
+    include_optional_tools: Option<bool>,
+    optional_tools: Option<Vec<String>>,
 ) -> Result<nexa_core::office_runtime::OfficePrepareResult, String> {
     let data_dir = app_handle
         .path()
@@ -5183,8 +5185,16 @@ pub async fn prepare_office_runtime_cmd(
         .unwrap_or_default();
 
     tokio::task::spawn_blocking(move || {
-        nexa_core::office_runtime::prepare_office_runtime_with_options(&data_dir, &ghproxy_base)
-            .map_err(|e| e.to_string())
+        let options = nexa_core::office_runtime::OfficePrepareOptions::from_requested_tools(
+            include_optional_tools.unwrap_or(false),
+            optional_tools.as_deref().unwrap_or(&[]),
+        );
+        nexa_core::office_runtime::prepare_office_runtime_with_prepare_options(
+            &data_dir,
+            &ghproxy_base,
+            options,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?

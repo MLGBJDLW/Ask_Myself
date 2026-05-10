@@ -130,7 +130,7 @@ pub fn describe_tool_access(name: &str) -> ToolAccessInfo {
             true,
             true,
             ApprovalRisk::Medium,
-            "Prepares local document-processing helpers and may install or verify optional tooling.",
+            "Prepares required document-processing helpers; optional Poppler/LibreOffice setup requires explicit selection.",
         ),
         "manage_source" => (
             "source_management",

@@ -7,12 +7,110 @@ import contextlib
 import io
 import json
 import sys
+import tempfile
 import unittest
+import zipfile
+from pathlib import Path
 
 import pptx_renderer
 
 
 class PptxRendererValidationTests(unittest.TestCase):
+    def test_theme_presets_include_distinct_design_directions(self) -> None:
+        for preset in [
+            "consulting-clean",
+            "executive-midnight",
+            "editorial-ink",
+            "product-energy",
+            "healthcare-trust",
+            "finance-precision",
+            "education-bright",
+        ]:
+            theme = pptx_renderer._normalize_theme(preset)
+            self.assertIn("background_style", theme)
+            self.assertRegex(theme["primary_color"], r"^[0-9A-F]{6}$")
+
+    def test_background_presets_include_industry_and_texture_styles(self) -> None:
+        for style in ["blueprint_grid", "paper_texture", "clinical_grid", "data_grid", "spotlight"]:
+            self.assertIn(style, pptx_renderer.PPTX_BACKGROUND_STYLES)
+
+    def test_image_catalog_supports_dict_and_list_aliases(self) -> None:
+        catalog = pptx_renderer._normalize_image_catalog(
+            {
+                "hero": {"path": "assets/hero.png"},
+                "diagram": "assets/diagram.png",
+                "photo": {"url": "https://example.com/photo.jpg"},
+            }
+        )
+        list_catalog = pptx_renderer._normalize_image_catalog(
+            [
+                {"id": "cover", "path": "assets/cover.png"},
+                {"name": "inline", "src": "assets/inline.png"},
+            ]
+        )
+
+        self.assertEqual("assets/hero.png", catalog["hero"])
+        self.assertEqual("assets/diagram.png", catalog["diagram"])
+        self.assertEqual("https://example.com/photo.jpg", catalog["photo"])
+        self.assertEqual("assets/cover.png", list_catalog["cover"])
+        self.assertEqual("assets/inline.png", list_catalog["inline"])
+
+    def test_icon_catalog_supports_builtin_and_asset_aliases(self) -> None:
+        catalog = pptx_renderer._normalize_icon_catalog(
+            {
+                "risk": "shield",
+                "growth": {"name": "trend"},
+                "logo": {"path": "assets/logo.png"},
+            }
+        )
+
+        self.assertEqual("shield", catalog["risk"])
+        self.assertEqual("trend", catalog["growth"])
+        self.assertEqual("assets/logo.png", catalog["logo"])
+
+    def test_apply_image_catalog_resolves_background_and_foreground_aliases(self) -> None:
+        slide = {
+            "layout": "two_column",
+            "background": {"image_id": "hero"},
+            "left": {"heading": "Why", "image_id": "diagram"},
+            "right": {"heading": "Now", "image": "@photo"},
+        }
+        resolved = pptx_renderer._apply_image_catalog_to_slide(
+            slide,
+            {
+                "hero": "assets/hero.png",
+                "diagram": "assets/diagram.png",
+                "photo": "assets/photo.png",
+            },
+        )
+
+        self.assertEqual("assets/hero.png", resolved["background"]["image"])
+        self.assertEqual("assets/diagram.png", resolved["left"]["image"])
+        self.assertEqual("assets/photo.png", resolved["right"]["image"])
+
+    def test_apply_icon_catalog_resolves_slide_and_item_aliases(self) -> None:
+        slide = {
+            "layout": "process",
+            "title": "Flow",
+            "icon_id": "workflow",
+            "steps": [
+                {"title": "Plan", "icon_id": "idea"},
+                {"title": "Launch", "icon": "@growth"},
+            ],
+        }
+        resolved = pptx_renderer._apply_icon_catalog_to_slide(
+            slide,
+            {
+                "workflow": "network",
+                "idea": "spark",
+                "growth": "trend",
+            },
+        )
+
+        self.assertEqual("network", resolved["icon"])
+        self.assertEqual("spark", resolved["steps"][0]["icon"])
+        self.assertEqual("trend", resolved["steps"][1]["icon"])
+
     def test_supported_layouts_include_advanced_editable_slide_families(self) -> None:
         expected = {
             "timeline",
@@ -147,6 +245,137 @@ class PptxRendererValidationTests(unittest.TestCase):
             sys.stdin = previous_stdin
 
         self.assertEqual("Demo", spec["slides"][0]["title"])
+
+    def test_create_pptx_accepts_slide_background_image(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bg = root / "bg.png"
+            Image.new("RGB", (160, 90), (12, 36, 64)).save(bg)
+            spec_path = root / "spec.json"
+            out_path = root / "deck.pptx"
+            spec_path.write_text(
+                json.dumps(
+                    {
+                        "theme": "nexa-dark",
+                        "slides": [
+                            {
+                                "layout": "body",
+                                "title": "Background Image",
+                                "bullets": ["Full-bleed background", "Editable foreground"],
+                                "background": {
+                                    "image_path": str(bg),
+                                    "overlay_transparency": 35,
+                                    "style": "none",
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            pptx_renderer.create_pptx_from_spec(str(out_path), str(spec_path), workspace_root=root)
+
+            self.assertTrue(out_path.exists())
+            with zipfile.ZipFile(out_path) as zf:
+                media = [name for name in zf.namelist() if name.startswith("ppt/media/")]
+            self.assertTrue(media)
+
+    def test_create_pptx_accepts_image_catalog_for_background_and_inline_image(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hero = root / "hero.png"
+            diagram = root / "diagram.png"
+            Image.new("RGB", (160, 90), (24, 48, 92)).save(hero)
+            Image.new("RGB", (90, 90), (220, 120, 40)).save(diagram)
+            spec_path = root / "spec.json"
+            out_path = root / "deck.pptx"
+            spec_path.write_text(
+                json.dumps(
+                    {
+                        "theme": "product-energy",
+                        "images": {
+                            "hero": {"path": str(hero)},
+                            "diagram": str(diagram),
+                        },
+                        "slides": [
+                            {
+                                "layout": "title",
+                                "title": "Image Catalog",
+                                "background_image_id": "hero",
+                            },
+                            {
+                                "layout": "body",
+                                "title": "Inline Image",
+                                "bullets": ["Foreground image comes from an alias"],
+                                "image_id": "diagram",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            pptx_renderer.create_pptx_from_spec(str(out_path), str(spec_path), workspace_root=root)
+
+            with zipfile.ZipFile(out_path) as zf:
+                media = [name for name in zf.namelist() if name.startswith("ppt/media/")]
+            self.assertGreaterEqual(len(media), 2)
+
+    def test_create_pptx_accepts_icon_catalog_and_new_background_presets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec_path = root / "spec.json"
+            out_path = root / "deck.pptx"
+            spec_path.write_text(
+                json.dumps(
+                    {
+                        "theme": "finance-precision",
+                        "icons": {"risk": "shield", "growth": "trend"},
+                        "slides": [
+                            {
+                                "layout": "body",
+                                "title": "Icon And Grid",
+                                "bullets": ["Consistent built-in icon language", "Editable grid background"],
+                                "icon_id": "risk",
+                                "background_style": "data_grid",
+                            },
+                            {
+                                "layout": "process",
+                                "title": "Signal Flow",
+                                "background_style": "blueprint_grid",
+                                "steps": [
+                                    {"title": "Sense", "detail": "Monitor signal", "icon_id": "growth"},
+                                    {"title": "Act", "detail": "Allocate capital", "icon": "check"},
+                                ],
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            pptx_renderer.create_pptx_from_spec(str(out_path), str(spec_path), workspace_root=root)
+
+            self.assertTrue(out_path.exists())
+            with zipfile.ZipFile(out_path) as zf:
+                xml = "\n".join(
+                    zf.read(name).decode("utf-8", errors="replace")
+                    for name in zf.namelist()
+                    if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+                )
+            self.assertIn("icon-risk", xml)
+            self.assertIn("icon-growth", xml)
 
 
 if __name__ == "__main__":

@@ -116,14 +116,35 @@ pub struct OfficePrepareResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OfficePrepareOptions {
-    pub include_optional_tools: bool,
+    pub include_poppler: bool,
+    pub include_libreoffice: bool,
 }
 
 impl Default for OfficePrepareOptions {
     fn default() -> Self {
         Self {
-            include_optional_tools: true,
+            include_poppler: false,
+            include_libreoffice: false,
         }
+    }
+}
+
+impl OfficePrepareOptions {
+    pub fn from_requested_tools(include_optional_tools: bool, optional_tools: &[String]) -> Self {
+        let include_all = include_optional_tools;
+        let wants = |name: &str| {
+            optional_tools
+                .iter()
+                .any(|item| item.trim().eq_ignore_ascii_case(name))
+        };
+        Self {
+            include_poppler: include_all || wants("poppler"),
+            include_libreoffice: include_all || wants("libreoffice") || wants("libre"),
+        }
+    }
+
+    fn includes_any_optional(self) -> bool {
+        self.include_poppler || self.include_libreoffice
     }
 }
 
@@ -494,6 +515,20 @@ fn derive_status(has_python: bool, dependencies: &[OfficeDependencyStatus]) -> (
     )
 }
 
+fn requested_optional_tools_ready(
+    options: OfficePrepareOptions,
+    readiness: &OfficeRuntimeReadiness,
+) -> bool {
+    let dep_ready = |id: &str| {
+        readiness
+            .dependencies
+            .iter()
+            .any(|dep| dep.id.eq_ignore_ascii_case(id) && dep.status == "ready")
+    };
+    (!options.include_poppler || dep_ready("Poppler"))
+        && (!options.include_libreoffice || dep_ready("LibreOffice"))
+}
+
 pub fn check_office_runtime(app_data_dir: &Path) -> OfficeRuntimeReadiness {
     let env_dir = office_env_dir(app_data_dir);
     let managed_python = office_python_path_for_env(&env_dir);
@@ -553,7 +588,7 @@ pub fn check_office_runtime(app_data_dir: &Path) -> OfficeRuntimeReadiness {
         &libreoffice_extra_paths(),
         false,
         "LibreOffice enables Office-to-PDF conversion, rendering QA, and Excel recalculation.",
-        "Click Prepare to install via winget/Homebrew when available, or install LibreOffice manually.",
+        "Install optional LibreOffice only when you need Office-to-PDF conversion, visual QA, or Excel recalculation. It can be a large download, so confirm first.",
     ));
     dependencies.push(check_binary(
         app_data_dir,
@@ -562,7 +597,7 @@ pub fn check_office_runtime(app_data_dir: &Path) -> OfficeRuntimeReadiness {
         &[],
         false,
         "Poppler enables DOCX/PPTX/PDF page image rendering.",
-        "Click Prepare to install an app-managed Poppler on Windows, or install Poppler manually.",
+        "Install optional Poppler when you need PDF/page image rendering. On Windows the app can install a managed copy after confirmation.",
     ));
 
     let (status, summary) = derive_status(python.is_some(), &dependencies);
@@ -653,10 +688,30 @@ fn tool_available(app_data_dir: &Path, names: &[&str], extra_paths: &[PathBuf]) 
 fn prepare_optional_office_tools(
     app_data_dir: &Path,
     ghproxy_base: &str,
+    options: OfficePrepareOptions,
     actions: &mut Vec<OfficePrepareAction>,
 ) {
-    prepare_poppler(app_data_dir, ghproxy_base, actions);
-    prepare_libreoffice(app_data_dir, actions);
+    if options.include_poppler {
+        prepare_poppler(app_data_dir, ghproxy_base, actions);
+    } else {
+        push_action(
+            actions,
+            "install-poppler",
+            "skipped",
+            Some("Poppler setup was not requested.".to_string()),
+        );
+    }
+
+    if options.include_libreoffice {
+        prepare_libreoffice(app_data_dir, actions);
+    } else {
+        push_action(
+            actions,
+            "install-libreoffice",
+            "skipped",
+            Some("LibreOffice setup was not requested.".to_string()),
+        );
+    }
 }
 
 fn prepare_poppler(
@@ -1109,8 +1164,8 @@ pub fn prepare_office_runtime_with_prepare_options(
         }
     }
 
-    if options.include_optional_tools {
-        prepare_optional_office_tools(app_data_dir, ghproxy_base, &mut actions);
+    if options.includes_any_optional() {
+        prepare_optional_office_tools(app_data_dir, ghproxy_base, options, &mut actions);
     } else {
         push_action(
             &mut actions,
@@ -1121,7 +1176,8 @@ pub fn prepare_office_runtime_with_prepare_options(
     }
     configure_app_managed_python_env(app_data_dir);
     let readiness = check_office_runtime(app_data_dir);
-    let success = matches!(readiness.status.as_str(), "ready" | "degraded");
+    let success = matches!(readiness.status.as_str(), "ready" | "degraded")
+        && requested_optional_tools_ready(options, &readiness);
     Ok(OfficePrepareResult {
         success,
         actions,
@@ -1187,6 +1243,58 @@ mod tests {
         } else {
             assert!(rendered.ends_with("runtime/bin/python"));
         }
+    }
+
+    #[test]
+    fn prepare_options_default_to_required_tools_only() {
+        let options = OfficePrepareOptions::default();
+        assert!(!options.include_poppler);
+        assert!(!options.include_libreoffice);
+        assert!(!options.includes_any_optional());
+    }
+
+    #[test]
+    fn prepare_options_support_selective_optional_tools() {
+        let options = OfficePrepareOptions::from_requested_tools(false, &[String::from("poppler")]);
+        assert!(options.include_poppler);
+        assert!(!options.include_libreoffice);
+
+        let options =
+            OfficePrepareOptions::from_requested_tools(false, &[String::from("libreoffice")]);
+        assert!(!options.include_poppler);
+        assert!(options.include_libreoffice);
+
+        let options = OfficePrepareOptions::from_requested_tools(true, &[]);
+        assert!(options.include_poppler);
+        assert!(options.include_libreoffice);
+    }
+
+    #[test]
+    fn requested_optional_tools_must_be_ready_when_requested() {
+        let readiness = OfficeRuntimeReadiness {
+            status: "degraded".into(),
+            summary: String::new(),
+            python_path: None,
+            app_managed_python_path: None,
+            app_managed_env_path: String::new(),
+            skill_script_path: String::new(),
+            requirements_path: String::new(),
+            can_prepare: true,
+            can_install_python_packages: true,
+            needs_python_install: false,
+            python_download_url: String::new(),
+            dependencies: vec![
+                dep("Poppler", false, "ready"),
+                dep("LibreOffice", false, "missing"),
+            ],
+        };
+
+        let poppler_only =
+            OfficePrepareOptions::from_requested_tools(false, &[String::from("poppler")]);
+        assert!(requested_optional_tools_ready(poppler_only, &readiness));
+
+        let both = OfficePrepareOptions::from_requested_tools(true, &[]);
+        assert!(!requested_optional_tools_ready(both, &readiness));
     }
 
     #[cfg(windows)]
