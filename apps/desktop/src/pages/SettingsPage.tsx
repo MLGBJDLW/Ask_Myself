@@ -21,10 +21,10 @@ import { getModelStatus, invalidate as invalidateModelStatus } from '../lib/mode
 import type { IndexStats } from '../types/index-stats';
 import type { PrivacyConfig, RedactRule } from '../types/privacy';
 import type { EmbedderConfig } from '../types/embedder';
-import type { AgentConfig, AppConfig, SaveAgentConfigInput, UserMemory } from '../types/conversation';
+import type { AgentConfig, AppConfig, SaveAgentConfigInput, UserMemory, AgentProceduralMemory } from '../types/conversation';
 import type { OcrConfig } from '../types/ocr';
 import type { VideoConfig } from '../types/video';
-import type { Skill, McpServer, McpToolInfo, SaveSkillInput, SaveMcpServerInput } from '../types/extensions';
+import type { Skill, SkillChangeProposal, McpServer, McpToolInfo, SaveSkillInput, SaveMcpServerInput } from '../types/extensions';
 import type { TraceSummary, AgentTrace } from '../types/trace';
 import type { QualityEvalReport } from '../types/qualityEval';
 import { useTranslation } from '../i18n';
@@ -221,10 +221,12 @@ export function SettingsPage() {
   const [newRule, setNewRule] = useState<RedactRule>({ name: '', pattern: '', replacement: '' });
   const [saveLoading, setSaveLoading] = useState(false);
   const [userMemories, setUserMemories] = useState<UserMemory[]>([]);
+  const [agentMemories, setAgentMemories] = useState<AgentProceduralMemory[]>([]);
   const [newMemory, setNewMemory] = useState('');
   const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
   const [editingMemoryDraft, setEditingMemoryDraft] = useState('');
   const [memoryLoading, setMemoryLoading] = useState(false);
+  const [agentMemoryLoading, setAgentMemoryLoading] = useState(false);
 
   /* ── Analytics state ────────────────────────────────────────────── */
   const [traceSummary, setTraceSummary] = useState<TraceSummary | null>(null);
@@ -418,6 +420,7 @@ export function SettingsPage() {
         confirmDestructive: false,
         shellAccessMode: 'restricted',
         toolApprovalMode: 'ask',
+        autoMemoryExtraction: true,
         hfMirrorBaseUrl: 'https://hf-mirror.com',
         ghproxyBaseUrl: 'https://mirror.ghproxy.com',
       });
@@ -858,9 +861,19 @@ export function SettingsPage() {
     }
   }, []);
 
+  const loadAgentMemories = useCallback(async () => {
+    try {
+      const list = await api.listAgentProceduralMemories(20);
+      setAgentMemories(list);
+    } catch (e) {
+      console.error('Failed to load agent procedural memories:', e);
+    }
+  }, []);
+
   useEffect(() => {
     loadUserMemories();
-  }, [loadUserMemories]);
+    loadAgentMemories();
+  }, [loadAgentMemories, loadUserMemories]);
 
   const handleAddUserMemory = async () => {
     const trimmed = newMemory.trim();
@@ -895,6 +908,18 @@ export function SettingsPage() {
       toast.error(String(e));
     } finally {
       setMemoryLoading(false);
+    }
+  };
+
+  const handleDeleteAgentMemory = async (id: string) => {
+    setAgentMemoryLoading(true);
+    try {
+      await api.deleteAgentProceduralMemory(id);
+      setAgentMemories((prev) => prev.filter((m) => m.id !== id));
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setAgentMemoryLoading(false);
     }
   };
 
@@ -991,6 +1016,8 @@ export function SettingsPage() {
   /* ── Extensions state ────────────────────────────────────────────── */
   const [personas, setPersonas] = useState<PersonaProfile[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [skillProposals, setSkillProposals] = useState<SkillChangeProposal[]>([]);
+  const [skillProposalBusyId, setSkillProposalBusyId] = useState<string | null>(null);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [editingPersona, setEditingPersona] = useState<PersonaProfile | null>(null);
   const [editingSkill, setEditingSkill] = useState<Skill | null>(null);
@@ -1024,6 +1051,14 @@ export function SettingsPage() {
       });
   }, []);
 
+  const loadSkillProposals = useCallback(() => {
+    api.listSkillChangeProposals('pending', 20)
+      .then(setSkillProposals)
+      .catch(() => {
+        toast.error(t('common.error'));
+      });
+  }, []);
+
   const loadMcpServers = useCallback(() => {
     api.listMcpServers().then(setMcpServers).catch(() => {
       toast.error(t('common.error'));
@@ -1034,9 +1069,10 @@ export function SettingsPage() {
     if (activeTab === 'extensions') {
       loadPersonas();
       loadSkills();
+      loadSkillProposals();
       loadMcpServers();
     }
-  }, [activeTab, loadPersonas, loadSkills, loadMcpServers]);
+  }, [activeTab, loadPersonas, loadSkillProposals, loadSkills, loadMcpServers]);
 
   const handleSavePersona = async (input: SavePersonaInput) => {
     try {
@@ -1103,6 +1139,33 @@ export function SettingsPage() {
       setSkills((prev) => prev.map((s) => s.id === id ? { ...s, enabled } : s));
     } catch {
       toast.error(t('common.error'));
+    }
+  };
+
+  const handleApplySkillProposal = async (id: string) => {
+    setSkillProposalBusyId(id);
+    try {
+      await api.applySkillChangeProposal(id);
+      toast.success(t('settings.skillProposalApplied'));
+      loadSkillProposals();
+      loadSkills();
+    } catch {
+      toast.error(t('common.error'));
+    } finally {
+      setSkillProposalBusyId(null);
+    }
+  };
+
+  const handleRejectSkillProposal = async (id: string) => {
+    setSkillProposalBusyId(id);
+    try {
+      await api.rejectSkillChangeProposal(id);
+      toast.success(t('settings.skillProposalRejected'));
+      loadSkillProposals();
+    } catch {
+      toast.error(t('common.error'));
+    } finally {
+      setSkillProposalBusyId(null);
     }
   };
 
@@ -1537,9 +1600,11 @@ export function SettingsPage() {
           newPattern={newPattern}
           newRule={newRule}
           userMemories={userMemories}
+          agentMemories={agentMemories}
           editingMemoryId={editingMemoryId}
           editingMemoryDraft={editingMemoryDraft}
           memoryLoading={memoryLoading}
+          agentMemoryLoading={agentMemoryLoading}
           newMemory={newMemory}
           memoryCharLimit={MEMORY_CHAR_LIMIT}
           saveLoading={saveLoading}
@@ -1557,6 +1622,7 @@ export function SettingsPage() {
           onCancelEditMemory={handleCancelEditUserMemory}
           onUpdateMemory={handleUpdateUserMemory}
           onDeleteMemory={handleDeleteUserMemory}
+          onDeleteAgentMemory={handleDeleteAgentMemory}
           onNewMemoryChange={setNewMemory}
           onAddMemory={handleAddUserMemory}
           onSavePrivacy={handleSavePrivacy}
@@ -1607,6 +1673,8 @@ export function SettingsPage() {
           personas={personas}
           skills={skills}
           filteredSkills={filteredSkills}
+          skillProposals={skillProposals}
+          skillProposalBusyId={skillProposalBusyId}
           showPersonaForm={showPersonaForm}
           editingPersona={editingPersona}
           deletePersonaTarget={deletePersonaTarget}
@@ -1651,6 +1719,8 @@ export function SettingsPage() {
           onEditSkill={(skill) => { setEditingSkill(skill); setShowSkillForm(true); }}
           onDeleteSkillTargetChange={setDeleteSkillTarget}
           onConfirmDeleteSkill={handleDeleteSkill}
+          onApplySkillProposal={(id) => { void handleApplySkillProposal(id); }}
+          onRejectSkillProposal={(id) => { void handleRejectSkillProposal(id); }}
           onAddMcpServer={() => { setEditingMcpServer(null); setShowMcpForm(true); }}
           onSaveMcpServer={handleSaveMcpServer}
           onCancelMcpForm={() => {

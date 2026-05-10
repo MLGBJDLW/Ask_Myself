@@ -22,7 +22,7 @@ import { toast } from 'sonner';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import * as api from '../lib/api';
-import type { Source, IngestResult, EmbedResult } from '../types';
+import type { Source, ScanError, IngestResult, EmbedResult } from '../types';
 import { useProgress, progressStore } from '../lib/progressStore';
 import { useTranslation } from '../i18n';
 import type { TranslationKeys } from '../i18n/types';
@@ -146,6 +146,8 @@ export function SourcesPage() {
   // Actively-scanning cards auto-expand in the render path regardless of this set.
   const [expandedSourceIds, setExpandedSourceIds] = useState<Set<string>>(new Set());
   const [sourceDetailTabs, setSourceDetailTabs] = useState<Record<string, SourceDetailTab>>({});
+  const [scanErrorsBySource, setScanErrorsBySource] = useState<Record<string, ScanError[]>>({});
+  const [clearingScanErrorKey, setClearingScanErrorKey] = useState<string | null>(null);
 
   // Add source modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -196,16 +198,35 @@ export function SourcesPage() {
 
   /* 鈹€鈹€ Load 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
+  const refreshScanErrors = useCallback(async (sourceId: string) => {
+    try {
+      const errors = await api.getScanErrors(sourceId);
+      setScanErrorsBySource((prev) => ({ ...prev, [sourceId]: errors }));
+    } catch {
+      setScanErrorsBySource((prev) => ({ ...prev, [sourceId]: [] }));
+    }
+  }, []);
+
   const loadSources = useCallback(async () => {
     try {
       const list = await api.listSources();
       setSources(list);
+      const scanErrorEntries = await Promise.all(
+        list.map(async (source) => {
+          try {
+            return [source.id, await api.getScanErrors(source.id)] as const;
+          } catch {
+            return [source.id, []] as const;
+          }
+        }),
+      );
+      setScanErrorsBySource(Object.fromEntries(scanErrorEntries));
     } catch (e) {
       toast.error(formatUserError(t('sources.loadError'), e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     loadSources();
@@ -352,6 +373,11 @@ export function SourcesPage() {
 
   const handleDelete = (source: Source) => {
     setSources((prev) => prev.filter((s) => s.id !== source.id));
+    setScanErrorsBySource((prev) => {
+      const next = { ...prev };
+      delete next[source.id];
+      return next;
+    });
     undoableAction({
       message: t('sources.deleted'),
       undoLabel: t('common.undo'),
@@ -404,8 +430,39 @@ export function SourcesPage() {
     } catch (e) {
       toast.error(formatUserError(t('sources.scanError'), e));
     } finally {
+      await refreshScanErrors(sourceId);
       setScanningId(null);
       progressStore.update('scanProgress', null);
+    }
+  };
+
+  const handleClearScanErrors = async (sourceId: string) => {
+    setClearingScanErrorKey(`${sourceId}:*`);
+    try {
+      await api.clearScanErrors(sourceId);
+      setScanErrorsBySource((prev) => ({ ...prev, [sourceId]: [] }));
+      toast.success(t('sources.scanErrorsCleared'));
+    } catch (e) {
+      toast.error(formatUserError(t('sources.scanErrorsClearError'), e));
+    } finally {
+      setClearingScanErrorKey(null);
+    }
+  };
+
+  const handleClearScanError = async (error: ScanError) => {
+    const key = `${error.sourceId}:${error.path}`;
+    setClearingScanErrorKey(key);
+    try {
+      await api.clearScanError(error.sourceId, error.path);
+      setScanErrorsBySource((prev) => ({
+        ...prev,
+        [error.sourceId]: (prev[error.sourceId] ?? []).filter((item) => item.path !== error.path),
+      }));
+      toast.success(t('sources.scanErrorCleared'));
+    } catch (e) {
+      toast.error(formatUserError(t('sources.scanErrorsClearError'), e));
+    } finally {
+      setClearingScanErrorKey(null);
     }
   };
 
@@ -615,6 +672,7 @@ export function SourcesPage() {
               const isManuallyExpanded = expandedSourceIds.has(source.id);
               const expanded = isManuallyExpanded || isActivelyScanning;
               const activeDetailTab = sourceDetailTabs[source.id] ?? (isActivelyScanning ? 'overview' : 'files');
+              const sourceScanErrors = scanErrorsBySource[source.id] ?? [];
               const toggleExpanded = () => {
                 setExpandedSourceIds((prev) => {
                   const next = new Set(prev);
@@ -660,6 +718,12 @@ export function SourcesPage() {
                           <Badge variant="info">
                             <RefreshCw size={10} className="animate-spin mr-1" />
                             {t('sources.indexingInProgress')}
+                          </Badge>
+                        )}
+                        {sourceScanErrors.length > 0 && (
+                          <Badge variant="danger">
+                            <AlertTriangle size={10} className="mr-1" />
+                            {t('sources.scanErrorsBadge', { count: sourceScanErrors.length })}
                           </Badge>
                         )}
                         {!expanded && (
@@ -808,6 +872,73 @@ export function SourcesPage() {
                                   progress={videoProcessing.progress}
                                   fileName={videoProcessing.fileName}
                                 />
+                              )}
+
+                              {sourceScanErrors.length > 0 && (
+                                <div className="rounded-lg border border-danger/25 bg-danger/10 p-3">
+                                  <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <p className="flex items-center gap-1.5 text-xs font-medium text-danger">
+                                        <AlertTriangle size={13} />
+                                        {t('sources.scanErrors')}
+                                      </p>
+                                      <p className="mt-0.5 text-[11px] text-danger/80">
+                                        {t('sources.scanErrorsDescription')}
+                                      </p>
+                                    </div>
+                                    <Button
+                                      variant="danger"
+                                      size="sm"
+                                      icon={<Trash2 size={13} />}
+                                      onClick={() => handleClearScanErrors(source.id)}
+                                      loading={clearingScanErrorKey === `${source.id}:*`}
+                                    >
+                                      {t('sources.clearScanErrors')}
+                                    </Button>
+                                  </div>
+                                  <div className="space-y-2">
+                                    {sourceScanErrors.slice(0, 5).map((error) => (
+                                      <div
+                                        key={error.path}
+                                        className="rounded-md border border-danger/20 bg-surface-0 px-3 py-2"
+                                      >
+                                        <div className="flex items-start justify-between gap-2">
+                                          <div className="min-w-0 flex-1">
+                                            <p className="truncate font-mono text-[11px] text-text-primary" title={error.path}>
+                                              {error.path}
+                                            </p>
+                                            <p className="mt-1 line-clamp-2 text-[11px] text-text-secondary">
+                                              {error.errorMessage}
+                                            </p>
+                                            <p className="mt-1 text-[10px] text-text-tertiary">
+                                              {t('sources.scanErrorCount', { count: error.errorCount })}
+                                              {' · '}
+                                              {t('sources.scanErrorLastFailed', {
+                                                time: new Date(error.lastFailedAt).toLocaleString(),
+                                              })}
+                                            </p>
+                                          </div>
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            icon={<Trash2 size={13} />}
+                                            onClick={() => handleClearScanError(error)}
+                                            loading={clearingScanErrorKey === `${error.sourceId}:${error.path}`}
+                                          >
+                                            {t('sources.clearScanError')}
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  {sourceScanErrors.length > 5 && (
+                                    <p className="mt-2 text-[11px] text-danger/80">
+                                      {t('sources.scanErrorsMore', {
+                                        count: sourceScanErrors.length - 5,
+                                      })}
+                                    </p>
+                                  )}
+                                </div>
                               )}
 
                               <div className="rounded-lg border border-border bg-surface-0 p-3">

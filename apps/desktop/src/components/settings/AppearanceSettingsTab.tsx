@@ -328,6 +328,17 @@ export function AppearanceSettingsTab({
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
+                    checked={appConfig.autoMemoryExtraction ?? true}
+                    onChange={(e) => onAppConfigChange({ ...appConfig, autoMemoryExtraction: e.target.checked })}
+                    className="rounded border-border"
+                  />
+                  <span className="text-sm font-medium text-text-primary">{t('settings.autoMemoryExtraction')}</span>
+                </label>
+                <p className="text-xs text-text-tertiary ml-6">{t('settings.autoMemoryExtractionDesc')}</p>
+
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
                     checked={appConfig.confirmDestructive ?? false}
                     onChange={(e) => onAppConfigChange({ ...appConfig, confirmDestructive: e.target.checked })}
                     className="rounded border-border"

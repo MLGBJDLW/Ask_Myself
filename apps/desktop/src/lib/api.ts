@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Source,
+  ScanError,
   EvidenceCard,
   Playbook,
   PlaybookCitation,
@@ -43,6 +44,7 @@ import type {
   FileCheckpoint,
   FileCheckpointRestore,
   UserMemory,
+  AgentProceduralMemory,
 } from "../types/conversation";
 import type {
   McpServer,
@@ -51,6 +53,9 @@ import type {
   DiscoveredSkillBundle,
   Skill,
   SaveSkillInput,
+  SkillChangeProposal,
+  SkillProposalStatus,
+  AppliedSkillChange,
 } from "../types/extensions";
 import type { TraceSummary, AgentTrace } from "../types/trace";
 import type { QualityEvalReport } from "../types/qualityEval";
@@ -74,6 +79,15 @@ export const scanSource = (sourceId: string) =>
 
 export const scanAllSources = () =>
   invoke<IngestResult[]>("scan_all_sources");
+
+export const getScanErrors = (sourceId: string) =>
+  invoke<ScanError[]>('get_scan_errors_cmd', { sourceId });
+
+export const clearScanErrors = (sourceId: string) =>
+  invoke<void>('clear_scan_errors_cmd', { sourceId });
+
+export const clearScanError = (sourceId: string, path: string) =>
+  invoke<void>('clear_scan_error_cmd', { sourceId, path });
 
 // ── Search ──────────────────────────────────────────────────────────────
 
@@ -693,6 +707,12 @@ export const updateUserMemory = (id: string, content: string) =>
 export const deleteUserMemory = (id: string) =>
   invoke<void>('delete_user_memory_cmd', { id });
 
+export const listAgentProceduralMemories = (limit = 20) =>
+  invoke<AgentProceduralMemory[]>('list_agent_procedural_memories_cmd', { limit });
+
+export const deleteAgentProceduralMemory = (id: string) =>
+  invoke<void>('delete_agent_procedural_memory_cmd', { id });
+
 // ── OCR ─────────────────────────────────────────────────────────────
 
 export const getOcrConfig = () =>
@@ -842,6 +862,12 @@ export const listAllSkills = async () => {
 export const listActiveSkills = async () =>
   (await listAllSkills()).filter((skill) => skill.enabled);
 
+export const listSelectedSkills = (query: string, personaId?: string | null) =>
+  invoke<Skill[]>('list_selected_skills_cmd', {
+    query,
+    personaId: personaId ?? null,
+  });
+
 export const importSkillFromMd = (content: string) =>
   invoke<Skill>('import_skill_from_md_cmd', { content });
 
@@ -850,6 +876,18 @@ export const exportSkillToMd = (skillId: string) =>
 
 export const scanSkillContent = (content: string) =>
   invoke<import('../types/extensions').SkillWarning[]>('scan_skill_content_cmd', { content });
+
+export const listSkillChangeProposals = (
+  status: SkillProposalStatus | null = 'pending',
+  limit = 20,
+) =>
+  invoke<SkillChangeProposal[]>('list_skill_change_proposals_cmd', { status, limit });
+
+export const applySkillChangeProposal = (id: string) =>
+  invoke<AppliedSkillChange>('apply_skill_change_proposal_cmd', { id });
+
+export const rejectSkillChangeProposal = (id: string) =>
+  invoke<SkillChangeProposal>('reject_skill_change_proposal_cmd', { id });
 
 export const discoverSkillsInDirectory = (directory: string) =>
   invoke<DiscoveredSkillBundle[]>('discover_skills_in_directory_cmd', { directory });

@@ -286,6 +286,8 @@ fn main() {
             commands::create_user_memory_cmd,
             commands::update_user_memory_cmd,
             commands::delete_user_memory_cmd,
+            commands::list_agent_procedural_memories_cmd,
+            commands::delete_agent_procedural_memory_cmd,
             // Agent scratchpad
             commands::get_agent_scratchpad_cmd,
             // Agent configs
@@ -346,10 +348,14 @@ fn main() {
             commands::save_skill_cmd,
             commands::delete_skill_cmd,
             commands::toggle_skill_cmd,
+            commands::list_selected_skills_cmd,
             commands::list_builtin_skills_cmd,
             commands::import_skill_from_md_cmd,
             commands::export_skill_to_md_cmd,
             commands::scan_skill_content_cmd,
+            commands::list_skill_change_proposals_cmd,
+            commands::apply_skill_change_proposal_cmd,
+            commands::reject_skill_change_proposal_cmd,
             commands::discover_skills_in_directory_cmd,
             commands::import_skills_from_directory_cmd,
             // MCP

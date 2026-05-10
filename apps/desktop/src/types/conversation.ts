@@ -297,6 +297,7 @@ export interface AppConfig {
   confirmDestructive?: boolean;
   shellAccessMode?: 'restricted' | 'confirm_all' | 'open';
   toolApprovalMode?: 'ask' | 'allow_all' | 'deny_all';
+  autoMemoryExtraction?: boolean;
   hfMirrorBaseUrl?: string;
   ghproxyBaseUrl?: string;
 }
@@ -475,6 +476,18 @@ export interface FileCheckpointRestore {
 export interface UserMemory {
   id: string;
   content: string;
+  source?: 'manual' | 'auto_extracted';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentProceduralMemory {
+  id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  source: string;
+  confidence: number;
   createdAt: string;
   updatedAt: string;
 }

@@ -28,6 +28,9 @@ use nexa_core::conversation::{
 };
 use nexa_core::db::Database;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
+use nexa_core::evolution::{
+    AgentProceduralMemory, AppliedSkillChange, SkillChangeProposal, SkillProposalStatus,
+};
 use nexa_core::feedback::{Feedback, FeedbackAction};
 use nexa_core::index::IndexStats;
 use nexa_core::ingest::{self, EmbedResult, IngestResult};
@@ -355,6 +358,25 @@ fn build_final_task_artifacts(
         serde_json::to_value(subtask_runs).unwrap_or_else(|_| serde_json::Value::Array(vec![])),
     );
     serde_json::Value::Object(merged)
+}
+
+fn build_selected_skills_artifact(skills: &[Skill]) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "selectedSkills",
+        "version": 1,
+        "skills": skills
+            .iter()
+            .map(|skill| {
+                serde_json::json!({
+                    "id": &skill.id,
+                    "name": &skill.name,
+                    "description": &skill.description,
+                    "enabled": skill.enabled,
+                    "builtin": skill.builtin,
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
 }
 
 fn record_task_progress_for_agent_event(
@@ -3464,6 +3486,28 @@ pub async fn delete_user_memory_cmd(
     state.db.delete_user_memory(&id).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn list_agent_procedural_memories_cmd(
+    state: tauri::State<'_, AppState>,
+    limit: Option<u32>,
+) -> Result<Vec<AgentProceduralMemory>, String> {
+    state
+        .db
+        .list_agent_procedural_memories(limit.unwrap_or(20).min(100) as usize)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_agent_procedural_memory_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    state
+        .db
+        .delete_agent_procedural_memory(&id)
+        .map_err(|e| e.to_string())
+}
+
 // ── Agent Config Commands (LLM providers) ───────────────────────────────
 
 #[tauri::command]
@@ -3721,6 +3765,38 @@ pub async fn agent_chat_cmd(
         .as_ref()
         .map(|persona| persona.default_skill_ids.clone())
         .unwrap_or_default();
+    let selected_skills = if persona_default_skill_ids.is_empty() {
+        nexa_core::skills::get_active_skills_for_query(&state.db, &message, 5)
+    } else {
+        nexa_core::skills::get_active_skills_for_query_with_pinned(
+            &state.db,
+            &message,
+            8,
+            &persona_default_skill_ids,
+        )
+    }
+    .unwrap_or_else(|err| {
+        warn!(
+            "Failed to select skills for task run {}: {err}",
+            task_run.id
+        );
+        Vec::new()
+    });
+    let initial_task_artifacts = serde_json::json!({
+        "kind": "agentTaskArtifacts",
+        "version": 1,
+        "selectedSkills": build_selected_skills_artifact(&selected_skills),
+    });
+    let _ = state.db.update_agent_task_run_progress(
+        &task_run.id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(&initial_task_artifacts),
+    );
+    emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
     let persona_section =
         nexa_core::persona::build_persona_prompt_section(persona_profile.as_ref());
     let current_turn_time_section = build_current_turn_time_section();
@@ -4277,16 +4353,7 @@ pub async fn agent_chat_cmd(
         if let Some(summ_provider) = summarization_provider {
             executor = executor.with_summarization_provider(summ_provider);
         }
-        if !persona_default_skill_ids.is_empty() {
-            let selected_skills = nexa_core::skills::get_active_skills_for_query_with_pinned(
-                &db,
-                &message,
-                8,
-                &persona_default_skill_ids,
-            )
-            .unwrap_or_default();
-            executor = executor.with_skills_override(selected_skills);
-        }
+        executor = executor.with_skills_override(selected_skills);
         let run_future = executor.run(
             history,
             user_parts,
@@ -5103,6 +5170,38 @@ pub async fn toggle_skill_cmd(
 }
 
 #[tauri::command]
+pub async fn list_selected_skills_cmd(
+    state: tauri::State<'_, AppState>,
+    query: String,
+    persona_id: Option<String>,
+) -> Result<Vec<Skill>, String> {
+    let pinned_skill_ids = match persona_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(id) => nexa_core::persona::enabled_persona_by_id(&state.db, id)
+            .map_err(|e| e.to_string())?
+            .map(|persona| persona.default_skill_ids)
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+
+    if pinned_skill_ids.is_empty() {
+        nexa_core::skills::get_active_skills_for_query(&state.db, &query, 5)
+            .map_err(|e| e.to_string())
+    } else {
+        nexa_core::skills::get_active_skills_for_query_with_pinned(
+            &state.db,
+            &query,
+            8,
+            &pinned_skill_ids,
+        )
+        .map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
 pub async fn list_builtin_skills_cmd() -> Result<Vec<Skill>, String> {
     Ok(nexa_core::skills::load_builtin_skills())
 }
@@ -5166,6 +5265,47 @@ pub async fn scan_skill_content_cmd(
     content: String,
 ) -> Result<Vec<nexa_core::skills::SkillWarning>, String> {
     Ok(nexa_core::skills::scan_skill_content(&content))
+}
+
+#[tauri::command]
+pub async fn list_skill_change_proposals_cmd(
+    state: tauri::State<'_, AppState>,
+    status: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<SkillChangeProposal>, String> {
+    let parsed_status = status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(SkillProposalStatus::try_from)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .list_skill_change_proposals(parsed_status, limit.unwrap_or(20).min(100) as usize)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn apply_skill_change_proposal_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<AppliedSkillChange, String> {
+    state
+        .db
+        .apply_skill_change_proposal(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn reject_skill_change_proposal_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<SkillChangeProposal, String> {
+    state
+        .db
+        .reject_skill_change_proposal(&id)
+        .map_err(|e| e.to_string())
 }
 
 // ── MCP Commands ────────────────────────────────────────────────────

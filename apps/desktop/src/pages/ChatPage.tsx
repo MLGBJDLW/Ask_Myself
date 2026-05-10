@@ -374,6 +374,14 @@ export function ChatPage() {
     [chat.turns],
   );
 
+  const latestUserSkillQuery = useMemo(() => {
+    for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
+      const message = chat.messages[index];
+      if (message.role === 'user') return message.content ?? '';
+    }
+    return '';
+  }, [chat.messages]);
+
   const latestAnswerEvidence = useMemo(() => {
     const latestAssistant = [...chat.messages]
       .reverse()
@@ -535,7 +543,12 @@ export function ChatPage() {
                       systemPrompt={chat.customSystemPrompt}
                       onSaved={(newPrompt) => chat.setCustomSystemPrompt(newPrompt)}
                     />
-                    <ActiveExtensions conversationId={chat.activeId ?? undefined} />
+                    <ActiveExtensions
+                      conversationId={chat.activeId ?? undefined}
+                      skillQuery={latestUserSkillQuery}
+                      personaId={activePersonaId}
+                      taskRun={chat.taskRun}
+                    />
                   </div>
                 </div>
               </div>
