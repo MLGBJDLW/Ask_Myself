@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -20,9 +21,12 @@ import {
   FileCode2,
   FileText,
   FolderOpen,
+  Image as ImageIcon,
   Languages,
   Loader2,
+  Minus,
   PanelRightClose,
+  Plus,
   RotateCcw,
   Save,
   Scissors,
@@ -38,7 +42,7 @@ import * as api from './api';
 import { markdownComponents, rehypePlugins } from '../components/chat/markdownComponents';
 import { FilePreviewContext } from './filePreviewContext';
 
-type PreviewMode = 'preview' | 'edit' | 'split';
+type PreviewMode = 'preview' | 'text' | 'edit' | 'split';
 
 const INSTANT_TRANSITION = { duration: 0 };
 const REMARK_PLUGINS = [remarkGfm];
@@ -341,6 +345,7 @@ function copyForLocale(locale: string) {
   return {
     title: zh ? '文件预览' : 'File Preview',
     preview: zh ? '预览' : 'Preview',
+    layout: zh ? '版式' : 'Layout',
     edit: zh ? '编辑' : 'Edit',
     split: zh ? '分屏' : 'Split',
     extracted: zh ? '提取文本' : 'Extracted Text',
@@ -364,6 +369,11 @@ function copyForLocale(locale: string) {
     reindexFailed: zh ? '文件已保存，但重新索引失败' : 'Saved, but reindexing failed',
     dirty: zh ? '未保存' : 'Unsaved',
     lines: zh ? '行' : 'lines',
+    pages: zh ? '页' : 'pages',
+    page: zh ? '页' : 'Page',
+    zoomIn: zh ? '放大' : 'Zoom in',
+    zoomOut: zh ? '缩小' : 'Zoom out',
+    resetZoom: zh ? '重置缩放' : 'Reset zoom',
     source: zh ? '来源' : 'Source',
     encoding: zh ? '编码' : 'Encoding',
     discardPrompt: zh ? '当前文件有未保存修改，确定要关闭吗？' : 'This file has unsaved changes. Close anyway?',
@@ -410,6 +420,102 @@ function MarkdownPreview({ content }: { content: string }) {
       >
         {content}
       </ReactMarkdown>
+    </div>
+  );
+}
+
+type PreviewLabels = ReturnType<typeof copyForLocale>;
+
+function OfficeRenderedPreview({
+  rendered,
+  labels,
+}: {
+  rendered: api.RenderedPreview;
+  labels: PreviewLabels;
+}) {
+  const [zoom, setZoom] = useState(1);
+
+  useEffect(() => {
+    setZoom(1);
+  }, [rendered]);
+
+  const zoomPercent = Math.round(zoom * 100);
+  const pageWidth = Math.round(900 * zoom);
+  const pageSummary = rendered.truncated
+    ? `${rendered.pageCount}+ ${labels.pages}`
+    : `${rendered.pageCount} ${labels.pages}`;
+
+  return (
+    <div data-testid="file-preview-rendered-content" className="flex h-full min-h-0 flex-col bg-surface-0">
+      <div className="shrink-0 border-b border-border bg-surface-1/95 px-4 py-2 backdrop-blur">
+        <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2 text-xs text-text-tertiary">
+            <ImageIcon size={14} className="text-accent" />
+            <span className="whitespace-nowrap">{pageSummary}</span>
+            <span className="hidden whitespace-nowrap sm:inline">{rendered.dpi} DPI</span>
+          </div>
+          <div className="flex-1" />
+          <div className="flex items-center rounded-md border border-border bg-surface-2 p-0.5">
+            <button
+              type="button"
+              onClick={() => setZoom((value) => Math.max(0.5, Number((value - 0.1).toFixed(2))))}
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+              title={labels.zoomOut}
+              aria-label={labels.zoomOut}
+            >
+              <Minus size={14} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(1)}
+              className="h-7 min-w-12 rounded px-2 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+              title={labels.resetZoom}
+              aria-label={labels.resetZoom}
+            >
+              {zoomPercent}%
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom((value) => Math.min(1.8, Number((value + 0.1).toFixed(2))))}
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+              title={labels.zoomIn}
+              aria-label={labels.zoomIn}
+            >
+              <Plus size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto px-4 py-5">
+        <div className="mx-auto flex max-w-full flex-col items-center gap-5">
+          {rendered.pages.map((page) => (
+            <figure
+              key={`${page.page}-${page.path}`}
+              data-testid="file-preview-rendered-page"
+              className="m-0"
+              style={{
+                width: pageWidth,
+                maxWidth: zoom <= 1 ? '100%' : undefined,
+              }}
+            >
+              <figcaption className="mb-1 flex items-center justify-between px-1 text-[11px] text-text-tertiary">
+                <span>
+                  {labels.page} {page.page}
+                </span>
+              </figcaption>
+              <div className="overflow-hidden rounded-md border border-border/70 bg-white shadow-[0_18px_45px_rgba(0,0,0,0.28)]">
+                <img
+                  src={convertFileSrc(page.path)}
+                  alt={`${labels.page} ${page.page}`}
+                  draggable={false}
+                  className="block w-full select-none"
+                />
+              </div>
+            </figure>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -476,7 +582,15 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
       setTextSelection(null);
       setAgentInstruction('');
       setCopiedAgentRequest(false);
-      setMode(next.kind === 'markdown' ? 'preview' : next.editable ? 'edit' : 'preview');
+      setMode(
+        next.renderedPreview?.pages?.length
+          ? 'preview'
+          : next.kind === 'markdown'
+            ? 'preview'
+            : next.editable
+              ? 'edit'
+              : 'preview',
+      );
       setActivePath(next.path);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -663,10 +777,14 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
 
   const contextValue = useMemo(() => ({ openFilePreview }), [openFilePreview]);
   const content = preview?.content ?? '';
-  const canShowPreview = Boolean(preview?.content);
+  const hasRenderedPreview = Boolean(preview?.renderedPreview?.pages?.length);
+  const canShowPreview = Boolean(hasRenderedPreview || preview?.content);
   const metadataBits = preview
     ? [
         formatBytes(preview.sizeBytes),
+        preview.renderedPreview?.pageCount
+          ? `${preview.renderedPreview.pageCount}${preview.renderedPreview.truncated ? '+' : ''} ${labels.pages}`
+          : '',
         preview.lineCount > 0 ? `${preview.lineCount} ${labels.lines}` : '',
         formatTimestamp(preview.modifiedAt, locale),
         preview.encoding ? `${labels.encoding}: ${preview.encoding}` : '',
@@ -750,10 +868,21 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                 <div className="flex rounded-md border border-border bg-surface-2 p-0.5">
                   <ModeButton
                     active={mode === 'preview'}
-                    icon={<Eye size={14} />}
-                    label={preview?.kind === 'document' ? labels.extracted : labels.preview}
-                    onClick={() => setMode('preview')}
+                    icon={hasRenderedPreview ? <ImageIcon size={14} /> : <Eye size={14} />}
+                    label={hasRenderedPreview ? labels.layout : preview?.kind === 'document' ? labels.extracted : labels.preview}
+                    onClick={() => {
+                      setMode('preview');
+                      if (hasRenderedPreview) setTextSelection(null);
+                    }}
                   />
+                  {hasRenderedPreview && preview?.content && (
+                    <ModeButton
+                      active={mode === 'text'}
+                      icon={<FileText size={14} />}
+                      label={labels.extracted}
+                      onClick={() => setMode('text')}
+                    />
+                  )}
                   {preview?.editable && (
                     <>
                       <ModeButton
@@ -913,6 +1042,9 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                   </div>
                 </div>
               ) : canShowPreview ? (
+                hasRenderedPreview && mode === 'preview' && preview.renderedPreview ? (
+                  <OfficeRenderedPreview rendered={preview.renderedPreview} labels={labels} />
+                ) : preview.content ? (
                 <div
                   data-testid="file-preview-readable-content"
                   className="h-full overflow-auto"
@@ -924,6 +1056,11 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                     <TextPreview content={preview.editable ? draft : content} />
                   )}
                 </div>
+                ) : (
+                  <div className="flex h-full items-center justify-center px-6 text-center text-sm text-text-tertiary">
+                    {labels.empty}
+                  </div>
+                )
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-center text-sm text-text-tertiary">
                   {preview.kind === 'binary' ? labels.unsupported : labels.empty}

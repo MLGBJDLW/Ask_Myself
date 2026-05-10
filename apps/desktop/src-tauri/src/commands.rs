@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -67,6 +68,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 /// Application state holding the database connection.
 pub struct AppState {
@@ -1639,6 +1643,25 @@ const PREVIEW_TEXT_BYTES_LIMIT: u64 = 2 * 1024 * 1024;
 const PREVIEW_PARSE_BYTES_LIMIT: u64 = 25 * 1024 * 1024;
 const PREVIEW_RELATIVE_SEARCH_LIMIT: usize = 5_000;
 const PREVIEW_RELATIVE_SEARCH_MAX_DEPTH: usize = 8;
+const PREVIEW_OFFICE_RENDER_DPI: u32 = 120;
+const PREVIEW_OFFICE_RENDER_MAX_PAGES: usize = 120;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedPreviewPage {
+    pub page: usize,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedPreview {
+    pub kind: String,
+    pub dpi: u32,
+    pub page_count: usize,
+    pub truncated: bool,
+    pub pages: Vec<RenderedPreviewPage>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1660,6 +1683,7 @@ pub struct FilePreview {
     pub line_count: usize,
     pub truncated: bool,
     pub warning: Option<String>,
+    pub rendered_preview: Option<RenderedPreview>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2051,7 +2075,383 @@ fn modified_at_iso(path: &Path) -> Option<String> {
     )
 }
 
-fn build_file_preview(db: &Database, raw_path: &str) -> Result<FilePreview, String> {
+fn append_preview_warning(warning: &mut Option<String>, message: impl Into<String>) {
+    let message = message.into();
+    if message.trim().is_empty() {
+        return;
+    }
+    match warning {
+        Some(existing) if !existing.trim().is_empty() => {
+            existing.push('\n');
+            existing.push_str(&message);
+        }
+        _ => *warning = Some(message),
+    }
+}
+
+fn is_office_renderable_preview(ext: &str, mime_type: &str) -> bool {
+    matches!(ext, ".docx" | ".xlsx" | ".pptx")
+        || matches!(
+            mime_type,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
+}
+
+fn sanitize_cache_label(name: &str) -> String {
+    let mut out = String::with_capacity(name.len().min(48));
+    for ch in name.chars() {
+        if out.len() >= 48 {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+            out.push(ch);
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    if trimmed.is_empty() {
+        "file".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn office_render_cache_dir(
+    app_data_dir: &Path,
+    path: &Path,
+    content_hash: &str,
+    display_name: &str,
+    ext: &str,
+) -> PathBuf {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(path.to_string_lossy().as_bytes());
+    hasher.update(content_hash.as_bytes());
+    hasher.update(ext.as_bytes());
+    hasher.update(PREVIEW_OFFICE_RENDER_DPI.to_string().as_bytes());
+    let key = hasher.finalize().to_hex().to_string();
+    let short_key: String = key.chars().take(24).collect();
+    app_data_dir
+        .join("preview-cache")
+        .join("office")
+        .join(format!(
+            "{}-{}",
+            sanitize_cache_label(display_name),
+            short_key
+        ))
+}
+
+fn rendered_page_number(path: &Path) -> usize {
+    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+        return usize::MAX;
+    };
+    let digits: String = stem
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    digits.parse::<usize>().unwrap_or(usize::MAX)
+}
+
+fn collect_rendered_preview(cache_dir: &Path) -> Result<Option<RenderedPreview>, String> {
+    if !cache_dir.is_dir() {
+        return Ok(None);
+    }
+
+    let mut images: Vec<PathBuf> = std::fs::read_dir(cache_dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+        })
+        .collect();
+    if images.is_empty() {
+        return Ok(None);
+    }
+
+    images.sort_by_key(|path| rendered_page_number(path));
+    let page_count = images.len();
+    let truncated = page_count >= PREVIEW_OFFICE_RENDER_MAX_PAGES;
+    let pages = images
+        .into_iter()
+        .take(PREVIEW_OFFICE_RENDER_MAX_PAGES)
+        .map(|path| RenderedPreviewPage {
+            page: rendered_page_number(&path),
+            path: path.to_string_lossy().to_string(),
+        })
+        .collect();
+
+    Ok(Some(RenderedPreview {
+        kind: "office-pages".to_string(),
+        dpi: PREVIEW_OFFICE_RENDER_DPI,
+        page_count,
+        truncated,
+        pages,
+    }))
+}
+
+fn office_tool_env_dirs(app_data_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(dir) = std::env::var_os(nexa_core::office_runtime::OFFICE_TOOLS_BIN_DIR_ENV) {
+        dirs.push(PathBuf::from(dir));
+    }
+    let managed = app_data_dir.join("runtimes").join("office-tools");
+    if !dirs.iter().any(|dir| dir == &managed) {
+        dirs.push(managed);
+    }
+    dirs
+}
+
+fn command_path_candidates(
+    app_data_dir: &Path,
+    names: &[&str],
+    extra_paths: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for dir in office_tool_env_dirs(app_data_dir) {
+        for name in names {
+            candidates.push(dir.join(name));
+        }
+    }
+    candidates.extend(extra_paths.iter().cloned());
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            for name in names {
+                candidates.push(dir.join(name));
+            }
+        }
+    }
+    candidates
+}
+
+fn find_program(app_data_dir: &Path, names: &[&str], extra_paths: &[PathBuf]) -> Option<PathBuf> {
+    command_path_candidates(app_data_dir, names, extra_paths)
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+fn find_soffice(app_data_dir: &Path) -> Option<PathBuf> {
+    let mut extra = Vec::new();
+    if cfg!(windows) {
+        for root in [
+            r"C:\Program Files",
+            r"C:\Program Files (x86)",
+            r"C:\Users\Default\AppData\Local\Programs",
+        ] {
+            extra.push(
+                Path::new(root)
+                    .join("LibreOffice")
+                    .join("program")
+                    .join("soffice.com"),
+            );
+            extra.push(
+                Path::new(root)
+                    .join("LibreOffice")
+                    .join("program")
+                    .join("soffice.exe"),
+            );
+        }
+    } else if cfg!(target_os = "macos") {
+        extra.push(PathBuf::from(
+            "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        ));
+    }
+    find_program(
+        app_data_dir,
+        &["soffice.com", "soffice.exe", "soffice", "libreoffice"],
+        &extra,
+    )
+}
+
+fn find_pdftoppm(app_data_dir: &Path) -> Option<PathBuf> {
+    find_program(app_data_dir, &["pdftoppm.exe", "pdftoppm"], &[])
+}
+
+fn configure_preview_child_command(command: &mut Command, app_data_dir: &Path) {
+    let mut path_entries = office_tool_env_dirs(app_data_dir);
+    if let Some(current) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&current));
+    }
+    if let Ok(joined) = std::env::join_paths(path_entries) {
+        command.env("PATH", joined);
+    }
+    command.env("SAL_USE_VCLPLUGIN", "svp");
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
+fn command_failure_message(output: &std::process::Output, fallback: &str) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+    fallback.to_string()
+}
+
+fn file_uri_escape(input: &str) -> String {
+    let mut out = String::new();
+    for byte in input.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(*byte, b'/' | b':' | b'-' | b'.' | b'_' | b'~')
+        {
+            out.push(*byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn path_to_file_uri(path: &Path) -> String {
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut value = resolved.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) && !value.starts_with('/') {
+        value = format!("/{value}");
+    }
+    format!("file://{}", file_uri_escape(&value))
+}
+
+fn convert_office_to_pdf(
+    app_data_dir: &Path,
+    path: &Path,
+    work_dir: &Path,
+) -> Result<PathBuf, String> {
+    let soffice = find_soffice(app_data_dir).ok_or_else(|| {
+        "Rich Office preview needs LibreOffice. Prepare Document tools in Settings first."
+            .to_string()
+    })?;
+    let outdir = work_dir.join("pdf");
+    let profile_dir = work_dir.join("lo-profile");
+    std::fs::create_dir_all(&outdir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&profile_dir).map_err(|e| e.to_string())?;
+
+    let mut command = Command::new(soffice);
+    command
+        .arg(format!(
+            "-env:UserInstallation={}",
+            path_to_file_uri(&profile_dir)
+        ))
+        .arg("--headless")
+        .arg("--invisible")
+        .arg("--norestore")
+        .arg("--nolockcheck")
+        .arg("--nodefault")
+        .arg("--convert-to")
+        .arg("pdf")
+        .arg("--outdir")
+        .arg(&outdir)
+        .arg(path);
+    configure_preview_child_command(&mut command, app_data_dir);
+    let output = command.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(command_failure_message(
+            &output,
+            "LibreOffice failed to convert the document to PDF.",
+        ));
+    }
+
+    let expected = outdir.join(format!(
+        "{}.pdf",
+        path.file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("preview")
+    ));
+    if expected.exists() {
+        return Ok(expected);
+    }
+    std::fs::read_dir(&outdir)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|candidate| {
+            candidate
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+        })
+        .ok_or_else(|| "LibreOffice did not produce a PDF preview.".to_string())
+}
+
+fn render_pdf_to_images(app_data_dir: &Path, pdf_path: &Path, outdir: &Path) -> Result<(), String> {
+    let pdftoppm = find_pdftoppm(app_data_dir).ok_or_else(|| {
+        "Rich Office preview needs Poppler. Prepare Document tools in Settings first.".to_string()
+    })?;
+    let prefix = outdir.join("page");
+    let mut command = Command::new(pdftoppm);
+    command
+        .arg("-png")
+        .arg("-r")
+        .arg(PREVIEW_OFFICE_RENDER_DPI.to_string())
+        .arg("-f")
+        .arg("1")
+        .arg("-l")
+        .arg(PREVIEW_OFFICE_RENDER_MAX_PAGES.to_string())
+        .arg(pdf_path)
+        .arg(prefix);
+    configure_preview_child_command(&mut command, app_data_dir);
+    let output = command.output().map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_failure_message(
+            &output,
+            "Poppler failed to render the Office preview images.",
+        ))
+    }
+}
+
+fn build_office_rendered_preview(
+    app_data_dir: &Path,
+    path: &Path,
+    content_hash: &str,
+    display_name: &str,
+    ext: &str,
+) -> Result<RenderedPreview, String> {
+    let cache_dir = office_render_cache_dir(app_data_dir, path, content_hash, display_name, ext);
+    if let Some(rendered) = collect_rendered_preview(&cache_dir)? {
+        return Ok(rendered);
+    }
+
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    let work_dir = cache_dir.join("_work");
+    std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
+
+    let result = (|| {
+        let pdf = convert_office_to_pdf(app_data_dir, path, &work_dir)?;
+        render_pdf_to_images(app_data_dir, &pdf, &cache_dir)?;
+        collect_rendered_preview(&cache_dir)?
+            .ok_or_else(|| "Office renderer produced no preview pages.".to_string())
+    })();
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+    result
+}
+
+fn build_file_preview(
+    db: &Database,
+    raw_path: &str,
+    app_data_dir: Option<&Path>,
+) -> Result<FilePreview, String> {
     let resolved = resolve_source_file(db, raw_path)?;
     let metadata = std::fs::metadata(&resolved.canonical).map_err(|e| e.to_string())?;
     let size_bytes = metadata.len();
@@ -2071,6 +2471,7 @@ fn build_file_preview(db: &Database, raw_path: &str) -> Result<FilePreview, Stri
     let mut binary = false;
     let mut truncated = false;
     let mut warning: Option<String> = None;
+    let mut rendered_preview: Option<RenderedPreview> = None;
 
     if is_document_preview_type(&mime_type) && size_bytes <= PREVIEW_PARSE_BYTES_LIMIT {
         match nexa_core::parse::parse_file(
@@ -2123,6 +2524,35 @@ fn build_file_preview(db: &Database, raw_path: &str) -> Result<FilePreview, Stri
         ));
     }
 
+    if size_bytes <= PREVIEW_PARSE_BYTES_LIMIT && is_office_renderable_preview(&ext, &mime_type) {
+        if let Some(data_dir) = app_data_dir {
+            match build_office_rendered_preview(
+                data_dir,
+                &resolved.canonical,
+                &hash,
+                &display_name,
+                &ext,
+            ) {
+                Ok(rendered) => {
+                    if rendered.truncated {
+                        append_preview_warning(
+                            &mut warning,
+                            format!(
+                                "Rich Office preview is capped at the first {} pages.",
+                                PREVIEW_OFFICE_RENDER_MAX_PAGES
+                            ),
+                        );
+                    }
+                    rendered_preview = Some(rendered);
+                }
+                Err(err) => append_preview_warning(
+                    &mut warning,
+                    format!("Rich Office preview unavailable: {err}"),
+                ),
+            }
+        }
+    }
+
     let kind = preview_kind(&ext, &mime_type, binary);
     let line_count = content
         .as_deref()
@@ -2157,16 +2587,22 @@ fn build_file_preview(db: &Database, raw_path: &str) -> Result<FilePreview, Stri
         line_count,
         truncated,
         warning,
+        rendered_preview,
     })
 }
 
 #[tauri::command]
 pub async fn preview_file_cmd(
     state: tauri::State<'_, AppState>,
+    app_handle: AppHandle,
     path: String,
 ) -> Result<FilePreview, String> {
     let db = state.db.clone();
-    tokio::task::spawn_blocking(move || build_file_preview(&db, &path))
+    let data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+    tokio::task::spawn_blocking(move || build_file_preview(&db, &path, Some(&data_dir)))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -2246,7 +2682,7 @@ pub async fn save_text_file_cmd(
                 Err(err) => ("error".to_string(), Some(err.to_string())),
             };
 
-        let preview = build_file_preview(&db, &resolved.canonical.to_string_lossy())?;
+        let preview = build_file_preview(&db, &resolved.canonical.to_string_lossy(), None)?;
         Ok(FileSaveResult {
             preview,
             checkpoint_id: checkpoint.id,
@@ -5871,5 +6307,54 @@ mod tests {
 
         assert_eq!(resolved.canonical, std::fs::canonicalize(&file).unwrap());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn office_render_cache_dir_changes_with_content_hash() {
+        let root = unique_temp_dir("preview-cache");
+        let file = root.join("Quarterly Report.docx");
+
+        let first =
+            office_render_cache_dir(&root, &file, "hash-one", "Quarterly Report.docx", ".docx");
+        let second =
+            office_render_cache_dir(&root, &file, "hash-two", "Quarterly Report.docx", ".docx");
+
+        assert_ne!(first, second);
+        assert!(first.starts_with(root.join("preview-cache").join("office")));
+        assert!(first
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap()
+            .starts_with("Quarterly_Report.docx-"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collect_rendered_preview_orders_pages_numerically() {
+        let root = unique_temp_dir("preview-pages");
+        std::fs::write(root.join("page-10.png"), b"ten").expect("write page");
+        std::fs::write(root.join("page-2.png"), b"two").expect("write page");
+        std::fs::write(root.join("page-1.png"), b"one").expect("write page");
+
+        let rendered = collect_rendered_preview(&root)
+            .expect("collect pages")
+            .expect("rendered preview");
+
+        let pages: Vec<usize> = rendered.pages.iter().map(|page| page.page).collect();
+        assert_eq!(pages, vec![1, 2, 10]);
+        assert_eq!(rendered.page_count, 3);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn append_preview_warning_keeps_existing_context() {
+        let mut warning = Some("Plain text extracted with fallback.".to_string());
+
+        append_preview_warning(&mut warning, "Rich Office preview unavailable.");
+
+        assert_eq!(
+            warning.as_deref(),
+            Some("Plain text extracted with fallback.\nRich Office preview unavailable.")
+        );
     }
 }

@@ -311,6 +311,20 @@ export interface FilePreview {
   lineCount: number;
   truncated: boolean;
   warning?: string | null;
+  renderedPreview?: RenderedPreview | null;
+}
+
+export interface RenderedPreviewPage {
+  page: number;
+  path: string;
+}
+
+export interface RenderedPreview {
+  kind: 'office-pages' | string;
+  dpi: number;
+  pageCount: number;
+  truncated: boolean;
+  pages: RenderedPreviewPage[];
 }
 
 export interface FileSaveResult {
