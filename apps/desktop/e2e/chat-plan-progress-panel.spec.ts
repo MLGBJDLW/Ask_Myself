@@ -57,6 +57,28 @@ test.beforeEach(async ({ page }) => {
       createdAt: nowIso,
       updatedAt: nowIso,
     };
+    const diffMergeConversation: Conversation = {
+      id: 'conv-diff-merge',
+      title: 'Diff merge',
+      provider: 'open_ai',
+      model: 'gpt-4.1',
+      systemPrompt: '',
+      collectionContext: null,
+      projectId: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    const runShellDiffConversation: Conversation = {
+      id: 'conv-run-shell-diffs',
+      title: 'Run shell diffs',
+      provider: 'open_ai',
+      model: 'gpt-4.1',
+      systemPrompt: '',
+      collectionContext: null,
+      projectId: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
 
     const planToolCallId = 'call-update-plan';
     const updatePlanArtifact = {
@@ -197,6 +219,250 @@ test.beforeEach(async ({ page }) => {
         imageAttachments: null,
       },
     ];
+    const diffMergeMessages: Message[] = [
+      {
+        id: 'm-user-diff-merge',
+        conversationId: diffMergeConversation.id,
+        role: 'user',
+        content: 'Update example.ts in two edits.',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 0,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-assistant-diff-merge',
+        conversationId: diffMergeConversation.id,
+        role: 'assistant',
+        content: 'Updated the file.',
+        toolCallId: null,
+        toolCalls: [
+          {
+            id: 'call-edit-answer',
+            name: 'edit_file',
+            arguments: JSON.stringify({
+              path: 'src/example.ts',
+              action: 'str_replace',
+              old_str: 'const answer = 42;',
+              new_str: 'const answer = 43;',
+            }),
+          },
+          {
+            id: 'call-edit-label',
+            name: 'edit_file',
+            arguments: JSON.stringify({
+              path: 'src/example.ts',
+              action: 'str_replace',
+              old_str: 'export const label = "old";',
+              new_str: 'export const label = "new";',
+            }),
+          },
+        ],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 1,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-tool-edit-answer',
+        conversationId: diffMergeConversation.id,
+        role: 'tool',
+        content: 'Successfully replaced text in src/example.ts',
+        toolCallId: 'call-edit-answer',
+        toolCalls: [],
+        artifacts: {
+          kind: 'fileCheckpoint',
+          checkpoint: {
+            id: 'checkpoint-edit-answer',
+            conversationId: diffMergeConversation.id,
+            toolCallId: 'call-edit-answer',
+            toolName: 'edit_file',
+            operation: 'str_replace',
+            path: 'src/example.ts',
+            absolutePath: 'D:/workspace/src/example.ts',
+            existedBefore: true,
+            bytesBefore: 64,
+            hashBefore: 'hash-before-answer',
+            createdAt: nowIso,
+          },
+          bytesAfter: 64,
+          diff: {
+            path: 'src/example.ts',
+            operation: 'str_replace',
+            additions: 1,
+            deletions: 1,
+            hunks: [{
+              oldStart: 1,
+              newStart: 1,
+              oldLines: 2,
+              newLines: 2,
+              lines: [
+                { type: 'deletion', oldLine: 1, newLine: null, content: 'const answer = 42;' },
+                { type: 'addition', oldLine: null, newLine: 1, content: 'const answer = 43;' },
+                { type: 'context', oldLine: 2, newLine: 2, content: 'export const label = "old";' },
+              ],
+            }],
+          },
+        },
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 2,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-tool-edit-label',
+        conversationId: diffMergeConversation.id,
+        role: 'tool',
+        content: 'Successfully replaced text in src/example.ts',
+        toolCallId: 'call-edit-label',
+        toolCalls: [],
+        artifacts: {
+          kind: 'fileCheckpoint',
+          checkpoint: {
+            id: 'checkpoint-edit-label',
+            conversationId: diffMergeConversation.id,
+            toolCallId: 'call-edit-label',
+            toolName: 'edit_file',
+            operation: 'str_replace',
+            path: 'src/example.ts',
+            absolutePath: 'D:/workspace/src/example.ts',
+            existedBefore: true,
+            bytesBefore: 64,
+            hashBefore: 'hash-before-label',
+            createdAt: nowIso,
+          },
+          bytesAfter: 64,
+          diff: {
+            path: 'src/example.ts',
+            operation: 'str_replace',
+            additions: 1,
+            deletions: 1,
+            hunks: [{
+              oldStart: 2,
+              newStart: 2,
+              oldLines: 1,
+              newLines: 1,
+              lines: [
+                { type: 'deletion', oldLine: 2, newLine: null, content: 'export const label = "old";' },
+                { type: 'addition', oldLine: null, newLine: 2, content: 'export const label = "new";' },
+              ],
+            }],
+          },
+        },
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 3,
+        thinking: null,
+        imageAttachments: null,
+      },
+    ];
+    const runShellDiffMessages: Message[] = [
+      {
+        id: 'm-user-run-shell-diffs',
+        conversationId: runShellDiffConversation.id,
+        role: 'user',
+        content: 'Generate files with run_shell.',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 0,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-assistant-run-shell-diffs',
+        conversationId: runShellDiffConversation.id,
+        role: 'assistant',
+        content: 'Generated the files.',
+        toolCallId: null,
+        toolCalls: [{
+          id: 'call-run-shell-diffs',
+          name: 'run_shell',
+          arguments: JSON.stringify({
+            program: 'python',
+            args: ['-'],
+            cwd: 'D:/workspace',
+          }),
+        }],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 1,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-tool-run-shell-diffs',
+        conversationId: runShellDiffConversation.id,
+        role: 'tool',
+        content: 'Exit code: 0\n\n── file changes ──\nFile changes: 2 file(s), +2, -0, 2 text diff(s): generated/a.txt, generated/b.txt\n',
+        toolCallId: 'call-run-shell-diffs',
+        toolCalls: [],
+        artifacts: {
+          kind: 'fileChangeSet',
+          source: 'run_shell',
+          fileChanges: [
+            { path: 'generated/a.txt', operation: 'create', textDiff: true },
+            { path: 'generated/b.txt', operation: 'create', textDiff: true },
+          ],
+          diffStats: {
+            kind: 'diffStats',
+            filesChanged: 2,
+            additions: 2,
+            deletions: 0,
+            hunks: 2,
+            operation: 'run_shell',
+            paths: ['generated/a.txt', 'generated/b.txt'],
+          },
+          diffs: [
+            {
+              path: 'generated/a.txt',
+              operation: 'create',
+              additions: 1,
+              deletions: 0,
+              hunks: [{
+                oldStart: 0,
+                newStart: 1,
+                oldLines: 0,
+                newLines: 1,
+                lines: [
+                  { type: 'addition', oldLine: null, newLine: 1, content: 'alpha' },
+                ],
+              }],
+            },
+            {
+              path: 'generated/b.txt',
+              operation: 'create',
+              additions: 1,
+              deletions: 0,
+              hunks: [{
+                oldStart: 0,
+                newStart: 1,
+                oldLines: 0,
+                newLines: 1,
+                lines: [
+                  { type: 'addition', oldLine: null, newLine: 1, content: 'beta' },
+                ],
+              }],
+            },
+          ],
+        },
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 2,
+        thinking: null,
+        imageAttachments: null,
+      },
+    ];
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handlerId: number }>();
     let callbackSeq = 1;
@@ -306,11 +572,22 @@ test.beforeEach(async ({ page }) => {
         case 'get_wizard_state_cmd':
           return { completed: true, language: 'en', aiProvider: 'open_ai', sourceAdded: true };
         case 'list_conversations_cmd':
-          return [clone(conversation), clone(autoPlanOnlyConversation)];
+          return [
+            clone(conversation),
+            clone(autoPlanOnlyConversation),
+            clone(diffMergeConversation),
+            clone(runShellDiffConversation),
+          ];
         case 'get_conversation_cmd': {
           const conversationId = String(args.id ?? '');
           if (conversationId === autoPlanOnlyConversation.id) {
             return [clone(autoPlanOnlyConversation), []];
+          }
+          if (conversationId === diffMergeConversation.id) {
+            return [clone(diffMergeConversation), clone(diffMergeMessages)];
+          }
+          if (conversationId === runShellDiffConversation.id) {
+            return [clone(runShellDiffConversation), clone(runShellDiffMessages)];
           }
           return [clone(conversation), clone(messages)];
         }
@@ -318,6 +595,12 @@ test.beforeEach(async ({ page }) => {
           return [];
         case 'get_agent_task_runs_cmd': {
           const conversationId = String(args.conversationId ?? '');
+          if (
+            conversationId === diffMergeConversation.id ||
+            conversationId === runShellDiffConversation.id
+          ) {
+            return [];
+          }
           return [
             clone(conversationId === autoPlanOnlyConversation.id ? autoPlanOnlyTaskRun : taskRun),
           ];
@@ -451,4 +734,38 @@ test('file diff preview stays attached before later user messages', async ({ pag
   });
 
   expect(diffBeforeFollowup).toBe(true);
+});
+
+test('file diff previews merge repeated changes to the same file', async ({ page }) => {
+  await page.goto('/chat/conv-diff-merge');
+
+  const previewGroup = page.getByTestId('turn-file-diff-previews');
+  await expect(previewGroup).toBeVisible();
+  await expect(previewGroup.getByTestId('file-diff-preview')).toHaveCount(1);
+
+  const diffCard = previewGroup.getByTestId('file-diff-preview').first();
+  await expect(diffCard).toContainText('example.ts');
+  await expect(diffCard.getByText('+2')).toBeVisible();
+  await expect(diffCard.getByText('-2')).toBeVisible();
+
+  await diffCard.getByRole('button').first().click();
+  await expect(diffCard.getByText('const answer = 42;')).toBeVisible();
+  await expect(diffCard.getByText('const answer = 43;')).toBeVisible();
+  await expect(diffCard.getByText('export const label = "old";').first()).toBeVisible();
+  await expect(diffCard.getByText('export const label = "new";')).toBeVisible();
+});
+
+test('file diff previews render run_shell diff arrays', async ({ page }) => {
+  await page.goto('/chat/conv-run-shell-diffs');
+
+  const previewGroup = page.getByTestId('turn-file-diff-previews');
+  await expect(previewGroup).toBeVisible();
+  await expect(previewGroup.getByTestId('file-diff-preview')).toHaveCount(2);
+  await expect(previewGroup).toContainText('a.txt');
+  await expect(previewGroup).toContainText('b.txt');
+
+  const firstDiff = previewGroup.getByTestId('file-diff-preview').first();
+  await expect(firstDiff.getByText('+1')).toBeVisible();
+  await firstDiff.getByRole('button').first().click();
+  await expect(firstDiff.getByText('alpha')).toBeVisible();
 });

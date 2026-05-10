@@ -42,7 +42,9 @@
 //!   code, duration, and kill status via `tracing`. **Arg contents are never
 //!   logged** (they may contain sensitive paths or data).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
@@ -50,13 +52,16 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
+use walkdir::{DirEntry, WalkDir};
 
 use crate::app_settings::ShellAccessMode;
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::models::Source;
 
+use super::diff_stats::text_diff_artifact;
 use super::path_utils::{
     resolve_existing_directory_in_sources, resolve_path_from_base_in_sources, PathKind,
 };
@@ -76,6 +81,20 @@ const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_SINGLE_ARG_BYTES: usize = 8 * 1024;
 const MAX_TOTAL_ARGV_BYTES: usize = 32 * 1024;
 const MAX_STDIN_BYTES: usize = 1024 * 1024;
+const MAX_FILE_TRACK_FILES: usize = 5_000;
+const MAX_FILE_TRACK_BYTES: u64 = 1024 * 1024;
+const MAX_FILE_TRACK_DIFFS: usize = 30;
+
+const FILE_TRACK_SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    "__pycache__",
+];
 
 /// Whitelisted program basenames. Matched case-insensitively on Windows,
 /// case-sensitively on Unix. The model may only pass these names exactly.
@@ -258,6 +277,26 @@ struct RunShellOutput {
     killed_by_timeout: bool,
 }
 
+#[derive(Debug, Clone)]
+struct FileSnapshotEntry {
+    bytes: u64,
+    hash: String,
+    content: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+struct FileSnapshot {
+    files: BTreeMap<PathBuf, FileSnapshotEntry>,
+    truncated: bool,
+    unreadable_count: usize,
+}
+
+#[derive(Debug)]
+struct FileChangeSet {
+    artifact: Value,
+    summary: String,
+}
+
 // ---------------------------------------------------------------------------
 // Validation helpers
 // ---------------------------------------------------------------------------
@@ -428,6 +467,265 @@ fn validate_stdin(stdin: Option<&str>) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn should_track_entry(entry: &DirEntry) -> bool {
+    if !entry.file_type().is_dir() {
+        return true;
+    }
+    let name = entry.file_name().to_string_lossy();
+    !FILE_TRACK_SKIP_DIRS
+        .iter()
+        .any(|skip| name.eq_ignore_ascii_case(skip))
+}
+
+fn read_snapshot_entry(path: &Path) -> Result<Option<FileSnapshotEntry>, String> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("cannot stat '{}': {err}", path.display())),
+    };
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+
+    let mut file = std::fs::File::open(path)
+        .map_err(|err| format!("cannot open '{}': {err}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut content = if metadata.len() <= MAX_FILE_TRACK_BYTES {
+        Some(Vec::with_capacity(metadata.len() as usize))
+    } else {
+        None
+    };
+    let mut buffer = [0u8; 8192];
+
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|err| format!("cannot read '{}': {err}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        if let Some(bytes) = content.as_mut() {
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+    }
+
+    Ok(Some(FileSnapshotEntry {
+        bytes: metadata.len(),
+        hash: hasher.finalize().to_hex().to_string(),
+        content,
+    }))
+}
+
+fn capture_file_snapshot(root: &Path) -> FileSnapshot {
+    let mut files = BTreeMap::new();
+    let mut truncated = false;
+    let mut unreadable_count = 0usize;
+
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(should_track_entry)
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                unreadable_count += 1;
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if files.len() >= MAX_FILE_TRACK_FILES {
+            truncated = true;
+            break;
+        }
+        let path = entry.path().to_path_buf();
+        match read_snapshot_entry(&path) {
+            Ok(Some(snapshot)) => {
+                files.insert(path, snapshot);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                unreadable_count += 1;
+            }
+        }
+    }
+
+    FileSnapshot {
+        files,
+        truncated,
+        unreadable_count,
+    }
+}
+
+fn snapshot_path_label(root: &Path, path: &Path) -> String {
+    let display = path
+        .strip_prefix(root)
+        .ok()
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .unwrap_or(path);
+    display.to_string_lossy().replace('\\', "/")
+}
+
+fn utf8_content(entry: Option<&FileSnapshotEntry>) -> Option<String> {
+    let bytes = entry?.content.as_ref()?;
+    std::str::from_utf8(bytes)
+        .ok()
+        .map(std::string::ToString::to_string)
+}
+
+fn diff_number(diff: &Value, key: &str) -> usize {
+    diff.get(key).and_then(Value::as_u64).unwrap_or(0) as usize
+}
+
+fn diff_hunk_count(diff: &Value) -> usize {
+    diff.get("hunks")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+fn build_run_shell_file_changes(
+    root: &Path,
+    before: &FileSnapshot,
+    after: &FileSnapshot,
+) -> Option<FileChangeSet> {
+    let mut all_paths = BTreeSet::new();
+    all_paths.extend(before.files.keys().cloned());
+    all_paths.extend(after.files.keys().cloned());
+
+    let mut changes = Vec::new();
+    let mut diffs = Vec::new();
+    let mut additions = 0usize;
+    let mut deletions = 0usize;
+    let mut hunk_count = 0usize;
+    let mut changed_paths = Vec::new();
+
+    for path in all_paths {
+        let old = before.files.get(&path);
+        let new = after.files.get(&path);
+        let operation = match (old, new) {
+            (None, Some(_)) => "create",
+            (Some(_), None) => "delete",
+            (Some(old), Some(new)) if old.hash != new.hash || old.bytes != new.bytes => "modify",
+            _ => continue,
+        };
+
+        let label = snapshot_path_label(root, &path);
+        let old_text = utf8_content(old);
+        let new_text = utf8_content(new);
+        let mut has_text_diff = false;
+
+        if diffs.len() < MAX_FILE_TRACK_DIFFS {
+            let maybe_diff = match operation {
+                "create" => new_text
+                    .as_deref()
+                    .map(|content| text_diff_artifact(&label, "create", "", content)),
+                "delete" => old_text
+                    .as_deref()
+                    .map(|content| text_diff_artifact(&label, "delete", content, "")),
+                _ => match (old_text.as_deref(), new_text.as_deref()) {
+                    (Some(old_content), Some(new_content)) => Some(text_diff_artifact(
+                        &label,
+                        "run_shell",
+                        old_content,
+                        new_content,
+                    )),
+                    _ => None,
+                },
+            };
+
+            if let Some(diff) = maybe_diff {
+                additions += diff_number(&diff, "additions");
+                deletions += diff_number(&diff, "deletions");
+                hunk_count += diff_hunk_count(&diff);
+                diffs.push(diff);
+                has_text_diff = true;
+            }
+        }
+
+        changed_paths.push(label.clone());
+        changes.push(json!({
+            "path": label,
+            "operation": operation,
+            "bytesBefore": old.map(|entry| entry.bytes),
+            "bytesAfter": new.map(|entry| entry.bytes),
+            "textDiff": has_text_diff,
+        }));
+    }
+
+    if changes.is_empty() {
+        return None;
+    }
+
+    let text_diff_count = diffs.len();
+    let mut artifact = json!({
+        "kind": "fileChangeSet",
+        "source": "run_shell",
+        "root": root.display().to_string(),
+        "tracking": {
+            "maxFiles": MAX_FILE_TRACK_FILES,
+            "maxBytesPerFile": MAX_FILE_TRACK_BYTES,
+            "truncated": before.truncated || after.truncated,
+            "unreadableCount": before.unreadable_count + after.unreadable_count,
+        },
+        "fileChanges": changes,
+        "diffs": diffs,
+        "diffStats": {
+            "kind": "diffStats",
+            "filesChanged": changed_paths.len(),
+            "additions": additions,
+            "deletions": deletions,
+            "hunks": hunk_count,
+            "operation": "run_shell",
+            "paths": changed_paths,
+        }
+    });
+
+    if let Some(first_diff) = artifact
+        .get("diffs")
+        .and_then(Value::as_array)
+        .and_then(|items| (items.len() == 1).then(|| items[0].clone()))
+    {
+        artifact["diff"] = first_diff;
+    }
+
+    let paths = artifact["diffStats"]["paths"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .take(6)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let more = artifact["diffStats"]["filesChanged"]
+        .as_u64()
+        .map(|count| {
+            if count > 6 {
+                format!(" and {} more", count - 6)
+            } else {
+                String::new()
+            }
+        })
+        .unwrap_or_default();
+    let summary = format!(
+        "File changes: {} file(s), +{}, -{}, {} text diff(s): {}{}",
+        artifact["diffStats"]["filesChanged"].as_u64().unwrap_or(0),
+        additions,
+        deletions,
+        text_diff_count,
+        paths,
+        more
+    );
+
+    Some(FileChangeSet { artifact, summary })
 }
 
 fn collect_positional_args(args: &[String]) -> Vec<&str> {
@@ -1291,6 +1589,12 @@ impl Tool for RunShellTool {
             Err(msg) => return Ok(error_result(call_id, msg)),
         };
 
+        let before_root = cwd_path.clone();
+        let before_snapshot =
+            tokio::task::spawn_blocking(move || capture_file_snapshot(&before_root))
+                .await
+                .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?;
+
         let output = if is_native_filesystem_program(&canonical_program) {
             if parsed.stdin.is_some() {
                 return Ok(error_result(
@@ -1317,6 +1621,14 @@ impl Tool for RunShellTool {
             }
         };
 
+        let after_root = cwd_path.clone();
+        let after_snapshot =
+            tokio::task::spawn_blocking(move || capture_file_snapshot(&after_root))
+                .await
+                .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?;
+        let file_changes =
+            build_run_shell_file_changes(&cwd_path, &before_snapshot, &after_snapshot);
+
         tracing::info!(
             target: "tool.run_shell",
             program = canonical_program,
@@ -1332,13 +1644,21 @@ impl Tool for RunShellTool {
         );
 
         let is_error = output.killed_by_timeout || output.exit_code != Some(0);
-        let content = format_output(&output);
+        let mut content = format_output(&output);
+        if let Some(changes) = &file_changes {
+            if !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push_str("\n── file changes ──\n");
+            content.push_str(&changes.summary);
+            content.push('\n');
+        }
 
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content,
             is_error,
-            artifacts: None,
+            artifacts: file_changes.map(|changes| changes.artifact),
         })
     }
 }
@@ -1350,7 +1670,20 @@ impl Tool for RunShellTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sources::CreateSourceInput;
     use std::ffi::OsString;
+
+    fn db_with_source(root: &Path) -> Database {
+        let db = Database::open_memory().expect("open memory db");
+        db.add_source(CreateSourceInput {
+            root_path: root.to_string_lossy().to_string(),
+            include_globs: vec![],
+            exclude_globs: vec![],
+            watch_enabled: false,
+        })
+        .expect("register source");
+        db
+    }
 
     // --- validate_program ---------------------------------------------------
 
@@ -1860,6 +2193,75 @@ mod tests {
         let text = format_output(&output);
         // Both truncation markers should appear
         assert_eq!(text.matches("truncated to 64KB").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_run_shell_reports_created_text_file_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("source.txt"), "hello\n").unwrap();
+        let db = db_with_source(tmp.path());
+        let tool = RunShellTool;
+        let args = json!({
+            "program": "cp",
+            "args": ["source.txt", "copy.txt"],
+            "cwd": tmp.path().to_string_lossy(),
+        });
+
+        let result = tool
+            .execute("run-shell-copy", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        let artifact = result.artifacts.as_ref().expect("file changes artifact");
+        assert_eq!(artifact["kind"], "fileChangeSet");
+        assert_eq!(artifact["source"], "run_shell");
+        assert_eq!(artifact["diffStats"]["filesChanged"], 1);
+        assert_eq!(artifact["diffStats"]["additions"], 1);
+        assert_eq!(artifact["diffStats"]["deletions"], 0);
+        assert_eq!(artifact["diffStats"]["paths"][0], "copy.txt");
+        assert_eq!(artifact["diff"]["operation"], "create");
+        assert_eq!(artifact["diff"]["path"], "copy.txt");
+        assert_eq!(artifact["fileChanges"][0]["operation"], "create");
+        assert!(result.content.contains("file changes"));
+        assert!(result.content.contains("copy.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_run_shell_reports_modified_text_file_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("source.txt"), "new\n").unwrap();
+        std::fs::write(tmp.path().join("dest.txt"), "old\n").unwrap();
+        let db = db_with_source(tmp.path());
+        let tool = RunShellTool;
+        let args = json!({
+            "program": "cp",
+            "args": ["source.txt", "dest.txt"],
+            "cwd": tmp.path().to_string_lossy(),
+        });
+
+        let result = tool
+            .execute("run-shell-overwrite", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        let artifact = result.artifacts.as_ref().expect("file changes artifact");
+        assert_eq!(artifact["diffStats"]["filesChanged"], 1);
+        assert_eq!(artifact["diffStats"]["additions"], 1);
+        assert_eq!(artifact["diffStats"]["deletions"], 1);
+        assert_eq!(artifact["diffStats"]["paths"][0], "dest.txt");
+        assert_eq!(artifact["diff"]["operation"], "run_shell");
+        assert!(artifact["diff"]["hunks"][0]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line["type"] == "deletion" && line["content"] == "old"));
+        assert!(artifact["diff"]["hunks"][0]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line["type"] == "addition" && line["content"] == "new"));
     }
 
     #[tokio::test]

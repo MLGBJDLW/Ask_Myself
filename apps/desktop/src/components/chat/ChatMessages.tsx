@@ -44,7 +44,8 @@ import type {
 import { ToolCallCard } from "./ToolCallCard";
 import {
   FileDiffPreview,
-  extractFileDiffArtifact,
+  extractFileDiffArtifacts,
+  mergeFileDiffArtifactsByPath,
   type FileDiffArtifact,
 } from "./FileDiffPreview";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -1303,9 +1304,9 @@ export function ChatMessages({
       for (let idx = userIdx + 1; idx < nextUserIdx; idx += 1) {
         const msg = messages[idx];
         if (msg.role !== "tool") continue;
-        const diff = extractFileDiffArtifact(msg.artifacts ?? undefined);
-        if (!diff) continue;
-        diffs.push(diff);
+        const messageDiffs = extractFileDiffArtifacts(msg.artifacts ?? undefined);
+        if (messageDiffs.length === 0) continue;
+        diffs.push(...messageDiffs);
         assignedToolMessageIndexes.add(idx);
       }
 
@@ -1321,10 +1322,10 @@ export function ChatMessages({
       if (msg.role !== "tool" || !msg.toolCallId) continue;
       const ownerIdx = ownerByToolCallId.get(msg.toolCallId);
       if (ownerIdx == null) continue;
-      const diff = extractFileDiffArtifact(msg.artifacts ?? undefined);
-      if (!diff) continue;
+      const messageDiffs = extractFileDiffArtifacts(msg.artifacts ?? undefined);
+      if (messageDiffs.length === 0) continue;
       const current = byAssistantIdx.get(ownerIdx) ?? [];
-      current.push(diff);
+      current.push(...messageDiffs);
       byAssistantIdx.set(ownerIdx, current);
     }
 
@@ -1334,10 +1335,11 @@ export function ChatMessages({
   const renderFileDiffPreviews = useCallback(
     (diffs: FileDiffArtifact[] | undefined, keyPrefix: string) => {
       if (!diffs || diffs.length === 0) return null;
+      const mergedDiffs = mergeFileDiffArtifactsByPath(diffs);
       return (
         <div className="my-2 flex justify-start" data-testid="turn-file-diff-previews">
           <div className="w-full max-w-[min(100%,72rem)] space-y-2">
-            {diffs.map((diff, diffIdx) => (
+            {mergedDiffs.map((diff, diffIdx) => (
               <FileDiffPreview key={`${keyPrefix}-${diff.path}-${diffIdx}`} diff={diff} />
             ))}
           </div>
