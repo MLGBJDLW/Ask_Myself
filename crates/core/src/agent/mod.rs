@@ -609,6 +609,7 @@ pub struct AgentConfig {
     pub subagent_max_calls_per_turn: Option<u32>,
     /// Soft token budget for delegated workers and adjudication per turn.
     pub subagent_token_budget: Option<u32>,
+    /// Maximum time for each tool call in seconds. 0 disables the outer tool timeout.
     pub tool_timeout_secs: Option<u32>,
     pub agent_timeout_secs: Option<u32>,
     /// Answer cache TTL in hours. When `None`, the cache module default is used.
@@ -636,6 +637,37 @@ fn default_trace_enabled() -> bool {
 
 fn default_dynamic_tool_visibility() -> bool {
     false
+}
+
+fn tool_timeout_for_call(
+    configured_timeout_secs: Option<u32>,
+    tool_name: &str,
+    parsed_args: &serde_json::Value,
+) -> Option<Duration> {
+    let base_timeout = configured_timeout_secs.unwrap_or(30) as u64;
+    if base_timeout == 0 {
+        return None;
+    }
+
+    let multiplier = match tool_name {
+        "retrieve_evidence" => 2,
+        "spawn_subagent" => 3,
+        _ => 1,
+    };
+    let mut timeout_secs = base_timeout.saturating_mul(multiplier);
+
+    if tool_name == "run_shell" {
+        let requested = parsed_args
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(30);
+        if requested == 0 {
+            return None;
+        }
+        timeout_secs = timeout_secs.max(requested.saturating_add(5));
+    }
+
+    Some(Duration::from_secs(timeout_secs.max(1)))
 }
 
 impl Default for AgentConfig {
@@ -2440,12 +2472,6 @@ impl AgentExecutor {
             let tool_futures: Vec<_> = tool_calls
                 .iter()
                 .map(|tc| {
-                    let base_timeout = self.config.tool_timeout_secs.unwrap_or(30) as u64;
-                    let tool_timeout = match tc.name.as_str() {
-                        "retrieve_evidence" => Duration::from_secs(base_timeout * 2),
-                        "spawn_subagent" => Duration::from_secs(base_timeout * 3),
-                        _ => Duration::from_secs(base_timeout),
-                    };
                     let source_scope = &source_scope;
                     let tool_span = info_span!("tool_execution", tool = %tc.name);
                     let progress_tx = tx.clone();
@@ -2457,6 +2483,11 @@ impl AgentExecutor {
                         // -- Confirmation gate for destructive tools --------
                         let parsed_args: serde_json::Value =
                             serde_json::from_str(&tc.arguments).unwrap_or_default();
+                        let tool_timeout = tool_timeout_for_call(
+                            self.config.tool_timeout_secs,
+                            &tc.name,
+                            &parsed_args,
+                        );
                         if self.config.dynamic_tool_visibility
                             && !offered_tool_names.contains(&tc.name)
                         {
@@ -2542,7 +2573,7 @@ impl AgentExecutor {
                         }
 
                         let tool_start = std::time::Instant::now();
-                        let result = tokio::time::timeout(tool_timeout, async {
+                        let execute_tool = async {
                             let exec_fut = self.tools.execute_with_context(
                                 &tc.name,
                                 &tc.id,
@@ -2579,8 +2610,12 @@ impl AgentExecutor {
                                     }
                                 }
                             }
-                        })
-                        .await;
+                        };
+                        let result = if let Some(timeout) = tool_timeout {
+                            tokio::time::timeout(timeout, execute_tool).await
+                        } else {
+                            Ok(execute_tool.await)
+                        };
                         let tool_elapsed = tool_start.elapsed();
                         (tc, tool_timeout, result, tool_elapsed)
                     }
@@ -2630,18 +2665,19 @@ impl AgentExecutor {
                         (err_content, structured.artifacts, true)
                     }
                     Err(_elapsed) => {
-                        warn!("Tool '{}' timed out after {:?}", tc.name, tool_timeout);
+                        let timeout_secs = tool_timeout.map(|d| d.as_secs()).unwrap_or(0);
+                        warn!("Tool '{}' timed out after {}s", tc.name, timeout_secs);
                         let structured = crate::tools::structured_tool_error_result(
                             &tc.id,
                             "tool_timeout",
                             format!(
                                 "tool '{}' timed out after {} seconds. Try a simpler query or different approach.",
                                 tc.name,
-                                tool_timeout.as_secs()
+                                timeout_secs
                             ),
                             serde_json::json!({
                                 "tool": &tc.name,
-                                "timeoutSeconds": tool_timeout.as_secs(),
+                                "timeoutSeconds": timeout_secs,
                                 "recovery": "retry with narrower arguments, fewer files, or a smaller limit"
                             }),
                             true,
@@ -3546,6 +3582,50 @@ mod tests {
     use crate::conversation::CreateConversationInput;
     use crate::llm::{CompletionResponse, FinishReason, StreamChunk};
     use crate::tools::{Tool, ToolResult};
+
+    #[test]
+    fn test_tool_timeout_zero_disables_outer_timeout() {
+        let timeout = tool_timeout_for_call(Some(0), "read_file", &serde_json::json!({}));
+        assert_eq!(timeout, None);
+    }
+
+    #[test]
+    fn test_tool_timeout_honors_run_shell_no_timeout() {
+        let timeout = tool_timeout_for_call(
+            Some(30),
+            "run_shell",
+            &serde_json::json!({ "timeout_secs": 0 }),
+        );
+        assert_eq!(timeout, None);
+    }
+
+    #[test]
+    fn test_tool_timeout_extends_for_long_run_shell_timeout() {
+        let timeout = tool_timeout_for_call(
+            Some(30),
+            "run_shell",
+            &serde_json::json!({ "timeout_secs": 600 }),
+        );
+        assert_eq!(timeout, Some(Duration::from_secs(605)));
+    }
+
+    #[test]
+    fn test_tool_timeout_leaves_room_for_run_shell_default_timeout() {
+        let timeout = tool_timeout_for_call(Some(30), "run_shell", &serde_json::json!({}));
+        assert_eq!(timeout, Some(Duration::from_secs(35)));
+    }
+
+    #[test]
+    fn test_tool_timeout_preserves_existing_multipliers() {
+        assert_eq!(
+            tool_timeout_for_call(Some(30), "retrieve_evidence", &serde_json::json!({})),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(
+            tool_timeout_for_call(Some(30), "spawn_subagent", &serde_json::json!({})),
+            Some(Duration::from_secs(90))
+        );
+    }
 
     #[test]
     fn test_accumulate_new_tool_call() {

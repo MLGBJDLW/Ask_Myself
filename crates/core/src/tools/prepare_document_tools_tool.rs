@@ -22,6 +22,8 @@ struct PrepareDocumentToolsArgs {
     action: String,
     #[serde(default)]
     include_optional_tools: bool,
+    #[serde(default)]
+    optional_tools: Vec<String>,
 }
 
 fn app_data_dir_from_db(db: &Database) -> Result<PathBuf, CoreError> {
@@ -89,12 +91,34 @@ impl Tool for PrepareDocumentToolsTool {
         if !self.requires_confirmation(args) {
             return None;
         }
-        let optional = args
+        let optional_all = args
             .get("include_optional_tools")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-        Some(if optional {
-            "Prepare document tools, including optional LibreOffice/Poppler helpers".to_string()
+        let requested = args
+            .get("optional_tools")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let options = OfficePrepareOptions::from_requested_tools(optional_all, &requested);
+        Some(if options.include_poppler || options.include_libreoffice {
+            let mut names = Vec::new();
+            if options.include_poppler {
+                names.push("Poppler");
+            }
+            if options.include_libreoffice {
+                names.push("LibreOffice");
+            }
+            format!(
+                "Prepare optional document helpers: {}. This may download or install large binaries; LibreOffice can be hundreds of MB.",
+                names.join(", ")
+            )
         } else {
             "Prepare required Python document tools".to_string()
         })
@@ -127,15 +151,16 @@ impl Tool for PrepareDocumentToolsTool {
                     .load_app_config()
                     .map(|cfg| cfg.ghproxy_base_url)
                     .unwrap_or_default();
-                let include_optional_tools = args.include_optional_tools;
+                let options = OfficePrepareOptions::from_requested_tools(
+                    args.include_optional_tools,
+                    &args.optional_tools,
+                );
                 let call_id = call_id.to_string();
                 tokio::task::spawn_blocking(move || {
                     let result = office_runtime::prepare_office_runtime_with_prepare_options(
                         &app_data_dir,
                         &ghproxy_base,
-                        OfficePrepareOptions {
-                            include_optional_tools,
-                        },
+                        options,
                     )?;
                     let actions = result
                         .actions

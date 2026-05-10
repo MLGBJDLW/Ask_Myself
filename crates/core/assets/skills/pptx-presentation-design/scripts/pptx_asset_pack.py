@@ -77,17 +77,179 @@ def inventory_pptx_assets(path: Path) -> dict[str, Any]:
     }
 
 
+def _catalog_ref(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("path", "url", "src", "image", "image_path", "image_url", "file"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return None
+
+
+def _normalize_image_catalog(images: Any) -> dict[str, str]:
+    catalog: dict[str, str] = {}
+    if isinstance(images, dict):
+        for key, value in images.items():
+            ref = _catalog_ref(value)
+            if ref:
+                catalog[str(key).strip().lstrip("@")] = ref
+    elif isinstance(images, list):
+        for value in images:
+            if not isinstance(value, dict):
+                continue
+            alias = value.get("id") or value.get("name") or value.get("key") or value.get("alias")
+            ref = _catalog_ref(value)
+            if alias and ref:
+                catalog[str(alias).strip().lstrip("@")] = ref
+    return catalog
+
+
+def _image_catalog_records(images: Any) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    if isinstance(images, dict):
+        for key, value in images.items():
+            ref = _catalog_ref(value)
+            if not ref:
+                continue
+            role = value.get("role") if isinstance(value, dict) else None
+            records.append({"alias": str(key).strip().lstrip("@"), "ref": ref, "declared_role": role})
+    elif isinstance(images, list):
+        for value in images:
+            if not isinstance(value, dict):
+                continue
+            alias = value.get("id") or value.get("name") or value.get("key") or value.get("alias")
+            ref = _catalog_ref(value)
+            if alias and ref:
+                records.append({"alias": str(alias).strip().lstrip("@"), "ref": ref, "declared_role": value.get("role")})
+    return records
+
+
+def _image_dimensions(path: Path) -> tuple[int, int] | None:
+    try:
+        from PIL import Image  # type: ignore
+    except ImportError:
+        return None
+    try:
+        with Image.open(path) as image:
+            return image.size
+    except Exception:
+        return None
+
+
+def _image_semantics(record: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    ref = str(record.get("ref") or "")
+    result: dict[str, Any] = {
+        "alias": record.get("alias"),
+        "ref": ref,
+        "declared_role": record.get("declared_role"),
+    }
+    if URL_RE.match(ref):
+        result.update({"source": "remote", "orientation": "unknown", "recommended_usage": record.get("declared_role") or "remote_image"})
+        return result
+
+    path = Path(ref)
+    if not path.is_absolute():
+        path = workspace / path
+    result["path"] = str(path)
+    size = _image_dimensions(path)
+    if not size:
+        result.update({"source": "local", "orientation": "unknown", "recommended_usage": record.get("declared_role") or "inline_image"})
+        return result
+
+    width, height = size
+    ratio = width / max(1, height)
+    if ratio >= 1.25:
+        orientation = "landscape"
+    elif ratio <= 0.8:
+        orientation = "portrait"
+    else:
+        orientation = "balanced"
+
+    role = str(record.get("declared_role") or "").strip().lower()
+    if role in {"background", "hero", "cover", "full_bleed", "full-bleed"}:
+        usage = "background"
+    elif orientation == "portrait":
+        usage = "inline_portrait"
+    elif orientation == "landscape":
+        usage = "background"
+    else:
+        usage = "inline_image"
+
+    result.update(
+        {
+            "source": "local",
+            "width": width,
+            "height": height,
+            "aspect_ratio": round(ratio, 3),
+            "orientation": orientation,
+            "recommended_usage": usage,
+            "crop_guidance": "cover center crop" if usage == "background" else "contain or side-by-side crop",
+        }
+    )
+    return result
+
+
+def _catalog_lookup(value: Any, catalog: dict[str, str]) -> Any:
+    if not isinstance(value, str):
+        return value
+    raw = value.strip()
+    key = raw[1:] if raw.startswith("@") else raw
+    return catalog.get(key, value)
+
+
+def _apply_image_catalog(value: Any, catalog: dict[str, str]) -> Any:
+    if not catalog:
+        return value
+    if isinstance(value, dict):
+        resolved = {
+            str(key): _apply_image_catalog(item, catalog) if isinstance(item, (dict, list)) else item
+            for key, item in value.items()
+        }
+        if "image_id" in resolved and not any(resolved.get(key) for key in ("image", "image_path", "image_url")):
+            resolved["image"] = _catalog_lookup(resolved["image_id"], catalog)
+        if "background_image_id" in resolved and not any(
+            resolved.get(key) for key in ("background_image", "background_image_path", "background_image_url")
+        ):
+            resolved["background_image"] = _catalog_lookup(resolved["background_image_id"], catalog)
+        for key in (
+            "image",
+            "image_path",
+            "image_url",
+            "background_image",
+            "background_image_path",
+            "background_image_url",
+        ):
+            if key in resolved:
+                resolved[key] = _catalog_lookup(resolved[key], catalog)
+        return resolved
+    if isinstance(value, list):
+        return [_apply_image_catalog(item, catalog) for item in value]
+    return value
+
+
 def validate_spec_assets(spec_path: Path, workspace_root: Path | None = None) -> dict[str, Any]:
     workspace = (workspace_root or Path.cwd()).resolve()
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    image_records = _image_catalog_records(spec.get("images"))
+    spec = _apply_image_catalog(spec, _normalize_image_catalog(spec.get("images")))
     missing: list[str] = []
     links: list[str] = []
     local_assets: list[dict[str, Any]] = []
+    seen_assets: set[str] = set()
 
     def visit(value: Any) -> None:
         if isinstance(value, dict):
             for key, item in value.items():
-                if key in {"image", "image_path", "image_url"} and isinstance(item, str):
+                if key in {
+                    "image",
+                    "image_path",
+                    "image_url",
+                    "background_image",
+                    "background_image_path",
+                    "background_image_url",
+                } and isinstance(item, str):
                     if URL_RE.match(item):
                         links.append(item)
                     else:
@@ -95,7 +257,10 @@ def validate_spec_assets(spec_path: Path, workspace_root: Path | None = None) ->
                         if not p.is_absolute():
                             p = workspace / p
                         if p.exists():
-                            local_assets.append({"path": str(p), "bytes": p.stat().st_size})
+                            asset_path = str(p)
+                            if asset_path not in seen_assets:
+                                local_assets.append({"path": asset_path, "bytes": p.stat().st_size})
+                                seen_assets.add(asset_path)
                         else:
                             missing.append(str(p))
                 elif key in {"links", "citations"} and isinstance(item, list):
@@ -114,6 +279,7 @@ def validate_spec_assets(spec_path: Path, workspace_root: Path | None = None) ->
         "local_assets": local_assets,
         "missing_assets": missing,
         "links": dedup_links,
+        "image_catalog": [_image_semantics(record, workspace) for record in image_records],
         "status": "fail" if missing else "pass",
     }
 

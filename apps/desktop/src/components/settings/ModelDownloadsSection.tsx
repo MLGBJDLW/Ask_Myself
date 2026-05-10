@@ -1,6 +1,6 @@
 import { AlertTriangle, Brain, HardDrive, Mic, ScanLine } from 'lucide-react';
 import { useTranslation } from '../../i18n';
-import type { OfficeRuntimeReadiness } from '../../lib/api';
+import type { OfficeRuntimeReadiness, PrepareOfficeRuntimeOptions } from '../../lib/api';
 import type { DownloadProgress } from '../../types/ingest';
 import type { AppConfig } from '../../types/conversation';
 import type { EmbedderConfig, LocalModelId } from '../../types/embedder';
@@ -38,7 +38,7 @@ interface ModelDownloadsSectionProps {
   onDownloadOcrModels: () => void;
   onWhisperDownload: () => void;
   onWhisperModelChange: (model: WhisperModel) => void;
-  onPrepareOfficeRuntime: () => void;
+  onPrepareOfficeRuntime: (options?: PrepareOfficeRuntimeOptions) => void;
   onRefreshOfficeRuntime: () => void;
   onAskAiPrepareOfficeRuntime: () => void;
   onAppConfigChange: (config: AppConfig) => void;

@@ -461,11 +461,24 @@ export function SettingsPage() {
     }
   }, [activeTab, loadOfficeRuntime]);
 
-  const handlePrepareOfficeRuntime = async () => {
+  const handlePrepareOfficeRuntime = async (options: api.PrepareOfficeRuntimeOptions = {}) => {
     if (officePreparing) return;
+    const optionalTools = options.optionalTools ?? [];
+    const includeAllOptional = options.includeOptionalTools === true;
+    if (includeAllOptional || optionalTools.length > 0) {
+      const tools = includeAllOptional
+        ? 'Poppler, LibreOffice'
+        : optionalTools.map((tool) => (tool === 'poppler' ? 'Poppler' : 'LibreOffice')).join(', ');
+      const confirmed = window.confirm(
+        t('settings.documentToolsOptionalConfirm', {
+          tools,
+        }),
+      );
+      if (!confirmed) return;
+    }
     setOfficePreparing(true);
     try {
-      const result = await api.prepareOfficeRuntime();
+      const result = await api.prepareOfficeRuntime(options);
       setOfficeRuntime(result.readiness);
       invalidateModelStatus('office');
       if (result.success) {
@@ -490,7 +503,9 @@ export function SettingsPage() {
           `请帮我准备本机文档工具，用于 DOCX、XLSX、PPTX 和 PDF 的创建、编辑、转换与渲染。\n\n` +
           `${readinessSummary}\n\n` +
           `请先调用 prepare_document_tools 检查当前状态。若必需依赖缺失，请帮我准备必需的 Python 环境和包。` +
-          `在安装或下载可选依赖（LibreOffice、Poppler）之前，请先询问我是否需要这些能力；` +
+          `在安装或下载可选依赖（LibreOffice、Poppler）之前，请先说明用途和体积风险并询问我是否需要；` +
+          `如果只需要 PDF/页面图片渲染，请只请求 optional_tools: ["poppler"]；` +
+          `只有需要 Office 转 PDF、PPT/DOCX 视觉 QA 或 Excel 公式重算时才请求 LibreOffice。` +
           `如果准备过程中发生权限、网络或路径问题，请继续诊断并给出可执行的下一步。`,
       },
     });

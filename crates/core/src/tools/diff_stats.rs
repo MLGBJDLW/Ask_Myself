@@ -150,30 +150,45 @@ pub(crate) fn text_diff_artifact(
         .min(DIFF_CONTEXT_LINES);
 
     let mut lines = Vec::new();
-    for idx in context_start..prefix {
+    for (idx, content) in old_lines
+        .iter()
+        .enumerate()
+        .take(prefix)
+        .skip(context_start)
+    {
         lines.push(json!({
             "type": "context",
             "oldLine": idx + 1,
             "newLine": idx + 1,
-            "content": old_lines[idx],
+            "content": content,
         }));
     }
 
-    for idx in prefix..old_changed_end {
+    for (idx, content) in old_lines
+        .iter()
+        .enumerate()
+        .take(old_changed_end)
+        .skip(prefix)
+    {
         lines.push(json!({
             "type": "deletion",
             "oldLine": idx + 1,
             "newLine": null,
-            "content": old_lines[idx],
+            "content": content,
         }));
     }
 
-    for idx in prefix..new_changed_end {
+    for (idx, content) in new_lines
+        .iter()
+        .enumerate()
+        .take(new_changed_end)
+        .skip(prefix)
+    {
         lines.push(json!({
             "type": "addition",
             "oldLine": null,
             "newLine": idx + 1,
-            "content": new_lines[idx],
+            "content": content,
         }));
     }
 

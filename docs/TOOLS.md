@@ -394,7 +394,7 @@ PPT deep-generation workflows live in the `pptx-presentation-design` skill, not 
 Runtime readiness:
 
 - The desktop app exposes **Settings → Models → Document tools** to check and prepare the Office runtime.
-- Preparation creates an app-managed Python virtual environment under the app data directory and installs the bundled `doc-script-editor/scripts/requirements.txt` packages there. It also attempts optional tool setup: app-managed Poppler on Windows, and LibreOffice/Poppler via `winget` or Homebrew when those package managers are available.
+- Preparation creates an app-managed Python virtual environment under the app data directory and installs the bundled `doc-script-editor/scripts/requirements.txt` packages there. Optional tool setup is explicit and selective: Poppler can be prepared for PDF/page image rendering, and LibreOffice can be prepared for Office-to-PDF conversion, visual QA, and spreadsheet recalculation. Ask before installing optional tools because LibreOffice can be a large download and may use `winget`, Homebrew, or an app-managed download.
 - After preparation, `run_shell` prepends the app-managed Python `Scripts`/`bin` directory and app-managed Office tool directory to `PATH`, so `python <SKILL_DIR>/scripts/edit_doc.py ...` uses the prepared Office environment automatically.
 - If Python itself is not installed, Nexa does not silently install a system runtime. The UI shows the Python download URL and keeps native generators available as simple compatibility fallback.
 - LibreOffice remains an optional system-level application for conversion, rendering, and Excel formula recalculation QA. If automatic package-manager install is unavailable or fails, the app keeps core Office editing ready and reports the optional item as degraded.
@@ -522,14 +522,14 @@ Execute a whitelisted program with explicit argv arguments inside a registered s
 | `program` | string | yes | Program basename; must be in the whitelist |
 | `args` | string[] | no | Argv list passed to the program (no shell expansion) |
 | `cwd` | string | yes | Working directory (absolute or relative to a source root) |
-| `timeout_secs` | integer | no | Timeout in seconds, 1–300 (default 30) |
+| `timeout_secs` | integer | no | Timeout in seconds (default 30); `0` disables the per-command timeout for intentional long installs/downloads/builds |
 
 **Default restricted whitelist:** `python`, `python3`, `pip`, `pip3`, `node`, `npm`, `npx`, `git`, `pwd`, `ls`, `cat`, `mkdir`, `cp`, `mv` (`pip`/`pip3` are normalized to `python -m pip` / `python3 -m pip`; `copy`/`move` aliases normalize to `cp`/`mv`). `git` is read-only by default: allowed subcommands are `status`, `diff`, `log`, `show`, `ls-files`, `rev-parse`, `branch`, `tag`, `config`, `remote`, `describe`, and `blame`. `git config` additionally requires an explicit read-only flag such as `--get`, `--list`, or `--get-regexp`. In less-restricted Shell Access modes, arbitrary bare command names (for example `bash` or `powershell` when available) may be allowed, but `run_shell` still does not invoke a shell automatically.
 
 **Safety posture:**
 - Always requires user confirmation before executing.
 - stdout and stderr are each capped at 64 KB.
-- Default timeout 30s, hard max 300s; timed-out processes are killed.
+- Default timeout 30s; `timeout_secs: 0` disables the per-command timeout for intentional long installs/downloads/builds. The broader agent turn timeout can still stop the run unless it is also raised or disabled. Timed-out processes are killed.
 - Environment is rebuilt from scratch: secret-like vars (`*KEY*`, `*SECRET*`, `*TOKEN*`, `*PASSWORD*`, `*CREDENTIAL*`, …) are stripped; only a neutral allow-list (`PATH`, `LANG`, `HOME`, …) is forwarded.
 - `cwd` must canonicalize inside a registered source root (path sandbox).
 - No stdin is attached; interactive programs cannot prompt.

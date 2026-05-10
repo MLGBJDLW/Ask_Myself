@@ -199,6 +199,26 @@ def _issue(slide: int, code: str, severity: str, message: str, shape_id: int | N
     return data
 
 
+def _render_image_issue(slide_index: int, image_path: Path) -> dict[str, Any] | None:
+    try:
+        from PIL import Image, ImageStat  # type: ignore
+    except ImportError:
+        return None
+    try:
+        with Image.open(image_path) as image:
+            image = image.convert("RGB").resize((64, 36))
+            stat = ImageStat.Stat(image)
+            spread = sum(stat.stddev) / 3
+            width, height = image.size
+    except Exception:
+        return _issue(slide_index, "render_unreadable", "warn", f"rendered image cannot be inspected: {image_path.name}")
+    if width < 32 or height < 18:
+        return _issue(slide_index, "tiny_render", "warn", f"rendered image is very small: {image_path.name}")
+    if spread < 2.0:
+        return _issue(slide_index, "flat_render", "warn", f"rendered image appears nearly blank or flat: {image_path.name}")
+    return None
+
+
 def _analyze_shape(slide_index: int, shape: dict[str, Any], slide_size: dict[str, float]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     box = shape["box"]
@@ -279,8 +299,13 @@ def analyze_pptx(path: Path, render_dir: Path | None = None) -> dict[str, Any]:
                     render_dir / f"slide-{slide_index}.jpg",
                     render_dir / f"slide-{slide_index}.png",
                 ]
-                if not any(candidate.exists() for candidate in image_candidates):
+                existing_render = next((candidate for candidate in image_candidates if candidate.exists()), None)
+                if not existing_render:
                     slide_issues.append(_issue(slide_index, "missing_render", "warn", "no rendered slide image found"))
+                else:
+                    render_issue = _render_image_issue(slide_index, existing_render)
+                    if render_issue:
+                        slide_issues.append(render_issue)
             issues.extend(slide_issues)
             slide_reports.append(
                 {
@@ -301,6 +326,61 @@ def analyze_pptx(path: Path, render_dir: Path | None = None) -> dict[str, Any]:
         "issues": issues,
         "slide_details": slide_reports,
         "render_dir": str(render_dir) if render_dir else None,
+    }
+
+
+def evaluate_spec_design(spec: dict[str, Any]) -> dict[str, Any]:
+    slides = [slide for slide in spec.get("slides") or [] if isinstance(slide, dict)]
+    issues: list[dict[str, Any]] = []
+    if not spec.get("metadata", {}).get("design_brief"):
+        issues.append(_issue(0, "missing_design_brief", "warn", "renderer spec has no design brief"))
+
+    roles = {str(slide.get("design_role") or "") for slide in slides if slide.get("design_role")}
+    if len(slides) >= 4 and len(roles) < 2:
+        issues.append(_issue(0, "low_page_rhythm", "warn", "slides do not vary design roles enough"))
+
+    visual_layouts = {"chart", "timeline", "process", "comparison", "matrix", "stat", "image_full", "table"}
+    for index, slide in enumerate(slides, start=1):
+        layout = str(slide.get("layout") or "body").lower()
+        has_background = bool(slide.get("background") or slide.get("background_style") or slide.get("background_image") or slide.get("background_image_id"))
+        has_visual = layout in visual_layouts or bool(slide.get("image") or slide.get("image_id") or slide.get("icon") or slide.get("icon_id"))
+        if index > 1 and not has_visual:
+            issues.append(_issue(index, "missing_spec_visual_anchor", "fail", "content slide has no visual anchor in the spec"))
+        elif index > 1 and not has_background:
+            issues.append(_issue(index, "plain_background", "warn", "content slide relies on plain theme background"))
+        text_items = []
+        if slide.get("paragraph"):
+            text_items.append(str(slide["paragraph"]))
+        if isinstance(slide.get("bullets"), list):
+            text_items.extend(str(item) for item in slide["bullets"])
+        if sum(len(item) for item in text_items) > 650:
+            issues.append(_issue(index, "dense_spec_text", "warn", "slide spec contains dense text"))
+
+    failures = [issue for issue in issues if issue["severity"] == "fail"]
+    score = 100
+    score -= len(failures) * 18
+    score -= sum(1 for issue in issues if issue["severity"] == "warn") * 5
+    score = max(0, min(100, score))
+    return {
+        "status": "fail" if failures or score < 70 else "pass",
+        "score": score,
+        "issue_count": len(issues),
+        "failure_count": len(failures),
+        "issues": issues,
+        "metrics": {
+            "slides": len(slides),
+            "design_roles": sorted(role for role in roles if role),
+            "backgrounded_slides": sum(1 for slide in slides if slide.get("background") or slide.get("background_style") or slide.get("background_image") or slide.get("background_image_id")),
+            "visual_anchor_slides": sum(
+                1
+                for slide in slides
+                if str(slide.get("layout") or "body").lower() in visual_layouts
+                or slide.get("image")
+                or slide.get("image_id")
+                or slide.get("icon")
+                or slide.get("icon_id")
+            ),
+        },
     }
 
 
@@ -351,6 +431,10 @@ def main() -> int:
         repaired = repair_spec(spec)
         Path(args.out_spec).write_text(json.dumps(repaired, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         report["repaired_spec"] = str(Path(args.out_spec))
+        report["design_review"] = evaluate_spec_design(spec)
+    elif args.spec:
+        spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+        report["design_review"] = evaluate_spec_design(spec)
     print(json.dumps(report, ensure_ascii=False, indent=2 if args.pretty else None))
     return 0 if report["status"] == "pass" else 4
 

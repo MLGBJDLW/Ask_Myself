@@ -32,8 +32,9 @@
 //!   dropped, and only an allow-list of neutral infrastructure vars (`PATH`,
 //!   `LANG`, `HOME`, …) is forwarded.
 //! * **Output caps.** stdout/stderr are each truncated to 64 KB.
-//! * **Timeout.** Default 30s, max 300s. On timeout we `start_kill()` and
-//!   rely on `kill_on_drop(true)` for cleanup.
+//! * **Timeout.** Default 30s. Set `timeout_secs` to 0 for no per-command
+//!   timeout when a long install/download is intentional. On timeout we rely
+//!   on `kill_on_drop(true)` for cleanup.
 //! * **No hidden console.** On Windows we spawn with `CREATE_NO_WINDOW` so
 //!   interactive programs cannot flash a console or trap input.
 //! * **Configurable confirmation.** Per-call confirmation is controlled by the
@@ -76,7 +77,6 @@ const DEF_JSON: &str = include_str!("../../prompts/tools/run_shell.json");
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MIN_TIMEOUT_SECS: u64 = 1;
-const MAX_TIMEOUT_SECS: u64 = 300;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_SINGLE_ARG_BYTES: usize = 8 * 1024;
 const MAX_TOTAL_ARGV_BYTES: usize = 32 * 1024;
@@ -865,12 +865,12 @@ fn resolve_program(program: &str) -> String {
     program.to_string()
 }
 
-/// Return clamped timeout in seconds.
+/// Return effective timeout in seconds. 0 means no per-command timeout.
 fn clamp_timeout(requested: Option<u64>) -> u64 {
     match requested {
         None => DEFAULT_TIMEOUT_SECS,
+        Some(0) => 0,
         Some(v) if v < MIN_TIMEOUT_SECS => MIN_TIMEOUT_SECS,
-        Some(v) if v > MAX_TIMEOUT_SECS => MAX_TIMEOUT_SECS,
         Some(v) => v,
     }
 }
@@ -1337,7 +1337,13 @@ async fn execute_inner(
     };
 
     let wait = child.wait_with_output();
-    match tokio::time::timeout(Duration::from_secs(timeout_secs), wait).await {
+    let result = if timeout_secs == 0 {
+        Ok(wait.await)
+    } else {
+        tokio::time::timeout(Duration::from_secs(timeout_secs), wait).await
+    };
+
+    match result {
         Ok(Ok(output)) => {
             if let Some(task) = stdin_task {
                 match task.await {
@@ -1393,13 +1399,18 @@ fn format_confirmation(
     stdin_bytes: Option<usize>,
 ) -> String {
     let args_joined = args.join(" ");
+    let timeout_label = if timeout == 0 {
+        "no timeout".to_string()
+    } else {
+        format!("timeout {timeout}s")
+    };
     let stdin_note = stdin_bytes
         .map(|bytes| format!(", stdin {bytes} bytes"))
         .unwrap_or_default();
     if args_joined.is_empty() {
-        format!("Run: {program} in {cwd} (timeout {timeout}s{stdin_note})")
+        format!("Run: {program} in {cwd} ({timeout_label}{stdin_note})")
     } else {
-        format!("Run: {program} {args_joined} in {cwd} (timeout {timeout}s{stdin_note})")
+        format!("Run: {program} {args_joined} in {cwd} ({timeout_label}{stdin_note})")
     }
 }
 
@@ -1946,9 +1957,9 @@ mod tests {
     // --- clamp_timeout ------------------------------------------------------
 
     #[test]
-    fn test_timeout_clamped_to_max() {
-        assert_eq!(clamp_timeout(Some(10_000)), MAX_TIMEOUT_SECS);
-        assert_eq!(clamp_timeout(Some(0)), MIN_TIMEOUT_SECS);
+    fn test_timeout_allows_unbounded_and_long_running_commands() {
+        assert_eq!(clamp_timeout(Some(10_000)), 10_000);
+        assert_eq!(clamp_timeout(Some(0)), 0);
         assert_eq!(clamp_timeout(Some(30)), 30);
         assert_eq!(clamp_timeout(None), DEFAULT_TIMEOUT_SECS);
     }
@@ -1989,7 +2000,7 @@ mod tests {
     }
 
     #[test]
-    fn test_confirmation_message_clamps_timeout() {
+    fn test_confirmation_message_shows_long_timeout() {
         let tool = RunShellTool;
         let args = serde_json::json!({
             "program": "python",
@@ -1998,7 +2009,21 @@ mod tests {
             "timeout_secs": 99_999
         });
         let msg = tool.confirmation_message(&args).expect("message");
-        assert!(msg.contains(&format!("{MAX_TIMEOUT_SECS}s")));
+        assert!(msg.contains("99999s"));
+    }
+
+    #[test]
+    fn test_confirmation_message_shows_no_timeout() {
+        let tool = RunShellTool;
+        let args = serde_json::json!({
+            "program": "python",
+            "args": ["-m", "pip", "install", "large-package"],
+            "cwd": ".",
+            "timeout_secs": 0
+        });
+        let msg = tool.confirmation_message(&args).expect("message");
+        assert!(msg.contains("no timeout"));
+        assert!(!msg.contains("timeout 0s"));
     }
 
     // --- bytes_to_clamped_string -------------------------------------------
