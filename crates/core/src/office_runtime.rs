@@ -114,19 +114,10 @@ pub struct OfficePrepareResult {
     pub readiness: OfficeRuntimeReadiness,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OfficePrepareOptions {
     pub include_poppler: bool,
     pub include_libreoffice: bool,
-}
-
-impl Default for OfficePrepareOptions {
-    fn default() -> Self {
-        Self {
-            include_poppler: false,
-            include_libreoffice: false,
-        }
-    }
 }
 
 impl OfficePrepareOptions {
