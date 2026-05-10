@@ -130,6 +130,13 @@ fn main() {
 
             let db_path = data_dir.join("nexa.db");
             let db = Database::new(&db_path).expect("failed to initialize database");
+            match db
+                .list_skills()
+                .and_then(|skills| nexa_core::skills::materialize_user_skills_to_disk(&data_dir, &skills))
+            {
+                Ok(()) => log::info!("Materialized user skills to {}", data_dir.join("skills/user").display()),
+                Err(e) => log::warn!("Failed to materialize user skills: {e}"),
+            }
             let db = Arc::new(db);
 
             app.manage(AppState {

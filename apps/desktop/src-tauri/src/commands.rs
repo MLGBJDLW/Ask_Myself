@@ -5139,6 +5139,34 @@ pub async fn get_video_metadata_cmd(
 
 // ── Skills Commands ─────────────────────────────────────────────────
 
+fn app_data_dir_for_skills(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data directory: {e}"))
+}
+
+fn materialize_user_skill_resource(app_handle: &AppHandle, skill: &Skill) -> Result<(), String> {
+    let data_dir = app_data_dir_for_skills(app_handle)?;
+    nexa_core::skills::materialize_user_skill_to_disk(&data_dir, skill)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn materialize_user_skill_resources(
+    app_handle: &AppHandle,
+    skills: &[Skill],
+) -> Result<(), String> {
+    let data_dir = app_data_dir_for_skills(app_handle)?;
+    nexa_core::skills::materialize_user_skills_to_disk(&data_dir, skills).map_err(|e| e.to_string())
+}
+
+fn remove_user_skill_resource(app_handle: &AppHandle, skill_id: &str) -> Result<(), String> {
+    let data_dir = app_data_dir_for_skills(app_handle)?;
+    nexa_core::skills::remove_materialized_user_skill(&data_dir, skill_id)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn list_skills_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<Skill>, String> {
     state.db.list_skills().map_err(|e| e.to_string())
@@ -5146,19 +5174,32 @@ pub async fn list_skills_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<Sk
 
 #[tauri::command]
 pub async fn save_skill_cmd(
+    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     input: SaveSkillInput,
 ) -> Result<Skill, String> {
-    state.db.save_skill(&input).map_err(|e| e.to_string())
+    let skill = state.db.save_skill(&input).map_err(|e| e.to_string())?;
+    if skill.enabled {
+        materialize_user_skill_resource(&app_handle, &skill)?;
+    } else {
+        remove_user_skill_resource(&app_handle, &skill.id)?;
+    }
+    Ok(skill)
 }
 
 #[tauri::command]
-pub async fn delete_skill_cmd(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
-    state.db.delete_skill(&id).map_err(|e| e.to_string())
+pub async fn delete_skill_cmd(
+    app_handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    state.db.delete_skill(&id).map_err(|e| e.to_string())?;
+    remove_user_skill_resource(&app_handle, &id)
 }
 
 #[tauri::command]
 pub async fn toggle_skill_cmd(
+    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     enabled: bool,
@@ -5166,7 +5207,21 @@ pub async fn toggle_skill_cmd(
     state
         .db
         .toggle_skill(&id, enabled)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if enabled {
+        if let Some(skill) = state
+            .db
+            .list_skills()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|skill| skill.id == id)
+        {
+            materialize_user_skill_resource(&app_handle, &skill)?;
+        }
+        Ok(())
+    } else {
+        remove_user_skill_resource(&app_handle, &id)
+    }
 }
 
 #[tauri::command]
@@ -5208,6 +5263,7 @@ pub async fn list_builtin_skills_cmd() -> Result<Vec<Skill>, String> {
 
 #[tauri::command]
 pub async fn import_skill_from_md_cmd(
+    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     content: String,
 ) -> Result<Skill, String> {
@@ -5220,7 +5276,11 @@ pub async fn import_skill_from_md_cmd(
         enabled: true,
         resource_bundle: Vec::new(),
     };
-    state.db.save_skill(&input).map_err(|e| e.to_string())
+    let skill = state.db.save_skill(&input).map_err(|e| e.to_string())?;
+    if skill.enabled {
+        materialize_user_skill_resource(&app_handle, &skill)?;
+    }
+    Ok(skill)
 }
 
 #[tauri::command]
@@ -5233,11 +5293,14 @@ pub async fn discover_skills_in_directory_cmd(
 
 #[tauri::command]
 pub async fn import_skills_from_directory_cmd(
+    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     directory: String,
 ) -> Result<Vec<Skill>, String> {
-    nexa_core::skills::import_skills_from_directory(&state.db, Path::new(&directory))
-        .map_err(|e| e.to_string())
+    let skills = nexa_core::skills::import_skills_from_directory(&state.db, Path::new(&directory))
+        .map_err(|e| e.to_string())?;
+    materialize_user_skill_resources(&app_handle, &skills)?;
+    Ok(skills)
 }
 
 #[tauri::command]
