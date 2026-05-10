@@ -127,9 +127,12 @@ def _validate_output_path(raw: str, *, workspace_root: str | Path | None = None)
 
 
 def _read_json(path: str, *, workspace_root: str | Path | None = None) -> dict[str, Any]:
-    spec_path = _validate_path(path, workspace_root=workspace_root)
-    with spec_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+    if path == "-":
+        data = json.load(sys.stdin)
+    else:
+        spec_path = _validate_path(path, workspace_root=workspace_root)
+        with spec_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
     if not isinstance(data, dict):
         _die("ERROR: JSON spec root must be an object", 3)
     return data
@@ -1171,7 +1174,7 @@ def create_pptx_from_spec(path: str, spec_path: str, template: str | None = None
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create an editable PPTX from a JSON deck spec.")
     parser.add_argument("--path", required=True, help="Absolute output .pptx path")
-    parser.add_argument("--spec", required=True, help="Absolute JSON deck spec path")
+    parser.add_argument("--spec", required=True, help="Absolute JSON deck spec path, or '-' to read JSON from stdin")
     parser.add_argument("--template", default=None, help="Optional absolute .pptx template path")
     args = parser.parse_args()
 

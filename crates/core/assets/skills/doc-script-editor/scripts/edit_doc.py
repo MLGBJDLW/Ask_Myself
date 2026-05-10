@@ -1110,7 +1110,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cx.set_defaults(func=cmd_create_xlsx)
 
     p_cp = sub.add_parser("create_pptx", help="Create a PPTX presentation from a JSON spec")
-    p_cp.add_argument("--spec", required=True, help="Absolute path to deck JSON spec")
+    p_cp.add_argument("--spec", required=True, help="Absolute path to deck JSON spec, or '-' to read JSON from stdin")
     p_cp.add_argument("--template", default=None, help="Optional absolute .pptx template path")
     p_cp.set_defaults(func=cmd_create_pptx)
 

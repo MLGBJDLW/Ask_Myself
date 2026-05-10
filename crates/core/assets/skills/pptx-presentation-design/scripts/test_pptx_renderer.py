@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
+import sys
 import unittest
 
 import pptx_renderer
@@ -135,6 +137,16 @@ class PptxRendererValidationTests(unittest.TestCase):
 
         self.assertEqual([], prs.slides._sldIdLst)
         self.assertEqual(["rId1"], prs.part.dropped)
+
+    def test_read_json_accepts_stdin_spec(self) -> None:
+        previous_stdin = sys.stdin
+        try:
+            sys.stdin = io.StringIO(json.dumps({"slides": [{"layout": "title", "title": "Demo"}]}))
+            spec = pptx_renderer._read_json("-")
+        finally:
+            sys.stdin = previous_stdin
+
+        self.assertEqual("Demo", spec["slides"][0]["title"])
 
 
 if __name__ == "__main__":
