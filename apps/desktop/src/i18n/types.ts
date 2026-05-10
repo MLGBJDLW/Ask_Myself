@@ -331,6 +331,10 @@ export interface TranslationKeys {
   'settings.documentToolsBlocked': string;
   'settings.documentToolsChecking': string;
   'settings.documentToolsPrepare': string;
+  'settings.documentToolsPrepareRequired': string;
+  'settings.documentToolsPrepareOptional': string;
+  'settings.documentToolsOptionalHint': string;
+  'settings.documentToolsOptionalConfirm': string;
   'settings.documentToolsPreparing': string;
   'settings.documentToolsRefresh': string;
   'settings.documentToolsManagedEnv': string;

@@ -37,6 +37,7 @@ impl ShellAccessMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
+    /// Maximum time for a single tool call in seconds. 0 disables the hard tool timeout.
     #[serde(default = "default_tool_timeout")]
     pub tool_timeout_secs: i64,
     /// Maximum time for an agent turn in seconds. 0 disables the hard turn timeout.
