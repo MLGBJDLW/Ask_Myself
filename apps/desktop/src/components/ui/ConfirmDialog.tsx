@@ -24,7 +24,12 @@ export function ConfirmDialog({
     <Modal open={open} onClose={onClose} title={title} footer={
       <>
         <Button variant="ghost" size="sm" onClick={onClose}>{t('common.cancel')}</Button>
-        <Button variant="danger" size="sm" onClick={onConfirm} loading={loading}>
+        <Button
+          variant={variant === 'danger' ? 'danger' : 'primary'}
+          size="sm"
+          onClick={onConfirm}
+          loading={loading}
+        >
           {resolvedConfirmText}
         </Button>
       </>

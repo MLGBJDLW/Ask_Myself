@@ -156,6 +156,17 @@ export interface TranslationKeys {
   'sources.scanUpdated': string;
   'sources.scanSkipped': string;
   'sources.scanFailed': string;
+  'sources.scanErrors': string;
+  'sources.scanErrorsBadge': string;
+  'sources.scanErrorsDescription': string;
+  'sources.scanErrorsMore': string;
+  'sources.clearScanErrors': string;
+  'sources.clearScanError': string;
+  'sources.scanErrorCleared': string;
+  'sources.scanErrorsCleared': string;
+  'sources.scanErrorsClearError': string;
+  'sources.scanErrorCount': string;
+  'sources.scanErrorLastFailed': string;
   'sources.embedResult': string;
   'sources.watcherStart': string;
   'sources.watcherStop': string;
@@ -451,6 +462,12 @@ export interface TranslationKeys {
   'settings.memoryTooLong': string;
   'settings.memorySaved': string;
   'settings.memoryUpdated': string;
+  'settings.memorySourceManual': string;
+  'settings.memorySourceAuto': string;
+  'settings.agentMemorySection': string;
+  'settings.agentMemoryDescription': string;
+  'settings.agentMemoryEmpty': string;
+  'settings.agentMemorySource': string;
 
   // Settings - Appearance
   'settings.appearance': string;
@@ -520,6 +537,8 @@ export interface TranslationKeys {
   'settings.dynamicToolsDesc': string;
   'settings.traceEnabled': string;
   'settings.traceEnabledDesc': string;
+  'settings.autoMemoryExtraction': string;
+  'settings.autoMemoryExtractionDesc': string;
   'settings.confirmDestructive': string;
   'settings.confirmDestructiveDesc': string;
   'settings.toolApproval': string;
@@ -1035,6 +1054,24 @@ export interface TranslationKeys {
   'settings.skillFilterDisabled': string;
   'settings.skillExportAll': string;
   'settings.skillExportAllSuccess': string;
+  'settings.skillProposals': string;
+  'settings.skillProposalsDescription': string;
+  'settings.skillProposalPendingCount': string;
+  'settings.skillProposalCreate': string;
+  'settings.skillProposalPatch': string;
+  'settings.skillProposalWarnings': string;
+  'settings.skillProposalRationale': string;
+  'settings.skillProposalPreview': string;
+  'settings.skillProposalApplyConfirmTitle': string;
+  'settings.skillProposalApplyConfirmMessage': string;
+  'settings.skillProposalDiffPreview': string;
+  'settings.skillProposalNewContent': string;
+  'settings.skillProposalCurrentMissing': string;
+  'settings.skillProposalNoChanges': string;
+  'settings.skillProposalReject': string;
+  'settings.skillProposalApply': string;
+  'settings.skillProposalApplied': string;
+  'settings.skillProposalRejected': string;
   'settings.skillViewBtn': string;
   'settings.skillNoResults': string;
   'settings.skillStats': string;

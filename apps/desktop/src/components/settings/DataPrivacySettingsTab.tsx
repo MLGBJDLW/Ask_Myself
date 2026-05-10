@@ -2,7 +2,7 @@ import { BarChart3, Database, Loader2, Pencil, Plus, RefreshCw, Save, Shield, Tr
 import { useTranslation } from '../../i18n';
 import type { IndexStats } from '../../types/index-stats';
 import type { PrivacyConfig, RedactRule } from '../../types/privacy';
-import type { UserMemory } from '../../types/conversation';
+import type { AgentProceduralMemory, UserMemory } from '../../types/conversation';
 import type { AgentTrace, TraceSummary } from '../../types/trace';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -26,9 +26,11 @@ interface DataPrivacySettingsTabProps {
   newPattern: string;
   newRule: RedactRule;
   userMemories: UserMemory[];
+  agentMemories: AgentProceduralMemory[];
   editingMemoryId: string | null;
   editingMemoryDraft: string;
   memoryLoading: boolean;
+  agentMemoryLoading: boolean;
   newMemory: string;
   memoryCharLimit: number;
   saveLoading: boolean;
@@ -46,6 +48,7 @@ interface DataPrivacySettingsTabProps {
   onCancelEditMemory: () => void;
   onUpdateMemory: () => void;
   onDeleteMemory: (id: string) => void;
+  onDeleteAgentMemory: (id: string) => void;
   onNewMemoryChange: (value: string) => void;
   onAddMemory: () => void;
   onSavePrivacy: () => void;
@@ -70,9 +73,11 @@ export function DataPrivacySettingsTab({
   newPattern,
   newRule,
   userMemories,
+  agentMemories,
   editingMemoryId,
   editingMemoryDraft,
   memoryLoading,
+  agentMemoryLoading,
   newMemory,
   memoryCharLimit,
   saveLoading,
@@ -90,6 +95,7 @@ export function DataPrivacySettingsTab({
   onCancelEditMemory,
   onUpdateMemory,
   onDeleteMemory,
+  onDeleteAgentMemory,
   onNewMemoryChange,
   onAddMemory,
   onSavePrivacy,
@@ -393,9 +399,25 @@ export function DataPrivacySettingsTab({
                       </div>
                     ) : (
                       <>
-                        <p className="flex-1 text-sm text-text-primary whitespace-pre-wrap" style={{ overflowWrap: 'break-word' }}>
-                          {memory.content}
-                        </p>
+                        <div className="min-w-0 flex-1">
+                          <div className="mb-1 flex items-center gap-1.5">
+                            <Badge
+                              variant="default"
+                              className={
+                                memory.source === 'auto_extracted'
+                                  ? 'text-[10px] border-accent/30 text-accent'
+                                  : 'text-[10px] border-border text-text-tertiary'
+                              }
+                            >
+                              {memory.source === 'auto_extracted'
+                                ? t('settings.memorySourceAuto')
+                                : t('settings.memorySourceManual')}
+                            </Badge>
+                          </div>
+                          <p className="text-sm text-text-primary whitespace-pre-wrap" style={{ overflowWrap: 'break-word' }}>
+                            {memory.content}
+                          </p>
+                        </div>
                         <div className="flex items-center gap-1">
                           <button
                             type="button"
@@ -438,6 +460,51 @@ export function DataPrivacySettingsTab({
               <p className="mt-2 text-xs text-text-tertiary">
                 {t('settings.memoryCharHelper', { length: String(newMemory.length), limit: String(memoryCharLimit) })}
               </p>
+            </div>
+
+            <div>
+              <h3 className="mb-2 text-sm font-medium text-text-primary">{t('settings.agentMemorySection')}</h3>
+              <p className="mb-3 text-xs text-text-tertiary">{t('settings.agentMemoryDescription')}</p>
+
+              <div className="space-y-2">
+                {agentMemories.length === 0 && (
+                  <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-text-tertiary">
+                    {t('settings.agentMemoryEmpty')}
+                  </div>
+                )}
+                {agentMemories.map((memory) => (
+                  <div key={memory.id} className="flex items-start gap-2 rounded-md border border-border bg-surface-2 px-3 py-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                        <p className="truncate text-sm font-medium text-text-primary">{memory.title}</p>
+                        <Badge variant="default" className="text-[10px] border-border text-text-tertiary">
+                          {Math.round(memory.confidence * 100)}%
+                        </Badge>
+                        {memory.tags.slice(0, 4).map((tag) => (
+                          <Badge key={tag} variant="default" className="text-[10px] border-border text-text-tertiary">
+                            {tag}
+                          </Badge>
+                        ))}
+                      </div>
+                      <p className="text-sm text-text-secondary whitespace-pre-wrap" style={{ overflowWrap: 'break-word' }}>
+                        {memory.content}
+                      </p>
+                      <p className="mt-1 text-xs text-text-tertiary">
+                        {t('settings.agentMemorySource')}: {memory.source}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteAgentMemory(memory.id)}
+                      disabled={agentMemoryLoading}
+                      className="mt-0.5 rounded p-1 text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      aria-label={t('common.delete')}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="flex justify-end border-t border-border pt-4">

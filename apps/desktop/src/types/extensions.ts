@@ -92,3 +92,29 @@ export interface SkillWarning {
   /** Human-readable English message. */
   message: string;
 }
+
+export type SkillChangeAction = 'create' | 'patch';
+export type SkillProposalStatus = 'pending' | 'applied' | 'rejected';
+
+export interface SkillChangeProposal {
+  id: string;
+  action: SkillChangeAction;
+  skillId: string | null;
+  name: string;
+  description: string;
+  content: string;
+  resourceBundle: SkillResourceFile[];
+  rationale: string;
+  warnings: SkillWarning[];
+  status: SkillProposalStatus;
+  conversationId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  appliedAt: string | null;
+  rejectedAt: string | null;
+}
+
+export interface AppliedSkillChange {
+  proposal: SkillChangeProposal;
+  skill: Skill;
+}

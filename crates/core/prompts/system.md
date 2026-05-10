@@ -67,8 +67,8 @@ For requests about the user's documents, choose the tool path that best matches 
 - Use `summarize_document` or `read_file` when the user wants a full-document summary.
 - For Office files, prefer Python-backed workflows through `run_shell` + `doc-script-editor` (`scripts/edit_doc.py`) for creation, validation, conversion, extraction, redaction, versioning, template preservation, existing-file edits, charts, formulas, speaker notes, and layout-sensitive output.
 - Before first Office/PDF work in the desktop app, use `prepare_document_tools` to check readiness. Use `prepare` for missing required Python dependencies, and ask the user before enabling optional LibreOffice/Poppler setup.
-- For **creating or editing** `.docx`, `.pptx`, `.xlsx`, or `.pdf` files, invoke the `doc-script-editor` skill via `run_shell`, e.g. `run_shell { program: "python", args: ["<SKILL_DIR>/scripts/edit_doc.py", "check"] }` followed by `create_docx`, `create_xlsx`, `create_pptx`, `validate`, `convert`, `render`, `recalc_xlsx`, `unpack`, `pack`, `replace`, `redact`, `extract`, `insert_slide`, or `version`. Do not use plain-text file tools on Office/PDF binaries.
-- For DOCX/XLSX/PPTX output, use Python Office packages through `run_shell` + `doc-script-editor`. If the final artifact is DOCX, do not create a Markdown deliverable unless the user explicitly asks for both.
+- For **creating or editing** `.docx`, `.pptx`, `.xlsx`, or `.pdf` files, invoke the relevant Office skill via `run_shell`. Use `doc-script-editor` for shared operations such as `create_docx`, `create_xlsx`, `validate`, `convert`, `render`, `recalc_xlsx`, `unpack`, `pack`, `replace`, `redact`, `extract`, `insert_slide`, or `version`; use `pptx-presentation-design/scripts/pptx_renderer.py` for new PPTX deck generation, with `doc-script-editor create_pptx` kept as a compatibility wrapper. Do not use plain-text file tools on Office/PDF binaries, and do not use `create_file` just to stage transient Office generation specs.
+- For DOCX/XLSX/PPTX output, use Python Office packages through `run_shell` and the appropriate format skill. If the final artifact is DOCX, do not create a Markdown deliverable unless the user explicitly asks for both.
 - Use `get_chunk_context` or `retrieve_evidence` when you already have candidate chunk IDs and need exact support.
 - Use `list_sources`, `list_documents`, or `list_dir` to browse when the user needs help locating content.
 - Use `fetch_url` only when the user shares a URL or explicitly asks for web content. Do not use it to compensate for missing knowledge-base evidence.
@@ -110,7 +110,7 @@ Do not answer factual knowledge-base questions from memory alone.
 
 ### Deck Generation
 
-For deck, slide, presentation, or PPT/PPTX output, use `run_shell` + `doc-script-editor` with `create_pptx`, `render`, `validate`, and `unpack`/`pack` for template edits, especially when the user expects speaker notes, templates, validation, visual QA, or later editing.
+For deck, slide, presentation, or PPT/PPTX output, use `pptx-presentation-design` for layout/theme/deck-quality decisions and its `pptx_renderer.py` for new editable decks. If the user supplies source notes but no spec, create one with `pptx_deck_planner.py`; if the user asks for narrative condensation or a new executive story, use `pptx_semantic_rewriter.py`. For ad-hoc generated specs, prefer one `run_shell` call with `--spec -` and pass the JSON spec through `stdin`; do not call `create_file` merely to write a temporary deck spec. If the user supplies a template or existing deck to adapt, run `pptx_template_bind.py --template <template.pptx> --spec <spec.json> --out <bound-spec.json>` and render the bound spec with `pptx_renderer.py --template <template.pptx>` so native template layouts/placeholders are reused. For existing-deck condensation or beautification, run `pptx_rewrite_plan.py` after audit and use its semantic rewrite spec as the starting point. The `doc-script-editor create_pptx` command is a compatibility entrypoint that delegates to that PPT renderer and also accepts `--spec -` via stdin; keep using `doc-script-editor` for `render`, `validate`, and `unpack`/`pack` template edits, especially when the user expects speaker notes, templates, validation, visual QA, or later editing. Before generation, run `pptx_asset_pack.py --spec` when local assets or links are present. After generation, run `pptx_audit.py` and `pptx_visual_qa.py`; for production or presenter-ready decks, also run `pptx_quality_gate.py --pretty` with the visual QA report and fix failures before final delivery. Package finished decks with `pptx_delivery_pack.py` when the user asks for a deliverable.
 
 **Theme.** Use the string `"nexa-light"` (default, corporate/report feel) or `"nexa-dark"` (tech/modern feel) so the deck auto-matches the app palette. Pick the theme from context. A custom theme may also be supplied as an object with `primary_color`, `accent_color`, `background_color`, `text_color`, `title_color`, `title_font`, `body_font` — colors as hex strings without `#`, fonts as plain names.
 
@@ -124,14 +124,21 @@ For deck, slide, presentation, or PPT/PPTX output, use `run_shell` + `doc-script
 - `quote` — pull quote (`text`, optional `attribution`).
 - `section` — chapter break on an inverted full-color background (`title`, optional `subtitle`).
 - `image_full` — full-bleed image with overlay (`image_url`, optional `title`, `caption`).
+- `table` — editable table (`title`, `table: string[][]` or `{ headers, rows, column_widths?, number_format?, banded_rows?, caption? }`).
+- `timeline` — roadmap or sequence (`events: [{ date, title, detail? }]`).
+- `process` — step-by-step workflow (`steps: [{ title, detail? }]`).
+- `comparison` — 2–3 editable cards (`left`/`right` or `columns: [{ heading, bullets?, paragraph? }]`).
+- `matrix` — 2x2 priority/positioning matrix (`quadrants: [{ title, detail? }]`, exactly four).
+- `chart` — native editable chart (`categories: string[]`, `series: [{ name, values }]`, optional `chart_type`: `column`, `bar`, `line`, `area`, `stacked_column`, `stacked_bar`, `pie`, or `doughnut`, optional `data_labels`).
 
 **Design guidance — produce decks a designer would ship:**
 
-- Vary layouts. Do **not** use `body` for every slide; mix in `stat`, `quote`, `section`, `two_column`, and `image_full`.
+- Vary layouts. Do **not** use `body` for every slide; mix in `stat`, `quote`, `section`, `two_column`, `timeline`, `process`, `comparison`, `matrix`, `chart`, and `image_full`.
 - Keep bullets short: under ~10 words each, at most 5 per slide. Offload detail to speaker notes.
 - For decks longer than ~8 slides, use `section` slides to mark chapter boundaries.
-- Numbers and KPIs belong in `stat` slides (1–4 stats). Testimonials and sayings belong in `quote` slides. Use `image_full` for emotional openers or closers.
+- Numbers and KPIs belong in `stat` or `chart` slides. Plans belong in `timeline`, workflows in `process`, tradeoffs in `comparison`, and prioritization in `matrix`. Testimonials and sayings belong in `quote` slides. Use `image_full` for emotional openers or closers.
 - `image_url` must be a direct image URL — prefer `https://images.unsplash.com/...`, `https://images.pexels.com/...`, or URLs the user supplied. **Never** link to a search-results page, and never use Google image-search URLs.
+- Preserve real source URLs with slide-level `links` or `citations`; use direct, checkable links rather than copying another agent's examples or search-result URLs.
 - Use the top-level `notes_per_slide: string[]` for speaker notes (one entry per slide, aligned by index).
 
 **Minimal example call:**

@@ -789,66 +789,25 @@ def cmd_create_xlsx(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_create_pptx(args: argparse.Namespace) -> int:
+def _load_pptx_renderer():
+    skills_root = Path(__file__).resolve().parents[2]
+    renderer_dir = skills_root / "pptx-presentation-design" / "scripts"
+    renderer_path = renderer_dir / "pptx_renderer.py"
+    if not renderer_path.exists():
+        _die(f"ERROR: PPTX renderer not found: {renderer_path}", 3)
+    if str(renderer_dir) not in sys.path:
+        sys.path.insert(0, str(renderer_dir))
     try:
-        from pptx import Presentation  # type: ignore
-        from pptx.util import Inches, Pt  # type: ignore
-    except ImportError:
-        _missing("python-pptx")
-    path = _validate_output_path(args.path, {"pptx"})
-    spec = _read_json(args.spec)
-    prs = Presentation(str(_validate_path(args.template))) if args.template else Presentation()
-    # Remove default empty slide only if present and unused by templates.
-    if not args.template and len(prs.slides) == 0:
-        pass
-    slides = spec.get("slides") or []
-    if not isinstance(slides, list) or not slides:
-        _die("ERROR: create_pptx spec requires non-empty 'slides' array", 3)
-    for slide_spec in slides:
-        layout_name = str(slide_spec.get("layout") or "body").lower()
-        layout_idx = 0 if layout_name == "title" else 1 if len(prs.slide_layouts) > 1 else 0
-        slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
-        if slide.shapes.title is not None:
-            slide.shapes.title.text = str(slide_spec.get("title") or "")
-        subtitle = slide_spec.get("subtitle")
-        body = slide_spec.get("body")
-        bullets = slide_spec.get("bullets") or []
-        if subtitle and layout_name == "title" and len(slide.placeholders) > 1:
-            slide.placeholders[1].text = str(subtitle)
-        elif body or bullets:
-            box = None
-            for ph in slide.placeholders:
-                if ph.placeholder_format.idx == 1:
-                    box = ph
-                    break
-            if box is None:
-                box = slide.shapes.add_textbox(Inches(0.8), Inches(1.5), Inches(8.7), Inches(4.8))
-            tf = box.text_frame
-            tf.clear()
-            if body:
-                tf.paragraphs[0].text = str(body)
-                tf.paragraphs[0].font.size = Pt(18)
-            for item in bullets:
-                p = tf.add_paragraph()
-                p.text = str(item)
-                p.level = 0
-                p.font.size = Pt(18)
-        table = slide_spec.get("table")
-        if isinstance(table, list) and table:
-            rows = len(table)
-            cols = max(len(row) for row in table if isinstance(row, list))
-            shape = slide.shapes.add_table(rows, cols, Inches(0.8), Inches(2.0), Inches(8.7), Inches(3.6))
-            for ri, row in enumerate(table):
-                for ci, value in enumerate(row):
-                    shape.table.cell(ri, ci).text = str(value)
-        notes = slide_spec.get("notes")
-        if notes:
-            try:
-                slide.notes_slide.notes_text_frame.text = str(notes)
-            except Exception:
-                pass
-    prs.save(str(path))
-    print(f"created PPTX: {path}")
+        from pptx_renderer import create_pptx_from_spec  # type: ignore
+    except ImportError as exc:
+        _die(f"ERROR: failed to load PPTX renderer: {exc}", 1)
+    return create_pptx_from_spec
+
+
+def cmd_create_pptx(args: argparse.Namespace) -> int:
+    create_pptx_from_spec = _load_pptx_renderer()
+    output = create_pptx_from_spec(args.path, args.spec, args.template, Path.cwd())
+    print(f"created PPTX: {output}")
     return 0
 
 
@@ -1151,7 +1110,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cx.set_defaults(func=cmd_create_xlsx)
 
     p_cp = sub.add_parser("create_pptx", help="Create a PPTX presentation from a JSON spec")
-    p_cp.add_argument("--spec", required=True, help="Absolute path to deck JSON spec")
+    p_cp.add_argument("--spec", required=True, help="Absolute path to deck JSON spec, or '-' to read JSON from stdin")
     p_cp.add_argument("--template", default=None, help="Optional absolute .pptx template path")
     p_cp.set_defaults(func=cmd_create_pptx)
 

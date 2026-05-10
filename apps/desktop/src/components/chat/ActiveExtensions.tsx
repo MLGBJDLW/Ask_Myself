@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Plug, Zap, AlertTriangle } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
 import { getSoftDropdownMotion } from '../../lib/uiMotion';
 import type { McpServer, McpToolInfo, Skill } from '../../types/extensions';
+import type { AgentTaskRun } from '../../types/conversation';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -14,6 +15,39 @@ interface ServerWithTools {
   server: McpServer;
   tools: McpToolInfo[];
   error?: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function parseSelectedSkillsSnapshot(taskRun?: AgentTaskRun | null): Skill[] | null {
+  const artifacts = asRecord(taskRun?.artifacts);
+  const selectedSkills = asRecord(artifacts?.selectedSkills);
+  const rawSkills = selectedSkills?.skills;
+  if (!Array.isArray(rawSkills)) return null;
+
+  return rawSkills
+    .map((raw): Skill | null => {
+      const item = asRecord(raw);
+      if (!item) return null;
+      const id = item.id;
+      const name = item.name;
+      if (typeof id !== 'string' || typeof name !== 'string') return null;
+      return {
+        id,
+        name,
+        description: typeof item.description === 'string' ? item.description : '',
+        content: '',
+        enabled: item.enabled !== false,
+        createdAt: '',
+        updatedAt: '',
+        builtin: item.builtin === true,
+      };
+    })
+    .filter((skill): skill is Skill => skill !== null);
 }
 
 /* ------------------------------------------------------------------ */
@@ -83,7 +117,17 @@ function ChipDropdown({
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function ActiveExtensions({ conversationId }: { conversationId?: string }) {
+export function ActiveExtensions({
+  conversationId,
+  skillQuery = '',
+  personaId,
+  taskRun,
+}: {
+  conversationId?: string;
+  skillQuery?: string;
+  personaId?: string;
+  taskRun?: AgentTaskRun | null;
+}) {
   const { t } = useTranslation();
   const copy = {
     unavailable: t('chat.extensions.unavailable'),
@@ -92,12 +136,15 @@ export function ActiveExtensions({ conversationId }: { conversationId?: string }
   const [serversWithTools, setServersWithTools] = useState<ServerWithTools[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const selectedSkillsSnapshot = useMemo(() => parseSelectedSkillsSnapshot(taskRun), [taskRun]);
 
   const loadData = useCallback(async () => {
     try {
       const [allServers, allSkills] = await Promise.all([
         api.listMcpServers(),
-        api.listActiveSkills(),
+        selectedSkillsSnapshot !== null
+          ? Promise.resolve(selectedSkillsSnapshot)
+          : api.listSelectedSkills(skillQuery, personaId),
       ]);
 
       const enabled = allServers.filter((s) => s.enabled);
@@ -120,7 +167,7 @@ export function ActiveExtensions({ conversationId }: { conversationId?: string }
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [personaId, selectedSkillsSnapshot, skillQuery]);
 
   useEffect(() => {
     void loadData();

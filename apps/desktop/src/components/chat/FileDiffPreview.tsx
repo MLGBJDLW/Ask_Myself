@@ -42,6 +42,44 @@ export interface DiffStatsArtifact {
   paths: string[];
 }
 
+function diffPathKey(path: string): string {
+  return path.replace(/\\/g, '/');
+}
+
+function mergeOperation(current: string, next: string): string {
+  if (current === 'create') return 'create';
+  if (current === next) return current;
+  return 'multi_edit';
+}
+
+export function mergeFileDiffArtifactsByPath(diffs: FileDiffArtifact[]): FileDiffArtifact[] {
+  const ordered: FileDiffArtifact[] = [];
+  const byPath = new Map<string, FileDiffArtifact>();
+
+  for (const diff of diffs) {
+    const key = diffPathKey(diff.path);
+    const existing = byPath.get(key);
+    if (!existing) {
+      const copy = {
+        ...diff,
+        hunks: [...diff.hunks],
+      };
+      byPath.set(key, copy);
+      ordered.push(copy);
+      continue;
+    }
+
+    existing.operation = mergeOperation(existing.operation, diff.operation);
+    existing.additions += diff.additions;
+    existing.deletions += diff.deletions;
+    existing.truncated = Boolean(existing.truncated || diff.truncated);
+    existing.omittedLineCount = (existing.omittedLineCount ?? 0) + (diff.omittedLineCount ?? 0);
+    existing.hunks = [...existing.hunks, ...diff.hunks];
+  }
+
+  return ordered;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -59,9 +97,8 @@ function normalizeLineType(value: unknown): FileDiffLineType | null {
   return null;
 }
 
-export function extractFileDiffArtifact(artifacts: ArtifactPayload | undefined): FileDiffArtifact | null {
-  if (!isRecord(artifacts) || !isRecord(artifacts.diff)) return null;
-  const diff = artifacts.diff;
+function parseFileDiffArtifact(diff: unknown): FileDiffArtifact | null {
+  if (!isRecord(diff)) return null;
   const path = typeof diff.path === 'string' ? diff.path : '';
   const hunksSource = Array.isArray(diff.hunks) ? diff.hunks : [];
   const hunks: FileDiffHunk[] = hunksSource.flatMap((hunk) => {
@@ -99,6 +136,23 @@ export function extractFileDiffArtifact(artifacts: ArtifactPayload | undefined):
   };
 }
 
+export function extractFileDiffArtifacts(artifacts: ArtifactPayload | undefined): FileDiffArtifact[] {
+  if (!isRecord(artifacts)) return [];
+  if (Array.isArray(artifacts.diffs)) {
+    return artifacts.diffs.flatMap((diff) => {
+      const parsed = parseFileDiffArtifact(diff);
+      return parsed ? [parsed] : [];
+    });
+  }
+
+  const parsed = parseFileDiffArtifact(artifacts.diff);
+  return parsed ? [parsed] : [];
+}
+
+export function extractFileDiffArtifact(artifacts: ArtifactPayload | undefined): FileDiffArtifact | null {
+  return extractFileDiffArtifacts(artifacts)[0] ?? null;
+}
+
 export function extractDiffStatsArtifact(artifacts: ArtifactPayload | undefined): DiffStatsArtifact | null {
   if (isRecord(artifacts) && isRecord(artifacts.diffStats)) {
     const stats = artifacts.diffStats;
@@ -119,16 +173,17 @@ export function extractDiffStatsArtifact(artifacts: ArtifactPayload | undefined)
     };
   }
 
-  const diff = extractFileDiffArtifact(artifacts);
-  if (!diff) return null;
+  const diffs = extractFileDiffArtifacts(artifacts);
+  if (diffs.length === 0) return null;
+  const paths = Array.from(new Set(diffs.map((diff) => diff.path)));
   return {
     kind: 'diffStats',
-    filesChanged: 1,
-    additions: diff.additions,
-    deletions: diff.deletions,
-    hunks: diff.hunks.length,
-    operation: diff.operation,
-    paths: [diff.path],
+    filesChanged: paths.length,
+    additions: diffs.reduce((total, diff) => total + diff.additions, 0),
+    deletions: diffs.reduce((total, diff) => total + diff.deletions, 0),
+    hunks: diffs.reduce((total, diff) => total + diff.hunks.length, 0),
+    operation: diffs.length === 1 ? diffs[0].operation : 'multi_edit',
+    paths,
   };
 }
 

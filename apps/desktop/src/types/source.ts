@@ -8,3 +8,12 @@ export interface Source {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface ScanError {
+  sourceId: string;
+  path: string;
+  errorMessage: string;
+  errorCount: number;
+  firstFailedAt: string;
+  lastFailedAt: string;
+}

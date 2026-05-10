@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { AlertTriangle, Blocks, ChevronDown, ChevronUp, Download, Eye, Loader2, Pencil, Plug, Plus, Search, Trash2, UserRound, X, Zap } from 'lucide-react';
+import { AlertTriangle, Blocks, Check, ChevronDown, ChevronUp, Download, Eye, Loader2, Pencil, Plug, Plus, Search, Trash2, UserRound, X, Zap } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
 import type { PersonaProfile, SavePersonaInput } from '../../lib/api';
-import type { McpServer, McpToolInfo, SaveMcpServerInput, SaveSkillInput, Skill } from '../../types/extensions';
+import type { McpServer, McpToolInfo, SaveMcpServerInput, SaveSkillInput, Skill, SkillChangeProposal } from '../../types/extensions';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
@@ -21,6 +21,8 @@ interface ExtensionsSettingsTabProps {
   personas: PersonaProfile[];
   skills: Skill[];
   filteredSkills: Skill[];
+  skillProposals: SkillChangeProposal[];
+  skillProposalBusyId: string | null;
   showPersonaForm: boolean;
   editingPersona: PersonaProfile | null;
   deletePersonaTarget: PersonaProfile | null;
@@ -57,6 +59,8 @@ interface ExtensionsSettingsTabProps {
   onEditSkill: (skill: Skill) => void;
   onDeleteSkillTargetChange: (skill: Skill | null) => void;
   onConfirmDeleteSkill: () => void;
+  onApplySkillProposal: (id: string) => void;
+  onRejectSkillProposal: (id: string) => void;
   onAddMcpServer: () => void;
   onSaveMcpServer: (input: SaveMcpServerInput) => Promise<void>;
   onCancelMcpForm: () => void;
@@ -112,6 +116,86 @@ function extractTriggers(description: string): string[] {
     .map((item) => item.trim())
     .filter((item) => item.length > 0 && item.length <= 40)
     .slice(0, 4);
+}
+
+function compact(text: string, max = 180): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+type DiffLineKind = 'same' | 'add' | 'remove';
+
+interface DiffLine {
+  kind: DiffLineKind;
+  text: string;
+}
+
+function splitLines(text: string): string[] {
+  if (!text) return [];
+  return text.replace(/\r\n/g, '\n').split('\n');
+}
+
+function buildLineDiff(before: string, after: string): DiffLine[] {
+  const oldLines = splitLines(before);
+  const newLines = splitLines(after);
+  if (oldLines.join('\n') === newLines.join('\n')) {
+    return oldLines.map((text) => ({ kind: 'same', text }));
+  }
+
+  if (oldLines.length * newLines.length > 60000) {
+    return [
+      ...oldLines.map((text) => ({ kind: 'remove' as const, text })),
+      ...newLines.map((text) => ({ kind: 'add' as const, text })),
+    ];
+  }
+
+  const table = Array.from({ length: oldLines.length + 1 }, () =>
+    Array.from({ length: newLines.length + 1 }, () => 0),
+  );
+  for (let i = oldLines.length - 1; i >= 0; i--) {
+    for (let j = newLines.length - 1; j >= 0; j--) {
+      table[i][j] =
+        oldLines[i] === newLines[j]
+          ? table[i + 1][j + 1] + 1
+          : Math.max(table[i + 1][j], table[i][j + 1]);
+    }
+  }
+
+  const diff: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < oldLines.length && j < newLines.length) {
+    if (oldLines[i] === newLines[j]) {
+      diff.push({ kind: 'same', text: oldLines[i] });
+      i += 1;
+      j += 1;
+    } else if (table[i + 1][j] >= table[i][j + 1]) {
+      diff.push({ kind: 'remove', text: oldLines[i] });
+      i += 1;
+    } else {
+      diff.push({ kind: 'add', text: newLines[j] });
+      j += 1;
+    }
+  }
+  while (i < oldLines.length) {
+    diff.push({ kind: 'remove', text: oldLines[i] });
+    i += 1;
+  }
+  while (j < newLines.length) {
+    diff.push({ kind: 'add', text: newLines[j] });
+    j += 1;
+  }
+  return diff;
+}
+
+function findProposalTargetSkill(proposal: SkillChangeProposal | null, skills: Skill[]): Skill | null {
+  if (!proposal) return null;
+  if (proposal.skillId) {
+    const byId = skills.find((skill) => skill.id === proposal.skillId);
+    if (byId) return byId;
+  }
+  return skills.find((skill) => skill.name === proposal.name) ?? null;
 }
 
 function PersonaEditor({
@@ -265,6 +349,8 @@ export function ExtensionsSettingsTab({
   personas,
   skills,
   filteredSkills,
+  skillProposals,
+  skillProposalBusyId,
   showPersonaForm,
   editingPersona,
   deletePersonaTarget,
@@ -301,6 +387,8 @@ export function ExtensionsSettingsTab({
   onEditSkill,
   onDeleteSkillTargetChange,
   onConfirmDeleteSkill,
+  onApplySkillProposal,
+  onRejectSkillProposal,
   onAddMcpServer,
   onSaveMcpServer,
   onCancelMcpForm,
@@ -337,6 +425,27 @@ export function ExtensionsSettingsTab({
     connectionFailed: t('settings.extensions.connectionFailed'),
     availableTools: t('settings.extensions.availableTools'),
     toggleTools: t('settings.extensions.toggleTools'),
+  };
+  const [previewProposal, setPreviewProposal] = useState<SkillChangeProposal | null>(null);
+  const [applyProposalTarget, setApplyProposalTarget] = useState<SkillChangeProposal | null>(null);
+  const previewTargetSkill = useMemo(
+    () => findProposalTargetSkill(previewProposal, skills),
+    [previewProposal, skills],
+  );
+  const previewDiff = useMemo(
+    () =>
+      previewProposal
+        ? buildLineDiff(
+            previewProposal.action === 'patch' ? previewTargetSkill?.content ?? '' : '',
+            previewProposal.content,
+          )
+        : [],
+    [previewProposal, previewTargetSkill],
+  );
+  const confirmApplyProposal = () => {
+    if (!applyProposalTarget) return;
+    onApplySkillProposal(applyProposalTarget.id);
+    setApplyProposalTarget(null);
   };
 
   return (
@@ -478,6 +587,103 @@ export function ExtensionsSettingsTab({
           />
         ) : (
           <div className="space-y-4">
+            {skillProposals.length > 0 && (
+              <div className="rounded-lg border border-accent/25 bg-accent/5 p-3">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium text-text-primary">
+                      {t('settings.skillProposals')}
+                    </p>
+                    <p className="text-xs text-text-tertiary">
+                      {t('settings.skillProposalsDescription')}
+                    </p>
+                  </div>
+                  <Badge variant="default" className="text-[10px] border-accent/40 text-accent">
+                    {t('settings.skillProposalPendingCount', {
+                      count: String(skillProposals.length),
+                    })}
+                  </Badge>
+                </div>
+                <div className="space-y-2">
+                  {skillProposals.map((proposal) => {
+                    const busy = skillProposalBusyId === proposal.id;
+                    return (
+                      <div
+                        key={proposal.id}
+                        className="rounded-md border border-border bg-surface-2 px-3 py-2"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="truncate text-sm font-medium text-text-primary">
+                                {proposal.name}
+                              </p>
+                              <Badge variant="default" className="text-[10px]">
+                                {proposal.action === 'patch'
+                                  ? t('settings.skillProposalPatch')
+                                  : t('settings.skillProposalCreate')}
+                              </Badge>
+                              {proposal.warnings.length > 0 && (
+                                <Badge
+                                  variant="default"
+                                  className="text-[10px] border-warning/40 text-warning"
+                                >
+                                  {t('settings.skillProposalWarnings', {
+                                    count: String(proposal.warnings.length),
+                                  })}
+                                </Badge>
+                              )}
+                            </div>
+                            {proposal.description && (
+                              <p className="mt-1 text-xs text-text-secondary">
+                                {compact(proposal.description, 160)}
+                              </p>
+                            )}
+                            {proposal.rationale && (
+                              <p className="mt-1 text-xs text-text-tertiary">
+                                {t('settings.skillProposalRationale')}: {compact(proposal.rationale, 220)}
+                              </p>
+                            )}
+                            <p className="mt-1 font-mono text-[11px] text-text-tertiary">
+                              {compact(proposal.content, 220)}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              icon={<Eye size={14} />}
+                              onClick={() => setPreviewProposal(proposal)}
+                              disabled={busy || !!skillProposalBusyId}
+                            >
+                              {t('settings.skillProposalPreview')}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              icon={busy ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
+                              onClick={() => onRejectSkillProposal(proposal.id)}
+                              disabled={busy || !!skillProposalBusyId}
+                            >
+                              {t('settings.skillProposalReject')}
+                            </Button>
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              icon={busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                              onClick={() => setApplyProposalTarget(proposal)}
+                              disabled={busy || !!skillProposalBusyId}
+                            >
+                              {t('settings.skillProposalApply')}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative min-w-55 flex-1">
@@ -789,6 +995,139 @@ export function ExtensionsSettingsTab({
         )}
       </Section>
 
+      {previewProposal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setPreviewProposal(null)}
+            aria-hidden="true"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={previewProposal.name}
+            className="relative z-10 flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-border bg-surface-2 shadow-lg"
+          >
+            <div className="flex items-center justify-between border-b border-border px-5 py-3">
+              <div className="min-w-0">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <h2 className="truncate text-sm font-semibold text-text-primary">
+                    {previewProposal.name}
+                  </h2>
+                  <Badge variant="default" className="text-[10px]">
+                    {previewProposal.action === 'patch'
+                      ? t('settings.skillProposalPatch')
+                      : t('settings.skillProposalCreate')}
+                  </Badge>
+                </div>
+                {previewProposal.rationale && (
+                  <p className="mt-1 line-clamp-2 text-xs text-text-tertiary">
+                    {previewProposal.rationale}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => setPreviewProposal(null)}
+                className="rounded-md p-1 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary"
+                aria-label={t('common.close')}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+              {previewProposal.warnings.length > 0 && (
+                <div className="mb-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
+                  <p className="text-xs font-medium text-warning">
+                    {t('settings.skillProposalWarnings', {
+                      count: String(previewProposal.warnings.length),
+                    })}
+                  </p>
+                  <ul className="mt-1 space-y-1">
+                    {previewProposal.warnings.map((warning) => (
+                      <li key={`${warning.code}-${warning.message}`} className="text-xs text-warning/80">
+                        {warning.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {previewProposal.action === 'patch' && !previewTargetSkill && (
+                <div className="mb-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+                  {t('settings.skillProposalCurrentMissing')}
+                </div>
+              )}
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-xs font-medium text-text-secondary">
+                  {previewProposal.action === 'create'
+                    ? t('settings.skillProposalNewContent')
+                    : t('settings.skillProposalDiffPreview')}
+                </p>
+                <span className="text-[11px] text-text-tertiary">
+                  {previewDiff.filter((line) => line.kind === 'add').length}+
+                  {' / '}
+                  {previewDiff.filter((line) => line.kind === 'remove').length}-
+                </span>
+              </div>
+              <div className="overflow-hidden rounded-md border border-border bg-surface-1">
+                {previewDiff.length === 0 ? (
+                  <p className="px-3 py-4 text-center text-xs text-text-tertiary">
+                    {t('settings.skillProposalNoChanges')}
+                  </p>
+                ) : (
+                  <div className="max-h-[54vh] overflow-auto py-2 font-mono text-[11px] leading-5">
+                    {previewDiff.map((line, index) => (
+                      <div
+                        key={`${index}-${line.kind}`}
+                        className={`flex gap-2 px-3 ${
+                          line.kind === 'add'
+                            ? 'bg-success/10 text-success'
+                            : line.kind === 'remove'
+                              ? 'bg-danger/10 text-danger'
+                              : 'text-text-tertiary'
+                        }`}
+                      >
+                        <span className="w-4 shrink-0 select-none text-right">
+                          {line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : ' '}
+                        </span>
+                        <code className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                          {line.text || ' '}
+                        </code>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const proposal = previewProposal;
+                  setPreviewProposal(null);
+                  onRejectSkillProposal(proposal.id);
+                }}
+                disabled={!!skillProposalBusyId}
+              >
+                {t('settings.skillProposalReject')}
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                icon={<Check size={14} />}
+                onClick={() => {
+                  setApplyProposalTarget(previewProposal);
+                  setPreviewProposal(null);
+                }}
+                disabled={!!skillProposalBusyId}
+              >
+                {t('settings.skillProposalApply')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <ConfirmDialog
         open={!!deletePersonaTarget}
         onClose={() => onDeletePersonaTargetChange(null)}
@@ -807,6 +1146,17 @@ export function ExtensionsSettingsTab({
         message={t('settings.deleteSkillConfirm')}
         confirmText={t('common.delete')}
         variant="danger"
+      />
+
+      <ConfirmDialog
+        open={!!applyProposalTarget}
+        onClose={() => setApplyProposalTarget(null)}
+        onConfirm={confirmApplyProposal}
+        title={t('settings.skillProposalApplyConfirmTitle')}
+        message={t('settings.skillProposalApplyConfirmMessage')}
+        confirmText={t('settings.skillProposalApply')}
+        variant="warning"
+        loading={!!applyProposalTarget && skillProposalBusyId === applyProposalTarget.id}
       />
 
       {viewSkill && (
