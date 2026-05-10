@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.5.0...nexa-monorepo-v0.5.1) (2026-05-10)
+
+
+### Features
+
+* improve PPT design and office tooling workflows ([24181fb](https://github.com/MLGBJDLW/Nexa/commit/24181fb7c7f0a4f4d5a7bb0613aba49b8f84eff3))
+
 ## [0.5.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.4.2...nexa-monorepo-v0.5.0) (2026-05-10)
 
 
