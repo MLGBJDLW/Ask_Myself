@@ -488,74 +488,99 @@ export function ExtensionsSettingsTab({
               <div className="space-y-3">
                 {personas.map((persona) => {
                   const defaultSkillCount = persona.defaultSkillIds?.length ?? 0;
+                  const defaultSkillNames = (persona.defaultSkillIds ?? [])
+                    .map((skillId) => skills.find((skill) => skill.id === skillId)?.name ?? skillId)
+                    .slice(0, 6);
                   return (
                     <motion.div
                       key={persona.id}
                       initial={{ opacity: 0, y: 20 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="flex items-center justify-between rounded-lg border border-border bg-surface-2 p-4 transition-colors hover:bg-surface-3/50"
+                      className="rounded-lg border border-border bg-surface-2 p-4 transition-colors hover:bg-surface-3/50"
                     >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="truncate text-sm font-medium text-text-primary">{persona.name}</p>
-                          {persona.builtin && (
-                            <Badge variant="default" className="text-[10px] shrink-0 border-accent/40 text-accent">
-                              {personaCopy.builtin}
-                            </Badge>
-                          )}
-                          {!persona.enabled && !persona.builtin && (
-                            <Badge variant="default" className="text-[10px] shrink-0 border-border text-text-tertiary">
-                              {personaCopy.disabled}
-                            </Badge>
-                          )}
-                          {defaultSkillCount > 0 && (
-                            <Badge variant="default" className="text-[10px] shrink-0">
-                              {personaCopy.defaultSkillCount(defaultSkillCount)}
-                            </Badge>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate text-sm font-medium text-text-primary">{persona.name}</p>
+                            {persona.builtin && (
+                              <Badge variant="default" className="text-[10px] shrink-0 border-accent/40 text-accent">
+                                {personaCopy.builtin}
+                              </Badge>
+                            )}
+                            {!persona.enabled && !persona.builtin && (
+                              <Badge variant="default" className="text-[10px] shrink-0 border-border text-text-tertiary">
+                                {personaCopy.disabled}
+                              </Badge>
+                            )}
+                            {defaultSkillCount > 0 && (
+                              <Badge variant="default" className="text-[10px] shrink-0">
+                                {personaCopy.defaultSkillCount(defaultSkillCount)}
+                              </Badge>
+                            )}
+                          </div>
+                          {persona.description ? (
+                            <p className="mt-0.5 line-clamp-2 text-xs text-text-secondary">
+                              {persona.description}
+                            </p>
+                          ) : (
+                            <p className="mt-0.5 truncate text-xs text-text-tertiary">
+                              {persona.instructions.slice(0, 100)}{persona.instructions.length > 100 ? '...' : ''}
+                            </p>
                           )}
                         </div>
-                        {persona.description ? (
-                          <p className="mt-0.5 line-clamp-2 text-xs text-text-secondary">
-                            {persona.description}
-                          </p>
-                        ) : (
-                          <p className="mt-0.5 truncate text-xs text-text-tertiary">
-                            {persona.instructions.slice(0, 100)}{persona.instructions.length > 100 ? '...' : ''}
-                          </p>
-                        )}
+                        <div className="flex shrink-0 items-center gap-1">
+                          {!persona.builtin && (
+                            <button
+                              onClick={() => onTogglePersona(persona.id, !persona.enabled)}
+                              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
+                                persona.enabled ? 'bg-accent' : 'bg-surface-3'
+                              }`}
+                            >
+                              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
+                                persona.enabled ? 'translate-x-6' : 'translate-x-1'
+                              }`} />
+                            </button>
+                          )}
+                          {!persona.builtin && (
+                            <button
+                              onClick={() => onEditPersona(persona)}
+                              className="rounded p-1.5 text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
+                              aria-label={t('common.edit')}
+                            >
+                              <Pencil size={14} />
+                            </button>
+                          )}
+                          {!persona.builtin && (
+                            <button
+                              onClick={() => onDeletePersonaTargetChange(persona)}
+                              className="rounded p-1.5 text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                              aria-label={t('common.delete')}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <div className="ml-3 flex shrink-0 items-center gap-1">
-                        {!persona.builtin && (
-                          <button
-                            onClick={() => onTogglePersona(persona.id, !persona.enabled)}
-                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
-                              persona.enabled ? 'bg-accent' : 'bg-surface-3'
-                            }`}
-                          >
-                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
-                              persona.enabled ? 'translate-x-6' : 'translate-x-1'
-                            }`} />
-                          </button>
-                        )}
-                        {!persona.builtin && (
-                          <button
-                            onClick={() => onEditPersona(persona)}
-                            className="rounded p-1.5 text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
-                            aria-label={t('common.edit')}
-                          >
-                            <Pencil size={14} />
-                          </button>
-                        )}
-                        {!persona.builtin && (
-                          <button
-                            onClick={() => onDeletePersonaTargetChange(persona)}
-                            className="rounded p-1.5 text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
-                            aria-label={t('common.delete')}
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        )}
-                      </div>
+                      <details className="mt-3 rounded-md border border-border/60 bg-surface-1 px-3 py-2 text-xs">
+                        <summary className="cursor-pointer select-none text-text-secondary">Preview</summary>
+                        <div className="mt-2 space-y-2 text-text-secondary">
+                          <p className="whitespace-pre-wrap leading-5">
+                            {persona.instructions.trim() || 'Balanced default behavior with no extra persona prompt.'}
+                          </p>
+                          {defaultSkillNames.length > 0 && (
+                            <div className="flex flex-wrap gap-1">
+                              {defaultSkillNames.map((skillName) => (
+                                <span
+                                  key={skillName}
+                                  className="rounded-md border border-border/50 bg-surface-0 px-1.5 py-0.5 text-[11px] text-text-tertiary"
+                                >
+                                  {skillName}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </details>
                     </motion.div>
                   );
                 })}

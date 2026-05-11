@@ -41,7 +41,13 @@ fn default_enabled() -> bool {
     true
 }
 
-fn builtin_profile(id: &str, name: &str, description: &str, instructions: &str) -> PersonaProfile {
+fn builtin_profile(
+    id: &str,
+    name: &str,
+    description: &str,
+    instructions: &str,
+    default_skill_ids: &[&str],
+) -> PersonaProfile {
     PersonaProfile {
         id: id.to_string(),
         name: name.to_string(),
@@ -49,7 +55,10 @@ fn builtin_profile(id: &str, name: &str, description: &str, instructions: &str) 
         instructions: instructions.to_string(),
         enabled: true,
         builtin: true,
-        default_skill_ids: Vec::new(),
+        default_skill_ids: default_skill_ids
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect(),
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -62,30 +71,35 @@ pub fn builtin_personas() -> Vec<PersonaProfile> {
             "Default",
             "Balanced workspace assistant.",
             "",
+            &[],
         ),
         builtin_profile(
             "novelist",
             "Novelist",
             "Long-form fiction planning, prose, scene craft, continuity.",
             "Emphasize story structure, character motivation, sensory detail, continuity, and prose quality. When drafting fiction, preserve the user's canon and project memory before inventing new details.",
+            &[],
         ),
         builtin_profile(
             "speaker",
             "Speaker",
             "Speechwriter and presentation coach.",
             "Emphasize audience, spoken rhythm, persuasive structure, memorable phrasing, timing, and delivery notes. Prefer language that sounds natural when read aloud.",
+            &["pptx-presentation-design", "visual-explanations"],
         ),
         builtin_profile(
             "researcher",
             "Researcher",
             "Evidence-heavy research and synthesis.",
             "Emphasize source quality, uncertainty, citations, comparison, and gaps. Separate evidence from inference clearly.",
+            &["evidence-first"],
         ),
         builtin_profile(
             "editor",
             "Editor",
             "Revision, style, and clarity.",
             "Emphasize concise editing, structure, tone consistency, grammar, and preservation of the author's intent. Explain major edits briefly.",
+            &["docx-document-design", "office-document-design"],
         ),
     ]
 }

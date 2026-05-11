@@ -1,21 +1,24 @@
 import { useMemo } from 'react';
-import type { ConversationMessage } from '../../types/conversation';
+import type { AgentTaskRun, ConversationMessage } from '../../types/conversation';
 import type { ToolCallEvent } from '../../lib/useAgentStream';
-import { extractPlanArtifact } from '../../lib/taskArtifacts';
+import { extractPlanArtifact, findLatestPlanArtifact } from '../../lib/taskArtifacts';
 import { PlanProgressPanel } from './TaskPanels';
 
 interface TaskBoardProps {
   messages: ConversationMessage[];
   toolCalls: ToolCallEvent[];
+  taskRun?: AgentTaskRun | null;
 }
 
 export function TaskBoard({
   messages,
   toolCalls,
+  taskRun,
 }: TaskBoardProps) {
   const plan = useMemo(
-    () => findLatestUpdatePlanArtifact(messages, toolCalls),
-    [messages, toolCalls],
+    () => findLatestUpdatePlanArtifact(messages, toolCalls)
+      ?? findLatestPlanArtifact(messages, toolCalls, taskRun?.plan),
+    [messages, taskRun?.plan, toolCalls],
   );
 
   if (!plan) {

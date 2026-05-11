@@ -316,7 +316,7 @@ export interface UseChatSessionReturn {
   finishReason: string | null;
   contextOverflow: boolean;
   rateLimited: boolean;
-  send: (content: string, images?: ImageAttachment[]) => Promise<void>;
+  send: (content: string, images?: ImageAttachment[], personaOverrideId?: string | null) => Promise<void>;
   stop: () => void;
   deleteConversation: (id: string) => Promise<void>;
   deleteConversationsBatch: (ids: string[]) => Promise<void>;
@@ -965,12 +965,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   }, [activeId]);
 
   const send = useCallback(
-    async (content: string, attachments?: ImageAttachment[]) => {
+    async (content: string, attachments?: ImageAttachment[], personaOverrideId?: string | null) => {
       const configForSend = activeAgentConfigRef.current;
       if (!configForSend) {
         toast.error(t('chat.noConfigError'));
         return;
       }
+      const personaForSend = personaOverrideId ?? activePersonaId;
 
       // Clear previous error
       setChatError(null);
@@ -1037,14 +1038,14 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
               customSystemPrompt || undefined,
               initialCollectionContext,
               undefined,
-              activePersonaId,
+              personaForSend,
             )
             : await api.createConversation(
             configForSend.provider,
             configForSend.model,
             customSystemPrompt || undefined,
             undefined,
-            activePersonaId,
+            personaForSend,
           );
           convId = conv.id;
           // Resolve the source scope to seed the new conversation with.
@@ -1089,7 +1090,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       pendingStreamConversationRef.current = convId;
       streamingConversationRef.current = convId;
 
-      await streamSend(convId, content, attachments, configForSend.id, activePersonaId);
+      await streamSend(convId, content, attachments, configForSend.id, personaForSend);
     },
     [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, isStreaming, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
   );

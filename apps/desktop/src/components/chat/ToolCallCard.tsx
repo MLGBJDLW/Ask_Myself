@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   Search,
@@ -59,6 +60,17 @@ interface TrustBoundaryArtifact {
   mutability?: string;
   externality?: string;
   canInstruct?: boolean;
+}
+
+interface GeneratedImageArtifact {
+  kind: 'generatedImage';
+  path?: string;
+  dataUrl?: string;
+  mediaType?: string;
+  provider?: string;
+  model?: string;
+  prompt?: string;
+  bytes?: number;
 }
 
 interface ToolCallCardProps {
@@ -311,6 +323,15 @@ function extractTrustBoundary(
   return boundary as TrustBoundaryArtifact;
 }
 
+function extractGeneratedImageArtifact(
+  artifacts: ArtifactPayload | undefined,
+): GeneratedImageArtifact | null {
+  if (!artifacts || Array.isArray(artifacts) || typeof artifacts !== 'object') return null;
+  const record = artifacts as Record<string, unknown>;
+  if (record.kind !== 'generatedImage') return null;
+  return record as unknown as GeneratedImageArtifact;
+}
+
 function verificationStatusLabel(
   status: VerificationOverallStatus,
   t: ReturnType<typeof useTranslation>['t'],
@@ -466,9 +487,10 @@ export function ToolCallCard({
   const fileDiff = useMemo(() => extractFileDiffArtifact(artifacts), [artifacts]);
   const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
+  const generatedImage = useMemo(() => extractGeneratedImageArtifact(artifacts), [artifacts]);
   const showPendingDiffStats = isPending && !diffStats && isDiffLikeTool(safeToolName);
-  const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact || fileDiff || diffStats);
-  const shouldAutoOpenStructuredTaskCard = Boolean(planArtifact || verificationArtifact);
+  const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact || fileDiff || diffStats || generatedImage);
+  const shouldAutoOpenStructuredTaskCard = Boolean(planArtifact || verificationArtifact || generatedImage);
 
   const isSearchDone =
     safeToolName.toLowerCase().includes('search') && status === 'done' && !!content;
@@ -856,7 +878,7 @@ export function ToolCallCard({
         <StatusIcon
           className={`h-3.5 w-3.5 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
         />
-        {(content || streamingArgsPreview || fileDiff || diffStats) ? (
+        {(content || streamingArgsPreview || fileDiff || diffStats || generatedImage) ? (
           expanded ? (
             <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
           ) : (
@@ -873,7 +895,7 @@ export function ToolCallCard({
 
       {/* Expandable result */}
       <AnimatePresence>
-        {expanded && (content || streamingArgsPreview || fileDiff || diffStats) && (
+        {expanded && (content || streamingArgsPreview || fileDiff || diffStats || generatedImage) && (
           <motion.div
             {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
@@ -891,7 +913,39 @@ export function ToolCallCard({
                   {formattedArgs}
                 </div>
               )}
-              {planArtifact ? (
+              {generatedImage ? (
+                <div className="space-y-2">
+                  <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
+                    <img
+                      src={generatedImage.dataUrl || (generatedImage.path ? convertFileSrc(generatedImage.path) : '')}
+                      alt={generatedImage.prompt || 'Generated image'}
+                      className="max-h-80 w-full object-contain"
+                    />
+                  </div>
+                  <div className="grid gap-1 text-[11px] text-text-tertiary">
+                    <div className="flex flex-wrap gap-1.5">
+                      {generatedImage.provider && (
+                        <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+                          {generatedImage.provider}
+                        </span>
+                      )}
+                      {generatedImage.model && (
+                        <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+                          {generatedImage.model}
+                        </span>
+                      )}
+                      {typeof generatedImage.bytes === 'number' && (
+                        <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+                          {formatByteCount(generatedImage.bytes)}
+                        </span>
+                      )}
+                    </div>
+                    {generatedImage.path && (
+                      <div className="break-all text-text-secondary">{generatedImage.path}</div>
+                    )}
+                  </div>
+                </div>
+              ) : planArtifact ? (
                 <PlanPanel plan={planArtifact} />
               ) : verificationArtifact ? (
                 <VerificationPanel verification={verificationArtifact} />
