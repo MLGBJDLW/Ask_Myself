@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.5.1...nexa-monorepo-v0.5.2) (2026-05-11)
+
+
+### Features
+
+* add structured Office previews ([833c5e4](https://github.com/MLGBJDLW/Nexa/commit/833c5e4b0119adf1df493ea14dac4c69dff5b650))
+* **agent:** advance task plans during execution ([9d5cf8a](https://github.com/MLGBJDLW/Nexa/commit/9d5cf8ad35a9cb2dfe39cc765eda7a43e1ed5386))
+* **chat:** improve attachments personas and previews ([1f95090](https://github.com/MLGBJDLW/Nexa/commit/1f9509022a33907001b1cfbc920f5c8e6ad878c0))
+* **office:** strengthen artifact skill guidance ([8591f73](https://github.com/MLGBJDLW/Nexa/commit/8591f7376a81e37f6f6bbe53572b6b33410d7474))
+* **tools:** add image generation adapter ([0cb9c52](https://github.com/MLGBJDLW/Nexa/commit/0cb9c5296662d05ce7360aeb375484eb824eabb3))
+
 ## [0.5.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.5.0...nexa-monorepo-v0.5.1) (2026-05-10)
 
 
