@@ -149,6 +149,7 @@ interface PersistedTraceToolCall {
   status: "running" | "done" | "error";
   renderKind?: ToolRenderKind;
   capabilities?: ToolRunCapabilities;
+  durationMs?: number;
   content?: string;
   isError?: boolean;
   artifacts?: ArtifactPayload;
@@ -295,6 +296,10 @@ function extractPersistedTraceItems(
           capabilities:
             toolCall.capabilities && typeof toolCall.capabilities === "object"
               ? (toolCall.capabilities as ToolRunCapabilities)
+              : undefined,
+          durationMs:
+            typeof toolCall.durationMs === "number"
+              ? toolCall.durationMs
               : undefined,
           content:
             typeof toolCall.content === "string" ? toolCall.content : undefined,
@@ -770,6 +775,8 @@ export function ChatMessages({
               arguments={item.toolCall.arguments}
               status={item.toolCall.status}
               renderKind={item.toolCall.renderKind}
+              capabilities={item.toolCall.capabilities}
+              durationMs={item.toolCall.durationMs}
               content={item.toolCall.content}
               isError={item.toolCall.isError}
               artifacts={item.toolCall.artifacts}
@@ -838,6 +845,8 @@ export function ChatMessages({
                       arguments={item.toolCall.arguments}
                       status={item.toolCall.status}
                       renderKind={item.toolCall.renderKind}
+                      capabilities={item.toolCall.capabilities}
+                      durationMs={item.toolCall.durationMs}
                       content={item.toolCall.content}
                       isError={item.toolCall.isError}
                       artifacts={item.toolCall.artifacts}
@@ -1000,6 +1009,8 @@ export function ChatMessages({
                 arguments={event.toolCall.arguments}
                 status={event.toolCall.status}
                 renderKind={event.toolCall.renderKind}
+                capabilities={event.toolCall.capabilities}
+                durationMs={event.toolCall.durationMs}
                 content={event.toolCall.content}
                 isError={event.toolCall.isError}
                 artifacts={event.toolCall.artifacts}
@@ -1056,6 +1067,8 @@ export function ChatMessages({
               arguments={tc.arguments}
               status={tc.status}
               renderKind={tc.renderKind}
+              capabilities={tc.capabilities}
+              durationMs={tc.durationMs}
               content={tc.content}
               isError={tc.isError}
               artifacts={tc.artifacts}

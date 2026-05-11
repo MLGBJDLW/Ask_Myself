@@ -35,7 +35,10 @@ use crate::llm::{
 };
 use crate::privacy;
 use crate::skills::Skill;
-use crate::tools::{ToolCategory, ToolRegistry, ToolRenderKind, ToolRunCapabilities};
+use crate::tools::{
+    ToolCategory, ToolInputStreamingMode, ToolInterruptBehavior, ToolRegistry, ToolRenderKind,
+    ToolRunCapabilities,
+};
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
 pub mod context;
@@ -290,6 +293,36 @@ fn build_tool_run_item(
         progress_note,
         duration_ms,
     }
+}
+
+fn tool_call_execution_batches(
+    tools: &ToolRegistry,
+    tool_policy: &ToolSchedulerPolicy,
+    tool_calls: &[ToolCallRequest],
+) -> Vec<Vec<usize>> {
+    let mut batches: Vec<Vec<usize>> = Vec::new();
+    let mut current_parallel_batch: Vec<usize> = Vec::new();
+
+    for (index, tool_call) in tool_calls.iter().enumerate() {
+        let scheduling = tool_policy.decision_for(tool_call);
+        let capabilities = tools.run_capabilities(&tool_call.name, &scheduling.parsed_args);
+        let can_share_batch = capabilities.concurrency_safe && !capabilities.destructive;
+        if can_share_batch {
+            current_parallel_batch.push(index);
+            continue;
+        }
+
+        if !current_parallel_batch.is_empty() {
+            batches.push(std::mem::take(&mut current_parallel_batch));
+        }
+        batches.push(vec![index]);
+    }
+
+    if !current_parallel_batch.is_empty() {
+        batches.push(current_parallel_batch);
+    }
+
+    batches
 }
 
 /// User input injected into an already-running agent turn.
@@ -1815,6 +1848,20 @@ impl AgentExecutor {
                             if let Some((tc_index, tc)) =
                                 resolve_delta_target(&tool_calls, tc_delta)
                             {
+                                let partial_args_value =
+                                    serde_json::from_str::<serde_json::Value>(&tc.arguments)
+                                        .unwrap_or(serde_json::Value::Null);
+                                let capabilities =
+                                    self.tools.run_capabilities(&tc.name, &partial_args_value);
+                                let preview_arguments = if matches!(
+                                    capabilities.input_streaming,
+                                    ToolInputStreamingMode::UiPreview
+                                        | ToolInputStreamingMode::ToolConsumesPartial
+                                ) {
+                                    Some(tc.arguments.as_str())
+                                } else {
+                                    None
+                                };
                                 if !tc.name.is_empty() && preparing_call_ids.insert(tc.id.clone()) {
                                     if tool_run_started_ids.insert(tc.id.clone()) {
                                         let _ = tx
@@ -1824,7 +1871,7 @@ impl AgentExecutor {
                                                     &tc.id,
                                                     &tc.name,
                                                     ToolRunStatus::Preparing,
-                                                    None,
+                                                    preview_arguments,
                                                     None,
                                                     None,
                                                     None,
@@ -1840,6 +1887,26 @@ impl AgentExecutor {
                                             tool_name: tc.name.clone(),
                                             args_bytes: tc.arguments.len() as u32,
                                             index: tc_index as u32,
+                                        })
+                                        .await;
+                                } else if !tc.name.is_empty()
+                                    && preview_arguments.is_some()
+                                    && !tc_delta.arguments_delta.is_empty()
+                                {
+                                    let _ = tx
+                                        .send(AgentEvent::ToolRunUpdated {
+                                            run: build_tool_run_item(
+                                                &self.tools,
+                                                &tc.id,
+                                                &tc.name,
+                                                ToolRunStatus::Preparing,
+                                                preview_arguments,
+                                                None,
+                                                None,
+                                                None,
+                                                None,
+                                                None,
+                                            ),
                                         })
                                         .await;
                                 }
@@ -2449,6 +2516,7 @@ impl AgentExecutor {
             enum ToolExecutionOutcome {
                 Result(crate::tools::ToolResult, ToolRunStatus),
                 ExecutionError(CoreError),
+                Cancelled,
                 Timeout,
             }
 
@@ -2468,22 +2536,30 @@ impl AgentExecutor {
                 artifacts: Option<serde_json::Value>,
             }
 
-            let mut tool_futures = FuturesUnordered::new();
-            for (index, tc) in tool_calls.iter().cloned().enumerate() {
-                let source_scope = &source_scope;
-                let tool_span = info_span!("tool_execution", tool = %tc.name);
-                let progress_tx = tx.clone();
-                let approval_tx = tx.clone();
-                let run_tx = tx.clone();
-                let progress_call_id = tc.id.clone();
-                let progress_tool_name = tc.name.clone();
-                let tool_policy = &tool_policy;
-                let loop_guard_block_reason = loop_guard_block_reason.clone();
-                tool_futures.push(
+            let tool_batches = tool_call_execution_batches(&self.tools, &tool_policy, &tool_calls);
+            let mut completed_for_context: Vec<Option<CompletedToolForContext>> =
+                vec![None; tool_calls.len()];
+            let mut post_tool_loop_guard_prompt: Option<String> = None;
+
+            for tool_batch in tool_batches {
+                let mut tool_futures = FuturesUnordered::new();
+                for index in tool_batch {
+                    let tc = tool_calls[index].clone();
+                    let source_scope = &source_scope;
+                    let tool_span = info_span!("tool_execution", tool = %tc.name);
+                    let progress_tx = tx.clone();
+                    let approval_tx = tx.clone();
+                    let run_tx = tx.clone();
+                    let progress_call_id = tc.id.clone();
+                    let progress_tool_name = tc.name.clone();
+                    let tool_policy = &tool_policy;
+                    let loop_guard_block_reason = loop_guard_block_reason.clone();
+                    tool_futures.push(
                     async move {
                         let scheduling = tool_policy.decision_for(&tc);
                         let parsed_args = scheduling.parsed_args;
                         let tool_timeout = scheduling.timeout;
+                        let capabilities = self.tools.run_capabilities(&tc.name, &parsed_args);
                         if let Some(reason) = loop_guard_block_reason.as_deref() {
                             let blocked = loop_guard_blocked_result(&tc, reason);
                             return FinishedToolExecution {
@@ -2675,31 +2751,45 @@ impl AgentExecutor {
                                 }
                             }
                         };
-                        let outcome = if let Some(timeout) = tool_timeout {
-                            match tokio::time::timeout(timeout, execute_tool).await {
-                                Ok(Ok(result)) => {
-                                    let status = if result.is_error {
-                                        ToolRunStatus::Failed
-                                    } else {
-                                        ToolRunStatus::Completed
-                                    };
-                                    ToolExecutionOutcome::Result(result, status)
+                        let execute_to_outcome = async {
+                            if let Some(timeout) = tool_timeout {
+                                match tokio::time::timeout(timeout, execute_tool).await {
+                                    Ok(Ok(result)) => {
+                                        let status = if result.is_error {
+                                            ToolRunStatus::Failed
+                                        } else {
+                                            ToolRunStatus::Completed
+                                        };
+                                        ToolExecutionOutcome::Result(result, status)
+                                    }
+                                    Ok(Err(err)) => ToolExecutionOutcome::ExecutionError(err),
+                                    Err(_) => ToolExecutionOutcome::Timeout,
                                 }
-                                Ok(Err(err)) => ToolExecutionOutcome::ExecutionError(err),
-                                Err(_) => ToolExecutionOutcome::Timeout,
+                            } else {
+                                match execute_tool.await {
+                                    Ok(result) => {
+                                        let status = if result.is_error {
+                                            ToolRunStatus::Failed
+                                        } else {
+                                            ToolRunStatus::Completed
+                                        };
+                                        ToolExecutionOutcome::Result(result, status)
+                                    }
+                                    Err(err) => ToolExecutionOutcome::ExecutionError(err),
+                                }
+                            }
+                        };
+                        let outcome = if matches!(
+                            capabilities.interrupt_behavior,
+                            ToolInterruptBehavior::Cancel
+                        ) {
+                            tokio::select! {
+                                biased;
+                                _ = self.cancel_token.cancelled() => ToolExecutionOutcome::Cancelled,
+                                outcome = execute_to_outcome => outcome,
                             }
                         } else {
-                            match execute_tool.await {
-                                Ok(result) => {
-                                    let status = if result.is_error {
-                                        ToolRunStatus::Failed
-                                    } else {
-                                        ToolRunStatus::Completed
-                                    };
-                                    ToolExecutionOutcome::Result(result, status)
-                                }
-                                Err(err) => ToolExecutionOutcome::ExecutionError(err),
-                            }
+                            execute_to_outcome.await
                         };
                         let tool_elapsed = tool_start.elapsed();
                         FinishedToolExecution {
@@ -2712,44 +2802,61 @@ impl AgentExecutor {
                     }
                     .instrument(tool_span),
                 );
-            }
+                }
 
-            let mut completed_for_context: Vec<Option<CompletedToolForContext>> =
-                vec![None; tool_calls.len()];
-            let mut post_tool_loop_guard_prompt: Option<String> = None;
-            while let Some(finished_tool) = tool_futures.next().await {
-                let tc = finished_tool.call;
-                let tool_elapsed = finished_tool.elapsed;
-                let (tool_msg, tool_artifacts, tool_is_error, run_status) = match finished_tool
-                    .outcome
-                {
-                    ToolExecutionOutcome::Result(result, status) => {
-                        (result.content, result.artifacts, result.is_error, status)
-                    }
-                    ToolExecutionOutcome::ExecutionError(e) => {
-                        let structured = crate::tools::structured_tool_error_result(
-                            &tc.id,
-                            "tool_execution_failed",
-                            format!("{} failed: {e}", tc.name),
-                            serde_json::json!({
-                                "tool": &tc.name,
-                                "arguments": "must match this tool's JSON schema exactly",
-                                "recovery": "inspect the error, adjust only the invalid fields, and retry if the request still needs this tool"
-                            }),
-                            true,
-                        );
-                        let err_content = structured.content.clone();
-                        (
-                            err_content,
-                            structured.artifacts,
-                            true,
-                            ToolRunStatus::Failed,
-                        )
-                    }
-                    ToolExecutionOutcome::Timeout => {
-                        let timeout_secs = finished_tool.timeout.map(|d| d.as_secs()).unwrap_or(0);
-                        warn!("Tool '{}' timed out after {}s", tc.name, timeout_secs);
-                        let structured = crate::tools::structured_tool_error_result(
+                while let Some(finished_tool) = tool_futures.next().await {
+                    let tc = finished_tool.call;
+                    let tool_elapsed = finished_tool.elapsed;
+                    let (tool_msg, tool_artifacts, tool_is_error, run_status) = match finished_tool
+                        .outcome
+                    {
+                        ToolExecutionOutcome::Result(result, status) => {
+                            (result.content, result.artifacts, result.is_error, status)
+                        }
+                        ToolExecutionOutcome::ExecutionError(e) => {
+                            let structured = crate::tools::structured_tool_error_result(
+                                &tc.id,
+                                "tool_execution_failed",
+                                format!("{} failed: {e}", tc.name),
+                                serde_json::json!({
+                                    "tool": &tc.name,
+                                    "arguments": "must match this tool's JSON schema exactly",
+                                    "recovery": "inspect the error, adjust only the invalid fields, and retry if the request still needs this tool"
+                                }),
+                                true,
+                            );
+                            let err_content = structured.content.clone();
+                            (
+                                err_content,
+                                structured.artifacts,
+                                true,
+                                ToolRunStatus::Failed,
+                            )
+                        }
+                        ToolExecutionOutcome::Cancelled => {
+                            let structured = crate::tools::structured_tool_error_result(
+                                &tc.id,
+                                "tool_cancelled",
+                                format!("tool '{}' was cancelled by user request.", tc.name),
+                                serde_json::json!({
+                                    "tool": &tc.name,
+                                    "recovery": "stop using this tool for the interrupted request unless the user asks to resume"
+                                }),
+                                false,
+                            );
+                            let err_content = structured.content.clone();
+                            (
+                                err_content,
+                                structured.artifacts,
+                                true,
+                                ToolRunStatus::Cancelled,
+                            )
+                        }
+                        ToolExecutionOutcome::Timeout => {
+                            let timeout_secs =
+                                finished_tool.timeout.map(|d| d.as_secs()).unwrap_or(0);
+                            warn!("Tool '{}' timed out after {}s", tc.name, timeout_secs);
+                            let structured = crate::tools::structured_tool_error_result(
                             &tc.id,
                             "tool_timeout",
                             format!(
@@ -2764,121 +2871,122 @@ impl AgentExecutor {
                             }),
                             true,
                         );
-                        let err_content = structured.content.clone();
-                        (
-                            err_content,
-                            structured.artifacts,
-                            true,
-                            ToolRunStatus::TimedOut,
-                        )
-                    }
-                };
-
-                let _ = tx
-                    .send(AgentEvent::ToolCallResult {
-                        call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        content: tool_msg.clone(),
-                        is_error: tool_is_error,
-                        artifacts: tool_artifacts.clone(),
-                    })
-                    .await;
-                let _ = tx
-                    .send(AgentEvent::ToolRunCompleted {
-                        run: build_tool_run_item(
-                            &self.tools,
-                            &tc.id,
-                            &tc.name,
-                            run_status,
-                            Some(&tc.arguments),
-                            Some(tool_msg.clone()),
-                            Some(tool_is_error),
-                            tool_artifacts.clone(),
-                            None,
-                            Some(tool_elapsed.as_millis() as u64),
-                        ),
-                    })
-                    .await;
-
-                // Redact tool output before adding to context.
-                let content = if privacy_cfg.enabled {
-                    privacy::redact_content(&tool_msg, &privacy_cfg.redact_patterns)
-                } else {
-                    tool_msg
-                };
-
-                append_persisted_trace_tool(
-                    &mut persisted_trace_items,
-                    &self.tools,
-                    &tc.name,
-                    &tc.arguments,
-                    &tc.id,
-                    if tool_is_error { "error" } else { "done" },
-                    Some(content.clone()),
-                    Some(tool_is_error),
-                    tool_artifacts.clone(),
-                );
-                let finished = TurnLoopEvent::ToolFinished {
-                    iteration,
-                    call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    duration_ms: tool_elapsed.as_millis() as u64,
-                    is_error: tool_is_error,
-                };
-                loop_recorder.record(finished.clone());
-                append_persisted_trace_loop_event(&mut persisted_trace_items, finished);
-                if let Some(intervention) = loop_guard.observe_tool_result(tool_is_error) {
-                    let event = TurnLoopEvent::LoopGuardIntervention {
-                        reason: intervention.reason.clone(),
-                        action: intervention.action.as_str().to_string(),
+                            let err_content = structured.content.clone();
+                            (
+                                err_content,
+                                structured.artifacts,
+                                true,
+                                ToolRunStatus::TimedOut,
+                            )
+                        }
                     };
-                    loop_recorder.record(event.clone());
-                    append_persisted_trace_loop_event(&mut persisted_trace_items, event);
-                    append_persisted_trace_status(
-                        &mut persisted_trace_items,
-                        &intervention.reason,
-                        "warning",
-                    );
+
                     let _ = tx
-                        .send(AgentEvent::Status {
-                            content: intervention.reason.clone(),
-                            tone: Some("warning".to_string()),
+                        .send(AgentEvent::ToolCallResult {
+                            call_id: tc.id.clone(),
+                            tool_name: tc.name.clone(),
+                            content: tool_msg.clone(),
+                            is_error: tool_is_error,
+                            artifacts: tool_artifacts.clone(),
                         })
                         .await;
-                    post_tool_loop_guard_prompt.get_or_insert(intervention.prompt);
-                }
-                if advance_task_plan_for_tool_result(&mut task_plan, &tc.name, tool_is_error) {
-                    emit_task_plan_update(
-                        &tx,
-                        &task_plan,
-                        if tool_is_error {
-                            "recovering"
-                        } else {
-                            "tooling"
-                        },
-                        if tool_is_error {
-                            "Tool failed; execution plan marked for recovery"
-                        } else {
-                            "Execution plan advanced after tool result"
-                        },
-                    )
-                    .await;
-                }
-                if let Some(tid) = turn_id {
-                    let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
-                    let _ = db.update_conversation_turn_progress(
-                        tid,
-                        Some(&format!("{:?}", route_plan.kind)),
-                        Some(&trace),
-                    );
-                }
+                    let _ = tx
+                        .send(AgentEvent::ToolRunCompleted {
+                            run: build_tool_run_item(
+                                &self.tools,
+                                &tc.id,
+                                &tc.name,
+                                run_status,
+                                Some(&tc.arguments),
+                                Some(tool_msg.clone()),
+                                Some(tool_is_error),
+                                tool_artifacts.clone(),
+                                None,
+                                Some(tool_elapsed.as_millis() as u64),
+                            ),
+                        })
+                        .await;
 
-                completed_for_context[finished_tool.index] = Some(CompletedToolForContext {
-                    call: tc,
-                    content,
-                    duration_ms: tool_elapsed.as_millis() as u64,
-                    artifacts: tool_artifacts,
-                });
+                    // Redact tool output before adding to context.
+                    let content = if privacy_cfg.enabled {
+                        privacy::redact_content(&tool_msg, &privacy_cfg.redact_patterns)
+                    } else {
+                        tool_msg
+                    };
+
+                    append_persisted_trace_tool(
+                        &mut persisted_trace_items,
+                        &self.tools,
+                        &tc.name,
+                        &tc.arguments,
+                        &tc.id,
+                        if tool_is_error { "error" } else { "done" },
+                        Some(content.clone()),
+                        Some(tool_is_error),
+                        tool_artifacts.clone(),
+                    );
+                    let finished = TurnLoopEvent::ToolFinished {
+                        iteration,
+                        call_id: tc.id.clone(),
+                        tool_name: tc.name.clone(),
+                        duration_ms: tool_elapsed.as_millis() as u64,
+                        is_error: tool_is_error,
+                    };
+                    loop_recorder.record(finished.clone());
+                    append_persisted_trace_loop_event(&mut persisted_trace_items, finished);
+                    if let Some(intervention) = loop_guard.observe_tool_result(tool_is_error) {
+                        let event = TurnLoopEvent::LoopGuardIntervention {
+                            reason: intervention.reason.clone(),
+                            action: intervention.action.as_str().to_string(),
+                        };
+                        loop_recorder.record(event.clone());
+                        append_persisted_trace_loop_event(&mut persisted_trace_items, event);
+                        append_persisted_trace_status(
+                            &mut persisted_trace_items,
+                            &intervention.reason,
+                            "warning",
+                        );
+                        let _ = tx
+                            .send(AgentEvent::Status {
+                                content: intervention.reason.clone(),
+                                tone: Some("warning".to_string()),
+                            })
+                            .await;
+                        post_tool_loop_guard_prompt.get_or_insert(intervention.prompt);
+                    }
+                    if advance_task_plan_for_tool_result(&mut task_plan, &tc.name, tool_is_error) {
+                        emit_task_plan_update(
+                            &tx,
+                            &task_plan,
+                            if tool_is_error {
+                                "recovering"
+                            } else {
+                                "tooling"
+                            },
+                            if tool_is_error {
+                                "Tool failed; execution plan marked for recovery"
+                            } else {
+                                "Execution plan advanced after tool result"
+                            },
+                        )
+                        .await;
+                    }
+                    if let Some(tid) = turn_id {
+                        let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                        let _ = db.update_conversation_turn_progress(
+                            tid,
+                            Some(&format!("{:?}", route_plan.kind)),
+                            Some(&trace),
+                        );
+                    }
+
+                    completed_for_context[finished_tool.index] = Some(CompletedToolForContext {
+                        call: tc,
+                        content,
+                        duration_ms: tool_elapsed.as_millis() as u64,
+                        artifacts: tool_artifacts,
+                    });
+                }
             }
 
             for completed in completed_for_context.into_iter().flatten() {
@@ -4481,6 +4589,53 @@ mod tests {
         }
     }
 
+    struct ScriptedProvider {
+        stream_calls: Arc<AtomicUsize>,
+        first_chunks: Vec<StreamChunk>,
+        final_answer: &'static str,
+    }
+
+    #[async_trait]
+    impl LlmProvider for ScriptedProvider {
+        fn name(&self) -> &str {
+            "scripted-mock"
+        }
+
+        async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+            Ok(vec!["mock-model".to_string()])
+        }
+
+        async fn complete(
+            &self,
+            _request: &CompletionRequest,
+        ) -> Result<CompletionResponse, CoreError> {
+            Err(CoreError::Llm("not implemented".to_string()))
+        }
+
+        async fn stream(
+            &self,
+            _request: &CompletionRequest,
+        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+            let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            let chunks = if call_no == 0 {
+                self.first_chunks.clone()
+            } else {
+                vec![StreamChunk {
+                    delta: self.final_answer.to_string(),
+                    tool_call_delta: None,
+                    finish_reason: Some(crate::llm::FinishReason::Stop),
+                    usage: None,
+                    thinking_delta: None,
+                }]
+            };
+            Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))))
+        }
+
+        async fn health_check(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
     struct DelayTool {
         name: &'static str,
         delay_ms: u64,
@@ -4503,6 +4658,53 @@ mod tests {
                     "value": { "type": "string" }
                 }
             })
+        }
+
+        async fn execute(
+            &self,
+            call_id: &str,
+            _arguments: &str,
+            _db: &Database,
+            _source_scope: &[String],
+        ) -> Result<ToolResult, CoreError> {
+            if self.delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            }
+            Ok(ToolResult {
+                call_id: call_id.to_string(),
+                content: format!("{}-ok", self.name),
+                is_error: false,
+                artifacts: None,
+            })
+        }
+    }
+
+    struct SerialDelayTool {
+        name: &'static str,
+        delay_ms: u64,
+    }
+
+    #[async_trait]
+    impl Tool for SerialDelayTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn description(&self) -> &str {
+            "Serial delay tool"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "value": { "type": "string" }
+                }
+            })
+        }
+
+        fn is_concurrency_safe(&self, _args: &serde_json::Value) -> bool {
+            false
         }
 
         async fn execute(
@@ -4714,6 +4916,300 @@ mod tests {
 
         let final_msg = run.await.expect("run should succeed");
         assert_eq!(final_msg.text_content(), "parallel final answer");
+    }
+
+    #[tokio::test]
+    async fn test_non_concurrency_safe_tool_creates_execution_barrier() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(SerialDelayTool {
+            name: "serial_tool",
+            delay_ms: 300,
+        }));
+        registry.register(Box::new(DelayTool {
+            name: "fast_tool",
+            delay_ms: 0,
+        }));
+
+        let stream_calls = Arc::new(AtomicUsize::new(0));
+        let provider = ScriptedProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            final_answer: "serial final answer",
+            first_chunks: vec![
+                StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: Some(ToolCallDelta {
+                        id: "serial_call".to_string(),
+                        name: Some("serial_tool".to_string()),
+                        arguments_delta: r#"{"value":"slow"}"#.to_string(),
+                        index: Some(0),
+                        thought_signature: None,
+                    }),
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: None,
+                },
+                StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: Some(ToolCallDelta {
+                        id: "fast_call".to_string(),
+                        name: Some("fast_tool".to_string()),
+                        arguments_delta: r#"{"value":"fast"}"#.to_string(),
+                        index: Some(1),
+                        thought_signature: None,
+                    }),
+                    finish_reason: Some(crate::llm::FinishReason::Stop),
+                    usage: None,
+                    thinking_delta: None,
+                },
+            ],
+        };
+        let executor = AgentExecutor::new(
+            Box::new(provider),
+            registry,
+            AgentConfig {
+                model: Some("mock-model".to_string()),
+                ..AgentConfig::default()
+            },
+        );
+
+        let db = Database::open_memory().expect("in-memory db");
+        let (tx, mut rx) = mpsc::channel(64);
+        let run = executor.run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "run serial then fast".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        );
+        tokio::pin!(run);
+
+        let first_result = tokio::time::timeout(Duration::from_millis(700), async {
+            loop {
+                tokio::select! {
+                    maybe_event = rx.recv() => {
+                        match maybe_event {
+                            Some(AgentEvent::ToolCallResult { call_id, content, .. }) => {
+                                break (call_id, content);
+                            }
+                            Some(_) => {}
+                            None => panic!("event stream closed before a tool result"),
+                        }
+                    }
+                    result = &mut run => {
+                        panic!("agent run completed before streaming a tool result: {result:?}");
+                    }
+                }
+            }
+        })
+        .await
+        .expect("serial tool should finish within the test timeout");
+
+        assert_eq!(first_result.0, "serial_call");
+        assert_eq!(first_result.1, "serial_tool-ok");
+
+        let final_msg = run.await.expect("run should succeed");
+        assert_eq!(final_msg.text_content(), "serial final answer");
+    }
+
+    #[tokio::test]
+    async fn test_cancellable_tool_run_completes_as_cancelled() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(DelayTool {
+            name: "slow_tool",
+            delay_ms: 2_000,
+        }));
+
+        let stream_calls = Arc::new(AtomicUsize::new(0));
+        let provider = ScriptedProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            final_answer: "should not need final answer",
+            first_chunks: vec![StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "slow_call".to_string(),
+                    name: Some("slow_tool".to_string()),
+                    arguments_delta: r#"{"value":"slow"}"#.to_string(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(crate::llm::FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }],
+        };
+        let cancel_token = CancellationToken::new();
+        let executor = AgentExecutor::new(
+            Box::new(provider),
+            registry,
+            AgentConfig {
+                model: Some("mock-model".to_string()),
+                ..AgentConfig::default()
+            },
+        )
+        .with_cancel_token(cancel_token.clone());
+
+        let db = Database::open_memory().expect("in-memory db");
+        let (tx, mut rx) = mpsc::channel(64);
+        let run = executor.run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "run cancellable tool".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        );
+        tokio::pin!(run);
+
+        let mut run_completed = false;
+        let mut saw_cancelled_run = false;
+        tokio::time::timeout(Duration::from_millis(700), async {
+            loop {
+                tokio::select! {
+                    maybe_event = rx.recv() => {
+                        match maybe_event {
+                            Some(AgentEvent::ToolCallStart { call_id, .. }) if call_id == "slow_call" => {
+                                cancel_token.cancel();
+                            }
+                            Some(AgentEvent::ToolRunCompleted { run }) if run.call_id == "slow_call" => {
+                                assert_eq!(run.status, ToolRunStatus::Cancelled);
+                                saw_cancelled_run = true;
+                                break;
+                            }
+                            Some(_) => {}
+                            None => panic!("event stream closed before cancellation completion"),
+                        }
+                    }
+                    result = &mut run => {
+                        let final_msg = result.expect("cancelled run should finalize gracefully");
+                        assert!(final_msg.text_content().contains("cancelled"));
+                        run_completed = true;
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("cancellable tool should report cancelled promptly");
+
+        while !saw_cancelled_run {
+            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+                Ok(Some(AgentEvent::ToolRunCompleted { run })) if run.call_id == "slow_call" => {
+                    assert_eq!(run.status, ToolRunStatus::Cancelled);
+                    saw_cancelled_run = true;
+                }
+                Ok(Some(_)) => {}
+                _ => break,
+            }
+        }
+        assert!(saw_cancelled_run);
+
+        if !run_completed {
+            let final_msg = run.await.expect("cancelled run should finalize gracefully");
+            assert!(final_msg.text_content().contains("cancelled"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ui_preview_tool_streams_preparing_arguments_without_legacy_delta() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(DelayTool {
+            name: "generate_image",
+            delay_ms: 0,
+        }));
+
+        let stream_calls = Arc::new(AtomicUsize::new(0));
+        let provider = ScriptedProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            final_answer: "preview final answer",
+            first_chunks: vec![
+                StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: Some(ToolCallDelta {
+                        id: "preview_call".to_string(),
+                        name: Some("generate_image".to_string()),
+                        arguments_delta: r#"{"prompt":"hel"#.to_string(),
+                        index: Some(0),
+                        thought_signature: None,
+                    }),
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: None,
+                },
+                StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: Some(ToolCallDelta {
+                        id: "preview_call".to_string(),
+                        name: Some("generate_image".to_string()),
+                        arguments_delta: r#"lo"}"#.to_string(),
+                        index: Some(0),
+                        thought_signature: None,
+                    }),
+                    finish_reason: Some(crate::llm::FinishReason::Stop),
+                    usage: None,
+                    thinking_delta: None,
+                },
+            ],
+        };
+        let executor = AgentExecutor::new(
+            Box::new(provider),
+            registry,
+            AgentConfig {
+                model: Some("mock-model".to_string()),
+                ..AgentConfig::default()
+            },
+        );
+
+        let db = Database::open_memory().expect("in-memory db");
+        let (tx, mut rx) = mpsc::channel(64);
+        let final_msg = executor
+            .run(
+                vec![],
+                vec![ContentPart::Text {
+                    text: "preview image tool".to_string(),
+                }],
+                &db,
+                None,
+                None,
+                tx,
+                0,
+            )
+            .await
+            .expect("run should succeed");
+        assert_eq!(final_msg.text_content(), "preview final answer");
+
+        let mut saw_preview_args = false;
+        let mut saw_legacy_delta = false;
+        while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
+            match event {
+                Some(AgentEvent::ToolRunStarted { run })
+                | Some(AgentEvent::ToolRunUpdated { run })
+                    if run.call_id == "preview_call" && run.status == ToolRunStatus::Preparing =>
+                {
+                    if run
+                        .arguments
+                        .as_deref()
+                        .is_some_and(|arguments| arguments.contains("hel"))
+                    {
+                        saw_preview_args = true;
+                    }
+                }
+                Some(AgentEvent::ToolCallArgsDelta { .. }) => {
+                    saw_legacy_delta = true;
+                }
+                Some(AgentEvent::Done { .. }) | None => break,
+                Some(_) => {}
+            }
+        }
+
+        assert!(saw_preview_args);
+        assert!(!saw_legacy_delta);
     }
 
     #[tokio::test]

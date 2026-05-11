@@ -31,7 +31,7 @@ import {
   parseSubagentArguments,
 } from '../../lib/subagentArtifacts';
 import { PlanPanel, VerificationPanel } from './TaskPanels';
-import type { ArtifactPayload, ToolRenderKind } from '../../types/conversation';
+import type { ArtifactPayload, ToolRenderKind, ToolRunCapabilities } from '../../types/conversation';
 import type { VerificationOverallStatus } from '../../lib/taskArtifacts';
 import { SubagentCard } from './SubagentCard';
 import {
@@ -90,6 +90,8 @@ interface ToolCallCardProps {
   arguments?: string;
   status: ToolCallCardStatus;
   renderKind?: ToolRenderKind;
+  capabilities?: ToolRunCapabilities;
+  durationMs?: number;
   content?: string;
   isError?: boolean;
   artifacts?: ArtifactPayload;
@@ -110,6 +112,16 @@ function formatByteCount(bytes: number): string {
   const kb = bytes / 1024;
   if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
   return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+function formatDurationMs(durationMs: number | undefined): string {
+  if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0) return '';
+  if (durationMs < 1000) return `${Math.round(durationMs)} ms`;
+  const seconds = durationMs / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)} s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60);
+  return `${minutes}m ${remainingSeconds}s`;
 }
 
 function AnimatedCount({
@@ -467,6 +479,8 @@ export function ToolCallCard({
   arguments: args,
   status,
   renderKind,
+  capabilities,
+  durationMs,
   content,
   isError,
   artifacts,
@@ -493,8 +507,16 @@ export function ToolCallCard({
   const argsByteLabel = formatByteCount(
     typeof argsBytes === 'number' ? argsBytes : (args ? args.length : 0),
   );
+  const durationLabel = formatDurationMs(durationMs);
   const latestProgressNote =
     progressNotes && progressNotes.length > 0 ? progressNotes[progressNotes.length - 1] : null;
+  const capabilitySummary = capabilities
+    ? [
+        capabilities.readOnly ? 'read-only' : 'writes',
+        capabilities.concurrencySafe ? 'parallel' : 'serial',
+        capabilities.interruptBehavior === 'cancel' ? 'cancellable' : 'blocking',
+      ].join(' · ')
+    : null;
   const streamingArgsPreview =
     isPending && (argsStatus === 'streaming' || status === 'starting' || status === 'approvalPending') && args
       ? args.length > 500 ? args.slice(0, 500) + '\u2026' : args
@@ -582,6 +604,8 @@ export function ToolCallCard({
   const headerSummary =
     isPending && argsByteLabel
       ? `${baseHeaderSummary} · ${argsByteLabel}`
+      : !isPending && durationLabel
+        ? `${baseHeaderSummary} · ${durationLabel}`
       : baseHeaderSummary;
 
   const StatusIcon = statusConfig.icon;
@@ -609,6 +633,7 @@ export function ToolCallCard({
           onClick={() => canExpand && setExpanded((prev) => !prev)}
           className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-surface-0/45 cursor-pointer disabled:cursor-default"
           disabled={!canExpand}
+          title={capabilitySummary ?? undefined}
         >
           <Icon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
           <span className="min-w-0 flex-1">

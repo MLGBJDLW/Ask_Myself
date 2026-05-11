@@ -199,6 +199,19 @@ fn infer_render_kind(name: &str) -> ToolRenderKind {
     }
 }
 
+fn infer_input_streaming(name: &str) -> ToolInputStreamingMode {
+    match name {
+        "generate_image"
+        | "run_shell"
+        | "search_knowledge_base"
+        | "search_files"
+        | "spawn_subagent"
+        | "spawn_subagent_batch"
+        | "tool_search" => ToolInputStreamingMode::UiPreview,
+        _ => ToolInputStreamingMode::None,
+    }
+}
+
 /// Trust metadata attached to tool artifacts that may be injected into model
 /// context or shown in the UI. Retrieved content is normally evidence, not
 /// instruction.
@@ -410,7 +423,7 @@ pub trait Tool: Send + Sync {
     /// complete. Default is no streaming; tools can opt into UI preview or true
     /// partial-input consumption once their implementation supports it.
     fn input_streaming(&self) -> ToolInputStreamingMode {
-        ToolInputStreamingMode::None
+        infer_input_streaming(self.name())
     }
 
     /// Whether this invocation is read-only after parsing its arguments.
@@ -420,23 +433,28 @@ pub trait Tool: Send + Sync {
 
     /// Whether multiple invocations of this tool can safely run concurrently.
     fn is_concurrency_safe(&self, _args: &serde_json::Value) -> bool {
-        true
+        !self.requires_confirmation(_args)
     }
 
     /// What should happen if the user interrupts while this tool is running.
     fn interrupt_behavior(&self) -> ToolInterruptBehavior {
-        ToolInterruptBehavior::Block
+        ToolInterruptBehavior::Cancel
     }
 
     /// Canonical capability descriptor used by the ToolRun lifecycle.
     fn run_capabilities(&self, args: &serde_json::Value) -> ToolRunCapabilities {
+        let destructive = self.requires_confirmation(args);
         ToolRunCapabilities {
             input_streaming: self.input_streaming(),
             render_kind: self.render_kind(),
             read_only: self.is_read_only(args),
-            destructive: self.requires_confirmation(args),
+            destructive,
             concurrency_safe: self.is_concurrency_safe(args),
-            interrupt_behavior: self.interrupt_behavior(),
+            interrupt_behavior: if destructive {
+                ToolInterruptBehavior::Block
+            } else {
+                self.interrupt_behavior()
+            },
         }
     }
 
