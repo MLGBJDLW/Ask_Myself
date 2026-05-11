@@ -128,6 +128,77 @@ pub struct ToolResult {
     pub artifacts: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolRenderKind {
+    Generic,
+    CommandExecution,
+    FileChange,
+    Search,
+    Subagent,
+    Image,
+    Plan,
+    Verification,
+    Mcp,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolInputStreamingMode {
+    None,
+    UiPreview,
+    ToolConsumesPartial,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolInterruptBehavior {
+    Block,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRunCapabilities {
+    pub input_streaming: ToolInputStreamingMode,
+    pub render_kind: ToolRenderKind,
+    pub read_only: bool,
+    pub destructive: bool,
+    pub concurrency_safe: bool,
+    pub interrupt_behavior: ToolInterruptBehavior,
+}
+
+pub struct ToolExecutionContext<'a> {
+    pub call_id: &'a str,
+    pub arguments: &'a str,
+    pub db: &'a Database,
+    pub source_scope: &'a [String],
+    pub conversation_id: Option<&'a str>,
+    pub cancel_token: Option<&'a tokio_util::sync::CancellationToken>,
+}
+
+fn infer_render_kind(name: &str) -> ToolRenderKind {
+    match name {
+        "run_shell" => ToolRenderKind::CommandExecution,
+        "edit_file" | "multi_edit" | "create_file" | "write_note" => ToolRenderKind::FileChange,
+        "search_knowledge_base"
+        | "search_files"
+        | "search_playbooks"
+        | "glob_files"
+        | "list_dir"
+        | "list_documents"
+        | "list_sources"
+        | "session_search"
+        | "tool_search" => ToolRenderKind::Search,
+        "spawn_subagent" | "spawn_subagent_batch" => ToolRenderKind::Subagent,
+        "generate_image" => ToolRenderKind::Image,
+        "update_plan" => ToolRenderKind::Plan,
+        "record_verification" => ToolRenderKind::Verification,
+        name if name.starts_with("mcp__") => ToolRenderKind::Mcp,
+        _ => ToolRenderKind::Generic,
+    }
+}
+
 /// Trust metadata attached to tool artifacts that may be injected into model
 /// context or shown in the UI. Retrieved content is normally evidence, not
 /// instruction.
@@ -330,6 +401,45 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// Preferred frontend renderer family for this tool.
+    fn render_kind(&self) -> ToolRenderKind {
+        infer_render_kind(self.name())
+    }
+
+    /// Whether this tool can safely receive arguments before the final JSON is
+    /// complete. Default is no streaming; tools can opt into UI preview or true
+    /// partial-input consumption once their implementation supports it.
+    fn input_streaming(&self) -> ToolInputStreamingMode {
+        ToolInputStreamingMode::None
+    }
+
+    /// Whether this invocation is read-only after parsing its arguments.
+    fn is_read_only(&self, args: &serde_json::Value) -> bool {
+        !self.requires_confirmation(args)
+    }
+
+    /// Whether multiple invocations of this tool can safely run concurrently.
+    fn is_concurrency_safe(&self, _args: &serde_json::Value) -> bool {
+        true
+    }
+
+    /// What should happen if the user interrupts while this tool is running.
+    fn interrupt_behavior(&self) -> ToolInterruptBehavior {
+        ToolInterruptBehavior::Block
+    }
+
+    /// Canonical capability descriptor used by the ToolRun lifecycle.
+    fn run_capabilities(&self, args: &serde_json::Value) -> ToolRunCapabilities {
+        ToolRunCapabilities {
+            input_streaming: self.input_streaming(),
+            render_kind: self.render_kind(),
+            read_only: self.is_read_only(args),
+            destructive: self.requires_confirmation(args),
+            concurrency_safe: self.is_concurrency_safe(args),
+            interrupt_behavior: self.interrupt_behavior(),
+        }
+    }
+
     /// Execute the tool with the given JSON-encoded arguments.
     ///
     /// `source_scope` restricts results to the given source IDs when non-empty
@@ -356,6 +466,25 @@ pub trait Tool: Send + Sync {
         _conversation_id: Option<&str>,
     ) -> Result<ToolResult, CoreError> {
         self.execute(call_id, arguments, db, source_scope).await
+    }
+
+    /// Deep execution interface used by the agent runtime.
+    ///
+    /// The default bridges to the legacy argument list, while newer tools can
+    /// use cancellation and other execution context without widening every call
+    /// site again.
+    async fn execute_with_run_context(
+        &self,
+        ctx: ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        self.execute_with_context(
+            ctx.call_id,
+            ctx.arguments,
+            ctx.db,
+            ctx.source_scope,
+            ctx.conversation_id,
+        )
+        .await
     }
 }
 
@@ -444,6 +573,19 @@ impl ToolRegistry {
     /// Get the confirmation message for a tool with the given arguments.
     pub fn confirmation_message(&self, name: &str, args: &serde_json::Value) -> Option<String> {
         self.get(name).and_then(|t| t.confirmation_message(args))
+    }
+
+    pub fn run_capabilities(&self, name: &str, args: &serde_json::Value) -> ToolRunCapabilities {
+        self.get(name)
+            .map(|tool| tool.run_capabilities(args))
+            .unwrap_or(ToolRunCapabilities {
+                input_streaming: ToolInputStreamingMode::None,
+                render_kind: infer_render_kind(name),
+                read_only: false,
+                destructive: false,
+                concurrency_safe: true,
+                interrupt_behavior: ToolInterruptBehavior::Block,
+            })
     }
 
     /// Return definitions for tools whose categories overlap with `active`.
@@ -746,6 +888,18 @@ impl ToolRegistry {
             .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
         tool.execute_with_context(call_id, arguments, db, source_scope, conversation_id)
             .await
+    }
+
+    pub async fn execute_with_run_context(
+        &self,
+        name: &str,
+        ctx: ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        enforce_tool_arg_limit(name, ctx.arguments)?;
+        let tool = self
+            .get(name)
+            .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
+        tool.execute_with_run_context(ctx).await
     }
 }
 

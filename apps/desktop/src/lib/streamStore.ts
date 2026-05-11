@@ -4,7 +4,15 @@
  */
 
 import type { AgentFrontendEvent, ApprovalRequest } from '../types';
-import type { AgentTaskRun, AgentTaskRunEvent, ArtifactPayload } from '../types/conversation';
+import type {
+  AgentTaskRun,
+  AgentTaskRunEvent,
+  ArtifactPayload,
+  ToolRenderKind,
+  ToolRunCapabilities,
+  ToolRunItem,
+  ToolRunStatus,
+} from '../types/conversation';
 
 /* ── Exported types ─────────────────────────────────────────────── */
 
@@ -12,9 +20,20 @@ export interface ToolCallEvent {
   callId: string;
   toolName: string;
   arguments: string;
-  status: 'starting' | 'running' | 'done' | 'error';
-  /** Assembly progress of `arguments` during mid-stream streaming. */
-  argsStatus: 'streaming' | 'ready' | 'done' | 'error';
+  status:
+    | 'preparing'
+    | 'starting'
+    | 'approvalPending'
+    | 'running'
+    | 'done'
+    | 'error'
+    | 'declined'
+    | 'cancelled'
+    | 'timedOut';
+  renderKind?: ToolRenderKind;
+  capabilities?: ToolRunCapabilities;
+  /** Assembly progress of `arguments` before execution. */
+  argsStatus: 'pending' | 'streaming' | 'ready' | 'done' | 'error';
   /** Number of characters received for `arguments` so far. */
   argsBytes: number;
   /** Latest up to 10 heartbeat notes accumulated during tool execution. */
@@ -22,9 +41,11 @@ export interface ToolCallEvent {
   content?: string;
   isError?: boolean;
   artifacts?: ArtifactPayload;
+  durationMs?: number;
 }
 
 const PROGRESS_NOTES_MAX = 10;
+const TOOL_PREPARING_DELAY_MS = 150;
 
 function createToolCall(partial: {
   callId: string;
@@ -32,6 +53,8 @@ function createToolCall(partial: {
   arguments?: string;
   status?: ToolCallEvent['status'];
   argsStatus?: ToolCallEvent['argsStatus'];
+  renderKind?: ToolRenderKind;
+  capabilities?: ToolRunCapabilities;
 }): ToolCallEvent {
   const argumentsText = partial.arguments ?? '';
   return {
@@ -39,7 +62,9 @@ function createToolCall(partial: {
     toolName: partial.toolName,
     arguments: argumentsText,
     status: partial.status ?? 'starting',
-    argsStatus: partial.argsStatus ?? 'streaming',
+    renderKind: partial.renderKind,
+    capabilities: partial.capabilities,
+    argsStatus: partial.argsStatus ?? 'ready',
     argsBytes: argumentsText.length,
     progressNotes: [],
   };
@@ -119,6 +144,7 @@ interface InternalStreamState extends StreamState {
   _activeRoundId: string | null;
   _activeRoundAcceptingStarts: boolean;
   _timeoutId: ReturnType<typeof setTimeout> | null;
+  _toolPreparingTimers: Record<string, ReturnType<typeof setTimeout>>;
 }
 
 /* ── Constants ──────────────────────────────────────────────────── */
@@ -150,10 +176,14 @@ function normalizeAgentEventType(value: unknown): AgentEventType | null {
     case 'thinking': return 'thinking';
     case 'textDelta': return 'textDelta';
     case 'streamReset': return 'streamReset';
+    case 'toolCallPreparing': return 'toolCallPreparing';
     case 'toolCallStart': return 'toolCallStart';
     case 'toolCallArgsDelta': return 'toolCallArgsDelta';
     case 'toolCallProgress': return 'toolCallProgress';
     case 'toolCallResult': return 'toolCallResult';
+    case 'toolRunStarted': return 'toolRunStarted';
+    case 'toolRunUpdated': return 'toolRunUpdated';
+    case 'toolRunCompleted': return 'toolRunCompleted';
     case 'status': return 'status';
     case 'done': return 'done';
     case 'error': return 'error';
@@ -184,7 +214,69 @@ function finalizeToolCall(
 }
 
 function isPendingStatus(status: ToolCallEvent['status']): boolean {
-  return status === 'running' || status === 'starting';
+  return status === 'running'
+    || status === 'starting'
+    || status === 'preparing'
+    || status === 'approvalPending';
+}
+
+function toolRunStatusToToolCallStatus(status: ToolRunStatus): ToolCallEvent['status'] {
+  switch (status) {
+    case 'preparing':
+      return 'preparing';
+    case 'approvalPending':
+      return 'approvalPending';
+    case 'running':
+      return 'running';
+    case 'completed':
+      return 'done';
+    case 'failed':
+      return 'error';
+    case 'declined':
+      return 'declined';
+    case 'cancelled':
+      return 'cancelled';
+    case 'timedOut':
+      return 'timedOut';
+    default:
+      return 'running';
+  }
+}
+
+function argsStatusForToolRun(run: ToolRunItem, status: ToolCallEvent['status']): ToolCallEvent['argsStatus'] {
+  if (status === 'preparing') return run.arguments ? 'streaming' : 'pending';
+  if (status === 'error' || status === 'timedOut') return 'error';
+  if (status === 'done' || status === 'declined' || status === 'cancelled') return 'done';
+  return run.arguments ? 'ready' : 'pending';
+}
+
+function appendProgressNote(notes: string[], note: string | undefined): string[] {
+  const trimmed = (note ?? '').trim();
+  if (!trimmed) return notes;
+  const next = notes.length >= PROGRESS_NOTES_MAX
+    ? [...notes.slice(-(PROGRESS_NOTES_MAX - 1)), trimmed]
+    : [...notes, trimmed];
+  return next;
+}
+
+function patchToolCallFromRun(prev: ToolCallEvent, run: ToolRunItem): ToolCallEvent {
+  const status = toolRunStatusToToolCallStatus(run.status);
+  const argumentsText = run.arguments ?? prev.arguments;
+  return {
+    ...prev,
+    toolName: run.toolName || prev.toolName,
+    arguments: argumentsText,
+    status,
+    renderKind: run.renderKind ?? prev.renderKind,
+    capabilities: run.capabilities ?? prev.capabilities,
+    argsStatus: argsStatusForToolRun(run, status),
+    argsBytes: Math.max(prev.argsBytes, argumentsText.length),
+    progressNotes: appendProgressNote(prev.progressNotes, run.progressNote),
+    content: run.content ?? prev.content,
+    isError: run.isError ?? prev.isError,
+    artifacts: run.artifacts ?? prev.artifacts,
+    durationMs: run.durationMs ?? prev.durationMs,
+  };
 }
 
 function resolveToolCallResult(
@@ -265,6 +357,7 @@ function createDefaultState(): InternalStreamState {
     _activeRoundId: null,
     _activeRoundAcceptingStarts: false,
     _timeoutId: null,
+    _toolPreparingTimers: {},
   };
 }
 
@@ -372,6 +465,125 @@ function syncTraceToolEvents(state: InternalStreamState): void {
   });
 }
 
+function clearToolPreparingTimer(state: InternalStreamState, callId: string): void {
+  const timer = state._toolPreparingTimers[callId];
+  if (!timer) return;
+  clearTimeout(timer);
+  delete state._toolPreparingTimers[callId];
+}
+
+function clearToolPreparingTimers(state: InternalStreamState): void {
+  Object.values(state._toolPreparingTimers).forEach(timer => clearTimeout(timer));
+  state._toolPreparingTimers = {};
+}
+
+function insertPendingToolCall(
+  state: InternalStreamState,
+  toolCall: ToolCallEvent,
+  roundThinking: string,
+): void {
+  if (state.streamText.trim().length > 0) {
+    const roundId = `stream-round-${Date.now()}-${state._roundSeq++}`;
+    state._activeRoundId = roundId;
+    state._activeRoundAcceptingStarts = true;
+    state.streamRounds = [...state.streamRounds, {
+      id: roundId,
+      thinking: roundThinking || undefined,
+      reply: state.streamText,
+      toolCalls: [toolCall],
+    }];
+    state.streamText = '';
+  } else if (state._activeRoundId && state._activeRoundAcceptingStarts) {
+    const mergeRoundId = state._activeRoundId;
+    const targetRound = state.streamRounds.find(r => r.id === mergeRoundId);
+    if (targetRound) {
+      state.streamRounds = state.streamRounds.map(round =>
+        round.id === mergeRoundId
+          ? {
+              ...round,
+              thinking: roundThinking ? ((round.thinking || '') + roundThinking) : round.thinking,
+              toolCalls: [...round.toolCalls, toolCall],
+            }
+          : round,
+      );
+    } else {
+      const roundId = `stream-round-${Date.now()}-${state._roundSeq++}`;
+      state._activeRoundId = roundId;
+      state._activeRoundAcceptingStarts = true;
+      state.streamRounds = [...state.streamRounds, {
+        id: roundId,
+        thinking: roundThinking || undefined,
+        reply: '',
+        toolCalls: [toolCall],
+      }];
+    }
+  } else {
+    const roundId = `stream-round-${Date.now()}-${state._roundSeq++}`;
+    state._activeRoundId = roundId;
+    state._activeRoundAcceptingStarts = true;
+    state.streamRounds = [...state.streamRounds, {
+      id: roundId,
+      thinking: roundThinking || undefined,
+      reply: '',
+      toolCalls: [toolCall],
+    }];
+  }
+
+  state.toolCalls = [...state.toolCalls, toolCall];
+  upsertToolTraceEvent(state, toolCall);
+}
+
+function applyToolRunEvent(state: InternalStreamState, run: ToolRunItem): void {
+  const callId = (run.callId || '').trim();
+  if (!callId) return;
+  const toolName = (run.toolName || '').trim() || 'unknown_tool';
+
+  const existingIdx = state.toolCalls.findIndex(tc => tc.callId === callId);
+  if (existingIdx < 0) {
+    const roundThinking = state.thinkingText.trim() ? state.thinkingText : '';
+    if (roundThinking) state.thinkingText = '';
+    state.isThinking = false;
+
+    const status = toolRunStatusToToolCallStatus(run.status);
+    const base = createToolCall({
+      callId,
+      toolName,
+      arguments: run.arguments ?? '',
+      status,
+      argsStatus: argsStatusForToolRun(run, status),
+      renderKind: run.renderKind,
+      capabilities: run.capabilities,
+    });
+    const nextCall = patchToolCallFromRun(base, run);
+    insertPendingToolCall(state, nextCall, roundThinking);
+    if (!isPendingStatus(nextCall.status)) {
+      state._activeRoundAcceptingStarts = false;
+    }
+    return;
+  }
+
+  state.toolCalls = state.toolCalls.map(tc => {
+    if (tc.callId !== callId) return tc;
+    return patchToolCallFromRun(tc, run);
+  });
+
+  state.streamRounds = state.streamRounds.map(round => {
+    const idx = round.toolCalls.findIndex(tc => tc.callId === callId);
+    if (idx < 0) return round;
+    const nextCalls = [...round.toolCalls];
+    nextCalls[idx] = patchToolCallFromRun(nextCalls[idx], run);
+    return { ...round, toolCalls: nextCalls };
+  });
+
+  const latest = state.toolCalls.find(tc => tc.callId === callId);
+  if (latest) {
+    upsertToolTraceEvent(state, latest);
+    if (!isPendingStatus(latest.status)) {
+      state._activeRoundAcceptingStarts = false;
+    }
+  }
+}
+
 /* ── Store implementation ───────────────────────────────────────── */
 
 type StoreListener = (conversationId: string) => void;
@@ -445,7 +657,10 @@ class StreamStoreImpl {
   /** Initialize (or reset) stream state for a conversation. */
   startStream(conversationId: string): void {
     const existing = this._streams[conversationId];
-    if (existing?._timeoutId) clearTimeout(existing._timeoutId);
+    if (existing) {
+      if (existing._timeoutId) clearTimeout(existing._timeoutId);
+      clearToolPreparingTimers(existing);
+    }
 
     const state = createDefaultState();
     state.isStreaming = true;
@@ -459,6 +674,7 @@ class StreamStoreImpl {
     const existing = this._streams[conversationId];
     if (!existing) return;
     if (existing._timeoutId) clearTimeout(existing._timeoutId);
+    clearToolPreparingTimers(existing);
     delete this._streams[conversationId];
     this.notify(conversationId);
   }
@@ -473,6 +689,7 @@ class StreamStoreImpl {
     s.thinkingText = '';
     s.isThinking = false;
     s.toolCalls = [];
+    clearToolPreparingTimers(s);
     s._activeRoundId = null;
     s._activeRoundAcceptingStarts = false;
     this.notify(conversationId);
@@ -483,6 +700,7 @@ class StreamStoreImpl {
     const s = this._streams[conversationId];
     if (!s) return;
     if (s._timeoutId) clearTimeout(s._timeoutId);
+    clearToolPreparingTimers(s);
     s.isThinking = false;
     s.thinkingText = '';
     s.toolCalls = markToolCallsFinished(s.toolCalls, 'error', 'Stopped by user');
@@ -501,6 +719,7 @@ class StreamStoreImpl {
     const s = this._streams[conversationId];
     if (!s) return;
     if (s._timeoutId) clearTimeout(s._timeoutId);
+    clearToolPreparingTimers(s);
     s.isThinking = false;
     s.thinkingText = '';
     s.toolCalls = markToolCallsFinished(s.toolCalls, 'error', 'Request failed');
@@ -522,6 +741,7 @@ class StreamStoreImpl {
     s._timeoutId = setTimeout(() => {
       const state = this._streams[conversationId];
       if (!state) return;
+      clearToolPreparingTimers(state);
       state.toolCalls = markToolCallsFinished(state.toolCalls, 'error', 'Connection lost');
       state.streamRounds = markRoundsToolCallsFinished(state.streamRounds, 'error', 'Connection lost');
       syncTraceToolEvents(state);
@@ -535,6 +755,39 @@ class StreamStoreImpl {
       state._timeoutId = null;
       this.notify(conversationId);
     }, STREAM_TIMEOUT_MS);
+  }
+
+  private scheduleToolPreparing(
+    conversationId: string,
+    callId: string,
+    toolName: string,
+    argsBytes: number,
+  ): void {
+    const s = this._streams[conversationId];
+    if (!s || s.toolCalls.some(tc => tc.callId === callId) || s._toolPreparingTimers[callId]) {
+      return;
+    }
+
+    s._toolPreparingTimers[callId] = setTimeout(() => {
+      const state = this._streams[conversationId];
+      if (!state) return;
+      delete state._toolPreparingTimers[callId];
+      if (!state.isStreaming || state.toolCalls.some(tc => tc.callId === callId)) return;
+
+      const roundThinking = state.thinkingText.trim() ? state.thinkingText : '';
+      if (roundThinking) state.thinkingText = '';
+      state.isThinking = false;
+
+      const preparingCall = createToolCall({
+        callId,
+        toolName,
+        status: 'preparing',
+        argsStatus: 'pending',
+      });
+      preparingCall.argsBytes = Math.max(0, argsBytes);
+      insertPendingToolCall(state, preparingCall, roundThinking);
+      this.scheduleNotify(conversationId);
+    }, TOOL_PREPARING_DELAY_MS);
   }
 
   /** Process an incoming agent event. */
@@ -595,11 +848,66 @@ class StreamStoreImpl {
         s.thinkingText = '';
         s.isThinking = false;
         s.toolCalls = [];
+        clearToolPreparingTimers(s);
         s.traceEvents = s.traceEvents.filter(trace => trace.kind === 'status');
         s.error = null;
         s._activeRoundId = null;
         s._activeRoundAcceptingStarts = false;
         appendStatusTraceEvent(s, reason, 'muted');
+        break;
+      }
+
+      case 'toolCallPreparing': {
+        try {
+          const callId = (
+            (typeof event.callId === 'string' && event.callId)
+            || (typeof raw.call_id === 'string' ? raw.call_id : '')
+          ).trim();
+          if (!callId) break;
+          const toolNameRaw = (typeof event.toolName === 'string' && event.toolName)
+            || (typeof raw.tool_name === 'string' ? raw.tool_name : '');
+          const toolName = toolNameRaw.trim() ? toolNameRaw : 'unknown_tool';
+          const argsBytesRaw = event.argsBytes ?? raw.args_bytes ?? raw.argsBytes ?? 0;
+          const argsBytes = typeof argsBytesRaw === 'number'
+            ? argsBytesRaw
+            : Number.parseInt(String(argsBytesRaw), 10);
+          this.scheduleToolPreparing(
+            conversationId,
+            callId,
+            toolName,
+            Number.isFinite(argsBytes) ? argsBytes : 0,
+          );
+        } catch (err) {
+          console.error('[streamStore] toolCallPreparing error:', err);
+        }
+        break;
+      }
+
+      case 'toolRunStarted':
+      case 'toolRunUpdated':
+      case 'toolRunCompleted': {
+        try {
+          const runRaw = event.run ?? raw.run;
+          if (!runRaw || typeof runRaw !== 'object') break;
+          const run = runRaw as ToolRunItem;
+          const callId = (run.callId || '').trim();
+          if (!callId) break;
+
+          if (run.status === 'preparing') {
+            this.scheduleToolPreparing(
+              conversationId,
+              callId,
+              (run.toolName || '').trim() || 'unknown_tool',
+              typeof run.arguments === 'string' ? run.arguments.length : 0,
+            );
+            break;
+          }
+
+          clearToolPreparingTimer(s, callId);
+          applyToolRunEvent(s, run);
+        } catch (err) {
+          console.error('[streamStore] toolRun event error:', err);
+        }
         break;
       }
 
@@ -616,6 +924,7 @@ class StreamStoreImpl {
           || (typeof raw.call_id === 'string' ? raw.call_id : '')
         ).trim();
         const callId = incomingCallId || `tool-call-${Date.now()}-${s._toolCallSeq++}`;
+        if (incomingCallId) clearToolPreparingTimer(s, incomingCallId);
         const toolNameRaw = (typeof event.toolName === 'string' && event.toolName)
           || (typeof raw.tool_name === 'string' ? raw.tool_name : '');
         const toolName = toolNameRaw.trim() ? toolNameRaw : 'unknown_tool';
@@ -629,7 +938,7 @@ class StreamStoreImpl {
           toolName,
           arguments: argumentsText,
           status: 'starting',
-          argsStatus: 'streaming',
+          argsStatus: 'ready',
         });
 
         // If there's accumulated text, start a new round with it
@@ -662,7 +971,8 @@ class StreamStoreImpl {
                   toolName,
                   arguments: mergedArgs,
                   argsBytes: Math.max(prev.argsBytes, mergedArgs.length),
-                  status: isPendingStatus(prev.status) ? prev.status : 'starting',
+                  status: prev.status === 'preparing' ? 'starting' : prev.status,
+                  argsStatus: isPendingStatus(prev.status) ? 'ready' : prev.argsStatus,
                 };
                 return { ...round, thinking: mergedThinking, toolCalls: nextToolCalls };
               }
@@ -704,7 +1014,8 @@ class StreamStoreImpl {
             toolName,
             arguments: mergedArgs,
             argsBytes: Math.max(prev.argsBytes, mergedArgs.length),
-            status: isPendingStatus(prev.status) ? prev.status : 'starting',
+            status: prev.status === 'preparing' ? 'starting' : prev.status,
+            argsStatus: isPendingStatus(prev.status) ? 'ready' : prev.argsStatus,
           };
           upsertToolTraceEvent(s, s.toolCalls[existing]);
         } else {
@@ -719,6 +1030,7 @@ class StreamStoreImpl {
             callId: fallbackCallId,
             toolName: 'unknown_tool',
             status: 'starting',
+            argsStatus: 'ready',
           });
           const roundId = `stream-round-${Date.now()}-${s._roundSeq++}`;
           s._activeRoundId = roundId;
@@ -747,10 +1059,6 @@ class StreamStoreImpl {
             ?? '';
           const delta = typeof deltaRaw === 'string' ? deltaRaw : String(deltaRaw ?? '');
           if (!delta) break;
-          const toolNameRaw = (typeof event.toolName === 'string' && event.toolName)
-            || (typeof raw.tool_name === 'string' ? raw.tool_name : '')
-            || 'unknown_tool';
-
           const patchCall = (tc: ToolCallEvent): ToolCallEvent => {
             const nextArgs = tc.arguments + delta;
             return {
@@ -769,34 +1077,9 @@ class StreamStoreImpl {
           });
 
           if (!foundInFlat) {
-            // Defensive: args delta arrived before toolCallStart. Create a stub.
-            const stub = createToolCall({
-              callId,
-              toolName: toolNameRaw,
-              arguments: delta,
-              status: 'starting',
-              argsStatus: 'streaming',
-            });
-            s.toolCalls = [...s.toolCalls, stub];
-
-            // Also place it on the active round (or a new one).
-            const mergeRoundId = s._activeRoundId;
-            const targetRound = mergeRoundId ? s.streamRounds.find(r => r.id === mergeRoundId) : null;
-            if (targetRound && s._activeRoundAcceptingStarts) {
-              s.streamRounds = s.streamRounds.map(round =>
-                round.id === mergeRoundId
-                  ? { ...round, toolCalls: [...round.toolCalls, stub] }
-                  : round,
-              );
-            } else {
-              const roundId = `stream-round-${Date.now()}-${s._roundSeq++}`;
-              s._activeRoundId = roundId;
-              s._activeRoundAcceptingStarts = true;
-              s.streamRounds = [...s.streamRounds, {
-                id: roundId, reply: '', toolCalls: [stub],
-              }];
-            }
-            upsertToolTraceEvent(s, stub);
+            // Legacy partial-argument deltas are only accepted after a stable
+            // tool row exists. Avoid creating UI cards from incomplete JSON.
+            break;
           } else {
             s.streamRounds = s.streamRounds.map(round => {
               const idx = round.toolCalls.findIndex(tc => tc.callId === callId);
@@ -832,9 +1115,13 @@ class StreamStoreImpl {
               ? [...tc.progressNotes.slice(-(PROGRESS_NOTES_MAX - 1)), note]
               : [...tc.progressNotes, note];
             const nextStatus: ToolCallEvent['status'] =
-              tc.status === 'starting' ? 'running' : tc.status;
+              tc.status === 'starting' || tc.status === 'preparing' || tc.status === 'approvalPending'
+                ? 'running'
+                : tc.status;
             const nextArgsStatus: ToolCallEvent['argsStatus'] =
-              tc.argsStatus === 'streaming' ? 'ready' : tc.argsStatus;
+              tc.argsStatus === 'streaming' || tc.argsStatus === 'pending'
+                ? 'ready'
+                : tc.argsStatus;
             return { ...tc, progressNotes: nextNotes, status: nextStatus, argsStatus: nextArgsStatus };
           };
 
@@ -865,6 +1152,7 @@ class StreamStoreImpl {
         try {
         const resultCallId = (typeof event.callId === 'string' && event.callId)
           || (typeof raw.call_id === 'string' ? raw.call_id : '') || '';
+        if (resultCallId) clearToolPreparingTimer(s, resultCallId);
         const resultIsError = (typeof event.isError === 'boolean' ? event.isError : undefined)
           ?? (typeof raw.is_error === 'boolean' ? raw.is_error : undefined);
         const resultContent = (typeof event.content === 'string' ? event.content : undefined)
@@ -920,6 +1208,7 @@ class StreamStoreImpl {
 
       case 'done': {
         if (s._timeoutId) clearTimeout(s._timeoutId);
+        clearToolPreparingTimers(s);
 
         // Capture final round
         const finalThinking = s.thinkingText;
@@ -1012,6 +1301,7 @@ class StreamStoreImpl {
 
       case 'error': {
         if (s._timeoutId) clearTimeout(s._timeoutId);
+        clearToolPreparingTimers(s);
         s.isThinking = false;
         s.thinkingText = '';
         s.toolCalls = markToolCallsFinished(s.toolCalls, 'error', 'Interrupted');

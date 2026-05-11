@@ -1715,6 +1715,10 @@ async fn run_subagent_once(
                 | AgentEvent::StreamReset { .. }
                 | AgentEvent::Error { .. }
                 | AgentEvent::AutoCompacted { .. }
+                | AgentEvent::ToolRunStarted { .. }
+                | AgentEvent::ToolRunUpdated { .. }
+                | AgentEvent::ToolRunCompleted { .. }
+                | AgentEvent::ToolCallPreparing { .. }
                 | AgentEvent::ToolCallArgsDelta { .. }
                 | AgentEvent::ToolCallProgress { .. }
                 | AgentEvent::ApprovalRequested { .. }

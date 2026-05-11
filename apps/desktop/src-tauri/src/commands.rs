@@ -589,6 +589,10 @@ fn record_task_progress_for_agent_event(
         }
         AgentEvent::TextDelta { .. }
         | AgentEvent::Thinking { .. }
+        | AgentEvent::ToolRunStarted { .. }
+        | AgentEvent::ToolRunUpdated { .. }
+        | AgentEvent::ToolRunCompleted { .. }
+        | AgentEvent::ToolCallPreparing { .. }
         | AgentEvent::ToolCallArgsDelta { .. }
         | AgentEvent::UsageUpdate { .. } => {}
     }

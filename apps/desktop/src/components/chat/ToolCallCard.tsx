@@ -31,7 +31,7 @@ import {
   parseSubagentArguments,
 } from '../../lib/subagentArtifacts';
 import { PlanPanel, VerificationPanel } from './TaskPanels';
-import type { ArtifactPayload } from '../../types/conversation';
+import type { ArtifactPayload, ToolRenderKind } from '../../types/conversation';
 import type { VerificationOverallStatus } from '../../lib/taskArtifacts';
 import { SubagentCard } from './SubagentCard';
 import {
@@ -40,6 +40,7 @@ import {
   extractFileDiffArtifact,
   type DiffStatsArtifact,
 } from './FileDiffPreview';
+import { isFileChangeToolRender } from './toolRenderers';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -73,18 +74,30 @@ interface GeneratedImageArtifact {
   bytes?: number;
 }
 
+type ToolCallCardStatus =
+  | 'preparing'
+  | 'starting'
+  | 'approvalPending'
+  | 'running'
+  | 'done'
+  | 'error'
+  | 'declined'
+  | 'cancelled'
+  | 'timedOut';
+
 interface ToolCallCardProps {
   toolName?: string;
   arguments?: string;
-  status: 'starting' | 'running' | 'done' | 'error';
+  status: ToolCallCardStatus;
+  renderKind?: ToolRenderKind;
   content?: string;
   isError?: boolean;
   artifacts?: ArtifactPayload;
   compact?: boolean;
   inline?: boolean;
   trace?: boolean;
-  /** Assembly progress of `arguments` during mid-stream streaming. */
-  argsStatus?: 'streaming' | 'ready' | 'done' | 'error';
+  /** Assembly progress of `arguments` before execution. */
+  argsStatus?: 'pending' | 'streaming' | 'ready' | 'done' | 'error';
   /** Total characters of `arguments` received so far. */
   argsBytes?: number;
   /** Accumulated heartbeat notes during tool execution. */
@@ -97,15 +110,6 @@ function formatByteCount(bytes: number): string {
   const kb = bytes / 1024;
   if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
   return `${(kb / 1024).toFixed(1)} MB`;
-}
-
-function isDiffLikeTool(name?: string): boolean {
-  const lower = (name || '').toLowerCase();
-  return lower.includes('edit_file')
-    || lower.includes('create_file')
-    || lower.includes('multi_edit')
-    || lower.includes('write_note')
-    || lower.includes('apply_patch');
 }
 
 function AnimatedCount({
@@ -299,8 +303,14 @@ function getToolBriefLabel(name: string, args?: string): string {
 }
 
 function getToolBriefResult(status: string, content?: string, toolName?: string): string {
-  if (status === 'running' || status === 'starting') return '\u2026';
-  if (status === 'error') return 'error';
+  if (
+    status === 'running'
+    || status === 'starting'
+    || status === 'preparing'
+    || status === 'approvalPending'
+  ) return '\u2026';
+  if (status === 'error' || status === 'timedOut') return 'error';
+  if (status === 'declined' || status === 'cancelled') return status;
   const lower = (toolName || '').toLowerCase();
   if (lower.includes('search') && content) {
     const match = content.match(/Found (\d+) result/i);
@@ -352,7 +362,7 @@ function verificationStatusLabel(
 function buildSubagentRun(
   toolName: string,
   args: string | undefined,
-  status: 'starting' | 'running' | 'done' | 'error',
+  status: ToolCallCardStatus,
   content: string | undefined,
   isError: boolean | undefined,
   artifacts: ArtifactPayload | undefined,
@@ -362,7 +372,15 @@ function buildSubagentRun(
   const parsedArgs = parseSubagentArguments(args);
   const task = artifact?.task ?? parsedArgs?.task;
   if (!task) return null;
-  const runStatus: 'running' | 'done' | 'error' = status === 'starting' ? 'running' : status;
+  const runStatus: 'running' | 'done' | 'error' =
+    status === 'starting'
+    || status === 'preparing'
+    || status === 'approvalPending'
+    || status === 'running'
+      ? 'running'
+      : status === 'done'
+        ? 'done'
+        : 'error';
   return {
     id: `${toolName}-${task}`,
     status: runStatus,
@@ -448,6 +466,7 @@ export function ToolCallCard({
   toolName,
   arguments: args,
   status,
+  renderKind,
   content,
   isError,
   artifacts,
@@ -466,14 +485,18 @@ export function ToolCallCard({
       : 'unknown_tool';
   const Icon = getToolIcon(safeToolName);
   const formattedArgs = formatArgs(args);
-  const isPending = status === 'running' || status === 'starting';
+  const isPending =
+    status === 'running'
+    || status === 'starting'
+    || status === 'preparing'
+    || status === 'approvalPending';
   const argsByteLabel = formatByteCount(
     typeof argsBytes === 'number' ? argsBytes : (args ? args.length : 0),
   );
   const latestProgressNote =
     progressNotes && progressNotes.length > 0 ? progressNotes[progressNotes.length - 1] : null;
   const streamingArgsPreview =
-    isPending && (argsStatus === 'streaming' || status === 'starting') && args
+    isPending && (argsStatus === 'streaming' || status === 'starting' || status === 'approvalPending') && args
       ? args.length > 500 ? args.slice(0, 500) + '\u2026' : args
       : null;
   const subagentRun = useMemo(
@@ -488,7 +511,7 @@ export function ToolCallCard({
   const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
   const generatedImage = useMemo(() => extractGeneratedImageArtifact(artifacts), [artifacts]);
-  const showPendingDiffStats = isPending && !diffStats && isDiffLikeTool(safeToolName);
+  const showPendingDiffStats = isPending && !diffStats && isFileChangeToolRender(safeToolName, renderKind);
   const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact || fileDiff || diffStats || generatedImage);
   const shouldAutoOpenStructuredTaskCard = Boolean(planArtifact || verificationArtifact || generatedImage);
 
@@ -528,10 +551,15 @@ export function ToolCallCard({
   }
 
   const statusConfig = {
+    preparing: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },
     starting: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },
+    approvalPending: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },
     running: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },
     done: { icon: CheckCircle2, text: t('chat.toolDone'), color: 'text-success', spin: false },
     error: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
+    declined: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
+    cancelled: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
+    timedOut: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
   }[status];
   const baseHeaderSummary = planArtifact
     ? t('chat.planStepsCompleted', {
