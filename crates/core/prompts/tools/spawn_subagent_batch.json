@@ -13,6 +13,10 @@
           "type": "object",
           "properties": {
             "id": { "type": "string" },
+            "task_id": {
+              "type": "string",
+              "description": "Optional reusable subagent session id. Reuse a task_id returned by an earlier worker to continue that worker's prior context within the current supervisor turn."
+            },
             "task": { "type": "string" },
             "role_id": {
               "type": "string",

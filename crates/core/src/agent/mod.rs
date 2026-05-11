@@ -39,14 +39,22 @@ use crate::tools::{ToolCategory, ToolRegistry};
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
 pub mod context;
+pub mod context_pipeline;
+pub mod loop_guard;
+pub mod route;
 pub mod scratchpad;
+pub mod tool_scheduler;
+pub mod turn_events;
+
+use self::context_pipeline::ContextPipeline;
+use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
+use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
+use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
+use self::turn_events::{TurnLoopEvent, TurnLoopRecorder};
 
 // Re-export so consumers don't need to depend on tokio-util directly.
 pub use tokio_util::sync::CancellationToken;
 
-/// Maximum characters to keep in a tool result for LLM context.
-/// ~4K tokens ≈ 16K chars for English text.
-const MAX_TOOL_RESULT_CONTEXT_CHARS: usize = 4_800;
 const MAX_CONTEXT_RECOVERY_ATTEMPTS: u32 = 2;
 const MISSING_REASONING_CONTENT_PLACEHOLDER: &str =
     "[reasoning content unavailable in local history]";
@@ -77,222 +85,8 @@ fn is_context_overflow_error(err: &CoreError) -> bool {
     }
 }
 
-fn summarize_lines(text: &str, head_lines: usize, tail_lines: usize, max_chars: usize) -> String {
-    if text.len() <= max_chars {
-        return text.to_string();
-    }
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= head_lines + tail_lines + 3 {
-        return truncate_tool_result(text, max_chars);
-    }
-    let omitted = lines.len().saturating_sub(head_lines + tail_lines);
-    let mut compact: Vec<String> = lines
-        .iter()
-        .take(head_lines)
-        .map(|line| (*line).to_string())
-        .collect();
-    compact.push(format!("[... {} lines omitted ...]", omitted));
-    compact.extend(
-        lines
-            .iter()
-            .skip(lines.len().saturating_sub(tail_lines))
-            .map(|line| (*line).to_string()),
-    );
-    let rendered = compact.join("\n");
-    if rendered.len() <= max_chars {
-        rendered
-    } else {
-        truncate_tool_result(&rendered, max_chars)
-    }
-}
-
 fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
-    match tool_name {
-        "run_shell" | "read_file" | "fetch_url" => summarize_lines(
-            &truncate_tool_result(content, MAX_TOOL_RESULT_CONTEXT_CHARS),
-            40,
-            25,
-            MAX_TOOL_RESULT_CONTEXT_CHARS,
-        ),
-        "list_dir" | "list_documents" | "list_sources" => {
-            summarize_lines(content, 60, 10, MAX_TOOL_RESULT_CONTEXT_CHARS)
-        }
-        "search_knowledge_base" => truncate_tool_result(content, 3_500),
-        "retrieve_evidence" | "search_playbooks" => truncate_tool_result(content, 6_000),
-        _ => truncate_tool_result(content, MAX_TOOL_RESULT_CONTEXT_CHARS),
-    }
-}
-
-/// Truncate tool result content to fit within a character budget.
-///
-/// Uses intelligent compression strategies before falling back to hard
-/// truncation:
-///   1. JSON arrays  — truncate long string values, then drop tail items.
-///   2. Section-based text (--- / ===) — keep first & last sections fully,
-///      truncate middle sections.
-///   3. Fallback — keep beginning + end with a gap note.
-fn truncate_tool_result(content: &str, max_chars: usize) -> String {
-    if content.len() <= max_chars {
-        return content.to_string();
-    }
-
-    // Try intelligent compression first.
-    if let Some(compressed) = try_smart_compress(content, max_chars) {
-        if compressed.len() <= max_chars {
-            return compressed;
-        }
-    }
-
-    // Fallback: keep beginning + end (char-boundary–safe).
-    let keep_each = max_chars / 2 - 100; // 100 chars reserved for separator
-    let mut start_cut = keep_each;
-    while !content.is_char_boundary(start_cut) {
-        start_cut -= 1;
-    }
-    // Try to land on a line break for readability.
-    if let Some(nl) = content[..start_cut].rfind('\n') {
-        start_cut = nl;
-    }
-
-    let mut end_start = content.len() - keep_each;
-    while !content.is_char_boundary(end_start) {
-        end_start += 1;
-    }
-    if let Some(nl) = content[end_start..].find('\n') {
-        end_start += nl + 1;
-    }
-
-    format!(
-        "{}\n\n[... {} chars omitted ...]\n\n{}",
-        &content[..start_cut],
-        content.len() - start_cut - (content.len() - end_start),
-        &content[end_start..]
-    )
-}
-
-// ---------------------------------------------------------------------------
-// Smart compression helpers
-// ---------------------------------------------------------------------------
-
-/// Attempt to compress the result using structure-aware strategies.
-fn try_smart_compress(result: &str, max_chars: usize) -> Option<String> {
-    let trimmed = result.trim();
-
-    // JSON array → compress entries.
-    if trimmed.starts_with('[') {
-        return compress_json_array(trimmed, max_chars);
-    }
-
-    // Section-delimited text → compress middle sections.
-    if trimmed.contains("---") || trimmed.contains("===") {
-        return compress_sections(trimmed);
-    }
-
-    None
-}
-
-/// Compress a JSON array by truncating long string values inside each item,
-/// then dropping trailing items if the total still exceeds the budget.
-fn compress_json_array(json_str: &str, max_chars: usize) -> Option<String> {
-    let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
-    let arr = parsed.as_array()?;
-    let total = arr.len();
-    let mut compressed: Vec<serde_json::Value> = Vec::with_capacity(total);
-
-    for (i, item) in arr.iter().enumerate() {
-        let item_json = serde_json::to_string(item).ok()?;
-        if item_json.len() > 500 {
-            compressed.push(truncate_json_values(item, 500));
-        } else {
-            compressed.push(item.clone());
-        }
-
-        // Check cumulative size periodically (every item for small arrays,
-        // every 5th item for larger ones).
-        if total < 20 || (i + 1) % 5 == 0 || i == total - 1 {
-            let current_len: usize = compressed
-                .iter()
-                .filter_map(|v| serde_json::to_string(v).ok())
-                .map(|s| s.len())
-                .sum();
-            if current_len > max_chars.saturating_sub(200) {
-                let remaining = total - i - 1;
-                let out =
-                    serde_json::to_string_pretty(&serde_json::Value::Array(compressed)).ok()?;
-                return Some(format!("{}\n[... {} more items omitted]", out, remaining));
-            }
-        }
-    }
-
-    serde_json::to_string_pretty(&serde_json::Value::Array(compressed)).ok()
-}
-
-/// Recursively truncate string values inside a JSON value.
-fn truncate_json_values(value: &serde_json::Value, max_str_len: usize) -> serde_json::Value {
-    match value {
-        serde_json::Value::String(s) => {
-            if s.len() > max_str_len {
-                // Find a char-boundary–safe cut point.
-                let mut cut = max_str_len;
-                while !s.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                serde_json::Value::String(format!("{}...[truncated]", &s[..cut]))
-            } else {
-                value.clone()
-            }
-        }
-        serde_json::Value::Object(map) => {
-            let new_map: serde_json::Map<String, serde_json::Value> = map
-                .iter()
-                .map(|(k, v)| (k.clone(), truncate_json_values(v, max_str_len)))
-                .collect();
-            serde_json::Value::Object(new_map)
-        }
-        serde_json::Value::Array(arr) => serde_json::Value::Array(
-            arr.iter()
-                .map(|v| truncate_json_values(v, max_str_len))
-                .collect(),
-        ),
-        _ => value.clone(),
-    }
-}
-
-/// Compress section-delimited text by keeping first & last sections fully and
-/// truncating middle sections to 300 chars each.
-fn compress_sections(text: &str) -> Option<String> {
-    let separator = if text.contains("---") { "---" } else { "===" };
-    let sections: Vec<&str> = text.split(separator).collect();
-
-    if sections.len() < 3 {
-        return None;
-    }
-
-    let mut result: Vec<String> = Vec::with_capacity(sections.len());
-    for (i, section) in sections.iter().enumerate() {
-        if i == 0 || i == sections.len() - 1 {
-            result.push(section.to_string());
-        } else {
-            let trimmed = section.trim();
-            if trimmed.len() > 300 {
-                // Char-boundary–safe cut.
-                let mut cut = 300;
-                while !trimmed.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                result.push(format!("{}...", &trimmed[..cut]));
-            } else {
-                result.push(trimmed.to_string());
-            }
-        }
-    }
-
-    let compressed = result.join(&format!("\n{}\n", separator));
-    if compressed.len() < text.len() {
-        Some(compressed)
-    } else {
-        None
-    }
+    tool_scheduler::compact_tool_result_for_context(tool_name, content)
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +248,7 @@ enum PersistedTraceItem {
     Thinking { text: String },
     Tool { tool_call: PersistedTraceToolCall },
     Status { text: String, tone: String },
+    Loop { event: TurnLoopEvent },
 }
 
 fn append_persisted_trace_thinking(items: &mut Vec<PersistedTraceItem>, text: &str) {
@@ -501,6 +296,10 @@ fn append_persisted_trace_status(items: &mut Vec<PersistedTraceItem>, text: &str
         text: trimmed.to_string(),
         tone: tone.to_string(),
     });
+}
+
+fn append_persisted_trace_loop_event(items: &mut Vec<PersistedTraceItem>, event: TurnLoopEvent) {
+    items.push(PersistedTraceItem::Loop { event });
 }
 
 async fn emit_task_plan_update(
@@ -667,35 +466,13 @@ fn default_dynamic_tool_visibility() -> bool {
     false
 }
 
+#[cfg(test)]
 fn tool_timeout_for_call(
     configured_timeout_secs: Option<u32>,
     tool_name: &str,
     parsed_args: &serde_json::Value,
 ) -> Option<Duration> {
-    let base_timeout = configured_timeout_secs.unwrap_or(30) as u64;
-    if base_timeout == 0 {
-        return None;
-    }
-
-    let multiplier = match tool_name {
-        "retrieve_evidence" => 2,
-        "spawn_subagent" => 3,
-        _ => 1,
-    };
-    let mut timeout_secs = base_timeout.saturating_mul(multiplier);
-
-    if tool_name == "run_shell" {
-        let requested = parsed_args
-            .get("timeout_secs")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(30);
-        if requested == 0 {
-            return None;
-        }
-        timeout_secs = timeout_secs.max(requested.saturating_add(5));
-    }
-
-    Some(Duration::from_secs(timeout_secs.max(1)))
+    tool_scheduler::tool_timeout_for_call(configured_timeout_secs, tool_name, parsed_args)
 }
 
 impl Default for AgentConfig {
@@ -765,223 +542,6 @@ pub fn build_system_prompt(conversation_prompt: Option<&str>, dynamic_sections: 
 struct DirectDispatch {
     tool_name: String,
     arguments: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentRouteKind {
-    DirectResponse,
-    KnowledgeRetrieval,
-    CollectionFocused,
-    ConversationRecall,
-    FileOperation,
-    WebLookup,
-    SourceManagement,
-}
-
-impl AgentRouteKind {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            AgentRouteKind::DirectResponse => "DirectResponse",
-            AgentRouteKind::KnowledgeRetrieval => "KnowledgeRetrieval",
-            AgentRouteKind::CollectionFocused => "CollectionFocused",
-            AgentRouteKind::FileOperation => "FileOperation",
-            AgentRouteKind::SourceManagement => "SourceManagement",
-            AgentRouteKind::ConversationRecall => "ConversationRecall",
-            AgentRouteKind::WebLookup => "WebLookup",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct AgentRoutePlan {
-    kind: AgentRouteKind,
-    prompt_section: String,
-    extra_categories: Vec<ToolCategory>,
-}
-
-fn query_looks_like_question(query: &str) -> bool {
-    let q = query.to_lowercase();
-    q.contains('?')
-        || q.contains("what")
-        || q.contains("why")
-        || q.contains("how")
-        || q.contains("which")
-        || q.contains("where")
-        || q.contains("when")
-        || q.contains("who")
-        || q.contains("tell me")
-        || q.contains("explain")
-        || q.contains("analyze")
-        || q.contains("analysis")
-        || q.contains("summarize")
-        || q.contains("compare")
-        || q.contains("分析")
-        || q.contains("总结")
-        || q.contains("为什么")
-        || q.contains("如何")
-        || q.contains("怎么")
-        || q.contains("哪些")
-        || q.contains("什么")
-}
-
-fn system_prompt_has_collection_context(system_prompt: &str) -> bool {
-    system_prompt
-        .lines()
-        .any(|line| line.trim().eq_ignore_ascii_case("## Collection Context"))
-}
-
-fn route_user_turn(query: &str, system_prompt: &str, has_sources: bool) -> AgentRoutePlan {
-    let q = query.to_lowercase();
-    let collection_context = system_prompt_has_collection_context(system_prompt);
-
-    let code_or_tool_operation = q.contains("run_shell")
-        || q.contains("run shell")
-        || q.contains("shell")
-        || q.contains("terminal")
-        || q.contains("command")
-        || q.contains("powershell")
-        || q.contains("cmd")
-        || q.contains("cargo")
-        || q.contains("npm")
-        || q.contains("pnpm")
-        || q.contains("node")
-        || q.contains("python")
-        || q.contains("git")
-        || q.contains("tool")
-        || q.contains("tools")
-        || q.contains("agent")
-        || q.contains("subagent")
-        || q.contains("unavailable")
-        || q.contains("available")
-        || q.contains("fix")
-        || q.contains("debug")
-        || q.contains("bug")
-        || q.contains("test")
-        || q.contains("build")
-        || q.contains("compile")
-        || q.contains("运行")
-        || q.contains("命令")
-        || q.contains("终端")
-        || q.contains("调用")
-        || q.contains("工具")
-        || q.contains("不可用")
-        || q.contains("修复")
-        || q.contains("排查")
-        || q.contains("测试")
-        || q.contains("构建")
-        || q.contains("编译")
-        || q.contains("代码")
-        || q.contains("项目")
-        || q.contains("仓库")
-        || q.contains("主agent")
-        || q.contains("子agent");
-
-    let file_operation = q.contains("file")
-        || q.contains("read")
-        || q.contains("edit")
-        || q.contains("write")
-        || q.contains("create")
-        || q.contains("move")
-        || q.contains("rename")
-        || q.contains("copy")
-        || q.contains("delete")
-        || q.contains("folder")
-        || q.contains("directory")
-        || q.contains("document")
-        || q.contains("word")
-        || q.contains("docx")
-        || q.contains("excel")
-        || q.contains("xlsx")
-        || q.contains("ppt")
-        || q.contains("pptx")
-        || q.contains("office")
-        || q.contains("文档")
-        || q.contains("文件")
-        || q.contains("移动")
-        || q.contains("重命名")
-        || q.contains("复制")
-        || q.contains("删除")
-        || q.contains("幻灯片")
-        || q.contains("表格")
-        || code_or_tool_operation;
-
-    let source_management = q.contains("source")
-        || q.contains("index")
-        || q.contains("reindex")
-        || q.contains("数据源")
-        || q.contains("索引");
-
-    let web_lookup = q.contains("http")
-        || q.contains("url")
-        || q.contains("website")
-        || q.contains("web ")
-        || q.contains("网页")
-        || q.contains("链接");
-
-    let conversation_recall = q.contains("earlier")
-        || q.contains("previous")
-        || q.contains("before")
-        || q.contains("this conversation")
-        || q.contains("chat history")
-        || q.contains("we discussed")
-        || q.contains("刚才")
-        || q.contains("之前")
-        || q.contains("上面")
-        || q.contains("这段对话");
-
-    if collection_context {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::CollectionFocused,
-            prompt_section: "## Active Routing Plan\nUse the current collection and its saved evidence as your primary working set. Stay anchored to that collection first, and only widen beyond it if the collection is clearly insufficient. If you widen scope, explain why.".to_string(),
-            extra_categories: vec![ToolCategory::Knowledge, ToolCategory::DocumentAnalysis],
-        };
-    }
-
-    if source_management {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::SourceManagement,
-            prompt_section: "## Active Routing Plan\nThis is a source/index management request. Prefer direct, operational handling over exploratory retrieval, and avoid unnecessary long-form analysis.".to_string(),
-            extra_categories: vec![ToolCategory::SourceManagement],
-        };
-    }
-
-    if file_operation {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::FileOperation,
-            prompt_section: "## Active Routing Plan\nThis request is file-centric. Prefer reading, comparing, generating, or editing the relevant files directly before broad knowledge-base search. For requested DOCX/XLSX/PPTX/PDF work, use run_shell + the doc-script-editor skill for Python-backed creation, validation, conversion, rendering, extraction, redaction, formula QA, template preservation, and OOXML edits. Pair Office work with docx-document-design, pptx-presentation-design, or xlsx-workbook-design as appropriate.".to_string(),
-            extra_categories: vec![ToolCategory::FileSystem, ToolCategory::DocumentAnalysis],
-        };
-    }
-
-    if conversation_recall {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::ConversationRecall,
-            prompt_section: "## Active Routing Plan\nThe user is asking about the current conversation context. Check the conversation history and already-available evidence first before widening to new retrieval.".to_string(),
-            extra_categories: vec![ToolCategory::Knowledge, ToolCategory::DocumentAnalysis],
-        };
-    }
-
-    if web_lookup {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::WebLookup,
-            prompt_section: "## Active Routing Plan\nThis request likely needs web or URL inspection. Prefer targeted fetch or MCP/web tools instead of broad local retrieval.".to_string(),
-            extra_categories: vec![ToolCategory::Web],
-        };
-    }
-
-    if has_sources && query_looks_like_question(query) {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::KnowledgeRetrieval,
-            prompt_section: "## Active Routing Plan\nThis is a knowledge retrieval turn. Prefer grounded retrieval, comparison, and evidence synthesis before answering. Stop once the evidence is sufficient instead of over-searching.".to_string(),
-            extra_categories: vec![ToolCategory::Knowledge, ToolCategory::DocumentAnalysis],
-        };
-    }
-
-    AgentRoutePlan {
-        kind: AgentRouteKind::DirectResponse,
-        prompt_section: "## Active Routing Plan\nAnswer the user's question. For factual questions, ALWAYS search the knowledge base first using search_knowledge_base, even if you believe you know the answer. Use tools whenever they would improve answer accuracy or completeness.".to_string(),
-        extra_categories: Vec::new(),
-    }
 }
 
 pub fn route_name_for_behavioral_eval(
@@ -1392,6 +952,7 @@ impl AgentExecutor {
             &self.config.system_prompt,
             has_sources,
         );
+        let mut loop_recorder = TurnLoopRecorder::new(route_plan.kind, self.config.max_iterations);
         let mut task_plan = build_task_plan(TaskPlanningInput {
             user_query: &user_query_text_for_tools,
             route_kind: route_plan.kind.as_str(),
@@ -1497,6 +1058,9 @@ impl AgentExecutor {
         let mut last_iteration_content = String::new();
         let mut last_finish_reason: Option<String> = None;
         let mut persisted_trace_items: Vec<PersistedTraceItem> = Vec::new();
+        for event in loop_recorder.events().iter().cloned() {
+            append_persisted_trace_loop_event(&mut persisted_trace_items, event);
+        }
 
         // --- 3c. Extract user query text and build cache key -----------------
         let user_query_text = &user_query_text_for_tools;
@@ -1666,6 +1230,11 @@ impl AgentExecutor {
                         "Request cancelled by user.",
                         "error",
                     );
+                    let finished = TurnLoopEvent::TurnFinished {
+                        outcome: "cancelled".to_string(),
+                    };
+                    loop_recorder.record(finished.clone());
+                    append_persisted_trace_loop_event(&mut persisted_trace_items, finished);
                     if let Some(cid) = conversation_id {
                         let assistant_message_id = Uuid::new_v4().to_string();
                         let conv_msg = ConversationMessage {
@@ -1795,7 +1364,16 @@ impl AgentExecutor {
         // --- 4. ReAct loop ----------------------------------------------------
         let mut last_tool_calls: Option<Vec<ToolCallRequest>> = None;
         let mut context_recovery_attempts = 0u32;
+        let context_pipeline =
+            ContextPipeline::new(model, self.config.context_window, max_response_tokens);
+        let mut loop_guard = AgentLoopGuard::new();
         for iteration in 0..self.config.max_iterations {
+            let step_started = TurnLoopEvent::StepStarted {
+                iteration,
+                remaining_iterations: self.config.max_iterations.saturating_sub(iteration),
+            };
+            loop_recorder.record(step_started.clone());
+            append_persisted_trace_loop_event(&mut persisted_trace_items, step_started);
             // ── Cancellation checkpoint: before LLM call ─────────────────
             check_cancelled!(last_tool_calls);
             let steering_texts = {
@@ -2304,8 +1882,8 @@ impl AgentExecutor {
 
             // -- 4b. Accumulate usage ------------------------------------------
             let mut iteration_compacted = false;
-            let mut iteration_context_pct: f32 = 0.0;
             if let Some(u) = chunk_usage {
+                let iteration_context_pct: f32;
                 last_prompt_tokens = u.prompt_tokens; // Always overwrite — we want the LAST iteration
                 total_usage.prompt_tokens += u.prompt_tokens;
                 total_usage.completion_tokens += u.completion_tokens;
@@ -2323,25 +1901,43 @@ impl AgentExecutor {
                     })
                     .await;
 
-                // -- 4b'. Auto-compact at 85% of context budget ----------------
-                let ctx_window = self
-                    .config
-                    .context_window
-                    .unwrap_or_else(|| model_context_window(model));
-                let max_response = self.config.max_tokens.unwrap_or(4096);
-                let budget = ctx_window
-                    .saturating_sub(max_response)
-                    .saturating_sub(context_safety_buffer(ctx_window));
-                if budget > 0 {
-                    iteration_context_pct = (u.prompt_tokens as f32 / budget as f32) * 100.0;
-                    if u.prompt_tokens > (budget as f64 * 0.85) as u32 {
-                        if let Err(e) = self.aggressive_compact(&mut messages, model, &tx).await {
-                            warn!("Auto-compact failed: {e}");
-                        } else {
-                            iteration_compacted = true;
-                        }
+                // -- 4b'. Context pipeline budget check ------------------------
+                let budget_decision = context_pipeline.budget_decision(u.prompt_tokens);
+                let _budget_tokens = budget_decision.budget_tokens;
+                iteration_context_pct = budget_decision.usage_pct;
+                if budget_decision.should_compact {
+                    let before_message_count = messages.len();
+                    let started = TurnLoopEvent::CompactionStarted {
+                        reason: "auto".to_string(),
+                        message_count: before_message_count,
+                    };
+                    loop_recorder.record(started.clone());
+                    append_persisted_trace_loop_event(&mut persisted_trace_items, started);
+                    if let Err(e) = self.aggressive_compact(&mut messages, model, &tx).await {
+                        warn!("Auto-compact failed: {e}");
+                    } else {
+                        iteration_compacted = true;
+                        let evicted_count = before_message_count.saturating_sub(messages.len());
+                        let ended = TurnLoopEvent::CompactionEnded {
+                            reason: "auto".to_string(),
+                            evicted_count,
+                            message_count: messages.len(),
+                        };
+                        loop_recorder.record(ended.clone());
+                        append_persisted_trace_loop_event(&mut persisted_trace_items, ended);
                     }
                 }
+
+                let completed = TurnLoopEvent::ModelStepCompleted {
+                    iteration,
+                    tool_call_count: tool_calls.len(),
+                    finish_reason: last_finish_reason.clone(),
+                    prompt_tokens: u.prompt_tokens,
+                    completion_tokens: u.completion_tokens,
+                    context_usage_pct: iteration_context_pct,
+                };
+                loop_recorder.record(completed.clone());
+                append_persisted_trace_loop_event(&mut persisted_trace_items, completed);
 
                 // Trace: record step for this LLM iteration
                 if let Some(ref mut t) = trace {
@@ -2382,9 +1978,36 @@ impl AgentExecutor {
                 reasoning_content: assistant_reasoning_content.clone(),
             };
             messages.push(assistant_msg.clone());
+            let loop_guard_intervention =
+                loop_guard.observe_model_step(&assistant_msg.text_content(), &tool_calls);
 
             // -- 4d. Check termination -----------------------------------------
             if tool_calls.is_empty() {
+                if let Some(intervention) = loop_guard_intervention.as_ref() {
+                    if intervention.action == LoopGuardAction::ChangeStrategy
+                        && iteration + 1 < self.config.max_iterations
+                    {
+                        let event = TurnLoopEvent::LoopGuardIntervention {
+                            reason: intervention.reason.clone(),
+                            action: intervention.action.as_str().to_string(),
+                        };
+                        loop_recorder.record(event.clone());
+                        append_persisted_trace_loop_event(&mut persisted_trace_items, event);
+                        append_persisted_trace_status(
+                            &mut persisted_trace_items,
+                            &intervention.reason,
+                            "warning",
+                        );
+                        let _ = tx
+                            .send(AgentEvent::Status {
+                                content: intervention.reason.clone(),
+                                tone: Some("warning".to_string()),
+                            })
+                            .await;
+                        messages.push(Message::text(Role::System, intervention.prompt.clone()));
+                        continue;
+                    }
+                }
                 let steering_texts = {
                     let mut steering_ctx = SteeringDrainContext {
                         db,
@@ -2556,6 +2179,12 @@ impl AgentExecutor {
                     }
                 }
 
+                let finished = TurnLoopEvent::TurnFinished {
+                    outcome: "success".to_string(),
+                };
+                loop_recorder.record(finished.clone());
+                append_persisted_trace_loop_event(&mut persisted_trace_items, finished);
+
                 let _ = tx
                     .send(AgentEvent::Done {
                         message: assistant_msg.clone(),
@@ -2613,6 +2242,32 @@ impl AgentExecutor {
             // ── Cancellation checkpoint: before tool execution ────────
             check_cancelled!(last_tool_calls);
 
+            let loop_guard_block_reason = loop_guard_intervention
+                .as_ref()
+                .filter(|intervention| intervention.action == LoopGuardAction::BlockToolCalls)
+                .map(|intervention| {
+                    let event = TurnLoopEvent::LoopGuardIntervention {
+                        reason: intervention.reason.clone(),
+                        action: intervention.action.as_str().to_string(),
+                    };
+                    loop_recorder.record(event.clone());
+                    append_persisted_trace_loop_event(&mut persisted_trace_items, event);
+                    append_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        &intervention.reason,
+                        "warning",
+                    );
+                    intervention.reason.clone()
+                });
+            if let Some(reason) = loop_guard_block_reason.as_ref() {
+                let _ = tx
+                    .send(AgentEvent::Status {
+                        content: reason.clone(),
+                        tone: Some("warning".to_string()),
+                    })
+                    .await;
+            }
+
             // -- 4e. Execute tool calls in parallel ------------------------------
             // Emit ToolCallStart events for tools that haven't yet been
             // announced during streaming (guards against providers that skip
@@ -2632,6 +2287,36 @@ impl AgentExecutor {
             // Build futures for all tool calls and execute concurrently.
             let offered_tool_names: HashSet<String> =
                 tool_defs.iter().map(|tool| tool.name.clone()).collect();
+            let tool_policy = ToolSchedulerPolicy::new(
+                self.config.tool_timeout_secs,
+                self.config.dynamic_tool_visibility,
+                offered_tool_names,
+            );
+            for tc in &tool_calls {
+                let decision = tool_policy.decision_for(tc);
+                let policy_label = if loop_guard_block_reason.is_some() {
+                    "blockedByLoopGuard"
+                } else {
+                    decision.policy_label
+                };
+                loop_recorder.tool_scheduled(
+                    iteration,
+                    &tc.id,
+                    &tc.name,
+                    decision.timeout.map(|timeout| timeout.as_secs()),
+                    policy_label,
+                );
+                append_persisted_trace_loop_event(
+                    &mut persisted_trace_items,
+                    TurnLoopEvent::ToolScheduled {
+                        iteration,
+                        call_id: tc.id.clone(),
+                        tool_name: tc.name.clone(),
+                        timeout_secs: decision.timeout.map(|timeout| timeout.as_secs()),
+                        policy: policy_label.to_string(),
+                    },
+                );
+            }
             let tool_futures: Vec<_> = tool_calls
                 .iter()
                 .map(|tc| {
@@ -2641,28 +2326,18 @@ impl AgentExecutor {
                     let approval_tx = tx.clone();
                     let progress_call_id = tc.id.clone();
                     let progress_tool_name = tc.name.clone();
-                    let offered_tool_names = &offered_tool_names;
+                    let tool_policy = &tool_policy;
+                    let loop_guard_block_reason = loop_guard_block_reason.clone();
                     async move {
                         // -- Confirmation gate for destructive tools --------
-                        let parsed_args: serde_json::Value =
-                            serde_json::from_str(&tc.arguments).unwrap_or_default();
-                        let tool_timeout = tool_timeout_for_call(
-                            self.config.tool_timeout_secs,
-                            &tc.name,
-                            &parsed_args,
-                        );
-                        if self.config.dynamic_tool_visibility
-                            && !offered_tool_names.contains(&tc.name)
-                        {
-                            let blocked = crate::tools::ToolResult {
-                                call_id: tc.id.clone(),
-                                content: format!(
-                                    "Tool '{}' is not available in the current tool policy for this turn. Use an offered tool or ask the user to change the request scope.",
-                                    tc.name
-                                ),
-                                is_error: true,
-                                artifacts: None,
-                            };
+                        let scheduling = tool_policy.decision_for(tc);
+                        let parsed_args = scheduling.parsed_args;
+                        let tool_timeout = scheduling.timeout;
+                        if let Some(reason) = loop_guard_block_reason.as_deref() {
+                            let blocked = loop_guard_blocked_result(tc, reason);
+                            return (tc, tool_timeout, Ok(Ok(blocked)), Duration::ZERO);
+                        }
+                        if let Some(blocked) = scheduling.synthetic_result {
                             return (tc, tool_timeout, Ok(Ok(blocked)), Duration::ZERO);
                         }
                         let tool_requires_confirm =
@@ -2789,6 +2464,7 @@ impl AgentExecutor {
             let tool_results = join_all(tool_futures).await;
 
             // Process results in original order (join_all preserves order).
+            let mut post_tool_loop_guard_prompt: Option<String> = None;
             for (tc, tool_timeout, tool_result, tool_elapsed) in tool_results {
                 let (tool_msg, tool_artifacts, tool_is_error) = match tool_result {
                     Ok(Ok(result)) => {
@@ -2876,6 +2552,35 @@ impl AgentExecutor {
                     Some(tool_is_error),
                     tool_artifacts.clone(),
                 );
+                let finished = TurnLoopEvent::ToolFinished {
+                    iteration,
+                    call_id: tc.id.clone(),
+                    tool_name: tc.name.clone(),
+                    duration_ms: tool_elapsed.as_millis() as u64,
+                    is_error: tool_is_error,
+                };
+                loop_recorder.record(finished.clone());
+                append_persisted_trace_loop_event(&mut persisted_trace_items, finished);
+                if let Some(intervention) = loop_guard.observe_tool_result(tool_is_error) {
+                    let event = TurnLoopEvent::LoopGuardIntervention {
+                        reason: intervention.reason.clone(),
+                        action: intervention.action.as_str().to_string(),
+                    };
+                    loop_recorder.record(event.clone());
+                    append_persisted_trace_loop_event(&mut persisted_trace_items, event);
+                    append_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        &intervention.reason,
+                        "warning",
+                    );
+                    let _ = tx
+                        .send(AgentEvent::Status {
+                            content: intervention.reason.clone(),
+                            tone: Some("warning".to_string()),
+                        })
+                        .await;
+                    post_tool_loop_guard_prompt.get_or_insert(intervention.prompt);
+                }
                 if advance_task_plan_for_tool_result(&mut task_plan, &tc.name, tool_is_error) {
                     emit_task_plan_update(
                         &tx,
@@ -2947,6 +2652,9 @@ impl AgentExecutor {
                     });
                 }
             }
+            if let Some(prompt) = post_tool_loop_guard_prompt {
+                messages.push(Message::text(Role::System, prompt));
+            }
 
             last_tool_calls = None;
 
@@ -2955,15 +2663,7 @@ impl AgentExecutor {
 
             // Re-trim messages to fit context window after appending tool results.
             // This prevents unbounded growth across iterations.
-            let max_ctx = self
-                .config
-                .context_window
-                .unwrap_or_else(|| model_context_window(model));
-            messages = trim_to_context_window(
-                &messages,
-                max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
-                max_response_tokens,
-            );
+            messages = context_pipeline.trim_after_tool_results(&messages);
 
             // Loop back → next LLM call with tool results.
         }
@@ -3005,6 +2705,11 @@ impl AgentExecutor {
             )
             .await;
         }
+        let finished = TurnLoopEvent::TurnFinished {
+            outcome: "max_iterations".to_string(),
+        };
+        loop_recorder.record(finished.clone());
+        append_persisted_trace_loop_event(&mut persisted_trace_items, finished);
 
         if let Some(cid) = conversation_id {
             let assistant_message_id = Uuid::new_v4().to_string();
@@ -3163,16 +2868,12 @@ impl AgentExecutor {
 
         self.aggressive_compact(messages, model, tx).await?;
 
-        let max_context = self
-            .config
-            .context_window
-            .unwrap_or_else(|| model_context_window(model));
-        let extra_safety = context_safety_buffer(max_context).saturating_mul(2);
-        *messages = trim_to_context_window(
-            messages,
-            max_context.saturating_sub(extra_safety),
+        let pipeline = ContextPipeline::new(
+            model,
+            self.config.context_window,
             self.config.max_tokens.unwrap_or(4096),
         );
+        *messages = pipeline.trim_after_overflow_recovery(messages);
 
         let after_tokens: u32 = messages
             .iter()
@@ -4593,18 +4294,31 @@ mod tests {
             .get("items")
             .and_then(|v| v.as_array())
             .expect("trace timeline should include items");
-        assert_eq!(items.len(), 4);
+        assert!(
+            items
+                .iter()
+                .any(|item| item.get("kind").and_then(|v| v.as_str()) == Some("loop")),
+            "trace timeline should include first-class loop events"
+        );
+        let non_loop_items = items
+            .iter()
+            .filter(|item| item.get("kind").and_then(|v| v.as_str()) != Some("loop"))
+            .collect::<Vec<_>>();
+        assert_eq!(non_loop_items.len(), 4);
         assert_eq!(
-            items[0].get("kind").and_then(|v| v.as_str()),
+            non_loop_items[0].get("kind").and_then(|v| v.as_str()),
             Some("thinking")
         );
-        assert_eq!(items[1].get("kind").and_then(|v| v.as_str()), Some("tool"));
         assert_eq!(
-            items[2].get("kind").and_then(|v| v.as_str()),
+            non_loop_items[1].get("kind").and_then(|v| v.as_str()),
+            Some("tool")
+        );
+        assert_eq!(
+            non_loop_items[2].get("kind").and_then(|v| v.as_str()),
             Some("thinking")
         );
         assert_eq!(
-            items[3].get("kind").and_then(|v| v.as_str()),
+            non_loop_items[3].get("kind").and_then(|v| v.as_str()),
             Some("status")
         );
     }

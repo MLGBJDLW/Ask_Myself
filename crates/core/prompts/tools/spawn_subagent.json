@@ -8,6 +8,10 @@
         "type": "string",
         "description": "The concrete subtask for the delegated agent to complete."
       },
+      "task_id": {
+        "type": "string",
+        "description": "Optional reusable subagent session id. Pass a task_id returned by an earlier subagent result to continue that worker's prior context within the current supervisor turn."
+      },
       "role_id": {
         "type": "string",
         "description": "Optional structured role profile. Use researcher, verifier, critic, planner, writer, connector, or desktop_operator when the task matches one of those responsibilities."
