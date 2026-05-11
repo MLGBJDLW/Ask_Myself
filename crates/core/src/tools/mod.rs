@@ -85,6 +85,7 @@ pub mod file_tool;
 pub mod glob_files_tool;
 pub mod harness_dry_run_tool;
 pub mod health_check_tool;
+pub mod image_generation_tool;
 pub mod knowledge_graph_tool;
 pub mod list_dir_tool;
 pub mod list_documents_tool;
@@ -813,6 +814,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(compile_tool::CompileTool));
     registry.register(Box::new(knowledge_graph_tool::KnowledgeGraphTool));
     registry.register(Box::new(health_check_tool::HealthCheckTool));
+    registry.register(Box::new(image_generation_tool::GenerateImageTool));
     registry.register(Box::new(archive_output_tool::ArchiveOutputTool));
     registry.register(Box::new(related_concepts_tool::RelatedConceptsTool));
     registry.register(Box::new(run_shell_tool::RunShellTool));
