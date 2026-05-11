@@ -4,6 +4,7 @@ declare global {
   interface Window {
     __lastAgentPrompt?: string;
     __lastSourceIds?: string[];
+    __lastPreviewIncludeLayout?: boolean;
   }
 }
 
@@ -43,6 +44,7 @@ test.beforeEach(async ({ page }) => {
 
     window.__lastAgentPrompt = undefined;
     window.__lastSourceIds = undefined;
+    window.__lastPreviewIncludeLayout = undefined;
 
     const defaultAgentConfig = {
       id: 'cfg-agent-edit',
@@ -93,7 +95,7 @@ test.beforeEach(async ({ page }) => {
           id: 'm-assistant-file',
           conversationId: 'conv-agent-edit',
           role: 'assistant',
-          content: 'Open `notes/agent-edit.md` and improve the action item. Also inspect `docs/office-proposal.docx`.',
+          content: 'Open `notes/agent-edit.md` and improve the action item. Also inspect `docs/office-proposal.docx`, `docs/structured-report.docx`, and `sheets/budget.xlsx`.',
           toolCallId: null,
           toolCalls: [],
           artifacts: null,
@@ -149,6 +151,8 @@ test.beforeEach(async ({ page }) => {
         case 'list_checkpoints_cmd':
         case 'list_user_memories_cmd':
         case 'list_skills_cmd':
+        case 'list_builtin_skills_cmd':
+        case 'list_selected_skills_cmd':
         case 'list_mcp_servers_cmd':
           return [];
         case 'set_conversation_sources_cmd':
@@ -188,6 +192,246 @@ test.beforeEach(async ({ page }) => {
         case 'clear_answer_cache':
           return 0;
         case 'preview_file_cmd':
+          window.__lastPreviewIncludeLayout = Boolean(args.includeLayout);
+          if (String(args.path ?? '').endsWith('structured-report.docx')) {
+            const includeLayout = Boolean(args.includeLayout);
+            return {
+              path: 'D:\\Vault\\docs\\structured-report.docx',
+              displayName: 'structured-report.docx',
+              sourceId: 'src-office-docs',
+              sourceName: 'Office Docs',
+              extension: '.docx',
+              mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+              kind: 'document',
+              language: null,
+              content: [
+                'Quarterly Report',
+                'Revenue increased for enterprise accounts.',
+                'North America: $125K',
+              ].join('\n'),
+              encoding: 'extracted-text',
+              editable: false,
+              sizeBytes: 92000,
+              modifiedAt: nowIso,
+              hash: 'sha256-structured-report',
+              lineCount: 3,
+              truncated: false,
+              warning: null,
+              structuredPreview: {
+                type: 'document',
+                assets: [],
+                blocks: [
+                  {
+                    type: 'heading',
+                    level: 1,
+                    alignment: null,
+                    runs: [
+                      {
+                        text: 'Quarterly Report',
+                        bold: true,
+                        italic: false,
+                        underline: false,
+                        color: null,
+                        backgroundColor: null,
+                        fontSize: 'xlarge',
+                        hyperlink: null,
+                      },
+                    ],
+                  },
+                  {
+                    type: 'paragraph',
+                    alignment: null,
+                    runs: [
+                      {
+                        text: 'Revenue increased for enterprise accounts.',
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                        color: null,
+                        backgroundColor: null,
+                        fontSize: null,
+                        hyperlink: null,
+                      },
+                    ],
+                  },
+                  {
+                    type: 'table',
+                    rows: [
+                      {
+                        cells: [
+                          {
+                            blocks: [
+                              {
+                                type: 'paragraph',
+                                alignment: null,
+                                runs: [
+                                  {
+                                    text: 'Region',
+                                    bold: true,
+                                    italic: false,
+                                    underline: false,
+                                    color: null,
+                                    backgroundColor: null,
+                                    fontSize: null,
+                                    hyperlink: null,
+                                  },
+                                ],
+                              },
+                            ],
+                          },
+                          {
+                            blocks: [
+                              {
+                                type: 'paragraph',
+                                alignment: null,
+                                runs: [
+                                  {
+                                    text: 'Revenue',
+                                    bold: true,
+                                    italic: false,
+                                    underline: false,
+                                    color: null,
+                                    backgroundColor: null,
+                                    fontSize: null,
+                                    hyperlink: null,
+                                  },
+                                ],
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                      {
+                        cells: [
+                          {
+                            blocks: [
+                              {
+                                type: 'paragraph',
+                                alignment: null,
+                                runs: [
+                                  {
+                                    text: 'North America',
+                                    bold: false,
+                                    italic: false,
+                                    underline: false,
+                                    color: null,
+                                    backgroundColor: null,
+                                    fontSize: null,
+                                    hyperlink: null,
+                                  },
+                                ],
+                              },
+                            ],
+                          },
+                          {
+                            blocks: [
+                              {
+                                type: 'paragraph',
+                                alignment: null,
+                                runs: [
+                                  {
+                                    text: '$125K',
+                                    bold: false,
+                                    italic: false,
+                                    underline: false,
+                                    color: null,
+                                    backgroundColor: null,
+                                    fontSize: null,
+                                    hyperlink: null,
+                                  },
+                                ],
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+              renderedPreview: includeLayout
+                ? {
+                    kind: 'office-pages',
+                    dpi: 144,
+                    pageCount: 1,
+                    truncated: false,
+                    pages: [{ page: 1, path: 'D:\\Preview\\structured-report-page-1.png' }],
+                  }
+                : null,
+              capabilities: {
+                canRenderStructured: true,
+                canRenderLayout: true,
+                canExtractText: true,
+                needsExternalRuntime: false,
+                layoutUnavailableReason: null,
+                structuredUnavailableReason: null,
+              },
+            };
+          }
+          if (String(args.path ?? '').endsWith('budget.xlsx')) {
+            return {
+              path: 'D:\\Vault\\sheets\\budget.xlsx',
+              displayName: 'budget.xlsx',
+              sourceId: 'src-office-docs',
+              sourceName: 'Office Docs',
+              extension: '.xlsx',
+              mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              kind: 'document',
+              language: null,
+              content: ['Name\tTotal', 'Q1\t3'].join('\n'),
+              encoding: 'extracted-text',
+              editable: false,
+              sizeBytes: 64000,
+              modifiedAt: nowIso,
+              hash: 'sha256-budget',
+              lineCount: 2,
+              truncated: false,
+              warning: null,
+              structuredPreview: {
+                type: 'workbook',
+                truncated: false,
+                limits: { maxSheets: 20, maxRows: 500, maxColumns: 60 },
+                sheets: [
+                  {
+                    name: 'Summary',
+                    index: 0,
+                    rowCount: 2,
+                    columnCount: 2,
+                    previewRowCount: 2,
+                    previewColumnCount: 2,
+                    truncated: false,
+                    mergedRanges: [{ startRow: 0, startColumn: 0, endRow: 0, endColumn: 1 }],
+                    cells: [
+                      { row: 0, column: 0, value: 'Name', dataType: 'string', formula: null },
+                      { row: 0, column: 1, value: 'Total', dataType: 'string', formula: null },
+                      { row: 1, column: 0, value: 'Q1', dataType: 'string', formula: null },
+                      { row: 1, column: 1, value: '3', dataType: 'number', formula: '1+2' },
+                    ],
+                  },
+                  {
+                    name: 'Detail',
+                    index: 1,
+                    rowCount: 1,
+                    columnCount: 1,
+                    previewRowCount: 1,
+                    previewColumnCount: 1,
+                    truncated: false,
+                    mergedRanges: [],
+                    cells: [{ row: 0, column: 0, value: 'Detail row', dataType: 'string', formula: null }],
+                  },
+                ],
+              },
+              renderedPreview: null,
+              capabilities: {
+                canRenderStructured: true,
+                canRenderLayout: false,
+                canExtractText: true,
+                needsExternalRuntime: true,
+                layoutUnavailableReason: 'LibreOffice and Poppler are not available.',
+                structuredUnavailableReason: null,
+              },
+            };
+          }
           if (String(args.path ?? '').endsWith('office-proposal.docx')) {
             return {
               path: 'D:\\Vault\\docs\\office-proposal.docx',
@@ -211,6 +455,16 @@ test.beforeEach(async ({ page }) => {
               lineCount: 3,
               truncated: false,
               warning: null,
+              structuredPreview: null,
+              renderedPreview: null,
+              capabilities: {
+                canRenderStructured: false,
+                canRenderLayout: false,
+                canExtractText: true,
+                needsExternalRuntime: true,
+                layoutUnavailableReason: 'LibreOffice and Poppler are not available.',
+                structuredUnavailableReason: null,
+              },
             };
           }
           return {
@@ -237,6 +491,16 @@ test.beforeEach(async ({ page }) => {
             lineCount: 5,
             truncated: false,
             warning: null,
+            structuredPreview: null,
+            renderedPreview: null,
+            capabilities: {
+              canRenderStructured: false,
+              canRenderLayout: false,
+              canExtractText: true,
+              needsExternalRuntime: false,
+              layoutUnavailableReason: null,
+              structuredUnavailableReason: null,
+            },
           };
         case 'create_conversation_cmd': {
           const id = 'conv-agent-edit-created';
@@ -364,6 +628,44 @@ test('opens file preview as a large panel and closes it from outside clicks', as
 
   await page.mouse.click(32, 32);
   await expect(previewPanel).toBeHidden();
+});
+
+test('renders structured DOCX first and loads layout only on demand', async ({ page }) => {
+  await page.goto('/chat/conv-agent-edit');
+
+  await page.getByRole('button', { name: /structured-report\.docx/i }).click();
+  await expect(page.getByLabel('File Preview')).toBeVisible();
+  await expect(page.getByTestId('file-preview-structured-document')).toBeVisible();
+  await expect(page.getByTestId('file-preview-structured-document')).toContainText('Quarterly Report');
+  await expect(page.getByTestId('file-preview-structured-document')).toContainText('North America');
+  await expect(page.getByTestId('file-preview-rendered-content')).toHaveCount(0);
+
+  await expect.poll(() => page.evaluate(() => window.__lastPreviewIncludeLayout)).toBe(false);
+
+  await page.getByRole('button', { name: 'Layout', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__lastPreviewIncludeLayout)).toBe(true);
+  await expect(page.getByTestId('file-preview-rendered-content')).toBeVisible();
+});
+
+test('renders structured XLSX sheets, formulas, and extracted text fallback', async ({ page }) => {
+  await page.goto('/chat/conv-agent-edit');
+
+  await page.getByRole('button', { name: /budget\.xlsx/i }).click();
+  await expect(page.getByLabel('File Preview')).toBeVisible();
+
+  const workbook = page.getByTestId('file-preview-workbook');
+  await expect(workbook).toBeVisible();
+  await expect(workbook).toContainText('Summary');
+  await expect(workbook).toContainText('Q1');
+  await expect(workbook).toContainText('fx');
+  await expect(workbook).toContainText('3');
+
+  await page.getByRole('button', { name: 'Detail', exact: true }).click();
+  await expect(workbook).toContainText('Detail row');
+
+  await page.getByRole('button', { name: 'Extracted Text', exact: true }).click();
+  await expect(page.getByTestId('file-preview-readable-content')).toContainText('Name');
+  await expect(page.getByTestId('file-preview-readable-content')).toContainText('Q1');
 });
 
 test('shows the agent panel for read-only extracted Office text and routes to Python document skills', async ({ page }) => {

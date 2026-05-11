@@ -311,7 +311,147 @@ export interface FilePreview {
   lineCount: number;
   truncated: boolean;
   warning?: string | null;
+  structuredPreview?: StructuredPreview | null;
   renderedPreview?: RenderedPreview | null;
+  capabilities?: PreviewCapabilities | null;
+}
+
+export interface PreviewCapabilities {
+  canRenderStructured: boolean;
+  canRenderLayout: boolean;
+  canExtractText: boolean;
+  needsExternalRuntime: boolean;
+  layoutUnavailableReason?: string | null;
+  structuredUnavailableReason?: string | null;
+}
+
+export type StructuredPreview = DocumentStructuredPreview | WorkbookStructuredPreview;
+
+export interface DocumentStructuredPreview {
+  type: 'document';
+  blocks: DocumentPreviewBlock[];
+  assets: PreviewAsset[];
+}
+
+export interface WorkbookStructuredPreview {
+  type: 'workbook';
+  sheets: WorkbookPreviewSheet[];
+  limits: WorkbookPreviewLimits;
+  truncated: boolean;
+}
+
+export type DocumentPreviewBlock =
+  | DocumentHeadingBlock
+  | DocumentParagraphBlock
+  | DocumentListBlock
+  | DocumentTableBlock
+  | DocumentImageBlock
+  | DocumentPageBreakBlock
+  | DocumentUnsupportedBlock;
+
+export interface DocumentHeadingBlock {
+  type: 'heading';
+  level: number;
+  runs: DocumentPreviewRun[];
+  alignment?: string | null;
+}
+
+export interface DocumentParagraphBlock {
+  type: 'paragraph';
+  runs: DocumentPreviewRun[];
+  alignment?: string | null;
+}
+
+export interface DocumentListBlock {
+  type: 'list';
+  ordered: boolean;
+  level: number;
+  items: DocumentPreviewListItem[];
+}
+
+export interface DocumentTableBlock {
+  type: 'table';
+  rows: DocumentPreviewTableRow[];
+}
+
+export interface DocumentImageBlock {
+  type: 'image';
+  assetId: string;
+  alt?: string | null;
+}
+
+export interface DocumentPageBreakBlock {
+  type: 'pageBreak';
+}
+
+export interface DocumentUnsupportedBlock {
+  type: 'unsupported';
+  message: string;
+}
+
+export interface DocumentPreviewRun {
+  text: string;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  color?: string | null;
+  backgroundColor?: string | null;
+  fontSize?: string | null;
+  hyperlink?: string | null;
+}
+
+export interface DocumentPreviewListItem {
+  runs: DocumentPreviewRun[];
+}
+
+export interface DocumentPreviewTableRow {
+  cells: DocumentPreviewTableCell[];
+}
+
+export interface DocumentPreviewTableCell {
+  blocks: DocumentPreviewBlock[];
+}
+
+export interface PreviewAsset {
+  id: string;
+  kind: string;
+  mimeType: string;
+  path: string;
+  width?: number | null;
+  height?: number | null;
+}
+
+export interface WorkbookPreviewLimits {
+  maxSheets: number;
+  maxRows: number;
+  maxColumns: number;
+}
+
+export interface WorkbookPreviewSheet {
+  name: string;
+  index: number;
+  rowCount: number;
+  columnCount: number;
+  previewRowCount: number;
+  previewColumnCount: number;
+  cells: WorkbookPreviewCell[];
+  mergedRanges: WorkbookPreviewMergedRange[];
+  truncated: boolean;
+}
+
+export interface WorkbookPreviewCell {
+  row: number;
+  column: number;
+  value: string;
+  dataType: string;
+  formula?: string | null;
+}
+
+export interface WorkbookPreviewMergedRange {
+  startRow: number;
+  startColumn: number;
+  endRow: number;
+  endColumn: number;
 }
 
 export interface RenderedPreviewPage {
@@ -354,8 +494,14 @@ export interface WorkflowCatalogTemplate {
   tasks: WorkflowCatalogTask[];
 }
 
-export const previewFile = (path: string) =>
-  invoke<FilePreview>('preview_file_cmd', { path });
+export const previewFile = (
+  path: string,
+  options: { includeLayout?: boolean } = {},
+) =>
+  invoke<FilePreview>('preview_file_cmd', {
+    path,
+    includeLayout: options.includeLayout ?? false,
+  });
 
 export const saveTextFile = (
   path: string,
