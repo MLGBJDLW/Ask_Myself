@@ -140,6 +140,131 @@ impl AgentTaskPlan {
     }
 }
 
+pub fn advance_task_plan_for_tool_result(
+    plan: &mut AgentTaskPlan,
+    tool_name: &str,
+    is_error: bool,
+) -> bool {
+    let normalized_tool = tool_name.trim();
+    if normalized_tool.is_empty() {
+        return false;
+    }
+
+    if is_error {
+        let note = format!("Tool `{normalized_tool}` failed; execution may need recovery.");
+        if !plan.ledger.open_questions.iter().any(|item| item == &note) {
+            plan.ledger.open_questions.push(note);
+            return true;
+        }
+        return false;
+    }
+
+    let mut changed = false;
+    let active_index = plan
+        .steps
+        .iter()
+        .position(|step| step.status == PlanStepStatus::InProgress)
+        .or_else(|| {
+            plan.steps
+                .iter()
+                .position(|step| step.status == PlanStepStatus::Pending)
+        });
+
+    if let Some(index) = active_index {
+        let active = &plan.steps[index];
+        if active.required_tools.is_empty()
+            || active
+                .required_tools
+                .iter()
+                .any(|tool| tool == normalized_tool)
+        {
+            plan.steps[index].status = PlanStepStatus::Completed;
+            changed = true;
+        }
+    }
+
+    if !changed {
+        if let Some(index) = plan.steps.iter().position(|step| {
+            step.status != PlanStepStatus::Completed
+                && step
+                    .required_tools
+                    .iter()
+                    .any(|tool| tool == normalized_tool)
+        }) {
+            for step in plan.steps.iter_mut().take(index + 1) {
+                if step.status != PlanStepStatus::Completed {
+                    step.status = PlanStepStatus::Completed;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if promote_next_pending_step(plan) {
+        changed = true;
+    }
+
+    changed
+}
+
+pub fn finalize_task_plan(plan: &mut AgentTaskPlan, verification_passed: bool) -> bool {
+    let before = plan.steps.clone();
+    if verification_passed {
+        for step in &mut plan.steps {
+            step.status = PlanStepStatus::Completed;
+        }
+        if plan.evidence_policy.mode == EvidenceMode::Required {
+            plan.ledger.sufficiency = "sufficient".to_string();
+        }
+        for claim in &mut plan.ledger.claims {
+            claim.status = PlanStepStatus::Completed;
+            if claim.confidence == "unknown" {
+                claim.confidence = "checked".to_string();
+            }
+        }
+    } else {
+        let verify_index = plan
+            .steps
+            .iter()
+            .position(|step| step.id == "verify")
+            .or_else(|| plan.steps.len().checked_sub(1));
+        if let Some(index) = verify_index {
+            for (step_index, step) in plan.steps.iter_mut().enumerate() {
+                step.status = if step_index < index {
+                    PlanStepStatus::Completed
+                } else if step_index == index {
+                    PlanStepStatus::InProgress
+                } else {
+                    PlanStepStatus::Pending
+                };
+            }
+        }
+        if plan.evidence_policy.mode == EvidenceMode::Required {
+            plan.ledger.sufficiency = "insufficient".to_string();
+        }
+    }
+    before != plan.steps
+}
+
+fn promote_next_pending_step(plan: &mut AgentTaskPlan) -> bool {
+    if plan
+        .steps
+        .iter()
+        .any(|step| step.status == PlanStepStatus::InProgress)
+    {
+        return false;
+    }
+    if let Some(next) = plan
+        .steps
+        .iter_mut()
+        .find(|step| step.status == PlanStepStatus::Pending)
+    {
+        next.status = PlanStepStatus::InProgress;
+        return true;
+    }
+    false
+}
+
 pub fn build_task_plan(input: TaskPlanningInput<'_>) -> AgentTaskPlan {
     let normalized_route = if input.collection_context {
         "CollectionFocused".to_string()
@@ -657,6 +782,49 @@ mod tests {
             .safeguards
             .iter()
             .any(|guard| guard.contains("office files")));
+    }
+
+    #[test]
+    fn task_plan_advances_from_tool_results() {
+        let mut plan = plan("FileOperation", "Update the report in docs.", true);
+
+        assert_eq!(plan.steps[0].status, PlanStepStatus::InProgress);
+        assert!(advance_task_plan_for_tool_result(
+            &mut plan,
+            "read_file",
+            false
+        ));
+        assert_eq!(plan.steps[0].status, PlanStepStatus::Completed);
+        assert_eq!(plan.steps[1].status, PlanStepStatus::InProgress);
+
+        assert!(advance_task_plan_for_tool_result(
+            &mut plan,
+            "edit_file",
+            false
+        ));
+        assert_eq!(plan.steps[1].status, PlanStepStatus::Completed);
+        assert_eq!(plan.steps[2].status, PlanStepStatus::InProgress);
+    }
+
+    #[test]
+    fn task_plan_finalization_marks_success_or_verification_gap() {
+        let mut success = plan("KnowledgeRetrieval", "Summarize the evidence.", true);
+        assert!(finalize_task_plan(&mut success, true));
+        assert!(success
+            .steps
+            .iter()
+            .all(|step| step.status == PlanStepStatus::Completed));
+        assert_eq!(success.ledger.sufficiency, "sufficient");
+
+        let mut failed = plan("KnowledgeRetrieval", "Summarize the evidence.", true);
+        assert!(finalize_task_plan(&mut failed, false));
+        let verify = failed
+            .steps
+            .iter()
+            .find(|step| step.id == "verify")
+            .unwrap();
+        assert_eq!(verify.status, PlanStepStatus::InProgress);
+        assert_eq!(failed.ledger.sufficiency, "insufficient");
     }
 
     #[test]

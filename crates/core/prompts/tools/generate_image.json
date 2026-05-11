@@ -1,0 +1,70 @@
+{
+  "name": "generate_image",
+  "description": "Generate an image from a text prompt using a configured image model provider, save it locally, and return a preview artifact. Supports OpenAI Image API compatible providers, Google Gemini/Nano Banana, and Alibaba DashScope/Qwen-Image when the selected provider config contains the right API key/base URL.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Detailed visual prompt describing subject, composition, style, mood, lighting, text, aspect ratio, and constraints."
+      },
+      "provider": {
+        "type": "string",
+        "description": "Optional provider override: openai, openai_compatible, google, gemini, nano_banana, qwen, dashscope, aliyun, or alibaba."
+      },
+      "api_style": {
+        "type": "string",
+        "description": "Optional API adapter override: openai_images, gemini_generate_content, or dashscope_multimodal. Use openai_images for any provider that exposes an OpenAI-compatible /images/generations endpoint."
+      },
+      "provider_config_id": {
+        "type": "string",
+        "description": "Optional saved provider config id to use. Defaults to the default agent config."
+      },
+      "model": {
+        "type": "string",
+        "description": "Optional image model. Any model id supported by the selected API adapter is accepted. If omitted, an image-capable model from the saved config is reused; otherwise defaults by adapter: gpt-image-1.5, gemini-2.5-flash-image, or qwen-image-2.0-pro."
+      },
+      "size": {
+        "type": "string",
+        "description": "Optional output size. OpenAI style uses 1024x1024; Qwen accepts width*height and x is converted to *."
+      },
+      "quality": {
+        "type": "string",
+        "description": "Optional quality hint for OpenAI-compatible models, for example low, medium, high, or auto."
+      },
+      "background": {
+        "type": "string",
+        "description": "Optional OpenAI-compatible background setting: auto, transparent, or opaque."
+      },
+      "output_format": {
+        "type": "string",
+        "description": "Optional image format preference: png, jpeg, or webp."
+      },
+      "negative_prompt": {
+        "type": "string",
+        "description": "Optional negative prompt, currently used by Qwen/DashScope."
+      },
+      "prompt_extend": {
+        "type": "boolean",
+        "description": "Optional Qwen prompt rewriting flag. Defaults to true for Qwen."
+      },
+      "watermark": {
+        "type": "boolean",
+        "description": "Optional Qwen watermark flag. Defaults to false."
+      },
+      "output_dir": {
+        "type": "string",
+        "description": "Optional directory for the saved image. Defaults to generated-images under the first registered source or current directory."
+      },
+      "output_path": {
+        "type": "string",
+        "description": "Optional exact output file path. If provided, parent directories are created. Paths must stay inside a registered source root when sources exist."
+      },
+      "filename": {
+        "type": "string",
+        "description": "Optional output filename. Extension is inferred from output_format when missing."
+      }
+    },
+    "required": ["prompt"]
+  }
+}

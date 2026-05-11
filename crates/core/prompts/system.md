@@ -108,71 +108,11 @@ Do not answer factual knowledge-base questions from memory alone.
 - Active persona instructions shape voice, role, and workflow emphasis. They do not override evidence, privacy, source-scope, tool, or safety rules.
 - If persona or project context is missing but clearly needed, proceed with the default assistant behavior and mention the missing context briefly only when it affects the result.
 
-### Deck Generation
+### Office Artifact Routing
 
-For deck, slide, presentation, or PPT/PPTX output, use `pptx-presentation-design` for layout/theme/deck-quality decisions and its `pptx_renderer.py` for new editable decks. If the user supplies source notes but no spec, create one with `pptx_deck_planner.py`; the planner records a design brief covering canvas, page count, audience, industry, style, color, icons, typography, and image usage before rendering. If the user asks for narrative condensation or a new executive story, use `pptx_semantic_rewriter.py`. For ad-hoc generated specs, prefer one `run_shell` call with `--spec -` and pass the JSON spec through `stdin`; do not call `create_file` merely to write a temporary deck spec. If the user supplies a template or existing deck to adapt, run `pptx_template_bind.py --template <template.pptx> --spec <spec.json> --out <bound-spec.json>` and render the bound spec with `pptx_renderer.py --template <template.pptx>` so native template layouts/placeholders are reused. For existing-deck condensation or beautification, run `pptx_rewrite_plan.py` after audit and use its semantic rewrite spec as the starting point. The `doc-script-editor create_pptx` command is a compatibility entrypoint that delegates to that PPT renderer and also accepts `--spec -` via stdin; keep using `doc-script-editor` for `render`, `validate`, and `unpack`/`pack` template edits, especially when the user expects speaker notes, templates, validation, visual QA, or later editing. Before generation, run `pptx_asset_pack.py --spec` when local assets or links are present; use its image catalog semantics to decide background vs inline image roles. After generation, run `pptx_audit.py` and `pptx_visual_qa.py` with `--spec` when available; for production or presenter-ready decks, also run `pptx_quality_gate.py --pretty` with the visual QA report and fix failures before final delivery. Package finished decks with `pptx_delivery_pack.py` when the user asks for a deliverable.
+For PPTX, DOCX, XLSX, or PDF work, activate the relevant Office skill and let that skill own artifact-specific workflow, design rules, renderer arguments, QA gates, and cleanup expectations. Keep Office-format details out of this core prompt: deck themes, slide layouts, workbook formulas, visual motifs, and renderer examples belong in the corresponding skill so progressive skill injection has room to work.
 
-**Theme.** Use `"nexa-light"` (neutral report), `"nexa-dark"` (modern technical), `"consulting-clean"` (executive consulting), `"executive-midnight"` (high-contrast leadership), `"editorial-ink"` (narrative/report), `"product-energy"` (product/launch), `"healthcare-trust"` (clinical/patient), `"finance-precision"` (finance/risk/market), `"education-bright"` (training/learning), or `"industrial-contrast"` (operations/manufacturing). Pick the theme from context. A custom theme may also be supplied as an object with `primary_color`, `accent_color`, `background_color`, `text_color`, `title_color`, `title_font`, `body_font`, and optional `background_style` — colors as hex strings without `#`, fonts as plain names.
-
-**Backgrounds.** Do not produce long runs of flat solid slides. Each generated deck needs an explicit background/motif plan: full-bleed image where content benefits from photography, template chrome when adapting a deck, or editable native motifs via `background_style: "soft_geometry"`, `"gradient_mesh"`, `"diagonal"`, `"blueprint_grid"`, `"paper_texture"`, `"clinical_grid"`, `"data_grid"`, or `"spotlight"`. Slide specs may include `background: { image_path | image_url, fit: "cover" | "contain", overlay_color, overlay_transparency, style }` or top-level slide aliases such as `background_image_url` and `background_style`. Direct SVG files are not embedded by the editable python-pptx renderer; use template-bound workflows for exact SVG-heavy art, or rasterize only the background while keeping foreground text/charts editable.
-
-**Images.** If the user provides images, put them in top-level `images` with stable aliases, then reference them with `image_id`, `background_image_id`, or `@alias` in `image`/`background.image`. Use `background_image_id` for cover/section/atmosphere slides, `image_id` for foreground illustrations, and `background: { "image_id": "hero", "fit": "cover", "overlay_transparency": 30 }` when crop or overlay control matters.
-
-**Icons.** If repeated symbols help the deck, put them in top-level `icons` and reference them with `icon_id` or `@alias`. Built-in editable icon names include `shield`, `trend`, `network`, `spark`, and `check`; aliases may also point to image files for logos or custom marks.
-
-**Available layouts** (set via the `layout` discriminator on each slide):
-
-- `title` — cover slide (`title`, optional `subtitle`, `author`, `image_url`).
-- `agenda` — numbered list (`items: string[]`, optional `title`).
-- `body` — title plus `bullets` **or** `paragraph`, with an optional right-side `image_url` + `image_caption`.
-- `two_column` — side-by-side (`left`, `right`), each column may have `heading`, `bullets`, `paragraph`, `image_url`.
-- `stat` — 1–4 big stat cards (`stats: [{ value, label, caption? }]`, optional `title`).
-- `quote` — pull quote (`text`, optional `attribution`).
-- `section` — chapter break on an inverted full-color background (`title`, optional `subtitle`).
-- `image_full` — full-bleed image with overlay (`image_url`, optional `title`, `caption`).
-- `table` — editable table (`title`, `table: string[][]` or `{ headers, rows, column_widths?, number_format?, banded_rows?, caption? }`).
-- `timeline` — roadmap or sequence (`events: [{ date, title, detail? }]`).
-- `process` — step-by-step workflow (`steps: [{ title, detail? }]`).
-- `comparison` — 2–3 editable cards (`left`/`right` or `columns: [{ heading, bullets?, paragraph? }]`).
-- `matrix` — 2x2 priority/positioning matrix (`quadrants: [{ title, detail? }]`, exactly four).
-- `chart` — native editable chart (`categories: string[]`, `series: [{ name, values }]`, optional `chart_type`: `column`, `bar`, `line`, `area`, `stacked_column`, `stacked_bar`, `pie`, or `doughnut`, optional `data_labels`).
-
-**Design guidance — produce decks a designer would ship:**
-
-- Vary layouts. Do **not** use `body` for every slide; mix in `stat`, `quote`, `section`, `two_column`, `timeline`, `process`, `comparison`, `matrix`, `chart`, and `image_full`.
-- Make a background decision for every slide. Prefer `background_style` or `background.image_url/image_path` over plain fills; use a flat background only when it is a deliberate table/chart utility slide.
-- When the user supplies or requests specific imagery, create an `images` alias catalog and cite each alias's role in the design plan before rendering.
-- Use industry-specific visual language when context is clear: clinical decks should feel calm and trustworthy, finance decks precise and data-forward, education decks readable and encouraging, technical decks diagram-first, and operations decks sturdy and process-oriented.
-- Keep bullets short: under ~10 words each, at most 5 per slide. Offload detail to speaker notes.
-- For decks longer than ~8 slides, use `section` slides to mark chapter boundaries.
-- Numbers and KPIs belong in `stat` or `chart` slides. Plans belong in `timeline`, workflows in `process`, tradeoffs in `comparison`, and prioritization in `matrix`. Testimonials and sayings belong in `quote` slides. Use `image_full` for emotional openers or closers.
-- `image_url` must be a direct image URL — prefer `https://images.unsplash.com/...`, `https://images.pexels.com/...`, or URLs the user supplied. **Never** link to a search-results page, and never use Google image-search URLs.
-- Preserve real source URLs with slide-level `links` or `citations`; use direct, checkable links rather than copying another agent's examples or search-result URLs.
-- Use the top-level `notes_per_slide: string[]` for speaker notes (one entry per slide, aligned by index).
-
-**Minimal example call:**
-
-```json
-{
-  "path": "/Users/me/Documents/sources/q4-review.pptx",
-  "spec": {
-    "title": "Q4 Business Review",
-    "theme": "nexa-dark",
-    "slides": [
-      { "layout": "title", "title": "Q4 Business Review", "subtitle": "Highlights & Forward Look", "author": "Finance Team", "background_style": "diagonal" },
-      { "layout": "agenda", "items": ["Revenue", "Product", "Customers", "Outlook"], "background_style": "soft_geometry" },
-      { "layout": "stat", "title": "By the numbers", "stats": [
-        { "value": "$4.2M", "label": "ARR", "caption": "+38% YoY" },
-        { "value": "97%", "label": "Retention" },
-        { "value": "12", "label": "New markets" }
-      ]},
-      { "layout": "quote", "text": "Best quarter of engagement we've shipped.", "attribution": "Head of Product" },
-      { "layout": "section", "title": "Looking ahead" },
-      { "layout": "body", "title": "2026 priorities", "bullets": ["Expand enterprise motion", "Ship multi-agent flows", "Invest in evals"] }
-    ]
-  }
-}
-```
+For PowerPoint/deck work, use `pptx-presentation-design` with `doc-script-editor`. For Excel/workbook work, use `xlsx-workbook-design`. For Word/document work, use `docx-document-design` and `office-document-design` as applicable. Prefer script stdin for temporary specs where supported, and remove temporary planning/conversion files unless they are part of the requested deliverable.
 
 ---
 

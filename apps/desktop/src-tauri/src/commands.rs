@@ -477,6 +477,31 @@ fn record_task_progress_for_agent_event(
             }
             record_and_emit_task_event(&task_event_ctx, "status", content, tone.as_deref(), None);
         }
+        AgentEvent::PlanUpdated {
+            plan,
+            phase,
+            summary,
+        } => {
+            let phase = phase.as_deref().unwrap_or("planning");
+            let summary = summary.as_deref().unwrap_or("Execution plan updated");
+            let _ = db.update_agent_task_run_progress(
+                task_run_id,
+                Some("running"),
+                Some(phase),
+                None,
+                Some(summary),
+                Some(plan),
+                None,
+            );
+            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+            record_and_emit_task_event(
+                &task_event_ctx,
+                "plan",
+                summary,
+                Some("running"),
+                Some(plan),
+            );
+        }
         AgentEvent::Done { finish_reason, .. } => {
             let payload = serde_json::json!({ "finishReason": finish_reason });
             let _ = db.update_agent_task_run_progress(
@@ -1683,7 +1708,9 @@ pub struct FilePreview {
     pub line_count: usize,
     pub truncated: bool,
     pub warning: Option<String>,
+    pub structured_preview: Option<nexa_core::preview::StructuredPreview>,
     pub rendered_preview: Option<RenderedPreview>,
+    pub capabilities: nexa_core::preview::PreviewCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2451,6 +2478,7 @@ fn build_file_preview(
     db: &Database,
     raw_path: &str,
     app_data_dir: Option<&Path>,
+    include_layout: bool,
 ) -> Result<FilePreview, String> {
     let resolved = resolve_source_file(db, raw_path)?;
     let metadata = std::fs::metadata(&resolved.canonical).map_err(|e| e.to_string())?;
@@ -2471,7 +2499,9 @@ fn build_file_preview(
     let mut binary = false;
     let mut truncated = false;
     let mut warning: Option<String> = None;
+    let mut structured_preview: Option<nexa_core::preview::StructuredPreview> = None;
     let mut rendered_preview: Option<RenderedPreview> = None;
+    let mut capabilities = nexa_core::preview::PreviewCapabilities::default();
 
     if is_document_preview_type(&mime_type) && size_bytes <= PREVIEW_PARSE_BYTES_LIMIT {
         match nexa_core::parse::parse_file(
@@ -2486,6 +2516,7 @@ fn build_file_preview(
             Ok(parsed) => {
                 content = Some(flatten_parsed_document(&parsed));
                 encoding = Some("extracted-text".to_string());
+                capabilities.can_extract_text = true;
             }
             Err(err) => {
                 warning = Some(format!("Could not extract document text: {err}"));
@@ -2505,6 +2536,7 @@ fn build_file_preview(
             content = Some(text);
             encoding = Some(enc);
             encoding_editable = editable_encoding;
+            capabilities.can_extract_text = true;
             if truncated {
                 warning = Some(format!(
                     "Preview is truncated to {} MB. Large files are read-only here.",
@@ -2524,31 +2556,87 @@ fn build_file_preview(
         ));
     }
 
-    if size_bytes <= PREVIEW_PARSE_BYTES_LIMIT && is_office_renderable_preview(&ext, &mime_type) {
-        if let Some(data_dir) = app_data_dir {
-            match build_office_rendered_preview(
-                data_dir,
-                &resolved.canonical,
-                &hash,
-                &display_name,
-                &ext,
-            ) {
-                Ok(rendered) => {
-                    if rendered.truncated {
-                        append_preview_warning(
-                            &mut warning,
-                            format!(
-                                "Rich Office preview is capped at the first {} pages.",
-                                PREVIEW_OFFICE_RENDER_MAX_PAGES
-                            ),
-                        );
-                    }
-                    rendered_preview = Some(rendered);
-                }
-                Err(err) => append_preview_warning(
+    if size_bytes <= PREVIEW_PARSE_BYTES_LIMIT {
+        let options = nexa_core::preview::PreviewBuildOptions {
+            asset_cache_dir: app_data_dir
+                .map(|data_dir| data_dir.join("preview-cache").join("assets")),
+        };
+        match nexa_core::preview::build_structured_preview(
+            &resolved.canonical,
+            &mime_type,
+            &hash,
+            &options,
+        ) {
+            Ok(Some(structured)) => {
+                structured_preview = Some(structured);
+                capabilities.can_render_structured = true;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                capabilities.structured_unavailable_reason = Some(err.clone());
+                append_preview_warning(
                     &mut warning,
-                    format!("Rich Office preview unavailable: {err}"),
-                ),
+                    format!("Structured preview unavailable: {err}"),
+                );
+            }
+        }
+    }
+
+    let layout_supported =
+        size_bytes <= PREVIEW_PARSE_BYTES_LIMIT && is_office_renderable_preview(&ext, &mime_type);
+    if layout_supported {
+        if let Some(data_dir) = app_data_dir {
+            let soffice_ready = find_soffice(data_dir).is_some();
+            let poppler_ready = find_pdftoppm(data_dir).is_some();
+            capabilities.can_render_layout = soffice_ready && poppler_ready;
+            capabilities.needs_external_runtime = !capabilities.can_render_layout;
+            if !capabilities.can_render_layout {
+                capabilities.layout_unavailable_reason = Some(match (soffice_ready, poppler_ready) {
+                    (false, false) => {
+                        "LibreOffice and Poppler are not available. Prepare Document tools in Settings to enable Layout mode.".to_string()
+                    }
+                    (false, true) => {
+                        "LibreOffice is not available. Prepare Document tools in Settings to enable Layout mode.".to_string()
+                    }
+                    (true, false) => {
+                        "Poppler is not available. Prepare Document tools in Settings to enable Layout mode.".to_string()
+                    }
+                    (true, true) => String::new(),
+                });
+            }
+        } else {
+            capabilities.needs_external_runtime = true;
+            capabilities.layout_unavailable_reason = Some(
+                "App data directory is unavailable, so Layout mode cannot cache pages.".to_string(),
+            );
+        }
+
+        if include_layout {
+            if let Some(data_dir) = app_data_dir {
+                match build_office_rendered_preview(
+                    data_dir,
+                    &resolved.canonical,
+                    &hash,
+                    &display_name,
+                    &ext,
+                ) {
+                    Ok(rendered) => {
+                        if rendered.truncated {
+                            append_preview_warning(
+                                &mut warning,
+                                format!(
+                                    "Rich Office preview is capped at the first {} pages.",
+                                    PREVIEW_OFFICE_RENDER_MAX_PAGES
+                                ),
+                            );
+                        }
+                        rendered_preview = Some(rendered);
+                    }
+                    Err(err) => append_preview_warning(
+                        &mut warning,
+                        format!("Rich Office preview unavailable: {err}"),
+                    ),
+                }
             }
         }
     }
@@ -2587,7 +2675,9 @@ fn build_file_preview(
         line_count,
         truncated,
         warning,
+        structured_preview,
         rendered_preview,
+        capabilities,
     })
 }
 
@@ -2596,15 +2686,18 @@ pub async fn preview_file_cmd(
     state: tauri::State<'_, AppState>,
     app_handle: AppHandle,
     path: String,
+    include_layout: Option<bool>,
 ) -> Result<FilePreview, String> {
     let db = state.db.clone();
     let data_dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
-    tokio::task::spawn_blocking(move || build_file_preview(&db, &path, Some(&data_dir)))
-        .await
-        .map_err(|e| e.to_string())?
+    tokio::task::spawn_blocking(move || {
+        build_file_preview(&db, &path, Some(&data_dir), include_layout.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Deserialize)]
@@ -2682,7 +2775,7 @@ pub async fn save_text_file_cmd(
                 Err(err) => ("error".to_string(), Some(err.to_string())),
             };
 
-        let preview = build_file_preview(&db, &resolved.canonical.to_string_lossy(), None)?;
+        let preview = build_file_preview(&db, &resolved.canonical.to_string_lossy(), None, false)?;
         Ok(FileSaveResult {
             preview,
             checkpoint_id: checkpoint.id,
@@ -6304,6 +6397,131 @@ mod tests {
         db
     }
 
+    fn write_minimal_docx(path: &Path) {
+        write_stored_zip(
+            path,
+            &[
+                (
+                    "[Content_Types].xml",
+                    br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"# as &[u8],
+                ),
+                (
+                    "_rels/.rels",
+                    br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"# as &[u8],
+                ),
+                (
+                    "word/document.xml",
+                    br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Quarterly Report</w:t></w:r></w:p>
+<w:p><w:r><w:t>Revenue increased.</w:t></w:r></w:p>
+</w:body>
+</w:document>"# as &[u8],
+                ),
+            ],
+        );
+    }
+
+    fn write_stored_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        struct CentralEntry {
+            name: String,
+            crc32: u32,
+            size: u32,
+            offset: u32,
+        }
+
+        fn push_u16(out: &mut Vec<u8>, value: u16) {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+
+        fn push_u32(out: &mut Vec<u8>, value: u32) {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut crc = 0xffff_ffffu32;
+            for byte in bytes {
+                crc ^= u32::from(*byte);
+                for _ in 0..8 {
+                    let mask = 0u32.wrapping_sub(crc & 1);
+                    crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+                }
+            }
+            !crc
+        }
+
+        let mut out = Vec::new();
+        let mut central_entries = Vec::new();
+        for (name, data) in entries {
+            let name_bytes = name.as_bytes();
+            let offset = out.len() as u32;
+            let crc = crc32(data);
+            let size = data.len() as u32;
+
+            push_u32(&mut out, 0x0403_4b50);
+            push_u16(&mut out, 20);
+            push_u16(&mut out, 0);
+            push_u16(&mut out, 0);
+            push_u16(&mut out, 0);
+            push_u16(&mut out, 0);
+            push_u32(&mut out, crc);
+            push_u32(&mut out, size);
+            push_u32(&mut out, size);
+            push_u16(&mut out, name_bytes.len() as u16);
+            push_u16(&mut out, 0);
+            out.extend_from_slice(name_bytes);
+            out.extend_from_slice(data);
+
+            central_entries.push(CentralEntry {
+                name: (*name).to_string(),
+                crc32: crc,
+                size,
+                offset,
+            });
+        }
+
+        let central_offset = out.len() as u32;
+        for entry in &central_entries {
+            let name_bytes = entry.name.as_bytes();
+            push_u32(&mut out, 0x0201_4b50);
+            push_u16(&mut out, 20);
+            push_u16(&mut out, 20);
+            push_u16(&mut out, 0);
+            push_u16(&mut out, 0);
+            push_u16(&mut out, 0);
+            push_u16(&mut out, 0);
+            push_u32(&mut out, entry.crc32);
+            push_u32(&mut out, entry.size);
+            push_u32(&mut out, entry.size);
+            push_u16(&mut out, name_bytes.len() as u16);
+            push_u16(&mut out, 0);
+            push_u16(&mut out, 0);
+            push_u16(&mut out, 0);
+            push_u16(&mut out, 0);
+            push_u32(&mut out, 0);
+            push_u32(&mut out, entry.offset);
+            out.extend_from_slice(name_bytes);
+        }
+        let central_size = out.len() as u32 - central_offset;
+
+        push_u32(&mut out, 0x0605_4b50);
+        push_u16(&mut out, 0);
+        push_u16(&mut out, 0);
+        push_u16(&mut out, central_entries.len() as u16);
+        push_u16(&mut out, central_entries.len() as u16);
+        push_u32(&mut out, central_size);
+        push_u32(&mut out, central_offset);
+        push_u16(&mut out, 0);
+
+        std::fs::write(path, out).expect("write zip");
+    }
+
     #[test]
     fn preview_resolves_unique_bare_filename_below_source_root() {
         let root = unique_temp_dir("preview-source");
@@ -6317,6 +6535,33 @@ mod tests {
 
         assert_eq!(resolved.canonical, std::fs::canonicalize(&file).unwrap());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn build_file_preview_uses_structured_office_preview_without_layout_by_default() {
+        let root = unique_temp_dir("preview-docx-source");
+        let app_data_dir = unique_temp_dir("preview-docx-app");
+        let file = root.join("sample.docx");
+        write_minimal_docx(&file);
+        let db = db_with_source(&root);
+
+        let preview = build_file_preview(&db, &file.to_string_lossy(), Some(&app_data_dir), false)
+            .expect("build preview");
+
+        assert!(preview.capabilities.can_render_structured);
+        assert!(preview.rendered_preview.is_none());
+        assert!(matches!(
+            preview.structured_preview,
+            Some(nexa_core::preview::StructuredPreview::Document { .. })
+        ));
+        assert!(!preview
+            .warning
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Rich Office preview"));
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(app_data_dir);
     }
 
     #[test]

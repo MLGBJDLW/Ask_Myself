@@ -28,6 +28,63 @@ const ALLOWED_MIME_TYPES = new Set([
   "application/vnd.ms-powerpoint",
 ]);
 
+const ALLOWED_EXTENSIONS = new Set([
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".gif",
+  ".webp",
+  ".pdf",
+  ".txt",
+  ".md",
+  ".csv",
+  ".json",
+  ".docx",
+  ".xlsx",
+  ".pptx",
+  ".doc",
+  ".xls",
+  ".ppt",
+]);
+
+const MIME_BY_EXTENSION = new Map<string, string>([
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".png", "image/png"],
+  [".gif", "image/gif"],
+  [".webp", "image/webp"],
+  [".pdf", "application/pdf"],
+  [".txt", "text/plain"],
+  [".md", "text/markdown"],
+  [".csv", "text/csv"],
+  [".json", "application/json"],
+  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  [".doc", "application/msword"],
+  [".xls", "application/vnd.ms-excel"],
+  [".ppt", "application/vnd.ms-powerpoint"],
+]);
+
+function getFileExtension(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot).toLowerCase() : "";
+}
+
+function getAllowedAttachmentMediaType(mediaType: string | undefined, name: string): string | null {
+  const normalized = (mediaType ?? "").trim().toLowerCase();
+  if (normalized && ALLOWED_MIME_TYPES.has(normalized)) {
+    return normalized;
+  }
+
+  const ext = getFileExtension(name);
+  if (!ALLOWED_EXTENSIONS.has(ext)) {
+    return null;
+  }
+
+  return MIME_BY_EXTENSION.get(ext) ?? "application/octet-stream";
+}
+
 interface ChatInputProps {
   onSend: (message: string, attachments?: ImageAttachment[]) => void;
   onStop: () => void;
@@ -162,10 +219,11 @@ export function ChatInput({
       const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
       if (!match) return false;
       const [, mediaType, base64Data] = match;
-      if (!ALLOWED_MIME_TYPES.has(mediaType)) return false;
+      const allowedMediaType = getAllowedAttachmentMediaType(mediaType, name);
+      if (!allowedMediaType) return false;
       setAttachments((prev) => [
         ...prev,
-        { base64Data, mediaType, originalName: name },
+        { base64Data, mediaType: allowedMediaType, originalName: name },
       ]);
       return true;
     },
@@ -240,7 +298,7 @@ export function ChatInput({
       const files = e.dataTransfer.files;
       if (!files) return;
       for (const file of Array.from(files)) {
-        if (!ALLOWED_MIME_TYPES.has(file.type)) continue;
+        if (!getAllowedAttachmentMediaType(file.type, file.name)) continue;
         try {
           await addAttachment(file, file.name);
         } catch {
@@ -470,7 +528,7 @@ export function ChatInput({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.txt,.md,.csv,.json,.docx,.xlsx,.pptx,.doc,.xls,.ppt"
+          accept="image/jpeg,image/png,image/gif,image/webp,.jpg,.jpeg,.png,.gif,.webp,.pdf,.txt,.md,.csv,.json,.docx,.xlsx,.pptx,.doc,.xls,.ppt"
           multiple
           hidden
           onChange={handleFileSelect}

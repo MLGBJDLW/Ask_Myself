@@ -12,9 +12,45 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { useChatSession } from '../lib/useChatSession';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
-import type { AgentConfig, Conversation } from '../types/conversation';
+import type { AgentConfig, Conversation, ImageAttachment } from '../types/conversation';
 import { extractChunkCitations } from '../lib/citationParser';
 import { formatUserError } from '../lib/userError';
+
+function personaExists(personas: api.PersonaProfile[], id: string): boolean {
+  return personas.some((persona) => persona.id === id && persona.enabled !== false);
+}
+
+function suggestPersonaId(message: string, personas: api.PersonaProfile[]): string | null {
+  const text = message.toLowerCase();
+  const matches = (terms: string[]) => terms.some((term) => text.includes(term.toLowerCase()));
+
+  if (
+    personaExists(personas, 'speaker') &&
+    matches(['ppt', 'pptx', 'powerpoint', 'slide', 'slides', 'deck', 'presentation', 'pitch', '演讲', '讲稿', '幻灯', '汇报', '路演'])
+  ) {
+    return 'speaker';
+  }
+  if (
+    personaExists(personas, 'researcher') &&
+    matches(['research', 'investigate', 'citation', 'citations', 'evidence', 'source', 'sources', 'paper', '调研', '研究', '证据', '引用', '论文', '深入了解'])
+  ) {
+    return 'researcher';
+  }
+  if (
+    personaExists(personas, 'editor') &&
+    matches(['edit', 'rewrite', 'polish', 'proofread', 'copyedit', '润色', '改写', '校对', '编辑', '修改文案'])
+  ) {
+    return 'editor';
+  }
+  if (
+    personaExists(personas, 'novelist') &&
+    matches(['novel', 'fiction', 'story', 'scene', 'character', 'plot', '小说', '故事', '角色', '剧情', '场景'])
+  ) {
+    return 'novelist';
+  }
+
+  return null;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -105,6 +141,19 @@ export function ChatPage() {
         .catch((error) => toast.error(formatUserError(t('settings.personas'), error)));
     }
   }, [chat.activeId, chat.setConversations, t]);
+
+  const handleChatSend = useCallback(
+    async (content: string, attachments?: ImageAttachment[]) => {
+      const suggestedPersonaId =
+        activePersonaId === 'default' ? suggestPersonaId(content, personas) : null;
+      const personaForSend = suggestedPersonaId ?? activePersonaId;
+      if (suggestedPersonaId && suggestedPersonaId !== activePersonaId) {
+        setPersona(suggestedPersonaId);
+      }
+      await chat.send(content, attachments, personaForSend);
+    },
+    [activePersonaId, chat.send, personas, setPersona],
+  );
 
   const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>([]);
   useEffect(() => {
@@ -598,9 +647,10 @@ export function ChatPage() {
             <TaskBoard
               messages={chat.messages}
               toolCalls={chat.toolCalls}
+              taskRun={chat.taskRun}
             />
             <ChatInput
-              onSend={chat.send}
+              onSend={handleChatSend}
               onStop={chat.stop}
               isStreaming={chat.isStreaming}
               disabled={!chat.agentConfig || chat.loadingMsgs}
