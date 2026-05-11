@@ -1,5 +1,6 @@
 mod docx;
 pub mod model;
+mod pdf;
 mod xlsx;
 
 use std::path::{Path, PathBuf};
@@ -32,6 +33,7 @@ pub fn build_structured_preview(
                 Ok(None)
             }
         }
+        "application/pdf" => pdf::preview_pdf(path),
         _ => Ok(None),
     }
 }

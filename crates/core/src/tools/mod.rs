@@ -128,6 +128,161 @@ pub struct ToolResult {
     pub artifacts: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolRenderKind {
+    Generic,
+    CommandExecution,
+    FileChange,
+    Search,
+    Subagent,
+    Image,
+    Plan,
+    Verification,
+    Mcp,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolInputStreamingMode {
+    None,
+    UiPreview,
+    ToolConsumesPartial,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolInterruptBehavior {
+    Block,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRunCapabilities {
+    pub input_streaming: ToolInputStreamingMode,
+    pub render_kind: ToolRenderKind,
+    pub read_only: bool,
+    pub destructive: bool,
+    pub concurrency_safe: bool,
+    pub interrupt_behavior: ToolInterruptBehavior,
+    pub resource_keys: Vec<String>,
+}
+
+pub struct ToolExecutionContext<'a> {
+    pub call_id: &'a str,
+    pub arguments: &'a str,
+    pub db: &'a Database,
+    pub source_scope: &'a [String],
+    pub conversation_id: Option<&'a str>,
+    pub cancel_token: Option<&'a tokio_util::sync::CancellationToken>,
+}
+
+fn infer_render_kind(name: &str) -> ToolRenderKind {
+    match name {
+        "run_shell" => ToolRenderKind::CommandExecution,
+        "edit_file" | "multi_edit" | "create_file" | "write_note" => ToolRenderKind::FileChange,
+        "search_knowledge_base"
+        | "search_files"
+        | "search_playbooks"
+        | "glob_files"
+        | "list_dir"
+        | "list_documents"
+        | "list_sources"
+        | "session_search"
+        | "tool_search" => ToolRenderKind::Search,
+        "spawn_subagent" | "spawn_subagent_batch" => ToolRenderKind::Subagent,
+        "generate_image" => ToolRenderKind::Image,
+        "update_plan" => ToolRenderKind::Plan,
+        "record_verification" => ToolRenderKind::Verification,
+        name if name.starts_with("mcp__") => ToolRenderKind::Mcp,
+        _ => ToolRenderKind::Generic,
+    }
+}
+
+fn infer_input_streaming(name: &str) -> ToolInputStreamingMode {
+    match name {
+        "generate_image"
+        | "run_shell"
+        | "search_knowledge_base"
+        | "search_files"
+        | "spawn_subagent"
+        | "spawn_subagent_batch"
+        | "tool_search" => ToolInputStreamingMode::UiPreview,
+        _ => ToolInputStreamingMode::None,
+    }
+}
+
+fn push_string_resource_key(keys: &mut Vec<String>, prefix: &str, value: &str) {
+    let normalized = value.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return;
+    }
+    let key = format!("{prefix}:{normalized}");
+    if !keys.iter().any(|existing| existing == &key) {
+        keys.push(key);
+    }
+}
+
+fn collect_string_or_array_resource(
+    args: &serde_json::Value,
+    field: &str,
+    prefix: &str,
+    keys: &mut Vec<String>,
+) {
+    let Some(value) = args.get(field) else {
+        return;
+    };
+    match value {
+        serde_json::Value::String(text) => push_string_resource_key(keys, prefix, text),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if let Some(text) = item.as_str() {
+                    push_string_resource_key(keys, prefix, text);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn infer_resource_keys(name: &str, args: &serde_json::Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    for field in [
+        "path",
+        "paths",
+        "file_path",
+        "filePath",
+        "file_paths",
+        "filePaths",
+        "target_path",
+        "targetPath",
+        "target_paths",
+        "targetPaths",
+        "absolute_path",
+        "absolutePath",
+        "source_path",
+        "sourcePath",
+        "destination_path",
+        "destinationPath",
+        "dest_path",
+        "destPath",
+        "new_path",
+        "newPath",
+        "old_path",
+        "oldPath",
+    ] {
+        collect_string_or_array_resource(args, field, "file", &mut keys);
+    }
+    for field in ["source_id", "sourceId", "source_ids", "sourceIds"] {
+        collect_string_or_array_resource(args, field, "source", &mut keys);
+    }
+    if name.starts_with("mcp__") {
+        push_string_resource_key(&mut keys, "mcp", name);
+    }
+    keys
+}
+
 /// Trust metadata attached to tool artifacts that may be injected into model
 /// context or shown in the UI. Retrieved content is normally evidence, not
 /// instruction.
@@ -330,6 +485,60 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// Preferred frontend renderer family for this tool.
+    fn render_kind(&self) -> ToolRenderKind {
+        infer_render_kind(self.name())
+    }
+
+    /// Whether this tool can safely receive arguments before the final JSON is
+    /// complete. Default is no streaming; tools can opt into UI preview or true
+    /// partial-input consumption once their implementation supports it.
+    fn input_streaming(&self) -> ToolInputStreamingMode {
+        infer_input_streaming(self.name())
+    }
+
+    /// Whether this invocation is read-only after parsing its arguments.
+    fn is_read_only(&self, args: &serde_json::Value) -> bool {
+        !self.requires_confirmation(args)
+    }
+
+    /// Whether multiple invocations of this tool can safely run concurrently.
+    fn is_concurrency_safe(&self, _args: &serde_json::Value) -> bool {
+        !self.requires_confirmation(_args)
+    }
+
+    /// What should happen if the user interrupts while this tool is running.
+    fn interrupt_behavior(&self) -> ToolInterruptBehavior {
+        ToolInterruptBehavior::Cancel
+    }
+
+    /// Resource identity touched by this invocation.
+    ///
+    /// The scheduler uses these keys to allow independent writes to run in
+    /// parallel while still isolating calls that touch the same file/source.
+    fn resource_keys(&self, args: &serde_json::Value) -> Vec<String> {
+        infer_resource_keys(self.name(), args)
+    }
+
+    /// Canonical capability descriptor used by the ToolRun lifecycle.
+    fn run_capabilities(&self, args: &serde_json::Value) -> ToolRunCapabilities {
+        let destructive = self.requires_confirmation(args);
+        let resource_keys = self.resource_keys(args);
+        ToolRunCapabilities {
+            input_streaming: self.input_streaming(),
+            render_kind: self.render_kind(),
+            read_only: self.is_read_only(args),
+            destructive,
+            concurrency_safe: self.is_concurrency_safe(args),
+            interrupt_behavior: if destructive {
+                ToolInterruptBehavior::Block
+            } else {
+                self.interrupt_behavior()
+            },
+            resource_keys,
+        }
+    }
+
     /// Execute the tool with the given JSON-encoded arguments.
     ///
     /// `source_scope` restricts results to the given source IDs when non-empty
@@ -356,6 +565,25 @@ pub trait Tool: Send + Sync {
         _conversation_id: Option<&str>,
     ) -> Result<ToolResult, CoreError> {
         self.execute(call_id, arguments, db, source_scope).await
+    }
+
+    /// Deep execution interface used by the agent runtime.
+    ///
+    /// The default bridges to the legacy argument list, while newer tools can
+    /// use cancellation and other execution context without widening every call
+    /// site again.
+    async fn execute_with_run_context(
+        &self,
+        ctx: ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        self.execute_with_context(
+            ctx.call_id,
+            ctx.arguments,
+            ctx.db,
+            ctx.source_scope,
+            ctx.conversation_id,
+        )
+        .await
     }
 }
 
@@ -444,6 +672,20 @@ impl ToolRegistry {
     /// Get the confirmation message for a tool with the given arguments.
     pub fn confirmation_message(&self, name: &str, args: &serde_json::Value) -> Option<String> {
         self.get(name).and_then(|t| t.confirmation_message(args))
+    }
+
+    pub fn run_capabilities(&self, name: &str, args: &serde_json::Value) -> ToolRunCapabilities {
+        self.get(name)
+            .map(|tool| tool.run_capabilities(args))
+            .unwrap_or(ToolRunCapabilities {
+                input_streaming: ToolInputStreamingMode::None,
+                render_kind: infer_render_kind(name),
+                read_only: false,
+                destructive: false,
+                concurrency_safe: true,
+                interrupt_behavior: ToolInterruptBehavior::Block,
+                resource_keys: infer_resource_keys(name, args),
+            })
     }
 
     /// Return definitions for tools whose categories overlap with `active`.
@@ -746,6 +988,18 @@ impl ToolRegistry {
             .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
         tool.execute_with_context(call_id, arguments, db, source_scope, conversation_id)
             .await
+    }
+
+    pub async fn execute_with_run_context(
+        &self,
+        name: &str,
+        ctx: ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        enforce_tool_arg_limit(name, ctx.arguments)?;
+        let tool = self
+            .get(name)
+            .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
+        tool.execute_with_run_context(ctx).await
     }
 }
 

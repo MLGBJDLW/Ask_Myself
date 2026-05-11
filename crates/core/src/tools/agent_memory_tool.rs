@@ -65,6 +65,29 @@ impl Tool for AgentMemoryTool {
             .is_some_and(|action| action == "delete")
     }
 
+    fn is_read_only(&self, args: &serde_json::Value) -> bool {
+        args.get("action")
+            .and_then(|v| v.as_str())
+            .is_some_and(|action| matches!(action, "search" | "list"))
+    }
+
+    fn is_concurrency_safe(&self, args: &serde_json::Value) -> bool {
+        self.is_read_only(args)
+    }
+
+    fn resource_keys(&self, args: &serde_json::Value) -> Vec<String> {
+        match args.get("action").and_then(|v| v.as_str()) {
+            Some("search" | "list") => Vec::new(),
+            Some("delete") => args
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|id| vec![format!("agent-memory:{id}")])
+                .unwrap_or_else(|| vec!["agent-memory".to_string()]),
+            Some("record") => vec!["agent-memory".to_string()],
+            _ => vec!["agent-memory".to_string()],
+        }
+    }
+
     fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
         let action = args.get("action")?.as_str()?;
         if action != "delete" {
@@ -184,5 +207,27 @@ mod tests {
             .unwrap();
         assert!(!result.is_error);
         assert!(result.content.contains("1"));
+    }
+
+    #[test]
+    fn memory_capabilities_distinguish_reads_from_writes() {
+        let tool = AgentMemoryTool;
+        let record = serde_json::json!({ "action": "record" });
+        let search = serde_json::json!({ "action": "search" });
+        let delete = serde_json::json!({ "action": "delete", "id": "mem-1" });
+
+        let record_caps = tool.run_capabilities(&record);
+        assert!(!record_caps.read_only);
+        assert!(!record_caps.concurrency_safe);
+        assert_eq!(record_caps.resource_keys, vec!["agent-memory"]);
+
+        let search_caps = tool.run_capabilities(&search);
+        assert!(search_caps.read_only);
+        assert!(search_caps.concurrency_safe);
+        assert!(search_caps.resource_keys.is_empty());
+
+        let delete_caps = tool.run_capabilities(&delete);
+        assert!(delete_caps.destructive);
+        assert_eq!(delete_caps.resource_keys, vec!["agent-memory:mem-1"]);
     }
 }

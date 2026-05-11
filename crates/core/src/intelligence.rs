@@ -551,8 +551,7 @@ fn file_operation_plan(input: TaskPlanningInput<'_>, objective: String) -> Agent
         safeguards: vec![
             "Create checkpoints before destructive file edits when available.".to_string(),
             "Ask for approval or use the approval flow for destructive actions.".to_string(),
-            "For office files, validate the rendered or structured output before finishing."
-                .to_string(),
+            "For office files, validate the structured output before finishing.".to_string(),
         ],
     }
 }

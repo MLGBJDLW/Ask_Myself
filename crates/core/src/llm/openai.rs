@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::{
     streaming::parse_sse_stream, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
@@ -18,6 +18,7 @@ use crate::error::CoreError;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
+const MAX_COMPLETE_ATTEMPTS: u32 = 3;
 const MISSING_REASONING_CONTENT_PLACEHOLDER: &str =
     "[reasoning content unavailable in local history]";
 
@@ -237,6 +238,26 @@ fn openai_reasoning_effort(effort: Option<&ReasoningEffort>) -> String {
 
 fn requires_non_streaming_fallback(model: &str) -> bool {
     model.to_lowercase().starts_with("gpt-5.5-pro")
+}
+
+fn is_retriable_reqwest_error(error: &reqwest::Error) -> bool {
+    let msg = error.to_string().to_ascii_lowercase();
+    error.is_timeout()
+        || error.is_connect()
+        || error.is_body()
+        || msg.contains("connection")
+        || msg.contains("closed")
+        || msg.contains("reset")
+        || msg.contains("broken pipe")
+        || msg.contains("incomplete")
+        || msg.contains("incompleted")
+        || msg.contains("unexpected eof")
+        || msg.trim() == "error decoding response body"
+}
+
+async fn sleep_before_completion_retry(attempt: u32) {
+    let delay_ms = 250_u64.saturating_mul(2_u64.saturating_pow(attempt.saturating_sub(1)));
+    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 }
 
 fn completion_response_to_stream_chunks(
@@ -624,22 +645,62 @@ impl LlmProvider for OpenAiProvider {
         let api_key = self.api_key()?;
         let body = build_request_body(request, false);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {api_key}"))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+        let mut attempt = 1;
+        let oai: OaiResponse = loop {
+            let response = match self
+                .client
+                .post(&url)
+                .header("Authorization", format!("Bearer {api_key}"))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(e) if is_retriable_reqwest_error(&e) && attempt < MAX_COMPLETE_ATTEMPTS => {
+                    warn!(
+                        "OpenAI completion request failed on attempt {attempt}/{MAX_COMPLETE_ATTEMPTS}: {e}; retrying"
+                    );
+                    sleep_before_completion_retry(attempt).await;
+                    attempt += 1;
+                    continue;
+                }
+                Err(e) => return Err(CoreError::Llm(format!("Request failed: {e}"))),
+            };
 
-        let response = self.check_response(response).await?;
+            let response = match self.check_response(response).await {
+                Ok(response) => response,
+                Err(CoreError::TransientLlm(message)) if attempt < MAX_COMPLETE_ATTEMPTS => {
+                    warn!(
+                        "OpenAI completion returned transient error on attempt {attempt}/{MAX_COMPLETE_ATTEMPTS}: {message}; retrying"
+                    );
+                    sleep_before_completion_retry(attempt).await;
+                    attempt += 1;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
 
-        let oai: OaiResponse = response
-            .json()
-            .await
-            .map_err(|e| CoreError::Llm(format!("Failed to parse completion response: {e}")))?;
+            match response.json().await {
+                Ok(oai) => break oai,
+                Err(e) if is_retriable_reqwest_error(&e) && attempt < MAX_COMPLETE_ATTEMPTS => {
+                    warn!(
+                        "OpenAI completion response body failed on attempt {attempt}/{MAX_COMPLETE_ATTEMPTS}: {e}; retrying"
+                    );
+                    sleep_before_completion_retry(attempt).await;
+                    attempt += 1;
+                    continue;
+                }
+                Err(e) => {
+                    let message = format!("Failed to parse completion response: {e}");
+                    return if is_retriable_reqwest_error(&e) {
+                        Err(CoreError::TransientLlm(message))
+                    } else {
+                        Err(CoreError::Llm(message))
+                    };
+                }
+            }
+        };
 
         let choice = oai
             .choices

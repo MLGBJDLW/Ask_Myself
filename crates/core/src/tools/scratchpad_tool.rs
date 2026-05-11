@@ -54,6 +54,18 @@ impl Tool for UpdateScratchpadTool {
         &[ToolCategory::Core]
     }
 
+    fn is_read_only(&self, _args: &serde_json::Value) -> bool {
+        false
+    }
+
+    fn is_concurrency_safe(&self, _args: &serde_json::Value) -> bool {
+        false
+    }
+
+    fn resource_keys(&self, _args: &serde_json::Value) -> Vec<String> {
+        vec!["conversation:scratchpad".to_string()]
+    }
+
     async fn execute(
         &self,
         call_id: &str,
@@ -231,5 +243,17 @@ mod tests {
             .await
             .unwrap();
         assert!(res.is_error);
+    }
+
+    #[test]
+    fn scratchpad_capabilities_are_conversation_write_scoped() {
+        let tool = UpdateScratchpadTool;
+        let args = serde_json::json!({ "action": "append", "content": "note" });
+
+        let caps = tool.run_capabilities(&args);
+
+        assert!(!caps.read_only);
+        assert!(!caps.concurrency_safe);
+        assert_eq!(caps.resource_keys, vec!["conversation:scratchpad"]);
     }
 }

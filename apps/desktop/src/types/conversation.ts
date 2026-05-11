@@ -322,10 +322,14 @@ export interface AgentEvent {
   type:
     | 'textDelta'
     | 'streamReset'
+    | 'toolCallPreparing'
     | 'toolCallStart'
     | 'toolCallArgsDelta'
     | 'toolCallProgress'
     | 'toolCallResult'
+    | 'toolRunStarted'
+    | 'toolRunUpdated'
+    | 'toolRunCompleted'
     | 'thinking'
     | 'status'
     | 'done'
@@ -340,13 +344,16 @@ export interface AgentEvent {
   reason?: string;
   callId?: string;
   toolName?: string;
+  /** Number of argument characters assembled when the backend entered preparing state. */
+  argsBytes?: number;
   arguments?: string;
-  /** Appended arguments fragment for streaming tool calls. */
+  /** Legacy appended arguments fragment for streaming tool calls. */
   argumentsDelta?: string;
   /** Optional ordering index for argument deltas. */
   index?: number;
   /** Progress heartbeat note from a long-running tool. */
   note?: string;
+  run?: ToolRunItem;
   content?: string;
   tone?: 'muted' | 'success' | 'error';
   isError?: boolean;
@@ -405,10 +412,12 @@ export interface AgentFrontendEvent {
   reason?: string;
   callId?: string;
   toolName?: string;
+  argsBytes?: number;
   arguments?: string;
   argumentsDelta?: string;
   index?: number;
   note?: string;
+  run?: ToolRunItem;
   content?: string;
   tone?: 'muted' | 'success' | 'error';
   isError?: boolean;
@@ -420,6 +429,54 @@ export interface AgentFrontendEvent {
   decision?: ApprovalDecisionValue;
   taskRun?: AgentTaskRun;
   taskEvent?: AgentTaskRunEvent;
+}
+
+export type ToolRunStatus =
+  | 'preparing'
+  | 'approvalPending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'declined'
+  | 'cancelled'
+  | 'timedOut';
+
+export type ToolRenderKind =
+  | 'generic'
+  | 'commandExecution'
+  | 'fileChange'
+  | 'search'
+  | 'subagent'
+  | 'image'
+  | 'plan'
+  | 'verification'
+  | 'mcp';
+
+export type ToolInputStreamingMode = 'none' | 'uiPreview' | 'toolConsumesPartial';
+export type ToolInterruptBehavior = 'block' | 'cancel';
+
+export interface ToolRunCapabilities {
+  inputStreaming: ToolInputStreamingMode;
+  renderKind: ToolRenderKind;
+  readOnly: boolean;
+  destructive: boolean;
+  concurrencySafe: boolean;
+  interruptBehavior: ToolInterruptBehavior;
+  resourceKeys: string[];
+}
+
+export interface ToolRunItem {
+  callId: string;
+  toolName: string;
+  status: ToolRunStatus;
+  arguments?: string;
+  renderKind: ToolRenderKind;
+  capabilities: ToolRunCapabilities;
+  content?: string;
+  isError?: boolean;
+  artifacts?: ArtifactPayload;
+  progressNote?: string;
+  durationMs?: number;
 }
 
 export interface ConversationStats {

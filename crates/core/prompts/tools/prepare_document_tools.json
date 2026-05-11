@@ -1,6 +1,6 @@
 {
   "name": "prepare_document_tools",
-  "description": "Check or prepare the local Python-backed document tools used by the Office skills. Use this before DOCX, XLSX, PPTX, or PDF creation/editing when dependencies may be missing. The prepare action creates or updates the app-managed Python environment and installs required Python packages. Do not request optional tools unless the user explicitly confirms after you explain that LibreOffice/Poppler may download or install large binaries.",
+  "description": "Check or prepare the local Python-backed document tools used by the Office skills. Use this before DOCX, XLSX, PPTX, or PDF creation/editing when dependencies may be missing. The prepare action creates or updates the app-managed Python environment and installs required Python packages.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -8,18 +8,6 @@
         "type": "string",
         "enum": ["check", "prepare"],
         "description": "Use check to report current readiness. Use prepare to install or update required document-tool dependencies."
-      },
-      "include_optional_tools": {
-        "type": "boolean",
-        "description": "Backward-compatible shortcut. When true, prepare both optional LibreOffice and Poppler helpers. Ask the user first; LibreOffice can be hundreds of MB."
-      },
-      "optional_tools": {
-        "type": "array",
-        "items": {
-          "type": "string",
-          "enum": ["poppler", "libreoffice"]
-        },
-        "description": "Selective optional helpers to prepare after explicit user confirmation. Use poppler for PDF/page image rendering. Use libreoffice for Office-to-PDF conversion, visual QA, and Excel recalculation; it can be a large download."
       }
     },
     "required": ["action"]

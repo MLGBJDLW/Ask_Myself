@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
@@ -437,6 +437,7 @@ pub struct DelegationRuntime {
     allowed_skill_ids: Option<Vec<String>>,
     parent_task_run_id: Option<String>,
     tool_registry: Arc<StdMutex<Option<ToolRegistry>>>,
+    sessions: Arc<StdMutex<HashMap<String, SubagentSessionSnapshot>>>,
     budget: SubagentBudgetController,
     cancel_token: CancellationToken,
     delegation_depth: u8,
@@ -556,6 +557,7 @@ impl DelegationRuntime {
             allowed_skill_ids,
             parent_task_run_id,
             tool_registry: Arc::new(StdMutex::new(None)),
+            sessions: Arc::new(StdMutex::new(HashMap::new())),
             budget,
             cancel_token,
             delegation_depth: 0,
@@ -588,6 +590,7 @@ impl DelegationRuntime {
             allowed_skill_ids: self.allowed_skill_ids.clone(),
             parent_task_run_id: self.parent_task_run_id.clone(),
             tool_registry: Arc::clone(&self.tool_registry),
+            sessions: Arc::clone(&self.sessions),
             budget: self.budget.clone(),
             cancel_token,
             delegation_depth: self.delegation_depth.saturating_add(1),
@@ -597,11 +600,26 @@ impl DelegationRuntime {
     fn can_delegate_further(&self) -> bool {
         self.delegation_depth < MAX_SUBAGENT_DELEGATION_DEPTH
     }
+
+    fn get_session_snapshot(&self, task_id: &str) -> Option<SubagentSessionSnapshot> {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.get(task_id).cloned())
+    }
+
+    fn save_session_snapshot(&self, snapshot: SubagentSessionSnapshot) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.insert(snapshot.task_id.clone(), snapshot);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct SpawnSubagentArgs {
     task: String,
+    #[serde(default)]
+    task_id: Option<String>,
     #[serde(default)]
     role_id: Option<String>,
     #[serde(default)]
@@ -634,6 +652,8 @@ struct SpawnSubagentArgs {
 struct BatchSubagentTaskArgs {
     #[serde(default)]
     id: Option<String>,
+    #[serde(default)]
+    task_id: Option<String>,
     task: String,
     #[serde(default)]
     role_id: Option<String>,
@@ -732,8 +752,25 @@ struct AppliedSkillRef {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SubagentSessionSnapshot {
+    task_id: String,
+    last_run_id: String,
+    task: String,
+    role_id: Option<String>,
+    role_name: Option<String>,
+    result: String,
+    finish_reason: Option<String>,
+    usage_total: Usage,
+    tool_event_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SubagentRunArtifact {
     id: String,
+    session_id: String,
+    resumed_from_task_id: Option<String>,
+    previous_session: Option<SubagentSessionSnapshot>,
     status: String,
     task: String,
     role_id: Option<String>,
@@ -790,6 +827,7 @@ fn subtask_input_payload(
         "kind": kind,
         "callLabel": call_label,
         "workerId": worker_id,
+        "taskId": &args.task_id,
         "task": &args.task,
         "roleId": role_profile.map(|profile| profile.id),
         "roleName": role_profile.map(|profile| profile.label),
@@ -1026,6 +1064,7 @@ fn expand_workflow_template_tasks(
 
             BatchSubagentTaskArgs {
                 id: Some(format!("{}-{}", template.id, task_template.id)),
+                task_id: None,
                 task: format!(
                     "Overall goal:\n{}\n\nTemplate step:\n{}",
                     batch_goal.trim(),
@@ -1208,6 +1247,7 @@ fn build_subagent_request(
     effective_allowed_tools: &[String],
     allowed_skills: &[AppliedSkillRef],
     evidence_handoff: &[EvidenceHandoffItem],
+    previous_session: Option<&SubagentSessionSnapshot>,
 ) -> String {
     let sections = build_return_sections(args, role_profile);
     let mut request = String::from(
@@ -1229,6 +1269,8 @@ fn build_subagent_request(
             "allowedTools": effective_allowed_tools,
             "allowedSkills": allowed_skills,
             "evidenceChunkIds": args.evidence_chunk_ids,
+            "taskId": args.task_id,
+            "resumingTaskId": previous_session.map(|snapshot| snapshot.task_id.as_str()),
         }))
         .unwrap_or_else(|_| "{}".to_string()),
     );
@@ -1275,6 +1317,17 @@ fn build_subagent_request(
     {
         request.push_str("\n\n## Supervisor Context\n");
         request.push_str(&truncate_excerpt(context, 4_000));
+    }
+
+    if let Some(snapshot) = previous_session {
+        request.push_str("\n\n## Resumed Subagent Session\n");
+        request.push_str("You are continuing a previous delegated session with task_id `");
+        request.push_str(&snapshot.task_id);
+        request.push_str("`. Treat the prior result as context, not as final truth.\n\n");
+        request.push_str("Previous task:\n");
+        request.push_str(&truncate_excerpt(&snapshot.task, 1_000));
+        request.push_str("\n\nPrevious result:\n");
+        request.push_str(&truncate_excerpt(&snapshot.result, 4_000));
     }
 
     if let Some(expected_output) = args
@@ -1374,6 +1427,7 @@ fn normalize_spawn_args(mut args: SpawnSubagentArgs) -> Result<SpawnSubagentArgs
     };
     resolve_role_profile(args.role_id.as_deref(), args.role.as_deref())?;
     args.role = trim_optional(args.role);
+    args.task_id = trim_optional(args.task_id);
     args.context = trim_optional(args.context);
     args.expected_output = trim_optional(args.expected_output);
     args.parallel_group = trim_optional(args.parallel_group);
@@ -1393,6 +1447,7 @@ fn normalize_batch_task_args(
     let worker_id = trim_optional(task.id);
     let args = normalize_spawn_args(SpawnSubagentArgs {
         task: task.task,
+        task_id: task.task_id,
         role_id: task.role_id,
         role: task.role,
         context: task.context,
@@ -1431,6 +1486,13 @@ async fn run_subagent_once(
         .map_err(|e| CoreError::Llm(e.to_string()))?;
 
     let role_profile = resolve_role_profile(args.role_id.as_deref(), args.role.as_deref())?;
+    let requested_task_id = args.task_id.clone();
+    let session_id = requested_task_id
+        .clone()
+        .unwrap_or_else(|| worker_id.clone().unwrap_or_else(|| call_label.clone()));
+    let previous_session = requested_task_id
+        .as_deref()
+        .and_then(|task_id| runtime.get_session_snapshot(task_id));
 
     let mut config = runtime.base_config.clone();
     config.max_iterations = args
@@ -1488,6 +1550,7 @@ async fn run_subagent_once(
         &effective_allowed_tools,
         &applied_skill_refs,
         &evidence_handoff,
+        previous_session.as_ref(),
     );
     let reserved_tokens = estimate_reserved_tokens(&config, &request_text, &tools);
     let subtask_input = subtask_input_payload(
@@ -1652,6 +1715,10 @@ async fn run_subagent_once(
                 | AgentEvent::StreamReset { .. }
                 | AgentEvent::Error { .. }
                 | AgentEvent::AutoCompacted { .. }
+                | AgentEvent::ToolRunStarted { .. }
+                | AgentEvent::ToolRunUpdated { .. }
+                | AgentEvent::ToolRunCompleted { .. }
+                | AgentEvent::ToolCallPreparing { .. }
                 | AgentEvent::ToolCallArgsDelta { .. }
                 | AgentEvent::ToolCallProgress { .. }
                 | AgentEvent::ApprovalRequested { .. }
@@ -1738,7 +1805,12 @@ async fn run_subagent_once(
             .is_some_and(|ids| !ids.is_empty());
 
     let run = SubagentRunArtifact {
-        id: worker_id.unwrap_or(call_label),
+        id: worker_id.unwrap_or_else(|| call_label.clone()),
+        session_id: session_id.clone(),
+        resumed_from_task_id: requested_task_id
+            .clone()
+            .filter(|_| previous_session.is_some()),
+        previous_session: previous_session.clone(),
         status: "done".to_string(),
         task: args.task,
         role_id: role_profile.map(|profile| profile.id.to_string()),
@@ -1769,6 +1841,17 @@ async fn run_subagent_once(
         is_error: false,
         error_message: None,
     };
+    runtime.save_session_snapshot(SubagentSessionSnapshot {
+        task_id: session_id.clone(),
+        last_run_id: run.id.clone(),
+        task: run.task.clone(),
+        role_id: run.role_id.clone(),
+        role_name: run.role_name.clone(),
+        result: run.result.clone(),
+        finish_reason: run.finish_reason.clone(),
+        usage_total: run.usage_total.clone(),
+        tool_event_count: run.tool_events.len(),
+    });
     let output = serde_json::json!({
         "kind": "subagent_run",
         "run": &run,
@@ -2238,7 +2321,10 @@ impl Tool for SubagentBatchTool {
                     {
                         Ok(run) => run,
                         Err(err) => SubagentRunArtifact {
-                            id: label,
+                            id: label.clone(),
+                            session_id: label,
+                            resumed_from_task_id: None,
+                            previous_session: None,
                             status: "error".to_string(),
                             task: fallback_task,
                             role_id: None,
@@ -2675,6 +2761,7 @@ mod tests {
     fn test_normalize_spawn_args_clamps_timeout() {
         let args = normalize_spawn_args(SpawnSubagentArgs {
             task: "Investigate".into(),
+            task_id: Some("  worker-1  ".into()),
             role_id: None,
             role: None,
             context: None,
@@ -2692,12 +2779,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(args.timeout_secs, Some(180));
+        assert_eq!(args.task_id.as_deref(), Some("worker-1"));
     }
 
     #[test]
     fn test_normalize_spawn_args_accepts_structured_role_id() {
         let args = normalize_spawn_args(SpawnSubagentArgs {
             task: "Check the draft".into(),
+            task_id: None,
             role_id: Some("Verifier".into()),
             role: None,
             context: None,
@@ -2733,6 +2822,7 @@ mod tests {
     fn test_unknown_role_id_is_rejected() {
         let err = normalize_spawn_args(SpawnSubagentArgs {
             task: "Check the draft".into(),
+            task_id: None,
             role_id: Some("wizard".into()),
             role: None,
             context: None,
@@ -2767,6 +2857,29 @@ mod tests {
         assert!(tools.contains(&"record_verification".to_string()));
         assert!(!tools.contains(&"desktop_automation".to_string()));
         assert!(!tools.contains(&"run_shell".to_string()));
+    }
+
+    #[test]
+    fn test_runtime_saves_subagent_session_snapshot() {
+        let runtime = test_runtime();
+        runtime.save_session_snapshot(SubagentSessionSnapshot {
+            task_id: "worker-1".to_string(),
+            last_run_id: "run-1".to_string(),
+            task: "Investigate".to_string(),
+            role_id: Some("researcher".to_string()),
+            role_name: Some("Researcher".to_string()),
+            result: "Prior result".to_string(),
+            finish_reason: Some("stop".to_string()),
+            usage_total: Usage::default(),
+            tool_event_count: 2,
+        });
+
+        let snapshot = runtime
+            .get_session_snapshot("worker-1")
+            .expect("snapshot should be saved");
+        assert_eq!(snapshot.last_run_id, "run-1");
+        assert_eq!(snapshot.result, "Prior result");
+        assert_eq!(snapshot.tool_event_count, 2);
     }
 
     #[test]

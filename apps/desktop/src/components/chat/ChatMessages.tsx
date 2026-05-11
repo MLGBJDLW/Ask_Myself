@@ -42,6 +42,7 @@ import type {
   TraceEvent,
 } from "../../lib/useAgentStream";
 import { ToolCallCard } from "./ToolCallCard";
+import { isBoardOnlyToolRender } from "./toolRenderers";
 import {
   FileDiffPreview,
   extractFileDiffArtifacts,
@@ -62,6 +63,8 @@ import type {
   ArtifactPayload,
   ConversationMessage,
   ConversationTurn,
+  ToolRenderKind,
+  ToolRunCapabilities,
 } from "../../types/conversation";
 
 interface ChatMessagesProps {
@@ -144,6 +147,9 @@ interface PersistedTraceToolCall {
   toolName: string;
   arguments: string;
   status: "running" | "done" | "error";
+  renderKind?: ToolRenderKind;
+  capabilities?: ToolRunCapabilities;
+  durationMs?: number;
   content?: string;
   isError?: boolean;
   artifacts?: ArtifactPayload;
@@ -188,8 +194,11 @@ function shouldHideTraceStatus(text: string | null | undefined): boolean {
   );
 }
 
-function isBoardOnlyToolCall(toolName: string | null | undefined): boolean {
-  return (toolName ?? "").trim() === "update_plan";
+function isBoardOnlyToolCall(
+  toolName: string | null | undefined,
+  renderKind?: ToolRenderKind,
+): boolean {
+  return isBoardOnlyToolRender(toolName, renderKind);
 }
 
 function formatTurnStatus(status: string): string {
@@ -280,6 +289,18 @@ function extractPersistedTraceItems(
               : toolCall.status === "running"
                 ? "running"
                 : "done",
+          renderKind:
+            typeof toolCall.renderKind === "string"
+              ? (toolCall.renderKind as ToolRenderKind)
+              : undefined,
+          capabilities:
+            toolCall.capabilities && typeof toolCall.capabilities === "object"
+              ? (toolCall.capabilities as ToolRunCapabilities)
+              : undefined,
+          durationMs:
+            typeof toolCall.durationMs === "number"
+              ? toolCall.durationMs
+              : undefined,
           content:
             typeof toolCall.content === "string" ? toolCall.content : undefined,
           isError:
@@ -742,7 +763,7 @@ export function ChatMessages({
           });
           continue;
         }
-        if (isBoardOnlyToolCall(item.toolCall.toolName)) {
+        if (isBoardOnlyToolCall(item.toolCall.toolName, item.toolCall.renderKind)) {
           continue;
         }
         fallbackSections.push({
@@ -753,6 +774,9 @@ export function ChatMessages({
               toolName={item.toolCall.toolName}
               arguments={item.toolCall.arguments}
               status={item.toolCall.status}
+              renderKind={item.toolCall.renderKind}
+              capabilities={item.toolCall.capabilities}
+              durationMs={item.toolCall.durationMs}
               content={item.toolCall.content}
               isError={item.toolCall.isError}
               artifacts={item.toolCall.artifacts}
@@ -809,7 +833,7 @@ export function ChatMessages({
                     ),
                   };
                 }
-                if (isBoardOnlyToolCall(item.toolCall.toolName)) {
+                if (isBoardOnlyToolCall(item.toolCall.toolName, item.toolCall.renderKind)) {
                   return [];
                 }
                 return {
@@ -820,6 +844,9 @@ export function ChatMessages({
                       toolName={item.toolCall.toolName}
                       arguments={item.toolCall.arguments}
                       status={item.toolCall.status}
+                      renderKind={item.toolCall.renderKind}
+                      capabilities={item.toolCall.capabilities}
+                      durationMs={item.toolCall.durationMs}
                       content={item.toolCall.content}
                       isError={item.toolCall.isError}
                       artifacts={item.toolCall.artifacts}
@@ -971,7 +998,7 @@ export function ChatMessages({
         return event.text.trim().length > 0 ? [{ text: event.text }] : [];
       }
       if (event.kind === "tool") {
-        if (isBoardOnlyToolCall(event.toolCall.toolName)) return [];
+        if (isBoardOnlyToolCall(event.toolCall.toolName, event.toolCall.renderKind)) return [];
         return [
           {
             text: "",
@@ -981,6 +1008,9 @@ export function ChatMessages({
                 toolName={event.toolCall.toolName}
                 arguments={event.toolCall.arguments}
                 status={event.toolCall.status}
+                renderKind={event.toolCall.renderKind}
+                capabilities={event.toolCall.capabilities}
+                durationMs={event.toolCall.durationMs}
                 content={event.toolCall.content}
                 isError={event.toolCall.isError}
                 artifacts={event.toolCall.artifacts}
@@ -1027,7 +1057,7 @@ export function ChatMessages({
         sections.push({ text: round.thinking });
       }
       for (const tc of round.toolCalls) {
-        if (isBoardOnlyToolCall(tc.toolName)) continue;
+        if (isBoardOnlyToolCall(tc.toolName, tc.renderKind)) continue;
         sections.push({
           text: "",
           node: (
@@ -1036,6 +1066,9 @@ export function ChatMessages({
               toolName={tc.toolName}
               arguments={tc.arguments}
               status={tc.status}
+              renderKind={tc.renderKind}
+              capabilities={tc.capabilities}
+              durationMs={tc.durationMs}
               content={tc.content}
               isError={tc.isError}
               artifacts={tc.artifacts}
@@ -1088,7 +1121,11 @@ export function ChatMessages({
       return (
         isThinking ||
         thinkingText.trim().length > 0 ||
-        toolCalls.some((toolCall) => toolCall.status === "running")
+        toolCalls.some((toolCall) =>
+          toolCall.status === "running" ||
+          toolCall.status === "starting" ||
+          toolCall.status === "preparing" ||
+          toolCall.status === "approvalPending")
       );
     }
     return lastVisibleEvent.kind !== "reply";

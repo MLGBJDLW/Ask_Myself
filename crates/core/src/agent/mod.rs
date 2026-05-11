@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::{future::join_all, StreamExt};
+use futures::{stream::FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 use tracing::{debug, error, info, info_span, warn, Instrument};
@@ -24,29 +24,52 @@ use crate::conversation::summarizer;
 use crate::conversation::{ConversationMessage, ImageAttachment};
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::evidence_verifier::{audit_final_answer, EvidenceSignals};
+use crate::evidence_verifier::audit_final_answer;
 use crate::intelligence::{
     advance_task_plan_for_tool_result, build_task_plan, finalize_task_plan, AgentTaskPlan,
     TaskPlanningInput,
 };
 use crate::llm::{
     CompletionRequest, ContentPart, LlmProvider, Message, ProviderType, ReasoningEffort, Role,
-    ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
+    StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
 };
 use crate::privacy;
 use crate::skills::Skill;
-use crate::tools::{ToolCategory, ToolRegistry};
+use crate::tools::{
+    ToolCategory, ToolInputStreamingMode, ToolInterruptBehavior, ToolRegistry, ToolRenderKind,
+    ToolRunCapabilities,
+};
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
 pub mod context;
+pub mod context_pipeline;
+mod direct_dispatch;
+pub mod loop_guard;
+pub mod route;
+mod sampling;
 pub mod scratchpad;
+mod tool_runtime;
+pub mod tool_scheduler;
+mod trace_builder;
+pub mod turn_events;
+
+use self::context_pipeline::ContextPipeline;
+use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
+use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
+use self::sampling::{completion_response_to_agent_stream, llm_streaming_disabled_by_env};
+use self::tool_runtime::{build_tool_run_item, tool_call_execution_batches};
+use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
+use self::trace_builder::{
+    append_persisted_trace_loop_event, append_persisted_trace_status,
+    append_persisted_trace_thinking, append_persisted_trace_tool, build_task_run_artifacts,
+    build_trace_artifacts, build_turn_trace, build_turn_trace_with_verification,
+    evidence_signals_from_trace, PersistedTraceItem,
+};
+use self::turn_events::{TurnLoopEvent, TurnLoopRecorder};
 
 // Re-export so consumers don't need to depend on tokio-util directly.
 pub use tokio_util::sync::CancellationToken;
 
-/// Maximum characters to keep in a tool result for LLM context.
-/// ~4K tokens ≈ 16K chars for English text.
-const MAX_TOOL_RESULT_CONTEXT_CHARS: usize = 4_800;
 const MAX_CONTEXT_RECOVERY_ATTEMPTS: u32 = 2;
 const MISSING_REASONING_CONTENT_PLACEHOLDER: &str =
     "[reasoning content unavailable in local history]";
@@ -77,222 +100,8 @@ fn is_context_overflow_error(err: &CoreError) -> bool {
     }
 }
 
-fn summarize_lines(text: &str, head_lines: usize, tail_lines: usize, max_chars: usize) -> String {
-    if text.len() <= max_chars {
-        return text.to_string();
-    }
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= head_lines + tail_lines + 3 {
-        return truncate_tool_result(text, max_chars);
-    }
-    let omitted = lines.len().saturating_sub(head_lines + tail_lines);
-    let mut compact: Vec<String> = lines
-        .iter()
-        .take(head_lines)
-        .map(|line| (*line).to_string())
-        .collect();
-    compact.push(format!("[... {} lines omitted ...]", omitted));
-    compact.extend(
-        lines
-            .iter()
-            .skip(lines.len().saturating_sub(tail_lines))
-            .map(|line| (*line).to_string()),
-    );
-    let rendered = compact.join("\n");
-    if rendered.len() <= max_chars {
-        rendered
-    } else {
-        truncate_tool_result(&rendered, max_chars)
-    }
-}
-
 fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
-    match tool_name {
-        "run_shell" | "read_file" | "fetch_url" => summarize_lines(
-            &truncate_tool_result(content, MAX_TOOL_RESULT_CONTEXT_CHARS),
-            40,
-            25,
-            MAX_TOOL_RESULT_CONTEXT_CHARS,
-        ),
-        "list_dir" | "list_documents" | "list_sources" => {
-            summarize_lines(content, 60, 10, MAX_TOOL_RESULT_CONTEXT_CHARS)
-        }
-        "search_knowledge_base" => truncate_tool_result(content, 3_500),
-        "retrieve_evidence" | "search_playbooks" => truncate_tool_result(content, 6_000),
-        _ => truncate_tool_result(content, MAX_TOOL_RESULT_CONTEXT_CHARS),
-    }
-}
-
-/// Truncate tool result content to fit within a character budget.
-///
-/// Uses intelligent compression strategies before falling back to hard
-/// truncation:
-///   1. JSON arrays  — truncate long string values, then drop tail items.
-///   2. Section-based text (--- / ===) — keep first & last sections fully,
-///      truncate middle sections.
-///   3. Fallback — keep beginning + end with a gap note.
-fn truncate_tool_result(content: &str, max_chars: usize) -> String {
-    if content.len() <= max_chars {
-        return content.to_string();
-    }
-
-    // Try intelligent compression first.
-    if let Some(compressed) = try_smart_compress(content, max_chars) {
-        if compressed.len() <= max_chars {
-            return compressed;
-        }
-    }
-
-    // Fallback: keep beginning + end (char-boundary–safe).
-    let keep_each = max_chars / 2 - 100; // 100 chars reserved for separator
-    let mut start_cut = keep_each;
-    while !content.is_char_boundary(start_cut) {
-        start_cut -= 1;
-    }
-    // Try to land on a line break for readability.
-    if let Some(nl) = content[..start_cut].rfind('\n') {
-        start_cut = nl;
-    }
-
-    let mut end_start = content.len() - keep_each;
-    while !content.is_char_boundary(end_start) {
-        end_start += 1;
-    }
-    if let Some(nl) = content[end_start..].find('\n') {
-        end_start += nl + 1;
-    }
-
-    format!(
-        "{}\n\n[... {} chars omitted ...]\n\n{}",
-        &content[..start_cut],
-        content.len() - start_cut - (content.len() - end_start),
-        &content[end_start..]
-    )
-}
-
-// ---------------------------------------------------------------------------
-// Smart compression helpers
-// ---------------------------------------------------------------------------
-
-/// Attempt to compress the result using structure-aware strategies.
-fn try_smart_compress(result: &str, max_chars: usize) -> Option<String> {
-    let trimmed = result.trim();
-
-    // JSON array → compress entries.
-    if trimmed.starts_with('[') {
-        return compress_json_array(trimmed, max_chars);
-    }
-
-    // Section-delimited text → compress middle sections.
-    if trimmed.contains("---") || trimmed.contains("===") {
-        return compress_sections(trimmed);
-    }
-
-    None
-}
-
-/// Compress a JSON array by truncating long string values inside each item,
-/// then dropping trailing items if the total still exceeds the budget.
-fn compress_json_array(json_str: &str, max_chars: usize) -> Option<String> {
-    let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
-    let arr = parsed.as_array()?;
-    let total = arr.len();
-    let mut compressed: Vec<serde_json::Value> = Vec::with_capacity(total);
-
-    for (i, item) in arr.iter().enumerate() {
-        let item_json = serde_json::to_string(item).ok()?;
-        if item_json.len() > 500 {
-            compressed.push(truncate_json_values(item, 500));
-        } else {
-            compressed.push(item.clone());
-        }
-
-        // Check cumulative size periodically (every item for small arrays,
-        // every 5th item for larger ones).
-        if total < 20 || (i + 1) % 5 == 0 || i == total - 1 {
-            let current_len: usize = compressed
-                .iter()
-                .filter_map(|v| serde_json::to_string(v).ok())
-                .map(|s| s.len())
-                .sum();
-            if current_len > max_chars.saturating_sub(200) {
-                let remaining = total - i - 1;
-                let out =
-                    serde_json::to_string_pretty(&serde_json::Value::Array(compressed)).ok()?;
-                return Some(format!("{}\n[... {} more items omitted]", out, remaining));
-            }
-        }
-    }
-
-    serde_json::to_string_pretty(&serde_json::Value::Array(compressed)).ok()
-}
-
-/// Recursively truncate string values inside a JSON value.
-fn truncate_json_values(value: &serde_json::Value, max_str_len: usize) -> serde_json::Value {
-    match value {
-        serde_json::Value::String(s) => {
-            if s.len() > max_str_len {
-                // Find a char-boundary–safe cut point.
-                let mut cut = max_str_len;
-                while !s.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                serde_json::Value::String(format!("{}...[truncated]", &s[..cut]))
-            } else {
-                value.clone()
-            }
-        }
-        serde_json::Value::Object(map) => {
-            let new_map: serde_json::Map<String, serde_json::Value> = map
-                .iter()
-                .map(|(k, v)| (k.clone(), truncate_json_values(v, max_str_len)))
-                .collect();
-            serde_json::Value::Object(new_map)
-        }
-        serde_json::Value::Array(arr) => serde_json::Value::Array(
-            arr.iter()
-                .map(|v| truncate_json_values(v, max_str_len))
-                .collect(),
-        ),
-        _ => value.clone(),
-    }
-}
-
-/// Compress section-delimited text by keeping first & last sections fully and
-/// truncating middle sections to 300 chars each.
-fn compress_sections(text: &str) -> Option<String> {
-    let separator = if text.contains("---") { "---" } else { "===" };
-    let sections: Vec<&str> = text.split(separator).collect();
-
-    if sections.len() < 3 {
-        return None;
-    }
-
-    let mut result: Vec<String> = Vec::with_capacity(sections.len());
-    for (i, section) in sections.iter().enumerate() {
-        if i == 0 || i == sections.len() - 1 {
-            result.push(section.to_string());
-        } else {
-            let trimmed = section.trim();
-            if trimmed.len() > 300 {
-                // Char-boundary–safe cut.
-                let mut cut = 300;
-                while !trimmed.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                result.push(format!("{}...", &trimmed[..cut]));
-            } else {
-                result.push(trimmed.to_string());
-            }
-        }
-    }
-
-    let compressed = result.join(&format!("\n{}\n", separator));
-    if compressed.len() < text.len() {
-        Some(compressed)
-    } else {
-        None
-    }
+    tool_scheduler::compact_tool_result_for_context(tool_name, content)
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +116,19 @@ pub enum AgentEvent {
     TextDelta { delta: String },
     /// Clear partial stream output before replaying a recovered response.
     StreamReset { reason: String },
-    /// A tool call is about to be executed.
+    /// The model has started assembling a tool call, but the arguments are not
+    /// stable enough to render or execute yet.
+    ToolCallPreparing {
+        #[serde(rename = "callId")]
+        call_id: String,
+        #[serde(rename = "toolName")]
+        tool_name: String,
+        #[serde(rename = "argsBytes")]
+        args_bytes: u32,
+        /// Tool-call index when the provider streams multiple calls in parallel.
+        index: u32,
+    },
+    /// A tool call is about to be executed with complete arguments.
     ToolCallStart {
         #[serde(rename = "callId")]
         call_id: String,
@@ -315,11 +136,12 @@ pub enum AgentEvent {
         tool_name: String,
         arguments: String,
     },
-    /// Incremental fragment of tool-call arguments streamed mid-response.
+    /// Legacy incremental fragment of tool-call arguments streamed mid-response.
     ///
-    /// Emitted while the model is still generating the tool call (before
-    /// execution) so the UI can show progress instead of waiting for the
-    /// full SSE stream to finish.
+    /// Generic tools should not rely on this because partial JSON arguments are
+    /// often syntactically invalid. The main agent loop now emits
+    /// `ToolCallPreparing` while arguments are still being assembled, then
+    /// `ToolCallStart` once the complete argument string is available.
     ToolCallArgsDelta {
         #[serde(rename = "callId")]
         call_id: String,
@@ -349,6 +171,12 @@ pub enum AgentEvent {
         is_error: bool,
         artifacts: Option<serde_json::Value>,
     },
+    /// Canonical lifecycle item for a tool run.
+    ToolRunStarted { run: ToolRunItem },
+    /// Authoritative update for an in-flight tool run.
+    ToolRunUpdated { run: ToolRunItem },
+    /// Authoritative final state for a tool run.
+    ToolRunCompleted { run: ToolRunItem },
     /// Thinking / chain-of-thought text (if the model supports it).
     Thinking { content: String },
     /// A lightweight status update for the trace timeline.
@@ -409,6 +237,44 @@ pub enum AgentEvent {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolRunStatus {
+    Preparing,
+    ApprovalPending,
+    Running,
+    Completed,
+    Failed,
+    Declined,
+    Cancelled,
+    TimedOut,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRunItem {
+    #[serde(rename = "callId")]
+    pub call_id: String,
+    #[serde(rename = "toolName")]
+    pub tool_name: String,
+    pub status: ToolRunStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
+    #[serde(rename = "renderKind")]
+    pub render_kind: ToolRenderKind,
+    pub capabilities: ToolRunCapabilities,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(rename = "isError", skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<serde_json::Value>,
+    #[serde(rename = "progressNote", skip_serializing_if = "Option::is_none")]
+    pub progress_note: Option<String>,
+    #[serde(rename = "durationMs", skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
 /// User input injected into an already-running agent turn.
 ///
 /// Steering messages are intentionally consumed only between LLM/tool rounds,
@@ -433,76 +299,6 @@ impl AgentSteeringMessage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PersistedTraceToolCall {
-    call_id: String,
-    tool_name: String,
-    arguments: String,
-    status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    is_error: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    artifacts: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum PersistedTraceItem {
-    Thinking { text: String },
-    Tool { tool_call: PersistedTraceToolCall },
-    Status { text: String, tone: String },
-}
-
-fn append_persisted_trace_thinking(items: &mut Vec<PersistedTraceItem>, text: &str) {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-
-    items.push(PersistedTraceItem::Thinking {
-        text: trimmed.to_string(),
-    });
-}
-
-#[allow(clippy::too_many_arguments)]
-fn append_persisted_trace_tool(
-    items: &mut Vec<PersistedTraceItem>,
-    tool_name: &str,
-    arguments: &str,
-    call_id: &str,
-    status: &str,
-    content: Option<String>,
-    is_error: Option<bool>,
-    artifacts: Option<serde_json::Value>,
-) {
-    items.push(PersistedTraceItem::Tool {
-        tool_call: PersistedTraceToolCall {
-            call_id: call_id.to_string(),
-            tool_name: tool_name.to_string(),
-            arguments: arguments.to_string(),
-            status: status.to_string(),
-            content,
-            is_error,
-            artifacts,
-        },
-    });
-}
-
-fn append_persisted_trace_status(items: &mut Vec<PersistedTraceItem>, text: &str, tone: &str) {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-
-    items.push(PersistedTraceItem::Status {
-        text: trimmed.to_string(),
-        tone: tone.to_string(),
-    });
-}
-
 async fn emit_task_plan_update(
     tx: &mpsc::Sender<AgentEvent>,
     plan: &AgentTaskPlan,
@@ -518,86 +314,6 @@ async fn emit_task_plan_update(
             summary: Some(summary.to_string()),
         })
         .await;
-}
-
-fn build_trace_artifacts(items: &[PersistedTraceItem]) -> Option<serde_json::Value> {
-    if items.is_empty() {
-        return None;
-    }
-
-    Some(serde_json::json!({
-        "kind": "traceTimeline",
-        "version": 1,
-        "items": items,
-    }))
-}
-
-fn build_turn_trace(route_kind: AgentRouteKind, items: &[PersistedTraceItem]) -> serde_json::Value {
-    build_turn_trace_with_verification(route_kind, items, None)
-}
-
-fn build_turn_trace_with_verification(
-    route_kind: AgentRouteKind,
-    items: &[PersistedTraceItem],
-    verification: Option<&serde_json::Value>,
-) -> serde_json::Value {
-    let mut trace = serde_json::json!({
-        "kind": "turnTrace",
-        "routeKind": format!("{route_kind:?}"),
-        "items": items,
-    });
-    if let Some(verification) = verification {
-        trace["verification"] = verification.clone();
-    }
-    trace
-}
-
-fn evidence_signals_from_trace(items: &[PersistedTraceItem]) -> EvidenceSignals {
-    let mut successful_evidence_tool_calls = 0usize;
-    let mut verification_tool_recorded = false;
-
-    for item in items {
-        let PersistedTraceItem::Tool { tool_call } = item else {
-            continue;
-        };
-        let ok = tool_call.status == "done" && tool_call.is_error != Some(true);
-        if ok && is_evidence_oriented_tool(&tool_call.tool_name) {
-            successful_evidence_tool_calls += 1;
-        }
-        if ok && tool_call.tool_name == "record_verification" {
-            verification_tool_recorded = true;
-        }
-    }
-
-    EvidenceSignals {
-        successful_evidence_tool_calls,
-        verification_tool_recorded,
-    }
-}
-
-fn is_evidence_oriented_tool(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "search_knowledge_base"
-            | "retrieve_evidence"
-            | "search_playbooks"
-            | "compare_documents"
-            | "summarize_document"
-            | "query_knowledge_graph"
-            | "fetch_url"
-            | "read_file"
-            | "read_files"
-            | "get_document_info"
-            | "search_sessions"
-    )
-}
-
-fn build_task_run_artifacts(verification: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "kind": "agentTaskArtifacts",
-        "version": 1,
-        "verification": verification,
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -667,35 +383,13 @@ fn default_dynamic_tool_visibility() -> bool {
     false
 }
 
+#[cfg(test)]
 fn tool_timeout_for_call(
     configured_timeout_secs: Option<u32>,
     tool_name: &str,
     parsed_args: &serde_json::Value,
 ) -> Option<Duration> {
-    let base_timeout = configured_timeout_secs.unwrap_or(30) as u64;
-    if base_timeout == 0 {
-        return None;
-    }
-
-    let multiplier = match tool_name {
-        "retrieve_evidence" => 2,
-        "spawn_subagent" => 3,
-        _ => 1,
-    };
-    let mut timeout_secs = base_timeout.saturating_mul(multiplier);
-
-    if tool_name == "run_shell" {
-        let requested = parsed_args
-            .get("timeout_secs")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(30);
-        if requested == 0 {
-            return None;
-        }
-        timeout_secs = timeout_secs.max(requested.saturating_add(5));
-    }
-
-    Some(Duration::from_secs(timeout_secs.max(1)))
+    tool_scheduler::tool_timeout_for_call(configured_timeout_secs, tool_name, parsed_args)
 }
 
 impl Default for AgentConfig {
@@ -759,229 +453,6 @@ pub fn build_system_prompt(conversation_prompt: Option<&str>, dynamic_sections: 
     }
 
     prompt
-}
-
-/// Internal result of a direct-dispatch pattern match.
-struct DirectDispatch {
-    tool_name: String,
-    arguments: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentRouteKind {
-    DirectResponse,
-    KnowledgeRetrieval,
-    CollectionFocused,
-    ConversationRecall,
-    FileOperation,
-    WebLookup,
-    SourceManagement,
-}
-
-impl AgentRouteKind {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            AgentRouteKind::DirectResponse => "DirectResponse",
-            AgentRouteKind::KnowledgeRetrieval => "KnowledgeRetrieval",
-            AgentRouteKind::CollectionFocused => "CollectionFocused",
-            AgentRouteKind::FileOperation => "FileOperation",
-            AgentRouteKind::SourceManagement => "SourceManagement",
-            AgentRouteKind::ConversationRecall => "ConversationRecall",
-            AgentRouteKind::WebLookup => "WebLookup",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct AgentRoutePlan {
-    kind: AgentRouteKind,
-    prompt_section: String,
-    extra_categories: Vec<ToolCategory>,
-}
-
-fn query_looks_like_question(query: &str) -> bool {
-    let q = query.to_lowercase();
-    q.contains('?')
-        || q.contains("what")
-        || q.contains("why")
-        || q.contains("how")
-        || q.contains("which")
-        || q.contains("where")
-        || q.contains("when")
-        || q.contains("who")
-        || q.contains("tell me")
-        || q.contains("explain")
-        || q.contains("analyze")
-        || q.contains("analysis")
-        || q.contains("summarize")
-        || q.contains("compare")
-        || q.contains("分析")
-        || q.contains("总结")
-        || q.contains("为什么")
-        || q.contains("如何")
-        || q.contains("怎么")
-        || q.contains("哪些")
-        || q.contains("什么")
-}
-
-fn system_prompt_has_collection_context(system_prompt: &str) -> bool {
-    system_prompt
-        .lines()
-        .any(|line| line.trim().eq_ignore_ascii_case("## Collection Context"))
-}
-
-fn route_user_turn(query: &str, system_prompt: &str, has_sources: bool) -> AgentRoutePlan {
-    let q = query.to_lowercase();
-    let collection_context = system_prompt_has_collection_context(system_prompt);
-
-    let code_or_tool_operation = q.contains("run_shell")
-        || q.contains("run shell")
-        || q.contains("shell")
-        || q.contains("terminal")
-        || q.contains("command")
-        || q.contains("powershell")
-        || q.contains("cmd")
-        || q.contains("cargo")
-        || q.contains("npm")
-        || q.contains("pnpm")
-        || q.contains("node")
-        || q.contains("python")
-        || q.contains("git")
-        || q.contains("tool")
-        || q.contains("tools")
-        || q.contains("agent")
-        || q.contains("subagent")
-        || q.contains("unavailable")
-        || q.contains("available")
-        || q.contains("fix")
-        || q.contains("debug")
-        || q.contains("bug")
-        || q.contains("test")
-        || q.contains("build")
-        || q.contains("compile")
-        || q.contains("运行")
-        || q.contains("命令")
-        || q.contains("终端")
-        || q.contains("调用")
-        || q.contains("工具")
-        || q.contains("不可用")
-        || q.contains("修复")
-        || q.contains("排查")
-        || q.contains("测试")
-        || q.contains("构建")
-        || q.contains("编译")
-        || q.contains("代码")
-        || q.contains("项目")
-        || q.contains("仓库")
-        || q.contains("主agent")
-        || q.contains("子agent");
-
-    let file_operation = q.contains("file")
-        || q.contains("read")
-        || q.contains("edit")
-        || q.contains("write")
-        || q.contains("create")
-        || q.contains("move")
-        || q.contains("rename")
-        || q.contains("copy")
-        || q.contains("delete")
-        || q.contains("folder")
-        || q.contains("directory")
-        || q.contains("document")
-        || q.contains("word")
-        || q.contains("docx")
-        || q.contains("excel")
-        || q.contains("xlsx")
-        || q.contains("ppt")
-        || q.contains("pptx")
-        || q.contains("office")
-        || q.contains("文档")
-        || q.contains("文件")
-        || q.contains("移动")
-        || q.contains("重命名")
-        || q.contains("复制")
-        || q.contains("删除")
-        || q.contains("幻灯片")
-        || q.contains("表格")
-        || code_or_tool_operation;
-
-    let source_management = q.contains("source")
-        || q.contains("index")
-        || q.contains("reindex")
-        || q.contains("数据源")
-        || q.contains("索引");
-
-    let web_lookup = q.contains("http")
-        || q.contains("url")
-        || q.contains("website")
-        || q.contains("web ")
-        || q.contains("网页")
-        || q.contains("链接");
-
-    let conversation_recall = q.contains("earlier")
-        || q.contains("previous")
-        || q.contains("before")
-        || q.contains("this conversation")
-        || q.contains("chat history")
-        || q.contains("we discussed")
-        || q.contains("刚才")
-        || q.contains("之前")
-        || q.contains("上面")
-        || q.contains("这段对话");
-
-    if collection_context {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::CollectionFocused,
-            prompt_section: "## Active Routing Plan\nUse the current collection and its saved evidence as your primary working set. Stay anchored to that collection first, and only widen beyond it if the collection is clearly insufficient. If you widen scope, explain why.".to_string(),
-            extra_categories: vec![ToolCategory::Knowledge, ToolCategory::DocumentAnalysis],
-        };
-    }
-
-    if source_management {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::SourceManagement,
-            prompt_section: "## Active Routing Plan\nThis is a source/index management request. Prefer direct, operational handling over exploratory retrieval, and avoid unnecessary long-form analysis.".to_string(),
-            extra_categories: vec![ToolCategory::SourceManagement],
-        };
-    }
-
-    if file_operation {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::FileOperation,
-            prompt_section: "## Active Routing Plan\nThis request is file-centric. Prefer reading, comparing, generating, or editing the relevant files directly before broad knowledge-base search. For requested DOCX/XLSX/PPTX/PDF work, use run_shell + the doc-script-editor skill for Python-backed creation, validation, conversion, rendering, extraction, redaction, formula QA, template preservation, and OOXML edits. Pair Office work with docx-document-design, pptx-presentation-design, or xlsx-workbook-design as appropriate.".to_string(),
-            extra_categories: vec![ToolCategory::FileSystem, ToolCategory::DocumentAnalysis],
-        };
-    }
-
-    if conversation_recall {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::ConversationRecall,
-            prompt_section: "## Active Routing Plan\nThe user is asking about the current conversation context. Check the conversation history and already-available evidence first before widening to new retrieval.".to_string(),
-            extra_categories: vec![ToolCategory::Knowledge, ToolCategory::DocumentAnalysis],
-        };
-    }
-
-    if web_lookup {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::WebLookup,
-            prompt_section: "## Active Routing Plan\nThis request likely needs web or URL inspection. Prefer targeted fetch or MCP/web tools instead of broad local retrieval.".to_string(),
-            extra_categories: vec![ToolCategory::Web],
-        };
-    }
-
-    if has_sources && query_looks_like_question(query) {
-        return AgentRoutePlan {
-            kind: AgentRouteKind::KnowledgeRetrieval,
-            prompt_section: "## Active Routing Plan\nThis is a knowledge retrieval turn. Prefer grounded retrieval, comparison, and evidence synthesis before answering. Stop once the evidence is sufficient instead of over-searching.".to_string(),
-            extra_categories: vec![ToolCategory::Knowledge, ToolCategory::DocumentAnalysis],
-        };
-    }
-
-    AgentRoutePlan {
-        kind: AgentRouteKind::DirectResponse,
-        prompt_section: "## Active Routing Plan\nAnswer the user's question. For factual questions, ALWAYS search the knowledge base first using search_knowledge_base, even if you believe you know the answer. Use tools whenever they would improve answer accuracy or completeness.".to_string(),
-        extra_categories: Vec::new(),
-    }
 }
 
 pub fn route_name_for_behavioral_eval(
@@ -1116,11 +587,24 @@ impl AgentExecutor {
         messages: &mut Vec<Message>,
         ctx: &mut SteeringDrainContext<'_>,
     ) -> Vec<String> {
+        self.drain_steering_messages_from(messages, ctx, None).await
+    }
+
+    async fn drain_steering_messages_from(
+        &self,
+        messages: &mut Vec<Message>,
+        ctx: &mut SteeringDrainContext<'_>,
+        initial: Option<AgentSteeringMessage>,
+    ) -> Vec<String> {
+        let mut drained = Vec::new();
+        if let Some(message) = initial {
+            drained.push(message);
+        }
+
         let Some(rx) = &self.steering_rx else {
-            return Vec::new();
+            return self.apply_steering_messages(messages, ctx, drained).await;
         };
 
-        let mut drained = Vec::new();
         {
             let mut rx = rx.lock().await;
             while let Ok(message) = rx.try_recv() {
@@ -1128,6 +612,24 @@ impl AgentExecutor {
             }
         }
 
+        self.apply_steering_messages(messages, ctx, drained).await
+    }
+
+    async fn wait_for_steering_message(&self) -> Option<AgentSteeringMessage> {
+        let Some(rx) = &self.steering_rx else {
+            return std::future::pending::<Option<AgentSteeringMessage>>().await;
+        };
+
+        let mut rx = rx.lock().await;
+        rx.recv().await
+    }
+
+    async fn apply_steering_messages(
+        &self,
+        messages: &mut Vec<Message>,
+        ctx: &mut SteeringDrainContext<'_>,
+        drained: Vec<AgentSteeringMessage>,
+    ) -> Vec<String> {
         if drained.is_empty() {
             return Vec::new();
         }
@@ -1361,6 +863,7 @@ impl AgentExecutor {
             &self.config.system_prompt,
             has_sources,
         );
+        let mut loop_recorder = TurnLoopRecorder::new(route_plan.kind, self.config.max_iterations);
         let mut task_plan = build_task_plan(TaskPlanningInput {
             user_query: &user_query_text_for_tools,
             route_kind: route_plan.kind.as_str(),
@@ -1466,6 +969,9 @@ impl AgentExecutor {
         let mut last_iteration_content = String::new();
         let mut last_finish_reason: Option<String> = None;
         let mut persisted_trace_items: Vec<PersistedTraceItem> = Vec::new();
+        for event in loop_recorder.events().iter().cloned() {
+            append_persisted_trace_loop_event(&mut persisted_trace_items, event);
+        }
 
         // --- 3c. Extract user query text and build cache key -----------------
         let user_query_text = &user_query_text_for_tools;
@@ -1635,6 +1141,11 @@ impl AgentExecutor {
                         "Request cancelled by user.",
                         "error",
                     );
+                    let finished = TurnLoopEvent::TurnFinished {
+                        outcome: "cancelled".to_string(),
+                    };
+                    loop_recorder.record(finished.clone());
+                    append_persisted_trace_loop_event(&mut persisted_trace_items, finished);
                     if let Some(cid) = conversation_id {
                         let assistant_message_id = Uuid::new_v4().to_string();
                         let conv_msg = ConversationMessage {
@@ -1764,7 +1275,17 @@ impl AgentExecutor {
         // --- 4. ReAct loop ----------------------------------------------------
         let mut last_tool_calls: Option<Vec<ToolCallRequest>> = None;
         let mut context_recovery_attempts = 0u32;
-        for iteration in 0..self.config.max_iterations {
+        let context_pipeline =
+            ContextPipeline::new(model, self.config.context_window, max_response_tokens);
+        let mut loop_guard = AgentLoopGuard::new();
+        let mut force_non_streaming_llm = llm_streaming_disabled_by_env();
+        'react_loop: for iteration in 0..self.config.max_iterations {
+            let step_started = TurnLoopEvent::StepStarted {
+                iteration,
+                remaining_iterations: self.config.max_iterations.saturating_sub(iteration),
+            };
+            loop_recorder.record(step_started.clone());
+            append_persisted_trace_loop_event(&mut persisted_trace_items, step_started);
             // ── Cancellation checkpoint: before LLM call ─────────────────
             check_cancelled!(last_tool_calls);
             let steering_texts = {
@@ -1822,132 +1343,468 @@ impl AgentExecutor {
 
             // -- 4a. Stream LLM response (with rate-limit retry) ----------------
             const MAX_LLM_RETRIES: u32 = 3;
-            let mut retry_count = 0u32;
-            let current_request: CompletionRequest;
-            let mut stream = loop {
-                let request = CompletionRequest {
-                    model: model.to_string(),
-                    messages: messages.clone(),
-                    temperature: self.config.temperature,
-                    max_tokens: self.config.max_tokens,
-                    tools: if tool_defs.is_empty() {
-                        None
+            const MAX_STREAM_DISCONNECT_RETRIES: u32 = 2;
+            let current_request = CompletionRequest {
+                model: model.to_string(),
+                messages: messages.clone(),
+                temperature: self.config.temperature,
+                max_tokens: self.config.max_tokens,
+                tools: if tool_defs.is_empty() {
+                    None
+                } else {
+                    Some(tool_defs.clone())
+                },
+                stop: None,
+                thinking_budget: if self.config.reasoning_enabled.unwrap_or(false) {
+                    Some(self.config.thinking_budget.unwrap_or(10_000))
+                } else {
+                    None
+                },
+                reasoning_effort: if self.config.reasoning_enabled.unwrap_or(false) {
+                    self.config.reasoning_effort.clone()
+                } else {
+                    None
+                },
+                provider_type: self.config.provider_type,
+                parallel_tool_calls: true,
+            };
+            let accumulated_len_before_iteration = accumulated_content.len();
+            let mut sampling_retries = 0u32;
+            let mut full_content = String::new();
+            let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
+            let mut chunk_usage: Option<Usage> = None;
+            let mut iteration_thinking = String::new();
+            let mut preparing_call_ids: HashSet<String> = HashSet::new();
+            let mut started_call_ids: HashSet<String> = HashSet::new();
+            let mut tool_run_started_ids: HashSet<String> = HashSet::new();
+
+            loop {
+                let mut retry_count = 0u32;
+                let mut stream: futures::stream::BoxStream<'_, Result<StreamChunk, CoreError>> =
+                    if force_non_streaming_llm {
+                        info!("Initiating LLM completion in non-streaming mode");
+                        match self.provider.complete(&current_request).await {
+                            Ok(response) => {
+                                context_recovery_attempts = 0;
+                                completion_response_to_agent_stream(response)
+                            }
+                            Err(e) => {
+                                let _ = tx
+                                    .send(AgentEvent::Error {
+                                        message: e.to_string(),
+                                    })
+                                    .await;
+                                if let Some(ref mut t) = trace {
+                                    t.finish(TraceOutcome::Error, Some(e.to_string()));
+                                    if let Err(te) = db.save_agent_trace(t) {
+                                        warn!("Failed to save agent trace: {te}");
+                                    }
+                                }
+                                if let Some(tid) = turn_id {
+                                    let trace =
+                                        build_turn_trace(route_plan.kind, &persisted_trace_items);
+                                    let _ = db.finalize_conversation_turn(
+                                        tid,
+                                        "error",
+                                        None,
+                                        Some(&trace),
+                                    );
+                                }
+                                return Err(e);
+                            }
+                        }
                     } else {
-                        Some(tool_defs.clone())
-                    },
-                    stop: None,
-                    thinking_budget: if self.config.reasoning_enabled.unwrap_or(false) {
-                        Some(self.config.thinking_budget.unwrap_or(10_000))
-                    } else {
-                        None
-                    },
-                    reasoning_effort: if self.config.reasoning_enabled.unwrap_or(false) {
-                        self.config.reasoning_effort.clone()
-                    } else {
-                        None
-                    },
-                    provider_type: self.config.provider_type,
-                    parallel_tool_calls: true,
-                };
-                info!("Initiating LLM stream, attempt {}", retry_count + 1);
-                match self.provider.stream(&request).await {
-                    Ok(s) => {
-                        info!("LLM stream connected");
-                        context_recovery_attempts = 0;
-                        current_request = request;
-                        break s;
-                    }
-                    Err(CoreError::RateLimited { retry_after_secs }) => {
-                        retry_count += 1;
-                        if retry_count > MAX_LLM_RETRIES {
-                            let _ = tx
-                                .send(AgentEvent::Error {
-                                    message: format!(
-                                        "Rate limited after {} retries",
-                                        MAX_LLM_RETRIES
-                                    ),
-                                })
-                                .await;
-                            if let Some(ref mut t) = trace {
-                                t.finish(TraceOutcome::Error, Some("rate limited".to_string()));
-                                if let Err(te) = db.save_agent_trace(t) {
-                                    warn!("Failed to save agent trace: {te}");
+                        loop {
+                            info!("Initiating LLM stream, attempt {}", retry_count + 1);
+                            match self.provider.stream(&current_request).await {
+                                Ok(s) => {
+                                    info!("LLM stream connected");
+                                    context_recovery_attempts = 0;
+                                    break s;
+                                }
+                                Err(CoreError::RateLimited { retry_after_secs }) => {
+                                    retry_count += 1;
+                                    if retry_count > MAX_LLM_RETRIES {
+                                        let _ = tx
+                                            .send(AgentEvent::Error {
+                                                message: format!(
+                                                    "Rate limited after {} retries",
+                                                    MAX_LLM_RETRIES
+                                                ),
+                                            })
+                                            .await;
+                                        if let Some(ref mut t) = trace {
+                                            t.finish(
+                                                TraceOutcome::Error,
+                                                Some("rate limited".to_string()),
+                                            );
+                                            if let Err(te) = db.save_agent_trace(t) {
+                                                warn!("Failed to save agent trace: {te}");
+                                            }
+                                        }
+                                        if let Some(tid) = turn_id {
+                                            let trace = build_turn_trace(
+                                                route_plan.kind,
+                                                &persisted_trace_items,
+                                            );
+                                            let _ = db.finalize_conversation_turn(
+                                                tid,
+                                                "error",
+                                                None,
+                                                Some(&trace),
+                                            );
+                                        }
+                                        return Err(CoreError::RateLimited { retry_after_secs });
+                                    }
+                                    // Use server's Retry-After, falling back to exponential backoff.
+                                    let wait = if retry_after_secs > 0 {
+                                        retry_after_secs
+                                    } else {
+                                        2u64.pow(retry_count)
+                                    };
+                                    warn!(
+                                        "Rate limited. Retry {}/{} after {}s",
+                                        retry_count, MAX_LLM_RETRIES, wait
+                                    );
+                                    let _ = tx
+                                        .send(AgentEvent::Thinking {
+                                            content: format!(
+                                                "Rate limited. Retrying in {}s...",
+                                                wait
+                                            ),
+                                        })
+                                        .await;
+                                    tokio::time::sleep(Duration::from_secs(wait)).await;
+                                }
+                                Err(CoreError::TransientLlm(msg)) => {
+                                    retry_count += 1;
+                                    if retry_count > MAX_LLM_RETRIES {
+                                        let _ = tx
+                                            .send(AgentEvent::Error {
+                                                message: format!(
+                                                    "Transient error after {} retries: {}",
+                                                    MAX_LLM_RETRIES, msg
+                                                ),
+                                            })
+                                            .await;
+                                        let err_msg = format!(
+                                            "Transient error after {} retries: {}",
+                                            MAX_LLM_RETRIES, msg
+                                        );
+                                        if let Some(ref mut t) = trace {
+                                            t.finish(TraceOutcome::Error, Some(err_msg.clone()));
+                                            if let Err(te) = db.save_agent_trace(t) {
+                                                warn!("Failed to save agent trace: {te}");
+                                            }
+                                        }
+                                        if let Some(tid) = turn_id {
+                                            let trace = build_turn_trace(
+                                                route_plan.kind,
+                                                &persisted_trace_items,
+                                            );
+                                            let _ = db.finalize_conversation_turn(
+                                                tid,
+                                                "error",
+                                                None,
+                                                Some(&trace),
+                                            );
+                                        }
+                                        return Err(CoreError::Llm(err_msg));
+                                    }
+                                    let wait = 2u64.pow(retry_count - 1); // 1s, 2s, 4s
+                                    warn!(
+                                        "Transient error (retry {}/{}): {}. Retrying after {}s",
+                                        retry_count, MAX_LLM_RETRIES, msg, wait
+                                    );
+                                    let _ = tx
+                                        .send(AgentEvent::Thinking {
+                                            content: format!(
+                                                "Connection error. Retrying in {}s...",
+                                                wait
+                                            ),
+                                        })
+                                        .await;
+                                    tokio::time::sleep(Duration::from_secs(wait)).await;
+                                }
+                                Err(e) if is_context_overflow_error(&e) => {
+                                    if context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
+                                        let message = format!(
+                                            "Context compression circuit breaker opened after {} recovery attempt(s): {}",
+                                            MAX_CONTEXT_RECOVERY_ATTEMPTS,
+                                            e
+                                        );
+                                        let _ = tx.send(AgentEvent::Error { message }).await;
+                                        if let Some(ref mut t) = trace {
+                                            t.finish(TraceOutcome::Error, Some(e.to_string()));
+                                            if let Err(te) = db.save_agent_trace(t) {
+                                                warn!("Failed to save agent trace: {te}");
+                                            }
+                                        }
+                                        if let Some(tid) = turn_id {
+                                            let trace = build_turn_trace(
+                                                route_plan.kind,
+                                                &persisted_trace_items,
+                                            );
+                                            let _ = db.finalize_conversation_turn(
+                                                tid,
+                                                "error",
+                                                None,
+                                                Some(&trace),
+                                            );
+                                        }
+                                        return Err(e);
+                                    }
+
+                                    context_recovery_attempts += 1;
+                                    let _ = tx
+                                        .send(AgentEvent::Status {
+                                            content: format!(
+                                                "Context window overflow detected. Compacting history and retrying ({}/{})",
+                                                context_recovery_attempts, MAX_CONTEXT_RECOVERY_ATTEMPTS
+                                            ),
+                                            tone: Some("muted".to_string()),
+                                        })
+                                        .await;
+                                    let recovered = self
+                                        .recover_context_overflow(&mut messages, model, &tx)
+                                        .await?;
+                                    if !recovered {
+                                        let _ = tx
+                                            .send(AgentEvent::Error {
+                                                message: format!(
+                                                    "Context overflow could not be reduced further: {}",
+                                                    e
+                                                ),
+                                            })
+                                            .await;
+                                        if let Some(ref mut t) = trace {
+                                            t.finish(TraceOutcome::Error, Some(e.to_string()));
+                                            if let Err(te) = db.save_agent_trace(t) {
+                                                warn!("Failed to save agent trace: {te}");
+                                            }
+                                        }
+                                        if let Some(tid) = turn_id {
+                                            let trace = build_turn_trace(
+                                                route_plan.kind,
+                                                &persisted_trace_items,
+                                            );
+                                            let _ = db.finalize_conversation_turn(
+                                                tid,
+                                                "error",
+                                                None,
+                                                Some(&trace),
+                                            );
+                                        }
+                                        return Err(e);
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = tx
+                                        .send(AgentEvent::Error {
+                                            message: e.to_string(),
+                                        })
+                                        .await;
+                                    // Trace: error
+                                    if let Some(ref mut t) = trace {
+                                        t.finish(TraceOutcome::Error, Some(e.to_string()));
+                                        if let Err(te) = db.save_agent_trace(t) {
+                                            warn!("Failed to save agent trace: {te}");
+                                        }
+                                    }
+                                    if let Some(tid) = turn_id {
+                                        let trace = build_turn_trace(
+                                            route_plan.kind,
+                                            &persisted_trace_items,
+                                        );
+                                        let _ = db.finalize_conversation_turn(
+                                            tid,
+                                            "error",
+                                            None,
+                                            Some(&trace),
+                                        );
+                                    }
+                                    return Err(e);
                                 }
                             }
-                            if let Some(tid) = turn_id {
-                                let trace =
-                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
-                                let _ =
-                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
-                            }
-                            return Err(CoreError::RateLimited { retry_after_secs });
                         }
-                        // Use server's Retry-After, falling back to exponential backoff.
-                        let wait = if retry_after_secs > 0 {
-                            retry_after_secs
-                        } else {
-                            2u64.pow(retry_count)
-                        };
-                        warn!(
-                            "Rate limited. Retry {}/{} after {}s",
-                            retry_count, MAX_LLM_RETRIES, wait
-                        );
-                        let _ = tx
-                            .send(AgentEvent::Thinking {
-                                content: format!("Rate limited. Retrying in {}s…", wait),
-                            })
-                            .await;
-                        tokio::time::sleep(Duration::from_secs(wait)).await;
-                    }
-                    Err(CoreError::TransientLlm(msg)) => {
-                        retry_count += 1;
-                        if retry_count > MAX_LLM_RETRIES {
-                            let _ = tx
-                                .send(AgentEvent::Error {
-                                    message: format!(
-                                        "Transient error after {} retries: {}",
-                                        MAX_LLM_RETRIES, msg
-                                    ),
-                                })
-                                .await;
-                            let err_msg = format!(
-                                "Transient error after {} retries: {}",
-                                MAX_LLM_RETRIES, msg
-                            );
-                            if let Some(ref mut t) = trace {
-                                t.finish(TraceOutcome::Error, Some(err_msg.clone()));
-                                if let Err(te) = db.save_agent_trace(t) {
-                                    warn!("Failed to save agent trace: {te}");
+                    };
+
+                full_content.clear();
+                tool_calls.clear();
+                if sampling_retries > 0 {
+                    chunk_usage = None;
+                }
+                iteration_thinking.clear();
+                last_finish_reason = None;
+                preparing_call_ids.clear();
+                started_call_ids.clear();
+                tool_run_started_ids.clear();
+                let mut chunk_count: usize = 0;
+                let mut stream_incomplete_detail: Option<String> = None;
+                let mut stream_interrupted_by_steering: Option<Vec<String>> = None;
+                let mut steering_closed = false;
+
+                enum StreamLoopEvent {
+                    Steering(Option<AgentSteeringMessage>),
+                    Chunk(Option<Result<crate::llm::StreamChunk, CoreError>>),
+                }
+
+                loop {
+                    let stream_event = tokio::select! {
+                        maybe_steering = self.wait_for_steering_message(), if self.steering_rx.is_some() && !steering_closed => {
+                            StreamLoopEvent::Steering(maybe_steering)
+                        }
+                        maybe_chunk = stream.next() => StreamLoopEvent::Chunk(maybe_chunk),
+                    };
+
+                    match stream_event {
+                        StreamLoopEvent::Steering(Some(steering)) => {
+                            let steering_texts = {
+                                let mut steering_ctx = SteeringDrainContext {
+                                    db,
+                                    conversation_id,
+                                    tx: &tx,
+                                    model,
+                                    sort_order: &mut sort_order,
+                                    privacy_cfg: &privacy_cfg,
+                                };
+                                self.drain_steering_messages_from(
+                                    &mut messages,
+                                    &mut steering_ctx,
+                                    Some(steering),
+                                )
+                                .await
+                            };
+
+                            if !steering_texts.is_empty() {
+                                stream_interrupted_by_steering = Some(steering_texts);
+                                break;
+                            }
+                        }
+                        StreamLoopEvent::Steering(None) => {
+                            steering_closed = true;
+                        }
+                        StreamLoopEvent::Chunk(None) => break,
+                        StreamLoopEvent::Chunk(Some(Ok(chunk))) => {
+                            chunk_count += 1;
+                            // Forward thinking deltas.
+                            if let Some(ref thinking) = chunk.thinking_delta {
+                                if !thinking.is_empty() {
+                                    iteration_thinking.push_str(thinking);
+                                    let _ = tx
+                                        .send(AgentEvent::Thinking {
+                                            content: thinking.clone(),
+                                        })
+                                        .await;
                                 }
                             }
-                            if let Some(tid) = turn_id {
-                                let trace =
-                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
-                                let _ =
-                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
+                            // Forward text deltas.
+                            if !chunk.delta.is_empty() {
+                                full_content.push_str(&chunk.delta);
+                                accumulated_content.push_str(&chunk.delta);
+                                let _ = tx.send(AgentEvent::TextDelta { delta: chunk.delta }).await;
                             }
-                            return Err(CoreError::Llm(err_msg));
+                            // Accumulate tool-call deltas.
+                            if let Some(ref tc_delta) = chunk.tool_call_delta {
+                                accumulate_tool_call(&mut tool_calls, tc_delta);
+
+                                // Emit a stable preparing signal while arguments are
+                                // still being assembled. Do not stream partial
+                                // generic arguments to the UI; they are often
+                                // invalid JSON until the provider finishes the call.
+                                if let Some((tc_index, tc)) =
+                                    resolve_delta_target(&tool_calls, tc_delta)
+                                {
+                                    let partial_args_value =
+                                        serde_json::from_str::<serde_json::Value>(&tc.arguments)
+                                            .unwrap_or(serde_json::Value::Null);
+                                    let capabilities =
+                                        self.tools.run_capabilities(&tc.name, &partial_args_value);
+                                    let preview_arguments = if matches!(
+                                        capabilities.input_streaming,
+                                        ToolInputStreamingMode::UiPreview
+                                            | ToolInputStreamingMode::ToolConsumesPartial
+                                    ) {
+                                        Some(tc.arguments.as_str())
+                                    } else {
+                                        None
+                                    };
+                                    if !tc.name.is_empty()
+                                        && preparing_call_ids.insert(tc.id.clone())
+                                    {
+                                        if tool_run_started_ids.insert(tc.id.clone()) {
+                                            let _ = tx
+                                                .send(AgentEvent::ToolRunStarted {
+                                                    run: build_tool_run_item(
+                                                        &self.tools,
+                                                        &tc.id,
+                                                        &tc.name,
+                                                        ToolRunStatus::Preparing,
+                                                        preview_arguments,
+                                                        None,
+                                                        None,
+                                                        None,
+                                                        None,
+                                                        None,
+                                                    ),
+                                                })
+                                                .await;
+                                        }
+                                        let _ = tx
+                                            .send(AgentEvent::ToolCallPreparing {
+                                                call_id: tc.id.clone(),
+                                                tool_name: tc.name.clone(),
+                                                args_bytes: tc.arguments.len() as u32,
+                                                index: tc_index as u32,
+                                            })
+                                            .await;
+                                    } else if !tc.name.is_empty()
+                                        && preview_arguments.is_some()
+                                        && !tc_delta.arguments_delta.is_empty()
+                                    {
+                                        let _ = tx
+                                            .send(AgentEvent::ToolRunUpdated {
+                                                run: build_tool_run_item(
+                                                    &self.tools,
+                                                    &tc.id,
+                                                    &tc.name,
+                                                    ToolRunStatus::Preparing,
+                                                    preview_arguments,
+                                                    None,
+                                                    None,
+                                                    None,
+                                                    None,
+                                                    None,
+                                                ),
+                                            })
+                                            .await;
+                                    }
+                                }
+                            }
+                            if let Some(ref fr) = chunk.finish_reason {
+                                last_finish_reason = Some(format!("{:?}", fr).to_lowercase());
+                            }
+                            if let Some(u) = chunk.usage {
+                                chunk_usage = Some(u);
+                            }
                         }
-                        let wait = 2u64.pow(retry_count - 1); // 1s, 2s, 4s
-                        warn!(
-                            "Transient error (retry {}/{}): {}. Retrying after {}s",
-                            retry_count, MAX_LLM_RETRIES, msg, wait
+                        StreamLoopEvent::Chunk(Some(Err(CoreError::StreamIncomplete(detail)))) => {
+                            warn!("Stream incomplete — response may be truncated ({detail})");
+                            info!(
+                            "Stream ended incomplete: {chunk_count} chunks, {} chars — {detail}",
+                            full_content.len()
                         );
-                        let _ = tx
-                            .send(AgentEvent::Thinking {
-                                content: format!("Connection error. Retrying in {}s…", wait),
-                            })
-                            .await;
-                        tokio::time::sleep(Duration::from_secs(wait)).await;
-                    }
-                    Err(e) if is_context_overflow_error(&e) => {
-                        if context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
-                            let message = format!(
-                                "Context compression circuit breaker opened after {} recovery attempt(s): {}",
-                                MAX_CONTEXT_RECOVERY_ATTEMPTS,
-                                e
-                            );
-                            let _ = tx.send(AgentEvent::Error { message }).await;
+                            stream_incomplete_detail = Some(detail);
+                            break;
+                        }
+                        StreamLoopEvent::Chunk(Some(Err(e))) => {
+                            error!("LLM stream error: {e}");
+                            let _ = tx
+                                .send(AgentEvent::Error {
+                                    message: e.to_string(),
+                                })
+                                .await;
+                            // Trace: error
                             if let Some(ref mut t) = trace {
                                 t.finish(TraceOutcome::Error, Some(e.to_string()));
                                 if let Err(te) = db.save_agent_trace(t) {
@@ -1962,244 +1819,156 @@ impl AgentExecutor {
                             }
                             return Err(e);
                         }
+                    }
+                }
 
-                        context_recovery_attempts += 1;
+                info!(
+                    "Stream complete: {chunk_count} chunks, {} chars",
+                    full_content.len()
+                );
+
+                if let Some(steering_texts) = stream_interrupted_by_steering {
+                    let reason = "Steering message received; restarting the model response.";
+                    let _ = tx
+                        .send(AgentEvent::StreamReset {
+                            reason: reason.to_string(),
+                        })
+                        .await;
+                    accumulated_content.truncate(accumulated_len_before_iteration);
+                    self.expand_tool_defs_for_steering(
+                        &mut tool_defs,
+                        &steering_texts,
+                        has_sources,
+                    );
+                    append_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        "Applied user steering during streaming and restarted the model response.",
+                        "info",
+                    );
+                    if let Some(tid) = turn_id {
+                        let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                        let _ = db.update_conversation_turn_progress(
+                            tid,
+                            Some(&format!("{:?}", route_plan.kind)),
+                            Some(&trace),
+                        );
+                    }
+                    let max_ctx = self
+                        .config
+                        .context_window
+                        .unwrap_or_else(|| model_context_window(model));
+                    messages = trim_to_context_window(
+                        &messages,
+                        max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
+                        max_response_tokens,
+                    );
+                    continue 'react_loop;
+                }
+
+                if let Some(detail) = stream_incomplete_detail {
+                    if !force_non_streaming_llm && sampling_retries < MAX_STREAM_DISCONNECT_RETRIES
+                    {
+                        sampling_retries += 1;
+                        let recovery_note = format!(
+                        "Stream interrupted; reconnecting model stream ({sampling_retries}/{MAX_STREAM_DISCONNECT_RETRIES})."
+                    );
                         let _ = tx
                             .send(AgentEvent::Status {
-                                content: format!(
-                                    "Context window overflow detected. Compacting history and retrying ({}/{})",
-                                    context_recovery_attempts, MAX_CONTEXT_RECOVERY_ATTEMPTS
-                                ),
+                                content: format!("{recovery_note} ({detail})"),
                                 tone: Some("muted".to_string()),
                             })
                             .await;
-                        let recovered = self
-                            .recover_context_overflow(&mut messages, model, &tx)
-                            .await?;
-                        if !recovered {
-                            let _ = tx
-                                .send(AgentEvent::Error {
-                                    message: format!(
-                                        "Context overflow could not be reduced further: {}",
-                                        e
-                                    ),
-                                })
-                                .await;
-                            if let Some(ref mut t) = trace {
-                                t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                if let Err(te) = db.save_agent_trace(t) {
-                                    warn!("Failed to save agent trace: {te}");
-                                }
-                            }
-                            if let Some(tid) = turn_id {
-                                let trace =
-                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
-                                let _ =
-                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
-                            }
-                            return Err(e);
-                        }
-                    }
-                    Err(e) => {
                         let _ = tx
-                            .send(AgentEvent::Error {
-                                message: e.to_string(),
+                            .send(AgentEvent::StreamReset {
+                                reason: recovery_note.clone(),
                             })
                             .await;
-                        // Trace: error
-                        if let Some(ref mut t) = trace {
-                            t.finish(TraceOutcome::Error, Some(e.to_string()));
-                            if let Err(te) = db.save_agent_trace(t) {
-                                warn!("Failed to save agent trace: {te}");
-                            }
-                        }
-                        if let Some(tid) = turn_id {
-                            let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
-                            let _ = db.finalize_conversation_turn(tid, "error", None, Some(&trace));
-                        }
-                        return Err(e);
+                        accumulated_content.truncate(accumulated_len_before_iteration);
+                        let delay_ms =
+                            250_u64.saturating_mul(2_u64.saturating_pow(sampling_retries - 1));
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        continue;
                     }
-                }
-            };
 
-            let mut full_content = String::new();
-            let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
-            let mut started_call_ids: HashSet<String> = HashSet::new();
-            let mut chunk_usage: Option<Usage> = None;
-            let mut iteration_thinking = String::new();
-            let mut chunk_count: usize = 0;
-            let accumulated_len_before_iteration = accumulated_content.len();
-            let mut stream_incomplete_detail: Option<String> = None;
+                    let recovery_note =
+                        "Stream interrupted repeatedly; switching this turn to non-streaming mode.";
+                    let _ = tx
+                        .send(AgentEvent::Status {
+                            content: format!("{recovery_note} ({detail})"),
+                            tone: Some("muted".to_string()),
+                        })
+                        .await;
 
-            while let Some(chunk_result) = stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        chunk_count += 1;
-                        // Forward thinking deltas.
-                        if let Some(ref thinking) = chunk.thinking_delta {
-                            if !thinking.is_empty() {
-                                iteration_thinking.push_str(thinking);
+                    match self.provider.complete(&current_request).await {
+                        Ok(response) => {
+                            force_non_streaming_llm = true;
+                            let _ = tx
+                                .send(AgentEvent::StreamReset {
+                                    reason: recovery_note.to_string(),
+                                })
+                                .await;
+
+                            accumulated_content.truncate(accumulated_len_before_iteration);
+                            full_content = response.content;
+                            accumulated_content.push_str(&full_content);
+                            iteration_thinking = response.thinking.unwrap_or_default();
+                            tool_calls = response.tool_calls.unwrap_or_default();
+                            preparing_call_ids.clear();
+                            started_call_ids.clear();
+                            tool_run_started_ids.clear();
+                            chunk_usage = Some(response.usage);
+                            last_finish_reason =
+                                Some(format!("{:?}", response.finish_reason).to_lowercase());
+
+                            if !iteration_thinking.is_empty() {
                                 let _ = tx
                                     .send(AgentEvent::Thinking {
-                                        content: thinking.clone(),
+                                        content: iteration_thinking.clone(),
+                                    })
+                                    .await;
+                            }
+                            if !full_content.is_empty() {
+                                let _ = tx
+                                    .send(AgentEvent::TextDelta {
+                                        delta: full_content.clone(),
                                     })
                                     .await;
                             }
                         }
-                        // Forward text deltas.
-                        if !chunk.delta.is_empty() {
-                            full_content.push_str(&chunk.delta);
-                            accumulated_content.push_str(&chunk.delta);
-                            let _ = tx.send(AgentEvent::TextDelta { delta: chunk.delta }).await;
-                        }
-                        // Accumulate tool-call deltas.
-                        if let Some(ref tc_delta) = chunk.tool_call_delta {
-                            accumulate_tool_call(&mut tool_calls, tc_delta);
-
-                            // Emit streaming ToolCallStart / ArgsDelta events
-                            // so the UI can show progress before the SSE stream
-                            // finishes (critical for long tool-arg payloads).
-                            if let Some((tc_index, tc)) =
-                                resolve_delta_target(&tool_calls, tc_delta)
-                            {
-                                if !tc.name.is_empty() && started_call_ids.insert(tc.id.clone()) {
-                                    let _ = tx
-                                        .send(AgentEvent::ToolCallStart {
-                                            call_id: tc.id.clone(),
-                                            tool_name: tc.name.clone(),
-                                            arguments: String::new(),
-                                        })
-                                        .await;
-                                }
-                                if !tc_delta.arguments_delta.is_empty()
-                                    && started_call_ids.contains(&tc.id)
-                                {
-                                    let _ = tx
-                                        .send(AgentEvent::ToolCallArgsDelta {
-                                            call_id: tc.id.clone(),
-                                            tool_name: tc.name.clone(),
-                                            arguments_delta: tc_delta.arguments_delta.clone(),
-                                            index: tc_index as u32,
-                                        })
-                                        .await;
-                                }
-                            }
-                        }
-                        if let Some(ref fr) = chunk.finish_reason {
-                            last_finish_reason = Some(format!("{:?}", fr).to_lowercase());
-                        }
-                        if let Some(u) = chunk.usage {
-                            chunk_usage = Some(u);
-                        }
-                    }
-                    Err(CoreError::StreamIncomplete(detail)) => {
-                        warn!("Stream incomplete — response may be truncated ({detail})");
-                        info!(
-                            "Stream ended incomplete: {chunk_count} chunks, {} chars — {detail}",
-                            full_content.len()
-                        );
-                        stream_incomplete_detail = Some(detail);
-                        break;
-                    }
-                    Err(e) => {
-                        error!("LLM stream error: {e}");
-                        let _ = tx
-                            .send(AgentEvent::Error {
-                                message: e.to_string(),
-                            })
-                            .await;
-                        // Trace: error
-                        if let Some(ref mut t) = trace {
-                            t.finish(TraceOutcome::Error, Some(e.to_string()));
-                            if let Err(te) = db.save_agent_trace(t) {
-                                warn!("Failed to save agent trace: {te}");
-                            }
-                        }
-                        if let Some(tid) = turn_id {
-                            let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
-                            let _ = db.finalize_conversation_turn(tid, "error", None, Some(&trace));
-                        }
-                        return Err(e);
-                    }
-                }
-            }
-
-            info!(
-                "Stream complete: {chunk_count} chunks, {} chars",
-                full_content.len()
-            );
-
-            if let Some(detail) = stream_incomplete_detail {
-                let recovery_note = "Stream interrupted; retrying once without streaming.";
-                let _ = tx
-                    .send(AgentEvent::Status {
-                        content: format!("{recovery_note} ({detail})"),
-                        tone: Some("muted".to_string()),
-                    })
-                    .await;
-
-                match self.provider.complete(&current_request).await {
-                    Ok(response) => {
-                        let _ = tx
-                            .send(AgentEvent::StreamReset {
-                                reason: recovery_note.to_string(),
-                            })
-                            .await;
-
-                        accumulated_content.truncate(accumulated_len_before_iteration);
-                        full_content = response.content;
-                        accumulated_content.push_str(&full_content);
-                        iteration_thinking = response.thinking.unwrap_or_default();
-                        tool_calls = response.tool_calls.unwrap_or_default();
-                        started_call_ids.clear();
-                        chunk_usage = Some(response.usage);
-                        last_finish_reason =
-                            Some(format!("{:?}", response.finish_reason).to_lowercase());
-
-                        if !iteration_thinking.is_empty() {
+                        Err(err) => {
+                            let message =
+                                format!("Stream interrupted and non-streaming retry failed: {err}");
                             let _ = tx
-                                .send(AgentEvent::Thinking {
-                                    content: iteration_thinking.clone(),
+                                .send(AgentEvent::Error {
+                                    message: message.clone(),
                                 })
                                 .await;
-                        }
-                        if !full_content.is_empty() {
-                            let _ = tx
-                                .send(AgentEvent::TextDelta {
-                                    delta: full_content.clone(),
-                                })
-                                .await;
-                        }
-                    }
-                    Err(err) => {
-                        let message =
-                            format!("Stream interrupted and non-streaming retry failed: {err}");
-                        let _ = tx
-                            .send(AgentEvent::Error {
-                                message: message.clone(),
-                            })
-                            .await;
-                        if let Some(ref mut t) = trace {
-                            t.finish(TraceOutcome::Error, Some(message.clone()));
-                            if let Err(te) = db.save_agent_trace(t) {
-                                warn!("Failed to save agent trace: {te}");
+                            if let Some(ref mut t) = trace {
+                                t.finish(TraceOutcome::Error, Some(message.clone()));
+                                if let Err(te) = db.save_agent_trace(t) {
+                                    warn!("Failed to save agent trace: {te}");
+                                }
                             }
+                            if let Some(tid) = turn_id {
+                                let trace =
+                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
+                                let _ =
+                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
+                            }
+                            return Err(CoreError::StreamIncomplete(format!(
+                                "{detail}; fallback failed: {err}"
+                            )));
                         }
-                        if let Some(tid) = turn_id {
-                            let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
-                            let _ = db.finalize_conversation_turn(tid, "error", None, Some(&trace));
-                        }
-                        return Err(CoreError::StreamIncomplete(format!(
-                            "{detail}; fallback failed: {err}"
-                        )));
                     }
                 }
+
+                break;
             }
 
             // -- 4b. Accumulate usage ------------------------------------------
             let mut iteration_compacted = false;
-            let mut iteration_context_pct: f32 = 0.0;
             if let Some(u) = chunk_usage {
+                let iteration_context_pct: f32;
                 last_prompt_tokens = u.prompt_tokens; // Always overwrite — we want the LAST iteration
                 total_usage.prompt_tokens += u.prompt_tokens;
                 total_usage.completion_tokens += u.completion_tokens;
@@ -2217,25 +1986,43 @@ impl AgentExecutor {
                     })
                     .await;
 
-                // -- 4b'. Auto-compact at 85% of context budget ----------------
-                let ctx_window = self
-                    .config
-                    .context_window
-                    .unwrap_or_else(|| model_context_window(model));
-                let max_response = self.config.max_tokens.unwrap_or(4096);
-                let budget = ctx_window
-                    .saturating_sub(max_response)
-                    .saturating_sub(context_safety_buffer(ctx_window));
-                if budget > 0 {
-                    iteration_context_pct = (u.prompt_tokens as f32 / budget as f32) * 100.0;
-                    if u.prompt_tokens > (budget as f64 * 0.85) as u32 {
-                        if let Err(e) = self.aggressive_compact(&mut messages, model, &tx).await {
-                            warn!("Auto-compact failed: {e}");
-                        } else {
-                            iteration_compacted = true;
-                        }
+                // -- 4b'. Context pipeline budget check ------------------------
+                let budget_decision = context_pipeline.budget_decision(u.prompt_tokens);
+                let _budget_tokens = budget_decision.budget_tokens;
+                iteration_context_pct = budget_decision.usage_pct;
+                if budget_decision.should_compact {
+                    let before_message_count = messages.len();
+                    let started = TurnLoopEvent::CompactionStarted {
+                        reason: "auto".to_string(),
+                        message_count: before_message_count,
+                    };
+                    loop_recorder.record(started.clone());
+                    append_persisted_trace_loop_event(&mut persisted_trace_items, started);
+                    if let Err(e) = self.aggressive_compact(&mut messages, model, &tx).await {
+                        warn!("Auto-compact failed: {e}");
+                    } else {
+                        iteration_compacted = true;
+                        let evicted_count = before_message_count.saturating_sub(messages.len());
+                        let ended = TurnLoopEvent::CompactionEnded {
+                            reason: "auto".to_string(),
+                            evicted_count,
+                            message_count: messages.len(),
+                        };
+                        loop_recorder.record(ended.clone());
+                        append_persisted_trace_loop_event(&mut persisted_trace_items, ended);
                     }
                 }
+
+                let completed = TurnLoopEvent::ModelStepCompleted {
+                    iteration,
+                    tool_call_count: tool_calls.len(),
+                    finish_reason: last_finish_reason.clone(),
+                    prompt_tokens: u.prompt_tokens,
+                    completion_tokens: u.completion_tokens,
+                    context_usage_pct: iteration_context_pct,
+                };
+                loop_recorder.record(completed.clone());
+                append_persisted_trace_loop_event(&mut persisted_trace_items, completed);
 
                 // Trace: record step for this LLM iteration
                 if let Some(ref mut t) = trace {
@@ -2276,9 +2063,36 @@ impl AgentExecutor {
                 reasoning_content: assistant_reasoning_content.clone(),
             };
             messages.push(assistant_msg.clone());
+            let loop_guard_intervention =
+                loop_guard.observe_model_step(&assistant_msg.text_content(), &tool_calls);
 
             // -- 4d. Check termination -----------------------------------------
             if tool_calls.is_empty() {
+                if let Some(intervention) = loop_guard_intervention.as_ref() {
+                    if intervention.action == LoopGuardAction::ChangeStrategy
+                        && iteration + 1 < self.config.max_iterations
+                    {
+                        let event = TurnLoopEvent::LoopGuardIntervention {
+                            reason: intervention.reason.clone(),
+                            action: intervention.action.as_str().to_string(),
+                        };
+                        loop_recorder.record(event.clone());
+                        append_persisted_trace_loop_event(&mut persisted_trace_items, event);
+                        append_persisted_trace_status(
+                            &mut persisted_trace_items,
+                            &intervention.reason,
+                            "warning",
+                        );
+                        let _ = tx
+                            .send(AgentEvent::Status {
+                                content: intervention.reason.clone(),
+                                tone: Some("warning".to_string()),
+                            })
+                            .await;
+                        messages.push(Message::text(Role::System, intervention.prompt.clone()));
+                        continue;
+                    }
+                }
                 let steering_texts = {
                     let mut steering_ctx = SteeringDrainContext {
                         db,
@@ -2450,6 +2264,12 @@ impl AgentExecutor {
                     }
                 }
 
+                let finished = TurnLoopEvent::TurnFinished {
+                    outcome: "success".to_string(),
+                };
+                loop_recorder.record(finished.clone());
+                append_persisted_trace_loop_event(&mut persisted_trace_items, finished);
+
                 let _ = tx
                     .send(AgentEvent::Done {
                         message: assistant_msg.clone(),
@@ -2507,11 +2327,54 @@ impl AgentExecutor {
             // ── Cancellation checkpoint: before tool execution ────────
             check_cancelled!(last_tool_calls);
 
+            let loop_guard_block_reason = loop_guard_intervention
+                .as_ref()
+                .filter(|intervention| intervention.action == LoopGuardAction::BlockToolCalls)
+                .map(|intervention| {
+                    let event = TurnLoopEvent::LoopGuardIntervention {
+                        reason: intervention.reason.clone(),
+                        action: intervention.action.as_str().to_string(),
+                    };
+                    loop_recorder.record(event.clone());
+                    append_persisted_trace_loop_event(&mut persisted_trace_items, event);
+                    append_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        &intervention.reason,
+                        "warning",
+                    );
+                    intervention.reason.clone()
+                });
+            if let Some(reason) = loop_guard_block_reason.as_ref() {
+                let _ = tx
+                    .send(AgentEvent::Status {
+                        content: reason.clone(),
+                        tone: Some("warning".to_string()),
+                    })
+                    .await;
+            }
+
             // -- 4e. Execute tool calls in parallel ------------------------------
-            // Emit ToolCallStart events for tools that haven't yet been
-            // announced during streaming (guards against providers that skip
-            // the streaming tool-call deltas and only provide them post-stream).
+            // Emit ToolCallStart only once the provider has finished assembling
+            // the complete argument string and the call is ready to execute.
             for tc in &tool_calls {
+                let running_run = build_tool_run_item(
+                    &self.tools,
+                    &tc.id,
+                    &tc.name,
+                    ToolRunStatus::Running,
+                    Some(&tc.arguments),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                let run_event = if tool_run_started_ids.insert(tc.id.clone()) {
+                    AgentEvent::ToolRunStarted { run: running_run }
+                } else {
+                    AgentEvent::ToolRunUpdated { run: running_run }
+                };
+                let _ = tx.send(run_event).await;
                 if started_call_ids.insert(tc.id.clone()) {
                     let _ = tx
                         .send(AgentEvent::ToolCallStart {
@@ -2526,48 +2389,130 @@ impl AgentExecutor {
             // Build futures for all tool calls and execute concurrently.
             let offered_tool_names: HashSet<String> =
                 tool_defs.iter().map(|tool| tool.name.clone()).collect();
-            let tool_futures: Vec<_> = tool_calls
-                .iter()
-                .map(|tc| {
+            let tool_policy = ToolSchedulerPolicy::new(
+                self.config.tool_timeout_secs,
+                self.config.dynamic_tool_visibility,
+                offered_tool_names,
+            );
+            for tc in &tool_calls {
+                let decision = tool_policy.decision_for(tc);
+                let policy_label = if loop_guard_block_reason.is_some() {
+                    "blockedByLoopGuard"
+                } else {
+                    decision.policy_label
+                };
+                loop_recorder.tool_scheduled(
+                    iteration,
+                    &tc.id,
+                    &tc.name,
+                    decision.timeout.map(|timeout| timeout.as_secs()),
+                    policy_label,
+                );
+                append_persisted_trace_loop_event(
+                    &mut persisted_trace_items,
+                    TurnLoopEvent::ToolScheduled {
+                        iteration,
+                        call_id: tc.id.clone(),
+                        tool_name: tc.name.clone(),
+                        timeout_secs: decision.timeout.map(|timeout| timeout.as_secs()),
+                        policy: policy_label.to_string(),
+                    },
+                );
+            }
+            enum ToolExecutionOutcome {
+                Result(crate::tools::ToolResult, ToolRunStatus),
+                ExecutionError(CoreError),
+                Cancelled,
+                Timeout,
+            }
+
+            struct FinishedToolExecution {
+                index: usize,
+                call: ToolCallRequest,
+                timeout: Option<Duration>,
+                outcome: ToolExecutionOutcome,
+                elapsed: Duration,
+            }
+
+            #[derive(Clone)]
+            struct CompletedToolForContext {
+                call: ToolCallRequest,
+                content: String,
+                duration_ms: u64,
+                artifacts: Option<serde_json::Value>,
+            }
+
+            let tool_batches = tool_call_execution_batches(&self.tools, &tool_policy, &tool_calls);
+            let mut completed_for_context: Vec<Option<CompletedToolForContext>> =
+                vec![None; tool_calls.len()];
+            let mut post_tool_loop_guard_prompt: Option<String> = None;
+
+            for tool_batch in tool_batches {
+                let mut tool_futures = FuturesUnordered::new();
+                for index in tool_batch {
+                    let tc = tool_calls[index].clone();
                     let source_scope = &source_scope;
                     let tool_span = info_span!("tool_execution", tool = %tc.name);
                     let progress_tx = tx.clone();
                     let approval_tx = tx.clone();
+                    let run_tx = tx.clone();
                     let progress_call_id = tc.id.clone();
                     let progress_tool_name = tc.name.clone();
-                    let offered_tool_names = &offered_tool_names;
+                    let tool_policy = &tool_policy;
+                    let loop_guard_block_reason = loop_guard_block_reason.clone();
+                    tool_futures.push(
                     async move {
-                        // -- Confirmation gate for destructive tools --------
-                        let parsed_args: serde_json::Value =
-                            serde_json::from_str(&tc.arguments).unwrap_or_default();
-                        let tool_timeout = tool_timeout_for_call(
-                            self.config.tool_timeout_secs,
-                            &tc.name,
-                            &parsed_args,
-                        );
-                        if self.config.dynamic_tool_visibility
-                            && !offered_tool_names.contains(&tc.name)
-                        {
-                            let blocked = crate::tools::ToolResult {
-                                call_id: tc.id.clone(),
-                                content: format!(
-                                    "Tool '{}' is not available in the current tool policy for this turn. Use an offered tool or ask the user to change the request scope.",
-                                    tc.name
+                        let scheduling = tool_policy.decision_for(&tc);
+                        let parsed_args = scheduling.parsed_args;
+                        let tool_timeout = scheduling.timeout;
+                        let capabilities = self.tools.run_capabilities(&tc.name, &parsed_args);
+                        if let Some(reason) = loop_guard_block_reason.as_deref() {
+                            let blocked = loop_guard_blocked_result(&tc, reason);
+                            return FinishedToolExecution {
+                                index,
+                                call: tc,
+                                timeout: tool_timeout,
+                                outcome: ToolExecutionOutcome::Result(
+                                    blocked,
+                                    ToolRunStatus::Failed,
                                 ),
-                                is_error: true,
-                                artifacts: None,
+                                elapsed: Duration::ZERO,
                             };
-                            return (tc, tool_timeout, Ok(Ok(blocked)), Duration::ZERO);
+                        }
+                        if let Some(blocked) = scheduling.synthetic_result {
+                            return FinishedToolExecution {
+                                index,
+                                call: tc,
+                                timeout: tool_timeout,
+                                outcome: ToolExecutionOutcome::Result(
+                                    blocked,
+                                    ToolRunStatus::Failed,
+                                ),
+                                elapsed: Duration::ZERO,
+                            };
                         }
                         let tool_requires_confirm =
                             self.tools.requires_confirmation(&tc.name, &parsed_args);
                         let shell_requires_confirm = tc.name == "run_shell"
                             && self.config.shell_access_mode.requires_confirmation();
-                        // Approval callback takes precedence — it always
-                        // fires for high-risk tools regardless of the
-                        // legacy `require_tool_confirmation` flag.
                         if let Some(ref approval_cb) = self.approval_callback {
                             if tool_requires_confirm || shell_requires_confirm {
+                                let _ = run_tx
+                                    .send(AgentEvent::ToolRunUpdated {
+                                        run: build_tool_run_item(
+                                            &self.tools,
+                                            &tc.id,
+                                            &tc.name,
+                                            ToolRunStatus::ApprovalPending,
+                                            Some(&tc.arguments),
+                                            None,
+                                            None,
+                                            None,
+                                            Some("waiting for approval".to_string()),
+                                            None,
+                                        ),
+                                    })
+                                    .await;
                                 let risk = classify_risk(&tc.name, &parsed_args);
                                 let reason = describe_request(&tc.name, &parsed_args);
                                 let req = ApprovalRequest::new(
@@ -2596,8 +2541,33 @@ impl AgentExecutor {
                                         is_error: true,
                                         artifacts: None,
                                     };
-                                    return (tc, tool_timeout, Ok(Ok(denied)), Duration::ZERO);
+                                    return FinishedToolExecution {
+                                        index,
+                                        call: tc,
+                                        timeout: tool_timeout,
+                                        outcome: ToolExecutionOutcome::Result(
+                                            denied,
+                                            ToolRunStatus::Declined,
+                                        ),
+                                        elapsed: Duration::ZERO,
+                                    };
                                 }
+                                let _ = run_tx
+                                    .send(AgentEvent::ToolRunUpdated {
+                                        run: build_tool_run_item(
+                                            &self.tools,
+                                            &tc.id,
+                                            &tc.name,
+                                            ToolRunStatus::Running,
+                                            Some(&tc.arguments),
+                                            None,
+                                            None,
+                                            None,
+                                            None,
+                                            None,
+                                        ),
+                                    })
+                                    .await;
                             }
                         } else {
                             let needs_confirmation = if tc.name == "run_shell" {
@@ -2618,12 +2588,16 @@ impl AgentExecutor {
                                             is_error: true,
                                             artifacts: None,
                                         };
-                                        return (
-                                            tc,
-                                            tool_timeout,
-                                            Ok(Ok(declined)),
-                                            Duration::ZERO,
-                                        );
+                                        return FinishedToolExecution {
+                                            index,
+                                            call: tc,
+                                            timeout: tool_timeout,
+                                            outcome: ToolExecutionOutcome::Result(
+                                                declined,
+                                                ToolRunStatus::Declined,
+                                            ),
+                                            elapsed: Duration::ZERO,
+                                        };
                                     }
                                 }
                             }
@@ -2631,26 +2605,28 @@ impl AgentExecutor {
 
                         let tool_start = std::time::Instant::now();
                         let execute_tool = async {
-                            let exec_fut = self.tools.execute_with_context(
+                            let exec_fut = self.tools.execute_with_run_context(
                                 &tc.name,
-                                &tc.id,
-                                &tc.arguments,
-                                db,
-                                source_scope,
-                                conversation_id,
+                                crate::tools::ToolExecutionContext {
+                                    call_id: &tc.id,
+                                    arguments: &tc.arguments,
+                                    db,
+                                    source_scope,
+                                    conversation_id,
+                                    cancel_token: Some(&self.cancel_token),
+                                },
                             );
                             tokio::pin!(exec_fut);
                             let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
                             heartbeat
                                 .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                            // Consume the immediate first tick so we don't fire
-                            // a heartbeat before any real wait has elapsed.
                             heartbeat.tick().await;
                             loop {
                                 tokio::select! {
                                     biased;
                                     r = &mut exec_fut => break r,
                                     _ = heartbeat.tick() => {
+                                        let note = format!("running {}...", progress_tool_name);
                                         debug!(
                                             "tool heartbeat: {} (call_id={})",
                                             progress_tool_name, progress_call_id,
@@ -2658,9 +2634,22 @@ impl AgentExecutor {
                                         let _ = progress_tx
                                             .send(AgentEvent::ToolCallProgress {
                                                 call_id: progress_call_id.clone(),
-                                                note: format!(
-                                                    "running {}…",
-                                                    progress_tool_name
+                                                note: note.clone(),
+                                            })
+                                            .await;
+                                        let _ = progress_tx
+                                            .send(AgentEvent::ToolRunUpdated {
+                                                run: build_tool_run_item(
+                                                    &self.tools,
+                                                    &progress_call_id,
+                                                    &progress_tool_name,
+                                                    ToolRunStatus::Running,
+                                                    Some(&tc.arguments),
+                                                    None,
+                                                    None,
+                                                    None,
+                                                    Some(note),
+                                                    None,
                                                 ),
                                             })
                                             .await;
@@ -2668,63 +2657,112 @@ impl AgentExecutor {
                                 }
                             }
                         };
-                        let result = if let Some(timeout) = tool_timeout {
-                            tokio::time::timeout(timeout, execute_tool).await
+                        let execute_to_outcome = async {
+                            if let Some(timeout) = tool_timeout {
+                                match tokio::time::timeout(timeout, execute_tool).await {
+                                    Ok(Ok(result)) => {
+                                        let status = if result.is_error {
+                                            ToolRunStatus::Failed
+                                        } else {
+                                            ToolRunStatus::Completed
+                                        };
+                                        ToolExecutionOutcome::Result(result, status)
+                                    }
+                                    Ok(Err(err)) => ToolExecutionOutcome::ExecutionError(err),
+                                    Err(_) => ToolExecutionOutcome::Timeout,
+                                }
+                            } else {
+                                match execute_tool.await {
+                                    Ok(result) => {
+                                        let status = if result.is_error {
+                                            ToolRunStatus::Failed
+                                        } else {
+                                            ToolRunStatus::Completed
+                                        };
+                                        ToolExecutionOutcome::Result(result, status)
+                                    }
+                                    Err(err) => ToolExecutionOutcome::ExecutionError(err),
+                                }
+                            }
+                        };
+                        let outcome = if matches!(
+                            capabilities.interrupt_behavior,
+                            ToolInterruptBehavior::Cancel
+                        ) {
+                            tokio::select! {
+                                biased;
+                                _ = self.cancel_token.cancelled() => ToolExecutionOutcome::Cancelled,
+                                outcome = execute_to_outcome => outcome,
+                            }
                         } else {
-                            Ok(execute_tool.await)
+                            execute_to_outcome.await
                         };
                         let tool_elapsed = tool_start.elapsed();
-                        (tc, tool_timeout, result, tool_elapsed)
+                        FinishedToolExecution {
+                            index,
+                            call: tc,
+                            timeout: tool_timeout,
+                            outcome,
+                            elapsed: tool_elapsed,
+                        }
                     }
-                    .instrument(tool_span)
-                })
-                .collect();
+                    .instrument(tool_span),
+                );
+                }
 
-            let tool_results = join_all(tool_futures).await;
-
-            // Process results in original order (join_all preserves order).
-            for (tc, tool_timeout, tool_result, tool_elapsed) in tool_results {
-                let (tool_msg, tool_artifacts, tool_is_error) = match tool_result {
-                    Ok(Ok(result)) => {
-                        let _ = tx
-                            .send(AgentEvent::ToolCallResult {
-                                call_id: result.call_id.clone(),
-                                tool_name: tc.name.clone(),
-                                content: result.content.clone(),
-                                is_error: result.is_error,
-                                artifacts: result.artifacts.clone(),
-                            })
-                            .await;
-                        (result.content, result.artifacts, result.is_error)
-                    }
-                    Ok(Err(e)) => {
-                        let structured = crate::tools::structured_tool_error_result(
-                            &tc.id,
-                            "tool_execution_failed",
-                            format!("{} failed: {e}", tc.name),
-                            serde_json::json!({
-                                "tool": &tc.name,
-                                "arguments": "must match this tool's JSON schema exactly",
-                                "recovery": "inspect the error, adjust only the invalid fields, and retry if the request still needs this tool"
-                            }),
-                            true,
-                        );
-                        let err_content = structured.content.clone();
-                        let _ = tx
-                            .send(AgentEvent::ToolCallResult {
-                                call_id: tc.id.clone(),
-                                tool_name: tc.name.clone(),
-                                content: err_content.clone(),
-                                is_error: true,
-                                artifacts: structured.artifacts.clone(),
-                            })
-                            .await;
-                        (err_content, structured.artifacts, true)
-                    }
-                    Err(_elapsed) => {
-                        let timeout_secs = tool_timeout.map(|d| d.as_secs()).unwrap_or(0);
-                        warn!("Tool '{}' timed out after {}s", tc.name, timeout_secs);
-                        let structured = crate::tools::structured_tool_error_result(
+                while let Some(finished_tool) = tool_futures.next().await {
+                    let tc = finished_tool.call;
+                    let tool_elapsed = finished_tool.elapsed;
+                    let (tool_msg, tool_artifacts, tool_is_error, run_status) = match finished_tool
+                        .outcome
+                    {
+                        ToolExecutionOutcome::Result(result, status) => {
+                            (result.content, result.artifacts, result.is_error, status)
+                        }
+                        ToolExecutionOutcome::ExecutionError(e) => {
+                            let structured = crate::tools::structured_tool_error_result(
+                                &tc.id,
+                                "tool_execution_failed",
+                                format!("{} failed: {e}", tc.name),
+                                serde_json::json!({
+                                    "tool": &tc.name,
+                                    "arguments": "must match this tool's JSON schema exactly",
+                                    "recovery": "inspect the error, adjust only the invalid fields, and retry if the request still needs this tool"
+                                }),
+                                true,
+                            );
+                            let err_content = structured.content.clone();
+                            (
+                                err_content,
+                                structured.artifacts,
+                                true,
+                                ToolRunStatus::Failed,
+                            )
+                        }
+                        ToolExecutionOutcome::Cancelled => {
+                            let structured = crate::tools::structured_tool_error_result(
+                                &tc.id,
+                                "tool_cancelled",
+                                format!("tool '{}' was cancelled by user request.", tc.name),
+                                serde_json::json!({
+                                    "tool": &tc.name,
+                                    "recovery": "stop using this tool for the interrupted request unless the user asks to resume"
+                                }),
+                                false,
+                            );
+                            let err_content = structured.content.clone();
+                            (
+                                err_content,
+                                structured.artifacts,
+                                true,
+                                ToolRunStatus::Cancelled,
+                            )
+                        }
+                        ToolExecutionOutcome::Timeout => {
+                            let timeout_secs =
+                                finished_tool.timeout.map(|d| d.as_secs()).unwrap_or(0);
+                            warn!("Tool '{}' timed out after {}s", tc.name, timeout_secs);
+                            let structured = crate::tools::structured_tool_error_result(
                             &tc.id,
                             "tool_timeout",
                             format!(
@@ -2739,62 +2777,129 @@ impl AgentExecutor {
                             }),
                             true,
                         );
-                        let err_content = structured.content.clone();
+                            let err_content = structured.content.clone();
+                            (
+                                err_content,
+                                structured.artifacts,
+                                true,
+                                ToolRunStatus::TimedOut,
+                            )
+                        }
+                    };
+
+                    let _ = tx
+                        .send(AgentEvent::ToolCallResult {
+                            call_id: tc.id.clone(),
+                            tool_name: tc.name.clone(),
+                            content: tool_msg.clone(),
+                            is_error: tool_is_error,
+                            artifacts: tool_artifacts.clone(),
+                        })
+                        .await;
+                    let _ = tx
+                        .send(AgentEvent::ToolRunCompleted {
+                            run: build_tool_run_item(
+                                &self.tools,
+                                &tc.id,
+                                &tc.name,
+                                run_status,
+                                Some(&tc.arguments),
+                                Some(tool_msg.clone()),
+                                Some(tool_is_error),
+                                tool_artifacts.clone(),
+                                None,
+                                Some(tool_elapsed.as_millis() as u64),
+                            ),
+                        })
+                        .await;
+
+                    // Redact tool output before adding to context.
+                    let content = if privacy_cfg.enabled {
+                        privacy::redact_content(&tool_msg, &privacy_cfg.redact_patterns)
+                    } else {
+                        tool_msg
+                    };
+
+                    append_persisted_trace_tool(
+                        &mut persisted_trace_items,
+                        &self.tools,
+                        &tc.name,
+                        &tc.arguments,
+                        &tc.id,
+                        if tool_is_error { "error" } else { "done" },
+                        Some(content.clone()),
+                        Some(tool_is_error),
+                        tool_artifacts.clone(),
+                    );
+                    let finished = TurnLoopEvent::ToolFinished {
+                        iteration,
+                        call_id: tc.id.clone(),
+                        tool_name: tc.name.clone(),
+                        duration_ms: tool_elapsed.as_millis() as u64,
+                        is_error: tool_is_error,
+                    };
+                    loop_recorder.record(finished.clone());
+                    append_persisted_trace_loop_event(&mut persisted_trace_items, finished);
+                    if let Some(intervention) = loop_guard.observe_tool_result(tool_is_error) {
+                        let event = TurnLoopEvent::LoopGuardIntervention {
+                            reason: intervention.reason.clone(),
+                            action: intervention.action.as_str().to_string(),
+                        };
+                        loop_recorder.record(event.clone());
+                        append_persisted_trace_loop_event(&mut persisted_trace_items, event);
+                        append_persisted_trace_status(
+                            &mut persisted_trace_items,
+                            &intervention.reason,
+                            "warning",
+                        );
                         let _ = tx
-                            .send(AgentEvent::ToolCallResult {
-                                call_id: tc.id.clone(),
-                                tool_name: tc.name.clone(),
-                                content: err_content.clone(),
-                                is_error: true,
-                                artifacts: structured.artifacts.clone(),
+                            .send(AgentEvent::Status {
+                                content: intervention.reason.clone(),
+                                tone: Some("warning".to_string()),
                             })
                             .await;
-                        (err_content, structured.artifacts, true)
+                        post_tool_loop_guard_prompt.get_or_insert(intervention.prompt);
                     }
-                };
+                    if advance_task_plan_for_tool_result(&mut task_plan, &tc.name, tool_is_error) {
+                        emit_task_plan_update(
+                            &tx,
+                            &task_plan,
+                            if tool_is_error {
+                                "recovering"
+                            } else {
+                                "tooling"
+                            },
+                            if tool_is_error {
+                                "Tool failed; execution plan marked for recovery"
+                            } else {
+                                "Execution plan advanced after tool result"
+                            },
+                        )
+                        .await;
+                    }
+                    if let Some(tid) = turn_id {
+                        let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                        let _ = db.update_conversation_turn_progress(
+                            tid,
+                            Some(&format!("{:?}", route_plan.kind)),
+                            Some(&trace),
+                        );
+                    }
 
-                // Redact tool output before adding to context.
-                let content = if privacy_cfg.enabled {
-                    privacy::redact_content(&tool_msg, &privacy_cfg.redact_patterns)
-                } else {
-                    tool_msg
-                };
+                    completed_for_context[finished_tool.index] = Some(CompletedToolForContext {
+                        call: tc,
+                        content,
+                        duration_ms: tool_elapsed.as_millis() as u64,
+                        artifacts: tool_artifacts,
+                    });
+                }
+            }
 
-                append_persisted_trace_tool(
-                    &mut persisted_trace_items,
-                    &tc.name,
-                    &tc.arguments,
-                    &tc.id,
-                    if tool_is_error { "error" } else { "done" },
-                    Some(content.clone()),
-                    Some(tool_is_error),
-                    tool_artifacts.clone(),
-                );
-                if advance_task_plan_for_tool_result(&mut task_plan, &tc.name, tool_is_error) {
-                    emit_task_plan_update(
-                        &tx,
-                        &task_plan,
-                        if tool_is_error {
-                            "recovering"
-                        } else {
-                            "tooling"
-                        },
-                        if tool_is_error {
-                            "Tool failed; execution plan marked for recovery"
-                        } else {
-                            "Execution plan advanced after tool result"
-                        },
-                    )
-                    .await;
-                }
-                if let Some(tid) = turn_id {
-                    let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
-                    let _ = db.update_conversation_turn_progress(
-                        tid,
-                        Some(&format!("{:?}", route_plan.kind)),
-                        Some(&trace),
-                    );
-                }
+            for completed in completed_for_context.into_iter().flatten() {
+                let tc = completed.call;
+                let content = completed.content;
+                let duration_ms = completed.duration_ms;
+                let tool_artifacts = completed.artifacts;
 
                 // Save tool result message to DB.
                 if let Some(cid) = conversation_id {
@@ -2833,13 +2938,16 @@ impl AgentExecutor {
                     t.add_step(TraceStep {
                         iteration,
                         tool_name: Some(tc.name.clone()),
-                        tool_duration_ms: Some(tool_elapsed.as_millis() as u64),
+                        tool_duration_ms: Some(duration_ms),
                         input_tokens: 0,
                         output_tokens: 0,
                         context_usage_pct: 0.0,
                         was_compacted: false,
                     });
                 }
+            }
+            if let Some(prompt) = post_tool_loop_guard_prompt {
+                messages.push(Message::text(Role::System, prompt));
             }
 
             last_tool_calls = None;
@@ -2849,15 +2957,7 @@ impl AgentExecutor {
 
             // Re-trim messages to fit context window after appending tool results.
             // This prevents unbounded growth across iterations.
-            let max_ctx = self
-                .config
-                .context_window
-                .unwrap_or_else(|| model_context_window(model));
-            messages = trim_to_context_window(
-                &messages,
-                max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
-                max_response_tokens,
-            );
+            messages = context_pipeline.trim_after_tool_results(&messages);
 
             // Loop back → next LLM call with tool results.
         }
@@ -2899,6 +2999,11 @@ impl AgentExecutor {
             )
             .await;
         }
+        let finished = TurnLoopEvent::TurnFinished {
+            outcome: "max_iterations".to_string(),
+        };
+        loop_recorder.record(finished.clone());
+        append_persisted_trace_loop_event(&mut persisted_trace_items, finished);
 
         if let Some(cid) = conversation_id {
             let assistant_message_id = Uuid::new_v4().to_string();
@@ -3057,16 +3162,12 @@ impl AgentExecutor {
 
         self.aggressive_compact(messages, model, tx).await?;
 
-        let max_context = self
-            .config
-            .context_window
-            .unwrap_or_else(|| model_context_window(model));
-        let extra_safety = context_safety_buffer(max_context).saturating_mul(2);
-        *messages = trim_to_context_window(
-            messages,
-            max_context.saturating_sub(extra_safety),
+        let pipeline = ContextPipeline::new(
+            model,
+            self.config.context_window,
             self.config.max_tokens.unwrap_or(4096),
         );
+        *messages = pipeline.trim_after_overflow_recovery(messages);
 
         let after_tokens: u32 = messages
             .iter()
@@ -3319,7 +3420,7 @@ impl AgentExecutor {
         }
         let model = self.config.model.as_deref().unwrap_or(DEFAULT_MODEL);
 
-        let dispatch = self.match_direct_pattern(user_text, db)?;
+        let dispatch = direct_dispatch::match_direct_pattern(user_text, db)?;
 
         debug!(
             "Direct dispatch: tool={}, args={}",
@@ -3328,7 +3429,25 @@ impl AgentExecutor {
 
         let call_id = format!("direct_{}", Uuid::new_v4());
 
-        // Emit ToolCallStart so the frontend shows tool-call UI.
+        let started_at = std::time::Instant::now();
+        let _ = tx
+            .send(AgentEvent::ToolRunStarted {
+                run: build_tool_run_item(
+                    &self.tools,
+                    &call_id,
+                    &dispatch.tool_name,
+                    ToolRunStatus::Running,
+                    Some(&dispatch.arguments),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            })
+            .await;
+
+        // Emit ToolCallStart so legacy frontend state shows tool-call UI.
         let _ = tx
             .send(AgentEvent::ToolCallStart {
                 call_id: call_id.clone(),
@@ -3340,12 +3459,16 @@ impl AgentExecutor {
         // Execute the tool directly.
         let result = self
             .tools
-            .execute(
+            .execute_with_run_context(
                 &dispatch.tool_name,
-                &call_id,
-                &dispatch.arguments,
-                db,
-                source_scope,
+                crate::tools::ToolExecutionContext {
+                    call_id: &call_id,
+                    arguments: &dispatch.arguments,
+                    db,
+                    source_scope,
+                    conversation_id,
+                    cancel_token: Some(&self.cancel_token),
+                },
             )
             .await;
 
@@ -3358,6 +3481,27 @@ impl AgentExecutor {
                         content: tool_result.content.clone(),
                         is_error: tool_result.is_error,
                         artifacts: tool_result.artifacts.clone(),
+                    })
+                    .await;
+                let direct_run_status = if tool_result.is_error {
+                    ToolRunStatus::Failed
+                } else {
+                    ToolRunStatus::Completed
+                };
+                let _ = tx
+                    .send(AgentEvent::ToolRunCompleted {
+                        run: build_tool_run_item(
+                            &self.tools,
+                            &tool_result.call_id,
+                            &dispatch.tool_name,
+                            direct_run_status,
+                            Some(&dispatch.arguments),
+                            Some(tool_result.content.clone()),
+                            Some(tool_result.is_error),
+                            tool_result.artifacts.clone(),
+                            None,
+                            Some(started_at.elapsed().as_millis() as u64),
+                        ),
                     })
                     .await;
 
@@ -3434,129 +3578,35 @@ impl AgentExecutor {
             }
             Err(e) => {
                 warn!("Direct dispatch failed ({}): {}", dispatch.tool_name, e);
+                let content = format!("{} failed: {e}", dispatch.tool_name);
+                let _ = tx
+                    .send(AgentEvent::ToolCallResult {
+                        call_id: call_id.clone(),
+                        tool_name: dispatch.tool_name.clone(),
+                        content: content.clone(),
+                        is_error: true,
+                        artifacts: None,
+                    })
+                    .await;
+                let _ = tx
+                    .send(AgentEvent::ToolRunCompleted {
+                        run: build_tool_run_item(
+                            &self.tools,
+                            &call_id,
+                            &dispatch.tool_name,
+                            ToolRunStatus::Failed,
+                            Some(&dispatch.arguments),
+                            Some(content),
+                            Some(true),
+                            None,
+                            None,
+                            Some(started_at.elapsed().as_millis() as u64),
+                        ),
+                    })
+                    .await;
                 None // Fall through to LLM
             }
         }
-    }
-
-    /// Match user query text against known direct-dispatch patterns.
-    ///
-    /// Only matches CLEAR, unambiguous commands. Anything vague or
-    /// conversational falls through to the LLM.
-    fn match_direct_pattern(&self, user_text: &str, db: &Database) -> Option<DirectDispatch> {
-        let q = user_text.trim().to_lowercase();
-        let q = q
-            .trim_end_matches(|c: char| ".?!\u{3002}\u{ff1f}\u{ff01}".contains(c))
-            .trim();
-
-        // Strip common polite prefixes/suffixes.
-        let q = q.strip_prefix("please ").unwrap_or(q);
-        let q = q.strip_prefix("can you ").unwrap_or(q);
-        let q = q.strip_prefix("could you ").unwrap_or(q);
-        let q = q.strip_suffix(" please").unwrap_or(q);
-        let q = q.strip_prefix('\u{8BF7}').unwrap_or(q); // 请
-
-        // --- List sources (no arguments) ------------------------------------
-        const LIST_SOURCES: &[&str] = &[
-            "list sources",
-            "list my sources",
-            "show sources",
-            "show my sources",
-            "show all sources",
-            "what sources do i have",
-            "what are my sources",
-            "\u{663E}\u{793A}\u{6570}\u{636E}\u{6E90}", // 显示数据源
-            "\u{5217}\u{51FA}\u{6570}\u{636E}\u{6E90}", // 列出数据源
-            "\u{67E5}\u{770B}\u{6570}\u{636E}\u{6E90}", // 查看数据源
-            "\u{6570}\u{636E}\u{6E90}\u{5217}\u{8868}", // 数据源列表
-            "\u{30BD}\u{30FC}\u{30B9}\u{4E00}\u{89A7}", // ソース一覧
-            "\u{30BD}\u{30FC}\u{30B9}\u{3092}\u{8868}\u{793A}", // ソースを表示
-        ];
-        if LIST_SOURCES.contains(&q) {
-            return Some(DirectDispatch {
-                tool_name: "list_sources".into(),
-                arguments: "{}".into(),
-            });
-        }
-
-        // --- List playbooks (action: list) ----------------------------------
-        const LIST_PLAYBOOKS: &[&str] = &[
-            "list playbooks",
-            "list my playbooks",
-            "show playbooks",
-            "show my playbooks",
-            "what playbooks do i have",
-            "what are my playbooks",
-            "\u{663E}\u{793A}\u{5267}\u{672C}", // 显示剧本
-            "\u{5217}\u{51FA}\u{5267}\u{672C}", // 列出剧本
-            "\u{67E5}\u{770B}\u{5267}\u{672C}", // 查看剧本
-            "\u{5267}\u{672C}\u{5217}\u{8868}", // 剧本列表
-            "\u{30D7}\u{30EC}\u{30A4}\u{30D6}\u{30C3}\u{30AF}\u{4E00}\u{89A7}", // プレイブック一覧
-        ];
-        if LIST_PLAYBOOKS.contains(&q) {
-            return Some(DirectDispatch {
-                tool_name: "manage_playbook".into(),
-                arguments: r#"{"action":"list"}"#.into(),
-            });
-        }
-
-        // --- Browse directory (extract path) --------------------------------
-        let path = None
-            .or_else(|| q.strip_prefix("ls "))
-            .or_else(|| q.strip_prefix("dir "))
-            .or_else(|| q.strip_prefix("browse "))
-            .or_else(|| q.strip_prefix("list directory "))
-            .or_else(|| q.strip_prefix("list dir "));
-
-        if let Some(raw_path) = path {
-            let raw_path = raw_path.trim().trim_matches('"').trim_matches('\'');
-            if !raw_path.is_empty() {
-                let escaped =
-                    serde_json::to_string(raw_path).unwrap_or_else(|_| format!("\"{}\"", raw_path));
-                return Some(DirectDispatch {
-                    tool_name: "list_dir".into(),
-                    arguments: format!(r#"{{"path":{}}}"#, escaped),
-                });
-            }
-        }
-
-        // --- List documents in source (resolve source name → ID) ------------
-        let source_phrase = None
-            .or_else(|| q.strip_prefix("list files in "))
-            .or_else(|| q.strip_prefix("show files in "))
-            .or_else(|| q.strip_prefix("list documents in "))
-            .or_else(|| q.strip_prefix("show documents in "))
-            .or_else(|| q.strip_suffix("\u{91CC}\u{7684}\u{6587}\u{4EF6}")) // 里的文件
-            .or_else(|| q.strip_suffix("\u{306E}\u{30D5}\u{30A1}\u{30A4}\u{30EB}")); // のファイル
-
-        if let Some(source_name) = source_phrase {
-            let source_name = source_name.trim().trim_matches('"').trim_matches('\'');
-            if !source_name.is_empty() {
-                if let Ok(sources) = db.list_sources() {
-                    let name_lower = source_name.to_lowercase();
-                    let matches: Vec<_> = sources
-                        .iter()
-                        .filter(|s| {
-                            let root_lower = s.root_path.to_lowercase();
-                            s.id == source_name
-                                || root_lower.ends_with(&name_lower)
-                                || root_lower.contains(&name_lower)
-                        })
-                        .collect();
-
-                    if matches.len() == 1 {
-                        let source_id = serde_json::to_string(&matches[0].id).unwrap_or_default();
-                        return Some(DirectDispatch {
-                            tool_name: "list_documents".into(),
-                            arguments: format!(r#"{{"source_id":{}}}"#, source_id),
-                        });
-                    }
-                    // 0 or >1 matches → ambiguous, fall through to LLM.
-                }
-            }
-        }
-
-        None
     }
 }
 
@@ -3634,7 +3684,7 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
 ///
 /// Mirrors the id-vs-index fallback logic in [`accumulate_tool_call`]. Call
 /// this *after* accumulation so the caller can observe the up-to-date entry
-/// (e.g. to decide whether a `ToolCallStart` event still needs to be emitted).
+/// (e.g. to decide whether a `ToolCallPreparing` event still needs to be emitted).
 fn resolve_delta_target<'a>(
     calls: &'a [ToolCallRequest],
     delta: &ToolCallDelta,
@@ -3652,835 +3702,4 @@ fn resolve_delta_target<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
-
-    use async_trait::async_trait;
-    use futures::stream::{self, BoxStream};
-
-    use super::*;
-    use crate::conversation::CreateConversationInput;
-    use crate::llm::{CompletionResponse, FinishReason, StreamChunk};
-    use crate::tools::{Tool, ToolResult};
-
-    #[test]
-    fn test_tool_timeout_zero_disables_outer_timeout() {
-        let timeout = tool_timeout_for_call(Some(0), "read_file", &serde_json::json!({}));
-        assert_eq!(timeout, None);
-    }
-
-    #[test]
-    fn test_tool_timeout_honors_run_shell_no_timeout() {
-        let timeout = tool_timeout_for_call(
-            Some(30),
-            "run_shell",
-            &serde_json::json!({ "timeout_secs": 0 }),
-        );
-        assert_eq!(timeout, None);
-    }
-
-    #[test]
-    fn test_tool_timeout_extends_for_long_run_shell_timeout() {
-        let timeout = tool_timeout_for_call(
-            Some(30),
-            "run_shell",
-            &serde_json::json!({ "timeout_secs": 600 }),
-        );
-        assert_eq!(timeout, Some(Duration::from_secs(605)));
-    }
-
-    #[test]
-    fn test_tool_timeout_leaves_room_for_run_shell_default_timeout() {
-        let timeout = tool_timeout_for_call(Some(30), "run_shell", &serde_json::json!({}));
-        assert_eq!(timeout, Some(Duration::from_secs(35)));
-    }
-
-    #[test]
-    fn test_tool_timeout_preserves_existing_multipliers() {
-        assert_eq!(
-            tool_timeout_for_call(Some(30), "retrieve_evidence", &serde_json::json!({})),
-            Some(Duration::from_secs(60))
-        );
-        assert_eq!(
-            tool_timeout_for_call(Some(30), "spawn_subagent", &serde_json::json!({})),
-            Some(Duration::from_secs(90))
-        );
-    }
-
-    #[test]
-    fn test_accumulate_new_tool_call() {
-        let mut calls = Vec::new();
-        let delta = ToolCallDelta {
-            id: "call_1".into(),
-            name: Some("search".into()),
-            arguments_delta: r#"{"qu"#.into(),
-            index: None,
-            thought_signature: None,
-        };
-        accumulate_tool_call(&mut calls, &delta);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].id, "call_1");
-        assert_eq!(calls[0].name, "search");
-        assert_eq!(calls[0].arguments, r#"{"qu"#);
-    }
-
-    #[test]
-    fn test_accumulate_appends_arguments() {
-        let mut calls = vec![ToolCallRequest {
-            id: "call_1".into(),
-            name: "search".into(),
-            arguments: r#"{"qu"#.into(),
-            thought_signature: None,
-        }];
-        let delta = ToolCallDelta {
-            id: "call_1".into(),
-            name: None,
-            arguments_delta: r#"ery":"test"}"#.into(),
-            index: None,
-            thought_signature: None,
-        };
-        accumulate_tool_call(&mut calls, &delta);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].arguments, r#"{"query":"test"}"#);
-    }
-
-    #[test]
-    fn test_accumulate_empty_id_appends_to_last() {
-        let mut calls = vec![ToolCallRequest {
-            id: "call_1".into(),
-            name: "search".into(),
-            arguments: r#"{"q"#.into(),
-            thought_signature: None,
-        }];
-        let delta = ToolCallDelta {
-            id: String::new(),
-            name: None,
-            arguments_delta: r#"":"v"}"#.into(),
-            index: None,
-            thought_signature: None,
-        };
-        accumulate_tool_call(&mut calls, &delta);
-        assert_eq!(calls[0].arguments, r#"{"q":"v"}"#);
-    }
-
-    #[test]
-    fn test_accumulate_multiple_tool_calls() {
-        let mut calls = Vec::new();
-        accumulate_tool_call(
-            &mut calls,
-            &ToolCallDelta {
-                id: "call_1".into(),
-                name: Some("search".into()),
-                arguments_delta: "{}".into(),
-                index: None,
-                thought_signature: None,
-            },
-        );
-        accumulate_tool_call(
-            &mut calls,
-            &ToolCallDelta {
-                id: "call_2".into(),
-                name: Some("file".into()),
-                arguments_delta: "{}".into(),
-                index: None,
-                thought_signature: None,
-            },
-        );
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].name, "search");
-        assert_eq!(calls[1].name, "file");
-    }
-
-    #[test]
-    fn test_accumulate_by_index_when_id_missing() {
-        let mut calls = vec![
-            ToolCallRequest {
-                id: "call_0".into(),
-                name: "search".into(),
-                arguments: r#"{"q":"hel"#.into(),
-                thought_signature: None,
-            },
-            ToolCallRequest {
-                id: "call_1".into(),
-                name: "read_file".into(),
-                arguments: r#"{"path":"C"#.into(),
-                thought_signature: None,
-            },
-        ];
-
-        accumulate_tool_call(
-            &mut calls,
-            &ToolCallDelta {
-                id: String::new(),
-                name: None,
-                arguments_delta: r#"lo"}"#.into(),
-                index: Some(0),
-                thought_signature: None,
-            },
-        );
-        accumulate_tool_call(
-            &mut calls,
-            &ToolCallDelta {
-                id: String::new(),
-                name: None,
-                arguments_delta: r#":\a.md"}"#.into(),
-                index: Some(1),
-                thought_signature: None,
-            },
-        );
-
-        assert_eq!(calls[0].arguments, r#"{"q":"hello"}"#);
-        assert_eq!(calls[1].arguments, r#"{"path":"C:\a.md"}"#);
-    }
-
-    #[test]
-    fn test_default_config() {
-        let cfg = AgentConfig::default();
-        assert_eq!(cfg.max_iterations, 25);
-        assert!(cfg
-            .system_prompt
-            .contains("local-first personal workspace assistant"));
-        assert_eq!(cfg.temperature, Some(0.3));
-        assert_eq!(cfg.max_tokens, Some(4096));
-    }
-
-    #[test]
-    fn test_build_system_prompt_preserves_core_rules() {
-        let prompt = build_system_prompt(
-            Some("Prefer terse answers."),
-            &["## User Preferences\n\n- Prefer PDFs first"],
-        );
-
-        let core_idx = prompt
-            .find("You are **Nexa**")
-            .expect("core prompt should be present");
-        let custom_idx = prompt
-            .find("## Conversation-Specific Instructions")
-            .expect("custom section should be present");
-        let dynamic_idx = prompt
-            .find("## User Preferences")
-            .expect("dynamic section should be present");
-
-        assert_eq!(core_idx, 0, "core prompt should stay first");
-        assert!(
-            custom_idx > core_idx,
-            "custom instructions should be appended"
-        );
-        assert!(
-            dynamic_idx > custom_idx,
-            "dynamic sections should follow custom text"
-        );
-        assert!(prompt.contains("Prefer terse answers."));
-    }
-
-    #[test]
-    fn test_build_system_prompt_skips_blank_sections() {
-        let prompt = build_system_prompt(Some("   "), &["", "  ", "\n\n"]);
-        assert_eq!(prompt, DEFAULT_SYSTEM_PROMPT.trim());
-    }
-
-    #[test]
-    fn test_route_user_turn_prefers_collection_context() {
-        let route = route_user_turn(
-            "Explain what this saved citation means",
-            "## Collection Context\nTitle: Retry Collection\n\nUse this collection and its saved evidence as your primary working set.",
-            true,
-        );
-
-        assert_eq!(route.kind, AgentRouteKind::CollectionFocused);
-        assert!(route.extra_categories.contains(&ToolCategory::Knowledge));
-    }
-
-    #[test]
-    fn test_route_user_turn_ignores_persona_saved_evidence_phrase() {
-        let route = route_user_turn(
-            "Say hello in one sentence.",
-            "## Active Persona\nInstructions: Prefer saved evidence when it exists.",
-            false,
-        );
-
-        assert_eq!(route.kind, AgentRouteKind::DirectResponse);
-    }
-
-    #[test]
-    fn test_route_user_turn_prefers_knowledge_retrieval_for_question_with_sources() {
-        let route = route_user_turn("Why did the retry guard fail?", "", true);
-
-        assert_eq!(route.kind, AgentRouteKind::KnowledgeRetrieval);
-        assert!(route
-            .extra_categories
-            .contains(&ToolCategory::DocumentAnalysis));
-    }
-
-    #[test]
-    fn test_route_user_turn_treats_office_generation_as_file_operation() {
-        let route = route_user_turn("请创建一份 Word 商业计划书", "", false);
-
-        assert_eq!(route.kind, AgentRouteKind::FileOperation);
-        assert!(route.extra_categories.contains(&ToolCategory::FileSystem));
-    }
-
-    #[test]
-    fn test_route_user_turn_treats_tool_repair_as_file_operation() {
-        let route = route_user_turn(
-            "为什么主agent没有办法调用run_shell？请仔细排查并全面修复。",
-            "",
-            false,
-        );
-
-        assert_eq!(route.kind, AgentRouteKind::FileOperation);
-        assert!(route.extra_categories.contains(&ToolCategory::FileSystem));
-    }
-
-    #[test]
-    fn test_agent_config_defaults_to_full_tool_visibility() {
-        assert!(!AgentConfig::default().dynamic_tool_visibility);
-    }
-
-    struct MockProvider {
-        stream_calls: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl LlmProvider for MockProvider {
-        fn name(&self) -> &str {
-            "mock"
-        }
-
-        async fn list_models(&self) -> Result<Vec<String>, CoreError> {
-            Ok(vec!["mock-model".to_string()])
-        }
-
-        async fn complete(
-            &self,
-            _request: &CompletionRequest,
-        ) -> Result<CompletionResponse, CoreError> {
-            Err(CoreError::Llm("not implemented".to_string()))
-        }
-
-        async fn stream(
-            &self,
-            _request: &CompletionRequest,
-        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-            let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
-            let chunks = if call_no == 0 {
-                vec![Ok(StreamChunk {
-                    delta: String::new(),
-                    tool_call_delta: Some(ToolCallDelta {
-                        id: "call_1".to_string(),
-                        name: Some("mock_tool".to_string()),
-                        arguments_delta: r#"{"value":"ok"}"#.to_string(),
-                        index: Some(0),
-                        thought_signature: None,
-                    }),
-                    // Some providers return `stop` even when tool calls are present.
-                    finish_reason: Some(crate::llm::FinishReason::Stop),
-                    usage: None,
-                    thinking_delta: None,
-                })]
-            } else {
-                vec![Ok(StreamChunk {
-                    delta: "final answer".to_string(),
-                    tool_call_delta: None,
-                    finish_reason: Some(crate::llm::FinishReason::Stop),
-                    usage: None,
-                    thinking_delta: None,
-                })]
-            };
-            Ok(Box::pin(stream::iter(chunks)))
-        }
-
-        async fn health_check(&self) -> Result<(), CoreError> {
-            Ok(())
-        }
-    }
-
-    struct ThinkingMockProvider {
-        stream_calls: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl LlmProvider for ThinkingMockProvider {
-        fn name(&self) -> &str {
-            "thinking-mock"
-        }
-
-        async fn list_models(&self) -> Result<Vec<String>, CoreError> {
-            Ok(vec!["mock-model".to_string()])
-        }
-
-        async fn complete(
-            &self,
-            _request: &CompletionRequest,
-        ) -> Result<CompletionResponse, CoreError> {
-            Err(CoreError::Llm("not implemented".to_string()))
-        }
-
-        async fn stream(
-            &self,
-            _request: &CompletionRequest,
-        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-            let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
-            let chunks = if call_no == 0 {
-                vec![
-                    Ok(StreamChunk {
-                        delta: String::new(),
-                        tool_call_delta: None,
-                        finish_reason: None,
-                        usage: None,
-                        thinking_delta: Some("first round reasoning".to_string()),
-                    }),
-                    Ok(StreamChunk {
-                        delta: String::new(),
-                        tool_call_delta: Some(ToolCallDelta {
-                            id: "call_1".to_string(),
-                            name: Some("mock_tool".to_string()),
-                            arguments_delta: r#"{"value":"ok"}"#.to_string(),
-                            index: Some(0),
-                            thought_signature: None,
-                        }),
-                        finish_reason: Some(crate::llm::FinishReason::Stop),
-                        usage: None,
-                        thinking_delta: None,
-                    }),
-                ]
-            } else {
-                vec![
-                    Ok(StreamChunk {
-                        delta: String::new(),
-                        tool_call_delta: None,
-                        finish_reason: None,
-                        usage: None,
-                        thinking_delta: Some("second round reasoning".to_string()),
-                    }),
-                    Ok(StreamChunk {
-                        delta: "final answer".to_string(),
-                        tool_call_delta: None,
-                        finish_reason: Some(crate::llm::FinishReason::Stop),
-                        usage: None,
-                        thinking_delta: None,
-                    }),
-                ]
-            };
-            Ok(Box::pin(stream::iter(chunks)))
-        }
-
-        async fn health_check(&self) -> Result<(), CoreError> {
-            Ok(())
-        }
-    }
-
-    struct RecoveringStreamProvider {
-        stream_calls: Arc<AtomicUsize>,
-        complete_calls: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl LlmProvider for RecoveringStreamProvider {
-        fn name(&self) -> &str {
-            "recovering-stream-mock"
-        }
-
-        async fn list_models(&self) -> Result<Vec<String>, CoreError> {
-            Ok(vec!["mock-model".to_string()])
-        }
-
-        async fn complete(
-            &self,
-            _request: &CompletionRequest,
-        ) -> Result<CompletionResponse, CoreError> {
-            self.complete_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(CompletionResponse {
-                content: "complete answer".to_string(),
-                tool_calls: None,
-                finish_reason: FinishReason::Stop,
-                usage: Usage {
-                    prompt_tokens: 10,
-                    completion_tokens: 2,
-                    total_tokens: 12,
-                    thinking_tokens: None,
-                },
-                thinking: None,
-            })
-        }
-
-        async fn stream(
-            &self,
-            _request: &CompletionRequest,
-        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-            self.stream_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::pin(stream::iter(vec![
-                Ok(StreamChunk {
-                    delta: "partial ".to_string(),
-                    tool_call_delta: None,
-                    finish_reason: None,
-                    usage: None,
-                    thinking_delta: None,
-                }),
-                Err(CoreError::StreamIncomplete(
-                    "stream interrupted: error decoding response body".to_string(),
-                )),
-            ])))
-        }
-
-        async fn health_check(&self) -> Result<(), CoreError> {
-            Ok(())
-        }
-    }
-
-    struct MockTool;
-
-    #[async_trait]
-    impl Tool for MockTool {
-        fn name(&self) -> &str {
-            "mock_tool"
-        }
-
-        fn description(&self) -> &str {
-            "Mock tool"
-        }
-
-        fn parameters_schema(&self) -> serde_json::Value {
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "value": { "type": "string" }
-                }
-            })
-        }
-
-        async fn execute(
-            &self,
-            call_id: &str,
-            _arguments: &str,
-            _db: &Database,
-            _source_scope: &[String],
-        ) -> Result<ToolResult, CoreError> {
-            Ok(ToolResult {
-                call_id: call_id.to_string(),
-                content: "tool-ok".to_string(),
-                is_error: false,
-                artifacts: None,
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn test_executes_tool_even_when_finish_reason_is_stop() {
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(MockTool));
-
-        let stream_calls = Arc::new(AtomicUsize::new(0));
-        let provider = MockProvider {
-            stream_calls: Arc::clone(&stream_calls),
-        };
-
-        let executor = AgentExecutor::new(
-            Box::new(provider),
-            registry,
-            AgentConfig {
-                model: Some("mock-model".to_string()),
-                ..AgentConfig::default()
-            },
-        );
-
-        let db = Database::open_memory().expect("in-memory db");
-        let (tx, mut rx) = mpsc::channel(32);
-
-        let final_msg = executor
-            .run(
-                vec![],
-                vec![ContentPart::Text {
-                    text: "hello".to_string(),
-                }],
-                &db,
-                None,
-                None,
-                tx,
-                0,
-            )
-            .await
-            .expect("run should succeed");
-
-        // Should perform two LLM calls: one for tool request, one after tool result.
-        assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
-        assert_eq!(final_msg.text_content(), "final answer");
-
-        // Drain events and assert tool call lifecycle happened.
-        let mut saw_start = false;
-        let mut saw_result = false;
-        while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
-            match event {
-                Some(AgentEvent::ToolCallStart { .. }) => saw_start = true,
-                Some(AgentEvent::ToolCallResult { .. }) => saw_result = true,
-                Some(AgentEvent::Done { .. }) => break,
-                Some(_) => {}
-                None => break,
-            }
-        }
-
-        assert!(saw_start, "expected ToolCallStart event");
-        assert!(saw_result, "expected ToolCallResult event");
-    }
-
-    #[tokio::test]
-    async fn test_run_persists_typed_task_plan_on_task_run() {
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(MockTool));
-
-        let stream_calls = Arc::new(AtomicUsize::new(0));
-        let provider = MockProvider {
-            stream_calls: Arc::clone(&stream_calls),
-        };
-
-        let executor = AgentExecutor::new(
-            Box::new(provider),
-            registry,
-            AgentConfig {
-                model: Some("mock-model".to_string()),
-                ..AgentConfig::default()
-            },
-        );
-
-        let db = Database::open_memory().expect("in-memory db");
-        let conversation = db
-            .create_conversation(&CreateConversationInput {
-                provider: "mock".to_string(),
-                model: "mock-model".to_string(),
-                system_prompt: None,
-                collection_context: None,
-                project_id: None,
-                persona_id: None,
-            })
-            .unwrap();
-        let user_msg = ConversationMessage {
-            id: Uuid::new_v4().to_string(),
-            conversation_id: conversation.id.clone(),
-            role: Role::User,
-            content: "Say hello in one sentence.".to_string(),
-            tool_call_id: None,
-            tool_calls: vec![],
-            artifacts: None,
-            token_count: 6,
-            created_at: String::new(),
-            sort_order: 0,
-            thinking: None,
-            image_attachments: None,
-        };
-        db.add_message(&user_msg).unwrap();
-        let turn = db
-            .create_conversation_turn(&conversation.id, &user_msg.id, None)
-            .unwrap();
-        let task_run = db
-            .create_agent_task_run(
-                &conversation.id,
-                &turn.id,
-                &user_msg.id,
-                "Say hello in one sentence.",
-                Some("mock"),
-                Some("mock-model"),
-            )
-            .unwrap();
-
-        let (tx, mut rx) = mpsc::channel(32);
-        let final_msg = executor
-            .run(
-                vec![],
-                vec![ContentPart::Text {
-                    text: user_msg.content.clone(),
-                }],
-                &db,
-                Some(&conversation.id),
-                Some(&turn.id),
-                tx,
-                1,
-            )
-            .await
-            .expect("run should succeed");
-        while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
-            if matches!(event, Some(AgentEvent::Done { .. }) | None) {
-                break;
-            }
-        }
-
-        assert_eq!(final_msg.text_content(), "final answer");
-        let updated = db.get_agent_task_run(&task_run.id).unwrap();
-        let plan = updated.plan.expect("task run should store typed plan");
-        assert_eq!(plan["routeKind"], "DirectResponse");
-        assert_eq!(plan["evidencePolicy"]["mode"], "notRequired");
-        let artifacts = updated
-            .artifacts
-            .expect("task run should store verification artifacts");
-        assert_eq!(artifacts["verification"]["kind"], "verification");
-
-        let events = db.get_agent_task_run_events(&task_run.id).unwrap();
-        assert!(events.iter().any(
-            |event| event.event_type == "plan" && event.status.as_deref() == Some("completed")
-        ));
-        assert!(events
-            .iter()
-            .any(|event| event.event_type == "verification"));
-    }
-
-    #[tokio::test]
-    async fn test_persists_only_final_iteration_thinking_on_final_assistant() {
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(MockTool));
-
-        let stream_calls = Arc::new(AtomicUsize::new(0));
-        let provider = ThinkingMockProvider {
-            stream_calls: Arc::clone(&stream_calls),
-        };
-
-        let executor = AgentExecutor::new(
-            Box::new(provider),
-            registry,
-            AgentConfig {
-                model: Some("mock-model".to_string()),
-                ..AgentConfig::default()
-            },
-        );
-
-        let db = Database::open_memory().expect("in-memory db");
-        let conversation = db
-            .create_conversation(&crate::conversation::CreateConversationInput {
-                provider: "open_ai".to_string(),
-                model: "mock-model".to_string(),
-                system_prompt: None,
-                collection_context: None,
-                project_id: None,
-                persona_id: None,
-            })
-            .expect("conversation");
-        let (tx, _rx) = mpsc::channel(32);
-
-        let final_msg = executor
-            .run(
-                vec![],
-                vec![ContentPart::Text {
-                    text: "hello".to_string(),
-                }],
-                &db,
-                Some(&conversation.id),
-                None,
-                tx,
-                0,
-            )
-            .await
-            .expect("run should succeed");
-
-        assert_eq!(final_msg.text_content(), "final answer");
-
-        let messages = db
-            .get_messages(&conversation.id)
-            .expect("messages should load");
-        assert_eq!(messages.len(), 3, "assistant(tool), tool, assistant(final)");
-        assert_eq!(
-            messages[0].thinking.as_deref(),
-            Some("first round reasoning")
-        );
-        assert_eq!(messages[0].tool_calls.len(), 1);
-        assert_eq!(messages[1].role, Role::Tool);
-        assert_eq!(messages[2].content, "final answer");
-        assert_eq!(
-            messages[2].thinking.as_deref(),
-            Some("second round reasoning")
-        );
-        let artifacts = messages[2]
-            .artifacts
-            .as_ref()
-            .and_then(|value| value.as_object())
-            .expect("final assistant message should persist trace artifacts");
-        assert_eq!(
-            artifacts.get("kind").and_then(|v| v.as_str()),
-            Some("traceTimeline")
-        );
-        let items = artifacts
-            .get("items")
-            .and_then(|v| v.as_array())
-            .expect("trace timeline should include items");
-        assert_eq!(items.len(), 4);
-        assert_eq!(
-            items[0].get("kind").and_then(|v| v.as_str()),
-            Some("thinking")
-        );
-        assert_eq!(items[1].get("kind").and_then(|v| v.as_str()), Some("tool"));
-        assert_eq!(
-            items[2].get("kind").and_then(|v| v.as_str()),
-            Some("thinking")
-        );
-        assert_eq!(
-            items[3].get("kind").and_then(|v| v.as_str()),
-            Some("status")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_stream_incomplete_recovers_with_non_streaming_retry() {
-        let registry = ToolRegistry::new();
-        let stream_calls = Arc::new(AtomicUsize::new(0));
-        let complete_calls = Arc::new(AtomicUsize::new(0));
-        let provider = RecoveringStreamProvider {
-            stream_calls: Arc::clone(&stream_calls),
-            complete_calls: Arc::clone(&complete_calls),
-        };
-
-        let executor = AgentExecutor::new(
-            Box::new(provider),
-            registry,
-            AgentConfig {
-                model: Some("mock-model".to_string()),
-                ..AgentConfig::default()
-            },
-        );
-
-        let db = Database::open_memory().expect("in-memory db");
-        let (tx, mut rx) = mpsc::channel(32);
-
-        let final_msg = executor
-            .run(
-                vec![],
-                vec![ContentPart::Text {
-                    text: "hello".to_string(),
-                }],
-                &db,
-                None,
-                None,
-                tx,
-                0,
-            )
-            .await
-            .expect("run should recover");
-
-        assert_eq!(final_msg.text_content(), "complete answer");
-        assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
-
-        let mut saw_reset = false;
-        let mut saw_error = false;
-        let mut visible_text = String::new();
-        while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
-            match event {
-                Some(AgentEvent::TextDelta { delta }) => visible_text.push_str(&delta),
-                Some(AgentEvent::StreamReset { .. }) => {
-                    saw_reset = true;
-                    visible_text.clear();
-                }
-                Some(AgentEvent::Error { .. }) => saw_error = true,
-                Some(AgentEvent::Done { .. }) => break,
-                Some(_) => {}
-                None => break,
-            }
-        }
-
-        assert!(
-            saw_reset,
-            "expected partial stream reset before retry replay"
-        );
-        assert!(!saw_error, "stream recovery should not surface an error");
-        assert_eq!(visible_text, "complete answer");
-    }
-}
+mod tests;
