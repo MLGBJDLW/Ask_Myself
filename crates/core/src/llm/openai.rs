@@ -692,9 +692,12 @@ impl LlmProvider for OpenAiProvider {
                     continue;
                 }
                 Err(e) => {
-                    return Err(CoreError::Llm(format!(
-                        "Failed to parse completion response: {e}"
-                    )));
+                    let message = format!("Failed to parse completion response: {e}");
+                    return if is_retriable_reqwest_error(&e) {
+                        Err(CoreError::TransientLlm(message))
+                    } else {
+                        Err(CoreError::Llm(message))
+                    };
                 }
             }
         };
