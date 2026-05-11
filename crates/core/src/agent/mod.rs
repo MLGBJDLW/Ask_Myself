@@ -302,20 +302,46 @@ fn tool_call_execution_batches(
 ) -> Vec<Vec<usize>> {
     let mut batches: Vec<Vec<usize>> = Vec::new();
     let mut current_parallel_batch: Vec<usize> = Vec::new();
+    let mut current_resource_keys: HashSet<String> = HashSet::new();
+    let mut current_exclusive_resource_keys: HashSet<String> = HashSet::new();
 
     for (index, tool_call) in tool_calls.iter().enumerate() {
         let scheduling = tool_policy.decision_for(tool_call);
         let capabilities = tools.run_capabilities(&tool_call.name, &scheduling.parsed_args);
-        let can_share_batch = capabilities.concurrency_safe && !capabilities.destructive;
-        if can_share_batch {
-            current_parallel_batch.push(index);
-            continue;
+        let exclusive = capabilities.destructive || !capabilities.concurrency_safe;
+        let has_resource_keys = !capabilities.resource_keys.is_empty();
+        let resource_conflict = if exclusive {
+            capabilities
+                .resource_keys
+                .iter()
+                .any(|key| current_resource_keys.contains(key))
+        } else {
+            capabilities
+                .resource_keys
+                .iter()
+                .any(|key| current_exclusive_resource_keys.contains(key))
+        };
+        let unkeyed_exclusive = exclusive && !has_resource_keys;
+
+        if !current_parallel_batch.is_empty() && (unkeyed_exclusive || resource_conflict) {
+            batches.push(std::mem::take(&mut current_parallel_batch));
+            current_resource_keys.clear();
+            current_exclusive_resource_keys.clear();
         }
 
-        if !current_parallel_batch.is_empty() {
-            batches.push(std::mem::take(&mut current_parallel_batch));
+        current_parallel_batch.push(index);
+        for key in &capabilities.resource_keys {
+            current_resource_keys.insert(key.clone());
+            if exclusive {
+                current_exclusive_resource_keys.insert(key.clone());
+            }
         }
-        batches.push(vec![index]);
+
+        if unkeyed_exclusive {
+            batches.push(std::mem::take(&mut current_parallel_batch));
+            current_resource_keys.clear();
+            current_exclusive_resource_keys.clear();
+        }
     }
 
     if !current_parallel_batch.is_empty() {
@@ -4726,6 +4752,56 @@ mod tests {
         }
     }
 
+    struct ResourceLockedTool;
+
+    #[async_trait]
+    impl Tool for ResourceLockedTool {
+        fn name(&self) -> &str {
+            "locked_write"
+        }
+
+        fn description(&self) -> &str {
+            "Resource locked write tool"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" }
+                }
+            })
+        }
+
+        fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
+            true
+        }
+
+        async fn execute(
+            &self,
+            call_id: &str,
+            _arguments: &str,
+            _db: &Database,
+            _source_scope: &[String],
+        ) -> Result<ToolResult, CoreError> {
+            Ok(ToolResult {
+                call_id: call_id.to_string(),
+                content: "locked-write-ok".to_string(),
+                is_error: false,
+                artifacts: None,
+            })
+        }
+    }
+
+    fn test_tool_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCallRequest {
+        ToolCallRequest {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+            thought_signature: None,
+        }
+    }
+
     #[tokio::test]
     async fn test_executes_tool_even_when_finish_reason_is_stop() {
         let mut registry = ToolRegistry::new();
@@ -5013,6 +5089,40 @@ mod tests {
 
         let final_msg = run.await.expect("run should succeed");
         assert_eq!(final_msg.text_content(), "serial final answer");
+    }
+
+    #[test]
+    fn test_resource_keys_allow_independent_writes_to_share_batch() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ResourceLockedTool));
+        let offered = HashSet::from(["locked_write".to_string()]);
+        let policy = ToolSchedulerPolicy::new(None, false, offered);
+        let calls = vec![
+            test_tool_call("a", "locked_write", serde_json::json!({ "path": "a.txt" })),
+            test_tool_call("b", "locked_write", serde_json::json!({ "path": "b.txt" })),
+            test_tool_call("c", "locked_write", serde_json::json!({ "path": "a.txt" })),
+        ];
+
+        let batches = tool_call_execution_batches(&registry, &policy, &calls);
+
+        assert_eq!(batches, vec![vec![0, 1], vec![2]]);
+    }
+
+    #[test]
+    fn test_unkeyed_exclusive_tool_remains_serial_barrier() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ResourceLockedTool));
+        let offered = HashSet::from(["locked_write".to_string()]);
+        let policy = ToolSchedulerPolicy::new(None, false, offered);
+        let calls = vec![
+            test_tool_call("a", "locked_write", serde_json::json!({})),
+            test_tool_call("b", "locked_write", serde_json::json!({ "path": "b.txt" })),
+            test_tool_call("c", "locked_write", serde_json::json!({})),
+        ];
+
+        let batches = tool_call_execution_batches(&registry, &policy, &calls);
+
+        assert_eq!(batches, vec![vec![0], vec![1], vec![2]]);
     }
 
     #[tokio::test]

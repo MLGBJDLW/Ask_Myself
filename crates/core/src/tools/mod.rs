@@ -166,6 +166,7 @@ pub struct ToolRunCapabilities {
     pub destructive: bool,
     pub concurrency_safe: bool,
     pub interrupt_behavior: ToolInterruptBehavior,
+    pub resource_keys: Vec<String>,
 }
 
 pub struct ToolExecutionContext<'a> {
@@ -210,6 +211,76 @@ fn infer_input_streaming(name: &str) -> ToolInputStreamingMode {
         | "tool_search" => ToolInputStreamingMode::UiPreview,
         _ => ToolInputStreamingMode::None,
     }
+}
+
+fn push_string_resource_key(keys: &mut Vec<String>, prefix: &str, value: &str) {
+    let normalized = value.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return;
+    }
+    let key = format!("{prefix}:{normalized}");
+    if !keys.iter().any(|existing| existing == &key) {
+        keys.push(key);
+    }
+}
+
+fn collect_string_or_array_resource(
+    args: &serde_json::Value,
+    field: &str,
+    prefix: &str,
+    keys: &mut Vec<String>,
+) {
+    let Some(value) = args.get(field) else {
+        return;
+    };
+    match value {
+        serde_json::Value::String(text) => push_string_resource_key(keys, prefix, text),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if let Some(text) = item.as_str() {
+                    push_string_resource_key(keys, prefix, text);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn infer_resource_keys(name: &str, args: &serde_json::Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    for field in [
+        "path",
+        "paths",
+        "file_path",
+        "filePath",
+        "file_paths",
+        "filePaths",
+        "target_path",
+        "targetPath",
+        "target_paths",
+        "targetPaths",
+        "absolute_path",
+        "absolutePath",
+        "source_path",
+        "sourcePath",
+        "destination_path",
+        "destinationPath",
+        "dest_path",
+        "destPath",
+        "new_path",
+        "newPath",
+        "old_path",
+        "oldPath",
+    ] {
+        collect_string_or_array_resource(args, field, "file", &mut keys);
+    }
+    for field in ["source_id", "sourceId", "source_ids", "sourceIds"] {
+        collect_string_or_array_resource(args, field, "source", &mut keys);
+    }
+    if name.starts_with("mcp__") {
+        push_string_resource_key(&mut keys, "mcp", name);
+    }
+    keys
 }
 
 /// Trust metadata attached to tool artifacts that may be injected into model
@@ -441,9 +512,18 @@ pub trait Tool: Send + Sync {
         ToolInterruptBehavior::Cancel
     }
 
+    /// Resource identity touched by this invocation.
+    ///
+    /// The scheduler uses these keys to allow independent writes to run in
+    /// parallel while still isolating calls that touch the same file/source.
+    fn resource_keys(&self, args: &serde_json::Value) -> Vec<String> {
+        infer_resource_keys(self.name(), args)
+    }
+
     /// Canonical capability descriptor used by the ToolRun lifecycle.
     fn run_capabilities(&self, args: &serde_json::Value) -> ToolRunCapabilities {
         let destructive = self.requires_confirmation(args);
+        let resource_keys = self.resource_keys(args);
         ToolRunCapabilities {
             input_streaming: self.input_streaming(),
             render_kind: self.render_kind(),
@@ -455,6 +535,7 @@ pub trait Tool: Send + Sync {
             } else {
                 self.interrupt_behavior()
             },
+            resource_keys,
         }
     }
 
@@ -603,6 +684,7 @@ impl ToolRegistry {
                 destructive: false,
                 concurrency_safe: true,
                 interrupt_behavior: ToolInterruptBehavior::Block,
+                resource_keys: infer_resource_keys(name, args),
             })
     }
 

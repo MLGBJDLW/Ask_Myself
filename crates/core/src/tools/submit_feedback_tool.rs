@@ -38,6 +38,21 @@ impl Tool for SubmitFeedbackTool {
         ToolDef::from_json(&DEF, DEF_JSON).parameters.clone()
     }
 
+    fn is_read_only(&self, _args: &serde_json::Value) -> bool {
+        false
+    }
+
+    fn is_concurrency_safe(&self, _args: &serde_json::Value) -> bool {
+        false
+    }
+
+    fn resource_keys(&self, args: &serde_json::Value) -> Vec<String> {
+        args.get("chunk_id")
+            .and_then(|v| v.as_str())
+            .map(|chunk_id| vec![format!("feedback:{chunk_id}")])
+            .unwrap_or_else(|| vec!["feedback".to_string()])
+    }
+
     async fn execute(
         &self,
         call_id: &str,
@@ -189,5 +204,20 @@ mod tests {
             .expect("query feedback");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].query_text, "");
+    }
+
+    #[test]
+    fn feedback_capabilities_are_write_scoped_to_chunk() {
+        let tool = SubmitFeedbackTool;
+        let args = serde_json::json!({
+            "chunk_id": "chunk-1",
+            "kind": "upvote"
+        });
+
+        let caps = tool.run_capabilities(&args);
+
+        assert!(!caps.read_only);
+        assert!(!caps.concurrency_safe);
+        assert_eq!(caps.resource_keys, vec!["feedback:chunk-1"]);
     }
 }

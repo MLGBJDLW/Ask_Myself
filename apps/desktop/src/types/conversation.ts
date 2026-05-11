@@ -462,6 +462,7 @@ export interface ToolRunCapabilities {
   destructive: boolean;
   concurrencySafe: boolean;
   interruptBehavior: ToolInterruptBehavior;
+  resourceKeys: string[];
 }
 
 export interface ToolRunItem {

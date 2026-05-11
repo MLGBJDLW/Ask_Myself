@@ -510,12 +510,16 @@ export function ToolCallCard({
   const durationLabel = formatDurationMs(durationMs);
   const latestProgressNote =
     progressNotes && progressNotes.length > 0 ? progressNotes[progressNotes.length - 1] : null;
+  const resourceKeyCount = Array.isArray(capabilities?.resourceKeys)
+    ? capabilities.resourceKeys.length
+    : 0;
   const capabilitySummary = capabilities
     ? [
         capabilities.readOnly ? 'read-only' : 'writes',
         capabilities.concurrencySafe ? 'parallel' : 'serial',
         capabilities.interruptBehavior === 'cancel' ? 'cancellable' : 'blocking',
-      ].join(' · ')
+        resourceKeyCount > 0 ? `${resourceKeyCount} resource${resourceKeyCount === 1 ? '' : 's'}` : null,
+      ].filter(Boolean).join(' · ')
     : null;
   const streamingArgsPreview =
     isPending && (argsStatus === 'streaming' || status === 'starting' || status === 'approvalPending') && args
