@@ -477,6 +477,31 @@ fn record_task_progress_for_agent_event(
             }
             record_and_emit_task_event(&task_event_ctx, "status", content, tone.as_deref(), None);
         }
+        AgentEvent::PlanUpdated {
+            plan,
+            phase,
+            summary,
+        } => {
+            let phase = phase.as_deref().unwrap_or("planning");
+            let summary = summary.as_deref().unwrap_or("Execution plan updated");
+            let _ = db.update_agent_task_run_progress(
+                task_run_id,
+                Some("running"),
+                Some(phase),
+                None,
+                Some(summary),
+                Some(plan),
+                None,
+            );
+            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+            record_and_emit_task_event(
+                &task_event_ctx,
+                "plan",
+                summary,
+                Some("running"),
+                Some(plan),
+            );
+        }
         AgentEvent::Done { finish_reason, .. } => {
             let payload = serde_json::json!({ "finishReason": finish_reason });
             let _ = db.update_agent_task_run_progress(

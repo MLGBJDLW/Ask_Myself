@@ -25,7 +25,10 @@ use crate::conversation::{ConversationMessage, ImageAttachment};
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::evidence_verifier::{audit_final_answer, EvidenceSignals};
-use crate::intelligence::{build_task_plan, TaskPlanningInput};
+use crate::intelligence::{
+    advance_task_plan_for_tool_result, build_task_plan, finalize_task_plan, AgentTaskPlan,
+    TaskPlanningInput,
+};
 use crate::llm::{
     CompletionRequest, ContentPart, LlmProvider, Message, ProviderType, ReasoningEffort, Role,
     ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
@@ -354,6 +357,14 @@ pub enum AgentEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         tone: Option<String>,
     },
+    /// Updated typed execution plan for the active task run.
+    PlanUpdated {
+        plan: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+    },
     /// The agent finished producing a final answer.
     Done {
         message: Message,
@@ -490,6 +501,23 @@ fn append_persisted_trace_status(items: &mut Vec<PersistedTraceItem>, text: &str
         text: trimmed.to_string(),
         tone: tone.to_string(),
     });
+}
+
+async fn emit_task_plan_update(
+    tx: &mpsc::Sender<AgentEvent>,
+    plan: &AgentTaskPlan,
+    phase: &str,
+    summary: &str,
+) {
+    let plan_value = serde_json::to_value(plan)
+        .unwrap_or_else(|_| serde_json::json!({ "error": "serializeTaskPlan" }));
+    let _ = tx
+        .send(AgentEvent::PlanUpdated {
+            plan: plan_value,
+            phase: Some(phase.to_string()),
+            summary: Some(summary.to_string()),
+        })
+        .await;
 }
 
 fn build_trace_artifacts(items: &[PersistedTraceItem]) -> Option<serde_json::Value> {
@@ -1333,7 +1361,7 @@ impl AgentExecutor {
             &self.config.system_prompt,
             has_sources,
         );
-        let task_plan = build_task_plan(TaskPlanningInput {
+        let mut task_plan = build_task_plan(TaskPlanningInput {
             user_query: &user_query_text_for_tools,
             route_kind: route_plan.kind.as_str(),
             has_sources,
@@ -1348,6 +1376,7 @@ impl AgentExecutor {
                 tone: Some("muted".to_string()),
             })
             .await;
+        emit_task_plan_update(&tx, &task_plan, "planning", "Typed task plan created").await;
         if let Some(tid) = turn_id {
             let route_label = format!("{:?}", route_plan.kind);
             let _ = db.update_conversation_turn_progress(tid, Some(&route_label), None);
@@ -1705,6 +1734,19 @@ impl AgentExecutor {
                         "Auto pre-search: injected knowledge base results.",
                         "info",
                     );
+                    if advance_task_plan_for_tool_result(
+                        &mut task_plan,
+                        "search_knowledge_base",
+                        false,
+                    ) {
+                        emit_task_plan_update(
+                            &tx,
+                            &task_plan,
+                            "retrieving",
+                            "Pre-fetched grounding evidence",
+                        )
+                        .await;
+                    }
                     debug!(
                         "Pre-search injected {} chars of context",
                         result.content.len()
@@ -2312,6 +2354,21 @@ impl AgentExecutor {
                     evidence_signals_from_trace(&persisted_trace_items),
                 );
                 let verification_artifact = evidence_audit.to_artifact();
+                let verification_passed =
+                    verification_artifact["overallStatus"].as_str() != Some("failed");
+                if finalize_task_plan(&mut task_plan, verification_passed) {
+                    emit_task_plan_update(
+                        &tx,
+                        &task_plan,
+                        "finalizing",
+                        if verification_passed {
+                            "Execution plan completed"
+                        } else {
+                            "Execution plan stopped with a verification gap"
+                        },
+                    )
+                    .await;
+                }
                 append_persisted_trace_status(
                     &mut persisted_trace_items,
                     &format!(
@@ -2713,6 +2770,23 @@ impl AgentExecutor {
                     Some(tool_is_error),
                     tool_artifacts.clone(),
                 );
+                if advance_task_plan_for_tool_result(&mut task_plan, &tc.name, tool_is_error) {
+                    emit_task_plan_update(
+                        &tx,
+                        &task_plan,
+                        if tool_is_error {
+                            "recovering"
+                        } else {
+                            "tooling"
+                        },
+                        if tool_is_error {
+                            "Tool failed; execution plan marked for recovery"
+                        } else {
+                            "Execution plan advanced after tool result"
+                        },
+                    )
+                    .await;
+                }
                 if let Some(tid) = turn_id {
                     let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
                     let _ = db.update_conversation_turn_progress(
@@ -2816,6 +2890,15 @@ impl AgentExecutor {
             "Reached maximum iterations before producing a final answer.",
             "error",
         );
+        if finalize_task_plan(&mut task_plan, false) {
+            emit_task_plan_update(
+                &tx,
+                &task_plan,
+                "finalizing",
+                "Execution plan stopped at max iterations",
+            )
+            .await;
+        }
 
         if let Some(cid) = conversation_id {
             let assistant_message_id = Uuid::new_v4().to_string();

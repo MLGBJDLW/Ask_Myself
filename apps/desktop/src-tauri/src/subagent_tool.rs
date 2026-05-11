@@ -1655,7 +1655,8 @@ async fn run_subagent_once(
                 | AgentEvent::ToolCallArgsDelta { .. }
                 | AgentEvent::ToolCallProgress { .. }
                 | AgentEvent::ApprovalRequested { .. }
-                | AgentEvent::ApprovalResolved { .. } => {}
+                | AgentEvent::ApprovalResolved { .. }
+                | AgentEvent::PlanUpdated { .. } => {}
             }
         }
 
