@@ -12,6 +12,9 @@
 - Start from a renderer theme preset when no brand template is supplied: `consulting-clean`, `executive-midnight`, `editorial-ink`, `product-energy`, `healthcare-trust`, `finance-precision`, `education-bright`, or `industrial-contrast` provide stronger visual direction than the neutral defaults.
 - Preserve a compact design brief in renderer metadata so later edits can recover why the theme, backgrounds, typography, and image approach were chosen.
 - Assign each slide a page rhythm role: `anchor` for cover/section/close, `breathing` for visual-led pages, and `dense` for data or process pages.
+- Use a PPT Master-style serial pipeline for high-quality decks: source audit, design brief/spec lock, asset acquisition, slide-by-slide execution, visual QA, then final export. Do not jump directly from notes to renderer output for presentation-grade work.
+- A design brief is not optional for beautiful output. It must specify the visual premise, motif system, image roles, icon rules, type scale, palette, and the reason each major slide type exists.
+- Re-read the design brief before generating each slide spec in long decks. If a slide needs a different motif, update the brief deliberately instead of letting the deck drift.
 
 ### Template Workflow
 - Inspect slide size, theme colors, layouts, placeholders, and existing style conventions before editing.
@@ -28,6 +31,8 @@
 - Preserve source facts and links, but rebuild weak slides into editable charts, tables, timelines, comparisons, processes, or matrices.
 - For executive condensation, keep the decision path: context, evidence, options, recommendation, risks, and next step.
 - Treat full-slide image decks as a red flag unless the user explicitly asked for poster-style output.
+- Treat shallow decoration as a failed beautification pass. Random circles, floating blobs, unmotivated gradients, and repeated text cards do not fix a weak slide. Change the slide's information architecture first, then style it.
+- A beautified slide should have an obvious visual anchor, a restrained text block, aligned geometry, and a background or motif that reinforces the content. If the before/after difference is only color and ornaments, iterate again.
 
 ### Assets And Links
 - Run the asset pack before delivery to inventory embedded media, external links, local image dependencies, and missing assets.
@@ -35,6 +40,7 @@
 - Keep source URLs as clickable slide links or notes. Do not replace a real citation with a search-results URL.
 - Use native editable charts and tables for data. Keep screenshots only when the original visual form matters.
 - Use slide-level `background` when an image or branded backdrop improves the slide. For non-photo slides, use native editable background motifs such as `background_style: "soft_geometry"`, `"gradient_mesh"`, `"diagonal"`, `"blueprint_grid"`, `"paper_texture"`, `"clinical_grid"`, `"data_grid"`, or `"spotlight"`. Avoid long runs of flat solid backgrounds.
+- Pick one background system for the deck: photography plus overlays, branded template chrome, editorial margins, data grids, diagonal bands, or a consistent editable geometry language. Do not alternate unrelated background ideas page by page.
 - Put supplied images in top-level `images` and reference them with `image_id`, `background_image_id`, or `@alias` so asset validation, replacement, and design reasoning stay consistent.
 - Put repeated symbolic marks in top-level `icons` and reference them with `icon_id` or `@alias`. Use built-in editable icon names for simple symbols and image-backed aliases for brand marks.
 - Treat SVG as a design source, not a guaranteed direct picture format in the editable renderer. For exact SVG-heavy aesthetics, prefer template-bound decks or rasterize only the background while keeping foreground text, charts, and shapes editable.
@@ -48,7 +54,9 @@
 - Keep editable content editable. Use full-slide images only for explicitly requested visual mockups or poster-style deliverables.
 - Cite sources on slides for non-obvious data claims.
 - Run the quality gate for generated decks. A production deck should pass with zero audit warnings, visual anchors on content slides, no empty placeholders, no low-editability full-slide images, and speaker notes when presenter-ready output is expected.
+- If visual QA flags a weak background, missing anchor, overflow risk, or low contrast, revise the spec and render again. Do not deliver a deck that only "has formatting"; the gate is publishability, not file creation.
 
 ### Regression And Delivery
 - Use the regression suite after renderer or QA changes to generate canonical executive brief, dashboard, and roadmap samples.
 - Package final decks with the delivery pack so the PPTX, audit, visual QA, asset manifest, quality gate result, and manifest travel together.
+- Remove intermediate specs, render screenshots, extracted OOXML folders, and conversion scratch files unless they are included in a requested delivery pack or are needed for debugging. User workspaces should not accumulate internal scaffolding.

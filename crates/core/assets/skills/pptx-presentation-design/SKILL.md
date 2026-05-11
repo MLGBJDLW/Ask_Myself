@@ -22,6 +22,10 @@ description: Create, edit, inspect, and validate PowerPoint PPTX presentations w
 4. Include speaker notes when the user asks for presenter-ready output or when the deck tells a story.
 5. Remove unused placeholders and empty shapes in template decks.
 6. Do not use deleted native Office generators. Do not make a full-slide-image deck unless the user explicitly wants non-editable poster-style slides.
+7. Before generation or beautification, lock a compact design brief: audience, decision story, page count, canvas, palette, typography, motif, image plan, icon language, and page rhythm.
+8. Treat decorative-only backgrounds as a failure. Two circles, random blobs, or a single weak accent shape do not count as a designed background. Use full-bleed photography, template chrome, data grids, diagonal bands, editorial margins, or a coherent editable geometry system.
+9. For decks longer than eight slides, assign each slide a rhythm role (`anchor`, `breathing`, or `dense`) and re-check the design brief before each rendered page to avoid style drift.
+10. For "make this beautiful" requests, rebuild the slide type and visual hierarchy; do not only recolor, add ornaments, or preserve a weak bullet layout.
 
 ## Reference
 Read `references/pptx-playbook.md` for template workflow, slide design rules, and QA checks.

@@ -10,6 +10,9 @@ description: Create, edit, analyze, recalculate, and validate Excel XLSX workboo
 4. For financial or scenario models, put assumptions in input cells and formulas in calculation cells. Do not hardcode derived numbers.
 5. After writing formulas, run `recalc_xlsx` when LibreOffice is available, then validate and treat formula errors as blocking.
 6. For existing workbooks, snapshot first and preserve formulas, named ranges, charts, styles, filters, freeze panes, and sheet visibility.
+7. Use an OfficeCLI-style ladder: L1 read/audit, L2 structured workbook edits, and L3 raw OOXML only for features the normal writer cannot express. Prefer deterministic workbook state over ad-hoc cell poking.
+8. For user-facing workbooks, render or preview important sheets after creation when tooling is available; fix clipped text, unusable widths, missing formats, and unreadable charts before delivery.
+9. Remove temporary CSV extracts, Python conversion scratch files, rendered previews, and unpacked OOXML folders unless the user requested an audit/debug bundle.
 
 ## Quality Rules
 1. Put an executive summary or dashboard first when the workbook is user-facing.
@@ -18,6 +21,8 @@ description: Create, edit, analyze, recalculate, and validate Excel XLSX workboo
 4. Freeze header rows, enable filters, and set column widths explicitly.
 5. Add charts only when they improve trend, comparison, or distribution reading.
 6. Never save a workbook loaded with `data_only=True`; that can destroy formulas.
+7. Use Excel tables, named ranges, data validation, conditional formatting, sparklines, pivots or pivot-style summaries, and slicers only when they improve repeated use or scanning.
+8. Financial models should separate assumptions, calculations, scenarios, sensitivity tables, and outputs. Every output number should trace back to inputs and formulas.
 
 ## Reference
 Read `references/xlsx-playbook.md` for formula safety, layout, recalculation, and QA guidance.
