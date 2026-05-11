@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.6.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.5.2...nexa-monorepo-v0.6.0) (2026-05-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* harden agent streaming and slim runtime
+* add resource-scoped tool scheduling
+* enforce tool runtime capabilities
+* upgrade tool runtime lifecycle
+
+### Features
+
+* add resource-scoped tool scheduling ([70d1b62](https://github.com/MLGBJDLW/Nexa/commit/70d1b62418846e8ca99953c5edd79ed0d49987d4))
+* **agent:** refactor loop control plane ([9c6d228](https://github.com/MLGBJDLW/Nexa/commit/9c6d228a6520198de1246ec385f54406794d71e0))
+* enforce tool runtime capabilities ([5ba0bc0](https://github.com/MLGBJDLW/Nexa/commit/5ba0bc0f4170318f5ea75a154148fd69b6b13f37))
+* harden agent streaming and slim runtime ([4255344](https://github.com/MLGBJDLW/Nexa/commit/4255344f438a7c3b753be83d1352af99dd4e0890))
+* **preview:** add structured PDF preview ([a3662d9](https://github.com/MLGBJDLW/Nexa/commit/a3662d9a003edd8964ac6c78676752cdfa85ef1f))
+* upgrade tool runtime lifecycle ([6833e99](https://github.com/MLGBJDLW/Nexa/commit/6833e990d2247e89937c3c28a14be61723070533))
+
+
+### Bug Fixes
+
+* **agent:** restart streams and simplify document runtime ([f48ecb2](https://github.com/MLGBJDLW/Nexa/commit/f48ecb2442fedd8db569001b5f7287cfc335211e))
+
 ## [0.5.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.5.1...nexa-monorepo-v0.5.2) (2026-05-11)
 
 
