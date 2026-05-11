@@ -147,7 +147,9 @@ export function ActiveExtensions({
           : api.listSelectedSkills(skillQuery, personaId),
       ]);
 
-      const enabled = allServers.filter((s) => s.enabled);
+      const safeServers = Array.isArray(allServers) ? allServers : [];
+      const safeSkills = Array.isArray(allSkills) ? allSkills : [];
+      const enabled = safeServers.filter((s) => s.enabled);
       const withTools = await Promise.all(
         enabled.map(async (server) => {
           try {
@@ -161,7 +163,7 @@ export function ActiveExtensions({
       );
 
       setServersWithTools(withTools);
-      setSkills(allSkills);
+      setSkills(safeSkills);
     } catch {
       // Silently fail — extensions info is non-critical
     } finally {

@@ -1116,11 +1116,24 @@ impl AgentExecutor {
         messages: &mut Vec<Message>,
         ctx: &mut SteeringDrainContext<'_>,
     ) -> Vec<String> {
+        self.drain_steering_messages_from(messages, ctx, None).await
+    }
+
+    async fn drain_steering_messages_from(
+        &self,
+        messages: &mut Vec<Message>,
+        ctx: &mut SteeringDrainContext<'_>,
+        initial: Option<AgentSteeringMessage>,
+    ) -> Vec<String> {
+        let mut drained = Vec::new();
+        if let Some(message) = initial {
+            drained.push(message);
+        }
+
         let Some(rx) = &self.steering_rx else {
-            return Vec::new();
+            return self.apply_steering_messages(messages, ctx, drained).await;
         };
 
-        let mut drained = Vec::new();
         {
             let mut rx = rx.lock().await;
             while let Ok(message) = rx.try_recv() {
@@ -1128,6 +1141,24 @@ impl AgentExecutor {
             }
         }
 
+        self.apply_steering_messages(messages, ctx, drained).await
+    }
+
+    async fn wait_for_steering_message(&self) -> Option<AgentSteeringMessage> {
+        let Some(rx) = &self.steering_rx else {
+            return std::future::pending::<Option<AgentSteeringMessage>>().await;
+        };
+
+        let mut rx = rx.lock().await;
+        rx.recv().await
+    }
+
+    async fn apply_steering_messages(
+        &self,
+        messages: &mut Vec<Message>,
+        ctx: &mut SteeringDrainContext<'_>,
+        drained: Vec<AgentSteeringMessage>,
+    ) -> Vec<String> {
         if drained.is_empty() {
             return Vec::new();
         }
@@ -2030,10 +2061,51 @@ impl AgentExecutor {
             let mut chunk_count: usize = 0;
             let accumulated_len_before_iteration = accumulated_content.len();
             let mut stream_incomplete_detail: Option<String> = None;
+            let mut stream_interrupted_by_steering: Option<Vec<String>> = None;
+            let mut steering_closed = false;
 
-            while let Some(chunk_result) = stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
+            enum StreamLoopEvent {
+                Steering(Option<AgentSteeringMessage>),
+                Chunk(Option<Result<crate::llm::StreamChunk, CoreError>>),
+            }
+
+            loop {
+                let stream_event = tokio::select! {
+                    maybe_steering = self.wait_for_steering_message(), if self.steering_rx.is_some() && !steering_closed => {
+                        StreamLoopEvent::Steering(maybe_steering)
+                    }
+                    maybe_chunk = stream.next() => StreamLoopEvent::Chunk(maybe_chunk),
+                };
+
+                match stream_event {
+                    StreamLoopEvent::Steering(Some(steering)) => {
+                        let steering_texts = {
+                            let mut steering_ctx = SteeringDrainContext {
+                                db,
+                                conversation_id,
+                                tx: &tx,
+                                model,
+                                sort_order: &mut sort_order,
+                                privacy_cfg: &privacy_cfg,
+                            };
+                            self.drain_steering_messages_from(
+                                &mut messages,
+                                &mut steering_ctx,
+                                Some(steering),
+                            )
+                            .await
+                        };
+
+                        if !steering_texts.is_empty() {
+                            stream_interrupted_by_steering = Some(steering_texts);
+                            break;
+                        }
+                    }
+                    StreamLoopEvent::Steering(None) => {
+                        steering_closed = true;
+                    }
+                    StreamLoopEvent::Chunk(None) => break,
+                    StreamLoopEvent::Chunk(Some(Ok(chunk))) => {
                         chunk_count += 1;
                         // Forward thinking deltas.
                         if let Some(ref thinking) = chunk.thinking_delta {
@@ -2092,7 +2164,7 @@ impl AgentExecutor {
                             chunk_usage = Some(u);
                         }
                     }
-                    Err(CoreError::StreamIncomplete(detail)) => {
+                    StreamLoopEvent::Chunk(Some(Err(CoreError::StreamIncomplete(detail)))) => {
                         warn!("Stream incomplete — response may be truncated ({detail})");
                         info!(
                             "Stream ended incomplete: {chunk_count} chunks, {} chars — {detail}",
@@ -2101,7 +2173,7 @@ impl AgentExecutor {
                         stream_incomplete_detail = Some(detail);
                         break;
                     }
-                    Err(e) => {
+                    StreamLoopEvent::Chunk(Some(Err(e))) => {
                         error!("LLM stream error: {e}");
                         let _ = tx
                             .send(AgentEvent::Error {
@@ -2128,6 +2200,40 @@ impl AgentExecutor {
                 "Stream complete: {chunk_count} chunks, {} chars",
                 full_content.len()
             );
+
+            if let Some(steering_texts) = stream_interrupted_by_steering {
+                let reason = "Steering message received; restarting the model response.";
+                let _ = tx
+                    .send(AgentEvent::StreamReset {
+                        reason: reason.to_string(),
+                    })
+                    .await;
+                accumulated_content.truncate(accumulated_len_before_iteration);
+                self.expand_tool_defs_for_steering(&mut tool_defs, &steering_texts, has_sources);
+                append_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    "Applied user steering during streaming and restarted the model response.",
+                    "info",
+                );
+                if let Some(tid) = turn_id {
+                    let trace = build_turn_trace(route_plan.kind, &persisted_trace_items);
+                    let _ = db.update_conversation_turn_progress(
+                        tid,
+                        Some(&format!("{:?}", route_plan.kind)),
+                        Some(&trace),
+                    );
+                }
+                let max_ctx = self
+                    .config
+                    .context_window
+                    .unwrap_or_else(|| model_context_window(model));
+                messages = trim_to_context_window(
+                    &messages,
+                    max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
+                    max_response_tokens,
+                );
+                continue;
+            }
 
             if let Some(detail) = stream_incomplete_detail {
                 let recovery_note = "Stream interrupted; retrying once without streaming.";
@@ -3655,7 +3761,7 @@ fn resolve_delta_target<'a>(
 mod tests {
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     };
 
     use async_trait::async_trait;
@@ -4131,6 +4237,91 @@ mod tests {
         }
     }
 
+    struct SteeringInterruptProvider {
+        stream_calls: Arc<AtomicUsize>,
+        request_texts: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for SteeringInterruptProvider {
+        fn name(&self) -> &str {
+            "steering-interrupt-mock"
+        }
+
+        async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+            Ok(vec!["mock-model".to_string()])
+        }
+
+        async fn complete(
+            &self,
+            _request: &CompletionRequest,
+        ) -> Result<CompletionResponse, CoreError> {
+            Err(CoreError::Llm("not implemented".to_string()))
+        }
+
+        async fn stream(
+            &self,
+            request: &CompletionRequest,
+        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+            let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            self.request_texts.lock().unwrap().push(
+                request
+                    .messages
+                    .iter()
+                    .map(|message| format!("{:?}:{}", message.role, message.text_content()))
+                    .collect(),
+            );
+
+            if call_no == 0 {
+                return Ok(Box::pin(stream::unfold(0, |state| async move {
+                    match state {
+                        0 => Some((
+                            Ok(StreamChunk {
+                                delta: "obsolete draft ".to_string(),
+                                tool_call_delta: None,
+                                finish_reason: None,
+                                usage: None,
+                                thinking_delta: None,
+                            }),
+                            1,
+                        )),
+                        1 => {
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                            Some((
+                                Ok(StreamChunk {
+                                    delta: "should not be used".to_string(),
+                                    tool_call_delta: None,
+                                    finish_reason: Some(FinishReason::Stop),
+                                    usage: None,
+                                    thinking_delta: None,
+                                }),
+                                2,
+                            ))
+                        }
+                        _ => None,
+                    }
+                })));
+            }
+
+            Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
+                delta: "steered answer".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: Some(Usage {
+                    prompt_tokens: 12,
+                    completion_tokens: 2,
+                    total_tokens: 14,
+                    thinking_tokens: None,
+                }),
+                thinking_delta: None,
+            })])))
+        }
+
+        async fn health_check(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
     struct MockTool;
 
     #[async_trait]
@@ -4482,5 +4673,108 @@ mod tests {
         );
         assert!(!saw_error, "stream recovery should not surface an error");
         assert_eq!(visible_text, "complete answer");
+    }
+
+    #[tokio::test]
+    async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
+        let registry = ToolRegistry::new();
+        let stream_calls = Arc::new(AtomicUsize::new(0));
+        let request_texts = Arc::new(Mutex::new(Vec::new()));
+        let provider = SteeringInterruptProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            request_texts: Arc::clone(&request_texts),
+        };
+        let (steering_tx, steering_rx) = mpsc::unbounded_channel();
+
+        let executor = AgentExecutor::new(
+            Box::new(provider),
+            registry,
+            AgentConfig {
+                model: Some("mock-model".to_string()),
+                max_iterations: 3,
+                ..AgentConfig::default()
+            },
+        )
+        .with_steering_receiver(steering_rx);
+
+        let db = Database::open_memory().expect("in-memory db");
+        let (tx, mut rx) = mpsc::channel(64);
+
+        let run = tokio::spawn(async move {
+            executor
+                .run(
+                    vec![],
+                    vec![ContentPart::Text {
+                        text: "start broad".to_string(),
+                    }],
+                    &db,
+                    None,
+                    None,
+                    tx,
+                    0,
+                )
+                .await
+        });
+
+        let mut visible_text = String::new();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+                Ok(Some(AgentEvent::TextDelta { delta })) => {
+                    visible_text.push_str(&delta);
+                    if visible_text.contains("obsolete draft") {
+                        break;
+                    }
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("agent event channel closed before initial stream delta"),
+                Err(_) => panic!("timed out waiting for initial stream delta"),
+            }
+        }
+
+        steering_tx
+            .send(AgentSteeringMessage::text("focus on edge cases instead"))
+            .expect("steering send");
+
+        let mut saw_reset = false;
+        let mut saw_error = false;
+        loop {
+            match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+                Ok(Some(AgentEvent::StreamReset { .. })) => {
+                    saw_reset = true;
+                    visible_text.clear();
+                }
+                Ok(Some(AgentEvent::TextDelta { delta })) => {
+                    visible_text.push_str(&delta);
+                }
+                Ok(Some(AgentEvent::Error { .. })) => {
+                    saw_error = true;
+                }
+                Ok(Some(AgentEvent::Done { .. })) => break,
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => panic!("timed out waiting for steered completion"),
+            }
+        }
+
+        let final_msg = tokio::time::timeout(Duration::from_secs(1), run)
+            .await
+            .expect("run should finish")
+            .expect("join should succeed")
+            .expect("agent should succeed");
+
+        assert!(saw_reset, "steering should reset the obsolete draft");
+        assert!(!saw_error, "steering should not surface an error");
+        assert_eq!(visible_text, "steered answer");
+        assert_eq!(final_msg.text_content(), "steered answer");
+        assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+
+        let requests = request_texts.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests[1]
+                .iter()
+                .any(|message| message.contains("focus on edge cases instead")),
+            "second LLM request should include steering text"
+        );
     }
 }

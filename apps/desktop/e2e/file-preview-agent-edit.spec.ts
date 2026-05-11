@@ -4,7 +4,6 @@ declare global {
   interface Window {
     __lastAgentPrompt?: string;
     __lastSourceIds?: string[];
-    __lastPreviewIncludeLayout?: boolean;
   }
 }
 
@@ -44,7 +43,6 @@ test.beforeEach(async ({ page }) => {
 
     window.__lastAgentPrompt = undefined;
     window.__lastSourceIds = undefined;
-    window.__lastPreviewIncludeLayout = undefined;
 
     const defaultAgentConfig = {
       id: 'cfg-agent-edit',
@@ -192,9 +190,7 @@ test.beforeEach(async ({ page }) => {
         case 'clear_answer_cache':
           return 0;
         case 'preview_file_cmd':
-          window.__lastPreviewIncludeLayout = Boolean(args.includeLayout);
           if (String(args.path ?? '').endsWith('structured-report.docx')) {
-            const includeLayout = Boolean(args.includeLayout);
             return {
               path: 'D:\\Vault\\docs\\structured-report.docx',
               displayName: 'structured-report.docx',
@@ -349,21 +345,11 @@ test.beforeEach(async ({ page }) => {
                   },
                 ],
               },
-              renderedPreview: includeLayout
-                ? {
-                    kind: 'office-pages',
-                    dpi: 144,
-                    pageCount: 1,
-                    truncated: false,
-                    pages: [{ page: 1, path: 'D:\\Preview\\structured-report-page-1.png' }],
-                  }
-                : null,
+              renderedPreview: null,
               capabilities: {
                 canRenderStructured: true,
-                canRenderLayout: true,
                 canExtractText: true,
                 needsExternalRuntime: false,
-                layoutUnavailableReason: null,
                 structuredUnavailableReason: null,
               },
             };
@@ -424,10 +410,8 @@ test.beforeEach(async ({ page }) => {
               renderedPreview: null,
               capabilities: {
                 canRenderStructured: true,
-                canRenderLayout: false,
                 canExtractText: true,
-                needsExternalRuntime: true,
-                layoutUnavailableReason: 'LibreOffice and Poppler are not available.',
+                needsExternalRuntime: false,
                 structuredUnavailableReason: null,
               },
             };
@@ -459,10 +443,8 @@ test.beforeEach(async ({ page }) => {
               renderedPreview: null,
               capabilities: {
                 canRenderStructured: false,
-                canRenderLayout: false,
                 canExtractText: true,
-                needsExternalRuntime: true,
-                layoutUnavailableReason: 'LibreOffice and Poppler are not available.',
+                needsExternalRuntime: false,
                 structuredUnavailableReason: null,
               },
             };
@@ -495,10 +477,8 @@ test.beforeEach(async ({ page }) => {
             renderedPreview: null,
             capabilities: {
               canRenderStructured: false,
-              canRenderLayout: false,
               canExtractText: true,
               needsExternalRuntime: false,
-              layoutUnavailableReason: null,
               structuredUnavailableReason: null,
             },
           };
@@ -630,7 +610,7 @@ test('opens file preview as a large panel and closes it from outside clicks', as
   await expect(previewPanel).toBeHidden();
 });
 
-test('renders structured DOCX first and loads layout only on demand', async ({ page }) => {
+test('renders structured DOCX without requesting layout rendering', async ({ page }) => {
   await page.goto('/chat/conv-agent-edit');
 
   await page.getByRole('button', { name: /structured-report\.docx/i }).click();
@@ -639,12 +619,7 @@ test('renders structured DOCX first and loads layout only on demand', async ({ p
   await expect(page.getByTestId('file-preview-structured-document')).toContainText('Quarterly Report');
   await expect(page.getByTestId('file-preview-structured-document')).toContainText('North America');
   await expect(page.getByTestId('file-preview-rendered-content')).toHaveCount(0);
-
-  await expect.poll(() => page.evaluate(() => window.__lastPreviewIncludeLayout)).toBe(false);
-
-  await page.getByRole('button', { name: 'Layout', exact: true }).click();
-  await expect.poll(() => page.evaluate(() => window.__lastPreviewIncludeLayout)).toBe(true);
-  await expect(page.getByTestId('file-preview-rendered-content')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Layout', exact: true })).toHaveCount(0);
 });
 
 test('renders structured XLSX sheets, formulas, and extracted text fallback', async ({ page }) => {

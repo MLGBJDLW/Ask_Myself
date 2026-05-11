@@ -45,7 +45,7 @@ import * as api from './api';
 import { markdownComponents, rehypePlugins } from '../components/chat/markdownComponents';
 import { FilePreviewContext } from './filePreviewContext';
 
-type PreviewMode = 'preview' | 'layout' | 'text' | 'edit' | 'split';
+type PreviewMode = 'preview' | 'text' | 'edit' | 'split';
 
 const INSTANT_TRANSITION = { duration: 0 };
 const REMARK_PLUGINS = [remarkGfm];
@@ -157,15 +157,6 @@ function defaultModeForPreview(preview: api.FilePreview): PreviewMode {
   if (preview.structuredPreview) return 'preview';
   if (preview.editable) return 'edit';
   return 'preview';
-}
-
-function canShowLayoutMode(preview: api.FilePreview | null): boolean {
-  if (!preview || !isOfficeDocumentPreview(preview)) return false;
-  return Boolean(
-    preview.renderedPreview?.pages?.length ||
-      preview.capabilities?.canRenderLayout ||
-      preview.capabilities?.layoutUnavailableReason,
-  );
 }
 
 function buildAgentEditPrompt({
@@ -368,7 +359,6 @@ function copyForLocale(locale: string) {
     title: zh ? '文件预览' : 'File Preview',
     preview: zh ? '预览' : 'Preview',
     structured: zh ? '结构化' : 'Structured',
-    layout: zh ? '版式' : 'Layout',
     edit: zh ? '编辑' : 'Edit',
     split: zh ? '分屏' : 'Split',
     extracted: zh ? '提取文本' : 'Extracted Text',
@@ -386,8 +376,6 @@ function copyForLocale(locale: string) {
     loading: zh ? '正在读取文件...' : 'Reading file...',
     empty: zh ? '没有可预览的文本内容。' : 'No text content is available for preview.',
     unsupported: zh ? '这个文件暂时不能在应用内预览或编辑。' : 'This file cannot be previewed or edited inline yet.',
-    layoutUnavailable: zh ? '版式预览当前不可用。' : 'Layout preview is unavailable.',
-    loadLayout: zh ? '生成版式' : 'Load Layout',
     sheets: zh ? '工作表' : 'sheets',
     rows: zh ? '行' : 'rows',
     columns: zh ? '列' : 'columns',
@@ -896,38 +884,6 @@ function StructuredPreviewRenderer({
   return <StructuredDocumentPreview preview={preview} labels={labels} onMouseUp={onMouseUp} />;
 }
 
-function LayoutUnavailable({
-  reason,
-  labels,
-  onLoadLayout,
-  canLoadLayout,
-}: {
-  reason?: string | null;
-  labels: PreviewLabels;
-  onLoadLayout: () => void;
-  canLoadLayout: boolean;
-}) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm text-text-tertiary">
-      <ImageIcon size={28} />
-      <div>
-        <p className="text-text-secondary">{labels.layoutUnavailable}</p>
-        {reason && <p className="mt-1 max-w-md text-xs leading-5 text-text-tertiary">{reason}</p>}
-      </div>
-      {canLoadLayout && (
-        <button
-          type="button"
-          onClick={onLoadLayout}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent-hover"
-        >
-          <ImageIcon size={14} />
-          {labels.loadLayout}
-        </button>
-      )}
-    </div>
-  );
-}
-
 function OfficeRenderedPreview({
   rendered,
   labels,
@@ -1076,13 +1032,13 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const loadFile = useCallback(
     async (
       path: string,
-      options: { includeLayout?: boolean; preferredMode?: PreviewMode } = {},
+      options: { preferredMode?: PreviewMode } = {},
     ) => {
       setLoading(true);
       setError(null);
       setActivePath(path);
       try {
-        const next = await api.previewFile(path, { includeLayout: options.includeLayout });
+        const next = await api.previewFile(path);
         setPreview(next);
         setDraft(next.content ?? '');
         setTextSelection(null);
@@ -1214,17 +1170,6 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
     setCopiedAgentRequest(false);
   }, [draft, labels.selectionMapFailed, preview]);
 
-  const loadLayoutPreview = useCallback(() => {
-    if (!preview) return;
-    setTextSelection(null);
-    setCopiedAgentRequest(false);
-    if (preview.renderedPreview?.pages?.length || !preview.capabilities?.canRenderLayout) {
-      setMode('layout');
-      return;
-    }
-    void loadFile(preview.path, { includeLayout: true, preferredMode: 'layout' });
-  }, [loadFile, preview]);
-
   const updateDraft = useCallback((value: string) => {
     setDraft(value);
     setTextSelection(null);
@@ -1290,8 +1235,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const content = preview?.content ?? '';
   const hasStructured = hasStructuredPreview(preview);
   const hasRenderedPreview = Boolean(preview?.renderedPreview?.pages?.length);
-  const canShowLayout = canShowLayoutMode(preview);
-  const canShowPreview = Boolean(hasStructured || hasRenderedPreview || preview?.content || canShowLayout);
+  const canShowPreview = Boolean(hasStructured || hasRenderedPreview || preview?.content);
   const metadataBits = preview
     ? [
         formatBytes(preview.sizeBytes),
@@ -1399,14 +1343,6 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                       setMode('preview');
                     }}
                   />
-                  {canShowLayout && (
-                    <ModeButton
-                      active={mode === 'layout'}
-                      icon={<ImageIcon size={14} />}
-                      label={labels.layout}
-                      onClick={loadLayoutPreview}
-                    />
-                  )}
                   {(hasStructured || hasRenderedPreview) && preview?.content && (
                     <ModeButton
                       active={mode === 'text'}
@@ -1506,10 +1442,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                       type="button"
                       onClick={() => {
                         if (preview) {
-                          void loadFile(preview.path, {
-                            includeLayout: mode === 'layout',
-                            preferredMode: mode === 'layout' ? 'layout' : undefined,
-                          });
+                          void loadFile(preview.path, { preferredMode: mode });
                         }
                       }}
                       className="inline-flex h-8 items-center justify-center rounded-md px-2 text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
@@ -1579,18 +1512,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                   </div>
                 </div>
               ) : canShowPreview ? (
-                mode === 'layout' ? (
-                  preview.renderedPreview ? (
-                    <OfficeRenderedPreview rendered={preview.renderedPreview} labels={labels} />
-                  ) : (
-                    <LayoutUnavailable
-                      reason={preview.capabilities?.layoutUnavailableReason}
-                      labels={labels}
-                      canLoadLayout={Boolean(preview.capabilities?.canRenderLayout)}
-                      onLoadLayout={loadLayoutPreview}
-                    />
-                  )
-                ) : mode === 'preview' && preview.structuredPreview ? (
+                mode === 'preview' && preview.structuredPreview ? (
                   <StructuredPreviewRenderer
                     preview={preview.structuredPreview}
                     labels={labels}

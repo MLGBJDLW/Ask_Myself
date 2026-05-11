@@ -95,9 +95,9 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 1. Existing Office/PDF file? Use `version` first for risky changes, then `replace`, `redact`, `insert_slide`, `extract`, `validate`, or a custom Python script.
 2. New DOCX/XLSX/PPTX and Python is available? Use `create_docx`, `create_xlsx`, or `create_pptx` first. Prefer a JSON spec for spreadsheets/decks and a markdown/body input for documents.
 3. Need template fidelity, comments, tracked changes, precise image replacement, relationship repair, or layout surgery? Use `unpack` → XML/media edit → `pack` → `validate`; do not use rigid one-shot generators.
-4. Need PDF/image preview or conversion QA? Use `render` when Poppler is available, or `convert --to pdf` with LibreOffice then inspect/extract.
+4. Need PDF/image preview or conversion QA? Use `render` when system Poppler is already available, or `convert --to pdf` with system LibreOffice already available, then inspect/extract.
 5. XLSX contains formulas? Use `recalc_xlsx` after writing formulas, then `validate` to scan for formula errors.
-6. Python/LibreOffice unavailable? Explain the missing runtime and what package or converter is needed; do not fall back to deleted native Office generator tools.
+6. Python unavailable? Prepare the Python runtime first. If LibreOffice/Poppler are unavailable, explain that conversion/render QA needs those system tools rather than asking the app to install them.
 
 ## Adopted Office-skill patterns
 
@@ -118,13 +118,13 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 - **Formula safety** — `recalc_xlsx` uses LibreOffice when available and reports Excel formula errors as structured JSON
 
 ## Dependencies
-In the desktop app, first prefer `prepare_document_tools` when that tool is available. Call `action: "check"` to inspect readiness, then call `action: "prepare"` with no optional tools for missing required Python dependencies. Ask the user before retrying with optional tools because LibreOffice/Poppler setup may download large binaries or touch system package managers. Prefer selective optional setup: `optional_tools: ["poppler"]` for PDF/page image rendering, `optional_tools: ["libreoffice"]` for Office-to-PDF conversion, PPT/DOCX visual QA, or Excel recalculation. Use `include_optional_tools: true` only when the user explicitly wants both. The same flow is exposed in Settings → Models → Document tools. It creates an app-managed virtual environment, installs the bundled requirements there, attempts confirmed optional tool setup (app-managed Poppler on Windows, system package-manager install for LibreOffice/Poppler when available), and makes `run_shell` prefer those managed paths automatically.
+In the desktop app, first prefer `prepare_document_tools` when that tool is available. Call `action: "check"` to inspect readiness, then call `action: "prepare"` for missing required Python dependencies. The same flow is exposed in Settings → Models → Document tools. It creates an app-managed virtual environment, installs the bundled requirements there, and makes `run_shell` prefer that managed Python path automatically. It does not install or manage Poppler or LibreOffice.
 
 For CLI/dev environments, install before first Office/PDF operation (only what's needed for the target format):
 ```
 python -m pip install -r <SKILL_DIR>/scripts/requirements.txt
 ```
-Optional for format conversion / PDF rendering: `libreoffice`, Poppler. These are best prepared through the desktop readiness flow because they are system or app-managed binaries rather than Python packages.
+Optional for format conversion / PDF rendering: system `libreoffice` and Poppler. Install them outside the app only when the task specifically needs conversion, render QA, or XLSX formula recalculation.
 
 ## Handling missing dependencies
 Before first use, or when the user targets an unfamiliar file type, run:

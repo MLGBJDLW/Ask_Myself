@@ -130,7 +130,7 @@ pub fn describe_tool_access(name: &str) -> ToolAccessInfo {
             true,
             true,
             ApprovalRisk::Medium,
-            "Prepares required document-processing helpers; optional Poppler/LibreOffice setup requires explicit selection.",
+            "Prepares required Python document-processing helpers.",
         ),
         "manage_source" => (
             "source_management",

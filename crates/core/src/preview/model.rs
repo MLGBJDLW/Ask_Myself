@@ -8,10 +8,8 @@ pub const WORKBOOK_MAX_COLUMNS: usize = 60;
 #[serde(rename_all = "camelCase")]
 pub struct PreviewCapabilities {
     pub can_render_structured: bool,
-    pub can_render_layout: bool,
     pub can_extract_text: bool,
     pub needs_external_runtime: bool,
-    pub layout_unavailable_reason: Option<String>,
     pub structured_unavailable_reason: Option<String>,
 }
 

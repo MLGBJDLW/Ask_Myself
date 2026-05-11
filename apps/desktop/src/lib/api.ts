@@ -318,10 +318,8 @@ export interface FilePreview {
 
 export interface PreviewCapabilities {
   canRenderStructured: boolean;
-  canRenderLayout: boolean;
   canExtractText: boolean;
   needsExternalRuntime: boolean;
-  layoutUnavailableReason?: string | null;
   structuredUnavailableReason?: string | null;
 }
 
@@ -494,13 +492,9 @@ export interface WorkflowCatalogTemplate {
   tasks: WorkflowCatalogTask[];
 }
 
-export const previewFile = (
-  path: string,
-  options: { includeLayout?: boolean } = {},
-) =>
+export const previewFile = (path: string) =>
   invoke<FilePreview>('preview_file_cmd', {
     path,
-    includeLayout: options.includeLayout ?? false,
   });
 
 export const saveTextFile = (
@@ -936,21 +930,11 @@ export interface OfficePrepareResult {
   readiness: OfficeRuntimeReadiness;
 }
 
-export type OfficeOptionalTool = 'poppler' | 'libreoffice';
-
-export interface PrepareOfficeRuntimeOptions {
-  includeOptionalTools?: boolean;
-  optionalTools?: OfficeOptionalTool[];
-}
-
 export const checkOfficeRuntime = () =>
   invoke<OfficeRuntimeReadiness>('check_office_runtime_cmd');
 
-export const prepareOfficeRuntime = (options: PrepareOfficeRuntimeOptions = {}) =>
-  invoke<OfficePrepareResult>('prepare_office_runtime_cmd', {
-    includeOptionalTools: options.includeOptionalTools ?? false,
-    optionalTools: options.optionalTools ?? [],
-  });
+export const prepareOfficeRuntime = () =>
+  invoke<OfficePrepareResult>('prepare_office_runtime_cmd');
 
 // ── Setup Wizard ────────────────────────────────────────────────────
 

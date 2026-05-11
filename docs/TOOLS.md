@@ -120,7 +120,7 @@ Use this quick routing guide when a request is about files or documents:
 | Edit an existing plain-text file | `edit_file` | Text-based files only | yes | Exact `str_replace` only; must match once |
 | Apply several coordinated text edits | `multi_edit` | Text-based files only | yes | Atomic multi-replacement with one checkpoint; all edits succeed or no file changes |
 | Create or edit an Office/PDF file | `run_shell` + `doc-script-editor` | DOCX, XLSX, PPTX, PDF | yes | Python-backed creation, extraction, redaction, templates, validation, conversion, rendering, OOXML edits, and formula QA |
-| Compatibility fallback for very simple new Office files | `generate_docx`/`generate_xlsx`/`ppt_generate` | DOCX, XLSX, PPTX | yes | Use only when Python/LibreOffice is unavailable or the schema fully covers the request |
+| Compatibility fallback for very simple new Office files | `generate_docx`/`generate_xlsx`/`ppt_generate` | DOCX, XLSX, PPTX | yes | Use only when Python is unavailable or the schema fully covers the request |
 | Refresh indexed content after file changes | `reindex_document` | File path or whole source | yes for file path | Use when external edits are not reflected in search/results yet |
 
 Path guidance:
@@ -394,10 +394,10 @@ PPT deep-generation workflows live in the `pptx-presentation-design` skill, not 
 Runtime readiness:
 
 - The desktop app exposes **Settings → Models → Document tools** to check and prepare the Office runtime.
-- Preparation creates an app-managed Python virtual environment under the app data directory and installs the bundled `doc-script-editor/scripts/requirements.txt` packages there. Optional tool setup is explicit and selective: Poppler can be prepared for PDF/page image rendering, and LibreOffice can be prepared for Office-to-PDF conversion, visual QA, and spreadsheet recalculation. Ask before installing optional tools because LibreOffice can be a large download and may use `winget`, Homebrew, or an app-managed download.
-- After preparation, `run_shell` prepends the app-managed Python `Scripts`/`bin` directory and app-managed Office tool directory to `PATH`, so `python <SKILL_DIR>/scripts/edit_doc.py ...` uses the prepared Office environment automatically.
+- Preparation creates an app-managed Python virtual environment under the app data directory and installs the bundled `doc-script-editor/scripts/requirements.txt` packages there. It no longer installs or manages Poppler or LibreOffice.
+- After preparation, `run_shell` prepends the app-managed Python `Scripts`/`bin` directory to `PATH`, so `python <SKILL_DIR>/scripts/edit_doc.py ...` uses the prepared Office environment automatically.
 - If Python itself is not installed, Nexa does not silently install a system runtime. The UI shows the Python download URL and keeps native generators available as simple compatibility fallback.
-- LibreOffice remains an optional system-level application for conversion, rendering, and Excel formula recalculation QA. If automatic package-manager install is unavailable or fails, the app keeps core Office editing ready and reports the optional item as degraded.
+- LibreOffice and Poppler remain optional system-level applications for conversion, rendering, and Excel formula recalculation QA. Install them outside the app only when a task needs those workflows.
 
 ---
 

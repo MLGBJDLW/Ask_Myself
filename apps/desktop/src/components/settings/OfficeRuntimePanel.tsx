@@ -5,14 +5,13 @@ import {
   Bot,
   CheckCircle,
   ChevronDown,
-  Download,
   Loader2,
   RefreshCw,
   Wrench,
   XCircle,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
-import type { OfficeDependencyStatus, OfficeOptionalTool, OfficeRuntimeReadiness, PrepareOfficeRuntimeOptions } from '../../lib/api';
+import type { OfficeDependencyStatus, OfficeRuntimeReadiness } from '../../lib/api';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -20,7 +19,7 @@ import { Button } from '../ui/Button';
 interface OfficeRuntimePanelProps {
   readiness: OfficeRuntimeReadiness | null;
   preparing: boolean;
-  onPrepare: (options?: PrepareOfficeRuntimeOptions) => void;
+  onPrepare: () => void;
   onRefresh: () => void;
   onAskAiPrepare: () => void;
 }
@@ -52,18 +51,8 @@ export function OfficeRuntimePanel({
     }
   })();
   const requiredDeps = readiness?.dependencies.filter((dep) => dep.required) ?? [];
-  const optionalDeps = readiness?.dependencies.filter((dep) => !dep.required) ?? [];
   const missingRequiredDeps = requiredDeps.filter((dep) => dep.status !== 'ready');
-  const missingOptionalDeps = optionalDeps.filter((dep) => dep.status !== 'ready');
   const canPrepare = Boolean(readiness?.canPrepare) || !readiness;
-  const optionalToolEntries = missingOptionalDeps
-    .map((dep): { tool: OfficeOptionalTool; label: string } | null => {
-      const id = dep.id.toLowerCase();
-      if (id.includes('poppler')) return { tool: 'poppler', label: dep.label };
-      if (id.includes('libreoffice')) return { tool: 'libreoffice', label: dep.label };
-      return null;
-    })
-    .filter((entry): entry is { tool: OfficeOptionalTool; label: string } => Boolean(entry));
   const shouldShowRequiredPrepare = !readiness || missingRequiredDeps.length > 0;
 
   const renderDep = (dep: OfficeDependencyStatus) => (
@@ -138,19 +127,6 @@ export function OfficeRuntimePanel({
               {preparing ? t('settings.documentToolsPreparing') : t('settings.documentToolsPrepareRequired')}
             </Button>
           )}
-          {optionalToolEntries.map(({ tool, label }) => (
-            <Button
-              key={tool}
-              variant={shouldShowRequiredPrepare ? 'secondary' : 'primary'}
-              size="sm"
-              icon={<Download size={14} />}
-              loading={preparing}
-              disabled={!canPrepare || preparing}
-              onClick={() => onPrepare({ optionalTools: [tool] })}
-            >
-              {t('settings.documentToolsPrepareOptional')} {label}
-            </Button>
-          ))}
           <button
             type="button"
             onClick={() => setDetailsOpen((value) => !value)}
@@ -194,19 +170,10 @@ export function OfficeRuntimePanel({
                 </div>
               )}
 
-              <div className="grid gap-4 lg:grid-cols-2">
+              <div>
                 <div>
                   <p className="mb-1 text-xs font-medium text-text-secondary">{t('settings.documentToolsRequired')}</p>
                   <div className="divide-y divide-border">{requiredDeps.map(renderDep)}</div>
-                </div>
-                <div>
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <p className="text-xs font-medium text-text-secondary">{t('settings.documentToolsOptional')}</p>
-                    {optionalToolEntries.length > 0 && (
-                      <span className="text-[11px] text-text-tertiary">{t('settings.documentToolsOptionalHint')}</span>
-                    )}
-                  </div>
-                  <div className="divide-y divide-border">{optionalDeps.map(renderDep)}</div>
                 </div>
               </div>
             </div>

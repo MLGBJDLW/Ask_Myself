@@ -17,7 +17,7 @@ Use this skill as the Office router. It should keep routing concise, then rely o
 1. Produce real editable Office files through Python-backed libraries or `doc-script-editor`; do not route Office work through deleted native generator tools.
 2. Keep file bytes on disk. Never paste binary content or base64 Office blobs into tool arguments.
 3. Validate after write with `edit_doc.py --path <file> validate` when possible.
-4. Render or convert layout-sensitive outputs for visual QA when LibreOffice/Poppler are available.
+4. Render or convert layout-sensitive outputs for visual QA only when the required system tools are already available.
 5. For XLSX formulas, recalculate and scan for formula errors before completion.
 6. Preserve existing templates unless the user explicitly asks for a redesign.
 
