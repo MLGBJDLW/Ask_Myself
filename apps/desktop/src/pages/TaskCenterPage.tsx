@@ -392,7 +392,9 @@ export function TaskCenterPage() {
           }),
         );
         if (cancelled) return;
-        setEvents(nextEvents);
+        setEvents(nextEvents.filter((event) =>
+          event.eventType !== 'streamBlockDelta' && event.eventType !== 'streamReset',
+        ));
         setGraph(nextGraph);
         setArtifacts(nextArtifacts);
         setSavedArtifacts(nextSavedArtifacts);

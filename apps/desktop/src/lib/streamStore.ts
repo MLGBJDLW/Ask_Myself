@@ -81,12 +81,16 @@ export interface TraceThinkingEvent {
   id: string;
   kind: 'thinking';
   text: string;
+  blockId?: string;
+  nextOffset?: number;
 }
 
 export interface TraceReplyEvent {
   id: string;
   kind: 'reply';
   text: string;
+  blockId?: string;
+  nextOffset?: number;
 }
 
 export interface TraceToolEvent {
@@ -141,6 +145,11 @@ interface InternalStreamState extends StreamState {
   _toolCallSeq: number;
   _roundSeq: number;
   _traceSeq: number;
+  _lastEventSeq: number;
+  _activeAnswerBlockId: string | null;
+  _activeAnswerOffset: number;
+  _activeThinkingBlockId: string | null;
+  _activeThinkingOffset: number;
   _activeRoundId: string | null;
   _activeRoundAcceptingStarts: boolean;
   _timeoutId: ReturnType<typeof setTimeout> | null;
@@ -175,6 +184,7 @@ function normalizeAgentEventType(value: unknown): AgentEventType | null {
   switch (lowered) {
     case 'thinking': return 'thinking';
     case 'textDelta': return 'textDelta';
+    case 'streamBlockDelta': return 'streamBlockDelta';
     case 'streamReset': return 'streamReset';
     case 'toolCallPreparing': return 'toolCallPreparing';
     case 'toolCallStart': return 'toolCallStart';
@@ -354,6 +364,11 @@ function createDefaultState(): InternalStreamState {
     _toolCallSeq: 0,
     _roundSeq: 0,
     _traceSeq: 0,
+    _lastEventSeq: 0,
+    _activeAnswerBlockId: null,
+    _activeAnswerOffset: 0,
+    _activeThinkingBlockId: null,
+    _activeThinkingOffset: 0,
     _activeRoundId: null,
     _activeRoundAcceptingStarts: false,
     _timeoutId: null,
@@ -440,6 +455,80 @@ function appendReplyTraceEvent(state: InternalStreamState, delta: string): void 
   }];
 }
 
+function utf8ByteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+function upsertThinkingBlockTraceEvent(
+  state: InternalStreamState,
+  blockId: string,
+  offset: number,
+  delta: string,
+): boolean {
+  if (!delta) return false;
+  const deltaBytes = utf8ByteLength(delta);
+  const idx = state.traceEvents.findIndex(
+    event => event.kind === 'thinking' && event.blockId === blockId,
+  );
+  if (idx >= 0) {
+    const prev = state.traceEvents[idx] as TraceThinkingEvent;
+    const nextOffset = prev.nextOffset ?? 0;
+    if (offset < nextOffset) return false;
+    const next = [...state.traceEvents];
+    next[idx] = {
+      ...prev,
+      text: prev.text + delta,
+      nextOffset: offset + deltaBytes,
+    };
+    state.traceEvents = next;
+    return true;
+  }
+
+  state.traceEvents = [...state.traceEvents, {
+    id: `trace-thinking-${Date.now()}-${state._traceSeq++}`,
+    kind: 'thinking',
+    text: delta,
+    blockId,
+    nextOffset: offset + deltaBytes,
+  }];
+  return true;
+}
+
+function upsertReplyBlockTraceEvent(
+  state: InternalStreamState,
+  blockId: string,
+  offset: number,
+  delta: string,
+): boolean {
+  if (!delta) return false;
+  const deltaBytes = utf8ByteLength(delta);
+  const idx = state.traceEvents.findIndex(
+    event => event.kind === 'reply' && event.blockId === blockId,
+  );
+  if (idx >= 0) {
+    const prev = state.traceEvents[idx] as TraceReplyEvent;
+    const nextOffset = prev.nextOffset ?? 0;
+    if (offset < nextOffset) return false;
+    const next = [...state.traceEvents];
+    next[idx] = {
+      ...prev,
+      text: prev.text + delta,
+      nextOffset: offset + deltaBytes,
+    };
+    state.traceEvents = next;
+    return true;
+  }
+
+  state.traceEvents = [...state.traceEvents, {
+    id: `trace-reply-${Date.now()}-${state._traceSeq++}`,
+    kind: 'reply',
+    text: delta,
+    blockId,
+    nextOffset: offset + deltaBytes,
+  }];
+  return true;
+}
+
 function upsertToolTraceEvent(state: InternalStreamState, toolCall: ToolCallEvent): void {
   const idx = state.traceEvents.findIndex(event =>
     event.kind === 'tool' && event.toolCall.callId === toolCall.callId);
@@ -475,6 +564,66 @@ function clearToolPreparingTimer(state: InternalStreamState, callId: string): vo
 function clearToolPreparingTimers(state: InternalStreamState): void {
   Object.values(state._toolPreparingTimers).forEach(timer => clearTimeout(timer));
   state._toolPreparingTimers = {};
+}
+
+function resetActiveStreamBlocks(state: InternalStreamState): void {
+  state._activeAnswerBlockId = null;
+  state._activeAnswerOffset = 0;
+  state._activeThinkingBlockId = null;
+  state._activeThinkingOffset = 0;
+}
+
+function applyStreamBlockDelta(
+  state: InternalStreamState,
+  channel: 'answer' | 'thinking',
+  blockId: string,
+  offset: number,
+  delta: string,
+): void {
+  if (!blockId || !delta) return;
+  const normalizedOffset = Number.isFinite(offset) && offset >= 0 ? offset : 0;
+  const deltaBytes = utf8ByteLength(delta);
+
+  if (channel === 'answer') {
+    state.isThinking = false;
+    if (state._activeRoundId) {
+      state._activeRoundId = null;
+      state._activeRoundAcceptingStarts = false;
+    }
+    if (state._activeAnswerBlockId !== blockId) {
+      state._activeAnswerBlockId = blockId;
+      state._activeAnswerOffset = 0;
+      state.streamText = '';
+    }
+    if (normalizedOffset < state._activeAnswerOffset) return;
+    state.thinkingText = '';
+    state.streamText += delta;
+    state._activeAnswerOffset = normalizedOffset + deltaBytes;
+    upsertReplyBlockTraceEvent(state, blockId, normalizedOffset, delta);
+    return;
+  }
+
+  state.isThinking = true;
+  if (state._activeThinkingBlockId !== blockId) {
+    state._activeThinkingBlockId = blockId;
+    state._activeThinkingOffset = 0;
+    state.thinkingText = '';
+  }
+  if (normalizedOffset < state._activeThinkingOffset) return;
+  state.thinkingText += delta;
+  state._activeThinkingOffset = normalizedOffset + deltaBytes;
+  upsertThinkingBlockTraceEvent(state, blockId, normalizedOffset, delta);
+}
+
+function taskRunIsActive(taskRun: AgentTaskRun): boolean {
+  return ['queued', 'running', 'waiting_approval'].includes(taskRun.status);
+}
+
+function taskEventPayloadRecord(event: AgentTaskRunEvent): Record<string, unknown> | null {
+  const payload = event.payload;
+  return payload && !Array.isArray(payload) && typeof payload === 'object'
+    ? payload as Record<string, unknown>
+    : null;
 }
 
 function insertPendingToolCall(
@@ -556,6 +705,7 @@ function applyToolRunEvent(state: InternalStreamState, run: ToolRunItem): void {
     });
     const nextCall = patchToolCallFromRun(base, run);
     insertPendingToolCall(state, nextCall, roundThinking);
+    resetActiveStreamBlocks(state);
     if (!isPendingStatus(nextCall.status)) {
       state._activeRoundAcceptingStarts = false;
     }
@@ -654,6 +804,89 @@ class StreamStoreImpl {
     return null;
   }
 
+  /** Rebuild the visible stream preview from durable typed stream events. */
+  restoreFromTaskEvents(
+    conversationId: string,
+    taskRun: AgentTaskRun,
+    taskEvents: AgentTaskRunEvent[],
+  ): void {
+    const existing = this._streams[conversationId];
+    if (existing?.isStreaming && (
+      existing.traceEvents.length > 0 ||
+      existing.streamText.length > 0 ||
+      existing.streamRounds.length > 0
+    )) {
+      return;
+    }
+    if (existing?._timeoutId) clearTimeout(existing._timeoutId);
+    if (existing) clearToolPreparingTimers(existing);
+
+    const state = createDefaultState();
+    state.isStreaming = taskRunIsActive(taskRun);
+    state.taskRun = taskRun;
+    state.taskEvents = taskEvents
+      .filter(event => event.eventType !== 'streamBlockDelta' && event.eventType !== 'streamReset')
+      .slice(-50);
+
+    const replayEvents = taskEvents
+      .map((event) => {
+        const payload = taskEventPayloadRecord(event);
+        if (!payload) return null;
+        const eventSeqRaw = payload.eventSeq;
+        const eventSeq = typeof eventSeqRaw === 'number'
+          ? eventSeqRaw
+          : Number.parseInt(String(eventSeqRaw ?? ''), 10);
+        return { event, payload, eventSeq: Number.isFinite(eventSeq) ? eventSeq : 0 };
+      })
+      .filter((item): item is { event: AgentTaskRunEvent; payload: Record<string, unknown>; eventSeq: number } =>
+        Boolean(item && item.eventSeq > 0),
+      )
+      .sort((a, b) => a.eventSeq - b.eventSeq);
+
+    for (const item of replayEvents) {
+      if (item.eventSeq <= state._lastEventSeq) continue;
+      state._lastEventSeq = item.eventSeq;
+      if (item.event.eventType === 'streamReset') {
+        const reason = typeof item.payload.reason === 'string'
+          ? item.payload.reason
+          : 'Stream restarted.';
+        state.streamText = '';
+        state.streamRounds = [];
+        state.thinkingText = '';
+        state.isThinking = false;
+        state.traceEvents = state.traceEvents.filter(trace => trace.kind === 'status');
+        resetActiveStreamBlocks(state);
+        appendStatusTraceEvent(state, reason, 'muted');
+        continue;
+      }
+      if (item.event.eventType !== 'streamBlockDelta') continue;
+      const channel = item.payload.channel === 'answer' || item.payload.channel === 'thinking'
+        ? item.payload.channel
+        : null;
+      const blockId = typeof item.payload.blockId === 'string' ? item.payload.blockId : '';
+      const delta = typeof item.payload.delta === 'string' ? item.payload.delta : '';
+      const offsetRaw = item.payload.offset;
+      const offset = typeof offsetRaw === 'number'
+        ? offsetRaw
+        : Number.parseInt(String(offsetRaw ?? '0'), 10);
+      if (channel && blockId && delta) {
+        applyStreamBlockDelta(
+          state,
+          channel,
+          blockId,
+          Number.isFinite(offset) ? offset : 0,
+          delta,
+        );
+      }
+    }
+
+    this._streams[conversationId] = state;
+    if (state.isStreaming) {
+      this.resetTimeout(conversationId);
+    }
+    this.notify(conversationId);
+  }
+
   /** Initialize (or reset) stream state for a conversation. */
   startStream(conversationId: string): void {
     const existing = this._streams[conversationId];
@@ -692,6 +925,7 @@ class StreamStoreImpl {
     clearToolPreparingTimers(s);
     s._activeRoundId = null;
     s._activeRoundAcceptingStarts = false;
+    resetActiveStreamBlocks(s);
     this.notify(conversationId);
   }
 
@@ -710,6 +944,7 @@ class StreamStoreImpl {
     s.isStreaming = false;
     s._activeRoundId = null;
     s._activeRoundAcceptingStarts = false;
+    resetActiveStreamBlocks(s);
     s._timeoutId = null;
     this.notify(conversationId);
   }
@@ -730,6 +965,7 @@ class StreamStoreImpl {
     s.isStreaming = false;
     s._activeRoundId = null;
     s._activeRoundAcceptingStarts = false;
+    resetActiveStreamBlocks(s);
     s._timeoutId = null;
     this.notify(conversationId);
   }
@@ -752,6 +988,7 @@ class StreamStoreImpl {
       state.isStreaming = false;
       state._activeRoundId = null;
       state._activeRoundAcceptingStarts = false;
+      resetActiveStreamBlocks(state);
       state._timeoutId = null;
       this.notify(conversationId);
     }, STREAM_TIMEOUT_MS);
@@ -801,6 +1038,15 @@ class StreamStoreImpl {
     const isTaskLifecycleEvent = eventType === 'taskRunUpdated' || eventType === 'taskRunEvent';
     if (!s.isStreaming && !isTaskLifecycleEvent) return;
 
+    const eventSeqRaw = event.eventSeq ?? raw.eventSeq;
+    const eventSeq = typeof eventSeqRaw === 'number'
+      ? eventSeqRaw
+      : Number.parseInt(String(eventSeqRaw ?? ''), 10);
+    if (Number.isFinite(eventSeq) && eventSeq > 0) {
+      if (eventSeq <= s._lastEventSeq) return;
+      s._lastEventSeq = eventSeq;
+    }
+
     // Reset inactivity timeout on every event, including empty keepalive
     // `thinking` events emitted while the backend is still working.
     if (s.isStreaming) {
@@ -808,6 +1054,32 @@ class StreamStoreImpl {
     }
 
     switch (eventType) {
+      case 'streamBlockDelta': {
+        const blockId = (typeof event.blockId === 'string' ? event.blockId : '')
+          || (typeof raw.blockId === 'string' ? raw.blockId : '');
+        const rawChannel = event.channel ?? raw.channel;
+        const channel = rawChannel === 'answer' || rawChannel === 'thinking'
+          ? rawChannel
+          : null;
+        const offsetRaw = event.offset ?? raw.offset;
+        const offset = typeof offsetRaw === 'number'
+          ? offsetRaw
+          : Number.parseInt(String(offsetRaw ?? '0'), 10);
+        const delta = typeof event.delta === 'string'
+          ? event.delta
+          : (typeof raw.delta === 'string' ? raw.delta : '');
+        if (channel && blockId && delta) {
+          applyStreamBlockDelta(
+            s,
+            channel,
+            blockId,
+            Number.isFinite(offset) ? offset : 0,
+            delta,
+          );
+        }
+        break;
+      }
+
       case 'thinking': {
         try {
         const delta = typeof event.content === 'string'
@@ -853,6 +1125,7 @@ class StreamStoreImpl {
         s.error = null;
         s._activeRoundId = null;
         s._activeRoundAcceptingStarts = false;
+        resetActiveStreamBlocks(s);
         appendStatusTraceEvent(s, reason, 'muted');
         break;
       }
@@ -1022,6 +1295,7 @@ class StreamStoreImpl {
           s.toolCalls = [...s.toolCalls, nextCall];
           upsertToolTraceEvent(s, nextCall);
         }
+        resetActiveStreamBlocks(s);
         } catch (err) {
           console.error('[streamStore] toolCallStart error, creating fallback round:', err);
           // Fallback: create a simple new round with the tool call
@@ -1042,6 +1316,7 @@ class StreamStoreImpl {
           upsertToolTraceEvent(s, fallbackCall);
           s.isThinking = false;
           s.thinkingText = '';
+          resetActiveStreamBlocks(s);
         }
         break;
       }
@@ -1251,6 +1526,7 @@ class StreamStoreImpl {
         s.isStreaming = false;
         s._activeRoundId = null;
         s._activeRoundAcceptingStarts = false;
+        resetActiveStreamBlocks(s);
         s._timeoutId = null;
         break;
       }
@@ -1324,6 +1600,7 @@ class StreamStoreImpl {
         s.isStreaming = false;
         s._activeRoundId = null;
         s._activeRoundAcceptingStarts = false;
+        resetActiveStreamBlocks(s);
         s._timeoutId = null;
         break;
       }

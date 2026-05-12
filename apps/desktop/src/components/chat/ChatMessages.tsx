@@ -214,6 +214,29 @@ function normalizeThinking(content: string): string {
   return content.replace(/\r\n/g, "\n").trim();
 }
 
+function compactThinkingText(content: string): string {
+  return normalizeThinking(content).replace(/\s+/g, " ");
+}
+
+function hasRenderableThinkingSection(section: ThinkingSection): boolean {
+  return Boolean(
+    section.node ||
+      section.toolCallCards ||
+      compactThinkingText(section.text).length > 0,
+  );
+}
+
+function isLowSignalThinkingSection(section: ThinkingSection): boolean {
+  if (section.node || section.toolCallCards) return false;
+  const text = compactThinkingText(section.text);
+  if (!text) return true;
+  if (/^[\p{P}\p{S}\s]+$/u.test(text)) return true;
+
+  const hasCjk = /[\u3400-\u9fff]/.test(text);
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  return !hasCjk && text.length <= 12 && wordCount <= 2;
+}
+
 interface PersistedTraceToolCall {
   callId: string;
   toolName: string;
@@ -1257,25 +1280,44 @@ export function ChatMessages({
     let activeSections: ThinkingSection[] = [];
 
     const flushThinking = (id: string, streaming = false) => {
-      if (activeSections.length === 0) return;
+      const renderableSections = activeSections.filter(
+        (section) =>
+          hasRenderableThinkingSection(section) &&
+          !isLowSignalThinkingSection(section),
+      );
+      activeSections = [];
+      if (renderableSections.length === 0) return;
       items.push({
         kind: "thinking",
         id,
-        sections: activeSections,
+        sections: renderableSections,
         isStreaming: streaming,
       });
-      activeSections = [];
+    };
+
+    const appendReply = (id: string, content: string, streaming = false) => {
+      if (!content) return;
+      const lastItem = items[items.length - 1];
+      if (lastItem?.kind === "reply") {
+        items[items.length - 1] = {
+          ...lastItem,
+          content: lastItem.content + content,
+          isStreaming: lastItem.isStreaming || streaming,
+        };
+        return;
+      }
+      items.push({
+        kind: "reply",
+        id,
+        content,
+        isStreaming: streaming,
+      });
     };
 
     for (const event of visibleTraceEvents) {
       if (event.kind === "reply") {
         flushThinking(`${event.id}-before-reply`);
-        items.push({
-          kind: "reply",
-          id: event.id,
-          content: event.text,
-          isStreaming: false,
-        });
+        appendReply(event.id, event.text);
         continue;
       }
 

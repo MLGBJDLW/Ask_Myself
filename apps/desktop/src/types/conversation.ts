@@ -325,6 +325,7 @@ export type ProviderType =
 export interface AgentEvent {
   type:
     | 'textDelta'
+    | 'streamBlockDelta'
     | 'streamReset'
     | 'toolCallPreparing'
     | 'toolCallStart'
@@ -345,6 +346,9 @@ export interface AgentEvent {
     | 'taskRunUpdated'
     | 'taskRunEvent';
   delta?: string;
+  blockId?: string;
+  channel?: 'answer' | 'thinking';
+  offset?: number;
   reason?: string;
   callId?: string;
   toolName?: string;
@@ -417,8 +421,12 @@ export interface ApprovalPolicyList {
 export interface AgentFrontendEvent {
   conversationId: string;
   type: AgentEvent['type'];
+  eventSeq?: number;
   summary?: string;
   delta?: string;
+  blockId?: string;
+  channel?: 'answer' | 'thinking';
+  offset?: number;
   reason?: string;
   callId?: string;
   toolName?: string;

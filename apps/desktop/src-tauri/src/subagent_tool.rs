@@ -1712,6 +1712,7 @@ async fn run_subagent_once(
                     capture.finish_reason = finish_reason;
                 }
                 AgentEvent::TextDelta { .. }
+                | AgentEvent::StreamBlockDelta { .. }
                 | AgentEvent::StreamReset { .. }
                 | AgentEvent::Error { .. }
                 | AgentEvent::AutoCompacted { .. }

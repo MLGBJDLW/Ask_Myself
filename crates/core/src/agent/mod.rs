@@ -106,12 +106,28 @@ fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
 // Events
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StreamBlockChannel {
+    Answer,
+    Thinking,
+}
+
 /// Events emitted by the agent during execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentEvent {
     /// Incremental text token from the LLM.
     TextDelta { delta: String },
+    /// Ordered, authoritative delta for a typed stream block.
+    StreamBlockDelta {
+        #[serde(rename = "blockId")]
+        block_id: String,
+        channel: StreamBlockChannel,
+        /// Starting UTF-8 byte offset within this block.
+        offset: usize,
+        delta: String,
+    },
     /// Clear partial stream output before replaying a recovered response.
     StreamReset { reason: String },
     /// The model has started assembling a tool call, but the arguments are not
