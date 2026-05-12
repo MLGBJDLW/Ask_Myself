@@ -50,6 +50,7 @@ export type {
   ApprovalRequest,
   ApprovalRisk,
   ApprovalDecisionValue,
+  ToolAccessInfo,
   ApprovalPolicy,
   ApprovalPolicyList,
 } from "./conversation";
