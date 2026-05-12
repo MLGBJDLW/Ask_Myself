@@ -869,6 +869,10 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_agent_task_artifact_versions_artifact
             ON agent_task_artifact_versions(artifact_id, version DESC);",
     ),
+    (
+        "v059_agent_config_image_generation_model",
+        "ALTER TABLE agent_configs ADD COLUMN image_generation_model TEXT DEFAULT NULL;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1103,6 +1107,21 @@ mod tests {
             has_default_skills,
             "personas.default_skill_ids_json should exist"
         );
+    }
+
+    #[test]
+    fn test_agent_config_image_generation_model_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_configs') WHERE name = 'image_generation_model'",
+                [],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
+            )
+            .unwrap();
+        assert!(exists, "agent_configs.image_generation_model should exist");
     }
 
     #[test]

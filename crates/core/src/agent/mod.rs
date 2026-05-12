@@ -854,7 +854,9 @@ impl AgentExecutor {
         // Resolve source scope early so we can pass `has_sources` into tool selection.
         let source_scope: Vec<String> =
             source_scope_override.unwrap_or_else(|| match conversation_id {
-                Some(cid) => db.get_linked_sources(cid).unwrap_or_default(),
+                Some(cid) => db
+                    .get_effective_conversation_source_scope(cid)
+                    .unwrap_or_default(),
                 None => Vec::new(),
             });
         let has_sources = !source_scope.is_empty();

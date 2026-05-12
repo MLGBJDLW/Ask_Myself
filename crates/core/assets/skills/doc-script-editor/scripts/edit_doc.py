@@ -648,6 +648,96 @@ def _numbered_markdown_text(stripped: str) -> str | None:
     return None
 
 
+def _docx_add_inline_markdown(paragraph, text: str) -> None:
+    """Add common inline Markdown as Word runs instead of literal markers."""
+    i = 0
+    plain_start = 0
+
+    def flush_plain(end: int) -> None:
+        nonlocal plain_start
+        if end > plain_start:
+            paragraph.add_run(text[plain_start:end])
+        plain_start = end
+
+    def add_styled(content: str, *, bold=False, italic=False, strike=False, code=False) -> None:
+        if not content:
+            return
+        run = paragraph.add_run(content)
+        run.bold = bold or None
+        run.italic = italic or None
+        run.font.strike = strike or None
+        if code:
+            run.font.name = "Consolas"
+
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            flush_plain(i)
+            paragraph.add_run(text[i + 1])
+            i += 2
+            plain_start = i
+            continue
+
+        if text.startswith(("**", "__"), i):
+            marker = text[i:i + 2]
+            end = text.find(marker, i + 2)
+            if end != -1:
+                flush_plain(i)
+                add_styled(text[i + 2:end], bold=True)
+                i = end + 2
+                plain_start = i
+                continue
+
+        if text.startswith("~~", i):
+            end = text.find("~~", i + 2)
+            if end != -1:
+                flush_plain(i)
+                add_styled(text[i + 2:end], strike=True)
+                i = end + 2
+                plain_start = i
+                continue
+
+        if text[i] == "`":
+            end = text.find("`", i + 1)
+            if end != -1:
+                flush_plain(i)
+                add_styled(text[i + 1:end], code=True)
+                i = end + 1
+                plain_start = i
+                continue
+
+        if text[i] in {"*", "_"}:
+            marker = text[i]
+            end = text.find(marker, i + 1)
+            if end != -1:
+                flush_plain(i)
+                add_styled(text[i + 1:end], italic=True)
+                i = end + 1
+                plain_start = i
+                continue
+
+        if text[i] == "[":
+            label_end = text.find("](", i + 1)
+            if label_end != -1:
+                url_end = text.find(")", label_end + 2)
+                if url_end != -1:
+                    flush_plain(i)
+                    label = text[i + 1:label_end]
+                    url = text[label_end + 2:url_end]
+                    if label:
+                        paragraph.add_run(label)
+                        if url:
+                            paragraph.add_run(f" ({url})")
+                    elif url:
+                        paragraph.add_run(url)
+                    i = url_end + 1
+                    plain_start = i
+                    continue
+
+        i += 1
+
+    flush_plain(len(text))
+
+
 def _docx_add_markdown(doc, markdown: str) -> None:
     lines = markdown.splitlines()
     i = 0
@@ -661,7 +751,8 @@ def _docx_add_markdown(doc, markdown: str) -> None:
         if stripped.startswith("#"):
             level = len(stripped) - len(stripped.lstrip("#"))
             if 1 <= level <= 6 and len(stripped) > level and stripped[level].isspace():
-                doc.add_heading(stripped[level:].strip(), level=min(level, 4))
+                heading = doc.add_heading(level=min(level, 4))
+                _docx_add_inline_markdown(heading, stripped[level:].strip())
                 i += 1
                 continue
         if stripped.startswith("|") and stripped.endswith("|"):
@@ -679,7 +770,9 @@ def _docx_add_markdown(doc, markdown: str) -> None:
                 table.style = "Table Grid"
                 for ri, row in enumerate(rows):
                     for ci, value in enumerate(row):
-                        table.rows[ri].cells[ci].text = value
+                        cell = table.rows[ri].cells[ci]
+                        cell.text = ""
+                        _docx_add_inline_markdown(cell.paragraphs[0], value)
                         if ri == 0:
                             for paragraph in table.rows[ri].cells[ci].paragraphs:
                                 for run in paragraph.runs:
@@ -687,14 +780,18 @@ def _docx_add_markdown(doc, markdown: str) -> None:
                 continue
         numbered = _numbered_markdown_text(stripped)
         if stripped.startswith(("- ", "* ", "• ")):
-            doc.add_paragraph(stripped[2:].strip(), style="List Bullet")
+            p = doc.add_paragraph(style="List Bullet")
+            _docx_add_inline_markdown(p, stripped[2:].strip())
         elif numbered is not None:
-            doc.add_paragraph(numbered, style="List Number")
+            p = doc.add_paragraph(style="List Number")
+            _docx_add_inline_markdown(p, numbered)
         elif stripped.startswith("> "):
-            p = doc.add_paragraph(stripped[2:].strip())
+            p = doc.add_paragraph()
             p.style = "Intense Quote"
+            _docx_add_inline_markdown(p, stripped[2:].strip())
         else:
-            doc.add_paragraph(stripped)
+            p = doc.add_paragraph()
+            _docx_add_inline_markdown(p, stripped)
         i += 1
 
 

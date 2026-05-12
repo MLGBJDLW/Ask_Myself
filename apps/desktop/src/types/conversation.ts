@@ -228,6 +228,8 @@ export interface AgentConfig {
   summarizationModel: string | null;
   /** Optional provider override for summarization (e.g. "open_ai"). */
   summarizationProvider: string | null;
+  /** Optional model for image generation. */
+  imageGenerationModel: string | null;
   /** Optional whitelist of delegated tool names that subagents may use. */
   subagentAllowedTools: string[] | null;
   /** Optional whitelist of enabled skill IDs that delegated subagents may inherit. */
@@ -266,6 +268,8 @@ export interface SaveAgentConfigInput {
   summarizationModel: string | null;
   /** Optional provider override for summarization (e.g. "open_ai"). */
   summarizationProvider: string | null;
+  /** Optional model for image generation. */
+  imageGenerationModel: string | null;
   /** Optional whitelist of delegated tool names that subagents may use. */
   subagentAllowedTools: string[] | null;
   /** Optional whitelist of enabled skill IDs that delegated subagents may inherit. */

@@ -1057,6 +1057,7 @@ mod tests {
             max_iterations: None,
             summarization_model: None,
             summarization_provider: None,
+            image_generation_model: None,
             subagent_allowed_tools: None,
             subagent_allowed_skill_ids: None,
             subagent_max_parallel: None,

@@ -33,8 +33,10 @@ import { appTimeMs } from "../../lib/dateTime";
 import {
   preprocessChunkCitations,
   buildCitationMap,
+  extractChunkCitations,
 } from "../../lib/citationParser";
 import type { CitationCardData } from "../../lib/citationParser";
+import { isWebUrl, sourceBasename, sourceHost } from "../../lib/sourceDisplay";
 import { SOFT_FADE_TRANSITION } from "../../lib/uiMotion";
 import type {
   StreamRoundEvent,
@@ -58,6 +60,7 @@ import {
   CitationContext,
 } from "./markdownComponents";
 import { MessageBubble } from "./MessageBubble";
+import { CitationChip } from "./EvidenceCard";
 import { Skeleton } from "../ui/Skeleton";
 import type {
   ArtifactPayload,
@@ -133,6 +136,75 @@ const SUGGESTIONS: {
     promptKey: "chat.suggestions.table.prompt",
   },
 ];
+
+function evidenceSourceLabel(
+  card: CitationCardData | undefined,
+  displayText: string | undefined,
+  fallback: string,
+): string {
+  const sourcePath = card?.documentPath?.trim() ?? "";
+  const title = card?.documentTitle?.trim() ?? "";
+  if (sourcePath) {
+    const host = isWebUrl(sourcePath) ? sourceHost(sourcePath) : "";
+    if (host) {
+      return title ? `${title} · ${host}` : host;
+    }
+    return title || sourceBasename(sourcePath);
+  }
+  return displayText || fallback;
+}
+
+function buildExplicitEvidenceItems(
+  content: string,
+  citationLookup:
+    | { getCard: (id: string) => CitationCardData | undefined }
+    | undefined,
+  fallbackLabel: (index: number) => string,
+) {
+  const grouped = new Map<
+    string,
+    {
+      chunkId: string;
+      card?: CitationCardData;
+      count: number;
+      displayText?: string;
+    }
+  >();
+
+  for (const entry of extractChunkCitations(content)) {
+    const card = citationLookup?.getCard(entry.chunkId);
+    const groupKey =
+      card?.documentPath?.trim() || card?.documentTitle?.trim() || entry.chunkId;
+    const existing = grouped.get(groupKey);
+    if (existing) {
+      existing.count += 1;
+      if (!existing.card && card) existing.card = card;
+      if (!existing.displayText && entry.displayText) {
+        existing.displayText = entry.displayText;
+      }
+      continue;
+    }
+    grouped.set(groupKey, {
+      chunkId: entry.chunkId,
+      card,
+      count: 1,
+      displayText: entry.displayText,
+    });
+  }
+
+  return Array.from(grouped.values()).map((item, index) => {
+    const baseLabel = evidenceSourceLabel(
+      item.card,
+      item.displayText,
+      fallbackLabel(index + 1),
+    );
+    return {
+      chunkId: item.chunkId,
+      displayText: item.count > 1 ? `${baseLabel} ×${item.count}` : baseLabel,
+      card: item.card,
+    };
+  });
+}
 
 const INSTANT_TRANSITION = { duration: 0 };
 const NEAR_BOTTOM_THRESHOLD = 96;
@@ -559,39 +631,88 @@ export function ChatMessages({
     return map;
   }, [messageToolCalls, messages]);
 
+  const allToolCitationLookup = useMemo(() => {
+    const citationMap = buildCitationMap(
+      messages
+        .filter((message) => message.role === "tool")
+        .map((message) => ({ artifacts: message.artifacts })),
+    );
+    return { getCard: (id: string) => citationMap.get(id) };
+  }, [messages]);
+
   const renderTraceReplyNode = useCallback(
     (
       key: string,
       content: string,
       isStreaming = false,
       citationLookup?: { getCard: (id: string) => CitationCardData | undefined },
-    ) => (
-      <div key={key} className="flex justify-start mb-4">
-        <div className="w-full max-w-[min(100%,72rem)] text-sm leading-relaxed text-text-primary">
-          <CitationContext.Provider
-            value={citationLookup ?? { getCard: () => undefined }}
-          >
-            <div className="relative">
-              <div className="prose-chat">
-                <ReactMarkdown
-                  remarkPlugins={remarkPlugins}
-                  rehypePlugins={rehypePlugins}
-                  components={markdownComponents}
-                >
-                  {preprocessStreamingMarkdown(content)}
-                </ReactMarkdown>
+    ) => {
+      const effectiveCitationLookup = citationLookup ?? allToolCitationLookup;
+      const evidenceItems = buildExplicitEvidenceItems(
+        content,
+        effectiveCitationLookup,
+        (index) => t("chat.evidenceSourceLabel", { index: String(index) }),
+      );
+
+      return (
+        <div key={key} className="flex justify-start mb-4">
+          <div className="w-full max-w-[min(100%,72rem)] text-sm leading-relaxed text-text-primary">
+            {evidenceItems.length > 0 && (
+              <div className="mb-3 rounded-xl border border-border/70 bg-surface-1/70 px-2.5 py-2">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-text-secondary">
+                    {t("chat.answerEvidence")}
+                  </span>
+                  <span className="text-[10px] text-text-tertiary">
+                    {t("chat.answerEvidenceSummary", {
+                      count: String(evidenceItems.length),
+                    })}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {evidenceItems.map((item) => (
+                    <CitationChip
+                      key={item.chunkId}
+                      chunkId={item.chunkId}
+                      displayText={item.displayText}
+                      card={item.card}
+                    />
+                  ))}
+                </div>
               </div>
-              {isStreaming && (
-                <span
-                  className={`streaming-caret-overlay ${shouldReduceMotion ? "" : "animate-pulse"}`}
-                />
-              )}
-            </div>
-          </CitationContext.Provider>
+            )}
+            <CitationContext.Provider
+              value={effectiveCitationLookup}
+            >
+              <div className="relative">
+                <div className="prose-chat">
+                  <ReactMarkdown
+                    remarkPlugins={remarkPlugins}
+                    rehypePlugins={rehypePlugins}
+                    components={markdownComponents}
+                    urlTransform={(url) => url}
+                  >
+                    {preprocessStreamingMarkdown(content)}
+                  </ReactMarkdown>
+                </div>
+                {isStreaming && (
+                  <span
+                    className={`streaming-caret-overlay ${shouldReduceMotion ? "" : "animate-pulse"}`}
+                  />
+                )}
+              </div>
+            </CitationContext.Provider>
+          </div>
         </div>
-      </div>
-    ),
-    [preprocessStreamingMarkdown, remarkPlugins, shouldReduceMotion],
+      );
+    },
+    [
+      allToolCitationLookup,
+      preprocessStreamingMarkdown,
+      remarkPlugins,
+      shouldReduceMotion,
+      t,
+    ],
   );
 
   const renderThinkingTraceNode = useCallback(

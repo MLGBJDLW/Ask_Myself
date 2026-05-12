@@ -2880,7 +2880,17 @@ pub async fn move_conversation_to_project_cmd(
     state
         .db
         .move_conversation_to_project(&conversation_id, &project_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if let Ok(project) = state.db.get_project(&project_id) {
+        if let Some(source_scope) = project.source_scope {
+            if !source_scope.is_empty() {
+                let _ = state
+                    .db
+                    .set_conversation_sources(&conversation_id, &source_scope);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2914,10 +2924,24 @@ pub async fn create_conversation_cmd(
         project_id,
         persona_id,
     };
-    state
+    let conversation = state
         .db
         .create_conversation(&input)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    if let Some(project_id) = conversation.project_id.as_deref() {
+        if let Ok(project) = state.db.get_project(project_id) {
+            if let Some(source_scope) = project.source_scope {
+                if !source_scope.is_empty() {
+                    let _ = state
+                        .db
+                        .set_conversation_sources(&conversation.id, &source_scope);
+                }
+            }
+        }
+    }
+
+    Ok(conversation)
 }
 
 #[tauri::command]
@@ -3791,7 +3815,7 @@ pub async fn agent_chat_cmd(
     // 6. Build prompt sections from conversation context.
     let source_scope_ids = state
         .db
-        .get_linked_sources(&conversation_id)
+        .get_effective_conversation_source_scope(&conversation_id)
         .unwrap_or_default();
     let source_scope_section =
         nexa_core::conversation::build_source_scope_prompt_section(&state.db, &source_scope_ids)
@@ -3800,9 +3824,12 @@ pub async fn agent_chat_cmd(
         nexa_core::conversation::build_collection_context_prompt_section(
             conv.collection_context.as_ref(),
         );
-    let memory_section =
+    let memory_section = if conv.project_id.is_some() {
+        String::new()
+    } else {
         nexa_core::personalization::build_memory_summary_for_query(&state.db, Some(&message))
-            .unwrap_or_default();
+            .unwrap_or_default()
+    };
     let project_memory_section = nexa_core::project_memory::build_project_memory_summary_for_query(
         &state.db,
         conv.project_id.as_deref(),

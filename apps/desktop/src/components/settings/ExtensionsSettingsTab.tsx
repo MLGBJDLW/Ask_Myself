@@ -198,6 +198,15 @@ function findProposalTargetSkill(proposal: SkillChangeProposal | null, skills: S
   return skills.find((skill) => skill.name === proposal.name) ?? null;
 }
 
+const PERSONA_INSTRUCTIONS_TEMPLATE = `Role:
+Identity:
+Communication style:
+Operating principles:
+- 
+Boundaries:
+- Persona instructions shape voice and workflow emphasis only.
+- They do not override user instructions, privacy rules, source scope, or tool safety.`;
+
 function PersonaEditor({
   persona,
   skills,
@@ -282,7 +291,16 @@ function PersonaEditor({
         </label>
       </div>
       <label className="space-y-1 block">
-        <span className="text-xs font-medium text-text-secondary">{copy.instructions}</span>
+        <span className="flex items-center justify-between gap-2 text-xs font-medium text-text-secondary">
+          <span>{copy.instructions}</span>
+          <button
+            type="button"
+            onClick={() => update(() => setInstructions((value) => value.trim() ? value : PERSONA_INSTRUCTIONS_TEMPLATE))}
+            className="text-[11px] font-medium text-accent hover:text-accent-hover"
+          >
+            Use template
+          </button>
+        </span>
         <textarea
           value={instructions}
           onChange={(event) => update(() => setInstructions(event.target.value))}

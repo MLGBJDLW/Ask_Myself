@@ -82,6 +82,7 @@ export function Step3Provider({
         maxIterations: null,
         summarizationModel: null,
         summarizationProvider: null,
+        imageGenerationModel: null,
         subagentAllowedTools: null,
       };
       const models = await api.testAgentConnection(config);

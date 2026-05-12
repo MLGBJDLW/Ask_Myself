@@ -112,6 +112,15 @@ test.beforeEach(async ({ page }) => {
             score: 0.93,
             headingPath: ['Retries'],
           },
+          result3: {
+            chunkId: 'chunk-c',
+            documentPath: 'D:/notes/uncited.md',
+            documentTitle: 'Uncited Search Hit',
+            sourceName: 'Knowledge Base',
+            content: 'This retrieved chunk was not used in the answer.',
+            score: 0.91,
+            headingPath: ['Uncited'],
+          },
         },
         tokenCount: 0,
         createdAt: nowIso,
@@ -152,6 +161,7 @@ test.beforeEach(async ({ page }) => {
       maxIterations: null,
       summarizationModel: null,
       summarizationProvider: null,
+      imageGenerationModel: null,
       subagentAllowedTools: null,
       createdAt: nowIso,
       updatedAt: nowIso,
@@ -167,6 +177,8 @@ test.beforeEach(async ({ page }) => {
           return listenerSeq++;
         case 'plugin:event|unlisten':
           return null;
+        case 'get_wizard_state_cmd':
+          return { completed: true, completedAt: nowIso };
         case 'list_agent_configs_cmd':
           return [clone(defaultAgentConfig)];
         case 'get_model_context_window':
@@ -255,5 +267,6 @@ test('groups multiple cited chunks from the same file into one evidence source c
   await page.goto('/chat/conv-evidence-dedup');
 
   await expect(page.getByText('Retries Guide ×2')).toBeVisible();
+  await expect(page.getByText('Uncited Search Hit')).toHaveCount(0);
   await expect(page.getByText('1 cited sources').first()).toBeVisible();
 });

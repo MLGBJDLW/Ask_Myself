@@ -218,6 +218,9 @@ export function AgentConfigForm({
   const [summarizationProvider, setSummarizationProvider] = useState<
     string | null
   >(config?.summarizationProvider ?? null);
+  const [imageGenerationModel, setImageGenerationModel] = useState<
+    string | null
+  >(config?.imageGenerationModel ?? null);
   const [subagentAllowedTools, setSubagentAllowedTools] = useState<string[]>(
     (config?.subagentAllowedTools ?? DEFAULT_SUBAGENT_TOOL_NAMES).map(
       canonicalSubagentToolName,
@@ -264,6 +267,7 @@ export function AgentConfigForm({
     maxIterations: config?.maxIterations ?? null,
     summarizationModel: config?.summarizationModel ?? null,
     summarizationProvider: config?.summarizationProvider ?? null,
+    imageGenerationModel: config?.imageGenerationModel ?? null,
     subagentAllowedTools: usesDefaultSubagentToolSelection(
       config?.subagentAllowedTools,
     )
@@ -580,6 +584,7 @@ export function AgentConfigForm({
         maxIterations,
         summarizationModel: summarizationModel?.trim() || null,
         summarizationProvider: summarizationProvider || null,
+        imageGenerationModel: imageGenerationModel?.trim() || null,
         subagentAllowedTools: usesDefaultSubagentToolSelection(
           subagentAllowedTools,
         )
@@ -614,6 +619,7 @@ export function AgentConfigForm({
       maxIterations,
       summarizationModel,
       summarizationProvider,
+      imageGenerationModel,
       subagentAllowedTools,
       subagentAllowedSkillIds,
       subagentMaxParallel,
@@ -1054,6 +1060,28 @@ export function AgentConfigForm({
             <p className="text-xs text-text-tertiary">
               {t("settings.summarizationProviderHelp")}
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* Image generation model */}
+      {showAdvanced && (
+        <div className="space-y-3 border-t border-border pt-4">
+          <h4 className="text-sm font-semibold text-text-primary">
+            Image generation
+          </h4>
+          <p className="text-xs text-text-tertiary">
+            Optional model for generate_image. Leave empty to use an image-capable main model or the provider default.
+          </p>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-text-primary">
+              Image model
+            </label>
+            <Input
+              value={imageGenerationModel ?? ""}
+              onChange={(e) => setImageGenerationModel(e.target.value || null)}
+              placeholder="gpt-image-1, gemini-2.5-flash-image, qwen-image"
+            />
           </div>
         </div>
       )}

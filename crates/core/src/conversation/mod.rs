@@ -103,6 +103,9 @@ pub struct AgentConfig {
     pub summarization_model: Option<String>,
     /// Optional provider override for summarization (e.g. "open_ai").
     pub summarization_provider: Option<String>,
+    /// Optional model to use for image generation. If empty, image tools fall
+    /// back to an image-capable main model or the provider default.
+    pub image_generation_model: Option<String>,
     /// Optional whitelist of delegated tool names that subagents may use.
     pub subagent_allowed_tools: Option<Vec<String>>,
     /// Optional whitelist of enabled skill IDs that delegated subagents may inherit.
@@ -376,6 +379,8 @@ pub struct SaveAgentConfigInput {
     pub summarization_model: Option<String>,
     /// Optional provider override for summarization (e.g. "open_ai").
     pub summarization_provider: Option<String>,
+    /// Optional model to use for image generation.
+    pub image_generation_model: Option<String>,
     /// Optional whitelist of delegated tool names that subagents may use.
     pub subagent_allowed_tools: Option<Vec<String>>,
     /// Optional whitelist of enabled skill IDs that delegated subagents may inherit.
@@ -2664,8 +2669,8 @@ impl Database {
             serialize_optional_string_list(input.subagent_allowed_skill_ids.as_deref())?;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 provider = excluded.provider,
@@ -2682,6 +2687,7 @@ impl Database {
                 max_iterations = excluded.max_iterations,
                 summarization_model = excluded.summarization_model,
                 summarization_provider = excluded.summarization_provider,
+                image_generation_model = excluded.image_generation_model,
                 subagent_allowed_tools_json = excluded.subagent_allowed_tools_json,
                 subagent_allowed_skill_ids_json = excluded.subagent_allowed_skill_ids_json,
                 subagent_max_parallel = excluded.subagent_max_parallel,
@@ -2707,6 +2713,7 @@ impl Database {
                 input.max_iterations,
                 &input.summarization_model,
                 &input.summarization_provider,
+                &input.image_generation_model,
                 &subagent_allowed_tools_json,
                 &subagent_allowed_skill_ids_json,
                 input.subagent_max_parallel,
@@ -2724,12 +2731,12 @@ impl Database {
     pub fn list_agent_configs(&self) -> Result<Vec<AgentConfig>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
              FROM agent_configs ORDER BY name ASC",
         )?;
         let rows = stmt.query_map([], |row| {
-            let subagent_allowed_tools_json: Option<String> = row.get(18)?;
-            let subagent_allowed_skill_ids_json: Option<String> = row.get(19)?;
+            let subagent_allowed_tools_json: Option<String> = row.get(19)?;
+            let subagent_allowed_skill_ids_json: Option<String> = row.get(20)?;
             Ok(AgentConfig {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -2749,15 +2756,16 @@ impl Database {
                 max_iterations: row.get(15)?,
                 summarization_model: row.get(16)?,
                 summarization_provider: row.get(17)?,
+                image_generation_model: row.get(18)?,
                 subagent_allowed_tools: parse_optional_string_list(subagent_allowed_tools_json),
                 subagent_allowed_skill_ids: parse_optional_string_list(
                     subagent_allowed_skill_ids_json,
                 ),
-                subagent_max_parallel: row.get(20)?,
-                subagent_max_calls_per_turn: row.get(21)?,
-                subagent_token_budget: row.get(22)?,
-                tool_timeout_secs: row.get(23)?,
-                agent_timeout_secs: row.get(24)?,
+                subagent_max_parallel: row.get(21)?,
+                subagent_max_calls_per_turn: row.get(22)?,
+                subagent_token_budget: row.get(23)?,
+                tool_timeout_secs: row.get(24)?,
+                agent_timeout_secs: row.get(25)?,
             })
         })?;
         let mut results = Vec::new();
@@ -2771,12 +2779,12 @@ impl Database {
     pub fn get_agent_config(&self, id: &str) -> Result<AgentConfig, CoreError> {
         let conn = self.conn();
         let config = conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
              FROM agent_configs WHERE id = ?1",
             rusqlite::params![id],
             |row| {
-                let subagent_allowed_tools_json: Option<String> = row.get(18)?;
-                let subagent_allowed_skill_ids_json: Option<String> = row.get(19)?;
+                let subagent_allowed_tools_json: Option<String> = row.get(19)?;
+                let subagent_allowed_skill_ids_json: Option<String> = row.get(20)?;
                 Ok(AgentConfig {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -2796,15 +2804,16 @@ impl Database {
                     max_iterations: row.get(15)?,
                     summarization_model: row.get(16)?,
                     summarization_provider: row.get(17)?,
+                    image_generation_model: row.get(18)?,
                     subagent_allowed_tools: parse_optional_string_list(subagent_allowed_tools_json),
                     subagent_allowed_skill_ids: parse_optional_string_list(
                         subagent_allowed_skill_ids_json,
                     ),
-                    subagent_max_parallel: row.get(20)?,
-                    subagent_max_calls_per_turn: row.get(21)?,
-                    subagent_token_budget: row.get(22)?,
-                    tool_timeout_secs: row.get(23)?,
-                    agent_timeout_secs: row.get(24)?,
+                    subagent_max_parallel: row.get(21)?,
+                    subagent_max_calls_per_turn: row.get(22)?,
+                    subagent_token_budget: row.get(23)?,
+                    tool_timeout_secs: row.get(24)?,
+                    agent_timeout_secs: row.get(25)?,
                 })
             },
         )
@@ -2854,12 +2863,12 @@ impl Database {
     pub fn get_default_agent_config(&self) -> Result<Option<AgentConfig>, CoreError> {
         let conn = self.conn();
         let result = conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
              FROM agent_configs WHERE is_default = 1 LIMIT 1",
             [],
             |row| {
-                let subagent_allowed_tools_json: Option<String> = row.get(18)?;
-                let subagent_allowed_skill_ids_json: Option<String> = row.get(19)?;
+                let subagent_allowed_tools_json: Option<String> = row.get(19)?;
+                let subagent_allowed_skill_ids_json: Option<String> = row.get(20)?;
                 Ok(AgentConfig {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -2879,15 +2888,16 @@ impl Database {
                     max_iterations: row.get(15)?,
                     summarization_model: row.get(16)?,
                     summarization_provider: row.get(17)?,
+                    image_generation_model: row.get(18)?,
                     subagent_allowed_tools: parse_optional_string_list(subagent_allowed_tools_json),
                     subagent_allowed_skill_ids: parse_optional_string_list(
                         subagent_allowed_skill_ids_json,
                     ),
-                    subagent_max_parallel: row.get(20)?,
-                    subagent_max_calls_per_turn: row.get(21)?,
-                    subagent_token_budget: row.get(22)?,
-                    tool_timeout_secs: row.get(23)?,
-                    agent_timeout_secs: row.get(24)?,
+                    subagent_max_parallel: row.get(21)?,
+                    subagent_max_calls_per_turn: row.get(22)?,
+                    subagent_token_budget: row.get(23)?,
+                    tool_timeout_secs: row.get(24)?,
+                    agent_timeout_secs: row.get(25)?,
                 })
             },
         );
@@ -2948,6 +2958,27 @@ impl Database {
             results.push(row?);
         }
         Ok(results)
+    }
+
+    /// Effective retrieval scope for a conversation.
+    ///
+    /// Conversation-level links win. If a project conversation has no explicit
+    /// links, the project source scope becomes the default hard boundary.
+    pub fn get_effective_conversation_source_scope(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<String>, CoreError> {
+        let linked = self.get_linked_sources(conversation_id)?;
+        if !linked.is_empty() {
+            return Ok(linked);
+        }
+
+        let conversation = self.get_conversation(conversation_id)?;
+        let Some(project_id) = conversation.project_id.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let project = self.get_project(project_id)?;
+        Ok(project.source_scope.unwrap_or_default())
     }
 
     /// Replace all source links for a conversation (delete old, insert new).
@@ -3963,6 +3994,63 @@ mod tests {
     }
 
     #[test]
+    fn test_effective_source_scope_uses_project_default_when_conversation_has_none() {
+        let db = Database::open_memory().unwrap();
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let source_a = db
+            .add_source(CreateSourceInput {
+                root_path: dir_a.path().to_string_lossy().to_string(),
+                include_globs: vec![],
+                exclude_globs: vec![],
+                watch_enabled: false,
+            })
+            .unwrap();
+        let source_b = db
+            .add_source(CreateSourceInput {
+                root_path: dir_b.path().to_string_lossy().to_string(),
+                include_globs: vec![],
+                exclude_globs: vec![],
+                watch_enabled: false,
+            })
+            .unwrap();
+        let project = db
+            .create_project(&CreateProjectInput {
+                name: "Scoped".into(),
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: None,
+                source_scope: Some(vec![source_a.id.clone()]),
+            })
+            .unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: Some(project.id),
+                persona_id: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            db.get_effective_conversation_source_scope(&conversation.id)
+                .unwrap(),
+            vec![source_a.id.clone()]
+        );
+
+        db.set_conversation_sources(&conversation.id, &[source_b.id.clone()])
+            .unwrap();
+        assert_eq!(
+            db.get_effective_conversation_source_scope(&conversation.id)
+                .unwrap(),
+            vec![source_b.id]
+        );
+    }
+
+    #[test]
     fn test_agent_config_crud() {
         let db = Database::open_memory().unwrap();
 
@@ -3985,6 +4073,7 @@ mod tests {
                 max_iterations: None,
                 summarization_model: None,
                 summarization_provider: None,
+                image_generation_model: Some("gpt-image-1".into()),
                 subagent_allowed_tools: None,
                 subagent_allowed_skill_ids: None,
                 subagent_max_parallel: None,
@@ -3995,6 +4084,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(config.name, "My GPT-4");
+        assert_eq!(
+            config.image_generation_model.as_deref(),
+            Some("gpt-image-1")
+        );
 
         // List
         let all = db.list_agent_configs().unwrap();
@@ -4019,6 +4112,7 @@ mod tests {
                 max_iterations: None,
                 summarization_model: None,
                 summarization_provider: None,
+                image_generation_model: None,
                 subagent_allowed_tools: None,
                 subagent_allowed_skill_ids: None,
                 subagent_max_parallel: None,
@@ -4058,6 +4152,7 @@ mod tests {
                 max_iterations: None,
                 summarization_model: None,
                 summarization_provider: None,
+                image_generation_model: None,
                 subagent_allowed_tools: None,
                 subagent_allowed_skill_ids: None,
                 subagent_max_parallel: None,
@@ -4099,6 +4194,7 @@ mod tests {
                 max_iterations: None,
                 summarization_model: None,
                 summarization_provider: None,
+                image_generation_model: None,
                 subagent_allowed_tools: None,
                 subagent_allowed_skill_ids: None,
                 subagent_max_parallel: None,
@@ -4127,6 +4223,7 @@ mod tests {
                 max_iterations: None,
                 summarization_model: None,
                 summarization_provider: None,
+                image_generation_model: None,
                 subagent_allowed_tools: None,
                 subagent_allowed_skill_ids: None,
                 subagent_max_parallel: None,
