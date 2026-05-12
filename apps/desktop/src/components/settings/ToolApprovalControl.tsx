@@ -14,37 +14,6 @@ interface ToolApprovalControlProps {
   onChange: (mode: ToolApprovalMode) => void;
 }
 
-const accessCopy = {
-  en: {
-    title: 'Tool capability overview',
-    description: 'What the agent is allowed to ask for, shown before any specific approval prompt appears.',
-    noTools: 'No tool capability data loaded.',
-    read: 'Reads',
-    write: 'Writes',
-    execute: 'Executes',
-    network: 'Network',
-    approval: 'Needs approval',
-    noApproval: 'No approval',
-    low: 'Low',
-    medium: 'Medium',
-    high: 'High',
-  },
-  zh: {
-    title: '工具能力总览',
-    description: '这里先说明 agent 可能请求哪些能力；真正执行高风险工具时仍会弹出具体审批。',
-    noTools: '还没有加载到工具能力数据。',
-    read: '读取',
-    write: '写入',
-    execute: '执行',
-    network: '联网',
-    approval: '需要审批',
-    noApproval: '无需审批',
-    low: '低',
-    medium: '中',
-    high: '高',
-  },
-};
-
 function riskRank(risk: ApprovalRisk): number {
   if (risk === 'high') return 0;
   if (risk === 'medium') return 1;
@@ -58,8 +27,7 @@ function riskVariant(risk: ApprovalRisk) {
 }
 
 export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps) {
-  const { t, locale } = useTranslation();
-  const copy = locale.startsWith('zh') ? accessCopy.zh : accessCopy.en;
+  const { t } = useTranslation();
   const [policies, setPolicies] = useState<ApprovalPolicyList>({ persisted: [], session: [] });
   const [accessMap, setAccessMap] = useState<ToolAccessInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -207,8 +175,8 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
       <div className="mt-3 rounded-lg border border-border bg-surface-2 p-3 space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
-            <div className="text-sm font-medium text-text-primary">{copy.title}</div>
-            <div className="mt-0.5 text-xs text-text-tertiary">{copy.description}</div>
+            <div className="text-sm font-medium text-text-primary">{t('settings.toolAccessOverviewTitle')}</div>
+            <div className="mt-0.5 text-xs text-text-tertiary">{t('settings.toolAccessOverviewDesc')}</div>
           </div>
           <Button
             size="sm"
@@ -222,7 +190,7 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
         </div>
 
         {sortedAccessMap.length === 0 ? (
-          <div className="text-xs text-text-tertiary">{copy.noTools}</div>
+          <div className="text-xs text-text-tertiary">{t('settings.toolAccessOverviewNoTools')}</div>
         ) : (
           <div className="max-h-96 space-y-2 overflow-auto pr-1">
             {sortedAccessMap.map((tool) => (
@@ -233,13 +201,13 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
                       <span className="truncate font-mono text-xs text-text-primary">{tool.name}</span>
                       <Badge variant={riskVariant(tool.riskLevel)} className="text-[10px]">
                         {tool.riskLevel === 'high'
-                          ? copy.high
+                          ? t('settings.toolRiskHigh')
                           : tool.riskLevel === 'medium'
-                            ? copy.medium
-                            : copy.low}
+                            ? t('settings.toolRiskMedium')
+                            : t('settings.toolRiskLow')}
                       </Badge>
                       <Badge variant={tool.needsApproval ? 'warning' : 'default'} className="text-[10px]">
-                        {tool.needsApproval ? copy.approval : copy.noApproval}
+                        {tool.needsApproval ? t('settings.toolAccessNeedsApproval') : t('settings.toolAccessNoApproval')}
                       </Badge>
                     </div>
                     <div className="mt-1 text-xs leading-relaxed text-text-tertiary">
@@ -247,10 +215,10 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap justify-end gap-1">
-                    {tool.canRead && <Badge variant="default" className="text-[10px]">{copy.read}</Badge>}
-                    {tool.canWrite && <Badge variant="danger" className="text-[10px]">{copy.write}</Badge>}
-                    {tool.canExecute && <Badge variant="warning" className="text-[10px]">{copy.execute}</Badge>}
-                    {tool.canAccessNetwork && <Badge variant="info" className="text-[10px]">{copy.network}</Badge>}
+                    {tool.canRead && <Badge variant="default" className="text-[10px]">{t('settings.toolAccessRead')}</Badge>}
+                    {tool.canWrite && <Badge variant="danger" className="text-[10px]">{t('settings.toolAccessWrite')}</Badge>}
+                    {tool.canExecute && <Badge variant="warning" className="text-[10px]">{t('settings.toolAccessExecute')}</Badge>}
+                    {tool.canAccessNetwork && <Badge variant="info" className="text-[10px]">{t('settings.toolAccessNetwork')}</Badge>}
                   </div>
                 </div>
               </div>
