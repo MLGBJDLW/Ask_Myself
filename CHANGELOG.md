@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.0...nexa-monorepo-v0.6.1) (2026-05-12)
+
+
+### Features
+
+* add project tool management panel ([97c783c](https://github.com/MLGBJDLW/Nexa/commit/97c783c8ff4a3f9abaf9ac842f4c31edaa959bcd))
+* add typed stream block protocol ([e6f68b6](https://github.com/MLGBJDLW/Nexa/commit/e6f68b6be40410205b2917da174c28d759a7e964))
+* **agent:** harden scoped context and citations ([def9453](https://github.com/MLGBJDLW/Nexa/commit/def94537ef43665b907cfd996d80a44cea72e2f7))
+* show tool capability overview ([1229661](https://github.com/MLGBJDLW/Nexa/commit/12296612bd68c4fb9cc89c9639408439e4ffa099))
+* upgrade tool architecture ([cef69f3](https://github.com/MLGBJDLW/Nexa/commit/cef69f31724f1a595830e328b1f7a5e14f5bc40b))
+
+
+### Bug Fixes
+
+* localize project tool settings ([abba345](https://github.com/MLGBJDLW/Nexa/commit/abba345050ed66e6f5ccb0dcc5af34e01bbd7701))
+
 ## [0.6.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.5.2...nexa-monorepo-v0.6.0) (2026-05-11)
 
 
