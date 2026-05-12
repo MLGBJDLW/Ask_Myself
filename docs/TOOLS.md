@@ -262,9 +262,10 @@ Discover, describe, and run project-local tools declared by source-scoped manife
 |-----------|------|----------|-------------|
 | `action` | string | yes | `list`, `describe`, or `run` |
 | `name` | string | no* | Manifest tool name for `describe` or `run` |
+| `manifestHash` | string | no* | Current manifest hash returned by `list` or `describe`; required for `run` |
 | `arguments` | object | no | Scalar values used to expand command arg placeholders like `{{path}}` |
 
-\* Required for `describe` and `run`.
+\* `name` is required for `describe` and `run`; `manifestHash` is required for `run`.
 
 Manifest shape:
 
@@ -293,9 +294,9 @@ Manifest shape:
 }
 ```
 
-Command execution uses argv directly, not a shell. `program` must be a program name, `cwd` must stay inside the source root, and placeholder values must be JSON scalars.
+Command execution uses argv directly, not a shell. `program` must be a program name, `cwd` must stay inside the source root, `timeoutSecs` must be between 1 and 1800, and placeholder values must be JSON scalars.
 
-Approval memory for `project_tool run` is keyed by manifest name, so allowing `lint` for the session does not allow `test`, `deploy`, or any other project-local tool.
+Approval memory for `project_tool run` is keyed by manifest name plus the short manifest hash, so allowing `lint` for the session does not allow `test`, `deploy`, any other project-local tool, or a later edited `lint` manifest. The Settings → Extensions → Project tools panel shows the manifest path, command preview, declared access, validation errors, and the hash a run must use.
 
 ---
 

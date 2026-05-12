@@ -172,12 +172,20 @@ impl ToolPermissionKey {
                 .and_then(|value| value.as_str())
                 .unwrap_or("<unknown>");
             if action == "run" {
-                let target = args
+                let name = args
                     .get("name")
                     .and_then(|value| value.as_str())
                     .map(str::trim)
                     .filter(|name| !name.is_empty())
                     .unwrap_or("<unknown>");
+                let target = args
+                    .get("manifestHash")
+                    .or_else(|| args.get("manifest_hash"))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|hash| !hash.is_empty())
+                    .map(|hash| format!("{name}@{}", short_permission_hash(hash)))
+                    .unwrap_or_else(|| name.to_string());
                 return Self::new(&invocation.tool_name, "project_tool", target);
             }
             return Self::new(&invocation.tool_name, "project_tool_catalog", action);
@@ -253,6 +261,10 @@ fn decode_permission_segment(value: &str) -> Option<String> {
         }
     }
     Some(out)
+}
+
+fn short_permission_hash(hash: &str) -> &str {
+    hash.get(..12).unwrap_or(hash)
 }
 
 fn extract_url_host(url: &str) -> Option<String> {
@@ -630,7 +642,13 @@ pub fn describe_request(tool_name: &str, args: &serde_json::Value) -> String {
                 .and_then(|v| v.as_str())
                 .unwrap_or("<unknown>");
             if action == "run" {
-                format!("Agent wants to run project-local tool `{name}`")
+                let hash = args
+                    .get("manifestHash")
+                    .or_else(|| args.get("manifest_hash"))
+                    .and_then(|v| v.as_str())
+                    .map(short_permission_hash)
+                    .unwrap_or("<missing>");
+                format!("Agent wants to run project-local tool `{name}` from manifest {hash}")
             } else {
                 format!("Agent wants to {action} project-local tool manifests")
             }
@@ -821,17 +839,28 @@ mod tests {
     fn permission_key_distinguishes_project_tool_manifests() {
         let lint = permission_key_for_tool(
             "project_tool",
-            &serde_json::json!({ "action": "run", "name": "lint" }),
+            &serde_json::json!({
+                "action": "run",
+                "name": "lint",
+                "manifestHash": "abcdef0123456789"
+            }),
         );
         let test = permission_key_for_tool(
             "project_tool",
-            &serde_json::json!({ "action": "run", "name": "test" }),
+            &serde_json::json!({
+                "action": "run",
+                "name": "test",
+                "manifestHash": "abcdef0123456789"
+            }),
         );
 
         assert_ne!(lint.permission_key(), test.permission_key());
-        assert_eq!(lint.permission_key(), "project_tool|project_tool|lint");
+        assert_eq!(
+            lint.permission_key(),
+            "project_tool|project_tool|lint@abcdef012345"
+        );
         assert_eq!(lint.target_kind, "project_tool");
-        assert_eq!(lint.target_value, "lint");
+        assert_eq!(lint.target_value, "lint@abcdef012345");
     }
 
     #[test]
@@ -839,14 +868,18 @@ mod tests {
         let args = serde_json::json!({
             "action": "run",
             "name": "lint",
+            "manifestHash": "abcdef0123456789",
             "arguments": { "path": "src/lib.rs" }
         });
 
         let req = ApprovalRequest::new("req-1", "project_tool", &args, ApprovalRisk::High, "test");
 
-        assert_eq!(req.permission_key, "project_tool|project_tool|lint");
+        assert_eq!(
+            req.permission_key,
+            "project_tool|project_tool|lint@abcdef012345"
+        );
         assert_eq!(req.target_kind, "project_tool");
-        assert_eq!(req.target_value, "lint");
+        assert_eq!(req.target_value, "lint@abcdef012345");
     }
 
     #[test]
@@ -919,8 +952,8 @@ mod tests {
     #[test]
     fn db_permission_policies_allow_multiple_targets_for_same_tool() {
         let db = crate::db::Database::open_memory().expect("in-memory db");
-        let lint = ToolPermissionKey::new("project_tool", "project_tool", "lint");
-        let test = ToolPermissionKey::new("project_tool", "project_tool", "test");
+        let lint = ToolPermissionKey::new("project_tool", "project_tool", "lint@111111111111");
+        let test = ToolPermissionKey::new("project_tool", "project_tool", "test@222222222222");
 
         db.save_tool_permission_policy(&lint, "allow_session")
             .unwrap();

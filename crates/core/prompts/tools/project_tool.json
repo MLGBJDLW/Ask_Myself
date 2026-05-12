@@ -1,6 +1,6 @@
 {
   "name": "project_tool",
-  "description": "Discover, describe, and run source-scoped project-local tool manifests. Use this when a repository defines repeatable local workflows under `.nexa/tools/*.json` or `.agents/tools/*.json`, such as lint, test, codegen, diagnostics, export, or project-specific validation.\n\nPrefer `list` first to discover available project tools, then `describe` to inspect parameters. Use `run` only when the project manifest clearly matches the task. Runs are command executions from local source manifests and require approval.",
+  "description": "Discover, describe, and run source-scoped project-local tool manifests. Use this when a repository defines repeatable local workflows under `.nexa/tools/*.json` or `.agents/tools/*.json`, such as lint, test, codegen, diagnostics, export, or project-specific validation.\n\nPrefer `list` first to discover available project tools, then `describe` to inspect parameters. Use `run` only when the project manifest clearly matches the task. Runs are command executions from local source manifests, require approval, and must include the current `manifestHash` returned by `list` or `describe` so approval is bound to the exact manifest version.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -17,6 +17,10 @@
         "type": "object",
         "description": "JSON object of scalar argument values used to expand command arg placeholders such as {{path}}. Values may be strings, numbers, booleans, or null.",
         "additionalProperties": true
+      },
+      "manifestHash": {
+        "type": "string",
+        "description": "Required for run. Use the exact manifestHash returned by project_tool list or describe for the selected tool. If the manifest changes, call list or describe again before running."
       }
     },
     "required": ["action"]

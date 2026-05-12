@@ -263,6 +263,7 @@ fn main() {
             commands::update_agent_task_artifact_cmd,
             commands::list_agent_task_artifact_versions_cmd,
             commands::list_tool_access_map_cmd,
+            commands::list_project_tools_cmd,
             commands::update_conversation_collection_context_cmd,
             commands::update_conversation_persona_cmd,
             commands::update_conversation_model_cmd,

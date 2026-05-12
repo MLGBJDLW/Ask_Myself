@@ -625,8 +625,7 @@ fn codebase_operation_plan(input: TaskPlanningInput<'_>, objective: String) -> A
         safeguards: vec![
             "Use code_intelligence before reading many files when the task names code concepts."
                 .to_string(),
-            "Use project_tool list/describe before ad hoc run_shell for repository workflows."
-                .to_string(),
+            "Use project_tool list/describe before ad hoc run_shell for repository workflows; pass the current manifestHash when running a project tool.".to_string(),
             "Avoid broad command execution and unrelated refactors.".to_string(),
             "Record verification before finalizing codebase changes.".to_string(),
         ],

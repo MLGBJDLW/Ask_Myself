@@ -670,6 +670,11 @@ export const listAgentTaskArtifactVersions = (artifactId: string) =>
 export const listToolAccessMap = () =>
   invoke<ToolAccessInfo[]>('list_tool_access_map_cmd');
 
+export const listProjectTools = (sourceScope?: string[] | null) =>
+  invoke<import('../types/project-tool').ProjectToolCatalog>('list_project_tools_cmd', {
+    sourceScope: sourceScope ?? null,
+  });
+
 export const deleteConversation = (id: string) =>
   invoke<void>('delete_conversation_cmd', { id });
 

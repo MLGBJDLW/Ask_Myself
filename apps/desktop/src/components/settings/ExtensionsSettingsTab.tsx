@@ -10,6 +10,7 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { McpServerForm } from './McpServerForm';
+import { ProjectToolsPanel } from './ProjectToolsPanel';
 import { Section } from './SettingsSection';
 import { SkillEditor } from './SkillEditor';
 import { SkillMarkdownPreview } from './SkillMarkdownPreview';
@@ -887,6 +888,8 @@ export function ExtensionsSettingsTab({
           </div>
         )}
       </Section>
+
+      <ProjectToolsPanel />
 
       <Section
         icon={<Plug size={20} />}

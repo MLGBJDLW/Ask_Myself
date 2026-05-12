@@ -3117,6 +3117,16 @@ pub async fn list_tool_access_map_cmd(
 }
 
 #[tauri::command]
+pub fn list_project_tools_cmd(
+    state: tauri::State<'_, AppState>,
+    source_scope: Option<Vec<String>>,
+) -> Result<nexa_core::tools::project_tool::ProjectToolCatalog, String> {
+    let scope = source_scope.unwrap_or_default();
+    nexa_core::tools::project_tool::list_project_tool_catalog(state.db.as_ref(), &scope)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn update_conversation_collection_context_cmd(
     state: tauri::State<'_, AppState>,
     id: String,

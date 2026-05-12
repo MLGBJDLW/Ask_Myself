@@ -34,50 +34,53 @@ enum ProjectToolAction {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProjectToolArgs {
     action: ProjectToolAction,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default, alias = "manifest_hash")]
+    manifest_hash: Option<String>,
     #[serde(default = "empty_object")]
     arguments: Value,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectToolManifest {
-    name: String,
-    description: String,
+pub struct ProjectToolManifest {
+    pub name: String,
+    pub description: String,
     #[serde(default = "default_parameters")]
-    parameters: Value,
+    pub parameters: Value,
     #[serde(default)]
-    command: Option<ProjectToolCommand>,
+    pub command: Option<ProjectToolCommand>,
     #[serde(default)]
-    access: ProjectToolAccess,
+    pub access: ProjectToolAccess,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectToolCommand {
-    program: String,
+pub struct ProjectToolCommand {
+    pub program: String,
     #[serde(default)]
-    args: Vec<String>,
+    pub args: Vec<String>,
     #[serde(default)]
-    cwd: Option<String>,
+    pub cwd: Option<String>,
     #[serde(default, alias = "timeout_secs")]
-    timeout_secs: Option<u64>,
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectToolAccess {
+pub struct ProjectToolAccess {
     #[serde(default = "default_true")]
-    read: bool,
+    pub read: bool,
     #[serde(default)]
-    write: bool,
+    pub write: bool,
     #[serde(default = "default_true")]
-    execute: bool,
+    pub execute: bool,
     #[serde(default)]
-    network: bool,
+    pub network: bool,
 }
 
 impl Default for ProjectToolAccess {
@@ -94,34 +97,41 @@ impl Default for ProjectToolAccess {
 #[derive(Debug, Clone)]
 struct ProjectToolRecord {
     manifest: ProjectToolManifest,
+    manifest_hash: String,
     manifest_path: PathBuf,
     source_root: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectToolSummary {
-    name: String,
-    description: String,
-    manifest_path: String,
-    source_root: String,
-    runnable: bool,
-    access: ProjectToolAccess,
+pub struct ProjectToolSummary {
+    pub name: String,
+    pub description: String,
+    pub manifest_hash: String,
+    pub manifest_path: String,
+    pub source_root: String,
+    pub runnable: bool,
+    pub access: ProjectToolAccess,
+    pub command: Option<ProjectToolCommand>,
+    pub command_preview: Option<String>,
+    pub parameter_names: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectToolManifestError {
-    path: String,
-    message: String,
+pub struct ProjectToolManifestError {
+    pub path: String,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectToolCatalog {
-    kind: &'static str,
-    tools: Vec<ProjectToolSummary>,
-    errors: Vec<ProjectToolManifestError>,
+pub struct ProjectToolCatalog {
+    pub kind: &'static str,
+    pub manifest_dirs: Vec<&'static str>,
+    pub tools: Vec<ProjectToolSummary>,
+    pub errors: Vec<ProjectToolManifestError>,
 }
 
 pub struct ProjectTool;
@@ -146,6 +156,7 @@ impl Tool for ProjectTool {
 
     fn requires_confirmation(&self, args: &serde_json::Value) -> bool {
         action_from_value(args).is_some_and(|action| matches!(action, ProjectToolAction::Run))
+            && manifest_hash_from_value(args).is_some()
     }
 
     fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
@@ -156,8 +167,11 @@ impl Tool for ProjectTool {
             .get("name")
             .and_then(|value| value.as_str())
             .unwrap_or("<missing>");
+        let hash = manifest_hash_from_value(args)
+            .map(short_hash)
+            .unwrap_or("<missing>");
         Some(format!(
-            "Run project-local tool '{name}' from a source-scoped manifest."
+            "Run project-local tool '{name}' from source-scoped manifest {hash}."
         ))
     }
 
@@ -170,10 +184,18 @@ impl Tool for ProjectTool {
     }
 
     fn resource_keys(&self, args: &serde_json::Value) -> Vec<String> {
-        args.get("name")
+        let Some(name) = args
+            .get("name")
             .and_then(|value| value.as_str())
-            .map(|name| vec![format!("project-tool:{name}")])
-            .unwrap_or_default()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            return Vec::new();
+        };
+        match manifest_hash_from_value(args) {
+            Some(hash) => vec![format!("project-tool:{name}@{}", short_hash(hash))],
+            None => vec![format!("project-tool:{name}")],
+        }
     }
 
     async fn execute(
@@ -217,17 +239,33 @@ fn action_from_value(args: &serde_json::Value) -> Option<ProjectToolAction> {
     }
 }
 
+fn manifest_hash_from_value(args: &serde_json::Value) -> Option<&str> {
+    args.get("manifestHash")
+        .or_else(|| args.get("manifest_hash"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|hash| !hash.is_empty())
+}
+
+pub fn list_project_tool_catalog(
+    db: &Database,
+    source_scope: &[String],
+) -> Result<ProjectToolCatalog, CoreError> {
+    let (records, errors) = discover_project_tools(db, source_scope)?;
+    Ok(ProjectToolCatalog {
+        kind: "projectToolCatalog",
+        manifest_dirs: MANIFEST_DIRS.to_vec(),
+        tools: records.iter().map(tool_summary).collect(),
+        errors,
+    })
+}
+
 fn list_project_tools(
     call_id: &str,
     db: &Database,
     source_scope: &[String],
 ) -> Result<ToolResult, CoreError> {
-    let (records, errors) = discover_project_tools(db, source_scope)?;
-    let catalog = ProjectToolCatalog {
-        kind: "projectToolCatalog",
-        tools: records.iter().map(tool_summary).collect(),
-        errors,
-    };
+    let catalog = list_project_tool_catalog(db, source_scope)?;
     let output = ToolOutput {
         llm_content: format_project_tool_catalog(&catalog),
         display_content: format_project_tool_catalog(&catalog),
@@ -254,19 +292,30 @@ fn describe_project_tool(
     let parameters = record.manifest.parameters.clone();
     let command = record.manifest.command.clone();
     let access = record.manifest.access.clone();
+    let parameter_names = parameter_names(&record.manifest.parameters);
+    let command_preview = record
+        .manifest
+        .command
+        .as_ref()
+        .map(format_command_template_preview);
+    let warnings = manifest_warnings(&record);
     let data = json!({
         "kind": "projectToolManifest",
         "name": manifest_name,
         "description": description,
+        "manifestHash": record.manifest_hash.clone(),
         "parameters": parameters,
         "command": command,
+        "commandPreview": command_preview,
         "access": access,
         "manifestPath": display_path(&record.manifest_path),
         "sourceRoot": display_path(&record.source_root),
+        "parameterNames": parameter_names,
+        "warnings": warnings,
     });
     let runnable = record.manifest.command.is_some();
     let content = format!(
-        "Project tool '{}' ({})\n{}\nManifest: {}\nRunnable: {}",
+        "Project tool '{}' ({})\n{}\nManifest: {}\nManifest hash: {}\nRunnable: {}",
         record.manifest.name,
         if record.manifest.access.write {
             "write-capable"
@@ -275,6 +324,7 @@ fn describe_project_tool(
         },
         record.manifest.description,
         display_path(&record.manifest_path),
+        short_hash(&record.manifest_hash),
         runnable
     );
     let output = ToolOutput {
@@ -297,6 +347,14 @@ async fn run_project_tool(
 ) -> Result<ToolResult, CoreError> {
     let name = required_tool_name(&args)?;
     let record = find_unique_project_tool(db, source_scope, name)?;
+    let requested_hash = required_manifest_hash(&args)?;
+    if !manifest_hash_matches(&record.manifest_hash, requested_hash) {
+        return Err(CoreError::InvalidInput(format!(
+            "Project tool '{name}' manifest changed since discovery. Expected manifestHash {}, found {}. Run project_tool list or describe again, then retry with the current manifestHash.",
+            short_hash(requested_hash),
+            short_hash(&record.manifest_hash)
+        )));
+    }
     let command = record.manifest.command.as_ref().ok_or_else(|| {
         CoreError::InvalidInput(format!("Project tool '{name}' does not define a command."))
     })?;
@@ -361,6 +419,7 @@ async fn run_project_tool(
         "stderr": stderr,
         "stdoutTruncated": stdout_truncated,
         "stderrTruncated": stderr_truncated,
+        "manifestHash": record.manifest_hash.clone(),
         "manifestPath": display_path(&record.manifest_path),
         "sourceRoot": display_path(&record.source_root),
     });
@@ -383,6 +442,27 @@ fn required_tool_name(args: &ProjectToolArgs) -> Result<&str, CoreError> {
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .ok_or_else(|| CoreError::InvalidInput("project_tool action requires 'name'.".to_string()))
+}
+
+fn required_manifest_hash(args: &ProjectToolArgs) -> Result<&str, CoreError> {
+    args.manifest_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|hash| !hash.is_empty())
+        .ok_or_else(|| {
+            CoreError::InvalidInput(
+                "project_tool run requires manifestHash from project_tool list or describe."
+                    .to_string(),
+            )
+        })
+}
+
+fn manifest_hash_matches(actual: &str, expected: &str) -> bool {
+    actual.eq_ignore_ascii_case(expected)
+}
+
+fn short_hash(hash: &str) -> &str {
+    hash.get(..12).unwrap_or(hash)
 }
 
 fn discover_project_tools(
@@ -411,9 +491,10 @@ fn discover_project_tools(
                     continue;
                 }
                 match read_manifest(&path) {
-                    Ok(manifest) => match validate_manifest(&manifest) {
+                    Ok((manifest, manifest_hash)) => match validate_manifest(&manifest) {
                         Ok(()) => records.push(ProjectToolRecord {
                             manifest,
+                            manifest_hash,
                             manifest_path: path,
                             source_root: source_root.clone(),
                         }),
@@ -461,10 +542,13 @@ fn find_unique_project_tool(
     }
 }
 
-fn read_manifest(path: &Path) -> Result<ProjectToolManifest, String> {
+fn read_manifest(path: &Path) -> Result<(ProjectToolManifest, String), String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Could not read project tool manifest: {e}"))?;
-    serde_json::from_str(&content).map_err(|e| format!("Invalid project tool manifest JSON: {e}"))
+    let manifest = serde_json::from_str(&content)
+        .map_err(|e| format!("Invalid project tool manifest JSON: {e}"))?;
+    let manifest_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+    Ok((manifest, manifest_hash))
 }
 
 fn validate_manifest(manifest: &ProjectToolManifest) -> Result<(), String> {
@@ -477,12 +561,25 @@ fn validate_manifest(manifest: &ProjectToolManifest) -> Result<(), String> {
     if manifest.description.trim().is_empty() {
         return Err("Tool description must not be empty.".to_string());
     }
+    if !manifest.parameters.is_object() {
+        return Err("Tool parameters must be a JSON schema object.".to_string());
+    }
     if let Some(command) = &manifest.command {
+        if !manifest.access.execute {
+            return Err("Runnable project tools must declare access.execute=true.".to_string());
+        }
         if command.program.trim().is_empty() {
             return Err("Command program must not be empty.".to_string());
         }
         if command.program.contains('/') || command.program.contains('\\') {
             return Err("Command program must be a program name, not a path.".to_string());
+        }
+        if let Some(timeout_secs) = command.timeout_secs {
+            if timeout_secs == 0 || timeout_secs > MAX_TIMEOUT_SECS {
+                return Err(format!(
+                    "Command timeoutSecs must be between 1 and {MAX_TIMEOUT_SECS}."
+                ));
+            }
         }
     }
     Ok(())
@@ -568,14 +665,52 @@ fn json_scalar_to_arg(key: &str, value: &Value) -> Result<String, CoreError> {
 }
 
 fn tool_summary(record: &ProjectToolRecord) -> ProjectToolSummary {
+    let command_preview = record
+        .manifest
+        .command
+        .as_ref()
+        .map(format_command_template_preview);
     ProjectToolSummary {
         name: record.manifest.name.clone(),
         description: record.manifest.description.clone(),
+        manifest_hash: record.manifest_hash.clone(),
         manifest_path: display_path(&record.manifest_path),
         source_root: display_path(&record.source_root),
         runnable: record.manifest.command.is_some(),
         access: record.manifest.access.clone(),
+        command: record.manifest.command.clone(),
+        command_preview,
+        parameter_names: parameter_names(&record.manifest.parameters),
+        warnings: manifest_warnings(record),
     }
+}
+
+fn parameter_names(parameters: &Value) -> Vec<String> {
+    let mut names = parameters
+        .get("properties")
+        .and_then(|properties| properties.as_object())
+        .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+fn manifest_warnings(record: &ProjectToolRecord) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if record.manifest.command.is_none() {
+        warnings.push("Manifest is metadata-only; it cannot be run.".to_string());
+    }
+    if record.manifest.access.write {
+        warnings.push("This tool declares write access and may modify source files.".to_string());
+    }
+    if record.manifest.access.network {
+        warnings.push("This tool declares network access.".to_string());
+    }
+    warnings
+}
+
+fn format_command_template_preview(command: &ProjectToolCommand) -> String {
+    format_command_display(&command.program, &command.args)
 }
 
 fn format_project_tool_catalog(catalog: &ProjectToolCatalog) -> String {
@@ -588,14 +723,15 @@ fn format_project_tool_catalog(catalog: &ProjectToolCatalog) -> String {
     }
     for tool in &catalog.tools {
         text.push_str(&format!(
-            "\n{} - {} ({})",
+            "\n{} - {} ({}, manifest {})",
             tool.name,
             tool.description,
             if tool.runnable {
                 "runnable"
             } else {
                 "metadata only"
-            }
+            },
+            short_hash(&tool.manifest_hash)
         ));
     }
     for error in &catalog.errors {
@@ -656,10 +792,7 @@ fn truncate_output(text: String) -> (String, bool) {
 }
 
 fn display_path(path: &Path) -> String {
-    path.components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+    path.display().to_string().replace('\\', "/")
 }
 
 #[cfg(test)]
@@ -728,6 +861,15 @@ mod tests {
             list_result.artifacts.as_ref().unwrap()["data"]["tools"][0]["name"],
             "lint"
         );
+        let manifest_hash = list_result.artifacts.as_ref().unwrap()["data"]["tools"][0]
+            ["manifestHash"]
+            .as_str()
+            .expect("manifest hash");
+        assert!(manifest_hash.len() >= 32);
+        assert_eq!(
+            list_result.artifacts.as_ref().unwrap()["data"]["tools"][0]["commandPreview"],
+            "npm run lint -- {{path}}"
+        );
 
         let describe_args = json!({ "action": "describe", "name": "lint" });
         let describe_result = tool
@@ -739,6 +881,10 @@ mod tests {
         assert_eq!(
             describe_result.artifacts.as_ref().unwrap()["data"]["kind"],
             "projectToolManifest"
+        );
+        assert_eq!(
+            describe_result.artifacts.as_ref().unwrap()["data"]["manifestHash"],
+            manifest_hash
         );
     }
 
@@ -771,10 +917,56 @@ mod tests {
     #[test]
     fn run_action_requires_confirmation_and_resource_key() {
         let tool = ProjectTool;
-        let args = json!({ "action": "run", "name": "lint" });
+        let missing_hash = json!({ "action": "run", "name": "lint" });
 
+        assert!(!tool.requires_confirmation(&missing_hash));
+        assert!(tool.is_read_only(&missing_hash));
+        assert_eq!(tool.resource_keys(&missing_hash), vec!["project-tool:lint"]);
+
+        let args = json!({
+            "action": "run",
+            "name": "lint",
+            "manifestHash": "abcdef0123456789abcdef0123456789"
+        });
         assert!(tool.requires_confirmation(&args));
         assert!(!tool.is_read_only(&args));
-        assert_eq!(tool.resource_keys(&args), vec!["project-tool:lint"]);
+        assert_eq!(
+            tool.resource_keys(&args),
+            vec!["project-tool:lint@abcdef012345"]
+        );
+    }
+
+    #[tokio::test]
+    async fn run_action_requires_current_manifest_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            "lint",
+            r#"{
+                "name": "lint",
+                "description": "Run lint",
+                "command": { "program": "cargo", "args": ["--version"] }
+            }"#,
+        );
+        let db = setup_db_with_source(dir.path());
+        let tool = ProjectTool;
+
+        let missing_hash = json!({ "action": "run", "name": "lint" });
+        let err = tool
+            .execute("project-tools-run-1", &missing_hash.to_string(), &db, &[])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("requires manifestHash"));
+
+        let wrong_hash = json!({
+            "action": "run",
+            "name": "lint",
+            "manifestHash": "00000000000000000000000000000000"
+        });
+        let err = tool
+            .execute("project-tools-run-2", &wrong_hash.to_string(), &db, &[])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("manifest changed"));
     }
 }
