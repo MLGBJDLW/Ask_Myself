@@ -1161,8 +1161,12 @@ export const approveToolCall = (requestId: string, decision: ApprovalDecisionVal
 export const listToolApprovalPolicies = () =>
   invoke<ApprovalPolicyList>('list_tool_approval_policies_cmd');
 
-export const deleteToolApprovalPolicy = (toolName: string, scope: 'session' | 'forever') =>
-  invoke<void>('delete_tool_approval_policy_cmd', { toolName, scope });
+export const deleteToolApprovalPolicy = (
+  toolName: string,
+  scope: 'session' | 'forever',
+  permissionKey?: string | null,
+) =>
+  invoke<void>('delete_tool_approval_policy_cmd', { toolName, scope, permissionKey });
 
 export const clearToolApprovalPolicies = () =>
   invoke<void>('clear_tool_approval_policies_cmd');

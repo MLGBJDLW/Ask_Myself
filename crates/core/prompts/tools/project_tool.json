@@ -1,0 +1,24 @@
+{
+  "name": "project_tool",
+  "description": "Discover, describe, and run source-scoped project-local tool manifests. Use this when a repository defines repeatable local workflows under `.nexa/tools/*.json` or `.agents/tools/*.json`, such as lint, test, codegen, diagnostics, export, or project-specific validation.\n\nPrefer `list` first to discover available project tools, then `describe` to inspect parameters. Use `run` only when the project manifest clearly matches the task. Runs are command executions from local source manifests and require approval.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["list", "describe", "run"],
+        "description": "Use list to discover manifests, describe to inspect one manifest, or run to execute one manifest command."
+      },
+      "name": {
+        "type": "string",
+        "description": "Project tool name for describe or run."
+      },
+      "arguments": {
+        "type": "object",
+        "description": "JSON object of scalar argument values used to expand command arg placeholders such as {{path}}. Values may be strings, numbers, booleans, or null.",
+        "additionalProperties": true
+      }
+    },
+    "required": ["action"]
+  }
+}

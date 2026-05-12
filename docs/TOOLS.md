@@ -113,6 +113,8 @@ Use this quick routing guide when a request is about files or documents:
 | Locate a file or browse a folder | `list_dir` | Any file/folder inside a source | yes | Best first step when the exact path is unknown or ambiguous |
 | Locate files by glob | `glob_files` | Any source-scoped file path | yes | Safe ripgrep-style traversal; respects hidden settings and gitignore files |
 | Search inside local files by text or regex | `search_files` / `grep_files` | Plain-text files inside a source | yes | Safe rg-style search with line numbers; use after/beside KB search when exact file locations matter |
+| Find code symbols or references | `code_intelligence` | Code/text files inside a source | yes | Lightweight declaration/reference lookup before broad reads; use for functions, types, components, commands, and domain terms |
+| Discover or run repo-defined workflows | `project_tool` | `.nexa/tools/*.json`, `.agents/tools/*.json` | yes | Project-local manifest API for repeatable lint/test/codegen/diagnostic commands; `run` requires approval |
 | Read a named file | `read_file` | Text, PDF, DOCX, XLSX, PPTX, image text extraction | yes | Supports line windows via `start_line` and `max_lines` |
 | Inspect document metadata or index state | `get_document_info` | Indexed documents | yes | Good for source ID, chunk count, MIME type, citation info |
 | Compare two files or indexed chunks | `compare_documents` | Text or parsed document content | yes for file paths | Use chunk IDs when you already know the exact evidence |
@@ -139,6 +141,10 @@ When adding or changing tools, optimize for model-call correctness rather than d
 - Attach trust metadata when returning retrieved, external, or mixed-authority content.
 - Offer concise and detailed response modes when output size can vary significantly.
 - Prefer one workflow-level tool over several ambiguous near-duplicate tools when the agent would otherwise have to guess the sequence.
+- Every registered tool must expose a registry-level access profile: category, read/write/execute/network capability, approval need, risk level, and risk reason. Settings, approval UI, and scheduling should read this profile instead of maintaining separate name-based tables.
+- Object-shaped tool schemas automatically include `wait_for_previous`. The model can set it to `true` when a tool call depends on files, artifacts, or command output from an earlier tool call in the same turn; the scheduler will start a new execution batch before that call.
+- Approval policy is target-aware. Shell commands are keyed by command prefix, file tools by resolved file resource, network tools by host, and MCP tools by server/tool identity. Use the target-aware policy APIs for new approval flows; legacy per-tool policies remain as a fallback only.
+- Tool results can expose separate output channels through `ToolOutput`: `llm_content` for the next model call, `display_content` for the UI, `data` for structured payloads, `artifacts` for auxiliary JSON, and `attachments` for rich outputs. Existing `ToolResult.content` remains the display fallback for older tools.
 
 ### `read_file`
 
@@ -227,6 +233,69 @@ Search plain-text files by content inside registered source directories. This is
 > **Example:** Find every source-scoped Markdown line mentioning a project name before editing the relevant note.
 
 `grep_files` is an alias with the same parameters for users and prompts that naturally ask to grep or rg local files.
+
+---
+
+### `code_intelligence`
+
+Find declaration-like code symbols or textual references inside registered source directories. This is a source-scoped local scanner for code navigation, not a full language server.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | yes | `symbols` for declaration-like definitions, `references` for matching source lines |
+| `query` | string | yes | Symbol name, identifier, fragment, or term |
+| `path` | string | no | File or directory path; omitted means all current source-scope directories |
+| `max_results` | integer | no | Max matches, 1-300 (default 80) |
+| `case_sensitive` | boolean | no | Use case-sensitive matching (default false) |
+| `whole_word` | boolean | no | For references, match identifier-like queries as whole words (default true) |
+| `include_hidden` | boolean | no | Include dotfiles and hidden directories (default false) |
+
+Returns `kind: "codeIntelligenceResults"` with searched file counts, truncation state, and matches containing `path`, `lineNumber`, `kind`, optional `name`, and `preview`. Use `symbols` first when you need likely definitions, then `references` to estimate call sites or usage.
+
+---
+
+### `project_tool`
+
+Discover, describe, and run project-local tools declared by source-scoped manifests. Manifests live at `.nexa/tools/*.json` or `.agents/tools/*.json` under a registered source root. `list` and `describe` are read-only; `run` executes the manifest command without shell interpolation and requires approval.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | yes | `list`, `describe`, or `run` |
+| `name` | string | no* | Manifest tool name for `describe` or `run` |
+| `arguments` | object | no | Scalar values used to expand command arg placeholders like `{{path}}` |
+
+\* Required for `describe` and `run`.
+
+Manifest shape:
+
+```json
+{
+  "name": "lint",
+  "description": "Run the project lint check",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string" }
+    }
+  },
+  "command": {
+    "program": "npm",
+    "args": ["run", "lint", "--", "{{path}}"],
+    "cwd": ".",
+    "timeoutSecs": 120
+  },
+  "access": {
+    "read": true,
+    "write": false,
+    "execute": true,
+    "network": false
+  }
+}
+```
+
+Command execution uses argv directly, not a shell. `program` must be a program name, `cwd` must stay inside the source root, and placeholder values must be JSON scalars.
+
+Approval memory for `project_tool run` is keyed by manifest name, so allowing `lint` for the session does not allow `test`, `deploy`, or any other project-local tool.
 
 ---
 

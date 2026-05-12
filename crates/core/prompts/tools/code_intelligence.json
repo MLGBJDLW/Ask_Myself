@@ -1,0 +1,41 @@
+{
+  "name": "code_intelligence",
+  "description": "Find source-scoped code symbols or textual references in registered local source directories. Use this before broad file reads when you need declaration-like locations, call/reference lines, or a quick code map for a named function, type, component, command, or domain term.\n\nThis is a lightweight local code intelligence tool, not a full language server. It scans readable code/text files under the current source scope, respects source permissions and gitignore-style traversal, skips heavy build folders, and returns line-numbered matches plus structured artifacts.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["symbols", "references"],
+        "description": "Use symbols to find declaration-like function/type/class/interface definitions. Use references to find source lines that mention a symbol or term."
+      },
+      "query": {
+        "type": "string",
+        "description": "Symbol name, name fragment, identifier, or term to find"
+      },
+      "path": {
+        "type": "string",
+        "description": "Optional file or directory path to scan. If omitted, scans all directories in the current source scope."
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "Maximum matches to return (default 80, max 300)",
+        "minimum": 1,
+        "maximum": 300
+      },
+      "case_sensitive": {
+        "type": "boolean",
+        "description": "Use case-sensitive matching (default false)"
+      },
+      "whole_word": {
+        "type": "boolean",
+        "description": "For references, match identifier-like queries as whole words only (default true)"
+      },
+      "include_hidden": {
+        "type": "boolean",
+        "description": "Include dotfiles and hidden directories (default false)"
+      }
+    },
+    "required": ["action", "query"]
+  }
+}

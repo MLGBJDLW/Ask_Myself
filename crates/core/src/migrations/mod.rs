@@ -873,6 +873,19 @@ Every answer that uses knowledge base search results.
         "v059_agent_config_image_generation_model",
         "ALTER TABLE agent_configs ADD COLUMN image_generation_model TEXT DEFAULT NULL;",
     ),
+    (
+        "v060_tool_permission_policies",
+        "CREATE TABLE IF NOT EXISTS tool_permission_policies (
+            permission_key TEXT PRIMARY KEY NOT NULL,
+            tool_name TEXT NOT NULL,
+            target_kind TEXT NOT NULL,
+            target_value TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_tool_permission_policies_tool
+            ON tool_permission_policies(tool_name, target_kind, target_value);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

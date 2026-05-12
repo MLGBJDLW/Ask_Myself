@@ -387,6 +387,9 @@ export interface ToolAccessInfo {
 export interface ApprovalRequest {
   id: string;
   toolName: string;
+  permissionKey: string;
+  targetKind: string;
+  targetValue: string;
   argumentsPreview: string;
   riskLevel: ApprovalRisk;
   reason: string;
@@ -401,6 +404,9 @@ export interface ApprovalPolicy {
   toolName: string;
   decision: string;
   createdAt?: string;
+  permissionKey?: string | null;
+  targetKind?: string | null;
+  targetValue?: string | null;
 }
 
 export interface ApprovalPolicyList {

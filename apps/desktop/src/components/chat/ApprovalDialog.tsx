@@ -66,6 +66,12 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
 
         <div className="space-y-3 px-5 py-4">
           <p className="text-sm text-zinc-700 dark:text-zinc-300">{request.reason}</p>
+          {request.targetKind && request.targetValue && (
+            <div className="rounded-md border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-700">
+              <span className="font-medium text-zinc-600 dark:text-zinc-300">{request.targetKind}</span>
+              <span className="ml-2 break-all font-mono text-zinc-500 dark:text-zinc-400">{request.targetValue}</span>
+            </div>
+          )}
           {request.checkpointPreview?.planned && (
             <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
               <div className="font-semibold">Safety checkpoint will be saved first</div>
@@ -132,7 +138,7 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
                 onClick={() => decide('never')}
                 className="rounded-md border border-rose-300 px-2 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-60 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-950"
               >
-                Never allow this tool
+                Never allow this target
               </button>
             </div>
           )}

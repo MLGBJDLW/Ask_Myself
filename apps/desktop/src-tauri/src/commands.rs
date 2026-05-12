@@ -16,7 +16,7 @@ use nexa_core::agent::{
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
 use nexa_core::approval::{
     ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
-    ToolApprovalPolicy,
+    ToolApprovalPolicy, ToolPermissionKey,
 };
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
@@ -4049,17 +4049,32 @@ pub async fn agent_chat_cmd(
                 if let Some(d) = approval_mode.short_circuit() {
                     return d;
                 }
-                // 1. Persistent "never" policy.
-                if let Ok(Some(pol)) = db.get_tool_approval_policy(&req.tool_name) {
+                // 1. Persistent "never" policy. Prefer targeted rules and
+                // fall back to legacy per-tool policies created before the
+                // permission engine gained target keys.
+                if let Ok(Some(pol)) = db.get_tool_permission_policy(&req.permission_key) {
                     if pol == "never" {
                         return ApprovalDecision::Deny;
                     }
                 }
+                let allow_legacy_tool_policy = req.tool_name != "project_tool";
+                if allow_legacy_tool_policy {
+                    if let Ok(Some(pol)) = db.get_tool_approval_policy(&req.tool_name) {
+                        if pol == "never" {
+                            return ApprovalDecision::Deny;
+                        }
+                    }
+                }
                 // 2. Session allow.
                 if matches!(
-                    store.get(&req.tool_name),
+                    store.get(&req.permission_key),
                     Some(ApprovalDecision::AllowSession)
-                ) {
+                ) || (allow_legacy_tool_policy
+                    && matches!(
+                        store.get(&req.tool_name),
+                        Some(ApprovalDecision::AllowSession)
+                    ))
+                {
                     return ApprovalDecision::AllowOnce;
                 }
                 // 3. Ask the UI — emit a synthetic frontend event
@@ -4085,10 +4100,11 @@ pub async fn agent_chat_cmd(
                 // 5. Persist the decision according to scope.
                 match decision {
                     ApprovalDecision::AllowSession => {
-                        store.set(&req.tool_name, ApprovalDecision::AllowSession);
+                        store.set(&req.permission_key, ApprovalDecision::AllowSession);
                     }
                     ApprovalDecision::Never => {
-                        let _ = db.save_tool_approval_policy(&req.tool_name, "never");
+                        let key = ToolPermissionKey::from_request(&req);
+                        let _ = db.save_tool_permission_policy(&key, "never");
                     }
                     _ => {}
                 }
@@ -5910,9 +5926,14 @@ pub fn list_tool_approval_policies_cmd(
         .session_store
         .list()
         .into_iter()
-        .map(|(tool_name, decision)| {
+        .map(|(permission_key, decision)| {
+            let key = ToolPermissionKey::parse(&permission_key)
+                .unwrap_or_else(|| ToolPermissionKey::new(permission_key.clone(), "tool", "*"));
             serde_json::json!({
-                "toolName": tool_name,
+                "toolName": key.tool_name,
+                "permissionKey": permission_key,
+                "targetKind": key.target_kind,
+                "targetValue": key.target_value,
                 "decision": decision.as_str(),
             })
         })
@@ -5929,13 +5950,25 @@ pub fn delete_tool_approval_policy_cmd(
     approval_state: tauri::State<'_, ApprovalState>,
     tool_name: String,
     scope: Option<String>,
+    permission_key: Option<String>,
 ) -> Result<(), String> {
     match scope.as_deref() {
-        Some("session") => approval_state.session_store.remove(&tool_name),
-        Some("forever") | None => state
-            .db
-            .delete_tool_approval_policy(&tool_name)
-            .map_err(|e| e.to_string())?,
+        Some("session") => approval_state
+            .session_store
+            .remove(permission_key.as_deref().unwrap_or(&tool_name)),
+        Some("forever") | None => {
+            if let Some(permission_key) = permission_key {
+                state
+                    .db
+                    .delete_tool_permission_policy(&permission_key)
+                    .map_err(|e| e.to_string())?;
+            } else {
+                state
+                    .db
+                    .delete_tool_approval_policy(&tool_name)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         Some(other) => return Err(format!("Unknown scope: {other}")),
     }
     Ok(())

@@ -169,6 +169,11 @@ fn is_evidence_oriented_tool(tool_name: &str) -> bool {
             | "fetch_url"
             | "read_file"
             | "read_files"
+            | "glob_files"
+            | "search_files"
+            | "grep_files"
+            | "code_intelligence"
+            | "project_tool"
             | "get_document_info"
             | "search_sessions"
     )
@@ -180,4 +185,47 @@ pub(super) fn build_task_run_artifacts(verification: &serde_json::Value) -> serd
         "version": 1,
         "verification": verification,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn done_tool(tool_name: &str) -> PersistedTraceItem {
+        PersistedTraceItem::Tool {
+            tool_call: PersistedTraceToolCall {
+                call_id: format!("{tool_name}-1"),
+                tool_name: tool_name.to_string(),
+                arguments: "{}".to_string(),
+                status: "done".to_string(),
+                render_kind: ToolRenderKind::Generic,
+                capabilities: ToolRunCapabilities {
+                    input_streaming: crate::tools::ToolInputStreamingMode::None,
+                    render_kind: ToolRenderKind::Generic,
+                    read_only: true,
+                    destructive: false,
+                    concurrency_safe: true,
+                    interrupt_behavior: crate::tools::ToolInterruptBehavior::Cancel,
+                    resource_keys: Vec::new(),
+                },
+                content: Some("ok".to_string()),
+                is_error: Some(false),
+                artifacts: None,
+            },
+        }
+    }
+
+    #[test]
+    fn evidence_signals_count_codebase_discovery_and_project_tools() {
+        let items = vec![
+            done_tool("code_intelligence"),
+            done_tool("search_files"),
+            done_tool("project_tool"),
+        ];
+
+        let signals = evidence_signals_from_trace(&items);
+
+        assert_eq!(signals.successful_evidence_tool_calls, 3);
+        assert!(!signals.verification_tool_recorded);
+    }
 }

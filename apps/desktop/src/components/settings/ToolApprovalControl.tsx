@@ -35,7 +35,7 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
 
   const remove = useCallback(async (p: ApprovalPolicy, scope: 'session' | 'forever') => {
     try {
-      await api.deleteToolApprovalPolicy(p.toolName, scope);
+      await api.deleteToolApprovalPolicy(p.toolName, scope, p.permissionKey);
       await load();
     } catch (err) {
       console.error('[approval] delete policy failed', err);
@@ -110,10 +110,13 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
         ) : (
           <div className="space-y-1">
             {policies.persisted.map((p) => (
-              <div key={`f-${p.toolName}`} className="flex items-center justify-between text-sm">
+              <div key={`f-${p.permissionKey ?? p.toolName}`} className="flex items-center justify-between text-sm">
                 <div className="flex items-center gap-2">
                   <Badge variant="default" className="text-[10px]">{t('settings.toolApprovalForever')}</Badge>
                   <span className="text-text-primary">{p.toolName}</span>
+                  {p.targetKind && p.targetValue && (
+                    <span className="text-xs text-text-tertiary">{p.targetKind}: {p.targetValue}</span>
+                  )}
                   <span className="text-xs text-text-tertiary">{p.decision}</span>
                 </div>
                 <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => void remove(p, 'forever')}>
@@ -122,10 +125,13 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
               </div>
             ))}
             {policies.session.map((p) => (
-              <div key={`s-${p.toolName}`} className="flex items-center justify-between text-sm">
+              <div key={`s-${p.permissionKey ?? p.toolName}`} className="flex items-center justify-between text-sm">
                 <div className="flex items-center gap-2">
                   <Badge variant="default" className="text-[10px]">{t('settings.toolApprovalSession')}</Badge>
                   <span className="text-text-primary">{p.toolName}</span>
+                  {p.targetKind && p.targetValue && (
+                    <span className="text-xs text-text-tertiary">{p.targetKind}: {p.targetValue}</span>
+                  )}
                   <span className="text-xs text-text-tertiary">{p.decision}</span>
                 </div>
                 <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => void remove(p, 'session')}>

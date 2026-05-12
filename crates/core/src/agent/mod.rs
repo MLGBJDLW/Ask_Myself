@@ -13,9 +13,7 @@ use tracing::{debug, error, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
 use crate::app_settings::ShellAccessMode;
-use crate::approval::{
-    classify_risk, describe_request, ApprovalCallback, ApprovalDecision, ApprovalRequest,
-};
+use crate::approval::{describe_request, ApprovalCallback, ApprovalDecision, ApprovalRequest};
 use crate::conversation::memory::{
     context_safety_buffer, estimate_message_tokens_for_model, estimate_tokens_for_model,
     model_context_window, trim_to_context_window,
@@ -2465,9 +2463,12 @@ impl AgentExecutor {
                     tool_futures.push(
                     async move {
                         let scheduling = tool_policy.decision_for(&tc);
-                        let parsed_args = scheduling.parsed_args;
+                        let invocation = self
+                            .tools
+                            .build_invocation(&tc.id, &tc.name, scheduling.parsed_args);
+                        let parsed_args = invocation.arguments.clone();
                         let tool_timeout = scheduling.timeout;
-                        let capabilities = self.tools.run_capabilities(&tc.name, &parsed_args);
+                        let capabilities = invocation.capabilities.clone();
                         if let Some(reason) = loop_guard_block_reason.as_deref() {
                             let blocked = loop_guard_blocked_result(&tc, reason);
                             return FinishedToolExecution {
@@ -2515,8 +2516,11 @@ impl AgentExecutor {
                                         ),
                                     })
                                     .await;
-                                let risk = classify_risk(&tc.name, &parsed_args);
-                                let reason = describe_request(&tc.name, &parsed_args);
+                                let risk = invocation.access_profile.risk_level;
+                                let reason = self
+                                    .tools
+                                    .confirmation_message(&tc.name, &parsed_args)
+                                    .unwrap_or_else(|| describe_request(&tc.name, &parsed_args));
                                 let req = ApprovalRequest::new(
                                     Uuid::new_v4().to_string(),
                                     &tc.name,
@@ -2715,79 +2719,88 @@ impl AgentExecutor {
                 while let Some(finished_tool) = tool_futures.next().await {
                     let tc = finished_tool.call;
                     let tool_elapsed = finished_tool.elapsed;
-                    let (tool_msg, tool_artifacts, tool_is_error, run_status) = match finished_tool
-                        .outcome
-                    {
-                        ToolExecutionOutcome::Result(result, status) => {
-                            (result.content, result.artifacts, result.is_error, status)
-                        }
-                        ToolExecutionOutcome::ExecutionError(e) => {
-                            let structured = crate::tools::structured_tool_error_result(
-                                &tc.id,
-                                "tool_execution_failed",
-                                format!("{} failed: {e}", tc.name),
-                                serde_json::json!({
-                                    "tool": &tc.name,
-                                    "arguments": "must match this tool's JSON schema exactly",
-                                    "recovery": "inspect the error, adjust only the invalid fields, and retry if the request still needs this tool"
-                                }),
-                                true,
-                            );
-                            let err_content = structured.content.clone();
-                            (
-                                err_content,
-                                structured.artifacts,
-                                true,
-                                ToolRunStatus::Failed,
-                            )
-                        }
-                        ToolExecutionOutcome::Cancelled => {
-                            let structured = crate::tools::structured_tool_error_result(
-                                &tc.id,
-                                "tool_cancelled",
-                                format!("tool '{}' was cancelled by user request.", tc.name),
-                                serde_json::json!({
-                                    "tool": &tc.name,
-                                    "recovery": "stop using this tool for the interrupted request unless the user asks to resume"
-                                }),
-                                false,
-                            );
-                            let err_content = structured.content.clone();
-                            (
-                                err_content,
-                                structured.artifacts,
-                                true,
-                                ToolRunStatus::Cancelled,
-                            )
-                        }
-                        ToolExecutionOutcome::Timeout => {
-                            let timeout_secs =
-                                finished_tool.timeout.map(|d| d.as_secs()).unwrap_or(0);
-                            warn!("Tool '{}' timed out after {}s", tc.name, timeout_secs);
-                            let structured = crate::tools::structured_tool_error_result(
-                            &tc.id,
-                            "tool_timeout",
-                            format!(
-                                "tool '{}' timed out after {} seconds. Try a simpler query or different approach.",
-                                tc.name,
-                                timeout_secs
-                            ),
-                            serde_json::json!({
-                                "tool": &tc.name,
-                                "timeoutSeconds": timeout_secs,
-                                "recovery": "retry with narrower arguments, fewer files, or a smaller limit"
-                            }),
-                            true,
-                        );
-                            let err_content = structured.content.clone();
-                            (
-                                err_content,
-                                structured.artifacts,
-                                true,
-                                ToolRunStatus::TimedOut,
-                            )
-                        }
-                    };
+                    let (tool_msg, tool_context_msg, tool_artifacts, tool_is_error, run_status) =
+                        match finished_tool.outcome {
+                            ToolExecutionOutcome::Result(result, status) => {
+                                let context_content = result.llm_context_content();
+                                (
+                                    result.content,
+                                    context_content,
+                                    result.artifacts,
+                                    result.is_error,
+                                    status,
+                                )
+                            }
+                            ToolExecutionOutcome::ExecutionError(e) => {
+                                let structured = crate::tools::structured_tool_error_result(
+                                    &tc.id,
+                                    "tool_execution_failed",
+                                    format!("{} failed: {e}", tc.name),
+                                    serde_json::json!({
+                                        "tool": &tc.name,
+                                        "arguments": "must match this tool's JSON schema exactly",
+                                        "recovery": "inspect the error, adjust only the invalid fields, and retry if the request still needs this tool"
+                                    }),
+                                    true,
+                                );
+                                let err_content = structured.content.clone();
+                                (
+                                    err_content.clone(),
+                                    err_content,
+                                    structured.artifacts,
+                                    true,
+                                    ToolRunStatus::Failed,
+                                )
+                            }
+                            ToolExecutionOutcome::Cancelled => {
+                                let structured = crate::tools::structured_tool_error_result(
+                                    &tc.id,
+                                    "tool_cancelled",
+                                    format!("tool '{}' was cancelled by user request.", tc.name),
+                                    serde_json::json!({
+                                        "tool": &tc.name,
+                                        "recovery": "stop using this tool for the interrupted request unless the user asks to resume"
+                                    }),
+                                    false,
+                                );
+                                let err_content = structured.content.clone();
+                                (
+                                    err_content.clone(),
+                                    err_content,
+                                    structured.artifacts,
+                                    true,
+                                    ToolRunStatus::Cancelled,
+                                )
+                            }
+                            ToolExecutionOutcome::Timeout => {
+                                let timeout_secs =
+                                    finished_tool.timeout.map(|d| d.as_secs()).unwrap_or(0);
+                                warn!("Tool '{}' timed out after {}s", tc.name, timeout_secs);
+                                let structured = crate::tools::structured_tool_error_result(
+                                    &tc.id,
+                                    "tool_timeout",
+                                    format!(
+                                        "tool '{}' timed out after {} seconds. Try a simpler query or different approach.",
+                                        tc.name,
+                                        timeout_secs
+                                    ),
+                                    serde_json::json!({
+                                        "tool": &tc.name,
+                                        "timeoutSeconds": timeout_secs,
+                                        "recovery": "retry with narrower arguments, fewer files, or a smaller limit"
+                                    }),
+                                    true,
+                                );
+                                let err_content = structured.content.clone();
+                                (
+                                    err_content.clone(),
+                                    err_content,
+                                    structured.artifacts,
+                                    true,
+                                    ToolRunStatus::TimedOut,
+                                )
+                            }
+                        };
 
                     let _ = tx
                         .send(AgentEvent::ToolCallResult {
@@ -2820,6 +2833,11 @@ impl AgentExecutor {
                         privacy::redact_content(&tool_msg, &privacy_cfg.redact_patterns)
                     } else {
                         tool_msg
+                    };
+                    let context_content = if privacy_cfg.enabled {
+                        privacy::redact_content(&tool_context_msg, &privacy_cfg.redact_patterns)
+                    } else {
+                        tool_context_msg
                     };
 
                     append_persisted_trace_tool(
@@ -2890,7 +2908,7 @@ impl AgentExecutor {
 
                     completed_for_context[finished_tool.index] = Some(CompletedToolForContext {
                         call: tc,
-                        content,
+                        content: context_content,
                         duration_ms: tool_elapsed.as_millis() as u64,
                         artifacts: tool_artifacts,
                     });
