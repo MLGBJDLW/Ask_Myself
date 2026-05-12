@@ -869,6 +869,23 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_agent_task_artifact_versions_artifact
             ON agent_task_artifact_versions(artifact_id, version DESC);",
     ),
+    (
+        "v059_agent_config_image_generation_model",
+        "ALTER TABLE agent_configs ADD COLUMN image_generation_model TEXT DEFAULT NULL;",
+    ),
+    (
+        "v060_tool_permission_policies",
+        "CREATE TABLE IF NOT EXISTS tool_permission_policies (
+            permission_key TEXT PRIMARY KEY NOT NULL,
+            tool_name TEXT NOT NULL,
+            target_kind TEXT NOT NULL,
+            target_value TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_tool_permission_policies_tool
+            ON tool_permission_policies(tool_name, target_kind, target_value);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1103,6 +1120,21 @@ mod tests {
             has_default_skills,
             "personas.default_skill_ids_json should exist"
         );
+    }
+
+    #[test]
+    fn test_agent_config_image_generation_model_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_configs') WHERE name = 'image_generation_model'",
+                [],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
+            )
+            .unwrap();
+        assert!(exists, "agent_configs.image_generation_model should exist");
     }
 
     #[test]

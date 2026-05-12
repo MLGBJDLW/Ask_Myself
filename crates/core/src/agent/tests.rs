@@ -1,4 +1,3 @@
-
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
@@ -277,8 +276,10 @@ fn test_route_user_turn_treats_tool_repair_as_file_operation() {
         false,
     );
 
-    assert_eq!(route.kind, AgentRouteKind::FileOperation);
+    assert_eq!(route.kind, AgentRouteKind::CodebaseOperation);
     assert!(route.extra_categories.contains(&ToolCategory::FileSystem));
+    assert!(route.prompt_section.contains("code_intelligence"));
+    assert!(route.prompt_section.contains("project_tool"));
 }
 
 #[test]
@@ -1238,6 +1239,30 @@ fn test_unkeyed_exclusive_tool_remains_serial_barrier() {
     let batches = tool_call_execution_batches(&registry, &policy, &calls);
 
     assert_eq!(batches, vec![vec![0], vec![1], vec![2]]);
+}
+
+#[test]
+fn test_wait_for_previous_forces_new_execution_batch() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(DelayTool {
+        name: "fast_tool",
+        delay_ms: 0,
+    }));
+    let offered = HashSet::from(["fast_tool".to_string()]);
+    let policy = ToolSchedulerPolicy::new(None, false, offered);
+    let calls = vec![
+        test_tool_call("a", "fast_tool", serde_json::json!({ "value": "a" })),
+        test_tool_call(
+            "b",
+            "fast_tool",
+            serde_json::json!({ "value": "b", "wait_for_previous": true }),
+        ),
+        test_tool_call("c", "fast_tool", serde_json::json!({ "value": "c" })),
+    ];
+
+    let batches = tool_call_execution_batches(&registry, &policy, &calls);
+
+    assert_eq!(batches, vec![vec![0], vec![1, 2]]);
 }
 
 #[tokio::test]

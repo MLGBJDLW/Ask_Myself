@@ -99,6 +99,20 @@ function isOptimisticSteeringMessage(message: ConversationMessage): boolean {
   return message.id.startsWith('temp-steer-') && isSteeringMessage(message);
 }
 
+function taskRunCanResumeStream(run: AgentTaskRun): boolean {
+  return ['queued', 'running', 'waiting_approval'].includes(run.status);
+}
+
+function streamHasVisiblePreview(conversationId: string): boolean {
+  const stream = streamStore.getStream(conversationId);
+  return Boolean(stream && (
+    stream.isStreaming ||
+    stream.streamRounds.length > 0 ||
+    stream.traceEvents.length > 0 ||
+    stream.streamText.length > 0
+  ));
+}
+
 function insertMessagesByCreatedAt(
   messages: ConversationMessage[],
   inserts: ConversationMessage[],
@@ -658,6 +672,17 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         setMessagesForConversation(activeId, (prev) => mergeLocalMessageState(prev, msgs));
         setTurnsForConversation(activeId, conversationTurns);
         setTaskRunsForConversation(activeId, agentTaskRuns);
+        const resumableRun = [...agentTaskRuns].reverse().find(taskRunCanResumeStream);
+        if (resumableRun && !streamHasVisiblePreview(activeId)) {
+          api.getAgentTaskRunEvents(resumableRun.id)
+            .then((events) => {
+              if (cancelled) return;
+              streamStore.restoreFromTaskEvents(activeId, resumableRun, events);
+              streamingConversationRef.current = activeId;
+              usageConversationRef.current = activeId;
+            })
+            .catch(() => undefined);
+        }
         setConversations((prev) => {
           const existing = prev.find((item) => item.id === conv.id);
           if (existing) {

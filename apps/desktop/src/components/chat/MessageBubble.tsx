@@ -8,6 +8,7 @@ import { useTranslation } from '../../i18n';
 import { markdownComponents, preprocessFilePaths, preprocessCitations, CitationContext } from './markdownComponents';
 import { extractChunkCitations, preprocessChunkCitations, preprocessInlineCitations } from '../../lib/citationParser';
 import type { CitationCardData } from '../../lib/citationParser';
+import { isWebUrl, sourceBasename, sourceHost } from '../../lib/sourceDisplay';
 import { MessageActions } from './MessageActions';
 import { messageTimestamp } from '../../lib/relativeTime';
 import type { ConversationMessage } from '../../types/conversation';
@@ -35,12 +36,6 @@ export interface MessageBubbleProps {
   onDeleteMessage?: (messageId: string) => void;
   /** Called when a message is edited and re-sent */
   onEditAndResend?: (messageId: string, newContent: string) => void;
-}
-
-function basename(path: string): string {
-  const normalized = path.replace(/[\\/]+$/, '');
-  const lastSep = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
-  return lastSep === -1 ? normalized : normalized.slice(lastSep + 1);
 }
 
 function isSteeringMessage(msg: ConversationMessage): boolean {
@@ -147,10 +142,6 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
       addEvidence(entry.chunkId, entry.displayText);
     }
 
-    for (const chunkId of chunkIds ?? []) {
-      addEvidence(chunkId);
-    }
-
     return Array.from(grouped.values())
       .sort((a, b) => {
         if (b.count !== a.count) return b.count - a.count;
@@ -159,9 +150,16 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
         return aLabel.localeCompare(bLabel);
       })
       .map((item, index) => {
+        const sourcePath = item.card?.documentPath?.trim() ?? '';
+        const host = sourcePath && isWebUrl(sourcePath) ? sourceHost(sourcePath) : '';
+        const title = item.card?.documentTitle?.trim() ?? '';
+        const sourceLabel = sourcePath
+          ? (host
+            ? (title ? `${title} · ${host}` : host)
+            : (title || sourceBasename(sourcePath)))
+          : '';
         const baseLabel =
-          item.card?.documentTitle
-          || (item.card?.documentPath ? basename(item.card.documentPath) : '')
+          sourceLabel
           || item.displayText
           || t('chat.evidenceSourceLabel', { index: String(index + 1) });
         return {
@@ -169,7 +167,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
           displayText: item.count > 1 ? `${baseLabel} ×${item.count}` : baseLabel,
         };
       });
-  }, [chunkIds, citationLookup, isUser, msg.content, t]);
+  }, [citationLookup, isUser, msg.content, t]);
 
   const timestamp = messageTimestamp(msg.createdAt, t);
   const steering = isSteeringMessage(msg);
@@ -318,7 +316,12 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
 
               <div className="prose-chat">
                 <CitationContext.Provider value={citationLookup ?? { getCard: () => undefined }}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins} components={markdownComponents}>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={rehypePlugins}
+                    components={markdownComponents}
+                    urlTransform={(url) => url}
+                  >
                     {preprocessFilePaths(preprocessCitations(preprocessInlineCitations(preprocessChunkCitations(msg.content))))}
                   </ReactMarkdown>
                 </CitationContext.Provider>

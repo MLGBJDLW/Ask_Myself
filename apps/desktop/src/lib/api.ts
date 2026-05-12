@@ -670,6 +670,11 @@ export const listAgentTaskArtifactVersions = (artifactId: string) =>
 export const listToolAccessMap = () =>
   invoke<ToolAccessInfo[]>('list_tool_access_map_cmd');
 
+export const listProjectTools = (sourceScope?: string[] | null) =>
+  invoke<import('../types/project-tool').ProjectToolCatalog>('list_project_tools_cmd', {
+    sourceScope: sourceScope ?? null,
+  });
+
 export const deleteConversation = (id: string) =>
   invoke<void>('delete_conversation_cmd', { id });
 
@@ -1161,8 +1166,12 @@ export const approveToolCall = (requestId: string, decision: ApprovalDecisionVal
 export const listToolApprovalPolicies = () =>
   invoke<ApprovalPolicyList>('list_tool_approval_policies_cmd');
 
-export const deleteToolApprovalPolicy = (toolName: string, scope: 'session' | 'forever') =>
-  invoke<void>('delete_tool_approval_policy_cmd', { toolName, scope });
+export const deleteToolApprovalPolicy = (
+  toolName: string,
+  scope: 'session' | 'forever',
+  permissionKey?: string | null,
+) =>
+  invoke<void>('delete_tool_approval_policy_cmd', { toolName, scope, permissionKey });
 
 export const clearToolApprovalPolicies = () =>
   invoke<void>('clear_tool_approval_policies_cmd');

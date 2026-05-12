@@ -10,6 +10,13 @@ export type { QueryLog } from "./query-log";
 export type { Feedback } from "./feedback";
 export type { EmbedResult } from "./embed";
 export type { PrivacyConfig, RedactRule } from "./privacy";
+export type {
+  ProjectToolAccess,
+  ProjectToolCatalog,
+  ProjectToolCommand,
+  ProjectToolManifestError,
+  ProjectToolSummary,
+} from "./project-tool";
 export type { EmbedderConfig } from "./embedder";
 export type { OcrConfig, OcrDownloadProgress } from "./ocr";
 export type {
@@ -43,6 +50,7 @@ export type {
   ApprovalRequest,
   ApprovalRisk,
   ApprovalDecisionValue,
+  ToolAccessInfo,
   ApprovalPolicy,
   ApprovalPolicyList,
 } from "./conversation";

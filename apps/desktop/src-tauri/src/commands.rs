@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -11,12 +11,12 @@ use crate::subagent_tool::{
 };
 use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
-    AgentSteeringMessage, CancellationToken, ConfirmationCallback,
+    AgentSteeringMessage, CancellationToken, ConfirmationCallback, StreamBlockChannel,
 };
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
 use nexa_core::approval::{
     ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
-    ToolApprovalPolicy,
+    ToolApprovalPolicy, ToolPermissionKey,
 };
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
@@ -209,8 +209,175 @@ pub struct FtsProgress {
 #[serde(rename_all = "camelCase")]
 struct AgentFrontendEvent {
     conversation_id: String,
+    #[serde(rename = "eventSeq", skip_serializing_if = "Option::is_none")]
+    event_seq: Option<u64>,
     #[serde(flatten)]
     event: AgentEvent,
+}
+
+fn emit_agent_frontend_event(
+    handle: &AppHandle,
+    event_seq: &AtomicU64,
+    conversation_id: &str,
+    event: AgentEvent,
+) {
+    let payload = AgentFrontendEvent {
+        conversation_id: conversation_id.to_string(),
+        event_seq: Some(event_seq.fetch_add(1, Ordering::SeqCst) + 1),
+        event,
+    };
+    emit_app_event(handle, "agent:event", &payload);
+}
+
+enum PendingStreamDelta {
+    Text(String),
+    Thinking(String),
+}
+
+struct StreamBlockEmitter {
+    event_seq: Arc<AtomicU64>,
+    answer_block_id: String,
+    thinking_block_id: String,
+    answer_offset: usize,
+    thinking_offset: usize,
+}
+
+impl StreamBlockEmitter {
+    fn new(event_seq: Arc<AtomicU64>) -> Self {
+        Self {
+            event_seq,
+            answer_block_id: new_stream_block_id(StreamBlockChannel::Answer),
+            thinking_block_id: new_stream_block_id(StreamBlockChannel::Thinking),
+            answer_offset: 0,
+            thinking_offset: 0,
+        }
+    }
+
+    fn rotate_blocks(&mut self) {
+        self.answer_block_id = new_stream_block_id(StreamBlockChannel::Answer);
+        self.thinking_block_id = new_stream_block_id(StreamBlockChannel::Thinking);
+        self.answer_offset = 0;
+        self.thinking_offset = 0;
+    }
+
+    fn emit_event(&self, handle: &AppHandle, conversation_id: &str, event: AgentEvent) -> u64 {
+        let event_seq = self.event_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let payload = AgentFrontendEvent {
+            conversation_id: conversation_id.to_string(),
+            event_seq: Some(event_seq),
+            event,
+        };
+        emit_app_event(handle, "agent:event", &payload);
+        event_seq
+    }
+
+    fn flush_pending(
+        &mut self,
+        pending: &mut Option<PendingStreamDelta>,
+        conversation_id: &str,
+        handle: &AppHandle,
+        db: &Database,
+        task_run_id: &str,
+    ) {
+        let Some(delta) = pending.take() else {
+            return;
+        };
+        match delta {
+            PendingStreamDelta::Text(delta) if !delta.is_empty() => self.emit_block_delta(
+                conversation_id,
+                handle,
+                db,
+                task_run_id,
+                StreamBlockChannel::Answer,
+                delta,
+            ),
+            PendingStreamDelta::Thinking(content) if !content.is_empty() => self.emit_block_delta(
+                conversation_id,
+                handle,
+                db,
+                task_run_id,
+                StreamBlockChannel::Thinking,
+                content,
+            ),
+            _ => {}
+        }
+    }
+
+    fn emit_block_delta(
+        &mut self,
+        conversation_id: &str,
+        handle: &AppHandle,
+        db: &Database,
+        task_run_id: &str,
+        channel: StreamBlockChannel,
+        delta: String,
+    ) {
+        let (block_id, offset) = match channel {
+            StreamBlockChannel::Answer => (self.answer_block_id.clone(), self.answer_offset),
+            StreamBlockChannel::Thinking => (self.thinking_block_id.clone(), self.thinking_offset),
+        };
+        let delta_len = delta.len();
+        let event_seq = self.event_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let event = AgentEvent::StreamBlockDelta {
+            block_id: block_id.clone(),
+            channel,
+            offset,
+            delta: delta.clone(),
+        };
+        let payload = AgentFrontendEvent {
+            conversation_id: conversation_id.to_string(),
+            event_seq: Some(event_seq),
+            event,
+        };
+        emit_app_event(handle, "agent:event", &payload);
+
+        let channel_label = stream_block_channel_label(channel);
+        let durable_payload = serde_json::json!({
+            "eventSeq": event_seq,
+            "blockId": block_id,
+            "channel": channel_label,
+            "offset": offset,
+            "delta": delta,
+        });
+        let _ = db.record_agent_task_run_event(
+            task_run_id,
+            "streamBlockDelta",
+            channel_label,
+            Some("running"),
+            Some(&durable_payload),
+        );
+
+        match channel {
+            StreamBlockChannel::Answer => self.answer_offset += delta_len,
+            StreamBlockChannel::Thinking => self.thinking_offset += delta_len,
+        }
+    }
+}
+
+fn new_stream_block_id(channel: StreamBlockChannel) -> String {
+    format!(
+        "stream-{}-{}",
+        stream_block_channel_label(channel),
+        Uuid::new_v4()
+    )
+}
+
+fn stream_block_channel_label(channel: StreamBlockChannel) -> &'static str {
+    match channel {
+        StreamBlockChannel::Answer => "answer",
+        StreamBlockChannel::Thinking => "thinking",
+    }
+}
+
+fn agent_event_rotates_stream_blocks(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::StreamReset { .. }
+            | AgentEvent::ToolCallStart { .. }
+            | AgentEvent::ToolRunStarted { .. }
+            | AgentEvent::ToolCallResult { .. }
+            | AgentEvent::ToolRunCompleted { .. }
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -588,6 +755,7 @@ fn record_task_progress_for_agent_event(
             );
         }
         AgentEvent::TextDelta { .. }
+        | AgentEvent::StreamBlockDelta { .. }
         | AgentEvent::Thinking { .. }
         | AgentEvent::ToolRunStarted { .. }
         | AgentEvent::ToolRunUpdated { .. }
@@ -2880,7 +3048,17 @@ pub async fn move_conversation_to_project_cmd(
     state
         .db
         .move_conversation_to_project(&conversation_id, &project_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if let Ok(project) = state.db.get_project(&project_id) {
+        if let Some(source_scope) = project.source_scope {
+            if !source_scope.is_empty() {
+                let _ = state
+                    .db
+                    .set_conversation_sources(&conversation_id, &source_scope);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2914,10 +3092,24 @@ pub async fn create_conversation_cmd(
         project_id,
         persona_id,
     };
-    state
+    let conversation = state
         .db
         .create_conversation(&input)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    if let Some(project_id) = conversation.project_id.as_deref() {
+        if let Ok(project) = state.db.get_project(project_id) {
+            if let Some(source_scope) = project.source_scope {
+                if !source_scope.is_empty() {
+                    let _ = state
+                        .db
+                        .set_conversation_sources(&conversation.id, &source_scope);
+                }
+            }
+        }
+    }
+
+    Ok(conversation)
 }
 
 #[tauri::command]
@@ -3090,6 +3282,16 @@ pub async fn list_tool_access_map_cmd(
         "judge_subagent_results".to_string(),
     ]);
     Ok(nexa_core::tool_access::tool_access_map_for_names(names))
+}
+
+#[tauri::command]
+pub fn list_project_tools_cmd(
+    state: tauri::State<'_, AppState>,
+    source_scope: Option<Vec<String>>,
+) -> Result<nexa_core::tools::project_tool::ProjectToolCatalog, String> {
+    let scope = source_scope.unwrap_or_default();
+    nexa_core::tools::project_tool::list_project_tool_catalog(state.db.as_ref(), &scope)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3777,6 +3979,7 @@ pub async fn agent_chat_cmd(
         )
         .map_err(|e| e.to_string())?;
     let task_run_id_for_command = task_run.id.clone();
+    let stream_event_seq = Arc::new(AtomicU64::new(0));
     emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
     if let Ok(event) = state.db.record_agent_task_run_event(
         &task_run.id,
@@ -3791,7 +3994,7 @@ pub async fn agent_chat_cmd(
     // 6. Build prompt sections from conversation context.
     let source_scope_ids = state
         .db
-        .get_linked_sources(&conversation_id)
+        .get_effective_conversation_source_scope(&conversation_id)
         .unwrap_or_default();
     let source_scope_section =
         nexa_core::conversation::build_source_scope_prompt_section(&state.db, &source_scope_ids)
@@ -3800,9 +4003,12 @@ pub async fn agent_chat_cmd(
         nexa_core::conversation::build_collection_context_prompt_section(
             conv.collection_context.as_ref(),
         );
-    let memory_section =
+    let memory_section = if conv.project_id.is_some() {
+        String::new()
+    } else {
         nexa_core::personalization::build_memory_summary_for_query(&state.db, Some(&message))
-            .unwrap_or_default();
+            .unwrap_or_default()
+    };
     let project_memory_section = nexa_core::project_memory::build_project_memory_summary_for_query(
         &state.db,
         conv.project_id.as_deref(),
@@ -4007,6 +4213,7 @@ pub async fn agent_chat_cmd(
     let approval_cb: Option<ApprovalCallback> = {
         let db_handle = state.db.clone();
         let app_handle_cb = app_handle.clone();
+        let approval_event_seq = Arc::clone(&stream_event_seq);
         let pending = approval_state.pending.clone();
         let session_store = approval_state.session_store.clone();
         let stream_conv_id = conversation_id.clone();
@@ -4017,22 +4224,38 @@ pub async fn agent_chat_cmd(
             let pending = pending.clone();
             let store = session_store.clone();
             let conv = stream_conv_id.clone();
+            let event_seq = Arc::clone(&approval_event_seq);
             Box::pin(async move {
                 // 0. Global mode short-circuit.
                 if let Some(d) = approval_mode.short_circuit() {
                     return d;
                 }
-                // 1. Persistent "never" policy.
-                if let Ok(Some(pol)) = db.get_tool_approval_policy(&req.tool_name) {
+                // 1. Persistent "never" policy. Prefer targeted rules and
+                // fall back to legacy per-tool policies created before the
+                // permission engine gained target keys.
+                if let Ok(Some(pol)) = db.get_tool_permission_policy(&req.permission_key) {
                     if pol == "never" {
                         return ApprovalDecision::Deny;
                     }
                 }
+                let allow_legacy_tool_policy = req.tool_name != "project_tool";
+                if allow_legacy_tool_policy {
+                    if let Ok(Some(pol)) = db.get_tool_approval_policy(&req.tool_name) {
+                        if pol == "never" {
+                            return ApprovalDecision::Deny;
+                        }
+                    }
+                }
                 // 2. Session allow.
                 if matches!(
-                    store.get(&req.tool_name),
+                    store.get(&req.permission_key),
                     Some(ApprovalDecision::AllowSession)
-                ) {
+                ) || (allow_legacy_tool_policy
+                    && matches!(
+                        store.get(&req.tool_name),
+                        Some(ApprovalDecision::AllowSession)
+                    ))
+                {
                     return ApprovalDecision::AllowOnce;
                 }
                 // 3. Ask the UI — emit a synthetic frontend event
@@ -4040,13 +4263,14 @@ pub async fn agent_chat_cmd(
                 //    conversation_id makes the UI dispatcher simpler).
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 pending.lock().await.insert(req.id.clone(), tx);
-                let payload = AgentFrontendEvent {
-                    conversation_id: conv.clone(),
-                    event: AgentEvent::ApprovalRequested {
+                emit_agent_frontend_event(
+                    &handle,
+                    &event_seq,
+                    &conv,
+                    AgentEvent::ApprovalRequested {
                         request: req.clone(),
                     },
-                };
-                emit_app_event(&handle, "agent:event", &payload);
+                );
                 // 4. Wait up to 60s for a decision; otherwise deny.
                 let decision = match tokio::time::timeout(Duration::from_secs(60), rx).await {
                     Ok(Ok(d)) => d,
@@ -4058,10 +4282,11 @@ pub async fn agent_chat_cmd(
                 // 5. Persist the decision according to scope.
                 match decision {
                     ApprovalDecision::AllowSession => {
-                        store.set(&req.tool_name, ApprovalDecision::AllowSession);
+                        store.set(&req.permission_key, ApprovalDecision::AllowSession);
                     }
                     ApprovalDecision::Never => {
-                        let _ = db.save_tool_approval_policy(&req.tool_name, "never");
+                        let key = ToolPermissionKey::from_request(&req);
+                        let _ = db.save_tool_permission_policy(&key, "never");
                     }
                     _ => {}
                 }
@@ -4302,6 +4527,7 @@ pub async fn agent_chat_cmd(
     let handle = app_handle.clone();
     let assistant_sort_order = next_sort_order + 1;
     let db_config_for_extraction = db_config.clone();
+    let forwarder_event_seq = Arc::clone(&stream_event_seq);
 
     let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(180) as u64;
 
@@ -4332,36 +4558,13 @@ pub async fn agent_chat_cmd(
         let event_db = db.clone();
         let event_task_run_id = task_run_id.clone();
         let event_forwarder = tokio::spawn(async move {
-            let mut pending_text = String::new();
-            let mut pending_thinking = String::new();
+            let mut pending_delta: Option<PendingStreamDelta> = None;
+            let mut stream_emitter = StreamBlockEmitter::new(forwarder_event_seq);
             let mut reasoning_phase_recorded = false;
             let mut generating_phase_recorded = false;
             let mut tick = tokio::time::interval(Duration::from_millis(16));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             tick.tick().await; // consume immediate first tick
-
-            let flush_text = |pending: &mut String, conv_id: &str, handle: &AppHandle| {
-                if !pending.is_empty() {
-                    let payload = AgentFrontendEvent {
-                        conversation_id: conv_id.to_string(),
-                        event: AgentEvent::TextDelta {
-                            delta: std::mem::take(pending),
-                        },
-                    };
-                    emit_app_event(handle, "agent:event", &payload);
-                }
-            };
-            let flush_thinking = |pending: &mut String, conv_id: &str, handle: &AppHandle| {
-                if !pending.is_empty() {
-                    let payload = AgentFrontendEvent {
-                        conversation_id: conv_id.to_string(),
-                        event: AgentEvent::Thinking {
-                            content: std::mem::take(pending),
-                        },
-                    };
-                    emit_app_event(handle, "agent:event", &payload);
-                }
-            };
 
             loop {
                 tokio::select! {
@@ -4387,7 +4590,20 @@ pub async fn agent_chat_cmd(
                                         &event_task_run_id,
                                     );
                                 }
-                                pending_text.push_str(&delta);
+                                match &mut pending_delta {
+                                    Some(PendingStreamDelta::Text(text)) => text.push_str(&delta),
+                                    Some(PendingStreamDelta::Thinking(_)) => {
+                                        stream_emitter.flush_pending(
+                                            &mut pending_delta,
+                                            &stream_conv_id,
+                                            &event_handle,
+                                            &event_db,
+                                            &event_task_run_id,
+                                        );
+                                        pending_delta = Some(PendingStreamDelta::Text(delta));
+                                    }
+                                    None => pending_delta = Some(PendingStreamDelta::Text(delta)),
+                                }
                             }
                             Some(AgentEvent::Thinking { content }) => {
                                 if !reasoning_phase_recorded {
@@ -4408,7 +4624,24 @@ pub async fn agent_chat_cmd(
                                         &event_task_run_id,
                                     );
                                 }
-                                pending_thinking.push_str(&content);
+                                match &mut pending_delta {
+                                    Some(PendingStreamDelta::Thinking(thinking)) => {
+                                        thinking.push_str(&content)
+                                    }
+                                    Some(PendingStreamDelta::Text(_)) => {
+                                        stream_emitter.flush_pending(
+                                            &mut pending_delta,
+                                            &stream_conv_id,
+                                            &event_handle,
+                                            &event_db,
+                                            &event_task_run_id,
+                                        );
+                                        pending_delta = Some(PendingStreamDelta::Thinking(content));
+                                    }
+                                    None => {
+                                        pending_delta = Some(PendingStreamDelta::Thinking(content))
+                                    }
+                                }
                             }
                             Some(other) => {
                                 record_task_progress_for_agent_event(
@@ -4418,26 +4651,60 @@ pub async fn agent_chat_cmd(
                                     &event_task_run_id,
                                     &other,
                                 );
-                                // Flush any buffered deltas before forwarding
-                                flush_text(&mut pending_text, &stream_conv_id, &event_handle);
-                                flush_thinking(&mut pending_thinking, &stream_conv_id, &event_handle);
-                                let payload = AgentFrontendEvent {
-                                    conversation_id: stream_conv_id.clone(),
-                                    event: other,
+                                // Flush buffered stream deltas before forwarding
+                                // structural events so the UI keeps provider order.
+                                stream_emitter.flush_pending(
+                                    &mut pending_delta,
+                                    &stream_conv_id,
+                                    &event_handle,
+                                    &event_db,
+                                    &event_task_run_id,
+                                );
+                                let reset_reason = match &other {
+                                    AgentEvent::StreamReset { reason } => Some(reason.clone()),
+                                    _ => None,
                                 };
-                                emit_app_event(&event_handle, "agent:event", &payload);
+                                let rotates_blocks = agent_event_rotates_stream_blocks(&other);
+                                let event_seq =
+                                    stream_emitter.emit_event(&event_handle, &stream_conv_id, other);
+                                if let Some(reason) = reset_reason {
+                                    let durable_payload = serde_json::json!({
+                                        "eventSeq": event_seq,
+                                        "reason": reason,
+                                    });
+                                    let _ = event_db.record_agent_task_run_event(
+                                        &event_task_run_id,
+                                        "streamReset",
+                                        "Stream reset",
+                                        Some("running"),
+                                        Some(&durable_payload),
+                                    );
+                                }
+                                if rotates_blocks {
+                                    stream_emitter.rotate_blocks();
+                                }
                             }
                             None => {
                                 // Channel closed — flush remaining and exit
-                                flush_text(&mut pending_text, &stream_conv_id, &event_handle);
-                                flush_thinking(&mut pending_thinking, &stream_conv_id, &event_handle);
+                                stream_emitter.flush_pending(
+                                    &mut pending_delta,
+                                    &stream_conv_id,
+                                    &event_handle,
+                                    &event_db,
+                                    &event_task_run_id,
+                                );
                                 break;
                             }
                         }
                     }
                     _ = tick.tick() => {
-                        flush_text(&mut pending_text, &stream_conv_id, &event_handle);
-                        flush_thinking(&mut pending_thinking, &stream_conv_id, &event_handle);
+                        stream_emitter.flush_pending(
+                            &mut pending_delta,
+                            &stream_conv_id,
+                            &event_handle,
+                            &event_db,
+                            &event_task_run_id,
+                        );
                     }
                 }
             }
@@ -4493,13 +4760,14 @@ pub async fn agent_chat_cmd(
                     }
                 } => break (None, true),
                 _ = keepalive.tick() => {
-                    let payload = AgentFrontendEvent {
-                        conversation_id: conv_id.clone(),
-                        event: AgentEvent::Thinking {
+                    emit_agent_frontend_event(
+                        &handle,
+                        &stream_event_seq,
+                        &conv_id,
+                        AgentEvent::Thinking {
                             content: String::new(),
                         },
-                    };
-                    emit_app_event(&handle, "agent:event", &payload);
+                    );
                 }
             }
         };
@@ -4519,47 +4787,51 @@ pub async fn agent_chat_cmd(
             Some(Ok(_)) => {}
             Some(Err(e)) => {
                 warn!("Agent execution failed for conversation {conv_id}: {e}");
-                let payload = AgentFrontendEvent {
-                    conversation_id: conv_id.clone(),
-                    event: AgentEvent::Error {
+                emit_agent_frontend_event(
+                    &handle,
+                    &stream_event_seq,
+                    &conv_id,
+                    AgentEvent::Error {
                         message: "Agent execution failed unexpectedly.".to_string(),
                     },
-                };
-                emit_app_event(&handle, "agent:event", &payload);
+                );
                 // Send Done so the frontend exits streaming state.
-                let done_payload = AgentFrontendEvent {
-                    conversation_id: conv_id.clone(),
-                    event: AgentEvent::Done {
+                emit_agent_frontend_event(
+                    &handle,
+                    &stream_event_seq,
+                    &conv_id,
+                    AgentEvent::Done {
                         message: Message::text(Role::Assistant, ""),
                         usage_total: Usage::default(),
                         last_prompt_tokens: 0,
                         cached: false,
                         finish_reason: Some("error".to_string()),
                     },
-                };
-                emit_app_event(&handle, "agent:event", &done_payload);
+                );
             }
             None => {
                 warn!("Agent execution timed out for conversation {conv_id}");
-                let payload = AgentFrontendEvent {
-                    conversation_id: conv_id.clone(),
-                    event: AgentEvent::Error {
+                emit_agent_frontend_event(
+                    &handle,
+                    &stream_event_seq,
+                    &conv_id,
+                    AgentEvent::Error {
                         message: "Agent execution timed out.".to_string(),
                     },
-                };
-                emit_app_event(&handle, "agent:event", &payload);
+                );
                 // Send Done so the frontend exits streaming state.
-                let done_payload = AgentFrontendEvent {
-                    conversation_id: conv_id.clone(),
-                    event: AgentEvent::Done {
+                emit_agent_frontend_event(
+                    &handle,
+                    &stream_event_seq,
+                    &conv_id,
+                    AgentEvent::Done {
                         message: Message::text(Role::Assistant, ""),
                         usage_total: Usage::default(),
                         last_prompt_tokens: 0,
                         cached: false,
                         finish_reason: Some("timeout".to_string()),
                     },
-                };
-                emit_app_event(&handle, "agent:event", &done_payload);
+                );
             }
         }
 
@@ -5883,9 +6155,14 @@ pub fn list_tool_approval_policies_cmd(
         .session_store
         .list()
         .into_iter()
-        .map(|(tool_name, decision)| {
+        .map(|(permission_key, decision)| {
+            let key = ToolPermissionKey::parse(&permission_key)
+                .unwrap_or_else(|| ToolPermissionKey::new(permission_key.clone(), "tool", "*"));
             serde_json::json!({
-                "toolName": tool_name,
+                "toolName": key.tool_name,
+                "permissionKey": permission_key,
+                "targetKind": key.target_kind,
+                "targetValue": key.target_value,
                 "decision": decision.as_str(),
             })
         })
@@ -5902,13 +6179,25 @@ pub fn delete_tool_approval_policy_cmd(
     approval_state: tauri::State<'_, ApprovalState>,
     tool_name: String,
     scope: Option<String>,
+    permission_key: Option<String>,
 ) -> Result<(), String> {
     match scope.as_deref() {
-        Some("session") => approval_state.session_store.remove(&tool_name),
-        Some("forever") | None => state
-            .db
-            .delete_tool_approval_policy(&tool_name)
-            .map_err(|e| e.to_string())?,
+        Some("session") => approval_state
+            .session_store
+            .remove(permission_key.as_deref().unwrap_or(&tool_name)),
+        Some("forever") | None => {
+            if let Some(permission_key) = permission_key {
+                state
+                    .db
+                    .delete_tool_permission_policy(&permission_key)
+                    .map_err(|e| e.to_string())?;
+            } else {
+                state
+                    .db
+                    .delete_tool_approval_policy(&tool_name)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         Some(other) => return Err(format!("Unknown scope: {other}")),
     }
     Ok(())

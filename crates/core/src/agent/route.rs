@@ -8,6 +8,7 @@ pub(crate) enum AgentRouteKind {
     KnowledgeRetrieval,
     CollectionFocused,
     ConversationRecall,
+    CodebaseOperation,
     FileOperation,
     WebLookup,
     SourceManagement,
@@ -22,6 +23,7 @@ impl AgentRouteKind {
             AgentRouteKind::FileOperation => "FileOperation",
             AgentRouteKind::SourceManagement => "SourceManagement",
             AgentRouteKind::ConversationRecall => "ConversationRecall",
+            AgentRouteKind::CodebaseOperation => "CodebaseOperation",
             AgentRouteKind::WebLookup => "WebLookup",
         }
     }
@@ -181,6 +183,14 @@ pub(crate) fn route_user_turn(
             kind: AgentRouteKind::SourceManagement,
             prompt_section: "## Active Routing Plan\nThis is a source/index management request. Prefer direct, operational handling over exploratory retrieval, and avoid unnecessary long-form analysis.".to_string(),
             extra_categories: vec![ToolCategory::SourceManagement],
+        };
+    }
+
+    if code_or_tool_operation {
+        return AgentRoutePlan {
+            kind: AgentRouteKind::CodebaseOperation,
+            prompt_section: "## Active Routing Plan\nThis is a codebase or tooling request. Start with code_intelligence for named functions, types, tools, agents, or call/reference questions before broad text search. Use project_tool list/describe before ad hoc run_shell when the repository may define local lint, test, codegen, diagnostics, or validation workflows; project_tool run must include the current manifestHash from list/describe. Inspect with glob_files/search_files/read_file as needed, then modify with text-edit tools, and verify with project_tool run or focused run_shell commands when appropriate.".to_string(),
+            extra_categories: vec![ToolCategory::FileSystem, ToolCategory::DocumentAnalysis],
         };
     }
 

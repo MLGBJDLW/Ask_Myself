@@ -125,6 +125,12 @@ function collectArtifactItems(value: unknown, out: unknown[]) {
       collectArtifactItems(obj[key], out);
     }
   }
+
+  for (const child of Object.values(obj)) {
+    if (child && typeof child === 'object') {
+      collectArtifactItems(child, out);
+    }
+  }
 }
 
 export interface ToolCallArtifacts {

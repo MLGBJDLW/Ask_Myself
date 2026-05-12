@@ -35,7 +35,7 @@ pub enum ToolCategory {
 }
 
 use crate::app_settings::ShellAccessMode;
-use crate::approval::ToolApprovalMode;
+use crate::approval::{ApprovalRisk, ToolApprovalMode};
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::ToolDefinition;
@@ -68,9 +68,35 @@ impl ToolDef {
     }
 }
 
+fn with_scheduler_control_parameters(mut parameters: serde_json::Value) -> serde_json::Value {
+    let Some(schema) = parameters.as_object_mut() else {
+        return parameters;
+    };
+    if schema.get("type").and_then(|value| value.as_str()) != Some("object") {
+        return parameters;
+    }
+    let properties = schema
+        .entry("properties")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(properties) = properties.as_object_mut() else {
+        return parameters;
+    };
+    properties
+        .entry("wait_for_previous".to_string())
+        .or_insert_with(|| {
+            serde_json::json!({
+                "type": "boolean",
+                "description": "If true, this call waits for earlier tool calls in the same assistant turn to finish before it starts. Use this when the call depends on files, artifacts, or command output produced by a previous tool call.",
+                "default": false
+            })
+        });
+    parameters
+}
+
 pub mod agent_memory_tool;
 pub mod archive_output_tool;
 pub mod chunk_context_tool;
+pub mod code_intelligence_tool;
 pub mod compare_tool;
 pub mod compile_tool;
 pub mod create_file_tool;
@@ -97,6 +123,7 @@ pub mod multi_edit_tool;
 pub mod path_utils;
 pub mod playbook_tool;
 pub mod prepare_document_tools_tool;
+pub mod project_tool;
 pub mod read_files_tool;
 pub mod record_verification_tool;
 pub mod reindex_tool;
@@ -126,6 +153,82 @@ pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
     pub artifacts: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolOutputAttachment {
+    pub name: String,
+    pub mime_type: String,
+    pub data: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolOutput {
+    pub llm_content: String,
+    pub display_content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ToolOutputAttachment>,
+}
+
+impl ToolOutput {
+    pub fn text(content: impl Into<String>) -> Self {
+        let content = content.into();
+        Self {
+            llm_content: content.clone(),
+            display_content: content,
+            data: None,
+            artifacts: None,
+            attachments: Vec::new(),
+        }
+    }
+}
+
+impl ToolResult {
+    const OUTPUT_ARTIFACT_KEY: &'static str = "toolOutput";
+
+    pub fn from_output(call_id: impl Into<String>, is_error: bool, output: ToolOutput) -> Self {
+        let mut artifacts = serde_json::Map::new();
+        artifacts.insert(
+            Self::OUTPUT_ARTIFACT_KEY.to_string(),
+            serde_json::to_value(&output).unwrap_or(serde_json::Value::Null),
+        );
+        if let Some(data) = output.data.clone() {
+            artifacts.insert("data".to_string(), data);
+        }
+        if let Some(nested_artifacts) = output.artifacts.clone() {
+            artifacts.insert("artifacts".to_string(), nested_artifacts);
+        }
+        Self {
+            call_id: call_id.into(),
+            content: output.display_content,
+            is_error,
+            artifacts: Some(serde_json::Value::Object(artifacts)),
+        }
+    }
+
+    pub fn output_channels(&self) -> ToolOutput {
+        self.artifacts
+            .as_ref()
+            .and_then(|artifacts| artifacts.get(Self::OUTPUT_ARTIFACT_KEY))
+            .and_then(|value| serde_json::from_value::<ToolOutput>(value.clone()).ok())
+            .unwrap_or_else(|| ToolOutput {
+                llm_content: self.content.clone(),
+                display_content: self.content.clone(),
+                data: None,
+                artifacts: self.artifacts.clone(),
+                attachments: Vec::new(),
+            })
+    }
+
+    pub fn llm_context_content(&self) -> String {
+        self.output_channels().llm_content
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -169,6 +272,36 @@ pub struct ToolRunCapabilities {
     pub resource_keys: Vec<String>,
 }
 
+/// Canonical policy and permission profile for a tool invocation.
+///
+/// This is intentionally separate from [`ToolRunCapabilities`]. Capabilities
+/// describe how a call should run; the access profile describes what kind of
+/// user data or system surface the call may touch, and how it should be shown
+/// in permission UIs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAccessProfile {
+    pub category: String,
+    pub can_read: bool,
+    pub can_write: bool,
+    pub can_execute: bool,
+    pub can_access_network: bool,
+    pub needs_approval: bool,
+    pub risk_level: ApprovalRisk,
+    pub risk_reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolInvocation {
+    pub call_id: String,
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+    pub capabilities: ToolRunCapabilities,
+    pub access_profile: ToolAccessProfile,
+    pub wait_for_previous: bool,
+}
+
 pub struct ToolExecutionContext<'a> {
     pub call_id: &'a str,
     pub arguments: &'a str,
@@ -190,7 +323,8 @@ fn infer_render_kind(name: &str) -> ToolRenderKind {
         | "list_documents"
         | "list_sources"
         | "session_search"
-        | "tool_search" => ToolRenderKind::Search,
+        | "tool_search"
+        | "code_intelligence" => ToolRenderKind::Search,
         "spawn_subagent" | "spawn_subagent_batch" => ToolRenderKind::Subagent,
         "generate_image" => ToolRenderKind::Image,
         "update_plan" => ToolRenderKind::Plan,
@@ -208,7 +342,8 @@ fn infer_input_streaming(name: &str) -> ToolInputStreamingMode {
         | "search_files"
         | "spawn_subagent"
         | "spawn_subagent_batch"
-        | "tool_search" => ToolInputStreamingMode::UiPreview,
+        | "tool_search"
+        | "code_intelligence" => ToolInputStreamingMode::UiPreview,
         _ => ToolInputStreamingMode::None,
     }
 }
@@ -281,6 +416,437 @@ fn infer_resource_keys(name: &str, args: &serde_json::Value) -> Vec<String> {
         push_string_resource_key(&mut keys, "mcp", name);
     }
     keys
+}
+
+fn is_builtin_web_search_mcp_tool(name: &str) -> bool {
+    name == "mcp__web_search__search" || name.starts_with("mcp__web_search__")
+}
+
+pub fn invocation_waits_for_previous(args: &serde_json::Value) -> bool {
+    args.get("wait_for_previous")
+        .or_else(|| args.get("waitForPrevious"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn category_label(category: ToolCategory) -> &'static str {
+    match category {
+        ToolCategory::Core => "core",
+        ToolCategory::FileSystem => "filesystem",
+        ToolCategory::SourceManagement => "source_management",
+        ToolCategory::Knowledge => "knowledge",
+        ToolCategory::Web => "web",
+        ToolCategory::DocumentAnalysis => "document_analysis",
+        ToolCategory::SubAgent => "delegation",
+        ToolCategory::Mcp => "mcp",
+        ToolCategory::Automation => "automation",
+    }
+}
+
+fn first_non_core_category(categories: &[ToolCategory]) -> ToolCategory {
+    categories
+        .iter()
+        .copied()
+        .find(|category| *category != ToolCategory::Core)
+        .or_else(|| categories.first().copied())
+        .unwrap_or(ToolCategory::Core)
+}
+
+fn generic_access_profile(
+    name: &str,
+    categories: &[ToolCategory],
+    capabilities: &ToolRunCapabilities,
+) -> ToolAccessProfile {
+    let category = if name.starts_with("mcp__") {
+        "mcp"
+    } else {
+        category_label(first_non_core_category(categories))
+    };
+    let can_execute = matches!(
+        capabilities.render_kind,
+        ToolRenderKind::CommandExecution | ToolRenderKind::Subagent
+    ) || categories
+        .iter()
+        .any(|category| matches!(category, ToolCategory::Automation | ToolCategory::SubAgent));
+    let can_access_network = categories
+        .iter()
+        .any(|category| matches!(category, ToolCategory::Web | ToolCategory::Mcp))
+        || name.starts_with("mcp__");
+    let can_write = !capabilities.read_only || capabilities.destructive;
+    let risk_level = if can_execute && (can_write || can_access_network) {
+        ApprovalRisk::High
+    } else if can_write || capabilities.destructive {
+        ApprovalRisk::Medium
+    } else {
+        ApprovalRisk::Low
+    };
+
+    ToolAccessProfile {
+        category: category.to_string(),
+        can_read: !matches!(
+            capabilities.render_kind,
+            ToolRenderKind::Plan | ToolRenderKind::Verification
+        ),
+        can_write,
+        can_execute,
+        can_access_network,
+        needs_approval: capabilities.destructive,
+        risk_level,
+        risk_reason: if risk_level == ApprovalRisk::Low {
+            "Read-only or low-risk local agent helper.".to_string()
+        } else {
+            "Tool capabilities indicate this invocation can mutate state, execute work, or cross a trust boundary.".to_string()
+        },
+    }
+}
+
+pub fn infer_tool_access_profile(
+    name: &str,
+    categories: &[ToolCategory],
+    capabilities: &ToolRunCapabilities,
+    args: &serde_json::Value,
+) -> ToolAccessProfile {
+    let (
+        category,
+        can_read,
+        can_write,
+        can_execute,
+        can_access_network,
+        needs_approval,
+        risk_level,
+        reason,
+    ) = match name {
+        "run_shell" => (
+            "system",
+            true,
+            true,
+            true,
+            true,
+            true,
+            ApprovalRisk::High,
+            "Executes local commands and can affect files, processes, and network.",
+        ),
+        "edit_file" | "multi_edit" => (
+            "filesystem",
+            true,
+            true,
+            false,
+            false,
+            true,
+            ApprovalRisk::High,
+            "Modifies existing text files and should pass through the write approval gate.",
+        ),
+        "create_file" => (
+            "filesystem",
+            false,
+            true,
+            false,
+            false,
+            true,
+            if args
+                .get("overwrite")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                ApprovalRisk::High
+            } else {
+                ApprovalRisk::Medium
+            },
+            "Creates or overwrites local files.",
+        ),
+        "write_note" => (
+            "filesystem",
+            false,
+            true,
+            false,
+            false,
+            true,
+            if args
+                .get("mode")
+                .and_then(|value| value.as_str())
+                .is_some_and(|mode| mode != "create")
+            {
+                ApprovalRisk::High
+            } else {
+                ApprovalRisk::Medium
+            },
+            "Creates or updates local notes.",
+        ),
+        "archive_output" => (
+            "artifact",
+            false,
+            true,
+            false,
+            false,
+            true,
+            ApprovalRisk::Medium,
+            "Persists agent output as a reusable local artifact.",
+        ),
+        "prepare_document_tools" => (
+            "document_tooling",
+            true,
+            true,
+            true,
+            true,
+            true,
+            ApprovalRisk::Medium,
+            "Prepares required Python document-processing helpers.",
+        ),
+        "manage_source" => (
+            "source_management",
+            true,
+            true,
+            false,
+            false,
+            true,
+            if args.get("action").and_then(|value| value.as_str()) == Some("remove") {
+                ApprovalRisk::High
+            } else {
+                ApprovalRisk::Medium
+            },
+            "Adds, updates, or removes knowledge sources.",
+        ),
+        "reindex_document" => (
+            "source_management",
+            true,
+            true,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Refreshes derived knowledge indexes without directly editing user files.",
+        ),
+        "compile_document" => (
+            "document_analysis",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads document compilation status and diagnostics.",
+        ),
+        "fetch_url" => (
+            "web",
+            true,
+            false,
+            false,
+            true,
+            false,
+            ApprovalRisk::Low,
+            "Reads remote URLs and crosses the local trust boundary.",
+        ),
+        "desktop_automation" => (
+            "automation",
+            true,
+            true,
+            true,
+            true,
+            true,
+            ApprovalRisk::High,
+            "Can operate desktop or browser surfaces through automation.",
+        ),
+        "get_document_info" | "compare_documents" | "summarize_document" => (
+            "document_analysis",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads local Office/PDF/document content for inspection and comparison.",
+        ),
+        "read_file" | "read_files" | "list_dir" | "glob_files" | "search_files"
+        | "grep_files" | "code_intelligence" => (
+            "filesystem",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads local files or directories for source-scoped inspection.",
+        ),
+        "project_tool" => {
+            if args.get("action").and_then(|value| value.as_str()) == Some("run") {
+                (
+                    "project_tool",
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                    ApprovalRisk::High,
+                    "Runs a command declared by a source-scoped project tool manifest.",
+                )
+            } else {
+                (
+                    "project_tool_catalog",
+                    true,
+                    false,
+                    false,
+                    false,
+                    false,
+                    ApprovalRisk::Low,
+                    "Reads source-scoped project tool manifests.",
+                )
+            }
+        }
+        "run_health_check" | "get_statistics" => (
+            "knowledge_health",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads knowledge-base diagnostics, coverage, and storage statistics.",
+        ),
+        "agent_harness_dry_run" => (
+            "agent_harness",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Runs a read-only readiness preview of local agent configuration and tool availability.",
+        ),
+        "search_knowledge_base"
+        | "retrieve_evidence"
+        | "list_sources"
+        | "list_documents"
+        | "search_by_date"
+        | "get_chunk_context"
+        | "query_knowledge_graph"
+        | "get_related_concepts" => (
+            "knowledge",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads indexed local knowledge as evidence.",
+        ),
+        "search_playbooks" | "search_sessions" => (
+            "memory",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads saved sessions, playbooks, or reusable local working context.",
+        ),
+        "manage_playbook" | "submit_feedback" => (
+            "memory",
+            true,
+            true,
+            false,
+            false,
+            true,
+            ApprovalRisk::Medium,
+            "Changes reusable playbooks, feedback, or knowledge-workflow records.",
+        ),
+        "manage_agent_memory" | "update_scratchpad" | "manage_skill" => (
+            "memory",
+            true,
+            true,
+            false,
+            false,
+            true,
+            ApprovalRisk::Medium,
+            "Changes persistent agent memory, skills, or working notes.",
+        ),
+        "spawn_subagent" | "spawn_subagent_batch" => (
+            "delegation",
+            true,
+            true,
+            true,
+            true,
+            true,
+            ApprovalRisk::Medium,
+            "Delegates bounded work to another agent with narrowed tool and source access.",
+        ),
+        "judge_subagent_results" => (
+            "delegation",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads and adjudicates subagent outputs without directly changing user data.",
+        ),
+        tool if is_builtin_web_search_mcp_tool(tool) => (
+            "web",
+            true,
+            false,
+            false,
+            true,
+            false,
+            ApprovalRisk::Low,
+            "Reads web search results through the built-in web search MCP server.",
+        ),
+        tool if tool == "mcp_tool" || tool.starts_with("mcp__") => (
+            "mcp",
+            true,
+            true,
+            true,
+            true,
+            true,
+            ApprovalRisk::High,
+            "Delegates to an external MCP server with server-defined capabilities.",
+        ),
+        "update_plan" | "record_verification" => (
+            "artifact",
+            false,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Records structured task progress or verification artifacts.",
+        ),
+        "tool_search" => (
+            "tool_catalog",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Reads the built-in tool catalog to choose an appropriate tool.",
+        ),
+        _ => {
+            return generic_access_profile(name, categories, capabilities);
+        }
+    };
+
+    ToolAccessProfile {
+        category: category.to_string(),
+        can_read,
+        can_write,
+        can_execute,
+        can_access_network,
+        needs_approval,
+        risk_level,
+        risk_reason: reason.to_string(),
+    }
+}
+
+pub fn fallback_tool_access_profile(name: &str, args: &serde_json::Value) -> ToolAccessProfile {
+    let capabilities = ToolRunCapabilities {
+        input_streaming: infer_input_streaming(name),
+        render_kind: infer_render_kind(name),
+        read_only: !matches!(name, "mcp_tool") && !name.starts_with("mcp__"),
+        destructive: false,
+        concurrency_safe: true,
+        interrupt_behavior: ToolInterruptBehavior::Block,
+        resource_keys: infer_resource_keys(name, args),
+    };
+    infer_tool_access_profile(name, &[ToolCategory::Core], &capabilities, args)
 }
 
 /// Trust metadata attached to tool artifacts that may be injected into model
@@ -461,7 +1027,7 @@ pub trait Tool: Send + Sync {
         ToolDefinition {
             name: self.name().to_string(),
             description: self.description().to_string(),
-            parameters: self.parameters_schema(),
+            parameters: with_scheduler_control_parameters(self.parameters_schema()),
         }
     }
 
@@ -537,6 +1103,12 @@ pub trait Tool: Send + Sync {
             },
             resource_keys,
         }
+    }
+
+    /// Canonical permission and risk descriptor for this invocation.
+    fn access_profile(&self, args: &serde_json::Value) -> ToolAccessProfile {
+        let capabilities = self.run_capabilities(args);
+        infer_tool_access_profile(self.name(), self.categories(), &capabilities, args)
     }
 
     /// Execute the tool with the given JSON-encoded arguments.
@@ -686,6 +1258,31 @@ impl ToolRegistry {
                 interrupt_behavior: ToolInterruptBehavior::Block,
                 resource_keys: infer_resource_keys(name, args),
             })
+    }
+
+    pub fn access_profile(&self, name: &str, args: &serde_json::Value) -> ToolAccessProfile {
+        self.get(name)
+            .map(|tool| tool.access_profile(args))
+            .unwrap_or_else(|| fallback_tool_access_profile(name, args))
+    }
+
+    pub fn build_invocation(
+        &self,
+        call_id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: serde_json::Value,
+    ) -> ToolInvocation {
+        let tool_name = name.into();
+        let capabilities = self.run_capabilities(&tool_name, &arguments);
+        let access_profile = self.access_profile(&tool_name, &arguments);
+        ToolInvocation {
+            call_id: call_id.into(),
+            tool_name,
+            wait_for_previous: invocation_waits_for_previous(&arguments),
+            arguments,
+            capabilities,
+            access_profile,
+        }
     }
 
     /// Return definitions for tools whose categories overlap with `active`.
@@ -1037,6 +1634,8 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(glob_files_tool::GlobFilesTool));
     registry.register(Box::new(search_files_tool::SearchFilesTool));
     registry.register(Box::new(search_files_tool::GrepFilesTool));
+    registry.register(Box::new(code_intelligence_tool::CodeIntelligenceTool));
+    registry.register(Box::new(project_tool::ProjectTool));
     registry.register(Box::new(playbook_tool::PlaybookTool));
     registry.register(Box::new(
         prepare_document_tools_tool::PrepareDocumentToolsTool,
@@ -1083,6 +1682,7 @@ pub fn default_tool_registry() -> ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approval::ApprovalRisk;
 
     #[test]
     fn select_tools_includes_knowledge_for_collection_queries() {
@@ -1155,5 +1755,164 @@ mod tests {
 
         assert!(names.iter().any(|name| name == "run_shell"));
         assert!(names.iter().any(|name| name == "edit_file"));
+        assert!(names.iter().any(|name| name == "code_intelligence"));
+        assert!(names.iter().any(|name| name == "project_tool"));
+    }
+
+    #[test]
+    fn select_tools_includes_code_navigation_for_codebase_tasks() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools(
+            "debug the agent routing bug and run the repository diagnostics",
+            false,
+        );
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "code_intelligence"));
+        assert!(names.iter().any(|name| name == "project_tool"));
+        assert!(names.iter().any(|name| name == "search_files"));
+        assert!(names.iter().any(|name| name == "run_shell"));
+    }
+
+    #[test]
+    fn access_profile_marks_run_shell_as_high_risk_platform_capability() {
+        let registry = default_tool_registry();
+        let args = serde_json::json!({
+            "program": "git",
+            "args": ["status", "--short"],
+            "cwd": "."
+        });
+
+        let profile = registry.access_profile("run_shell", &args);
+
+        assert_eq!(profile.category, "system");
+        assert!(profile.can_read);
+        assert!(profile.can_write);
+        assert!(profile.can_execute);
+        assert!(profile.can_access_network);
+        assert!(profile.needs_approval);
+        assert_eq!(profile.risk_level, ApprovalRisk::High);
+
+        let capabilities = registry.run_capabilities("run_shell", &args);
+        assert!(!capabilities.destructive);
+    }
+
+    #[test]
+    fn access_profile_reflects_argument_sensitive_write_risk() {
+        let registry = default_tool_registry();
+        let create = registry.access_profile(
+            "create_file",
+            &serde_json::json!({
+                "path": "notes/example.md",
+                "content": "hello",
+                "overwrite": false
+            }),
+        );
+        let overwrite = registry.access_profile(
+            "create_file",
+            &serde_json::json!({
+                "path": "notes/example.md",
+                "content": "hello",
+                "overwrite": true
+            }),
+        );
+
+        assert!(create.can_write);
+        assert_eq!(create.risk_level, ApprovalRisk::Medium);
+        assert_eq!(overwrite.risk_level, ApprovalRisk::High);
+        assert!(overwrite.needs_approval);
+    }
+
+    #[test]
+    fn tool_definitions_expose_scheduler_wait_hint() {
+        let registry = default_tool_registry();
+        let def = registry
+            .get("run_shell")
+            .expect("run_shell should be registered")
+            .definition();
+
+        let properties = def.parameters["properties"]
+            .as_object()
+            .expect("parameters should expose properties");
+        assert!(properties.contains_key("wait_for_previous"));
+        assert!(!def.parameters["required"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .any(|value| value.as_str() == Some("wait_for_previous")));
+    }
+
+    #[test]
+    fn default_tool_contracts_have_policy_and_scheduler_metadata() {
+        let registry = default_tool_registry();
+
+        for name in registry.tool_names() {
+            let tool = registry.get(&name).expect("registered tool should resolve");
+            let def = tool.definition();
+            if def.parameters["type"].as_str() == Some("object") {
+                assert!(
+                    def.parameters["properties"]
+                        .as_object()
+                        .is_some_and(|properties| properties.contains_key("wait_for_previous")),
+                    "{name} should expose wait_for_previous"
+                );
+            }
+
+            let profile = registry.access_profile(&name, &serde_json::Value::Null);
+            assert!(
+                !profile.category.is_empty(),
+                "{name} should declare an access category"
+            );
+            assert!(
+                !profile.risk_reason.is_empty(),
+                "{name} should declare a risk reason"
+            );
+            if profile.needs_approval {
+                assert_ne!(
+                    profile.risk_level,
+                    ApprovalRisk::Low,
+                    "{name} should not be low-risk when approval is needed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invocation_combines_capabilities_policy_and_scheduler_hints() {
+        let registry = default_tool_registry();
+        let invocation = registry.build_invocation(
+            "call-1",
+            "create_file",
+            serde_json::json!({
+                "path": "notes/example.md",
+                "content": "hello",
+                "overwrite": true,
+                "wait_for_previous": true
+            }),
+        );
+
+        assert_eq!(invocation.call_id, "call-1");
+        assert_eq!(invocation.tool_name, "create_file");
+        assert!(invocation.wait_for_previous);
+        assert!(invocation.capabilities.destructive);
+        assert!(invocation.access_profile.can_write);
+        assert_eq!(invocation.access_profile.risk_level, ApprovalRisk::High);
+    }
+
+    #[test]
+    fn tool_result_can_split_display_data_and_llm_context() {
+        let output = ToolOutput {
+            llm_content: "context-only summary".to_string(),
+            display_content: "full display output".to_string(),
+            data: Some(serde_json::json!({ "rows": 2 })),
+            artifacts: Some(serde_json::json!({ "kind": "table" })),
+            attachments: Vec::new(),
+        };
+
+        let result = ToolResult::from_output("call-1", false, output.clone());
+
+        assert_eq!(result.content, "full display output");
+        assert_eq!(result.llm_context_content(), "context-only summary");
+        assert_eq!(result.output_channels(), output);
     }
 }

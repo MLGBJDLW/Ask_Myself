@@ -277,6 +277,7 @@ pub fn build_task_plan(input: TaskPlanningInput<'_>) -> AgentTaskPlan {
         "CollectionFocused" => collection_plan(input, objective),
         "KnowledgeRetrieval" => knowledge_plan(input, objective),
         "ConversationRecall" => conversation_recall_plan(input, objective),
+        "CodebaseOperation" => codebase_operation_plan(input, objective),
         "FileOperation" => file_operation_plan(input, objective),
         "WebLookup" => web_lookup_plan(input, objective),
         "SourceManagement" => source_management_plan(input, objective),
@@ -286,8 +287,10 @@ pub fn build_task_plan(input: TaskPlanningInput<'_>) -> AgentTaskPlan {
 
 fn normalize_route(route_kind: &str) -> String {
     match route_kind {
-        "CollectionFocused" | "KnowledgeRetrieval" | "ConversationRecall" | "FileOperation"
-        | "WebLookup" | "SourceManagement" | "DirectResponse" => route_kind.to_string(),
+        "CollectionFocused" | "KnowledgeRetrieval" | "ConversationRecall" | "CodebaseOperation"
+        | "FileOperation" | "WebLookup" | "SourceManagement" | "DirectResponse" => {
+            route_kind.to_string()
+        }
         other => {
             let compact = other.trim();
             if compact.is_empty() {
@@ -556,6 +559,79 @@ fn file_operation_plan(input: TaskPlanningInput<'_>, objective: String) -> Agent
     }
 }
 
+fn codebase_operation_plan(input: TaskPlanningInput<'_>, objective: String) -> AgentTaskPlan {
+    AgentTaskPlan {
+        version: 1,
+        route_kind: "CodebaseOperation".to_string(),
+        confidence: 90,
+        objective: objective.clone(),
+        source_scope_policy: SourceScopePolicy::FilesystemFirst,
+        source_scope_count: input.source_scope_count,
+        evidence_policy: EvidencePolicy {
+            mode: EvidenceMode::Prefer,
+            min_sources: 1,
+            require_citations: false,
+            require_verification: true,
+            contradiction_check: false,
+            allow_web: false,
+            allow_memory: true,
+        },
+        tool_budget: ToolBudget {
+            max_tool_rounds: 7,
+            max_parallel_tools: 3,
+            prefer_direct_dispatch: true,
+        },
+        delegation: DelegationPlan {
+            mode: DelegationMode::Optional,
+            max_workers: 2,
+            judge_required: true,
+            trigger_conditions: vec![
+                "Multiple independent modules can be inspected or changed in parallel."
+                    .to_string(),
+                "A risky refactor needs a separate review or verification pass.".to_string(),
+            ],
+        },
+        steps: vec![
+            plan_step(
+                "locate",
+                "Locate relevant code symbols, project manifests, and source files before broad reads.",
+                PlanStepStatus::InProgress,
+                &["code_intelligence", "project_tool", "glob_files", "search_files"],
+                &["Likely declarations, references, files, or project-local tools are identified."],
+            ),
+            plan_step(
+                "diagnose",
+                "Inspect the implementation and run existing repository diagnostics when available.",
+                PlanStepStatus::Pending,
+                &["read_file", "read_files", "project_tool", "run_shell"],
+                &["The failure mode or implementation target is understood before editing."],
+            ),
+            plan_step(
+                "change",
+                "Make the narrowest source change that addresses the request.",
+                PlanStepStatus::Pending,
+                &["edit_file", "multi_edit", "create_file"],
+                &["Changes are scoped to relevant files and preserve existing behavior where required."],
+            ),
+            plan_step(
+                "verify",
+                "Run targeted verification and record the result or remaining gap.",
+                PlanStepStatus::Pending,
+                &["project_tool", "run_shell", "record_verification"],
+                &["Verification output or an explicit validation gap is recorded."],
+            ),
+        ],
+        ledger: initial_ledger(&objective, false),
+        safeguards: vec![
+            "Use code_intelligence before reading many files when the task names code concepts."
+                .to_string(),
+            "Use project_tool list/describe before ad hoc run_shell for repository workflows; pass the current manifestHash when running a project tool.".to_string(),
+            "Avoid broad command execution and unrelated refactors.".to_string(),
+            "Record verification before finalizing codebase changes.".to_string(),
+        ],
+    }
+}
+
 fn web_lookup_plan(input: TaskPlanningInput<'_>, objective: String) -> AgentTaskPlan {
     AgentTaskPlan {
         version: 1,
@@ -781,6 +857,30 @@ mod tests {
             .safeguards
             .iter()
             .any(|guard| guard.contains("office files")));
+    }
+
+    #[test]
+    fn codebase_plan_prefers_code_navigation_and_project_tools() {
+        let plan = plan(
+            "CodebaseOperation",
+            "Debug the agent routing bug and run repository diagnostics.",
+            true,
+        );
+
+        assert_eq!(plan.route_kind, "CodebaseOperation");
+        assert_eq!(plan.source_scope_policy, SourceScopePolicy::FilesystemFirst);
+        assert!(plan
+            .steps
+            .iter()
+            .any(|step| step.id == "locate"
+                && step.required_tools.contains(&"code_intelligence".into())));
+        assert!(plan
+            .steps
+            .iter()
+            .any(|step| step.id == "diagnose"
+                && step.required_tools.contains(&"project_tool".into())));
+        assert!(plan.steps.iter().any(|step| step.id == "verify"
+            && step.required_tools.contains(&"record_verification".into())));
     }
 
     #[test]

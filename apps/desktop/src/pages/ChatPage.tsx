@@ -90,14 +90,7 @@ export function ChatPage() {
     currentSourceIdsRef.current = ids;
   }, []);
 
-  const PERSONA_STORAGE_KEY = 'chat-active-persona-id';
-  const [activePersonaId, setActivePersonaId] = useState(() => {
-    try {
-      return localStorage.getItem(PERSONA_STORAGE_KEY) || 'default';
-    } catch {
-      return 'default';
-    }
-  });
+  const [activePersonaId, setActivePersonaId] = useState('default');
   const [personas, setPersonas] = useState<api.PersonaProfile[]>([]);
   useEffect(() => {
     api.listPersonas()
@@ -116,21 +109,12 @@ export function ChatPage() {
 
   useEffect(() => {
     if (!chat.activeId) return;
-    const next = chat.activeConversation?.personaId || (() => {
-      try {
-        return localStorage.getItem(PERSONA_STORAGE_KEY) || 'default';
-      } catch {
-        return 'default';
-      }
-    })();
+    const next = chat.activeConversation?.personaId || 'default';
     setActivePersonaId((current) => (current === next ? current : next));
   }, [chat.activeId, chat.activeConversation?.personaId]);
 
   const setPersona = useCallback((id: string) => {
     setActivePersonaId(id);
-    try {
-      localStorage.setItem(PERSONA_STORAGE_KEY, id);
-    } catch { /* ignore */ }
     if (chat.activeId) {
       void api.updateConversationPersona(chat.activeId, id)
         .then((updated) => {
@@ -285,7 +269,7 @@ export function ChatPage() {
         chat.agentConfig.model,
         systemPrompt,
         projectId ?? undefined,
-        activePersonaId,
+        'default',
       );
       chat.setConversations((prev) => [conv, ...prev.filter((c) => c.id !== conv.id)]);
       navigate(`/chat/${conv.id}`);
@@ -299,7 +283,6 @@ export function ChatPage() {
     chat.customSystemPrompt,
     chat.setConversations,
     chat.createNewConversation,
-    activePersonaId,
     navigate,
     t,
   ]);

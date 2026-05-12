@@ -228,6 +228,8 @@ export interface AgentConfig {
   summarizationModel: string | null;
   /** Optional provider override for summarization (e.g. "open_ai"). */
   summarizationProvider: string | null;
+  /** Optional model for image generation. */
+  imageGenerationModel: string | null;
   /** Optional whitelist of delegated tool names that subagents may use. */
   subagentAllowedTools: string[] | null;
   /** Optional whitelist of enabled skill IDs that delegated subagents may inherit. */
@@ -266,6 +268,8 @@ export interface SaveAgentConfigInput {
   summarizationModel: string | null;
   /** Optional provider override for summarization (e.g. "open_ai"). */
   summarizationProvider: string | null;
+  /** Optional model for image generation. */
+  imageGenerationModel: string | null;
   /** Optional whitelist of delegated tool names that subagents may use. */
   subagentAllowedTools: string[] | null;
   /** Optional whitelist of enabled skill IDs that delegated subagents may inherit. */
@@ -321,6 +325,7 @@ export type ProviderType =
 export interface AgentEvent {
   type:
     | 'textDelta'
+    | 'streamBlockDelta'
     | 'streamReset'
     | 'toolCallPreparing'
     | 'toolCallStart'
@@ -341,6 +346,9 @@ export interface AgentEvent {
     | 'taskRunUpdated'
     | 'taskRunEvent';
   delta?: string;
+  blockId?: string;
+  channel?: 'answer' | 'thinking';
+  offset?: number;
   reason?: string;
   callId?: string;
   toolName?: string;
@@ -383,6 +391,9 @@ export interface ToolAccessInfo {
 export interface ApprovalRequest {
   id: string;
   toolName: string;
+  permissionKey: string;
+  targetKind: string;
+  targetValue: string;
   argumentsPreview: string;
   riskLevel: ApprovalRisk;
   reason: string;
@@ -397,6 +408,9 @@ export interface ApprovalPolicy {
   toolName: string;
   decision: string;
   createdAt?: string;
+  permissionKey?: string | null;
+  targetKind?: string | null;
+  targetValue?: string | null;
 }
 
 export interface ApprovalPolicyList {
@@ -407,8 +421,12 @@ export interface ApprovalPolicyList {
 export interface AgentFrontendEvent {
   conversationId: string;
   type: AgentEvent['type'];
+  eventSeq?: number;
   summary?: string;
   delta?: string;
+  blockId?: string;
+  channel?: 'answer' | 'thinking';
+  offset?: number;
   reason?: string;
   callId?: string;
   toolName?: string;

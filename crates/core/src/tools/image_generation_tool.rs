@@ -119,6 +119,12 @@ impl Tool for GenerateImageTool {
             .model
             .clone()
             .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                config
+                    .image_generation_model
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+            })
             .or_else(|| is_image_generation_model(&config.model).then(|| config.model.clone()))
             .unwrap_or_else(|| default_model(provider).to_string());
         let output_format = normalize_output_format(args.output_format.as_deref());

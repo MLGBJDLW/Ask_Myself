@@ -7,6 +7,7 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { useTranslation } from '../../i18n';
 import { openFileInDefaultApp } from '../../lib/api';
 import { canPreviewInApp, useFilePreview } from '../../lib/filePreviewContext';
+import { sourceHost } from '../../lib/sourceDisplay';
 import { FileBadge } from '../ui/FileBadge';
 import { CitationChip } from './EvidenceCard';
 import type { CitationCardData } from '../../lib/citationParser';
@@ -177,6 +178,13 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
   // URL reference: open in system browser
   if (href && href.startsWith('url:')) {
     const rawUrl = href.slice(4);
+    const host = sourceHost(rawUrl);
+    const label = Array.isArray(children)
+      ? children.map(String).join('')
+      : String(children ?? '');
+    const displayLabel = host && label && !label.includes(host)
+      ? `${label} · ${host}`
+      : (label || host || rawUrl);
     return (
       <button
         type="button"
@@ -193,7 +201,7 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
         title={rawUrl}
       >
         <ExternalLink className="h-2.5 w-2.5 shrink-0" />
-        <span className="truncate max-w-[150px]">{children}</span>
+        <span className="truncate max-w-[180px]">{displayLabel}</span>
       </button>
     );
   }

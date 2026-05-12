@@ -50,16 +50,25 @@ pub(super) fn tool_call_execution_batches(
 
     for (index, tool_call) in tool_calls.iter().enumerate() {
         let scheduling = tool_policy.decision_for(tool_call);
-        let capabilities = tools.run_capabilities(&tool_call.name, &scheduling.parsed_args);
-        let exclusive = capabilities.destructive || !capabilities.concurrency_safe;
-        let has_resource_keys = !capabilities.resource_keys.is_empty();
+        let invocation =
+            tools.build_invocation(&tool_call.id, &tool_call.name, scheduling.parsed_args);
+        if invocation.wait_for_previous && !current_parallel_batch.is_empty() {
+            batches.push(std::mem::take(&mut current_parallel_batch));
+            current_resource_keys.clear();
+            current_exclusive_resource_keys.clear();
+        }
+        let exclusive =
+            invocation.capabilities.destructive || !invocation.capabilities.concurrency_safe;
+        let has_resource_keys = !invocation.capabilities.resource_keys.is_empty();
         let resource_conflict = if exclusive {
-            capabilities
+            invocation
+                .capabilities
                 .resource_keys
                 .iter()
                 .any(|key| current_resource_keys.contains(key))
         } else {
-            capabilities
+            invocation
+                .capabilities
                 .resource_keys
                 .iter()
                 .any(|key| current_exclusive_resource_keys.contains(key))
@@ -73,7 +82,7 @@ pub(super) fn tool_call_execution_batches(
         }
 
         current_parallel_batch.push(index);
-        for key in &capabilities.resource_keys {
+        for key in &invocation.capabilities.resource_keys {
             current_resource_keys.insert(key.clone());
             if exclusive {
                 current_exclusive_resource_keys.insert(key.clone());

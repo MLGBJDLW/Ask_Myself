@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Brain, FolderOpen, Plus, ChevronDown, Check, Pencil, Save, Trash2, X } from 'lucide-react';
+import { Brain, Database, FolderOpen, Plus, ChevronDown, Check, Pencil, Save, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import type { Project, CreateProjectInput, UpdateProjectInput } from '../../types/project';
+import type { Source } from '../../types';
 import * as api from '../../lib/api';
 import {
   DEFAULT_PROJECT_COLOR,
@@ -57,10 +58,13 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
   const [newName, setNewName] = useState('');
   const [newIcon, setNewIcon] = useState(PROJECT_ICON_OPTIONS[0].id);
   const [newColor, setNewColor] = useState(DEFAULT_PROJECT_COLOR);
+  const [newSourceScope, setNewSourceScope] = useState<string[]>([]);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editIcon, setEditIcon] = useState(PROJECT_ICON_OPTIONS[0].id);
   const [editColor, setEditColor] = useState(DEFAULT_PROJECT_COLOR);
+  const [editSourceScope, setEditSourceScope] = useState<string[]>([]);
+  const [sources, setSources] = useState<Source[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [projectBusy, setProjectBusy] = useState(false);
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
@@ -80,6 +84,12 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
   }, [loadProjects]);
 
   useEffect(() => {
+    api.listSources()
+      .then((list) => setSources(Array.isArray(list) ? list : []))
+      .catch(() => setSources([]));
+  }, []);
+
+  useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -88,6 +98,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
         setNewName('');
         setNewIcon(PROJECT_ICON_OPTIONS[0].id);
         setNewColor(DEFAULT_PROJECT_COLOR);
+        setNewSourceScope([]);
         setEditingProjectId(null);
       }
     };
@@ -107,11 +118,17 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
     if (!trimmed) return;
     setProjectBusy(true);
     try {
-      const input: CreateProjectInput = { name: trimmed, icon: newIcon, color: newColor };
+      const input: CreateProjectInput = {
+        name: trimmed,
+        icon: newIcon,
+        color: newColor,
+        sourceScope: newSourceScope.length > 0 ? newSourceScope : null,
+      };
       const created = await api.createProject(input);
       setNewName('');
       setNewIcon(PROJECT_ICON_OPTIONS[0].id);
       setNewColor(DEFAULT_PROJECT_COLOR);
+      setNewSourceScope([]);
       setCreating(false);
       await loadProjects();
       onProjectChange(created.id);
@@ -130,6 +147,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
     setEditName(project.name);
     setEditIcon(getProjectIconOption(project.icon).id);
     setEditColor(normalizeProjectColor(project.color));
+    setEditSourceScope(project.sourceScope ?? []);
   };
 
   const cancelEditProject = () => {
@@ -137,12 +155,18 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
     setEditName('');
     setEditIcon(PROJECT_ICON_OPTIONS[0].id);
     setEditColor(DEFAULT_PROJECT_COLOR);
+    setEditSourceScope([]);
   };
 
   const handleUpdateProject = async (project: Project) => {
     const trimmed = editName.trim();
     if (!trimmed) return;
-    const input: UpdateProjectInput = { name: trimmed, icon: editIcon, color: editColor };
+    const input: UpdateProjectInput = {
+      name: trimmed,
+      icon: editIcon,
+      color: editColor,
+      sourceScope: editSourceScope.length > 0 ? editSourceScope : [],
+    };
     setProjectBusy(true);
     try {
       const updated = await api.updateProject(project.id, input);
@@ -244,6 +268,59 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
     );
   };
 
+  const renderSourceScopePicker = (value: string[], onChange: (ids: string[]) => void) => {
+    const selected = new Set(value);
+    const toggleSource = (sourceId: string) => {
+      const next = new Set(selected);
+      if (next.has(sourceId)) {
+        next.delete(sourceId);
+      } else {
+        next.add(sourceId);
+      }
+      onChange(Array.from(next));
+    };
+
+    if (sources.length === 0) {
+      return null;
+    }
+
+    return (
+      <div className="space-y-1.5 rounded-md border border-border/70 bg-surface-1 p-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-text-secondary">
+          <Database size={12} />
+          <span>Project sources</span>
+          <span className="ml-auto text-[10px] text-text-tertiary">
+            {selected.size === 0 ? 'All' : `${selected.size}/${sources.length}`}
+          </span>
+        </div>
+        <div className="max-h-28 space-y-1 overflow-y-auto pr-1">
+          {sources.map((source) => {
+            const checked = selected.has(source.id);
+            return (
+              <button
+                key={source.id}
+                type="button"
+                onClick={() => toggleSource(source.id)}
+                className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] text-text-secondary hover:bg-surface-3 hover:text-text-primary"
+              >
+                <span
+                  className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
+                    checked
+                      ? 'border-accent bg-accent text-white'
+                      : 'border-border bg-surface-0'
+                  }`}
+                >
+                  {checked && <Check size={10} />}
+                </span>
+                <span className="truncate">{source.rootPath}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   const renderProjectRow = (project: Project) => {
     const editing = editingProjectId === project.id;
 
@@ -262,6 +339,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
           />
           {renderIconPicker(editIcon, setEditIcon)}
           {renderColorPicker(editColor, setEditColor)}
+          {renderSourceScopePicker(editSourceScope, setEditSourceScope)}
           <div className="flex justify-end gap-1">
             <button
               type="button"
@@ -378,11 +456,12 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') void handleCreate();
-                  if (e.key === 'Escape') {
+                if (e.key === 'Escape') {
                     setCreating(false);
                     setNewName('');
                     setNewIcon(PROJECT_ICON_OPTIONS[0].id);
                     setNewColor(DEFAULT_PROJECT_COLOR);
+                    setNewSourceScope([]);
                   }
                 }}
                 placeholder={t('project.namePlaceholder')}
@@ -390,6 +469,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
               />
               {renderIconPicker(newIcon, setNewIcon)}
               {renderColorPicker(newColor, setNewColor)}
+              {renderSourceScopePicker(newSourceScope, setNewSourceScope)}
               <div className="flex justify-end gap-1">
                 <button
                   type="button"
@@ -398,6 +478,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
                     setNewName('');
                     setNewIcon(PROJECT_ICON_OPTIONS[0].id);
                     setNewColor(DEFAULT_PROJECT_COLOR);
+                    setNewSourceScope([]);
                   }}
                   className="rounded p-1.5 text-text-tertiary hover:bg-surface-3 hover:text-text-primary"
                   aria-label={t('common.cancel')}
@@ -421,6 +502,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
             <button
               onClick={() => {
                 setEditingProjectId(null);
+                setNewSourceScope([]);
                 setCreating(true);
               }}
               className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-accent transition-colors hover:bg-surface-3 hover:text-accent-hover"

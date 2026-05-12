@@ -53,11 +53,19 @@ impl Tool for KnowledgeGraphTool {
         call_id: &str,
         arguments: &str,
         db: &Database,
-        _source_scope: &[String],
+        source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let args: KnowledgeGraphArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid query_knowledge_graph arguments: {e}"))
         })?;
+        if !source_scope.is_empty() {
+            return Ok(ToolResult {
+                call_id: call_id.to_string(),
+                content: "query_knowledge_graph is disabled while a source scope is active because the compiled graph is not yet source-filtered. Use search_knowledge_base, retrieve_evidence, or summarize_document within the active scope instead.".into(),
+                is_error: false,
+                artifacts: None,
+            });
+        }
 
         let db = db.clone();
         let call_id = call_id.to_string();
