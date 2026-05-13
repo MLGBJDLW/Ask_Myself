@@ -448,6 +448,7 @@ Primary Office commands:
 | Create DOCX from body/Markdown/template | `create_docx` |
 | Create XLSX from JSON workbook spec | `create_xlsx` |
 | Create PPTX from JSON deck spec/template | `create_pptx` |
+| Create PPTX from HTML/CSS deck project | `create_html_pptx` |
 | Extract text | `extract` |
 | Replace/redact text | `replace` / `redact` |
 | Snapshot before risky edits | `version` |
@@ -457,7 +458,7 @@ Primary Office commands:
 | Unpack/pack OOXML for precise edits | `unpack` / `pack` |
 | Recalculate XLSX formulas and scan errors | `recalc_xlsx` |
 
-PPT deep-generation workflows live in the `pptx-presentation-design` skill, not as separate global tools. `create_pptx` remains a compatibility command backed by that skill's renderer; for PPT planning, template profiling, style extraction, visual QA, rewrite planning, asset inventory, regression samples, quality gates, and delivery packages, activate the PPT skill and use its bundled scripts/resources.
+PPT deep-generation workflows live in the `pptx-presentation-design` skill, not as separate global tools. `create_pptx` remains a compatibility command backed by that skill's native renderer; `create_html_pptx` is the HTML-first route for CSS layout, screenshot QA, hybrid native/raster export, transitions, animations, and deck manifests. For PPT planning, template profiling, style extraction, visual QA, rewrite planning, asset inventory, regression samples, quality gates, and delivery packages, activate the PPT skill and use its bundled scripts/resources.
 
 `generate_docx`, `generate_xlsx`, and `ppt_generate` remain registered for compatibility, but they are fallback tools. Prefer the Python path because it supports validation, templates, rendering, formulas, speaker notes, and follow-up edits without passing binary content through tool arguments.
 
@@ -468,6 +469,7 @@ Runtime readiness:
 - After preparation, `run_shell` prepends the app-managed Python `Scripts`/`bin` directory to `PATH`, so `python <SKILL_DIR>/scripts/edit_doc.py ...` uses the prepared Office environment automatically.
 - If Python itself is not installed, Nexa does not silently install a system runtime. The UI shows the Python download URL and keeps native generators available as simple compatibility fallback.
 - LibreOffice and Poppler remain optional system-level applications for conversion, rendering, and Excel formula recalculation QA. Install them outside the app only when a task needs those workflows.
+- Python Playwright remains optional for HTML-first PPTX screenshot QA. Without it, `create_html_pptx --screenshot auto` still writes HTML, PPTX, manifest, and QA, but reports screenshot coverage as a warning.
 
 ---
 

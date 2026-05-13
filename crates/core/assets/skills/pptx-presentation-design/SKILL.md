@@ -7,14 +7,15 @@ description: Create, edit, inspect, and validate PowerPoint PPTX presentations w
 1. For source material, run `scripts/pptx_deck_planner.py --input <notes.md> --out <spec.json>` when a renderer spec is not already available.
 2. Create or edit the JSON spec as a workspace file with `create_file`, `edit_file`, or `multi_edit`; do not pass large deck specs through a single `run_shell` argument.
 3. For a new editable deck, use `scripts/pptx_renderer.py --path <file> --spec <json>` or the `doc-script-editor create_pptx` compatibility command, which delegates to this renderer.
-4. Use `doc-script-editor` for cross-format file operations: `check`, `insert_slide`, `replace`, `extract`, `version`, `unpack`, `pack`, `render`, `convert`, and `validate`.
-5. For a template deck, run `scripts/pptx_template_bind.py --template <template.pptx> --spec <spec.json> --out <bound-spec.json>` before rendering; this profiles layouts/style and annotates each slide with template layout bindings.
-6. For an existing deck rewrite, run `scripts/pptx_semantic_rewriter.py --path <file> --out <spec.json>` for a new semantic story, or `scripts/pptx_rewrite_plan.py --path <file> --out-spec <spec.json>` when you also need slide-level remediation actions.
-7. Before rendering, run `scripts/pptx_asset_pack.py --spec <spec.json> --pretty` to catch missing local assets and preserve source links.
-8. After writing, run `scripts/pptx_audit.py --path <file> --pretty` and `scripts/pptx_visual_qa.py --path <file> --pretty`; if rendered slide images exist, pass `--render-dir`.
-9. Run `scripts/pptx_quality_gate.py --path <file> --visual-qa <visual.json> --pretty` on finished decks; use `--strict` or `--require-notes` for presenter-ready or production decks.
-10. For final delivery, run `scripts/pptx_delivery_pack.py --path <file> --out-dir <dir> --pretty` to save the deck, audit, visual QA, asset manifest, and quality gate result together.
-11. Use OOXML unpack/pack for speaker notes, media replacement, relationship repair, master/layout work, or precise template surgery.
+4. For a high-design deck that benefits from CSS/web layout, use `scripts/html_deck_renderer.py --spec <json> --out-dir <project-dir> --pptx <file> --mode hybrid --screenshot auto` or `doc-script-editor create_html_pptx`. Keep the HTML deck spec as a file; do not pass it through a shell argument.
+5. Use `doc-script-editor` for cross-format file operations: `check`, `insert_slide`, `replace`, `extract`, `version`, `unpack`, `pack`, `render`, `convert`, and `validate`.
+6. For a template deck, run `scripts/pptx_template_bind.py --template <template.pptx> --spec <spec.json> --out <bound-spec.json>` before rendering; this profiles layouts/style and annotates each slide with template layout bindings.
+7. For an existing deck rewrite, run `scripts/pptx_semantic_rewriter.py --path <file> --out <spec.json>` for a new semantic story, or `scripts/pptx_rewrite_plan.py --path <file> --out-spec <spec.json>` when you also need slide-level remediation actions.
+8. Before rendering, run `scripts/pptx_asset_pack.py --spec <spec.json> --pretty` to catch missing local assets and preserve source links.
+9. After writing, run `scripts/pptx_audit.py --path <file> --pretty` and `scripts/pptx_visual_qa.py --path <file> --pretty`; if rendered slide images exist, pass `--render-dir`.
+10. Run `scripts/pptx_quality_gate.py --path <file> --visual-qa <visual.json> --pretty` on finished decks; use `--strict` or `--require-notes` for presenter-ready or production decks.
+11. For final delivery, run `scripts/pptx_delivery_pack.py --path <file> --out-dir <dir> --pretty` to save the deck, audit, visual QA, asset manifest, and quality gate result together.
+12. Use OOXML unpack/pack for speaker notes, media replacement, relationship repair, master/layout work, or precise template surgery.
 
 ## Quality Rules
 1. One idea per slide. Put the message in the title, not only the body.
@@ -35,6 +36,8 @@ Read `references/pptx-playbook.md` for template workflow, slide design rules, an
 Use `scripts/pptx_renderer.py` to create editable decks from JSON specs. Supported layouts are `title`, `agenda`, `body`, `two_column`, `stat`, `quote`, `section`, `image_full`, `table`, `timeline`, `process`, `comparison`, `matrix`, and `chart`; specs may include `theme`, `slide_size`, `footer`, slide-level `notes`, top-level `notes_per_slide`, `images`, `icons`, slide-level `background`, slide-level `icon`, and template reuse.
 
 Slide-level `transition` is supported for light motion: `"fade"`, `"push"`, `"wipe"`, `"split"`, `"cover"`, `"pull"`, or `"cut"`, or an object such as `{ "type": "push", "dir": "left", "speed": "fast", "advance_ms": 5000 }`. Use it sparingly for section changes and narrative pacing. True Morph choreography and per-shape animations need an OfficeCLI-style OOXML/shape-name workflow that this renderer does not fully implement yet; do not promise Morph unless you are explicitly doing OOXML surgery and validating in PowerPoint.
+
+Use `scripts/html_deck_renderer.py` when the route should be HTML-first rather than native-PPT-first. It writes a reviewable HTML project (`source/deck.html` and one HTML file per slide), optionally captures Playwright screenshots, exports a PPTX, maps slide transitions and simple entrance animations, and writes `manifest.json` plus `qa.json`. Default to `--mode hybrid`: use native PPTX elements for editable text/shapes while allowing screenshots as visual backplates when requested. Use `--mode raster` only for poster-like slides where editability is not required; use `--mode native` when editability is more important than exact CSS fidelity. Use `--screenshot require` for final visual QA when Playwright is prepared, `auto` during normal generation, and `skip` only in CI or unit tests.
 
 Prefer advanced editable layouts for non-trivial decks: `timeline` for roadmaps, `process` for workflows, `comparison` for tradeoffs, `matrix` for prioritization, and `chart` for native editable bar/column/line/area/stacked/pie/doughnut charts. `table` accepts either `string[][]` or an object with `headers`, `rows`, `column_widths`, `number_format`, `banded_rows`, and `caption`. Slides may include `links` or `citations`; the renderer writes them as small clickable source links.
 

@@ -13,7 +13,7 @@ Use this skill as the execution backend. Pair it with the format skill that carr
 - `pptx-presentation-design` for PowerPoint decks, slides, speaker notes, and template decks
 - `xlsx-workbook-design` for Excel workbooks, spreadsheets, dashboards, formulas, and financial models
 
-Keep format-specific generation logic in the format skill. In particular, `create_pptx` is a backward-compatible command that delegates to `pptx-presentation-design/scripts/pptx_renderer.py`; new PPT layout, theme, and deck-quality work belongs in `pptx-presentation-design`, not this shared dispatcher.
+Keep format-specific generation logic in the format skill. In particular, `create_pptx` is a backward-compatible command that delegates to `pptx-presentation-design/scripts/pptx_renderer.py`; `create_html_pptx` delegates to `pptx-presentation-design/scripts/html_deck_renderer.py` for the HTML-first deck route. New PPT layout, theme, and deck-quality work belongs in `pptx-presentation-design`, not this shared dispatcher.
 
 ## When to use
 - Creating new DOCX, XLSX, or PPTX files with Python libraries when the result must be a real Office artifact
@@ -69,8 +69,9 @@ For this skill, invoke the bundled document script through `run_shell` with `pyt
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/report.docx create_docx --title "Board Report" --input-md /abs/source/report_content.md
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/model.xlsx create_xlsx --spec /abs/source/workbook_spec.json
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/deck.pptx create_pptx --spec /abs/source/deck_spec.json
+   python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/html_deck.pptx create_html_pptx --spec /abs/source/html_deck_spec.json --outdir /abs/source/html_deck_project --mode hybrid --screenshot auto
    ```
-   The PPTX command is a compatibility wrapper around the PPT skill renderer. For complex generation, put a short custom script inside an approved source/workspace path, use `python-docx`, `openpyxl`, or `python-pptx`, and write the final `.docx`/`.xlsx`/`.pptx` directly to disk.
+   The PPTX commands are wrappers around the PPT skill renderers. Use `create_html_pptx` when the deck needs web-grade layout/CSS exploration plus a PPTX export; it writes `source/*.html`, `manifest.json`, and `qa.json` alongside the final deck. For complex DOCX/XLSX generation, put a short custom script inside an approved source/workspace path, use `python-docx` or `openpyxl`, and write the final `.docx`/`.xlsx` directly to disk.
 6. Validate and convert after generation:
    ```
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/report.docx validate
@@ -101,7 +102,7 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 ## Decision tree
 
 1. Existing Office/PDF file? Use `version` first for risky changes, then `replace`, `redact`, `insert_slide`, `extract`, `validate`, or a custom Python script.
-2. New DOCX/XLSX/PPTX and Python is available? Use `create_docx`, `create_xlsx`, or `create_pptx` first. Prefer a JSON spec for spreadsheets/decks and a markdown/body input for documents.
+2. New DOCX/XLSX/PPTX and Python is available? Use `create_docx`, `create_xlsx`, `create_pptx`, or `create_html_pptx` first. Prefer a JSON spec for spreadsheets/decks and a markdown/body input for documents.
 3. Need template fidelity, comments, tracked changes, precise image replacement, relationship repair, or layout surgery? Use `unpack` → XML/media edit → `pack` → `validate`; do not use rigid one-shot generators.
 4. Need PDF/image preview or conversion QA? Use `render` when system Poppler is already available, or `convert --to pdf` with system LibreOffice already available, then inspect/extract.
 5. XLSX contains formulas? Use `recalc_xlsx` after writing formulas, then `validate` to scan for formula errors.
@@ -121,6 +122,7 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 - **Capability check** — `check` subcommand reports available/missing backends with exit code 2 if core deps are absent
 - **Validate after write** — `validate` opens the file with its backend and checks Office ZIP integrity
 - **Visual QA** — `render` converts Office/PDF pages to PNG/JPEG images with isolated LibreOffice profiles
+- **HTML-first PPTX** — `create_html_pptx` keeps the deck source as reviewable HTML/CSS, optionally captures Playwright screenshots, exports hybrid native/raster PPTX, and writes manifest/QA JSON
 - **Conversion QA** — `convert` uses LibreOffice headless with an isolated user profile for PDF previews and format conversion
 - **OOXML escape hatch** — `unpack` / `pack` make low-level template and relationship fixes possible without passing binary data through tool arguments
 - **Formula safety** — `recalc_xlsx` uses LibreOffice when available and reports Excel formula errors as structured JSON
@@ -132,7 +134,7 @@ For CLI/dev environments, install before first Office/PDF operation (only what's
 ```
 python -m pip install -r <SKILL_DIR>/scripts/requirements.txt
 ```
-Optional for format conversion / PDF rendering: system `libreoffice` and Poppler. Install them outside the app only when the task specifically needs conversion, render QA, or XLSX formula recalculation.
+Optional for format conversion / PDF rendering: system `libreoffice` and Poppler. Optional for HTML-first PPTX screenshot QA: Python `playwright` plus browser installation. Install optional tools only when the task specifically needs conversion, render QA, screenshot QA, or XLSX formula recalculation.
 
 ## Handling missing dependencies
 Before first use, or when the user targets an unfamiliar file type, run:
@@ -162,6 +164,7 @@ Only install backends the user actually needs — don't pull `python-pptx` for a
 | create_docx    | .docx            | python-docx      |
 | create_xlsx    | .xlsx            | openpyxl         |
 | create_pptx    | .pptx            | python-pptx      |
+| create_html_pptx | .pptx          | python-pptx; optional Playwright for screenshots |
 | unpack         | .docx/.pptx/.xlsx | (none)           |
 | pack           | .docx/.pptx/.xlsx | (none)           |
 | replace        | .docx            | python-docx      |

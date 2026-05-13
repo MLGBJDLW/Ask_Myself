@@ -330,6 +330,39 @@ def cmd_check(args: argparse.Namespace) -> int:
         })
         if not args.json:
             print("  Poppler        MISSING (needed for render QA)")
+    try:
+        imported = __import__("playwright")
+        ver = getattr(imported, "__version__", "unknown")
+        results.append({
+            "id": "Playwright",
+            "module": "playwright",
+            "status": "ok",
+            "version": str(ver),
+            "required": False,
+            "detail": "needed for HTML-first PPTX screenshot QA",
+        })
+        if not args.json:
+            print(f"  Playwright     OK      ({ver})")
+    except ImportError:
+        results.append({
+            "id": "Playwright",
+            "module": "playwright",
+            "status": "missing",
+            "required": False,
+            "detail": "needed for HTML-first PPTX screenshot QA",
+        })
+        if not args.json:
+            print("  Playwright     MISSING (needed for HTML-first PPTX screenshot QA)")
+    except Exception as e:  # noqa: BLE001
+        results.append({
+            "id": "Playwright",
+            "module": "playwright",
+            "status": "broken",
+            "required": False,
+            "detail": f"{type(e).__name__}: {e}",
+        })
+        if not args.json:
+            print(f"  Playwright     BROKEN  ({type(e).__name__}: {e})")
     if args.json:
         payload = {
             "python": {
@@ -901,11 +934,46 @@ def _load_pptx_renderer():
     return create_pptx_from_spec
 
 
+def _load_html_deck_renderer():
+    skills_root = Path(__file__).resolve().parents[2]
+    renderer_dir = skills_root / "pptx-presentation-design" / "scripts"
+    renderer_path = renderer_dir / "html_deck_renderer.py"
+    if not renderer_path.exists():
+        _die(f"ERROR: HTML deck renderer not found: {renderer_path}", 3)
+    if str(renderer_dir) not in sys.path:
+        sys.path.insert(0, str(renderer_dir))
+    try:
+        from html_deck_renderer import render_html_deck  # type: ignore
+    except ImportError as exc:
+        _die(f"ERROR: failed to load HTML deck renderer: {exc}", 1)
+    return render_html_deck
+
+
 def cmd_create_pptx(args: argparse.Namespace) -> int:
     create_pptx_from_spec = _load_pptx_renderer()
     output = create_pptx_from_spec(args.path, args.spec, args.template, Path.cwd())
     print(f"created PPTX: {output}")
     return 0
+
+
+def cmd_create_html_pptx(args: argparse.Namespace) -> int:
+    if not args.path:
+        _die("ERROR: --path is required for create_html_pptx", 3)
+    if args.spec != "-":
+        args.spec = str(_validate_path(args.spec))
+    args.outdir = str(_validate_output_dir(args.outdir))
+    args.path = str(_validate_output_path(args.path, {"pptx"}))
+    render_html_deck = _load_html_deck_renderer()
+    result = render_html_deck(
+        spec_path=args.spec,
+        out_dir=args.outdir,
+        pptx_path=args.path,
+        mode=args.mode,
+        screenshot=args.screenshot,
+        workspace_root=Path.cwd(),
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result["qa"]["status"] != "fail" else 4
 
 
 # ---------------------------------------------------------------------------
@@ -1210,6 +1278,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_cp.add_argument("--spec", required=True, help="Absolute path to deck JSON spec, or '-' to read JSON from stdin")
     p_cp.add_argument("--template", default=None, help="Optional absolute .pptx template path")
     p_cp.set_defaults(func=cmd_create_pptx)
+
+    p_chp = sub.add_parser("create_html_pptx", help="Create a PPTX from an HTML-first deck spec")
+    p_chp.add_argument("--spec", required=True, help="Absolute path to HTML deck JSON spec")
+    p_chp.add_argument("--outdir", required=True, help="Absolute output project directory for HTML, render artifacts, manifest, and QA")
+    p_chp.add_argument("--mode", choices=["hybrid", "native", "raster"], default="hybrid")
+    p_chp.add_argument("--screenshot", choices=["auto", "require", "skip"], default="auto")
+    p_chp.set_defaults(func=cmd_create_html_pptx)
 
     p_unpack = sub.add_parser("unpack", help="Unpack DOCX/PPTX/XLSX into editable OOXML")
     p_unpack.add_argument("--outdir", required=True, help="Absolute output directory")
