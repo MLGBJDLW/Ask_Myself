@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use crate::context_pack::ContextPack;
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::models::{EvidenceCard, FileType, SearchFilters, SearchQuery};
@@ -149,6 +150,11 @@ fn format_search_artifacts(
     strategy: &rag::RagStrategyPlan,
     context_pack: &rag::RagContextPack,
 ) -> serde_json::Value {
+    let context_manifest = ContextPack::from_rag_context_pack(
+        context_pack,
+        "search_knowledge_base evidence packing",
+        None,
+    );
     serde_json::json!({
         "kind": "searchResults",
         "evidenceCards": &result.evidence_cards,
@@ -167,6 +173,7 @@ fn format_search_artifacts(
             "tool": "get_chunk_context"
         },
         "contextPack": context_pack,
+        "contextManifest": context_manifest,
         "trustBoundary": TrustBoundary::local_source_evidence(scope_is_active(source_scope)),
         "contract": {
             "sourceRole": "reference",
@@ -638,6 +645,11 @@ mod tests {
         assert_eq!(artifacts["ragStrategy"]["useHyde"], true);
         assert_eq!(artifacts["contextWindow"]["recommended"], true);
         assert_eq!(artifacts["contextWindow"]["tool"], "get_chunk_context");
+        assert_eq!(artifacts["contextManifest"]["version"], 1);
+        assert_eq!(
+            artifacts["contextManifest"]["items"][0]["role"],
+            "tool_guidance"
+        );
     }
 
     #[tokio::test]

@@ -13,7 +13,7 @@ use tracing::{debug, error, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
 use crate::app_settings::ShellAccessMode;
-use crate::approval::{describe_request, ApprovalCallback, ApprovalDecision, ApprovalRequest};
+use crate::approval::{describe_request, ApprovalCallback, ApprovalRequest};
 use crate::conversation::memory::{
     context_safety_buffer, estimate_message_tokens_for_model, estimate_tokens_for_model,
     model_context_window, trim_to_context_window,
@@ -31,17 +31,16 @@ use crate::llm::{
     CompletionRequest, ContentPart, LlmProvider, Message, ProviderType, ReasoningEffort, Role,
     StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
 };
+use crate::policy_engine::{evaluate_policy_with_baseline, PolicyEffect, PolicySubject};
 use crate::privacy;
 use crate::skills::Skill;
-use crate::tools::{
-    ToolCategory, ToolInputStreamingMode, ToolInterruptBehavior, ToolRegistry, ToolRenderKind,
-    ToolRunCapabilities,
-};
+use crate::tools::{ToolCategory, ToolInputStreamingMode, ToolInterruptBehavior, ToolRegistry};
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
 pub mod context;
 pub mod context_pipeline;
 mod direct_dispatch;
+mod events;
 pub mod loop_guard;
 pub mod route;
 mod sampling;
@@ -64,6 +63,8 @@ use self::trace_builder::{
     evidence_signals_from_trace, PersistedTraceItem,
 };
 use self::turn_events::{TurnLoopEvent, TurnLoopRecorder};
+
+pub use self::events::{AgentEvent, StreamBlockChannel, ToolRunItem, ToolRunStatus};
 
 // Re-export so consumers don't need to depend on tokio-util directly.
 pub use tokio_util::sync::CancellationToken;
@@ -100,193 +101,6 @@ fn is_context_overflow_error(err: &CoreError) -> bool {
 
 fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
     tool_scheduler::compact_tool_result_for_context(tool_name, content)
-}
-
-// ---------------------------------------------------------------------------
-// Events
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum StreamBlockChannel {
-    Answer,
-    Thinking,
-}
-
-/// Events emitted by the agent during execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum AgentEvent {
-    /// Incremental text token from the LLM.
-    TextDelta { delta: String },
-    /// Ordered, authoritative delta for a typed stream block.
-    StreamBlockDelta {
-        #[serde(rename = "blockId")]
-        block_id: String,
-        channel: StreamBlockChannel,
-        /// Starting UTF-8 byte offset within this block.
-        offset: usize,
-        delta: String,
-    },
-    /// Clear partial stream output before replaying a recovered response.
-    StreamReset { reason: String },
-    /// The model has started assembling a tool call, but the arguments are not
-    /// stable enough to render or execute yet.
-    ToolCallPreparing {
-        #[serde(rename = "callId")]
-        call_id: String,
-        #[serde(rename = "toolName")]
-        tool_name: String,
-        #[serde(rename = "argsBytes")]
-        args_bytes: u32,
-        /// Tool-call index when the provider streams multiple calls in parallel.
-        index: u32,
-    },
-    /// A tool call is about to be executed with complete arguments.
-    ToolCallStart {
-        #[serde(rename = "callId")]
-        call_id: String,
-        #[serde(rename = "toolName")]
-        tool_name: String,
-        arguments: String,
-    },
-    /// Legacy incremental fragment of tool-call arguments streamed mid-response.
-    ///
-    /// Generic tools should not rely on this because partial JSON arguments are
-    /// often syntactically invalid. The main agent loop now emits
-    /// `ToolCallPreparing` while arguments are still being assembled, then
-    /// `ToolCallStart` once the complete argument string is available.
-    ToolCallArgsDelta {
-        #[serde(rename = "callId")]
-        call_id: String,
-        #[serde(rename = "toolName")]
-        tool_name: String,
-        #[serde(rename = "argumentsDelta")]
-        arguments_delta: String,
-        /// Tool-call index when the provider streams multiple calls in parallel.
-        index: u32,
-    },
-    /// Heartbeat emitted while a long-running tool is still executing.
-    ///
-    /// Used to keep the frontend watchdog alive for long-running tools.
-    ToolCallProgress {
-        #[serde(rename = "callId")]
-        call_id: String,
-        note: String,
-    },
-    /// Result of a tool execution.
-    ToolCallResult {
-        #[serde(rename = "callId")]
-        call_id: String,
-        #[serde(rename = "toolName")]
-        tool_name: String,
-        content: String,
-        #[serde(rename = "isError")]
-        is_error: bool,
-        artifacts: Option<serde_json::Value>,
-    },
-    /// Canonical lifecycle item for a tool run.
-    ToolRunStarted { run: ToolRunItem },
-    /// Authoritative update for an in-flight tool run.
-    ToolRunUpdated { run: ToolRunItem },
-    /// Authoritative final state for a tool run.
-    ToolRunCompleted { run: ToolRunItem },
-    /// Thinking / chain-of-thought text (if the model supports it).
-    Thinking { content: String },
-    /// A lightweight status update for the trace timeline.
-    Status {
-        content: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tone: Option<String>,
-    },
-    /// Updated typed execution plan for the active task run.
-    PlanUpdated {
-        plan: serde_json::Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        phase: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        summary: Option<String>,
-    },
-    /// The agent finished producing a final answer.
-    Done {
-        message: Message,
-        #[serde(rename = "usageTotal")]
-        usage_total: Usage,
-        /// The prompt token count from the *last* LLM iteration (best
-        /// represents how full the context window currently is).
-        #[serde(rename = "lastPromptTokens")]
-        last_prompt_tokens: u32,
-        /// Whether this response came from the answer cache.
-        #[serde(default)]
-        cached: bool,
-        /// Why the model stopped generating (e.g. "stop", "length", "content_filter").
-        #[serde(rename = "finishReason", skip_serializing_if = "Option::is_none")]
-        finish_reason: Option<String>,
-    },
-    /// Intermediate token usage update emitted after each LLM iteration.
-    UsageUpdate {
-        #[serde(rename = "usageTotal")]
-        usage_total: Usage,
-        #[serde(rename = "lastPromptTokens")]
-        last_prompt_tokens: u32,
-    },
-    /// An error occurred during execution.
-    Error { message: String },
-    /// The agent auto-compacted the conversation to free context space.
-    AutoCompacted {
-        /// Number of messages that were summarized.
-        #[serde(rename = "evictedCount")]
-        evicted_count: usize,
-    },
-    /// A high-risk tool call is waiting for user approval via the GUI.
-    ///
-    /// The UI should render a dialog and later resolve the request by
-    /// invoking the `approve_tool_call_cmd` Tauri command.
-    ApprovalRequested { request: ApprovalRequest },
-    /// A previously emitted approval request was resolved (for UI cleanup).
-    ApprovalResolved {
-        #[serde(rename = "requestId")]
-        request_id: String,
-        decision: ApprovalDecision,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ToolRunStatus {
-    Preparing,
-    ApprovalPending,
-    Running,
-    Completed,
-    Failed,
-    Declined,
-    Cancelled,
-    TimedOut,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolRunItem {
-    #[serde(rename = "callId")]
-    pub call_id: String,
-    #[serde(rename = "toolName")]
-    pub tool_name: String,
-    pub status: ToolRunStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<String>,
-    #[serde(rename = "renderKind")]
-    pub render_kind: ToolRenderKind,
-    pub capabilities: ToolRunCapabilities,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
-    #[serde(rename = "isError", skip_serializing_if = "Option::is_none")]
-    pub is_error: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub artifacts: Option<serde_json::Value>,
-    #[serde(rename = "progressNote", skip_serializing_if = "Option::is_none")]
-    pub progress_note: Option<String>,
-    #[serde(rename = "durationMs", skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
 }
 
 /// User input injected into an already-running agent turn.
@@ -572,7 +386,7 @@ impl AgentExecutor {
     /// when both are set. Invoked for any tool that either returns
     /// `requires_confirmation() == true` or is `run_shell` under
     /// [`ShellAccessMode::ConfirmAll`]. The callback receives a fully
-    /// populated [`ApprovalRequest`] and returns an [`ApprovalDecision`].
+    /// populated [`ApprovalRequest`] and returns an approval decision.
     pub fn with_approval_callback(mut self, cb: ApprovalCallback) -> Self {
         self.approval_callback = Some(cb);
         self
@@ -2528,7 +2342,44 @@ impl AgentExecutor {
                         let shell_requires_confirm = tc.name == "run_shell"
                             && self.config.shell_access_mode.requires_confirmation();
                         if let Some(ref approval_cb) = self.approval_callback {
-                            if tool_requires_confirm || shell_requires_confirm {
+                            let baseline = if tool_requires_confirm || shell_requires_confirm {
+                                PolicyEffect::RequireApproval
+                            } else {
+                                PolicyEffect::Allow
+                            };
+                            let policy_decision = evaluate_policy_with_baseline(
+                                &[],
+                                &PolicySubject::from_invocation(&invocation),
+                                baseline,
+                            );
+                            if policy_decision.denied {
+                                let denied = crate::tools::ToolResult {
+                                    call_id: tc.id.clone(),
+                                    content: format!(
+                                        "Policy denied permission for {}: {}",
+                                        tc.name,
+                                        policy_decision.reasons.join(" ")
+                                    ),
+                                    is_error: true,
+                                    artifacts: Some(serde_json::json!({
+                                        "kind": "policyDecision",
+                                        "effect": policy_decision.effect.as_str(),
+                                        "reasons": policy_decision.reasons,
+                                        "matchedRuleIds": policy_decision.matched_rule_ids,
+                                    })),
+                                };
+                                return FinishedToolExecution {
+                                    index,
+                                    call: tc,
+                                    timeout: tool_timeout,
+                                    outcome: ToolExecutionOutcome::Result(
+                                        denied,
+                                        ToolRunStatus::Declined,
+                                    ),
+                                    elapsed: Duration::ZERO,
+                                };
+                            }
+                            if policy_decision.needs_approval {
                                 let _ = run_tx
                                     .send(AgentEvent::ToolRunUpdated {
                                         run: build_tool_run_item(
@@ -2545,7 +2396,7 @@ impl AgentExecutor {
                                         ),
                                     })
                                     .await;
-                                let risk = invocation.access_profile.risk_level;
+                                let risk = policy_decision.risk_level;
                                 let reason = self
                                     .tools
                                     .confirmation_message(&tc.name, &parsed_args)
@@ -2605,12 +2456,49 @@ impl AgentExecutor {
                                     .await;
                             }
                         } else {
-                            let needs_confirmation = if tc.name == "run_shell" {
+                            let baseline_requires_confirmation = if tc.name == "run_shell" {
                                 shell_requires_confirm
                             } else {
                                 self.config.require_tool_confirmation && tool_requires_confirm
                             };
-                            if needs_confirmation {
+                            let baseline = if baseline_requires_confirmation {
+                                PolicyEffect::RequireApproval
+                            } else {
+                                PolicyEffect::Allow
+                            };
+                            let policy_decision = evaluate_policy_with_baseline(
+                                &[],
+                                &PolicySubject::from_invocation(&invocation),
+                                baseline,
+                            );
+                            if policy_decision.denied {
+                                let declined = crate::tools::ToolResult {
+                                    call_id: tc.id.clone(),
+                                    content: format!(
+                                        "Policy denied permission for {}: {}",
+                                        tc.name,
+                                        policy_decision.reasons.join(" ")
+                                    ),
+                                    is_error: true,
+                                    artifacts: Some(serde_json::json!({
+                                        "kind": "policyDecision",
+                                        "effect": policy_decision.effect.as_str(),
+                                        "reasons": policy_decision.reasons,
+                                        "matchedRuleIds": policy_decision.matched_rule_ids,
+                                    })),
+                                };
+                                return FinishedToolExecution {
+                                    index,
+                                    call: tc,
+                                    timeout: tool_timeout,
+                                    outcome: ToolExecutionOutcome::Result(
+                                        declined,
+                                        ToolRunStatus::Declined,
+                                    ),
+                                    elapsed: Duration::ZERO,
+                                };
+                            }
+                            if policy_decision.needs_approval {
                                 if let Some(ref cb) = self.confirmation_callback {
                                     let message = self
                                         .tools

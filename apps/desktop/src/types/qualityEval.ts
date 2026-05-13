@@ -41,6 +41,28 @@ export interface QualityEvalSuiteReport {
   cases: QualityEvalCaseResult[];
 }
 
+export interface QualityGateThresholds {
+  maxFailed: number;
+  minPassRate: number;
+  requiredSuites: string[];
+}
+
+export interface QualityGateSuiteStatus {
+  id: string;
+  present: boolean;
+  passed: boolean;
+  failed: number;
+}
+
+export interface QualityGateReport {
+  passed: boolean;
+  passRate: number;
+  thresholds: QualityGateThresholds;
+  missingRequiredSuites: string[];
+  failingRequiredSuites: string[];
+  suites: QualityGateSuiteStatus[];
+}
+
 export interface QualityEvalReport {
   status: string;
   total: number;
@@ -48,4 +70,5 @@ export interface QualityEvalReport {
   failed: number;
   suites: QualityEvalSuiteReport[];
   behavioralEval: BehavioralEvalReport;
+  gate: QualityGateReport;
 }

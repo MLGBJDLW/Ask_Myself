@@ -13,6 +13,7 @@ use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
     AgentSteeringMessage, CancellationToken, ConfirmationCallback, StreamBlockChannel,
 };
+use nexa_core::agent_run::AgentRunEvent;
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
 use nexa_core::approval::{
     ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
@@ -497,6 +498,38 @@ fn record_and_emit_task_event(
     }
 }
 
+fn payload_with_agent_run_protocol(
+    run_event: &AgentRunEvent,
+    payload: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut map = match payload {
+        Some(serde_json::Value::Object(existing)) => existing.clone(),
+        Some(existing) => {
+            let mut map = serde_json::Map::new();
+            map.insert("data".to_string(), existing.clone());
+            map
+        }
+        None => serde_json::Map::new(),
+    };
+    map.insert(
+        "agentRun".to_string(),
+        serde_json::to_value(run_event).unwrap_or_else(|_| serde_json::json!({})),
+    );
+    serde_json::Value::Object(map)
+}
+
+fn record_and_emit_agent_run_task_event(
+    ctx: &TaskEventEmitContext<'_>,
+    run_event: &AgentRunEvent,
+    event_type: &str,
+    label: &str,
+    status: Option<&str>,
+    payload: Option<&serde_json::Value>,
+) {
+    let payload = payload_with_agent_run_protocol(run_event, payload);
+    record_and_emit_task_event(ctx, event_type, label, status, Some(&payload));
+}
+
 fn build_final_task_artifacts(
     previous_artifacts: Option<serde_json::Value>,
     trace_artifacts: serde_json::Value,
@@ -559,10 +592,19 @@ fn record_task_progress_for_agent_event(
         conversation_id,
         task_run_id,
     };
+    let run_event =
+        AgentRunEvent::from_agent_event(event).with_context(Some(task_run_id), None, None);
 
     match event {
         AgentEvent::StreamReset { reason } => {
-            record_and_emit_task_event(&task_event_ctx, "status", reason, Some("running"), None);
+            record_and_emit_agent_run_task_event(
+                &task_event_ctx,
+                &run_event,
+                "status",
+                reason,
+                Some("running"),
+                None,
+            );
         }
         AgentEvent::ToolCallStart {
             call_id,
@@ -584,8 +626,9 @@ fn record_task_progress_for_agent_event(
                 "toolName": tool_name,
                 "arguments": truncate_task_event_text(arguments, 4000),
             });
-            record_and_emit_task_event(
+            record_and_emit_agent_run_task_event(
                 &task_event_ctx,
+                &run_event,
                 "tool",
                 tool_name,
                 Some("running"),
@@ -594,8 +637,9 @@ fn record_task_progress_for_agent_event(
         }
         AgentEvent::ToolCallProgress { call_id, note } => {
             let payload = serde_json::json!({ "callId": call_id, "note": note });
-            record_and_emit_task_event(
+            record_and_emit_agent_run_task_event(
                 &task_event_ctx,
+                &run_event,
                 "toolProgress",
                 note,
                 Some("running"),
@@ -617,8 +661,9 @@ fn record_task_progress_for_agent_event(
                 "content": truncate_task_event_text(content, 4000),
                 "artifacts": artifacts,
             });
-            record_and_emit_task_event(
+            record_and_emit_agent_run_task_event(
                 &task_event_ctx,
+                &run_event,
                 "tool",
                 tool_name,
                 Some(status),
@@ -638,7 +683,14 @@ fn record_task_progress_for_agent_event(
                 );
                 emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
             }
-            record_and_emit_task_event(&task_event_ctx, "status", content, tone.as_deref(), None);
+            record_and_emit_agent_run_task_event(
+                &task_event_ctx,
+                &run_event,
+                "status",
+                content,
+                tone.as_deref(),
+                None,
+            );
         }
         AgentEvent::PlanUpdated {
             plan,
@@ -657,8 +709,9 @@ fn record_task_progress_for_agent_event(
                 None,
             );
             emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
-            record_and_emit_task_event(
+            record_and_emit_agent_run_task_event(
                 &task_event_ctx,
+                &run_event,
                 "plan",
                 summary,
                 Some("running"),
@@ -677,8 +730,9 @@ fn record_task_progress_for_agent_event(
                 None,
             );
             emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
-            record_and_emit_task_event(
+            record_and_emit_agent_run_task_event(
                 &task_event_ctx,
+                &run_event,
                 "status",
                 "Final answer produced",
                 Some("completed"),
@@ -696,12 +750,20 @@ fn record_task_progress_for_agent_event(
                 None,
             );
             emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
-            record_and_emit_task_event(&task_event_ctx, "error", message, Some("failed"), None);
+            record_and_emit_agent_run_task_event(
+                &task_event_ctx,
+                &run_event,
+                "error",
+                message,
+                Some("failed"),
+                None,
+            );
         }
         AgentEvent::AutoCompacted { evicted_count } => {
             let payload = serde_json::json!({ "evictedCount": evicted_count });
-            record_and_emit_task_event(
+            record_and_emit_agent_run_task_event(
                 &task_event_ctx,
+                &run_event,
                 "status",
                 "Conversation context compacted",
                 Some("completed"),
@@ -720,8 +782,9 @@ fn record_task_progress_for_agent_event(
             );
             emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
             let payload = serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({}));
-            record_and_emit_task_event(
+            record_and_emit_agent_run_task_event(
                 &task_event_ctx,
+                &run_event,
                 "approval",
                 &request.tool_name,
                 Some("pending"),
@@ -746,8 +809,9 @@ fn record_task_progress_for_agent_event(
                 "requestId": request_id,
                 "decision": decision,
             });
-            record_and_emit_task_event(
+            record_and_emit_agent_run_task_event(
                 &task_event_ctx,
+                &run_event,
                 "approval",
                 "Approval resolved",
                 Some("completed"),

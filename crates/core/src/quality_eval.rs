@@ -46,6 +46,50 @@ pub struct QualityEvalSuiteReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct QualityGateThresholds {
+    pub max_failed: usize,
+    pub min_pass_rate: f64,
+    pub required_suites: Vec<String>,
+}
+
+impl QualityGateThresholds {
+    pub fn release_default() -> Self {
+        Self {
+            max_failed: 0,
+            min_pass_rate: 1.0,
+            required_suites: vec![
+                "behavioral_routing".to_string(),
+                "evidence_policy".to_string(),
+                "rag_governance".to_string(),
+                "workflow_catalog".to_string(),
+                "checkpoint_recovery".to_string(),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityGateSuiteStatus {
+    pub id: String,
+    pub present: bool,
+    pub passed: bool,
+    pub failed: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityGateReport {
+    pub passed: bool,
+    pub pass_rate: f64,
+    pub thresholds: QualityGateThresholds,
+    pub missing_required_suites: Vec<String>,
+    pub failing_required_suites: Vec<String>,
+    pub suites: Vec<QualityGateSuiteStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QualityEvalReport {
     pub status: String,
     pub total: usize,
@@ -53,6 +97,7 @@ pub struct QualityEvalReport {
     pub failed: usize,
     pub suites: Vec<QualityEvalSuiteReport>,
     pub behavioral_eval: BehavioralEvalReport,
+    pub gate: QualityGateReport,
 }
 
 pub fn run_agent_quality_eval() -> QualityEvalReport {
@@ -67,6 +112,13 @@ pub fn run_agent_quality_eval() -> QualityEvalReport {
     let total = suites.iter().map(|suite| suite.total).sum();
     let passed = suites.iter().map(|suite| suite.passed).sum();
     let failed = total - passed;
+    let gate = evaluate_quality_gate(
+        &suites,
+        total,
+        passed,
+        failed,
+        QualityGateThresholds::release_default(),
+    );
 
     QualityEvalReport {
         status: if failed == 0 { "passed" } else { "failed" }.to_string(),
@@ -75,6 +127,62 @@ pub fn run_agent_quality_eval() -> QualityEvalReport {
         failed,
         suites,
         behavioral_eval,
+        gate,
+    }
+}
+
+pub fn evaluate_quality_gate(
+    suites: &[QualityEvalSuiteReport],
+    total: usize,
+    passed: usize,
+    failed: usize,
+    thresholds: QualityGateThresholds,
+) -> QualityGateReport {
+    let pass_rate = if total == 0 {
+        0.0
+    } else {
+        passed as f64 / total as f64
+    };
+    let mut missing_required_suites = Vec::new();
+    let mut failing_required_suites = Vec::new();
+    let suite_statuses = thresholds
+        .required_suites
+        .iter()
+        .map(|required_id| {
+            if let Some(suite) = suites.iter().find(|suite| &suite.id == required_id) {
+                if suite.failed > 0 {
+                    failing_required_suites.push(required_id.clone());
+                }
+                QualityGateSuiteStatus {
+                    id: required_id.clone(),
+                    present: true,
+                    passed: suite.failed == 0,
+                    failed: suite.failed,
+                }
+            } else {
+                missing_required_suites.push(required_id.clone());
+                QualityGateSuiteStatus {
+                    id: required_id.clone(),
+                    present: false,
+                    passed: false,
+                    failed: 0,
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let gate_passed = failed <= thresholds.max_failed
+        && pass_rate >= thresholds.min_pass_rate
+        && missing_required_suites.is_empty()
+        && failing_required_suites.is_empty();
+
+    QualityGateReport {
+        passed: gate_passed,
+        pass_rate,
+        thresholds,
+        missing_required_suites,
+        failing_required_suites,
+        suites: suite_statuses,
     }
 }
 
@@ -817,5 +925,26 @@ mod tests {
         assert!(suite_ids.contains(&"workflow_catalog"));
         assert!(suite_ids.contains(&"checkpoint_recovery"));
         assert_eq!(report.status, "passed");
+        assert!(report.gate.passed);
+        assert!(report.gate.missing_required_suites.is_empty());
+        assert!(report.gate.failing_required_suites.is_empty());
+    }
+
+    #[test]
+    fn quality_gate_fails_when_required_suite_is_missing() {
+        let gate = evaluate_quality_gate(
+            &[],
+            0,
+            0,
+            0,
+            QualityGateThresholds {
+                max_failed: 0,
+                min_pass_rate: 1.0,
+                required_suites: vec!["behavioral_routing".to_string()],
+            },
+        );
+
+        assert!(!gate.passed);
+        assert_eq!(gate.missing_required_suites, vec!["behavioral_routing"]);
     }
 }

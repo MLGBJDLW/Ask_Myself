@@ -85,13 +85,52 @@ export interface AgentTaskRunListItem {
   artifactKinds: string[];
 }
 
+export type AgentRunPhase =
+  | 'routing'
+  | 'planning'
+  | 'responding'
+  | 'tooling'
+  | 'approval'
+  | 'compacting'
+  | 'accounting'
+  | 'done';
+
+export type AgentRunEventKind =
+  | 'outputDelta'
+  | 'streamReset'
+  | 'thinking'
+  | 'status'
+  | 'planUpdated'
+  | 'toolPreparing'
+  | 'toolStarted'
+  | 'toolProgress'
+  | 'toolCompleted'
+  | 'approvalRequested'
+  | 'approvalResolved'
+  | 'usageUpdated'
+  | 'autoCompacted'
+  | 'done'
+  | 'error';
+
+export interface AgentRunEvent {
+  version: number;
+  runId?: string | null;
+  turnId?: string | null;
+  eventSeq?: number | null;
+  kind: AgentRunEventKind;
+  phase: AgentRunPhase;
+  label: string;
+  status?: string | null;
+  payload: ArtifactPayload | null;
+}
+
 export interface AgentTaskRunEvent {
   id: string;
   runId: string;
   eventType: string;
   label: string;
   status?: string | null;
-  payload?: Record<string, unknown> | unknown[] | null;
+  payload?: (Record<string, unknown> & { agentRun?: AgentRunEvent }) | unknown[] | null;
   createdAt: string;
 }
 

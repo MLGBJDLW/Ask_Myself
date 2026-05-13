@@ -74,6 +74,41 @@ interface GeneratedImageArtifact {
   bytes?: number;
 }
 
+interface WorkPlanTarget {
+  kind?: string;
+  value?: string;
+}
+
+interface WorkPlanStep {
+  id?: string;
+  stage?: string;
+  status?: string;
+}
+
+interface WorkPlanArtifact {
+  version?: number;
+  toolName?: string;
+  risk?: string;
+  requiresReview?: boolean;
+  targets?: WorkPlanTarget[];
+  steps?: WorkPlanStep[];
+}
+
+interface ContextManifestItem {
+  id?: string;
+  role?: string;
+  source?: string;
+  trustLevel?: string;
+  tokenEstimate?: number;
+}
+
+interface ContextManifestArtifact {
+  version?: number;
+  tokenBudget?: number | null;
+  totalTokenEstimate?: number;
+  items?: ContextManifestItem[];
+}
+
 type ToolCallCardStatus =
   | 'preparing'
   | 'starting'
@@ -179,6 +214,7 @@ function AnimatedCount({
 }
 
 function DiffStatsTicker({ stats, compact = false }: { stats: DiffStatsArtifact; compact?: boolean }) {
+  const { t } = useTranslation();
   const pillBase = compact
     ? 'h-5 px-1.5 text-[10px]'
     : 'h-6 px-2 text-[11px]';
@@ -195,13 +231,13 @@ function DiffStatsTicker({ stats, compact = false }: { stats: DiffStatsArtifact;
       {stats.filesChanged > 1 && (
         <span className={neutralPill}>
           <AnimatedCount value={stats.filesChanged} />
-          <span className="font-sans">files</span>
+          <span className="font-sans">{t('chat.diffFiles')}</span>
         </span>
       )}
       {typeof stats.replacements === 'number' && stats.replacements > 0 && (
         <span className={`${neutralPill} hidden sm:inline-flex`}>
           <AnimatedCount value={stats.replacements} />
-          <span className="font-sans">rep</span>
+          <span className="font-sans">{t('chat.diffReplacements')}</span>
         </span>
       )}
     </div>
@@ -209,6 +245,7 @@ function DiffStatsTicker({ stats, compact = false }: { stats: DiffStatsArtifact;
 }
 
 function PendingDiffTicker({ compact = false }: { compact?: boolean }) {
+  const { t } = useTranslation();
   return (
     <span
       className={`inline-flex shrink-0 items-center gap-1 rounded-md border border-accent/20 bg-accent/10 font-mono tabular-nums text-accent ${
@@ -216,12 +253,13 @@ function PendingDiffTicker({ compact = false }: { compact?: boolean }) {
       }`}
     >
       <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
-      diff
+      {t('chat.diffPending')}
     </span>
   );
 }
 
 function DiffStatsSummaryPanel({ stats }: { stats: DiffStatsArtifact }) {
+  const { t } = useTranslation();
   const path = stats.paths[0];
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-surface-0/65 px-3 py-2">
@@ -229,7 +267,7 @@ function DiffStatsSummaryPanel({ stats }: { stats: DiffStatsArtifact }) {
       {path && <FileBadge path={path} className="min-w-0 max-w-full" />}
       {stats.hunks > 0 && (
         <span className="rounded-md border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-tertiary">
-          {stats.hunks} hunk{stats.hunks === 1 ? '' : 's'}
+          {t('chat.diffHunks', { count: String(stats.hunks) })}
         </span>
       )}
     </div>
@@ -314,44 +352,114 @@ function getToolBriefLabel(name: string, args?: string): string {
   return name;
 }
 
-function getToolBriefResult(status: string, content?: string, toolName?: string): string {
+function getToolBriefResult(
+  status: string,
+  t: ReturnType<typeof useTranslation>['t'],
+  content?: string,
+  toolName?: string,
+): string {
   if (
     status === 'running'
     || status === 'starting'
     || status === 'preparing'
     || status === 'approvalPending'
   ) return '\u2026';
-  if (status === 'error' || status === 'timedOut') return 'error';
-  if (status === 'declined' || status === 'cancelled') return status;
+  if (status === 'error' || status === 'timedOut') return t('chat.toolBriefError');
+  if (status === 'declined') return t('chat.toolBriefDeclined');
+  if (status === 'cancelled') return t('chat.toolBriefCancelled');
   const lower = (toolName || '').toLowerCase();
   if (lower.includes('search') && content) {
     const match = content.match(/Found (\d+) result/i);
-    if (match) return `${match[1]} results`;
+    if (match) return t('search.results', { count: match[1] });
   }
   if (content) {
     const lines = content.split('\n').length;
-    if (lines > 3) return `${lines} lines`;
+    if (lines > 3) return t('chat.toolBriefLines', { count: String(lines) });
   }
-  return 'done';
+  return t('chat.toolBriefDone');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function extractTrustBoundary(
   artifacts: ArtifactPayload | undefined,
 ): TrustBoundaryArtifact | null {
-  if (!artifacts || Array.isArray(artifacts) || typeof artifacts !== 'object') return null;
-  const record = artifacts as Record<string, unknown>;
-  const boundary = record.trustBoundary;
-  if (!boundary || typeof boundary !== 'object' || Array.isArray(boundary)) return null;
+  if (!isRecord(artifacts)) return null;
+  const boundary = artifacts.trustBoundary;
+  if (!isRecord(boundary)) return null;
   return boundary as TrustBoundaryArtifact;
 }
 
 function extractGeneratedImageArtifact(
   artifacts: ArtifactPayload | undefined,
 ): GeneratedImageArtifact | null {
-  if (!artifacts || Array.isArray(artifacts) || typeof artifacts !== 'object') return null;
-  const record = artifacts as Record<string, unknown>;
-  if (record.kind !== 'generatedImage') return null;
-  return record as unknown as GeneratedImageArtifact;
+  if (!isRecord(artifacts)) return null;
+  if (artifacts.kind !== 'generatedImage') return null;
+  return artifacts as unknown as GeneratedImageArtifact;
+}
+
+function extractWorkPlanArtifact(
+  artifacts: ArtifactPayload | undefined,
+): WorkPlanArtifact | null {
+  if (!isRecord(artifacts)) return null;
+  const workPlan = artifacts.workPlan;
+  if (!isRecord(workPlan)) return null;
+
+  const targets = Array.isArray(workPlan.targets)
+    ? workPlan.targets.filter(isRecord).map((target) => ({
+      kind: typeof target.kind === 'string' ? target.kind : undefined,
+      value: typeof target.value === 'string' ? target.value : undefined,
+    }))
+    : undefined;
+  const steps = Array.isArray(workPlan.steps)
+    ? workPlan.steps.filter(isRecord).map((step) => ({
+      id: typeof step.id === 'string' ? step.id : undefined,
+      stage: typeof step.stage === 'string' ? step.stage : undefined,
+      status: typeof step.status === 'string' ? step.status : undefined,
+    }))
+    : undefined;
+
+  return {
+    version: typeof workPlan.version === 'number' ? workPlan.version : undefined,
+    toolName: typeof workPlan.toolName === 'string' ? workPlan.toolName : undefined,
+    risk: typeof workPlan.risk === 'string' ? workPlan.risk : undefined,
+    requiresReview: typeof workPlan.requiresReview === 'boolean' ? workPlan.requiresReview : undefined,
+    targets,
+    steps,
+  };
+}
+
+function extractContextManifestArtifact(
+  artifacts: ArtifactPayload | undefined,
+): ContextManifestArtifact | null {
+  if (!isRecord(artifacts)) return null;
+  const contextManifest = artifacts.contextManifest;
+  if (!isRecord(contextManifest)) return null;
+
+  const items = Array.isArray(contextManifest.items)
+    ? contextManifest.items.filter(isRecord).map((item) => ({
+      id: typeof item.id === 'string' ? item.id : undefined,
+      role: typeof item.role === 'string' ? item.role : undefined,
+      source: typeof item.source === 'string' ? item.source : undefined,
+      trustLevel: typeof item.trustLevel === 'string' ? item.trustLevel : undefined,
+      tokenEstimate: typeof item.tokenEstimate === 'number' ? item.tokenEstimate : undefined,
+    }))
+    : undefined;
+
+  return {
+    version: typeof contextManifest.version === 'number' ? contextManifest.version : undefined,
+    tokenBudget:
+      typeof contextManifest.tokenBudget === 'number' || contextManifest.tokenBudget === null
+        ? contextManifest.tokenBudget
+        : undefined,
+    totalTokenEstimate:
+      typeof contextManifest.totalTokenEstimate === 'number'
+        ? contextManifest.totalTokenEstimate
+        : undefined,
+    items,
+  };
 }
 
 function verificationStatusLabel(
@@ -368,6 +476,107 @@ function verificationStatusLabel(
     case 'pending':
     default:
       return t('chat.verificationPending');
+  }
+}
+
+function workPlanStageLabel(stage: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
+  switch (stage) {
+    case 'planner':
+      return t('chat.workPlanStagePlanner');
+    case 'executor':
+      return t('chat.workPlanStageExecutor');
+    case 'reviewer':
+      return t('chat.workPlanStageReviewer');
+    default:
+      return stage || t('chat.workPlanStagePlanner');
+  }
+}
+
+function workPlanRiskLabel(risk: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
+  switch (risk) {
+    case 'low':
+      return t('chat.workPlanRiskLow');
+    case 'medium':
+      return t('chat.workPlanRiskMedium');
+    case 'high':
+      return t('chat.workPlanRiskHigh');
+    default:
+      return risk || t('chat.workPlanRiskLow');
+  }
+}
+
+function workPlanStepStatusLabel(status: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
+  switch (status) {
+    case 'done':
+      return t('chat.taskRunCompleted');
+    case 'running':
+      return t('chat.taskRunRunning');
+    case 'failed':
+      return t('chat.taskRunFailed');
+    case 'skipped':
+      return t('chat.taskRunUnknown');
+    default:
+      return t('chat.taskRunQueued');
+  }
+}
+
+function contextRoleLabel(role: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
+  switch (role) {
+    case 'instruction':
+      return t('chat.contextManifestRoleInstruction');
+    case 'evidence':
+      return t('chat.contextManifestRoleEvidence');
+    case 'tool_guidance':
+      return t('chat.contextManifestRoleToolGuidance');
+    case 'memory':
+      return t('chat.contextManifestRoleMemory');
+    case 'conversation':
+      return t('chat.contextManifestRoleConversation');
+    case 'source_scope':
+      return t('chat.contextManifestRoleSourceScope');
+    default:
+      return role || t('chat.contextManifestRoleEvidence');
+  }
+}
+
+function contextTrustLabel(trustLevel: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
+  switch (trustLevel) {
+    case 'system':
+      return t('chat.contextManifestTrustSystem');
+    case 'user_selected':
+      return t('chat.contextManifestTrustUserSelected');
+    case 'retrieved_evidence':
+      return t('chat.contextManifestTrustRetrievedEvidence');
+    case 'agent_memory':
+      return t('chat.contextManifestTrustAgentMemory');
+    case 'external':
+      return t('chat.contextManifestTrustExternal');
+    default:
+      return trustLevel || t('chat.contextManifestTrustRetrievedEvidence');
+  }
+}
+
+function trustAuthorityLabel(authority: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
+  switch (authority) {
+    case 'evidence':
+      return t('chat.contextManifestRoleEvidence');
+    case 'observation':
+      return t('chat.trustAuthorityObservation');
+    default:
+      return authority || t('chat.contextManifestRoleEvidence');
+  }
+}
+
+function trustVisibilityLabel(visibility: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
+  switch (visibility) {
+    case 'source_scope':
+      return t('chat.trustVisibilitySourceScope');
+    case 'workspace':
+      return t('chat.trustVisibilityWorkspace');
+    case 'current_chat':
+      return t('chat.trustVisibilityCurrentChat');
+    default:
+      return visibility || '';
   }
 }
 
@@ -470,6 +679,121 @@ function SearchResultCards({ items }: { items: SearchResultItem[] }) {
   );
 }
 
+function TrustBoundaryPills({ boundary }: { boundary: TrustBoundaryArtifact }) {
+  const { t } = useTranslation();
+  const visibilityLabel = trustVisibilityLabel(boundary.visibility, t);
+  return (
+    <div className="mb-2 flex flex-wrap gap-1.5 text-[10px] text-text-tertiary">
+      <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+        {trustAuthorityLabel(boundary.authority, t)}
+      </span>
+      <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+        {t('chat.trustCanInstruct')}: {boundary.canInstruct ? t('chat.trustCanInstructYes') : t('chat.trustCanInstructNo')}
+      </span>
+      {visibilityLabel && (
+        <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+          {visibilityLabel}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function WorkPlanPanel({ plan, compact = false }: { plan: WorkPlanArtifact; compact?: boolean }) {
+  const { t } = useTranslation();
+  const targets = plan.targets ?? [];
+  const steps = plan.steps ?? [];
+  const visibleTargets = targets.slice(0, compact ? 2 : 4);
+  const visibleSteps = steps.slice(0, compact ? 2 : 3);
+
+  return (
+    <div className="rounded-lg border border-border/60 bg-surface-0/65 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="font-medium text-text-primary">{t('chat.workPlanLabel')}</span>
+        <span className="rounded-full border border-border/60 bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary">
+          {workPlanRiskLabel(plan.risk, t)}
+        </span>
+        <span className="rounded-full border border-border/60 bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary">
+          {plan.requiresReview ? t('chat.workPlanReviewRequired') : t('chat.workPlanReviewOptional')}
+        </span>
+        {targets.length > 0 && (
+          <span className="text-[11px] text-text-tertiary">
+            {t('chat.workPlanTargetCount', { count: String(targets.length) })}
+          </span>
+        )}
+      </div>
+
+      {visibleTargets.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {visibleTargets.map((target, index) => (
+            <span
+              key={`${target.kind ?? 'target'}-${target.value ?? index}`}
+              className="inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary"
+            >
+              {target.kind && <span className="text-text-tertiary">{target.kind}</span>}
+              {target.value && <span className="truncate">{target.value}</span>}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {visibleSteps.length > 0 && (
+        <div className="mt-2 grid gap-1.5">
+          {visibleSteps.map((step, index) => (
+            <div
+              key={step.id ?? `${step.stage ?? 'step'}-${index}`}
+              className="flex items-center justify-between gap-2 rounded-md border border-border/50 bg-surface-1/70 px-2 py-1"
+            >
+              <span className="text-[11px] font-medium text-text-secondary">
+                {workPlanStageLabel(step.stage, t)}
+              </span>
+              <span className="text-[11px] text-text-tertiary">
+                {workPlanStepStatusLabel(step.status, t)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContextManifestPanel({ manifest, compact = false }: { manifest: ContextManifestArtifact; compact?: boolean }) {
+  const { t } = useTranslation();
+  const items = manifest.items ?? [];
+  const visibleItems = items.slice(0, compact ? 2 : 4);
+  const tokenEstimate = manifest.totalTokenEstimate ?? items.reduce((sum, item) => sum + (item.tokenEstimate ?? 0), 0);
+
+  return (
+    <div className="rounded-lg border border-border/60 bg-surface-0/65 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="font-medium text-text-primary">{t('chat.contextManifestLabel')}</span>
+        <span className="text-[11px] text-text-tertiary">
+          {t('chat.contextManifestSummary', {
+            count: String(items.length),
+            tokens: String(tokenEstimate),
+          })}
+        </span>
+      </div>
+
+      {visibleItems.length > 0 && (
+        <div className="mt-2 grid gap-1.5">
+          {visibleItems.map((item, index) => (
+            <div
+              key={item.id ?? `${item.source ?? 'context'}-${index}`}
+              className="flex flex-wrap items-center gap-1.5 rounded-md border border-border/50 bg-surface-1/70 px-2 py-1 text-[11px]"
+            >
+              <span className="font-medium text-text-secondary">{contextRoleLabel(item.role, t)}</span>
+              <span className="text-text-tertiary">{contextTrustLabel(item.trustLevel, t)}</span>
+              {item.source && <span className="min-w-0 truncate text-text-tertiary">{item.source}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -515,10 +839,10 @@ export function ToolCallCard({
     : 0;
   const capabilitySummary = capabilities
     ? [
-        capabilities.readOnly ? 'read-only' : 'writes',
-        capabilities.concurrencySafe ? 'parallel' : 'serial',
-        capabilities.interruptBehavior === 'cancel' ? 'cancellable' : 'blocking',
-        resourceKeyCount > 0 ? `${resourceKeyCount} resource${resourceKeyCount === 1 ? '' : 's'}` : null,
+        capabilities.readOnly ? t('chat.capabilityReadOnly') : t('chat.capabilityWrites'),
+        capabilities.concurrencySafe ? t('chat.capabilityParallel') : t('chat.capabilitySerial'),
+        capabilities.interruptBehavior === 'cancel' ? t('chat.capabilityCancellable') : t('chat.capabilityBlocking'),
+        resourceKeyCount > 0 ? t('chat.capabilityResources', { count: String(resourceKeyCount) }) : null,
       ].filter(Boolean).join(' · ')
     : null;
   const streamingArgsPreview =
@@ -537,9 +861,19 @@ export function ToolCallCard({
   const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
   const generatedImage = useMemo(() => extractGeneratedImageArtifact(artifacts), [artifacts]);
+  const workPlanArtifact = useMemo(() => extractWorkPlanArtifact(artifacts), [artifacts]);
+  const contextManifest = useMemo(() => extractContextManifestArtifact(artifacts), [artifacts]);
   const showPendingDiffStats = isPending && !diffStats && isFileChangeToolRender(safeToolName, renderKind);
-  const isStructuredTaskCard = Boolean(planArtifact || verificationArtifact || fileDiff || diffStats || generatedImage);
-  const shouldAutoOpenStructuredTaskCard = Boolean(planArtifact || verificationArtifact || generatedImage);
+  const isStructuredTaskCard = Boolean(
+    planArtifact ||
+    verificationArtifact ||
+    fileDiff ||
+    diffStats ||
+    generatedImage ||
+    workPlanArtifact ||
+    contextManifest,
+  );
+  const shouldAutoOpenStructuredTaskCard = Boolean(planArtifact || verificationArtifact || generatedImage || workPlanArtifact);
 
   const isSearchDone =
     safeToolName.toLowerCase().includes('search') && status === 'done' && !!content;
@@ -565,7 +899,7 @@ export function ToolCallCard({
 
   if (inline) {
     const briefLabel = getToolBriefLabel(safeToolName, args);
-    const briefResult = getToolBriefResult(status, content, safeToolName);
+    const briefResult = getToolBriefResult(status, t, content, safeToolName);
     return (
       <span className="inline-flex items-center gap-1">
         <Icon className="h-2.5 w-2.5 shrink-0" />
@@ -596,8 +930,12 @@ export function ToolCallCard({
       ? t('chat.verificationStatus', {
         status: verificationStatusLabel(verificationArtifact.overallStatus ?? 'pending', t),
       })
+      : workPlanArtifact
+        ? t('chat.workPlanLabel')
       : searchItems
         ? t('search.results', { count: String(searchItems.length) })
+        : contextManifest
+          ? t('chat.contextManifestLabel')
         : diffStats
           ? `${diffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
         : showPendingDiffStats
@@ -628,6 +966,9 @@ export function ToolCallCard({
       verificationArtifact ||
       fileDiff ||
       diffStats ||
+      generatedImage ||
+      workPlanArtifact ||
+      contextManifest ||
       streamingArgsPreview,
     );
     return (
@@ -671,7 +1012,22 @@ export function ToolCallCard({
                 {streamingArgsPreview}
               </pre>
             )}
-            {subagentRun ? (
+            {workPlanArtifact && <WorkPlanPanel plan={workPlanArtifact} compact />}
+            {contextManifest && <ContextManifestPanel manifest={contextManifest} compact />}
+            {generatedImage ? (
+              <div className="space-y-2">
+                <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
+                  <img
+                    src={generatedImage.dataUrl || (generatedImage.path ? convertFileSrc(generatedImage.path) : '')}
+                    alt={generatedImage.prompt || t('chat.generatedImageAlt')}
+                    className="max-h-64 w-full object-contain"
+                  />
+                </div>
+                {generatedImage.path && (
+                  <div className="break-all text-[11px] text-text-secondary">{generatedImage.path}</div>
+                )}
+              </div>
+            ) : subagentRun ? (
               <SubagentCard run={subagentRun} defaultOpen />
             ) : subagentBatch ? (
               <div className="space-y-2">
@@ -683,14 +1039,14 @@ export function ToolCallCard({
               <div className="rounded-lg border border-border/60 bg-surface-0/70 px-3 py-2">
                 <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
                   <span className="font-medium text-text-primary">
-                    {subagentJudgement.task || 'Delegated result adjudication'}
+                    {subagentJudgement.task || t('chat.subagentJudgementFallback')}
                   </span>
                   <span className="rounded-full border border-border/60 bg-surface-1 px-2 py-0.5">
                     {subagentJudgement.decisionMode}
                   </span>
                   {subagentJudgement.confidence && (
                     <span className="rounded-full border border-border/60 bg-surface-1 px-2 py-0.5">
-                      confidence {subagentJudgement.confidence}
+                      {t('chat.subagentConfidence', { value: subagentJudgement.confidence })}
                     </span>
                   )}
                 </div>
@@ -701,21 +1057,7 @@ export function ToolCallCard({
               </div>
             ) : searchItems ? (
               <>
-                {trustBoundary && (
-                  <div className="mb-2 flex flex-wrap gap-1.5 text-[10px] text-text-tertiary">
-                    <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
-                      {trustBoundary.authority ?? 'evidence'}
-                    </span>
-                    <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
-                      can instruct: {trustBoundary.canInstruct ? 'yes' : 'no'}
-                    </span>
-                    {trustBoundary.visibility && (
-                      <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
-                        {trustBoundary.visibility}
-                      </span>
-                    )}
-                  </div>
-                )}
+                {trustBoundary && <TrustBoundaryPills boundary={trustBoundary} />}
                 <SearchResultCards items={searchItems} />
               </>
             ) : planArtifact ? (
@@ -763,14 +1105,24 @@ export function ToolCallCard({
             className={`h-3 w-3 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
           />
         </button>
-        {expanded && (content || fileDiff || diffStats) && (
+        {expanded && (content || fileDiff || diffStats || generatedImage || workPlanArtifact || contextManifest) && (
           <div className="border-t border-border/30 px-2 py-1.5">
             {formattedArgs && (
               <div className="mb-1 rounded bg-surface-0/60 px-1.5 py-0.5 text-[10px] text-text-tertiary break-words">
                 {formattedArgs}
               </div>
             )}
-            {fileDiff ? (
+            {workPlanArtifact && <WorkPlanPanel plan={workPlanArtifact} compact />}
+            {contextManifest && <ContextManifestPanel manifest={contextManifest} compact />}
+            {generatedImage ? (
+              <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
+                <img
+                  src={generatedImage.dataUrl || (generatedImage.path ? convertFileSrc(generatedImage.path) : '')}
+                  alt={generatedImage.prompt || t('chat.generatedImageAlt')}
+                  className="max-h-32 w-full object-contain"
+                />
+              </div>
+            ) : fileDiff ? (
               <FileDiffPreview diff={fileDiff} compact />
             ) : diffStats ? (
               <div className="space-y-1.5">
@@ -781,11 +1133,11 @@ export function ToolCallCard({
                   </pre>
                 )}
               </div>
-            ) : (
+            ) : content ? (
               <pre className={`text-[11px] whitespace-pre-wrap break-words max-h-32 overflow-y-auto ${isError ? 'text-danger' : 'text-text-tertiary'}`}>
                 {content}
               </pre>
-            )}
+            ) : null}
           </div>
         )}
       </div>
@@ -815,11 +1167,11 @@ export function ToolCallCard({
       >
         <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
           <span className="font-medium text-text-primary">
-            {subagentBatch.batchGoal || 'Parallel delegated run'}
+            {subagentBatch.batchGoal || t('chat.subagentParallelRun')}
           </span>
           {typeof subagentBatch.effectiveMaxParallel === 'number' && (
             <span className="rounded-full border border-border/60 bg-surface-0 px-2 py-1">
-              parallel {subagentBatch.effectiveMaxParallel}
+              {t('chat.subagentParallelCount', { count: String(subagentBatch.effectiveMaxParallel) })}
             </span>
           )}
           {subagentBatch.workflowTemplateLabel && (
@@ -832,12 +1184,12 @@ export function ToolCallCard({
           )}
           {typeof subagentBatch.completedRuns === 'number' && (
             <span className="rounded-full border border-border/60 bg-surface-0 px-2 py-1">
-              complete {subagentBatch.completedRuns}
+              {t('chat.subagentCompletedCount', { count: String(subagentBatch.completedRuns) })}
             </span>
           )}
           {typeof subagentBatch.failedRuns === 'number' && subagentBatch.failedRuns > 0 && (
             <span className="rounded-full border border-danger/25 bg-danger/10 px-2 py-1 text-danger">
-              failed {subagentBatch.failedRuns}
+              {t('chat.subagentFailedCount', { count: String(subagentBatch.failedRuns) })}
             </span>
           )}
         </div>
@@ -860,19 +1212,19 @@ export function ToolCallCard({
       >
         <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
           <span className="font-medium text-text-primary">
-            {subagentJudgement.task || 'Delegated result adjudication'}
+            {subagentJudgement.task || t('chat.subagentJudgementFallback')}
           </span>
           <span className="rounded-full border border-border/60 bg-surface-0 px-2 py-1">
             {subagentJudgement.decisionMode}
           </span>
           {subagentJudgement.confidence && (
             <span className="rounded-full border border-border/60 bg-surface-0 px-2 py-1">
-              confidence {subagentJudgement.confidence}
+              {t('chat.subagentConfidence', { value: subagentJudgement.confidence })}
             </span>
           )}
           {subagentJudgement.winnerIds.length > 0 && (
             <span className="rounded-full border border-accent/25 bg-accent/10 px-2 py-1 text-accent">
-              winners {subagentJudgement.winnerIds.join(', ')}
+              {t('chat.subagentWinners', { value: subagentJudgement.winnerIds.join(', ') })}
             </span>
           )}
         </div>
@@ -887,7 +1239,7 @@ export function ToolCallCard({
         {subagentJudgement.rubric && subagentJudgement.rubric.length > 0 && (
           <div className="mt-3">
             <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
-              Rubric
+              {t('chat.subagentRubric')}
             </div>
             <div className="flex flex-wrap gap-1.5">
               {subagentJudgement.rubric.map((item, index) => (
@@ -935,7 +1287,7 @@ export function ToolCallCard({
         <StatusIcon
           className={`h-3.5 w-3.5 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
         />
-        {(content || streamingArgsPreview || fileDiff || diffStats || generatedImage) ? (
+        {(content || streamingArgsPreview || fileDiff || diffStats || generatedImage || workPlanArtifact || contextManifest) ? (
           expanded ? (
             <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
           ) : (
@@ -952,7 +1304,7 @@ export function ToolCallCard({
 
       {/* Expandable result */}
       <AnimatePresence>
-        {expanded && (content || streamingArgsPreview || fileDiff || diffStats || generatedImage) && (
+        {expanded && (content || streamingArgsPreview || fileDiff || diffStats || generatedImage || workPlanArtifact || contextManifest) && (
           <motion.div
             {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
@@ -970,12 +1322,22 @@ export function ToolCallCard({
                   {formattedArgs}
                 </div>
               )}
+              {workPlanArtifact && (
+                <div className="mb-2">
+                  <WorkPlanPanel plan={workPlanArtifact} />
+                </div>
+              )}
+              {contextManifest && (
+                <div className="mb-2">
+                  <ContextManifestPanel manifest={contextManifest} />
+                </div>
+              )}
               {generatedImage ? (
                 <div className="space-y-2">
                   <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
                     <img
                       src={generatedImage.dataUrl || (generatedImage.path ? convertFileSrc(generatedImage.path) : '')}
-                      alt={generatedImage.prompt || 'Generated image'}
+                      alt={generatedImage.prompt || t('chat.generatedImageAlt')}
                       className="max-h-80 w-full object-contain"
                     />
                   </div>
@@ -1022,21 +1384,7 @@ export function ToolCallCard({
                 </div>
               ) : searchItems ? (
                 <>
-                  {trustBoundary && (
-                    <div className="mb-2 flex flex-wrap gap-1.5 text-[10px] text-text-tertiary">
-                      <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
-                        {trustBoundary.authority ?? 'evidence'}
-                      </span>
-                      <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
-                        can instruct: {trustBoundary.canInstruct ? 'yes' : 'no'}
-                      </span>
-                      {trustBoundary.visibility && (
-                        <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
-                          {trustBoundary.visibility}
-                        </span>
-                      )}
-                    </div>
-                  )}
+                  {trustBoundary && <TrustBoundaryPills boundary={trustBoundary} />}
                   <SearchResultCards items={searchItems} />
                 </>
               ) : content ? (
