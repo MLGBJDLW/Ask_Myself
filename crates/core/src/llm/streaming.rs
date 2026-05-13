@@ -58,7 +58,25 @@ struct SseToolCallDelta {
 #[derive(serde::Deserialize)]
 struct SseFunctionDelta {
     name: Option<String>,
-    arguments: Option<String>,
+    arguments: Option<SseArgumentsDelta>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum SseArgumentsDelta {
+    Text(String),
+    Json(serde_json::Value),
+}
+
+impl SseArgumentsDelta {
+    fn to_delta_text(&self) -> String {
+        match self {
+            SseArgumentsDelta::Text(text) => text.clone(),
+            SseArgumentsDelta::Json(value) => {
+                serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
+            }
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -97,7 +115,7 @@ fn map_tool_call_delta(tc: &SseToolCallDelta) -> ToolCallDelta {
         arguments_delta: tc
             .function
             .as_ref()
-            .and_then(|f| f.arguments.clone())
+            .and_then(|f| f.arguments.as_ref().map(SseArgumentsDelta::to_delta_text))
             .unwrap_or_default(),
         index: tc.index,
         thought_signature: None,
@@ -589,6 +607,25 @@ mod tests {
         .expect("deserialize choice");
 
         assert_eq!(extract_text_delta_from_choice(&choice), "assistant output");
+    }
+
+    #[test]
+    fn tool_call_delta_accepts_json_object_arguments() {
+        let tool_call: SseToolCallDelta = serde_json::from_value(serde_json::json!({
+            "id": "call_1",
+            "index": 0,
+            "function": {
+                "name": "lookup",
+                "arguments": { "q": "x" }
+            }
+        }))
+        .expect("deserialize tool call delta");
+
+        let delta = map_tool_call_delta(&tool_call);
+
+        assert_eq!(delta.id, "call_1");
+        assert_eq!(delta.name.as_deref(), Some("lookup"));
+        assert_eq!(delta.arguments_delta, "{\"q\":\"x\"}");
     }
 
     // -- split_think_tags tests -------------------------------------------

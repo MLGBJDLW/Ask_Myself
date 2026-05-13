@@ -1657,7 +1657,7 @@ impl AgentExecutor {
                 tool_run_started_ids.clear();
                 let mut chunk_count: usize = 0;
                 let mut stream_incomplete_detail: Option<String> = None;
-                let mut stream_interrupted_by_steering: Option<Vec<String>> = None;
+                let mut stream_interrupted_by_steering: Option<AgentSteeringMessage> = None;
                 let mut steering_closed = false;
 
                 enum StreamLoopEvent {
@@ -1675,27 +1675,8 @@ impl AgentExecutor {
 
                     match stream_event {
                         StreamLoopEvent::Steering(Some(steering)) => {
-                            let steering_texts = {
-                                let mut steering_ctx = SteeringDrainContext {
-                                    db,
-                                    conversation_id,
-                                    tx: &tx,
-                                    model,
-                                    sort_order: &mut sort_order,
-                                    privacy_cfg: &privacy_cfg,
-                                };
-                                self.drain_steering_messages_from(
-                                    &mut messages,
-                                    &mut steering_ctx,
-                                    Some(steering),
-                                )
-                                .await
-                            };
-
-                            if !steering_texts.is_empty() {
-                                stream_interrupted_by_steering = Some(steering_texts);
-                                break;
-                            }
+                            stream_interrupted_by_steering = Some(steering);
+                            break;
                         }
                         StreamLoopEvent::Steering(None) => {
                             steering_closed = true;
@@ -1843,7 +1824,39 @@ impl AgentExecutor {
                     full_content.len()
                 );
 
-                if let Some(steering_texts) = stream_interrupted_by_steering {
+                if let Some(steering) = stream_interrupted_by_steering {
+                    if !full_content.trim().is_empty() {
+                        let draft_reasoning =
+                            self.reasoning_content_for_iteration(&iteration_thinking, false);
+                        messages.push(Message {
+                            role: Role::Assistant,
+                            parts: vec![ContentPart::Text {
+                                text: full_content.clone(),
+                            }],
+                            name: None,
+                            tool_calls: None,
+                            reasoning_content: draft_reasoning,
+                        });
+                    }
+                    let steering_texts = {
+                        let mut steering_ctx = SteeringDrainContext {
+                            db,
+                            conversation_id,
+                            tx: &tx,
+                            model,
+                            sort_order: &mut sort_order,
+                            privacy_cfg: &privacy_cfg,
+                        };
+                        self.drain_steering_messages_from(
+                            &mut messages,
+                            &mut steering_ctx,
+                            Some(steering),
+                        )
+                        .await
+                    };
+                    if steering_texts.is_empty() {
+                        continue 'react_loop;
+                    }
                     let reason = "Steering message received; restarting the model response.";
                     let _ = tx
                         .send(AgentEvent::StreamReset {
