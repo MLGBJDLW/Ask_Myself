@@ -168,9 +168,8 @@ const FILE_REGEX_CITE = /\[file:([^\]|]+?)(?:\|([^\]]*))?\]/g;
 const URL_REGEX = /\[url:([^\]|]+?)(?:\|([^\]]*))?\]/g;
 
 /**
- * Convert `[doc:ID|label]`, `[file:PATH|label]`, `[url:URL|label]` markers
- * into markdown links with custom URI schemes so the MarkdownLink component
- * can render them as clickable inline badges.
+ * Convert inline citation markers into markdown links with custom URI schemes
+ * so the MarkdownLink component can render them as clickable inline badges.
  */
 export function preprocessInlineCitations(content: string): string {
   return content
