@@ -1811,7 +1811,6 @@ impl AgentExecutor {
             // -- 4b. Accumulate usage ------------------------------------------
             let mut iteration_compacted = false;
             if let Some(u) = chunk_usage {
-                let iteration_context_pct: f32;
                 last_prompt_tokens = u.prompt_tokens; // Always overwrite — we want the LAST iteration
                 total_usage.prompt_tokens += u.prompt_tokens;
                 total_usage.completion_tokens += u.completion_tokens;
@@ -1832,7 +1831,7 @@ impl AgentExecutor {
                 // -- 4b'. Context pipeline budget check ------------------------
                 let budget_decision = context_pipeline.budget_decision(u.prompt_tokens);
                 let _budget_tokens = budget_decision.budget_tokens;
-                iteration_context_pct = budget_decision.usage_pct;
+                let iteration_context_pct = budget_decision.usage_pct;
                 if budget_decision.should_compact {
                     let before_message_count = messages.len();
                     let started = TurnLoopEvent::CompactionStarted {

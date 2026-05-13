@@ -37,8 +37,7 @@ fn preview_pdf_inner(path: &Path) -> Result<Option<StructuredPreview>, String> {
         match extract_page_text(&doc, *page_number) {
             Ok(text) if !text.trim().is_empty() => {
                 extracted_any_text = true;
-                let mut paragraph_count = 0;
-                for paragraph in pdf_paragraphs(&text) {
+                for (paragraph_count, paragraph) in pdf_paragraphs(&text).into_iter().enumerate() {
                     if paragraph_count >= PDF_PREVIEW_MAX_PARAGRAPHS_PER_PAGE {
                         blocks.push(PreviewBlock::Unsupported {
                             message: format!(
@@ -50,7 +49,6 @@ fn preview_pdf_inner(path: &Path) -> Result<Option<StructuredPreview>, String> {
                         break;
                     }
                     blocks.push(paragraph_block(paragraph));
-                    paragraph_count += 1;
                 }
             }
             Ok(_) => {
