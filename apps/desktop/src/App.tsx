@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from "react";
+import { Suspense, lazy, useState, useEffect, type ReactNode } from "react";
 import {
   createBrowserRouter,
   createRoutesFromElements,
@@ -14,14 +14,6 @@ import { I18nProvider, useTranslation } from "./i18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Layout } from "./components/Layout";
 
-import { SearchPage } from "./pages/SearchPage";
-import { SourcesPage } from "./pages/SourcesPage";
-import { PlaybooksPage } from "./pages/PlaybooksPage";
-import { KnowledgePage } from "./pages/KnowledgePage";
-import { SettingsPage } from "./pages/SettingsPage";
-import { ChatPage } from './pages/ChatPage';
-import { TaskCenterPage } from './pages/TaskCenterPage';
-import { WizardPage } from "./pages/WizardPage";
 import { CommandPalette } from "./components/CommandPalette";
 import { StreamProvider } from "./lib/StreamProvider";
 import { ProgressProvider } from "./lib/ProgressProvider";
@@ -30,6 +22,15 @@ import * as api from "./lib/api";
 import { useAutoCompile } from "./lib/useAutoCompile";
 import { useAutoHealthCheck } from "./lib/useAutoHealthCheck";
 import { useKnowledgeInsights } from "./lib/useKnowledgeInsights";
+
+const SearchPage = lazy(() => import("./pages/SearchPage").then((module) => ({ default: module.SearchPage })));
+const SourcesPage = lazy(() => import("./pages/SourcesPage").then((module) => ({ default: module.SourcesPage })));
+const PlaybooksPage = lazy(() => import("./pages/PlaybooksPage").then((module) => ({ default: module.PlaybooksPage })));
+const KnowledgePage = lazy(() => import("./pages/KnowledgePage").then((module) => ({ default: module.KnowledgePage })));
+const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
+const ChatPage = lazy(() => import("./pages/ChatPage").then((module) => ({ default: module.ChatPage })));
+const TaskCenterPage = lazy(() => import("./pages/TaskCenterPage").then((module) => ({ default: module.TaskCenterPage })));
+const WizardPage = lazy(() => import("./pages/WizardPage").then((module) => ({ default: module.WizardPage })));
 
 /* ── Page transition wrapper ─────────────────────────────────────── */
 function PageTransition({ children }: { children: ReactNode }) {
@@ -62,6 +63,23 @@ function NotFoundPage() {
         {t('app.goHome')}
       </Link>
     </div>
+  );
+}
+
+function PageLoader() {
+  const { t } = useTranslation();
+  return (
+    <div className="flex h-full min-h-0 items-center justify-center text-sm text-text-tertiary">
+      {t('common.loading')}
+    </div>
+  );
+}
+
+function LazyPage({ children }: { children: ReactNode }) {
+  return (
+    <Suspense fallback={<PageLoader />}>
+      <PageTransition>{children}</PageTransition>
+    </Suspense>
   );
 }
 
@@ -118,16 +136,16 @@ export type AppShellOutletContext = {
 const router = createBrowserRouter(
   createRoutesFromElements(
     <Route element={<AppShell />}>
-      <Route path="/wizard" element={<WizardPage />} />
+      <Route path="/wizard" element={<Suspense fallback={<PageLoader />}><WizardPage /></Suspense>} />
       <Route element={<Layout />}>
-        <Route path="/" element={<PageTransition><SearchPage /></PageTransition>} />
-        <Route path="/sources" element={<PageTransition><SourcesPage /></PageTransition>} />
-        <Route path="/playbooks" element={<PageTransition><PlaybooksPage /></PageTransition>} />
-        <Route path="/knowledge" element={<PageTransition><KnowledgePage /></PageTransition>} />
-        <Route path="/chat/:conversationId?" element={<PageTransition><ChatPage /></PageTransition>} />
-        <Route path="/tasks" element={<PageTransition><TaskCenterPage /></PageTransition>} />
-        <Route path="/settings" element={<PageTransition><SettingsPage /></PageTransition>} />
-        <Route path="*" element={<PageTransition><NotFoundPage /></PageTransition>} />
+        <Route path="/" element={<LazyPage><SearchPage /></LazyPage>} />
+        <Route path="/sources" element={<LazyPage><SourcesPage /></LazyPage>} />
+        <Route path="/playbooks" element={<LazyPage><PlaybooksPage /></LazyPage>} />
+        <Route path="/knowledge" element={<LazyPage><KnowledgePage /></LazyPage>} />
+        <Route path="/chat/:conversationId?" element={<LazyPage><ChatPage /></LazyPage>} />
+        <Route path="/tasks" element={<LazyPage><TaskCenterPage /></LazyPage>} />
+        <Route path="/settings" element={<LazyPage><SettingsPage /></LazyPage>} />
+        <Route path="*" element={<LazyPage><NotFoundPage /></LazyPage>} />
       </Route>
     </Route>
   ),

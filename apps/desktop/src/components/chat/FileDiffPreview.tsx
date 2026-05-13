@@ -23,6 +23,7 @@ interface FileDiffHunk {
 
 export interface FileDiffArtifact {
   path: string;
+  absolutePath?: string;
   operation: string;
   additions: number;
   deletions: number;
@@ -70,6 +71,7 @@ export function mergeFileDiffArtifactsByPath(diffs: FileDiffArtifact[]): FileDif
     }
 
     existing.operation = mergeOperation(existing.operation, diff.operation);
+    existing.absolutePath ||= diff.absolutePath;
     existing.additions += diff.additions;
     existing.deletions += diff.deletions;
     existing.truncated = Boolean(existing.truncated || diff.truncated);
@@ -92,14 +94,22 @@ function numberOrZero(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
 function normalizeLineType(value: unknown): FileDiffLineType | null {
   if (value === 'context' || value === 'addition' || value === 'deletion') return value;
   return null;
 }
 
-function parseFileDiffArtifact(diff: unknown): FileDiffArtifact | null {
+function parseFileDiffArtifact(
+  diff: unknown,
+  fallbackAbsolutePath?: string | null,
+): FileDiffArtifact | null {
   if (!isRecord(diff)) return null;
   const path = typeof diff.path === 'string' ? diff.path : '';
+  const absolutePath = stringOrNull(diff.absolutePath) ?? fallbackAbsolutePath ?? undefined;
   const hunksSource = Array.isArray(diff.hunks) ? diff.hunks : [];
   const hunks: FileDiffHunk[] = hunksSource.flatMap((hunk) => {
     if (!isRecord(hunk) || !Array.isArray(hunk.lines)) return [];
@@ -127,6 +137,7 @@ function parseFileDiffArtifact(diff: unknown): FileDiffArtifact | null {
   if (!path || hunks.length === 0) return null;
   return {
     path,
+    absolutePath,
     operation: typeof diff.operation === 'string' ? diff.operation : 'str_replace',
     additions: numberOrZero(diff.additions),
     deletions: numberOrZero(diff.deletions),
@@ -138,14 +149,32 @@ function parseFileDiffArtifact(diff: unknown): FileDiffArtifact | null {
 
 export function extractFileDiffArtifacts(artifacts: ArtifactPayload | undefined): FileDiffArtifact[] {
   if (!isRecord(artifacts)) return [];
+  const absolutePathsByPath = new Map<string, string>();
+  if (Array.isArray(artifacts.fileChanges)) {
+    for (const change of artifacts.fileChanges) {
+      if (!isRecord(change)) continue;
+      const path = stringOrNull(change.path);
+      const absolutePath = stringOrNull(change.absolutePath);
+      if (path && absolutePath) {
+        absolutePathsByPath.set(diffPathKey(path), absolutePath);
+      }
+    }
+  }
+
+  const parseWithFallback = (diff: unknown): FileDiffArtifact | null => {
+    const directPath = isRecord(diff) ? stringOrNull(diff.path) : null;
+    const fallback = directPath ? absolutePathsByPath.get(diffPathKey(directPath)) : null;
+    return parseFileDiffArtifact(diff, fallback);
+  };
+
   if (Array.isArray(artifacts.diffs)) {
     return artifacts.diffs.flatMap((diff) => {
-      const parsed = parseFileDiffArtifact(diff);
+      const parsed = parseWithFallback(diff);
       return parsed ? [parsed] : [];
     });
   }
 
-  const parsed = parseFileDiffArtifact(artifacts.diff);
+  const parsed = parseWithFallback(artifacts.diff);
   return parsed ? [parsed] : [];
 }
 
@@ -227,15 +256,16 @@ export function FileDiffPreview({
   const created = diff.operation === 'create';
   const Icon = created ? FilePlus2 : FilePenLine;
   const operationLabel = created ? t('chat.fileDiffCreated') : t('chat.fileDiffModified');
-  const maxHeight = compact ? 'max-h-56' : 'max-h-80';
+  const previewPath = diff.absolutePath || diff.path;
+  const maxHeight = compact ? 'max-h-72' : 'max-h-[32rem]';
   const ToggleIcon = expanded ? ChevronDown : ChevronRight;
 
   return (
     <div
-      className="overflow-hidden rounded-lg border border-border/70 bg-surface-0/80 shadow-sm"
+      className="w-full overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-sm ring-1 ring-black/[0.02]"
       data-testid="file-diff-preview"
     >
-      <div className="flex items-center gap-2 border-b border-border/60 bg-surface-1/70 px-3 py-2">
+      <div className="flex items-center gap-2 border-b border-border/60 bg-surface-1/85 px-3 py-2">
         <button
           type="button"
           onClick={() => setExpanded((current) => !current)}
@@ -251,7 +281,7 @@ export function FileDiffPreview({
         </button>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <FileBadge path={diff.path} className="min-w-0 max-w-full" />
+            <FileBadge path={previewPath} className="min-w-0 max-w-full" />
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums">

@@ -13,7 +13,8 @@
 - Use formulas for derived values. Do not hardcode calculated totals, rates, deltas, or scenario outputs.
 - Put model assumptions in explicit input cells and reference them from formulas.
 - Avoid saving files opened with `data_only=True`; it strips or hides formula intent.
-- Recalculate with LibreOffice when available, then scan for formula errors such as `#REF!`, `#VALUE!`, `#DIV/0!`, `#NAME?`, and `#N/A`.
+- Run `lint_xlsx` and `validate` after writing formulas. The default QA path does not use LibreOffice; it checks formula structure, missing sheet references, external workbook links, structured table references, cached error values, and `#REF!` tokens.
+- Mark generated workbooks for automatic recalculation on open so Excel refreshes formula results when the user opens the file.
 - For financial models, build assumptions, drivers, calculations, scenarios, sensitivity analysis, outputs, and checks as separate zones or sheets. Add balance/check rows where a broken model would otherwise look plausible.
 - Prefer formulas, tables, and named ranges to pasted derived values. If a value is intentionally static, label it as an input or assumption.
 

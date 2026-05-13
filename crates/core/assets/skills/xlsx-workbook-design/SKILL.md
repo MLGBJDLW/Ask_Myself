@@ -1,18 +1,19 @@
 ---
 name: xlsx-workbook-design
-description: Create, edit, analyze, recalculate, and validate Excel XLSX workbooks with Python-backed workflows. Activate for XLSX files, Excel spreadsheets, workbooks, dashboards, financial models, formulas, charts, tables, pivot-style summaries, data cleaning, or spreadsheet QA; use with `doc-script-editor`, openpyxl, pandas, and LibreOffice recalculation when available.
+description: Create, edit, analyze, lint, and validate Excel XLSX workbooks with Python-backed workflows. Activate for XLSX files, Excel spreadsheets, workbooks, dashboards, financial models, formulas, charts, tables, pivot-style summaries, data cleaning, or spreadsheet QA; use with `doc-script-editor`, openpyxl, pandas, and the skill-owned XLSX renderer.
 ---
 
 ## Workflow
-1. Use `doc-script-editor` for file operations: `check`, `create_xlsx`, `replace`, `extract`, `version`, `unpack`, `pack`, `recalc_xlsx`, `render`, `convert`, and `validate`.
-2. Run `scripts/xlsx_audit.py --path <file> --pretty` before editing existing workbooks and after generating formula-heavy files.
-3. For a new workbook, prefer a JSON spec or a short Python script using `openpyxl`; use pandas only for data loading/transforms, then format with `openpyxl`.
-4. For financial or scenario models, put assumptions in input cells and formulas in calculation cells. Do not hardcode derived numbers.
-5. After writing formulas, run `recalc_xlsx` when LibreOffice is available, then validate and treat formula errors as blocking.
-6. For existing workbooks, snapshot first and preserve formulas, named ranges, charts, styles, filters, freeze panes, and sheet visibility.
-7. Use an OfficeCLI-style ladder: L1 read/audit, L2 structured workbook edits, and L3 raw OOXML only for features the normal writer cannot express. Prefer deterministic workbook state over ad-hoc cell poking.
-8. For user-facing workbooks, render or preview important sheets after creation when tooling is available; fix clipped text, unusable widths, missing formats, and unreadable charts before delivery.
-9. Remove temporary CSV extracts, Python conversion scratch files, rendered previews, and unpacked OOXML folders unless the user requested an audit/debug bundle.
+1. Use `doc-script-editor` for file operations: `check`, `create_xlsx`, `lint_xlsx`, `replace`, `extract`, `version`, `unpack`, `pack`, `render`, `convert`, and `validate`.
+2. For a new workbook, create or edit a JSON spec as a workspace file, then run `create_xlsx`; it delegates to `scripts/xlsx_model_renderer.py`.
+3. Run `scripts/xlsx_audit.py --path <file> --pretty` before editing existing workbooks and after generating formula-heavy files.
+4. Use pandas only for data loading/transforms, then format with `openpyxl`; do not use ad-hoc one-shot Python when the renderer spec covers the task.
+5. For financial or scenario models, put assumptions in input cells and formulas in calculation cells. Do not hardcode derived numbers.
+6. After writing formulas, run `lint_xlsx` and `validate`. Do not use LibreOffice for the default Excel QA path; the renderer marks workbooks for Excel recalculation on open and performs internal formula linting for references, structured table names, external links, and `#REF!`.
+7. For existing workbooks, snapshot first and preserve formulas, named ranges, charts, styles, filters, freeze panes, and sheet visibility.
+8. Use an OfficeCLI-style ladder: L1 read/audit, L2 structured workbook edits, and L3 raw OOXML only for features the normal writer cannot express. Prefer deterministic workbook state over ad-hoc cell poking.
+9. For user-facing workbooks, render or preview important sheets after creation when tooling is available; fix clipped text, unusable widths, missing formats, and unreadable charts before delivery.
+10. Remove temporary CSV extracts, Python conversion scratch files, rendered previews, and unpacked OOXML folders unless the user requested an audit/debug bundle.
 
 ## Quality Rules
 1. Put an executive summary or dashboard first when the workbook is user-facing.
@@ -25,7 +26,31 @@ description: Create, edit, analyze, recalculate, and validate Excel XLSX workboo
 8. Financial models should separate assumptions, calculations, scenarios, sensitivity tables, and outputs. Every output number should trace back to inputs and formulas.
 
 ## Reference
-Read `references/xlsx-playbook.md` for formula safety, layout, recalculation, and QA guidance.
+Read `references/xlsx-playbook.md` for formula safety, layout, and QA guidance.
 
 ## Script
+Use `scripts/xlsx_model_renderer.py` for structured workbook creation. It supports rows/records, formal Excel tables, formula fill-down/fill-right with translated references, named ranges, validations, conditional formatting, charts, column widths, calculation metadata, and internal formula QA without LibreOffice.
+
+Minimal formula-model spec:
+
+```json
+{
+  "title": "Revenue Model",
+  "qa": { "min_formulas": 3 },
+  "sheets": [
+    {
+      "name": "Model",
+      "start_cell": "B4",
+      "headers": ["Metric", "2024", "2025", "2026"],
+      "rows": [["Revenue", 100, 120, 144], ["Margin", 0.4, 0.42, 0.45], ["Gross Profit", null, null, null]],
+      "table": { "name": "ModelTable" },
+      "formulas": [
+        { "cell": "C6", "formula": "=C4*C5", "fill_down": { "to_cell": "E6" }, "number_format": "$#,##0" }
+      ],
+      "named_ranges": [{ "name": "BaseRevenue", "cell": "C4" }]
+    }
+  ]
+}
+```
+
 Use `scripts/xlsx_audit.py` for a deterministic XLSX JSON inventory: sheets, dimensions, rows, cells, formulas, formula errors, tables, drawings, autofilters, frozen panes, calculation metadata, and warnings. It uses only Python stdlib and reads OOXML directly.

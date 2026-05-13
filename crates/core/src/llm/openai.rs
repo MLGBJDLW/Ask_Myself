@@ -158,7 +158,25 @@ struct OaiToolCallIn {
 #[derive(Deserialize)]
 struct OaiFunctionIn {
     name: String,
-    arguments: String,
+    arguments: OaiArgumentsIn,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OaiArgumentsIn {
+    Text(String),
+    Json(serde_json::Value),
+}
+
+impl OaiArgumentsIn {
+    fn into_argument_string(self) -> String {
+        match self {
+            OaiArgumentsIn::Text(text) => text,
+            OaiArgumentsIn::Json(value) => {
+                serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -352,6 +370,29 @@ fn parse_finish_reason(s: &str) -> FinishReason {
     }
 }
 
+fn parsed_tool_arguments(raw: &str) -> Option<serde_json::Value> {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(value @ serde_json::Value::Object(_)) | Ok(value @ serde_json::Value::Array(_)) => {
+            Some(value)
+        }
+        Ok(_) | Err(_) => None,
+    }
+}
+
+fn normalized_tool_arguments_text(raw: &str) -> String {
+    parsed_tool_arguments(raw)
+        .and_then(|value| serde_json::to_string(&value).ok())
+        .unwrap_or_else(|| "{}".to_string())
+}
+
+fn serialize_tool_arguments_for_history(raw: &str, raw_tool_args: bool) -> serde_json::Value {
+    if raw_tool_args {
+        parsed_tool_arguments(raw).unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::Value::String(normalized_tool_arguments_text(raw))
+    }
+}
+
 fn convert_message(
     msg: &Message,
     include_reasoning_content: bool,
@@ -402,13 +443,8 @@ fn convert_message(
             calls
                 .iter()
                 .map(|tc| {
-                    let arguments = if raw_tool_args {
-                        // DashScope requires arguments as a JSON object, not a string.
-                        serde_json::from_str(&tc.arguments)
-                            .unwrap_or_else(|_| serde_json::Value::String(tc.arguments.clone()))
-                    } else {
-                        serde_json::Value::String(tc.arguments.clone())
-                    };
+                    let arguments =
+                        serialize_tool_arguments_for_history(&tc.arguments, raw_tool_args);
                     OaiToolCallOut {
                         id: tc.id.clone(),
                         call_type: "function".to_string(),
@@ -713,7 +749,7 @@ impl LlmProvider for OpenAiProvider {
                 .map(|tc| ToolCallRequest {
                     id: tc.id,
                     name: tc.function.name,
-                    arguments: tc.function.arguments,
+                    arguments: tc.function.arguments.into_argument_string(),
                     thought_signature: None,
                 })
                 .collect()
@@ -1043,6 +1079,126 @@ mod tests {
         };
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
         assert_eq!(body["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn qwen_history_tool_arguments_are_sent_as_json_objects() {
+        let assistant = Message {
+            role: Role::Assistant,
+            parts: vec![],
+            name: None,
+            tool_calls: Some(vec![ToolCallRequest {
+                id: "call_1".to_string(),
+                name: "run_shell".to_string(),
+                arguments: "{\"program\":\"python\",\"args\":[\"-c\",\"print(1)\"]}".to_string(),
+                thought_signature: None,
+            }]),
+            reasoning_content: None,
+        };
+        let request = CompletionRequest {
+            model: "qwen3-coder".to_string(),
+            messages: vec![assistant],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::Qwen),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["arguments"],
+            serde_json::json!({
+                "program": "python",
+                "args": ["-c", "print(1)"]
+            })
+        );
+    }
+
+    #[test]
+    fn invalid_history_tool_arguments_are_replaced_before_replay() {
+        let assistant = Message {
+            role: Role::Assistant,
+            parts: vec![],
+            name: None,
+            tool_calls: Some(vec![ToolCallRequest {
+                id: "call_bad".to_string(),
+                name: "run_shell".to_string(),
+                arguments: "{not valid json".to_string(),
+                thought_signature: None,
+            }]),
+            reasoning_content: None,
+        };
+        let request = CompletionRequest {
+            model: "qwen3-coder".to_string(),
+            messages: vec![assistant],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::Qwen),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["arguments"],
+            serde_json::json!({})
+        );
+
+        let request = CompletionRequest {
+            provider_type: Some(ProviderType::OpenAi),
+            model: "gpt-5.5".to_string(),
+            ..request
+        };
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["arguments"],
+            "{}"
+        );
+    }
+
+    #[test]
+    fn response_tool_arguments_accept_json_object_wire_shape() {
+        let response: OaiResponse = serde_json::from_value(serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": { "q": "x" }
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": null
+        }))
+        .unwrap();
+
+        let tool_call = response
+            .choices
+            .into_iter()
+            .next()
+            .unwrap()
+            .message
+            .tool_calls
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+
+        assert_eq!(
+            tool_call.function.arguments.into_argument_string(),
+            "{\"q\":\"x\"}"
+        );
     }
 
     #[test]

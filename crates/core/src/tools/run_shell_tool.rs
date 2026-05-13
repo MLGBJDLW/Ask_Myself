@@ -571,6 +571,20 @@ fn snapshot_path_label(root: &Path, path: &Path) -> String {
     display.to_string_lossy().replace('\\', "/")
 }
 
+fn absolute_path_label(path: &Path) -> String {
+    let text = path.to_string_lossy().to_string();
+    #[cfg(windows)]
+    {
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return rest.to_string();
+        }
+    }
+    text
+}
+
 fn utf8_content(entry: Option<&FileSnapshotEntry>) -> Option<String> {
     let bytes = entry?.content.as_ref()?;
     std::str::from_utf8(bytes)
@@ -616,6 +630,7 @@ fn build_run_shell_file_changes(
         };
 
         let label = snapshot_path_label(root, &path);
+        let absolute_path = absolute_path_label(&path);
         let old_text = utf8_content(old);
         let new_text = utf8_content(new);
         let mut has_text_diff = false;
@@ -639,7 +654,13 @@ fn build_run_shell_file_changes(
                 },
             };
 
-            if let Some(diff) = maybe_diff {
+            if let Some(mut diff) = maybe_diff {
+                if let Some(object) = diff.as_object_mut() {
+                    object.insert(
+                        "absolutePath".to_string(),
+                        Value::String(absolute_path.clone()),
+                    );
+                }
                 additions += diff_number(&diff, "additions");
                 deletions += diff_number(&diff, "deletions");
                 hunk_count += diff_hunk_count(&diff);
@@ -651,6 +672,7 @@ fn build_run_shell_file_changes(
         changed_paths.push(label.clone());
         changes.push(json!({
             "path": label,
+            "absolutePath": absolute_path,
             "operation": operation,
             "bytesBefore": old.map(|entry| entry.bytes),
             "bytesAfter": new.map(|entry| entry.bytes),
@@ -2212,7 +2234,15 @@ mod tests {
         assert_eq!(artifact["diffStats"]["paths"][0], "copy.txt");
         assert_eq!(artifact["diff"]["operation"], "create");
         assert_eq!(artifact["diff"]["path"], "copy.txt");
+        assert_eq!(
+            artifact["diff"]["absolutePath"],
+            tmp.path().join("copy.txt").to_string_lossy().to_string()
+        );
         assert_eq!(artifact["fileChanges"][0]["operation"], "create");
+        assert_eq!(
+            artifact["fileChanges"][0]["absolutePath"],
+            tmp.path().join("copy.txt").to_string_lossy().to_string()
+        );
         assert!(result.content.contains("file changes"));
         assert!(result.content.contains("copy.txt"));
     }
@@ -2242,6 +2272,10 @@ mod tests {
         assert_eq!(artifact["diffStats"]["deletions"], 1);
         assert_eq!(artifact["diffStats"]["paths"][0], "dest.txt");
         assert_eq!(artifact["diff"]["operation"], "run_shell");
+        assert_eq!(
+            artifact["diff"]["absolutePath"],
+            tmp.path().join("dest.txt").to_string_lossy().to_string()
+        );
         assert!(artifact["diff"]["hunks"][0]["lines"]
             .as_array()
             .unwrap()

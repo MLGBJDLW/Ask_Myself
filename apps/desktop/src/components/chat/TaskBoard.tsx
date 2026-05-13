@@ -25,6 +25,10 @@ export function TaskBoard({
     return null;
   }
 
+  if (plan.routeKind === 'DirectResponse') {
+    return null;
+  }
+
   return (
     <div
       data-testid="task-board"

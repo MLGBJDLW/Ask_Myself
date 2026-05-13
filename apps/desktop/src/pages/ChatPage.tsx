@@ -639,6 +639,8 @@ export function ChatPage() {
               disabled={!chat.agentConfig || chat.loadingMsgs}
               conversationId={chat.activeId ?? undefined}
               prefillText={prefillText}
+              onCompact={chat.activeId ? handleCompactConversation : undefined}
+              isCompacting={isCompacting}
               onRestoreCheckpoint={chat.activeId ? async () => {
                 await chat.reloadMessages();
               } : undefined}

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use crate::llm::ToolCallRequest;
 use crate::tools::ToolRegistry;
+use crate::work_plan::MutationWorkPlan;
 
 use super::tool_scheduler::ToolSchedulerPolicy;
 use super::{ToolRunItem, ToolRunStatus};
@@ -22,7 +23,9 @@ pub(super) fn build_tool_run_item(
     let parsed_args = arguments
         .and_then(|args| serde_json::from_str::<serde_json::Value>(args).ok())
         .unwrap_or(serde_json::Value::Null);
-    let capabilities = tools.run_capabilities(tool_name, &parsed_args);
+    let invocation = tools.build_invocation(call_id, tool_name, parsed_args);
+    let capabilities = invocation.capabilities.clone();
+    let artifacts = artifacts_with_work_plan(artifacts, &invocation);
     ToolRunItem {
         call_id: call_id.to_string(),
         tool_name: tool_name.to_string(),
@@ -36,6 +39,27 @@ pub(super) fn build_tool_run_item(
         progress_note,
         duration_ms,
     }
+}
+
+fn artifacts_with_work_plan(
+    artifacts: Option<serde_json::Value>,
+    invocation: &crate::tools::ToolInvocation,
+) -> Option<serde_json::Value> {
+    let Some(work_plan) = MutationWorkPlan::from_tool_invocation(invocation) else {
+        return artifacts;
+    };
+    let work_plan = serde_json::to_value(work_plan).ok()?;
+    let mut map = match artifacts {
+        Some(serde_json::Value::Object(map)) => map,
+        Some(value) => {
+            let mut map = serde_json::Map::new();
+            map.insert("result".to_string(), value);
+            map
+        }
+        None => serde_json::Map::new(),
+    };
+    map.entry("workPlan".to_string()).or_insert(work_plan);
+    Some(serde_json::Value::Object(map))
 }
 
 pub(super) fn tool_call_execution_batches(
@@ -101,4 +125,69 @@ pub(super) fn tool_call_execution_batches(
     }
 
     batches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::default_tool_registry;
+
+    #[test]
+    fn mutation_tool_run_item_includes_work_plan_artifact() {
+        let tools = default_tool_registry();
+        let run = build_tool_run_item(
+            &tools,
+            "call-1",
+            "edit_file",
+            ToolRunStatus::Preparing,
+            Some(r#"{"path":"notes.md","old_str":"before","new_str":"after"}"#),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let artifacts = run.artifacts.expect("work plan artifact");
+        assert_eq!(artifacts["workPlan"]["toolName"], "edit_file");
+        assert_eq!(artifacts["workPlan"]["steps"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn readonly_tool_run_item_does_not_create_work_plan_artifact() {
+        let tools = default_tool_registry();
+        let run = build_tool_run_item(
+            &tools,
+            "call-1",
+            "search_knowledge_base",
+            ToolRunStatus::Preparing,
+            Some(r#"{"query":"notes"}"#),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(run.artifacts.is_none());
+    }
+
+    #[test]
+    fn readonly_tool_run_item_preserves_existing_artifacts() {
+        let tools = default_tool_registry();
+        let run = build_tool_run_item(
+            &tools,
+            "call-1",
+            "search_knowledge_base",
+            ToolRunStatus::Completed,
+            Some(r#"{"query":"notes"}"#),
+            None,
+            None,
+            Some(serde_json::json!({ "kind": "searchResults" })),
+            None,
+            None,
+        );
+
+        assert_eq!(run.artifacts.unwrap()["kind"], "searchResults");
+    }
 }

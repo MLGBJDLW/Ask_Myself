@@ -14,3 +14,36 @@ export interface SearchResult {
   searchTimeMs: number;
   searchMode?: 'fts' | 'hybrid';
 }
+
+export type ContextItemRole =
+  | 'instruction'
+  | 'evidence'
+  | 'tool_guidance'
+  | 'memory'
+  | 'conversation'
+  | 'source_scope';
+
+export type ContextTrustLevel =
+  | 'system'
+  | 'user_selected'
+  | 'retrieved_evidence'
+  | 'agent_memory'
+  | 'external';
+
+export interface ContextPackItem {
+  id: string;
+  role: ContextItemRole;
+  source: string;
+  reason: string;
+  trustLevel: ContextTrustLevel;
+  tokenEstimate: number;
+  payload: Record<string, unknown> | unknown[] | string | number | boolean | null;
+}
+
+export interface ContextPack {
+  version: number;
+  purpose: string;
+  tokenBudget?: number | null;
+  totalTokenEstimate: number;
+  items: ContextPackItem[];
+}

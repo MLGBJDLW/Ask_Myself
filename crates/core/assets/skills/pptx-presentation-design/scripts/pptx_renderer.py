@@ -208,6 +208,16 @@ PPTX_BACKGROUND_STYLES = {
     "spotlight",
 }
 
+PPTX_TRANSITION_TYPES = {
+    "fade",
+    "push",
+    "wipe",
+    "split",
+    "cover",
+    "pull",
+    "cut",
+}
+
 EMU_PER_INCH = 914400
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff"}
 
@@ -1715,6 +1725,117 @@ def _apply_notes(slide: Any, notes: Any) -> None:
         pass
 
 
+def _transition_dict(value: Any) -> dict[str, Any] | None:
+    if not value:
+        return None
+    if isinstance(value, str):
+        return {"type": value}
+    if isinstance(value, dict):
+        return value
+    return None
+
+
+def _transition_bool(value: Any, default: bool) -> str:
+    if value is None:
+        return "1" if default else "0"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, str):
+        return "0" if value.strip().lower() in {"0", "false", "no", "off"} else "1"
+    return "1" if bool(value) else "0"
+
+
+def _transition_speed(value: Any) -> str:
+    speed = str(value or "med").strip().lower()
+    if speed in {"slow", "slw"}:
+        return "slow"
+    if speed in {"fast", "fst"}:
+        return "fast"
+    return "med"
+
+
+def _transition_dir(value: Any, default: str = "l") -> str:
+    direction = str(value or default).strip().lower()
+    return {
+        "left": "l",
+        "right": "r",
+        "up": "u",
+        "down": "d",
+        "l": "l",
+        "r": "r",
+        "u": "u",
+        "d": "d",
+    }.get(direction, default)
+
+
+def _transition_xml(spec: dict[str, Any]) -> str:
+    transition_type = str(spec.get("type") or spec.get("effect") or "fade").strip().lower()
+    if transition_type in {"none", "off"}:
+        return ""
+    if transition_type not in PPTX_TRANSITION_TYPES:
+        _die(
+            f"ERROR: unsupported slide transition '{transition_type}'. "
+            f"Supported transitions: {', '.join(sorted(PPTX_TRANSITION_TYPES))}",
+            3,
+        )
+    attrs = [
+        f'spd="{_transition_speed(spec.get("speed"))}"',
+        f'advClick="{_transition_bool(spec.get("advance_click"), True)}"',
+    ]
+    advance_ms = spec.get("advance_ms") or spec.get("advanceTime") or spec.get("advance_time")
+    if advance_ms not in (None, ""):
+        try:
+            attrs.append(f'advTm="{max(0, int(advance_ms))}"')
+        except (TypeError, ValueError):
+            _die("ERROR: slide transition advance_ms must be an integer", 3)
+
+    if transition_type == "fade":
+        child = "<p:fade/>"
+    elif transition_type in {"push", "wipe", "cover", "pull"}:
+        child = f'<p:{transition_type} dir="{_transition_dir(spec.get("dir") or spec.get("direction"))}"/>'
+    elif transition_type == "split":
+        orient = str(spec.get("orient") or spec.get("orientation") or "vert").strip().lower()
+        if orient not in {"horz", "vert"}:
+            orient = "vert"
+        split_dir = str(spec.get("dir") or spec.get("direction") or "out").strip().lower()
+        if split_dir not in {"in", "out"}:
+            split_dir = "out"
+        child = f'<p:split orient="{orient}" dir="{split_dir}"/>'
+    else:
+        child = "<p:cut/>"
+
+    return f'<p:transition {" ".join(attrs)} xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">{child}</p:transition>'
+
+
+def _apply_slide_transition(slide: Any, transition: Any) -> None:
+    spec = _transition_dict(transition)
+    if not spec:
+        return
+    xml = _transition_xml(spec)
+    if not xml:
+        return
+    try:
+        from pptx.oxml import parse_xml  # type: ignore
+        from pptx.oxml.ns import qn  # type: ignore
+    except ImportError:
+        _missing("python-pptx")
+
+    slide_element = slide._element
+    transition_tag = qn("p:transition")
+    timing_tag = qn("p:timing")
+    ext_tag = qn("p:extLst")
+    for child in list(slide_element):
+        if child.tag == transition_tag:
+            slide_element.remove(child)
+
+    insert_at = len(slide_element)
+    for idx, child in enumerate(slide_element):
+        if child.tag in {timing_tag, ext_tag}:
+            insert_at = idx
+            break
+    slide_element.insert(insert_at, parse_xml(xml))
+
+
 def _require_items(idx: int, slide_spec: dict[str, Any], layout_name: str, *keys: str) -> None:
     for key in keys:
         if _item_dicts(slide_spec.get(key)):
@@ -1842,6 +1963,7 @@ def create_pptx_from_spec(path: str, spec_path: str, template: str | None = None
             _add_slide_links(slide, slide_spec, theme, slide_w, slide_h)
             _add_footer(slide, slide_spec, theme, slide_w, slide_h, index, len(slides))
             _apply_notes(slide, slide_spec.get("notes") or (notes_per_slide[index - 1] if notes_per_slide else None))
+            _apply_slide_transition(slide, slide_spec.get("transition"))
     finally:
         for temp_path in temp_paths:
             try:

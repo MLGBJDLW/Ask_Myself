@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Square, Paperclip, X, FileText, Workflow, ChevronDown } from "lucide-react";
+import { Send, Square, Paperclip, X, FileText, Workflow, ChevronDown, Scissors } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "../../i18n";
 import type { Conversation, ImageAttachment } from "../../types/conversation";
@@ -94,6 +94,8 @@ interface ChatInputProps {
   onRestoreCheckpoint?: () => void;
   onBranchCheckpoint?: (conversation: Conversation) => void;
   prefillText?: string;
+  onCompact?: () => void;
+  isCompacting?: boolean;
 }
 
 interface ChatDraftState {
@@ -110,6 +112,8 @@ export function ChatInput({
   onRestoreCheckpoint,
   onBranchCheckpoint,
   prefillText,
+  onCompact,
+  isCompacting = false,
 }: ChatInputProps) {
   const { t } = useTranslation();
   const draftKey = conversationId ?? "__new__";
@@ -188,6 +192,13 @@ export function ChatInput({
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed && attachments.length === 0) return;
+    if (trimmed === "/compact" && attachments.length === 0 && onCompact) {
+      onCompact();
+      draftsRef.current[draftKey] = { value: "", attachments: [] };
+      setValue("");
+      setAttachments([]);
+      return;
+    }
     onSend(
       trimmed || t("chat.imageMessage"),
       attachments.length > 0 ? attachments : undefined,
@@ -200,7 +211,7 @@ export function ChatInput({
         textareaRef.current.style.height = "auto";
       }
     }, 0);
-  }, [attachments, draftKey, onSend, t, value]);
+  }, [attachments, draftKey, onCompact, onSend, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -525,6 +536,18 @@ export function ChatInput({
         >
           <Paperclip className="h-4 w-4" />
         </button>
+        {conversationId && onCompact && (
+          <button
+            type="button"
+            onClick={onCompact}
+            disabled={disabled || isStreaming || isCompacting}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
+            aria-label={t("chat.compact")}
+            title="/compact"
+          >
+            <Scissors className={`h-4 w-4 ${isCompacting ? "animate-pulse" : ""}`} />
+          </button>
+        )}
         <input
           ref={fileInputRef}
           type="file"
