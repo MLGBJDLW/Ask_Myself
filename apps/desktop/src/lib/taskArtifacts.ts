@@ -16,6 +16,7 @@ export interface PlanArtifact {
   kind: 'plan';
   title?: string | null;
   explanation?: string | null;
+  routeKind?: string | null;
   steps: PlanStepArtifact[];
   counts?: {
     total?: number;
@@ -101,6 +102,7 @@ function normalizePlanArtifact(value: unknown): PlanArtifact | null {
     kind: 'plan',
     title: typeof record.title === 'string' ? record.title : null,
     explanation: typeof record.explanation === 'string' ? record.explanation : null,
+    routeKind: typeof record.routeKind === 'string' ? record.routeKind : null,
     steps,
     counts: counts
       ? {

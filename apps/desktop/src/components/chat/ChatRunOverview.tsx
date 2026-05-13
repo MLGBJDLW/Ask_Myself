@@ -325,6 +325,13 @@ export function ChatRunOverview({
   const canCompact = Boolean(onCompact);
   const canStartNewChat = Boolean(onStartNewChat);
   const showContextActions = (contextOverflow || usagePercent >= 95) && (canCompact || canStartNewChat);
+  const showInvestigationPanel = Boolean(
+    collectionContext
+      || evidenceCount > 0
+      || evidenceLevel !== 'none'
+      || (routeKind && routeKind !== 'DirectResponse')
+      || sourceSummary.selectedCount > 0,
+  );
 
   const riskLabel = rateLimited
     ? t('chat.rateLimited')
@@ -397,7 +404,7 @@ export function ChatRunOverview({
         </summary>
 
         <div className="border-t border-border/60 px-3 pb-3 pt-2.5">
-          <div className="grid gap-2 xl:grid-cols-[1.15fr_1fr]">
+          <div className={`grid gap-2 ${showInvestigationPanel ? 'xl:grid-cols-[1.15fr_1fr]' : ''}`}>
             <section className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -408,10 +415,14 @@ export function ChatRunOverview({
                   <div className="mt-1 truncate text-sm font-medium text-text-primary">
                     {taskRun?.title || title}
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-1.5 text-[11px] text-text-tertiary">
-                    <span>{taskRun ? taskPhaseLabel(taskRun.phase, t) : routeLabel}</span>
-                    {taskRun && routeLabel && <span>{routeLabel}</span>}
-                    {taskRun?.summary && <span>{taskRun.summary}</span>}
+                  <div className="mt-1 max-h-16 overflow-y-auto text-[11px] text-text-tertiary">
+                    <div className="flex flex-wrap gap-1.5">
+                      <span>{taskRun ? taskPhaseLabel(taskRun.phase, t) : routeLabel}</span>
+                      {taskRun && routeLabel && <span>{routeLabel}</span>}
+                    </div>
+                    {taskRun?.summary && (
+                      <p className="mt-1 break-words leading-4">{taskRun.summary}</p>
+                    )}
                   </div>
                 </div>
                 <span className="shrink-0 rounded-full border border-border/70 bg-surface-0/80 px-2 py-1 text-[11px] text-text-secondary">
@@ -441,26 +452,28 @@ export function ChatRunOverview({
               )}
             </section>
 
-            <section className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
-              <div className="flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
-                <Database className="h-3.5 w-3.5" />
-                {t('chat.investigationLabel')}
-              </div>
-              <p className="mt-1 line-clamp-2 text-sm text-text-secondary">
-                {contextSummary}
-              </p>
-              <div className="mt-2 grid gap-1.5 sm:grid-cols-3">
-                <span className="rounded-md border border-border/60 bg-surface-0/70 px-2 py-1.5 text-[11px] text-text-secondary">
-                  {t('chat.investigationRouteLabel')}: {routeLabel}
-                </span>
-                <span className="rounded-md border border-border/60 bg-surface-0/70 px-2 py-1.5 text-[11px] text-text-secondary">
-                  {t('chat.answerEvidence')}: {evidenceCount > 0 ? evidenceCount : t('chat.investigationSupportingNone')}
-                </span>
-                <span className="rounded-md border border-border/60 bg-surface-0/70 px-2 py-1.5 text-[11px] text-text-secondary">
-                  {t('chat.contextScopeLabel')}: {scopeHint}
-                </span>
-              </div>
-            </section>
+            {showInvestigationPanel && (
+              <section className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
+                <div className="flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
+                  <Database className="h-3.5 w-3.5" />
+                  {t('chat.investigationLabel')}
+                </div>
+                <p className="mt-1 line-clamp-2 text-sm text-text-secondary">
+                  {contextSummary}
+                </p>
+                <div className="mt-2 grid gap-1.5 sm:grid-cols-3">
+                  <span className="rounded-md border border-border/60 bg-surface-0/70 px-2 py-1.5 text-[11px] text-text-secondary">
+                    {t('chat.investigationRouteLabel')}: {routeLabel}
+                  </span>
+                  <span className="rounded-md border border-border/60 bg-surface-0/70 px-2 py-1.5 text-[11px] text-text-secondary">
+                    {t('chat.answerEvidence')}: {evidenceCount > 0 ? evidenceCount : t('chat.investigationSupportingNone')}
+                  </span>
+                  <span className="rounded-md border border-border/60 bg-surface-0/70 px-2 py-1.5 text-[11px] text-text-secondary">
+                    {t('chat.contextScopeLabel')}: {scopeHint}
+                  </span>
+                </div>
+              </section>
+            )}
           </div>
 
           <div className="mt-2 grid gap-2 lg:grid-cols-3">
