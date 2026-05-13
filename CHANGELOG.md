@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.1...nexa-monorepo-v0.6.2) (2026-05-13)
+
+
+### Features
+
+* **desktop:** streamline agent panels and image settings ([42728ec](https://github.com/MLGBJDLW/Nexa/commit/42728ecd709747e44a68ac63b1673bdeeca58e45))
+* **pptx:** add html-first deck pipeline ([05cb0fb](https://github.com/MLGBJDLW/Nexa/commit/05cb0fb684bd347b75108dcd555ed681411a691b))
+* **pptx:** add transitions and spec discipline ([44eea2e](https://github.com/MLGBJDLW/Nexa/commit/44eea2e58c4ae0efc974f0b3243adb90bdebf573))
+* **xlsx:** add internal model renderer and formula lint ([a02bed8](https://github.com/MLGBJDLW/Nexa/commit/a02bed83f804969f717944b8978ada330d0d47ca))
+
+
+### Bug Fixes
+
+* **agent:** harden tool arguments and steering ([43ba9f8](https://github.com/MLGBJDLW/Nexa/commit/43ba9f86dd269835bc3e5977e1f02a512a555350))
+* **preview:** resolve shell file changes by absolute path ([6cda889](https://github.com/MLGBJDLW/Nexa/commit/6cda889db20b6170833946d01426699cb88bc0fa))
+
 ## [0.6.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.0...nexa-monorepo-v0.6.1) (2026-05-12)
 
 
