@@ -307,10 +307,10 @@ def cmd_check(args: argparse.Namespace) -> int:
             "id": "LibreOffice",
             "status": "missing",
             "required": False,
-            "detail": "needed for convert/recalc/render QA",
+            "detail": "needed for convert/render QA",
         })
         if not args.json:
-            print("  LibreOffice    MISSING (needed for convert/recalc/render QA)")
+            print("  LibreOffice    MISSING (needed for convert/render QA)")
     pdftoppm = _find_pdftoppm()
     if pdftoppm:
         results.append({
@@ -857,66 +857,31 @@ def cmd_create_docx(args: argparse.Namespace) -> int:
 
 
 def cmd_create_xlsx(args: argparse.Namespace) -> int:
-    try:
-        import openpyxl  # type: ignore
-        from openpyxl.chart import BarChart, LineChart, Reference  # type: ignore
-        from openpyxl.styles import Font, PatternFill, Alignment  # type: ignore
-        from openpyxl.worksheet.table import Table, TableStyleInfo  # type: ignore
-    except ImportError:
-        _missing("openpyxl")
     path = _validate_output_path(args.path, {"xlsx"})
-    spec = _read_json(args.spec)
-    wb = openpyxl.Workbook()
-    wb.remove(wb.active)
-    sheets = spec.get("sheets") or []
-    if not isinstance(sheets, list) or not sheets:
-        _die("ERROR: create_xlsx spec requires non-empty 'sheets' array", 3)
-    for sheet_spec in sheets:
-        name = str(sheet_spec.get("name") or f"Sheet{len(wb.worksheets) + 1}")[:31]
-        ws = wb.create_sheet(name)
-        rows = sheet_spec.get("rows") or []
-        for row in rows:
-            ws.append(row if isinstance(row, list) else [row])
-        if rows:
-            for cell in ws[1]:
-                cell.font = Font(bold=True, color="FFFFFF")
-                cell.fill = PatternFill("solid", fgColor="2B579A")
-                cell.alignment = Alignment(horizontal="center")
-            ws.freeze_panes = sheet_spec.get("freeze_panes") or "A2"
-            ws.auto_filter.ref = ws.dimensions
-            if sheet_spec.get("table", True):
-                table_name = "".join(ch for ch in name if ch.isalnum()) or f"Table{len(wb.worksheets)}"
-                table = Table(displayName=f"{table_name[:24]}Table", ref=ws.dimensions)
-                style = TableStyleInfo(
-                    name="TableStyleMedium2",
-                    showFirstColumn=False,
-                    showLastColumn=False,
-                    showRowStripes=True,
-                    showColumnStripes=False,
-                )
-                table.tableStyleInfo = style
-                ws.add_table(table)
-        for item in sheet_spec.get("formulas") or []:
-            ws[str(item["cell"])] = str(item["formula"])
-        for idx, width in enumerate(sheet_spec.get("column_widths") or [], start=1):
-            ws.column_dimensions[openpyxl.utils.get_column_letter(idx)].width = float(width)
-        for chart_spec in sheet_spec.get("charts") or []:
-            chart_type = str(chart_spec.get("type") or "bar").lower()
-            chart = LineChart() if chart_type == "line" else BarChart()
-            chart.title = chart_spec.get("title") or ""
-            min_col = int(chart_spec.get("min_col", 2))
-            max_col = int(chart_spec.get("max_col", min_col))
-            min_row = int(chart_spec.get("min_row", 1))
-            max_row = int(chart_spec.get("max_row", ws.max_row))
-            data = Reference(ws, min_col=min_col, max_col=max_col, min_row=min_row, max_row=max_row)
-            chart.add_data(data, titles_from_data=True)
-            if chart_spec.get("categories_col"):
-                cats = Reference(ws, min_col=int(chart_spec["categories_col"]), min_row=min_row + 1, max_row=max_row)
-                chart.set_categories(cats)
-            ws.add_chart(chart, chart_spec.get("anchor") or "E2")
-    wb.save(str(path))
-    print(f"created XLSX: {path}")
-    return 0
+    spec_path = _validate_path(args.spec)
+    create_xlsx_from_spec, _ = _load_xlsx_renderer()
+    result = create_xlsx_from_spec(
+        path,
+        spec_path,
+        workspace_root=Path.cwd(),
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result["qa"]["status"] != "fail" else 4
+
+
+def _load_xlsx_renderer():
+    skills_root = Path(__file__).resolve().parents[2]
+    renderer_dir = skills_root / "xlsx-workbook-design" / "scripts"
+    renderer_path = renderer_dir / "xlsx_model_renderer.py"
+    if not renderer_path.exists():
+        _die(f"ERROR: XLSX renderer not found: {renderer_path}", 3)
+    if str(renderer_dir) not in sys.path:
+        sys.path.insert(0, str(renderer_dir))
+    try:
+        from xlsx_model_renderer import audit_xlsx_formula_integrity, create_xlsx_from_spec  # type: ignore
+    except ImportError as exc:
+        _die(f"ERROR: failed to load XLSX renderer: {exc}", 1)
+    return create_xlsx_from_spec, audit_xlsx_formula_integrity
 
 
 def _load_pptx_renderer():
@@ -1116,38 +1081,36 @@ def cmd_recalc_xlsx(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
     if _ext(path) != "xlsx":
         _die("ERROR: recalc_xlsx requires a .xlsx file", 3)
-    soffice = _find_soffice()
-    if not soffice:
-        _die("MISSING_DEP: LibreOffice/soffice\nInstall LibreOffice and ensure soffice is on PATH.", 2)
-    with tempfile.TemporaryDirectory(prefix="nexa-xlsx-recalc-") as tmp:
-        tmp_path = Path(tmp)
-        source = tmp_path / path.name
-        outdir = tmp_path / "out"
-        outdir.mkdir()
-        shutil.copy2(path, source)
-        completed = _run_soffice_convert(source, "xlsx", outdir)
-        if completed.returncode != 0:
-            stderr = completed.stderr.strip() or completed.stdout.strip() or "LibreOffice recalculation failed"
-            _die(stderr, completed.returncode or 1)
-        output = _expected_converted_path(source, outdir, "xlsx")
-        if not output.exists():
-            matches = sorted(outdir.glob("*.xlsx"))
-            if not matches:
-                _die("ERROR: LibreOffice did not produce a recalculated XLSX", 1)
-            output = matches[0]
-        shutil.copy2(output, path)
-    total_errors, errors = _scan_xlsx_formula_errors(path)
+    _, audit_xlsx_formula_integrity = _load_xlsx_renderer()
+    formula_qa = audit_xlsx_formula_integrity(path)
     result = {
-        "status": "success" if total_errors == 0 else "errors_found",
-        "total_errors": total_errors,
+        "status": formula_qa["status"],
+        "legacy_command": "recalc_xlsx",
+        "recalculated": False,
+        "message": "LibreOffice is not used. Formulas were linted and the workbook's calculation metadata is preserved for Excel to recalculate on open.",
+        "formula_qa": formula_qa,
+        "cached_formula_errors": _scan_xlsx_formula_errors(path)[1],
         "total_formulas": _count_xlsx_formulas(path),
-        "error_summary": {
-            err: {"count": len(locations), "locations": locations[:20]}
-            for err, locations in errors.items()
-        },
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if total_errors == 0 else 1
+    return 0 if formula_qa["status"] != "fail" else 1
+
+
+def cmd_lint_xlsx(args: argparse.Namespace) -> int:
+    path = _validate_path(args.path)
+    if _ext(path) != "xlsx":
+        _die("ERROR: lint_xlsx requires a .xlsx file", 3)
+    _, audit_xlsx_formula_integrity = _load_xlsx_renderer()
+    formula_qa = audit_xlsx_formula_integrity(path)
+    total_errors, cached_errors = _scan_xlsx_formula_errors(path)
+    result = {
+        "status": "fail" if formula_qa["status"] == "fail" or total_errors else formula_qa["status"],
+        "formula_qa": formula_qa,
+        "cached_formula_errors": cached_errors,
+        "note": "No LibreOffice or Excel process was used.",
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result["status"] != "fail" else 1
 
 def cmd_validate(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
@@ -1186,6 +1149,16 @@ def cmd_validate(args: argparse.Namespace) -> int:
         if errors:
             print(json.dumps(errors, ensure_ascii=False, indent=2))
             return 1
+        try:
+            _, audit_xlsx_formula_integrity = _load_xlsx_renderer()
+            formula_qa = audit_xlsx_formula_integrity(path)
+            print(json.dumps({"formula_qa": formula_qa}, ensure_ascii=False, indent=2))
+            if formula_qa["status"] == "fail":
+                return 1
+        except SystemExit:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARNING: XLSX formula lint unavailable: {type(exc).__name__}: {exc}")
     elif ext == "pdf":
         try:
             from pypdf import PdfReader  # type: ignore
@@ -1301,7 +1274,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--format", default="png", choices=["png", "jpeg"])
     p_render.set_defaults(func=cmd_render)
 
-    p_recalc = sub.add_parser("recalc_xlsx", help="Recalculate XLSX formulas with LibreOffice and scan for formula errors")
+    p_lint = sub.add_parser("lint_xlsx", help="Lint XLSX formulas without LibreOffice or Excel automation")
+    p_lint.set_defaults(func=cmd_lint_xlsx)
+
+    p_recalc = sub.add_parser("recalc_xlsx", help="Legacy alias: lint XLSX formulas without LibreOffice")
     p_recalc.set_defaults(func=cmd_recalc_xlsx)
 
     p_val = sub.add_parser("validate", help="Validate that a document opens with its backend")

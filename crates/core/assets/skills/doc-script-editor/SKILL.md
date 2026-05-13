@@ -1,6 +1,6 @@
 ---
 name: doc-script-editor
-description: Activate when creating, editing, validating, converting, rendering, unpacking, or analyzing DOCX, PPTX, PDF, or XLSX files on disk with Python-backed fidelity — Office creation, template-aware edits, OOXML surgery, text replacement, slide insert, extraction, redaction, snapshotting, validation, conversion, visual QA, formula recalculation, or format-aware document work.
+description: Activate when creating, editing, validating, converting, rendering, unpacking, or analyzing DOCX, PPTX, PDF, or XLSX files on disk with Python-backed fidelity — Office creation, template-aware edits, OOXML surgery, text replacement, slide insert, extraction, redaction, snapshotting, validation, conversion, visual QA, formula linting, or format-aware document work.
 ---
 
 ## Trigger
@@ -71,7 +71,7 @@ For this skill, invoke the bundled document script through `run_shell` with `pyt
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/deck.pptx create_pptx --spec /abs/source/deck_spec.json
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/html_deck.pptx create_html_pptx --spec /abs/source/html_deck_spec.json --outdir /abs/source/html_deck_project --mode hybrid --screenshot auto
    ```
-   The PPTX commands are wrappers around the PPT skill renderers. Use `create_html_pptx` when the deck needs web-grade layout/CSS exploration plus a PPTX export; it writes `source/*.html`, `manifest.json`, and `qa.json` alongside the final deck. For complex DOCX/XLSX generation, put a short custom script inside an approved source/workspace path, use `python-docx` or `openpyxl`, and write the final `.docx`/`.xlsx` directly to disk.
+   The PPTX commands are wrappers around the PPT skill renderers. `create_xlsx` delegates to the XLSX skill renderer, so complex workbooks should be driven by a reviewable JSON spec rather than one-off Python. Use `create_html_pptx` when the deck needs web-grade layout/CSS exploration plus a PPTX export; it writes `source/*.html`, `manifest.json`, and `qa.json` alongside the final deck.
 6. Validate and convert after generation:
    ```
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/report.docx validate
@@ -88,9 +88,9 @@ For this skill, invoke the bundled document script through `run_shell` with `pyt
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/output.pptx pack --input-dir /abs/source/template_unpacked
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/output.pptx validate
    ```
-9. Recalculate and verify Excel formulas:
+9. Lint and verify Excel formulas without LibreOffice:
    ```
-   python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/model.xlsx recalc_xlsx
+   python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/model.xlsx lint_xlsx
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/model.xlsx validate
    ```
 
@@ -105,12 +105,12 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 2. New DOCX/XLSX/PPTX and Python is available? Use `create_docx`, `create_xlsx`, `create_pptx`, or `create_html_pptx` first. Prefer a JSON spec for spreadsheets/decks and a markdown/body input for documents.
 3. Need template fidelity, comments, tracked changes, precise image replacement, relationship repair, or layout surgery? Use `unpack` → XML/media edit → `pack` → `validate`; do not use rigid one-shot generators.
 4. Need PDF/image preview or conversion QA? Use `render` when system Poppler is already available, or `convert --to pdf` with system LibreOffice already available, then inspect/extract.
-5. XLSX contains formulas? Use `recalc_xlsx` after writing formulas, then `validate` to scan for formula errors.
+5. XLSX contains formulas? Use `lint_xlsx` after writing formulas, then `validate` to scan formula references and cached error values without LibreOffice.
 6. Python unavailable? Prepare the Python runtime first. If LibreOffice/Poppler are unavailable, explain that conversion/render QA needs those system tools rather than asking the app to install them.
 
 ## Adopted Office-skill patterns
 
-- Keep the useful parts: Python Office libraries, OOXML unpack/pack escape hatch, isolated LibreOffice conversion profiles, visual render QA, XLSX formula recalculation, and explicit validation.
+- Keep the useful parts: Python Office libraries, OOXML unpack/pack escape hatch, isolated LibreOffice profiles for conversion/render only, visual render QA, internal XLSX formula linting, and explicit validation.
 - Do not use external hard-coded skill paths, external author names, assumptions that every binary is preinstalled, or Node-first DOCX/PPTX generation as the default.
 - Do not paste binary/base64 Office content into tool calls. All Office bytes stay on disk and are passed by absolute path.
 
@@ -125,7 +125,7 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 - **HTML-first PPTX** — `create_html_pptx` keeps the deck source as reviewable HTML/CSS, optionally captures Playwright screenshots, exports hybrid native/raster PPTX, and writes manifest/QA JSON
 - **Conversion QA** — `convert` uses LibreOffice headless with an isolated user profile for PDF previews and format conversion
 - **OOXML escape hatch** — `unpack` / `pack` make low-level template and relationship fixes possible without passing binary data through tool arguments
-- **Formula safety** — `recalc_xlsx` uses LibreOffice when available and reports Excel formula errors as structured JSON
+- **Formula safety** — `create_xlsx`, `lint_xlsx`, and `validate` use the XLSX skill renderer/linter for formula references, structured table references, external links, cached error values, and `#REF!` checks without LibreOffice
 
 ## Dependencies
 In the desktop app, first prefer `prepare_document_tools` when that tool is available. Call `action: "check"` to inspect readiness, then call `action: "prepare"` for missing required Python dependencies. The same flow is exposed in Settings → Models → Document tools. It creates an app-managed virtual environment, installs the bundled requirements there, and makes `run_shell` prefer that managed Python path automatically. It does not install or manage Poppler or LibreOffice.
@@ -134,7 +134,7 @@ For CLI/dev environments, install before first Office/PDF operation (only what's
 ```
 python -m pip install -r <SKILL_DIR>/scripts/requirements.txt
 ```
-Optional for format conversion / PDF rendering: system `libreoffice` and Poppler. Optional for HTML-first PPTX screenshot QA: Python `playwright` plus browser installation. Install optional tools only when the task specifically needs conversion, render QA, screenshot QA, or XLSX formula recalculation.
+Optional for format conversion / PDF rendering: system `libreoffice` and Poppler. Optional for HTML-first PPTX screenshot QA: Python `playwright` plus browser installation. Install optional tools only when the task specifically needs conversion, render QA, or screenshot QA.
 
 ## Handling missing dependencies
 Before first use, or when the user targets an unfamiliar file type, run:
@@ -177,7 +177,8 @@ Only install backends the user actually needs — don't pull `python-pptx` for a
 | extract        | .pdf             | pypdf            |
 | insert_slide   | .pptx            | python-pptx      |
 | render         | Office/PDF       | LibreOffice + Poppler |
-| recalc_xlsx    | .xlsx            | LibreOffice + openpyxl |
+| lint_xlsx      | .xlsx            | openpyxl         |
+| recalc_xlsx    | .xlsx            | openpyxl; legacy alias for `lint_xlsx` |
 | validate       | .docx/.pptx/.xlsx/.pdf | matching backend |
 | convert        | Office/PDF       | LibreOffice      |
 | version        | any              | (none)           |
