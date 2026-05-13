@@ -35,6 +35,14 @@ Keep format-specific generation logic in the format skill. In particular, `creat
 ## Critical rule
 **NEVER paste file contents, binary bytes, or base64 blobs into tool arguments.** Pass only the absolute `--path` plus operation parameters. The script reads and writes bytes on disk itself.
 
+## Tool discipline
+
+- Use `create_file`, `edit_file`, or `multi_edit` for durable text inputs: Markdown bodies, JSON specs, CSV data, and reusable Python scripts.
+- Use `run_shell` only to execute the bundled renderer/editor scripts or a short command against files that already exist on disk.
+- Do not write a large one-off Python program inside a single `run_shell` argument. If custom code is genuinely needed, create a small script file in the workspace, run it, validate the output, then remove only temporary scratch files the user did not ask to keep.
+- For new Office binaries, keep a reviewable source artifact next to the output whenever possible: `.md` for DOCX body content, `.json` for PPTX/XLSX specs, plus validation/audit output for layout-sensitive work.
+- Large specs should be file-backed, not passed through argv/stdin. This avoids provider JSON-argument failures and makes frontend file diffs/previews useful.
+
 ## Invocation pattern
 For this skill, invoke the bundled document script through `run_shell` with `python` (or `python3`). This is a Python backend requirement for the Office/PDF workflow, not a general restriction on other `run_shell` programs or less-restricted shell access modes:
 
