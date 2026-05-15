@@ -41,13 +41,13 @@ export function findImageProviderPreset(input: {
   provider?: string | null;
   apiStyle?: string | null;
   baseUrl?: string | null;
-}): ImageProviderPreset | null {
+}, presets = IMAGE_PROVIDER_PRESETS): ImageProviderPreset | null {
   const provider = (input.provider ?? "").trim();
   const apiStyle = (input.apiStyle ?? "").trim();
   const baseUrl = normalize(input.baseUrl);
 
   if (baseUrl) {
-    const exact = IMAGE_PROVIDER_PRESETS.find(
+    const exact = presets.find(
       (preset) =>
         preset.provider === provider &&
         preset.apiStyle === apiStyle &&
@@ -56,7 +56,7 @@ export function findImageProviderPreset(input: {
     if (exact) return exact;
   }
 
-  const matches = IMAGE_PROVIDER_PRESETS.filter(
+  const matches = presets.filter(
     (preset) =>
       preset.provider === provider &&
       (!apiStyle || preset.apiStyle === apiStyle),

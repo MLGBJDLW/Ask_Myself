@@ -4,6 +4,9 @@
 //! packages before their implementations are moved behind package-specific
 //! modules.
 
+mod image_generation;
+
+use crate::app_settings::AppConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -15,7 +18,65 @@ pub struct ToolPluginInfo {
     pub description: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginProviderCatalog {
+    pub id: String,
+    pub label: String,
+    pub item_kind: String,
+    pub items: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSettingsSchema {
+    pub config_key: String,
+    pub fields: Vec<PluginSettingsField>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSettingsField {
+    pub key: String,
+    pub label: String,
+    pub kind: String,
+    pub required: bool,
+    pub secret: bool,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PluginRuntimeStatus {
+    Pass,
+    Warning,
+    Error,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PluginCheckSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRuntimeCheck {
+    pub id: String,
+    pub label: String,
+    pub status: PluginRuntimeStatus,
+    pub severity: PluginCheckSeverity,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginManifest {
     pub id: String,
@@ -26,6 +87,12 @@ pub struct PluginManifest {
     pub tools: Vec<String>,
     pub settings_surfaces: Vec<String>,
     pub workflows: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings_schema: Option<PluginSettingsSchema>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_catalogs: Vec<PluginProviderCatalog>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_checks: Vec<PluginRuntimeCheck>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -49,7 +116,7 @@ impl BuiltinPlugin {
         }
     }
 
-    fn manifest(self) -> PluginManifest {
+    fn base_manifest(self) -> PluginManifest {
         PluginManifest {
             id: self.id.to_string(),
             name: self.name.to_string(),
@@ -67,6 +134,21 @@ impl BuiltinPlugin {
                 .iter()
                 .map(|workflow| (*workflow).to_string())
                 .collect(),
+            settings_schema: None,
+            provider_catalogs: Vec::new(),
+            runtime_checks: Vec::new(),
+        }
+    }
+
+    fn manifest(self, app_config: Option<&AppConfig>) -> PluginManifest {
+        let manifest = self.base_manifest();
+        if self.id == IMAGE_PLUGIN.id {
+            image_generation::enrich_manifest(
+                manifest,
+                app_config.map(|config| &config.image_generation),
+            )
+        } else {
+            manifest
         }
     }
 
@@ -257,9 +339,13 @@ const BUILTIN_PLUGINS: &[BuiltinPlugin] = &[
 ];
 
 pub fn builtin_plugin_manifests() -> Vec<PluginManifest> {
+    builtin_plugin_manifests_for_config(None)
+}
+
+pub fn builtin_plugin_manifests_for_config(app_config: Option<&AppConfig>) -> Vec<PluginManifest> {
     BUILTIN_PLUGINS
         .iter()
-        .map(|plugin| plugin.manifest())
+        .map(|plugin| plugin.manifest(app_config))
         .collect()
 }
 

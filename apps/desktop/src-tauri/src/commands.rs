@@ -3349,8 +3349,13 @@ pub async fn list_tool_access_map_cmd(
 }
 
 #[tauri::command]
-pub fn list_builtin_plugins_cmd() -> Vec<nexa_core::plugins::PluginManifest> {
-    nexa_core::plugins::builtin_plugin_manifests()
+pub fn list_builtin_plugins_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<nexa_core::plugins::PluginManifest>, String> {
+    let config = state.db.load_app_config().map_err(|e| e.to_string())?;
+    Ok(nexa_core::plugins::builtin_plugin_manifests_for_config(
+        Some(&config),
+    ))
 }
 
 #[tauri::command]

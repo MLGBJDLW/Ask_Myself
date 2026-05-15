@@ -1,6 +1,12 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Eye, EyeOff, Image as ImageIcon, Save } from "lucide-react";
-import type { AppConfig, ImageGenerationConfig } from "../../types/conversation";
+import type {
+  AppConfig,
+  ImageGenerationConfig,
+  PluginManifest,
+  PluginRuntimeCheck,
+} from "../../types/conversation";
+import * as api from "../../lib/api";
 import {
   findImageProviderPreset,
   getDefaultImageModel,
@@ -17,7 +23,7 @@ interface ImageGenerationSettingsPanelProps {
   loading: boolean;
   onChange: (config: AppConfig) => void;
   onMarkDirty: () => void;
-  onSave: () => void;
+  onSave: () => void | Promise<void>;
 }
 
 const DEFAULT_IMAGE_CONFIG: ImageGenerationConfig = {
@@ -39,16 +45,49 @@ function firstSize(preset: ImageProviderPreset | null): string | null {
   return preset?.sizeOptions[0]?.value ?? null;
 }
 
-function fallbackPresetForConfig(config: ImageGenerationConfig): ImageProviderPreset {
+function isImageProviderPreset(value: unknown): value is ImageProviderPreset {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
   return (
-    IMAGE_PROVIDER_PRESETS.find(
+    typeof record.id === "string" &&
+    typeof record.name === "string" &&
+    typeof record.provider === "string" &&
+    typeof record.apiStyle === "string" &&
+    typeof record.baseUrl === "string" &&
+    Array.isArray(record.models) &&
+    Array.isArray(record.sizeOptions) &&
+    Array.isArray(record.qualityOptions) &&
+    Array.isArray(record.outputFormats)
+  );
+}
+
+function extractImageProviderPresets(plugin: PluginManifest | null): ImageProviderPreset[] {
+  const catalog = plugin?.providerCatalogs?.find((item) => item.id === "imageProviders");
+  const presets = (catalog?.items ?? []).filter(isImageProviderPreset);
+  return presets.length > 0 ? presets : IMAGE_PROVIDER_PRESETS;
+}
+
+function fallbackPresetForConfig(
+  config: ImageGenerationConfig,
+  providerPresets: ImageProviderPreset[],
+): ImageProviderPreset {
+  return (
+    providerPresets.find(
       (preset) =>
         preset.provider === config.provider &&
         preset.apiStyle === config.apiStyle,
     ) ??
-    IMAGE_PROVIDER_PRESETS.find((preset) => preset.provider === config.provider) ??
+    providerPresets.find((preset) => preset.provider === config.provider) ??
+    providerPresets[0] ??
     IMAGE_PROVIDER_PRESETS[0]
   );
+}
+
+function runtimeCheckVariant(check: PluginRuntimeCheck) {
+  if (check.status === "error" || check.severity === "error") return "danger" as const;
+  if (check.status === "warning" || check.severity === "warning") return "warning" as const;
+  if (check.status === "pass") return "success" as const;
+  return "default" as const;
 }
 
 export function ImageGenerationSettingsPanel({
@@ -59,15 +98,31 @@ export function ImageGenerationSettingsPanel({
   onSave,
 }: ImageGenerationSettingsPanelProps) {
   const [showKey, setShowKey] = useState(false);
+  const [plugin, setPlugin] = useState<PluginManifest | null>(null);
   const imageConfig = appConfig.imageGeneration ?? DEFAULT_IMAGE_CONFIG;
+  const loadPlugin = useCallback(async () => {
+    try {
+      const plugins = await api.listBuiltinPlugins();
+      setPlugin(plugins.find((candidate) => candidate.id === "image-generation") ?? null);
+    } catch (error) {
+      console.error("[image-plugin] failed to load plugin manifest", error);
+      setPlugin(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPlugin();
+  }, [loadPlugin]);
+
+  const providerPresets = useMemo(() => extractImageProviderPresets(plugin), [plugin]);
   const activePreset = useMemo(
     () =>
       findImageProviderPreset({
         provider: imageConfig.provider,
         apiStyle: imageConfig.apiStyle,
         baseUrl: imageConfig.baseUrl,
-      }) ?? fallbackPresetForConfig(imageConfig),
-    [imageConfig.apiStyle, imageConfig.baseUrl, imageConfig.provider],
+      }, providerPresets) ?? fallbackPresetForConfig(imageConfig, providerPresets),
+    [imageConfig.apiStyle, imageConfig.baseUrl, imageConfig.provider, providerPresets],
   );
   const hasPresetModel =
     activePreset.models.length > 0 &&
@@ -81,7 +136,8 @@ export function ImageGenerationSettingsPanel({
 
   const applyPreset = (presetId: string) => {
     const preset =
-      IMAGE_PROVIDER_PRESETS.find((candidate) => candidate.id === presetId) ??
+      providerPresets.find((candidate) => candidate.id === presetId) ??
+      providerPresets[0] ??
       IMAGE_PROVIDER_PRESETS[0];
     updateImageConfig({
       ...imageConfig,
@@ -96,6 +152,12 @@ export function ImageGenerationSettingsPanel({
   };
 
   const currentPresetId = activePreset.id;
+  const runtimeChecks = (plugin?.runtimeChecks ?? []).filter((check) => check.status !== "unknown");
+
+  const handleSave = async () => {
+    await onSave();
+    void loadPlugin();
+  };
 
   return (
     <div className="rounded-xl border border-border bg-surface-2">
@@ -118,8 +180,22 @@ export function ImageGenerationSettingsPanel({
             </Badge>
           </div>
           <p className="mt-0.5 text-xs text-text-tertiary">
-            Dedicated provider for generate_image. This is separate from chat LLM providers.
+            {plugin?.description ?? "Dedicated provider for generate_image. This is separate from chat LLM providers."}
           </p>
+          {runtimeChecks.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {runtimeChecks.map((check) => (
+                <Badge
+                  key={check.id}
+                  variant={runtimeCheckVariant(check)}
+                  title={check.message}
+                  className="text-[10px]"
+                >
+                  {check.label}
+                </Badge>
+              ))}
+            </div>
+          )}
         </div>
         <Button
           type="button"
@@ -127,7 +203,7 @@ export function ImageGenerationSettingsPanel({
           size="sm"
           icon={<Save size={14} />}
           loading={loading}
-          onClick={onSave}
+          onClick={() => void handleSave()}
           disabled={!imageConfig.model.trim() || !imageConfig.apiKey.trim()}
         >
           Save
@@ -143,7 +219,7 @@ export function ImageGenerationSettingsPanel({
               onChange={(event) => applyPreset(event.target.value)}
               className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
             >
-              {IMAGE_PROVIDER_PRESETS.map((preset) => (
+              {providerPresets.map((preset) => (
                 <option key={preset.id} value={preset.id}>
                   {preset.name}
                 </option>

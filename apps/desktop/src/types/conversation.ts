@@ -435,11 +435,48 @@ export interface ToolPluginInfo {
   description: string;
 }
 
+export interface PluginProviderCatalog {
+  id: string;
+  label: string;
+  itemKind: string;
+  items: unknown[];
+}
+
+export interface PluginSettingsSchema {
+  configKey: string;
+  fields: PluginSettingsField[];
+}
+
+export interface PluginSettingsField {
+  key: string;
+  label: string;
+  kind: string;
+  required: boolean;
+  secret: boolean;
+  description: string;
+  optionsSource?: string;
+  defaultValue?: unknown;
+}
+
+export type PluginRuntimeStatus = 'pass' | 'warning' | 'error' | 'unknown';
+export type PluginCheckSeverity = 'info' | 'warning' | 'error';
+
+export interface PluginRuntimeCheck {
+  id: string;
+  label: string;
+  status: PluginRuntimeStatus;
+  severity: PluginCheckSeverity;
+  message: string;
+}
+
 export interface PluginManifest extends ToolPluginInfo {
   builtIn: boolean;
   tools: string[];
   settingsSurfaces: string[];
   workflows: string[];
+  settingsSchema?: PluginSettingsSchema | null;
+  providerCatalogs?: PluginProviderCatalog[];
+  runtimeChecks?: PluginRuntimeCheck[];
 }
 
 export interface ToolAccessInfo {
