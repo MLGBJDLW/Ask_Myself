@@ -31,7 +31,7 @@ import {
   parseSubagentArguments,
 } from '../../lib/subagentArtifacts';
 import { PlanPanel, VerificationPanel } from './TaskPanels';
-import type { ArtifactPayload, ToolRenderKind, ToolRunCapabilities } from '../../types/conversation';
+import type { ArtifactPayload, ToolPluginInfo, ToolRenderKind, ToolRunCapabilities } from '../../types/conversation';
 import type { VerificationOverallStatus } from '../../lib/taskArtifacts';
 import { SubagentCard } from './SubagentCard';
 import {
@@ -124,6 +124,7 @@ interface ToolCallCardProps {
   toolName?: string;
   arguments?: string;
   status: ToolCallCardStatus;
+  plugin?: ToolPluginInfo;
   renderKind?: ToolRenderKind;
   capabilities?: ToolRunCapabilities;
   durationMs?: number;
@@ -802,6 +803,7 @@ export function ToolCallCard({
   toolName,
   arguments: args,
   status,
+  plugin,
   renderKind,
   capabilities,
   durationMs,
@@ -823,6 +825,8 @@ export function ToolCallCard({
       : 'unknown_tool';
   const Icon = getToolIcon(safeToolName);
   const formattedArgs = formatArgs(args);
+  const briefLabel = getToolBriefLabel(safeToolName, args);
+  const briefResult = getToolBriefResult(status, t, content, safeToolName);
   const isPending =
     status === 'running'
     || status === 'starting'
@@ -839,6 +843,7 @@ export function ToolCallCard({
     : 0;
   const capabilitySummary = capabilities
     ? [
+        plugin?.name ?? null,
         capabilities.readOnly ? t('chat.capabilityReadOnly') : t('chat.capabilityWrites'),
         capabilities.concurrencySafe ? t('chat.capabilityParallel') : t('chat.capabilitySerial'),
         capabilities.interruptBehavior === 'cancel' ? t('chat.capabilityCancellable') : t('chat.capabilityBlocking'),
@@ -864,17 +869,6 @@ export function ToolCallCard({
   const workPlanArtifact = useMemo(() => extractWorkPlanArtifact(artifacts), [artifacts]);
   const contextManifest = useMemo(() => extractContextManifestArtifact(artifacts), [artifacts]);
   const showPendingDiffStats = isPending && !diffStats && isFileChangeToolRender(safeToolName, renderKind);
-  const isStructuredTaskCard = Boolean(
-    planArtifact ||
-    verificationArtifact ||
-    fileDiff ||
-    diffStats ||
-    generatedImage ||
-    workPlanArtifact ||
-    contextManifest,
-  );
-  const shouldAutoOpenStructuredTaskCard = Boolean(planArtifact || verificationArtifact || generatedImage || workPlanArtifact);
-
   const isSearchDone =
     safeToolName.toLowerCase().includes('search') && status === 'done' && !!content;
   const searchItems = useMemo(
@@ -882,24 +876,16 @@ export function ToolCallCard({
     [isSearchDone, content],
   );
 
-  const [expanded, setExpanded] = useState(shouldAutoOpenStructuredTaskCard);
+  const [expanded, setExpanded] = useState(false);
 
   // Auto-collapse file mutation details when execution finishes; users can manually re-open.
   useEffect(() => {
-    if (!isPending && !shouldAutoOpenStructuredTaskCard) {
+    if (!isPending) {
       setExpanded(false);
     }
-  }, [isPending, shouldAutoOpenStructuredTaskCard]);
-
-  useEffect(() => {
-    if (shouldAutoOpenStructuredTaskCard) {
-      setExpanded(true);
-    }
-  }, [shouldAutoOpenStructuredTaskCard]);
+  }, [isPending]);
 
   if (inline) {
-    const briefLabel = getToolBriefLabel(safeToolName, args);
-    const briefResult = getToolBriefResult(status, t, content, safeToolName);
     return (
       <span className="inline-flex items-center gap-1">
         <Icon className="h-2.5 w-2.5 shrink-0" />
@@ -941,7 +927,7 @@ export function ToolCallCard({
         : showPendingDiffStats
           ? t('chat.fileDiffModified')
         : status === 'done' && content
-          ? t('chat.traceOutputReady')
+          ? briefResult
           : statusConfig.text;
   const headerSummary =
     isPending && argsByteLabel
@@ -982,11 +968,9 @@ export function ToolCallCard({
         >
           <Icon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-[12px] font-medium text-text-primary">{safeToolName}</span>
+            <span className="block truncate text-[12px] font-medium text-text-primary">{briefLabel}</span>
             {isPending && latestProgressNote ? (
               <span className="block truncate text-[11px] text-text-tertiary/80 italic">{latestProgressNote}</span>
-            ) : formattedArgs ? (
-              <span className="block truncate text-[11px] text-text-tertiary">{formattedArgs}</span>
             ) : null}
           </span>
           <span className={`inline-flex items-center gap-1 text-[11px] ${statusConfig.color}`}>
@@ -1094,7 +1078,7 @@ export function ToolCallCard({
           className="flex items-center gap-1.5 w-full px-2 py-1 text-left hover:bg-surface-2/50 transition-colors cursor-pointer"
         >
           <Icon className="h-3 w-3 shrink-0 text-text-tertiary" />
-          <span className="text-[11px] font-medium text-text-secondary truncate">{safeToolName}</span>
+          <span className="text-[11px] font-medium text-text-secondary truncate">{briefLabel}</span>
           <span className="text-[10px] text-text-tertiary truncate flex-1">{headerSummary}</span>
           {diffStats ? (
             <DiffStatsTicker stats={diffStats} compact />
@@ -1275,7 +1259,7 @@ export function ToolCallCard({
           transition-colors duration-fast ease-out cursor-pointer"
       >
         <Icon className="h-4 w-4 shrink-0 text-text-tertiary" />
-        <span className="text-xs font-medium text-text-primary truncate">{safeToolName}</span>
+        <span className="text-xs font-medium text-text-primary truncate">{briefLabel}</span>
         <span className="text-[11px] text-text-tertiary truncate flex-1">
           {headerSummary}
         </span>
@@ -1395,11 +1379,6 @@ export function ToolCallCard({
                   {content}
                 </pre>
               ) : null}
-              {artifacts && !isStructuredTaskCard && !fileDiff && (
-                <div className="mt-2 text-[11px] text-text-tertiary">
-                  {JSON.stringify(artifacts, null, 2).slice(0, 500)}
-                </div>
-              )}
             </div>
           </motion.div>
         )}

@@ -460,6 +460,8 @@ Primary Office commands:
 
 PPT deep-generation workflows live in the `pptx-presentation-design` skill, not as separate global tools. `create_pptx` remains a compatibility command backed by that skill's native renderer; `create_html_pptx` is the HTML-first route for CSS layout, screenshot QA, hybrid native/raster export, transitions, animations, and deck manifests. For PPT planning, template profiling, style extraction, visual QA, rewrite planning, asset inventory, regression samples, quality gates, and delivery packages, activate the PPT skill and use its bundled scripts/resources.
 
+For generated HTML-first decks, call `create_html_pptx` with `--spec -` and pass the JSON deck spec through `run_shell.stdin`. Do not put raw HTML/CSS/JSON deck content in `run_shell.args`; argv is only for command tokens.
+
 `generate_docx`, `generate_xlsx`, and `ppt_generate` remain registered for compatibility, but they are fallback tools. Prefer the Python path because it supports validation, templates, rendering, formulas, speaker notes, and follow-up edits without passing binary content through tool arguments. `create_xlsx` delegates to the XLSX skill renderer for formula fill-down/fill-right, tables, named ranges, validations, conditional formatting, charts, and internal formula QA.
 
 Runtime readiness:

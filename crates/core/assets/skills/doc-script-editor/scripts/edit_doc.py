@@ -1253,7 +1253,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cp.set_defaults(func=cmd_create_pptx)
 
     p_chp = sub.add_parser("create_html_pptx", help="Create a PPTX from an HTML-first deck spec")
-    p_chp.add_argument("--spec", required=True, help="Absolute path to HTML deck JSON spec")
+    p_chp.add_argument("--spec", required=True, help="Absolute path to HTML deck JSON spec, or '-' to read JSON from stdin")
     p_chp.add_argument("--outdir", required=True, help="Absolute output project directory for HTML, render artifacts, manifest, and QA")
     p_chp.add_argument("--mode", choices=["hybrid", "native", "raster"], default="hybrid")
     p_chp.add_argument("--screenshot", choices=["auto", "require", "skip"], default="auto")

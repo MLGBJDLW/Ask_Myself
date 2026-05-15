@@ -25,10 +25,12 @@ pub(super) fn build_tool_run_item(
         .unwrap_or(serde_json::Value::Null);
     let invocation = tools.build_invocation(call_id, tool_name, parsed_args);
     let capabilities = invocation.capabilities.clone();
+    let plugin = invocation.plugin.clone();
     let artifacts = artifacts_with_work_plan(artifacts, &invocation);
     ToolRunItem {
         call_id: call_id.to_string(),
         tool_name: tool_name.to_string(),
+        plugin,
         status,
         arguments: arguments.map(ToString::to_string),
         render_kind: capabilities.render_kind,

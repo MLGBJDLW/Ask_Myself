@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Square, Paperclip, X, FileText, Workflow, ChevronDown, Scissors } from "lucide-react";
+import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, Scissors } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "../../i18n";
 import type { Conversation, ImageAttachment } from "../../types/conversation";
@@ -158,8 +158,9 @@ export function ChatInput({
     if (!el) return;
     el.style.height = "auto";
     const lineHeight = 22;
-    const maxHeight = lineHeight * 6 + 16;
-    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+    const minHeight = 96;
+    const maxHeight = lineHeight * 9 + 20;
+    el.style.height = `${Math.max(minHeight, Math.min(el.scrollHeight, maxHeight))}px`;
   }, []);
 
   useEffect(() => {
@@ -483,71 +484,37 @@ export function ChatInput({
         </div>
       )}
 
-      {attachments.length > 0 && (
-        <div className="flex flex-wrap gap-2 pb-2">
-          {attachments.map((att, i) => (
-            <div key={i} className="relative group">
-              {att.mediaType.startsWith("image/") ? (
-                <img
-                  src={`data:${att.mediaType};base64,${att.base64Data}`}
-                  alt={att.originalName}
-                  className="h-16 w-16 rounded-md border border-border object-cover"
-                />
-              ) : (
-                <div className="h-16 w-16 rounded-md border border-border bg-surface-2 flex items-center justify-center">
-                  <FileText className="h-6 w-6 text-text-tertiary" />
-                </div>
-              )}
-              <button
-                onClick={() => removeAttachment(i)}
-                className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-danger text-[10px] leading-none text-white opacity-0 transition-opacity cursor-pointer group-hover:opacity-100"
-                aria-label={t("chat.removeAttachment")}
-              >
-                <X className="h-3 w-3" />
-              </button>
-              <span className="absolute bottom-0 left-0 right-0 truncate rounded-b-md bg-black/50 px-1 text-[9px] text-white">
-                {att.originalName}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="flex items-end gap-2">
-        <button
-          type="button"
-          data-testid="workflow-catalog-trigger"
-          onClick={() => setWorkflowCatalogOpen((open) => !open)}
-          disabled={disabled || isStreaming}
-          className="flex h-10 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-surface-0 px-2.5 text-xs font-medium text-text-secondary transition-colors duration-fast ease-out hover:border-border-hover hover:bg-surface-2 hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
-          aria-label={t("chat.workflows")}
-          aria-expanded={workflowCatalogOpen}
-        >
-          <Workflow className="h-4 w-4" />
-          <span className="hidden sm:inline">{t("chat.workflows")}</span>
-          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${workflowCatalogOpen ? "rotate-180" : ""}`} />
-        </button>
-
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled || isStreaming}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
-          aria-label={t("chat.attachImage")}
-        >
-          <Paperclip className="h-4 w-4" />
-        </button>
-        {conversationId && onCompact && (
-          <button
-            type="button"
-            onClick={onCompact}
-            disabled={disabled || isStreaming || isCompacting}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
-            aria-label={t("chat.compact")}
-            title="/compact"
-          >
-            <Scissors className={`h-4 w-4 ${isCompacting ? "animate-pulse" : ""}`} />
-          </button>
+      <div className="overflow-hidden rounded-xl border border-border/80 bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast focus-within:border-accent/55 focus-within:ring-accent/20">
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 border-b border-border/35 px-3 py-2.5">
+            {attachments.map((att, i) => (
+              <div key={i} className="relative group">
+                {att.mediaType.startsWith("image/") ? (
+                  <img
+                    src={`data:${att.mediaType};base64,${att.base64Data}`}
+                    alt={att.originalName}
+                    className="h-14 w-14 rounded-md border border-border object-cover"
+                  />
+                ) : (
+                  <div className="h-14 w-14 rounded-md border border-border bg-surface-2 flex items-center justify-center">
+                    <FileText className="h-5 w-5 text-text-tertiary" />
+                  </div>
+                )}
+                <button
+                  onClick={() => removeAttachment(i)}
+                  className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-danger text-[10px] leading-none text-white opacity-0 transition-opacity cursor-pointer group-hover:opacity-100"
+                  aria-label={t("chat.removeAttachment")}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+                <span className="absolute bottom-0 left-0 right-0 truncate rounded-b-md bg-black/50 px-1 text-[9px] text-white">
+                  {att.originalName}
+                </span>
+              </div>
+            ))}
+          </div>
         )}
+
         <input
           ref={fileInputRef}
           type="file"
@@ -567,54 +534,92 @@ export function ChatInput({
           placeholder={t("chat.placeholder")}
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none rounded-lg border border-border bg-surface-0 px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-tertiary outline-none transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 disabled:pointer-events-none disabled:opacity-40"
+          className="block min-h-24 w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary outline-none disabled:pointer-events-none disabled:opacity-40"
         />
 
-        <VoiceInputButton
-          onTranscript={(text) =>
-            setValue((prev) => prev + (prev ? " " : "") + text)
-          }
-          disabled={disabled || isStreaming}
-        />
+        <div className="flex min-h-11 items-center justify-between gap-3 border-t border-border/35 px-2.5 py-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <button
+              type="button"
+              data-testid="workflow-catalog-trigger"
+              onClick={() => setWorkflowCatalogOpen((open) => !open)}
+              disabled={disabled || isStreaming}
+              className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-text-secondary transition-colors duration-fast ease-out hover:bg-surface-2 hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
+              aria-label={t("chat.workflows")}
+              aria-expanded={workflowCatalogOpen}
+            >
+              <Workflow className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">{t("chat.workflows")}</span>
+              <ChevronDown className={`h-3 w-3 transition-transform ${workflowCatalogOpen ? "rotate-180" : ""}`} />
+            </button>
 
-        <EmojiPicker
-          onEmojiSelect={(emoji) => {
-            setValue((prev) => prev + emoji);
-            textareaRef.current?.focus();
-          }}
-          disabled={disabled || isStreaming}
-        />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={disabled || isStreaming}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
+              aria-label={t("chat.attachImage")}
+            >
+              <Paperclip className="h-3.5 w-3.5" />
+            </button>
+            {conversationId && onCompact && (
+              <button
+                type="button"
+                onClick={onCompact}
+                disabled={disabled || isStreaming || isCompacting}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
+                aria-label={t("chat.compact")}
+                title="/compact"
+              >
+                <Scissors className={`h-3.5 w-3.5 ${isCompacting ? "animate-pulse" : ""}`} />
+              </button>
+            )}
+            {conversationId && onRestoreCheckpoint && (
+              <CheckpointMenu
+                conversationId={conversationId}
+                onRestore={onRestoreCheckpoint}
+                onBranch={onBranchCheckpoint}
+              />
+            )}
+          </div>
 
-        <button
-          onClick={handleSend}
-          disabled={disabled || (!value.trim() && attachments.length === 0)}
-          data-testid="chat-send"
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-white transition-colors duration-fast ease-out cursor-pointer hover:bg-accent-hover disabled:pointer-events-none disabled:opacity-40"
-          aria-label={t("chat.send")}
-        >
-          <Send className="h-4 w-4" />
-        </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <VoiceInputButton
+              onTranscript={(text) =>
+                setValue((prev) => prev + (prev ? " " : "") + text)
+              }
+              disabled={disabled || isStreaming}
+            />
 
-        {isStreaming && (
-          <button
-            onClick={onStop}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-danger/10 text-danger transition-colors duration-fast ease-out cursor-pointer hover:bg-danger/20"
-            aria-label={t("chat.stop")}
-          >
-            <Square className="h-4 w-4" />
-          </button>
-        )}
-      </div>
+            <EmojiPicker
+              onEmojiSelect={(emoji) => {
+                setValue((prev) => prev + emoji);
+                textareaRef.current?.focus();
+              }}
+              disabled={disabled || isStreaming}
+            />
 
-      {conversationId && onRestoreCheckpoint && (
-        <div className="mt-2 flex justify-end">
-          <CheckpointMenu
-            conversationId={conversationId}
-            onRestore={onRestoreCheckpoint}
-            onBranch={onBranchCheckpoint}
-          />
+            {isStreaming ? (
+              <button
+                onClick={onStop}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-danger/10 text-danger transition-colors duration-fast ease-out cursor-pointer hover:bg-danger/20"
+                aria-label={t("chat.stop")}
+              >
+                <Square className="h-3.5 w-3.5" />
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={disabled || (!value.trim() && attachments.length === 0)}
+                data-testid="chat-send"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-text-primary/10 bg-text-primary text-surface-0 shadow-[0_8px_20px_rgba(0,0,0,0.22)] transition-[background-color,border-color,color,box-shadow,transform] duration-fast ease-out cursor-pointer hover:-translate-y-0.5 hover:bg-text-secondary hover:shadow-[0_10px_24px_rgba(0,0,0,0.28)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:pointer-events-none disabled:translate-y-0 disabled:border-border disabled:bg-surface-2 disabled:text-text-tertiary disabled:shadow-none"
+                aria-label={t("chat.send")}
+              >
+                <ArrowUp className="h-4 w-4" strokeWidth={2.4} />
+              </button>
+            )}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

@@ -96,23 +96,23 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     <button
       onClick={handleClick}
       disabled={disabled || busy}
-      className={`relative flex h-10 shrink-0 items-center justify-center rounded-lg transition-colors duration-fast ease-out cursor-pointer disabled:pointer-events-none disabled:opacity-40 ${
+      className={`relative flex h-8 shrink-0 items-center justify-center rounded-md transition-colors duration-fast ease-out cursor-pointer disabled:pointer-events-none disabled:opacity-40 ${
         isRecording
-          ? 'gap-1.5 bg-danger/10 px-3 text-danger voice-btn-recording'
-          : 'w-10 text-text-tertiary hover:bg-surface-2 hover:text-text-secondary'
+          ? 'gap-1.5 bg-danger/10 px-2.5 text-danger voice-btn-recording'
+          : 'w-8 text-text-tertiary hover:bg-surface-2 hover:text-text-secondary'
       }`}
       aria-label={label}
       title={label}
     >
       {busy ? (
-        <Loader2 className="h-4 w-4 animate-spin" />
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
       ) : isRecording ? (
         <>
           <span className="recording-indicator" />
-          <span className="text-xs font-medium tabular-nums">{formatDuration(recordingDuration)}</span>
+          <span className="text-[11px] font-medium tabular-nums">{formatDuration(recordingDuration)}</span>
         </>
       ) : (
-        <Mic className="h-4 w-4" />
+        <Mic className="h-3.5 w-3.5" />
       )}
     </button>
   );

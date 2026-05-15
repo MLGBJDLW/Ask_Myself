@@ -760,9 +760,20 @@ test('file diff previews render run_shell diff arrays', async ({ page }) => {
 
   const previewGroup = page.getByTestId('turn-file-diff-previews');
   await expect(previewGroup).toBeVisible();
+  const summaryPanel = previewGroup.getByTestId('file-diff-summary-panel');
+  await expect(summaryPanel).toBeVisible();
+  await expect(summaryPanel).toContainText('Edited 2 files');
+  await expect(summaryPanel.getByText('+2')).toBeVisible();
   await expect(previewGroup.getByTestId('file-diff-preview')).toHaveCount(2);
   await expect(previewGroup).toContainText('a.txt');
   await expect(previewGroup).toContainText('b.txt');
+
+  const summaryToggle = summaryPanel.getByRole('button').first();
+  await expect(summaryToggle).toHaveAttribute('aria-expanded', 'true');
+  await summaryToggle.click();
+  await expect(summaryToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(summaryPanel.getByTestId('file-diff-preview')).toHaveCount(0);
+  await summaryToggle.click();
 
   const firstDiff = previewGroup.getByTestId('file-diff-preview').first();
   await expect(firstDiff.getByText('+1')).toBeVisible();

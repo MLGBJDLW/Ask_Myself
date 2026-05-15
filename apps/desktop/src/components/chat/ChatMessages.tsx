@@ -46,7 +46,7 @@ import type {
 import { ToolCallCard } from "./ToolCallCard";
 import { isBoardOnlyToolRender } from "./toolRenderers";
 import {
-  FileDiffPreview,
+  FileDiffSummaryPanel,
   extractFileDiffArtifacts,
   mergeFileDiffArtifactsByPath,
   type FileDiffArtifact,
@@ -66,6 +66,7 @@ import type {
   ArtifactPayload,
   ConversationMessage,
   ConversationTurn,
+  ToolPluginInfo,
   ToolRenderKind,
   ToolRunCapabilities,
 } from "../../types/conversation";
@@ -240,6 +241,7 @@ function isLowSignalThinkingSection(section: ThinkingSection): boolean {
 interface PersistedTraceToolCall {
   callId: string;
   toolName: string;
+  plugin?: ToolPluginInfo;
   arguments: string;
   status: "running" | "done" | "error";
   renderKind?: ToolRenderKind;
@@ -384,13 +386,17 @@ function extractPersistedTraceItems(
               : toolCall.status === "running"
                 ? "running"
                 : "done",
-          renderKind:
-            typeof toolCall.renderKind === "string"
-              ? (toolCall.renderKind as ToolRenderKind)
-              : undefined,
-          capabilities:
-            toolCall.capabilities && typeof toolCall.capabilities === "object"
-              ? (toolCall.capabilities as ToolRunCapabilities)
+            renderKind:
+              typeof toolCall.renderKind === "string"
+                ? (toolCall.renderKind as ToolRenderKind)
+                : undefined,
+            plugin:
+              toolCall.plugin && typeof toolCall.plugin === "object"
+                ? (toolCall.plugin as ToolPluginInfo)
+                : undefined,
+            capabilities:
+              toolCall.capabilities && typeof toolCall.capabilities === "object"
+                ? (toolCall.capabilities as ToolRunCapabilities)
               : undefined,
           durationMs:
             typeof toolCall.durationMs === "number"
@@ -918,6 +924,7 @@ export function ChatMessages({
               toolName={item.toolCall.toolName}
               arguments={item.toolCall.arguments}
               status={item.toolCall.status}
+              plugin={item.toolCall.plugin}
               renderKind={item.toolCall.renderKind}
               capabilities={item.toolCall.capabilities}
               durationMs={item.toolCall.durationMs}
@@ -988,6 +995,7 @@ export function ChatMessages({
                       toolName={item.toolCall.toolName}
                       arguments={item.toolCall.arguments}
                       status={item.toolCall.status}
+                      plugin={item.toolCall.plugin}
                       renderKind={item.toolCall.renderKind}
                       capabilities={item.toolCall.capabilities}
                       durationMs={item.toolCall.durationMs}
@@ -1031,6 +1039,7 @@ export function ChatMessages({
                 toolName={tc.name || "unknown_tool"}
                 arguments={tc.arguments || ""}
                 status={toolResult ? "done" : "running"}
+                plugin={tc.plugin}
                 content={toolResult?.content}
                 artifacts={toolResult?.artifacts ?? undefined}
                 trace={true}
@@ -1152,6 +1161,7 @@ export function ChatMessages({
                 toolName={event.toolCall.toolName}
                 arguments={event.toolCall.arguments}
                 status={event.toolCall.status}
+                plugin={event.toolCall.plugin}
                 renderKind={event.toolCall.renderKind}
                 capabilities={event.toolCall.capabilities}
                 durationMs={event.toolCall.durationMs}
@@ -1210,6 +1220,7 @@ export function ChatMessages({
               toolName={tc.toolName}
               arguments={tc.arguments}
               status={tc.status}
+              plugin={tc.plugin}
               renderKind={tc.renderKind}
               capabilities={tc.capabilities}
               durationMs={tc.durationMs}
@@ -1533,15 +1544,13 @@ export function ChatMessages({
   }, [messageIndexById, messages, turns]);
 
   const renderFileDiffPreviews = useCallback(
-    (diffs: FileDiffArtifact[] | undefined, keyPrefix: string) => {
+    (diffs: FileDiffArtifact[] | undefined, _keyPrefix: string) => {
       if (!diffs || diffs.length === 0) return null;
       const mergedDiffs = mergeFileDiffArtifactsByPath(diffs);
       return (
         <div className="my-2 flex justify-start" data-testid="turn-file-diff-previews">
-          <div className="w-full max-w-[min(100%,72rem)] space-y-2">
-            {mergedDiffs.map((diff, diffIdx) => (
-              <FileDiffPreview key={`${keyPrefix}-${diff.path}-${diffIdx}`} diff={diff} />
-            ))}
+          <div className="w-full max-w-[min(100%,72rem)]">
+            <FileDiffSummaryPanel diffs={mergedDiffs} />
           </div>
         </div>
       );

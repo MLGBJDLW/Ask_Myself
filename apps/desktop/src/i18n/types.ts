@@ -614,6 +614,10 @@ export interface TranslationKeys {
   'chat.fileDiffCreated': string;
   'chat.fileDiffModified': string;
   'chat.fileDiffLinesOmitted': string;
+  'chat.fileDiffSummaryTitle': string;
+  'chat.fileDiffSummaryMixed': string;
+  'chat.fileDiffShowMore': string;
+  'chat.fileDiffShowLess': string;
   'chat.thinking': string;
   'chat.stop': string;
   'chat.retry': string;
@@ -1003,6 +1007,22 @@ export interface TranslationKeys {
 
   // Settings - AI Providers
   'settings.aiProviders': string;
+  'settings.commonLlm': string;
+  'settings.imageGeneration': string;
+  'settings.imageGenerationDesc': string;
+  'settings.expandImageGeneration': string;
+  'settings.collapseImageGeneration': string;
+  'settings.configured': string;
+  'settings.needsApiKey': string;
+  'settings.providerApiKeySource': string;
+  'settings.dedicatedApiKeySource': string;
+  'settings.noApiKeySource': string;
+  'settings.provider': string;
+  'settings.model': string;
+  'settings.defaultSize': string;
+  'settings.quality': string;
+  'settings.outputFormat': string;
+  'settings.subagentsCount': string;
   'settings.addProvider': string;
   'settings.editProvider': string;
   'settings.providerName': string;

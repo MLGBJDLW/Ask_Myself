@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import {
   AlertTriangle,
@@ -12,16 +12,25 @@ import {
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { OfficeDependencyStatus, OfficeRuntimeReadiness } from '../../lib/api';
+import * as api from '../../lib/api';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
+import type { PluginManifest, PluginRuntimeCheck } from '../../types/conversation';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 
 interface OfficeRuntimePanelProps {
   readiness: OfficeRuntimeReadiness | null;
   preparing: boolean;
-  onPrepare: () => void;
-  onRefresh: () => void;
+  onPrepare: () => void | Promise<void>;
+  onRefresh: () => void | Promise<void>;
   onAskAiPrepare: () => void;
+}
+
+function runtimeCheckVariant(check: PluginRuntimeCheck) {
+  if (check.status === 'error' || check.severity === 'error') return 'danger' as const;
+  if (check.status === 'warning' || check.severity === 'warning') return 'warning' as const;
+  if (check.status === 'pass') return 'success' as const;
+  return 'default' as const;
 }
 
 export function OfficeRuntimePanel({
@@ -34,6 +43,21 @@ export function OfficeRuntimePanel({
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [plugin, setPlugin] = useState<PluginManifest | null>(null);
+  const loadPlugin = useCallback(async () => {
+    try {
+      const plugins = await api.listBuiltinPlugins({ includeRuntimeChecks: true });
+      setPlugin(plugins.find((candidate) => candidate.id === 'office-documents') ?? null);
+    } catch (error) {
+      console.error('[office-plugin] failed to load plugin manifest', error);
+      setPlugin(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPlugin();
+  }, [loadPlugin]);
+
   const status = readiness?.status ?? 'missing';
   const statusMeta = (() => {
     if (!readiness) {
@@ -54,6 +78,19 @@ export function OfficeRuntimePanel({
   const missingRequiredDeps = requiredDeps.filter((dep) => dep.status !== 'ready');
   const canPrepare = Boolean(readiness?.canPrepare) || !readiness;
   const shouldShowRequiredPrepare = !readiness || missingRequiredDeps.length > 0;
+  const visibleRuntimeChecks = (plugin?.runtimeChecks ?? []).filter(
+    (check) => check.status !== 'unknown' && check.status !== 'pass',
+  );
+
+  const handlePrepare = async () => {
+    await onPrepare();
+    void loadPlugin();
+  };
+
+  const handleRefresh = async () => {
+    await onRefresh();
+    void loadPlugin();
+  };
 
   const renderDep = (dep: OfficeDependencyStatus) => (
     <div key={dep.id} className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-start sm:justify-between">
@@ -94,8 +131,22 @@ export function OfficeRuntimePanel({
             </Badge>
           </div>
           <p className="mt-1 text-xs leading-relaxed text-text-tertiary">
-            {readiness?.summary ?? t('settings.documentToolsDesc')}
+            {readiness?.summary ?? plugin?.description ?? t('settings.documentToolsDesc')}
           </p>
+          {visibleRuntimeChecks.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {visibleRuntimeChecks.map((check) => (
+                <Badge
+                  key={check.id}
+                  variant={runtimeCheckVariant(check)}
+                  title={check.message}
+                  className="text-[10px]"
+                >
+                  {check.label}
+                </Badge>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button
@@ -111,7 +162,7 @@ export function OfficeRuntimePanel({
             size="sm"
             icon={<RefreshCw size={14} />}
             iconOnly
-            onClick={onRefresh}
+            onClick={() => void handleRefresh()}
             title={t('settings.documentToolsRefresh')}
             aria-label={t('settings.documentToolsRefresh')}
           />
@@ -122,7 +173,7 @@ export function OfficeRuntimePanel({
               icon={<Wrench size={14} />}
               loading={preparing}
               disabled={!canPrepare || preparing}
-              onClick={() => onPrepare()}
+              onClick={() => void handlePrepare()}
             >
               {preparing ? t('settings.documentToolsPreparing') : t('settings.documentToolsPrepareRequired')}
             </Button>

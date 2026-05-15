@@ -8,6 +8,7 @@ import type {
   AgentTaskRun,
   AgentTaskRunEvent,
   ArtifactPayload,
+  ToolPluginInfo,
   ToolRenderKind,
   ToolRunCapabilities,
   ToolRunItem,
@@ -19,6 +20,7 @@ import type {
 export interface ToolCallEvent {
   callId: string;
   toolName: string;
+  plugin?: ToolPluginInfo;
   arguments: string;
   status:
     | 'preparing'
@@ -55,11 +57,13 @@ function createToolCall(partial: {
   argsStatus?: ToolCallEvent['argsStatus'];
   renderKind?: ToolRenderKind;
   capabilities?: ToolRunCapabilities;
+  plugin?: ToolPluginInfo;
 }): ToolCallEvent {
   const argumentsText = partial.arguments ?? '';
   return {
     callId: partial.callId,
     toolName: partial.toolName,
+    plugin: partial.plugin,
     arguments: argumentsText,
     status: partial.status ?? 'starting',
     renderKind: partial.renderKind,
@@ -279,6 +283,7 @@ function patchToolCallFromRun(prev: ToolCallEvent, run: ToolRunItem): ToolCallEv
     status,
     renderKind: run.renderKind ?? prev.renderKind,
     capabilities: run.capabilities ?? prev.capabilities,
+    plugin: run.plugin ?? prev.plugin,
     argsStatus: argsStatusForToolRun(run, status),
     argsBytes: Math.max(prev.argsBytes, argumentsText.length),
     progressNotes: appendProgressNote(prev.progressNotes, run.progressNote),
@@ -702,6 +707,7 @@ function applyToolRunEvent(state: InternalStreamState, run: ToolRunItem): void {
       argsStatus: argsStatusForToolRun(run, status),
       renderKind: run.renderKind,
       capabilities: run.capabilities,
+      plugin: run.plugin,
     });
     const nextCall = patchToolCallFromRun(base, run);
     insertPendingToolCall(state, nextCall, roundThinking);

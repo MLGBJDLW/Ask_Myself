@@ -40,6 +40,7 @@ use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::ToolDefinition;
 use crate::models::Source;
+use crate::plugins::ToolPluginInfo;
 
 // ---------------------------------------------------------------------------
 // Shared tool-definition helper (parsed from JSON once via OnceLock)
@@ -296,6 +297,7 @@ pub struct ToolAccessProfile {
 pub struct ToolInvocation {
     pub call_id: String,
     pub tool_name: String,
+    pub plugin: ToolPluginInfo,
     pub arguments: serde_json::Value,
     pub capabilities: ToolRunCapabilities,
     pub access_profile: ToolAccessProfile,
@@ -1266,6 +1268,10 @@ impl ToolRegistry {
             .unwrap_or_else(|| fallback_tool_access_profile(name, args))
     }
 
+    pub fn plugin_info(&self, name: &str) -> ToolPluginInfo {
+        crate::plugins::plugin_for_tool(name)
+    }
+
     pub fn build_invocation(
         &self,
         call_id: impl Into<String>,
@@ -1275,9 +1281,11 @@ impl ToolRegistry {
         let tool_name = name.into();
         let capabilities = self.run_capabilities(&tool_name, &arguments);
         let access_profile = self.access_profile(&tool_name, &arguments);
+        let plugin = self.plugin_info(&tool_name);
         ToolInvocation {
             call_id: call_id.into(),
             tool_name,
+            plugin,
             wait_for_previous: invocation_waits_for_previous(&arguments),
             arguments,
             capabilities,
@@ -1893,6 +1901,7 @@ mod tests {
 
         assert_eq!(invocation.call_id, "call-1");
         assert_eq!(invocation.tool_name, "create_file");
+        assert_eq!(invocation.plugin.id, "file-workspace");
         assert!(invocation.wait_for_previous);
         assert!(invocation.capabilities.destructive);
         assert!(invocation.access_profile.can_write);

@@ -194,6 +194,46 @@ body {
   }
 }
 
+@keyframes chat-context-hud-sheen {
+  0% {
+    transform: translateX(-140%);
+    opacity: 0;
+  }
+  24% {
+    opacity: 0.18;
+  }
+  62% {
+    opacity: 0.26;
+  }
+  100% {
+    transform: translateX(140%);
+    opacity: 0;
+  }
+}
+
+.chat-context-hud-fill {
+  transition: width 520ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.chat-context-hud-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 22%,
+    rgba(255, 255, 255, 0.36) 50%,
+    transparent 78%
+  );
+  animation: chat-context-hud-sheen 3.6s ease-in-out infinite;
+}
+
+.chat-context-hud[data-active='false'] .chat-context-hud-fill::after {
+  animation: none;
+}
+
 .chat-trace-panel {
   position: relative;
   isolation: isolate;

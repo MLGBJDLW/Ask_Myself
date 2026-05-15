@@ -3349,6 +3349,33 @@ pub async fn list_tool_access_map_cmd(
 }
 
 #[tauri::command]
+pub fn list_builtin_plugins_cmd(
+    state: tauri::State<'_, AppState>,
+    app_handle: AppHandle,
+    include_runtime_checks: Option<bool>,
+) -> Result<Vec<nexa_core::plugins::PluginManifest>, String> {
+    let config = state.db.load_app_config().map_err(|e| e.to_string())?;
+    let office_runtime = if include_runtime_checks.unwrap_or(false) {
+        match app_handle.path().app_data_dir() {
+            Ok(data_dir) => Some(nexa_core::office_runtime::check_office_runtime(&data_dir)),
+            Err(error) => {
+                warn!("Failed to resolve app data directory for plugin runtime checks: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    Ok(nexa_core::plugins::builtin_plugin_manifests_with_context(
+        nexa_core::plugins::PluginManifestContext {
+            app_config: Some(&config),
+            office_runtime: office_runtime.as_ref(),
+        },
+    ))
+}
+
+#[tauri::command]
 pub fn list_project_tools_cmd(
     state: tauri::State<'_, AppState>,
     source_scope: Option<Vec<String>>,

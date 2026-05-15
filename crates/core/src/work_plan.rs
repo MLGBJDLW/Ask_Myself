@@ -153,6 +153,7 @@ mod tests {
         let invocation = ToolInvocation {
             call_id: "call-1".to_string(),
             tool_name: "edit_file".to_string(),
+            plugin: crate::plugins::plugin_for_tool("edit_file"),
             arguments: serde_json::json!({ "path": "notes.md" }),
             capabilities: ToolRunCapabilities {
                 input_streaming: ToolInputStreamingMode::None,
@@ -191,6 +192,7 @@ mod tests {
         let invocation = ToolInvocation {
             call_id: "call-1".to_string(),
             tool_name: "search_knowledge_base".to_string(),
+            plugin: crate::plugins::plugin_for_tool("search_knowledge_base"),
             arguments: serde_json::json!({ "query": "notes" }),
             capabilities: ToolRunCapabilities {
                 input_streaming: ToolInputStreamingMode::None,

@@ -11,9 +11,7 @@
  *        node scripts/build-icons.mjs
  *
  * Inputs:  apps/desktop/src-tauri/icons/icon.svg
- * Outputs: 32x32.png, 128x128.png, 128x128@2x.png, icon.png,
- *          Square30x30Logo.png ... Square310x310Logo.png, StoreLogo.png,
- *          icon.icns, icon.ico
+ * Outputs: desktop, Windows Store, iOS, and Android raster icons, plus icon.icns/icon.ico.
  */
 
 import { readFile, writeFile } from 'node:fs/promises';
@@ -57,6 +55,51 @@ async function main() {
     const png = await renderPng(svg, size);
     await writeFile(resolve(ICONS_DIR, name), png);
     console.log(`\u2713 ${name} (${size}\u00d7${size})`);
+  }
+
+  const iosSizes = {
+    'AppIcon-20x20@1x.png': 20,
+    'AppIcon-20x20@2x.png': 40,
+    'AppIcon-20x20@2x-1.png': 40,
+    'AppIcon-20x20@3x.png': 60,
+    'AppIcon-29x29@1x.png': 29,
+    'AppIcon-29x29@2x.png': 58,
+    'AppIcon-29x29@2x-1.png': 58,
+    'AppIcon-29x29@3x.png': 87,
+    'AppIcon-40x40@1x.png': 40,
+    'AppIcon-40x40@2x.png': 80,
+    'AppIcon-40x40@2x-1.png': 80,
+    'AppIcon-40x40@3x.png': 120,
+    'AppIcon-60x60@2x.png': 120,
+    'AppIcon-60x60@3x.png': 180,
+    'AppIcon-76x76@1x.png': 76,
+    'AppIcon-76x76@2x.png': 152,
+    'AppIcon-83.5x83.5@2x.png': 167,
+    'AppIcon-512@2x.png': 1024,
+  };
+
+  for (const [name, size] of Object.entries(iosSizes)) {
+    const png = await renderPng(svg, size);
+    await writeFile(resolve(ICONS_DIR, 'ios', name), png);
+    console.log(`\u2713 ios/${name} (${size}\u00d7${size})`);
+  }
+
+  const androidDensitySizes = {
+    'mipmap-mdpi': [48, 108],
+    'mipmap-hdpi': [72, 162],
+    'mipmap-xhdpi': [96, 216],
+    'mipmap-xxhdpi': [144, 324],
+    'mipmap-xxxhdpi': [192, 432],
+  };
+
+  for (const [density, [launcherSize, foregroundSize]] of Object.entries(androidDensitySizes)) {
+    const launcher = await renderPng(svg, launcherSize);
+    await writeFile(resolve(ICONS_DIR, 'android', density, 'ic_launcher.png'), launcher);
+    await writeFile(resolve(ICONS_DIR, 'android', density, 'ic_launcher_round.png'), launcher);
+
+    const foreground = await renderPng(svg, foregroundSize);
+    await writeFile(resolve(ICONS_DIR, 'android', density, 'ic_launcher_foreground.png'), foreground);
+    console.log(`\u2713 android/${density} (${launcherSize}\u00d7${launcherSize}, ${foregroundSize}\u00d7${foregroundSize})`);
   }
 
   // Multi-size source for .icns / .ico

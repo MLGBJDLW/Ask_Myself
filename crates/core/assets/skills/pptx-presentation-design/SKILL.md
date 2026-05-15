@@ -5,9 +5,9 @@ description: Create, edit, inspect, and validate PowerPoint PPTX presentations w
 
 ## Workflow
 1. For source material, run `scripts/pptx_deck_planner.py --input <notes.md> --out <spec.json>` when a renderer spec is not already available.
-2. Create or edit the JSON spec as a workspace file with `create_file`, `edit_file`, or `multi_edit`; do not pass large deck specs through a single `run_shell` argument.
+2. Create or edit the JSON spec as a workspace file only when it is meant to remain as a durable source artifact. For generated or transient specs, pass JSON through `run_shell.stdin` and call the renderer with `--spec -`; never pass large deck specs through a single `run_shell` argument.
 3. For a new editable deck, use `scripts/pptx_renderer.py --path <file> --spec <json>` or the `doc-script-editor create_pptx` compatibility command, which delegates to this renderer.
-4. For a high-design deck that benefits from CSS/web layout, use `scripts/html_deck_renderer.py --spec <json> --out-dir <project-dir> --pptx <file> --mode hybrid --screenshot auto` or `doc-script-editor create_html_pptx`. Keep the HTML deck spec as a file; do not pass it through a shell argument.
+4. For a high-design deck that benefits from CSS/web layout, use `scripts/html_deck_renderer.py --spec - --out-dir <project-dir> --pptx <file> --mode hybrid --screenshot auto` or `doc-script-editor create_html_pptx --spec -`, with the generated spec in `run_shell.stdin`. Keep the HTML deck spec as a file only when the user needs a durable editable source; do not pass it through a shell argument.
 5. Use `doc-script-editor` for cross-format file operations: `check`, `insert_slide`, `replace`, `extract`, `version`, `unpack`, `pack`, `render`, `convert`, and `validate`.
 6. For a template deck, run `scripts/pptx_template_bind.py --template <template.pptx> --spec <spec.json> --out <bound-spec.json>` before rendering; this profiles layouts/style and annotates each slide with template layout bindings.
 7. For an existing deck rewrite, run `scripts/pptx_semantic_rewriter.py --path <file> --out <spec.json>` for a new semantic story, or `scripts/pptx_rewrite_plan.py --path <file> --out-spec <spec.json>` when you also need slide-level remediation actions.

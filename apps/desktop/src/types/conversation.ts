@@ -239,6 +239,7 @@ export interface UpdateAgentTaskArtifactInput {
 export interface ToolCallRequest {
   id: string;
   name: string;
+  plugin?: ToolPluginInfo;
   arguments: string;
 }
 
@@ -343,6 +344,18 @@ export interface AppConfig {
   autoMemoryExtraction?: boolean;
   hfMirrorBaseUrl?: string;
   ghproxyBaseUrl?: string;
+  imageGeneration?: ImageGenerationConfig;
+}
+
+export interface ImageGenerationConfig {
+  provider: string;
+  apiStyle: string;
+  apiKey: string;
+  baseUrl: string | null;
+  model: string;
+  size: string | null;
+  quality: string | null;
+  outputFormat: string | null;
 }
 
 export type ProviderType =
@@ -415,8 +428,60 @@ export interface AgentEvent {
 export type ApprovalRisk = 'low' | 'medium' | 'high';
 export type ApprovalDecisionValue = 'allow_once' | 'allow_session' | 'deny' | 'never';
 
+export interface ToolPluginInfo {
+  id: string;
+  name: string;
+  capability: string;
+  description: string;
+}
+
+export interface PluginProviderCatalog {
+  id: string;
+  label: string;
+  itemKind: string;
+  items: unknown[];
+}
+
+export interface PluginSettingsSchema {
+  configKey: string;
+  fields: PluginSettingsField[];
+}
+
+export interface PluginSettingsField {
+  key: string;
+  label: string;
+  kind: string;
+  required: boolean;
+  secret: boolean;
+  description: string;
+  optionsSource?: string;
+  defaultValue?: unknown;
+}
+
+export type PluginRuntimeStatus = 'pass' | 'warning' | 'error' | 'unknown';
+export type PluginCheckSeverity = 'info' | 'warning' | 'error';
+
+export interface PluginRuntimeCheck {
+  id: string;
+  label: string;
+  status: PluginRuntimeStatus;
+  severity: PluginCheckSeverity;
+  message: string;
+}
+
+export interface PluginManifest extends ToolPluginInfo {
+  builtIn: boolean;
+  tools: string[];
+  settingsSurfaces: string[];
+  workflows: string[];
+  settingsSchema?: PluginSettingsSchema | null;
+  providerCatalogs?: PluginProviderCatalog[];
+  runtimeChecks?: PluginRuntimeCheck[];
+}
+
 export interface ToolAccessInfo {
   name: string;
+  plugin: ToolPluginInfo;
   category: string;
   canRead: boolean;
   canWrite: boolean;
@@ -525,6 +590,7 @@ export interface ToolRunCapabilities {
 export interface ToolRunItem {
   callId: string;
   toolName: string;
+  plugin: ToolPluginInfo;
   status: ToolRunStatus;
   arguments?: string;
   renderKind: ToolRenderKind;

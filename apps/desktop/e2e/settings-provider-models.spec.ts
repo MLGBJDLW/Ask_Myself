@@ -20,7 +20,7 @@ test.beforeEach(async ({ page }) => {
       temperature: 0.3,
       maxTokens: 4096,
       contextWindow: 200000,
-      isDefault: true,
+      isDefault: false,
       reasoningEnabled: null,
       thinkingBudget: null,
       reasoningEffort: null,
@@ -30,6 +30,17 @@ test.beforeEach(async ({ page }) => {
       subagentAllowedTools: null,
       createdAt: nowIso,
       updatedAt: nowIso,
+    };
+
+    const qwenConfig = {
+      ...anthropicConfig,
+      id: "cfg-qwen",
+      name: "Qwen CN",
+      provider: "qwen",
+      apiKey: "sk-qwen-demo",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      model: "qwen3.6-plus",
+      isDefault: true,
     };
 
     const embedderConfig = {
@@ -48,6 +59,34 @@ test.beforeEach(async ({ page }) => {
       llmFallback: false,
       detectionLimit: 2048,
       useCls: false,
+    };
+
+    const appConfig = {
+      toolTimeoutSecs: 30,
+      agentTimeoutSecs: 180,
+      cacheTtlHours: 24,
+      defaultSearchLimit: 20,
+      minSearchSimilarity: 0.2,
+      maxTextFileSize: 104857600,
+      maxVideoFileSize: 2147483648,
+      maxAudioFileSize: 536870912,
+      llmTimeoutSecs: 300,
+      mcpCallTimeoutSecs: 60,
+      confirmDestructive: true,
+      shellAccessMode: "restricted",
+      toolApprovalMode: "ask",
+      hfMirrorBaseUrl: "https://hf-mirror.com",
+      ghproxyBaseUrl: "https://mirror.ghproxy.com",
+      imageGeneration: {
+        provider: "open_ai",
+        apiStyle: "openai_images",
+        apiKey: "",
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-image-2",
+        size: "1024x1024",
+        quality: null,
+        outputFormat: "png",
+      },
     };
 
     const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -69,7 +108,7 @@ test.beforeEach(async ({ page }) => {
         case "get_wizard_state_cmd":
           return { completed: true };
         case "list_agent_configs_cmd":
-          return [clone(anthropicConfig)];
+          return [clone(anthropicConfig), clone(qwenConfig)];
         case "list_conversations_cmd":
           return [];
         case "list_sources":
@@ -90,6 +129,29 @@ test.beforeEach(async ({ page }) => {
           return { enabled: false, excludePatterns: [], redactPatterns: [] };
         case "get_embedder_config_cmd":
           return clone(embedderConfig);
+        case "get_app_config_cmd":
+          return clone(appConfig);
+        case "save_app_config_cmd":
+          (window as unknown as { __savedAppConfig?: unknown }).__savedAppConfig = clone(
+            _args.config,
+          );
+          return null;
+        case "list_builtin_plugins_cmd":
+          return [
+            {
+              id: "image-generation",
+              name: "Image Generation",
+              capability: "Image creation",
+              description: "Routes image requests through provider-specific adapters.",
+              builtIn: true,
+              tools: ["generate_image"],
+              settingsSurfaces: ["image-generation"],
+              workflows: ["generate-image"],
+              settingsSchema: null,
+              providerCatalogs: [],
+              runtimeChecks: [],
+            },
+          ];
         case "get_ocr_config_cmd":
           return clone(ocrConfig);
         case "check_ocr_models_cmd":
@@ -189,7 +251,7 @@ test("settings provider form shows updated preset models for add and edit flows"
   ]);
 
   await page.getByRole("button", { name: "Cancel" }).click();
-  await page.getByTitle("Edit").click();
+  await page.getByTitle("Edit").first().click();
 
   modelSelect = modelField().getByRole("combobox");
   await expect(modelSelect).toBeVisible();
@@ -198,4 +260,32 @@ test("settings provider form shows updated preset models for add and edit flows"
     "Claude Sonnet 4.5",
     "Claude Haiku 4.5",
   ]);
+});
+
+test("settings exposes image generation model config under AI providers", async ({
+  page,
+}) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const panel = page.getByTestId("image-generation-settings-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "Image Generation" })).toBeVisible();
+  await expect(panel.getByText("Qwen Image (DashScope Beijing)")).toBeVisible();
+  await expect(panel.getByText("Qwen CN API key")).toBeVisible();
+  await expect(panel.locator("select")).toHaveCount(0);
+
+  await panel.getByRole("button", { name: "Expand image generation settings" }).click();
+  await expect(panel.getByText("Image provider defaults for generate_image")).toBeVisible();
+  const selects = panel.locator("select");
+  await expect(selects.nth(0)).toHaveValue("qwen-dashscope-cn");
+  await expect(selects.nth(1)).toHaveValue("qwen-image-2.0-pro");
+
+  await panel.getByRole("button", { name: "Save" }).click();
+  await page.waitForFunction(() => {
+    const saved = (window as unknown as { __savedAppConfig?: { imageGeneration?: { provider?: string; apiKey?: string } } })
+      .__savedAppConfig;
+    return saved?.imageGeneration?.provider === "qwen" &&
+      saved.imageGeneration.apiKey === "sk-qwen-demo";
+  });
 });

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, FilePenLine, FilePlus2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileCode2, FilePenLine, FilePlus2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { ArtifactPayload } from '../../types/conversation';
 import { FileBadge } from '../ui/FileBadge';
@@ -47,6 +47,10 @@ function diffPathKey(path: string): string {
   return path.replace(/\\/g, '/');
 }
 
+function diffIdentityKey(diff: FileDiffArtifact): string {
+  return diffPathKey(diff.absolutePath || diff.path);
+}
+
 function mergeOperation(current: string, next: string): string {
   if (current === 'create') return 'create';
   if (current === next) return current;
@@ -58,7 +62,7 @@ export function mergeFileDiffArtifactsByPath(diffs: FileDiffArtifact[]): FileDif
   const byPath = new Map<string, FileDiffArtifact>();
 
   for (const diff of diffs) {
-    const key = diffPathKey(diff.path);
+    const key = diffIdentityKey(diff);
     const existing = byPath.get(key);
     if (!existing) {
       const copy = {
@@ -160,6 +164,13 @@ export function extractFileDiffArtifacts(artifacts: ArtifactPayload | undefined)
       }
     }
   }
+  if (isRecord(artifacts.checkpoint)) {
+    const path = stringOrNull(artifacts.checkpoint.path);
+    const absolutePath = stringOrNull(artifacts.checkpoint.absolutePath);
+    if (path && absolutePath) {
+      absolutePathsByPath.set(diffPathKey(path), absolutePath);
+    }
+  }
 
   const parseWithFallback = (diff: unknown): FileDiffArtifact | null => {
     const directPath = isRecord(diff) ? stringOrNull(diff.path) : null;
@@ -242,6 +253,208 @@ function lineNumber(value: number | null): string {
   return value == null ? '' : String(value);
 }
 
+function FileDiffBody({ diff, compact = false }: { diff: FileDiffArtifact; compact?: boolean }) {
+  const { t } = useTranslation();
+  const maxHeight = compact ? 'max-h-72' : 'max-h-[32rem]';
+
+  return (
+    <div className={`${maxHeight} overflow-auto bg-surface-0`}>
+      <div className="min-w-max py-1 font-mono text-[11px] leading-5">
+        {diff.hunks.map((hunk, hunkIndex) => (
+          <div key={`hunk-${hunkIndex}`}>
+            <div className="grid border-y border-border/40 bg-surface-2/70 px-2 text-[10px] text-text-tertiary">
+              <span>
+                @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
+              </span>
+            </div>
+            {hunk.lines.map((line, lineIndex) => (
+              <div
+                key={`line-${hunkIndex}-${lineIndex}`}
+                className={`grid min-h-5 items-start px-2 transition-colors ${lineClassName(line.type)}`}
+                style={{ gridTemplateColumns: '3.25rem 3.25rem 1.5rem minmax(0, 1fr)' }}
+              >
+                <span className="select-none pr-3 text-right text-text-tertiary/70">
+                  {lineNumber(line.oldLine)}
+                </span>
+                <span className="select-none pr-3 text-right text-text-tertiary/70">
+                  {lineNumber(line.newLine)}
+                </span>
+                <span className={`select-none ${markerClassName(line.type)}`}>
+                  {marker(line.type)}
+                </span>
+                <span className="whitespace-pre pr-4 text-left">{line.content || ' '}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+        {diff.truncated && diff.omittedLineCount ? (
+          <div className="border-t border-border/40 bg-surface-1/70 px-3 py-2 text-xs text-text-tertiary">
+            {t('chat.fileDiffLinesOmitted', { count: String(diff.omittedLineCount) })}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function FileDiffStatsPills({ additions, deletions }: { additions: number; deletions: number }) {
+  const showAdditions = additions > 0 || deletions === 0;
+  const showDeletions = deletions > 0;
+
+  return (
+    <div className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums">
+      {showAdditions && (
+        <span className="rounded-md border border-success/20 bg-success/10 px-1.5 py-0.5 text-success">
+          +{additions}
+        </span>
+      )}
+      {showDeletions && (
+        <span className="rounded-md border border-danger/20 bg-danger/10 px-1.5 py-0.5 text-danger">
+          -{deletions}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function basename(path: string): string {
+  const normalized = path.replace(/\\/g, '/');
+  return normalized.split('/').filter(Boolean).pop() ?? path;
+}
+
+function summarizeOperation(diffs: FileDiffArtifact[]): string {
+  if (diffs.every((diff) => diff.operation === 'create')) return 'create';
+  if (diffs.some((diff) => diff.operation === 'create')) return 'mixed';
+  return 'edit';
+}
+
+export function FileDiffSummaryPanel({ diffs }: { diffs: FileDiffArtifact[] }) {
+  const { t } = useTranslation();
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [showAll, setShowAll] = useState(false);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const visibleLimit = 4;
+  const visibleDiffs = showAll ? diffs : diffs.slice(0, visibleLimit);
+  const hiddenCount = Math.max(0, diffs.length - visibleDiffs.length);
+  const additions = diffs.reduce((total, diff) => total + diff.additions, 0);
+  const deletions = diffs.reduce((total, diff) => total + diff.deletions, 0);
+  const operation = summarizeOperation(diffs);
+  const operationLabel =
+    operation === 'create'
+      ? t('chat.fileDiffCreated')
+      : operation === 'mixed'
+        ? t('chat.fileDiffSummaryMixed')
+        : t('chat.fileDiffModified');
+
+  const togglePath = (path: string) => {
+    setExpandedPaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <div
+      className="w-full overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-sm ring-1 ring-black/[0.02]"
+      data-testid="file-diff-summary-panel"
+    >
+      <div className="flex items-center gap-3 border-b border-border/60 bg-surface-1/90 px-3 py-2.5">
+        <button
+          type="button"
+          onClick={() => setPanelOpen((current) => !current)}
+          aria-expanded={panelOpen}
+          aria-label={`${panelOpen ? t('common.collapse') : t('common.expand')} ${t('chat.fileDiffSummaryTitle', { count: String(diffs.length) })}`}
+          className="inline-flex min-w-0 flex-1 items-center gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-surface-0 text-text-secondary shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <FileCode2 size={17} strokeWidth={1.9} />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold text-text-primary">
+              {t('chat.fileDiffSummaryTitle', { count: String(diffs.length) })}
+            </span>
+            <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-tertiary">
+              <span>{operationLabel}</span>
+              {diffs[0] && (
+                <span className="truncate">
+                  {basename(diffs[0].path)}
+                  {diffs.length > 1 ? ` +${diffs.length - 1}` : ''}
+                </span>
+              )}
+            </span>
+          </span>
+        </button>
+        <FileDiffStatsPills additions={additions} deletions={deletions} />
+        <ChevronDown
+          size={16}
+          className={`shrink-0 text-text-tertiary transition-transform ${panelOpen ? 'rotate-180' : ''}`}
+        />
+      </div>
+
+      {panelOpen && (
+        <div className="divide-y divide-border/45">
+          {visibleDiffs.map((diff, index) => {
+            const key = diffIdentityKey(diff);
+            const created = diff.operation === 'create';
+            const Icon = created ? FilePlus2 : FilePenLine;
+            const expanded = expandedPaths.has(key);
+            const previewPath = diff.absolutePath || diff.path;
+            const rowOperationLabel = created ? t('chat.fileDiffCreated') : t('chat.fileDiffModified');
+
+            return (
+              <div key={`${key}-${index}`} data-testid="file-diff-preview">
+                <button
+                  type="button"
+                  onClick={() => togglePath(key)}
+                  aria-expanded={expanded}
+                  aria-label={`${expanded ? t('common.collapse') : t('common.expand')} ${rowOperationLabel} ${diff.path}`}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface-1/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35"
+                >
+                  <ChevronRight
+                    className={`h-3.5 w-3.5 shrink-0 text-text-tertiary transition-transform ${expanded ? 'rotate-90' : ''}`}
+                  />
+                  <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/60 bg-surface-1 text-text-secondary">
+                    <Icon size={14} strokeWidth={1.9} />
+                  </span>
+                  <span className="shrink-0 text-xs font-medium text-text-secondary">{rowOperationLabel}</span>
+                  <FileBadge path={previewPath} className="min-w-0 flex-1" />
+                  <FileDiffStatsPills additions={diff.additions} deletions={diff.deletions} />
+                </button>
+                {expanded && (
+                  <div className="border-t border-border/40">
+                    <FileDiffBody diff={diff} compact />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {hiddenCount > 0 || showAll ? (
+            <button
+              type="button"
+              onClick={() => setShowAll((current) => !current)}
+              className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-xs text-text-tertiary transition-colors hover:bg-surface-1/65 hover:text-text-secondary"
+            >
+              <ChevronDown
+                size={14}
+                className={`transition-transform ${showAll ? 'rotate-180' : ''}`}
+              />
+              {showAll
+                ? t('chat.fileDiffShowLess')
+                : t('chat.fileDiffShowMore', { count: String(hiddenCount) })}
+            </button>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function FileDiffPreview({
   diff,
   compact = false,
@@ -257,7 +470,6 @@ export function FileDiffPreview({
   const Icon = created ? FilePlus2 : FilePenLine;
   const operationLabel = created ? t('chat.fileDiffCreated') : t('chat.fileDiffModified');
   const previewPath = diff.absolutePath || diff.path;
-  const maxHeight = compact ? 'max-h-72' : 'max-h-[32rem]';
   const ToggleIcon = expanded ? ChevronDown : ChevronRight;
 
   return (
@@ -284,53 +496,11 @@ export function FileDiffPreview({
             <FileBadge path={previewPath} className="min-w-0 max-w-full" />
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums">
-          <span className="rounded-md border border-success/20 bg-success/10 px-1.5 py-0.5 text-success">
-            +{diff.additions}
-          </span>
-          <span className="rounded-md border border-danger/20 bg-danger/10 px-1.5 py-0.5 text-danger">
-            -{diff.deletions}
-          </span>
-        </div>
+        <FileDiffStatsPills additions={diff.additions} deletions={diff.deletions} />
       </div>
 
       {expanded ? (
-        <div className={`${maxHeight} overflow-auto bg-surface-0`}>
-          <div className="min-w-max py-1 font-mono text-[11px] leading-5">
-            {diff.hunks.map((hunk, hunkIndex) => (
-              <div key={`hunk-${hunkIndex}`}>
-                <div className="grid border-y border-border/40 bg-surface-2/70 px-2 text-[10px] text-text-tertiary">
-                  <span>
-                    @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
-                  </span>
-                </div>
-                {hunk.lines.map((line, lineIndex) => (
-                  <div
-                    key={`line-${hunkIndex}-${lineIndex}`}
-                    className={`grid min-h-5 items-start px-2 transition-colors ${lineClassName(line.type)}`}
-                    style={{ gridTemplateColumns: '3.25rem 3.25rem 1.5rem minmax(0, 1fr)' }}
-                  >
-                    <span className="select-none pr-3 text-right text-text-tertiary/70">
-                      {lineNumber(line.oldLine)}
-                    </span>
-                    <span className="select-none pr-3 text-right text-text-tertiary/70">
-                      {lineNumber(line.newLine)}
-                    </span>
-                    <span className={`select-none ${markerClassName(line.type)}`}>
-                      {marker(line.type)}
-                    </span>
-                    <span className="whitespace-pre pr-4 text-left">{line.content || ' '}</span>
-                  </div>
-                ))}
-              </div>
-            ))}
-            {diff.truncated && diff.omittedLineCount ? (
-              <div className="border-t border-border/40 bg-surface-1/70 px-3 py-2 text-xs text-text-tertiary">
-                {t('chat.fileDiffLinesOmitted', { count: String(diff.omittedLineCount) })}
-              </div>
-            ) : null}
-          </div>
-        </div>
+        <FileDiffBody diff={diff} compact={compact} />
       ) : null}
     </div>
   );

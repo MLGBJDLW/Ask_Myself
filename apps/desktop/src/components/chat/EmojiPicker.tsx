@@ -54,18 +54,18 @@ export function EmojiPicker({ onEmojiSelect, disabled }: EmojiPickerProps) {
       <button
         onClick={() => setOpen((prev) => !prev)}
         disabled={disabled}
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
         aria-label={t("chat.insertEmoji")}
         type="button"
       >
-        <Smile className="h-4 w-4" />
+        <Smile className="h-3.5 w-3.5" />
       </button>
 
       <AnimatePresence>
         {open && (
           <motion.div
             {...getSoftDropdownMotion(!!shouldReduceMotion, 6)}
-            className="absolute bottom-12 right-0 z-50"
+            className="absolute bottom-10 right-0 z-50"
           >
             <Suspense
               fallback={

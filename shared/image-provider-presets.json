@@ -1,0 +1,148 @@
+[
+  {
+    "id": "openai",
+    "name": "OpenAI Images",
+    "provider": "open_ai",
+    "apiStyle": "openai_images",
+    "baseUrl": "https://api.openai.com/v1",
+    "requiresApiKey": true,
+    "description": "GPT Image models through the OpenAI Image API.",
+    "models": [
+      { "id": "gpt-image-2", "name": "GPT Image 2", "recommended": true },
+      { "id": "gpt-image-1.5", "name": "GPT Image 1.5" },
+      { "id": "gpt-image-1", "name": "GPT Image 1" },
+      { "id": "gpt-image-1-mini", "name": "GPT Image 1 Mini" }
+    ],
+    "sizeOptions": [
+      { "value": "auto", "label": "Auto" },
+      { "value": "1024x1024", "label": "Square 1024" },
+      { "value": "1024x1536", "label": "Portrait 1024x1536" },
+      { "value": "1536x1024", "label": "Landscape 1536x1024" },
+      { "value": "2048x2048", "label": "Square 2K" },
+      { "value": "2048x1152", "label": "Landscape 2K" },
+      { "value": "3840x2160", "label": "Landscape 4K" },
+      { "value": "2160x3840", "label": "Portrait 4K" }
+    ],
+    "qualityOptions": ["auto", "low", "medium", "high"],
+    "outputFormats": ["png", "jpeg", "webp"]
+  },
+  {
+    "id": "google-gemini",
+    "name": "Google Gemini Images",
+    "provider": "google",
+    "apiStyle": "gemini_generate_content",
+    "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+    "requiresApiKey": true,
+    "description": "Gemini Nano Banana image models through generateContent.",
+    "models": [
+      { "id": "gemini-3.1-flash-image-preview", "name": "Gemini 3.1 Flash Image Preview", "recommended": true },
+      { "id": "gemini-3-pro-image-preview", "name": "Gemini 3 Pro Image Preview" },
+      { "id": "gemini-2.5-flash-image", "name": "Gemini 2.5 Flash Image" }
+    ],
+    "sizeOptions": [
+      { "value": "1:1|1K", "label": "Square 1K" },
+      { "value": "1:1|2K", "label": "Square 2K" },
+      { "value": "1:1|4K", "label": "Square 4K" },
+      { "value": "16:9|2K", "label": "Landscape 2K" },
+      { "value": "9:16|2K", "label": "Portrait 2K" },
+      { "value": "3:2|2K", "label": "Wide 3:2 2K" },
+      { "value": "2:3|2K", "label": "Tall 2:3 2K" },
+      { "value": "4:3|2K", "label": "Wide 4:3 2K" },
+      { "value": "3:4|2K", "label": "Tall 3:4 2K" },
+      { "value": "21:9|2K", "label": "Ultrawide 21:9 2K" }
+    ],
+    "qualityOptions": [],
+    "outputFormats": ["png"]
+  },
+  {
+    "id": "qwen-dashscope-cn",
+    "name": "Qwen Image (DashScope Beijing)",
+    "provider": "qwen",
+    "apiStyle": "dashscope_multimodal",
+    "baseUrl": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+    "requiresApiKey": true,
+    "description": "Qwen-Image through Alibaba Cloud Model Studio Beijing region.",
+    "models": [
+      { "id": "qwen-image-2.0-pro", "name": "Qwen Image 2.0 Pro", "recommended": true },
+      { "id": "qwen-image-2.0", "name": "Qwen Image 2.0" },
+      { "id": "qwen-image-max", "name": "Qwen Image Max" },
+      { "id": "qwen-image-plus", "name": "Qwen Image Plus" },
+      { "id": "qwen-image", "name": "Qwen Image" }
+    ],
+    "sizeOptions": [
+      { "value": "2048x2048", "label": "Square 2048" },
+      { "value": "2688x1536", "label": "Landscape 16:9" },
+      { "value": "1536x2688", "label": "Portrait 9:16" },
+      { "value": "2368x1728", "label": "Wide 4:3" },
+      { "value": "1728x2368", "label": "Tall 3:4" }
+    ],
+    "qualityOptions": [],
+    "outputFormats": ["png"]
+  },
+  {
+    "id": "qwen-dashscope-intl",
+    "name": "Qwen Image (DashScope Singapore)",
+    "provider": "qwen",
+    "apiStyle": "dashscope_multimodal",
+    "baseUrl": "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+    "requiresApiKey": true,
+    "description": "Qwen-Image through Alibaba Cloud Model Studio Singapore region.",
+    "models": [
+      { "id": "qwen-image-2.0-pro", "name": "Qwen Image 2.0 Pro", "recommended": true },
+      { "id": "qwen-image-2.0", "name": "Qwen Image 2.0" },
+      { "id": "qwen-image-max", "name": "Qwen Image Max" },
+      { "id": "qwen-image-plus", "name": "Qwen Image Plus" },
+      { "id": "qwen-image", "name": "Qwen Image" }
+    ],
+    "sizeOptions": [
+      { "value": "2048x2048", "label": "Square 2048" },
+      { "value": "2688x1536", "label": "Landscape 16:9" },
+      { "value": "1536x2688", "label": "Portrait 9:16" },
+      { "value": "2368x1728", "label": "Wide 4:3" },
+      { "value": "1728x2368", "label": "Tall 3:4" }
+    ],
+    "qualityOptions": [],
+    "outputFormats": ["png"]
+  },
+  {
+    "id": "zhipu-cogview",
+    "name": "Zhipu CogView",
+    "provider": "zhipu",
+    "apiStyle": "openai_images",
+    "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+    "requiresApiKey": true,
+    "description": "CogView/GLM image models through an OpenAI-style images endpoint.",
+    "models": [
+      { "id": "glm-image", "name": "GLM Image", "recommended": true },
+      { "id": "cogview-4-250304", "name": "CogView 4" }
+    ],
+    "sizeOptions": [
+      { "value": "1280x1280", "label": "Square 1280" },
+      { "value": "1568x1056", "label": "Landscape 3:2" },
+      { "value": "1056x1568", "label": "Portrait 2:3" },
+      { "value": "1472x1088", "label": "Landscape 4:3" },
+      { "value": "1088x1472", "label": "Portrait 3:4" },
+      { "value": "1728x960", "label": "Landscape 16:9" },
+      { "value": "960x1728", "label": "Portrait 9:16" }
+    ],
+    "qualityOptions": ["standard", "hd"],
+    "outputFormats": ["png", "jpeg"]
+  },
+  {
+    "id": "custom-openai-images",
+    "name": "Custom OpenAI-compatible Images",
+    "provider": "custom",
+    "apiStyle": "openai_images",
+    "baseUrl": "https://example.com/v1",
+    "requiresApiKey": true,
+    "description": "Any provider that implements POST /images/generations with an OpenAI-style response.",
+    "models": [],
+    "sizeOptions": [
+      { "value": "1024x1024", "label": "Square 1024" },
+      { "value": "1024x1536", "label": "Portrait" },
+      { "value": "1536x1024", "label": "Landscape" }
+    ],
+    "qualityOptions": [],
+    "outputFormats": ["png", "jpeg", "webp"]
+  }
+]
