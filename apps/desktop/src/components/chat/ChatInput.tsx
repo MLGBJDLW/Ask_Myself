@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Square, Paperclip, X, FileText, Workflow, ChevronDown, Scissors } from "lucide-react";
+import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, Scissors } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "../../i18n";
 import type { Conversation, ImageAttachment } from "../../types/conversation";
@@ -611,10 +611,10 @@ export function ChatInput({
                 onClick={handleSend}
                 disabled={disabled || (!value.trim() && attachments.length === 0)}
                 data-testid="chat-send"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-white transition-colors duration-fast ease-out cursor-pointer hover:bg-accent-hover disabled:pointer-events-none disabled:opacity-40"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-text-primary/10 bg-text-primary text-surface-0 shadow-[0_8px_20px_rgba(0,0,0,0.22)] transition-[background-color,border-color,color,box-shadow,transform] duration-fast ease-out cursor-pointer hover:-translate-y-0.5 hover:bg-text-secondary hover:shadow-[0_10px_24px_rgba(0,0,0,0.28)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:pointer-events-none disabled:translate-y-0 disabled:border-border disabled:bg-surface-2 disabled:text-text-tertiary disabled:shadow-none"
                 aria-label={t("chat.send")}
               >
-                <Send className="h-3.5 w-3.5" />
+                <ArrowUp className="h-4 w-4" strokeWidth={2.4} />
               </button>
             )}
           </div>
