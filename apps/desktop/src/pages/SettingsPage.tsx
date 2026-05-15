@@ -441,14 +441,18 @@ export function SettingsPage() {
     void loadAppConfig();
   }, [loadAppConfig]);
 
-  const handleAppConfigSave = async () => {
-    if (!appConfig) return;
+  const handleAppConfigSave = async (configOverride?: AppConfig) => {
+    const configToSave = configOverride ?? appConfig;
+    if (!configToSave) return false;
     setAppConfigLoading(true);
     try {
-      await api.saveAppConfig(appConfig);
+      await api.saveAppConfig(configToSave);
+      if (configOverride) setAppConfig(configOverride);
       toast.success(t('common.success'));
+      return true;
     } catch {
       toast.error(t('common.error'));
+      return false;
     } finally {
       setAppConfigLoading(false);
     }
@@ -1534,7 +1538,9 @@ export function SettingsPage() {
           }}
           onAskAiPrepareOfficeRuntime={handleAskAiPrepareOfficeRuntime}
           onAppConfigChange={setAppConfig}
-          onAppConfigSave={() => { void handleAppConfigSave(); }}
+          onAppConfigSave={async () => {
+            if (await handleAppConfigSave()) markClean('models_embedding');
+          }}
           onMarkModelsDirty={() => markDirty('models_embedding')}
         />
 
@@ -1562,7 +1568,14 @@ export function SettingsPage() {
           editingConfig={editingConfig}
           selectedPreset={selectedPreset}
           agentSaveLoading={agentSaveLoading}
+          appConfig={appConfig}
+          appConfigLoading={appConfigLoading}
           onSaveAgent={handleSaveAgent}
+          onAppConfigChange={setAppConfig}
+          onAppConfigSave={async (configOverride) => {
+            if (await handleAppConfigSave(configOverride)) markClean('providers');
+          }}
+          onMarkAppConfigDirty={() => markDirty('providers')}
           onProviderViewChange={setProviderView}
           onProviderFormDirtyChange={setProviderFormDirty}
           onEditingConfigChange={setEditingConfig}

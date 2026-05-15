@@ -3,10 +3,11 @@ import { useTranslation } from '../../i18n';
 import { DEFAULT_SUBAGENT_TOOL_NAMES } from '../../lib/subagentTools';
 import { PROVIDER_PRESETS, type ProviderPreset } from '../../lib/providerPresets';
 import { ProviderIcon } from '../../lib/providerIcons';
-import type { AgentConfig, SaveAgentConfigInput } from '../../types/conversation';
+import type { AgentConfig, AppConfig, SaveAgentConfigInput } from '../../types/conversation';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { AgentConfigForm } from './AgentConfigForm';
+import { ImageGenerationSettingsPanel } from './ImageGenerationSettingsPanel';
 import { Section } from './SettingsSection';
 
 export type ProviderView = 'list' | 'selector' | 'form';
@@ -17,7 +18,12 @@ interface ProvidersSettingsTabProps {
   editingConfig: AgentConfig | undefined;
   selectedPreset: ProviderPreset | null;
   agentSaveLoading: boolean;
+  appConfig: AppConfig | null;
+  appConfigLoading: boolean;
   onSaveAgent: (input: SaveAgentConfigInput) => Promise<void>;
+  onAppConfigChange: (config: AppConfig) => void;
+  onAppConfigSave: (config?: AppConfig) => void | Promise<void>;
+  onMarkAppConfigDirty: () => void;
   onProviderViewChange: (view: ProviderView) => void;
   onProviderFormDirtyChange: (dirty: boolean) => void;
   onEditingConfigChange: (config: AgentConfig | undefined) => void;
@@ -32,7 +38,12 @@ export function ProvidersSettingsTab({
   editingConfig,
   selectedPreset,
   agentSaveLoading,
+  appConfig,
+  appConfigLoading,
   onSaveAgent,
+  onAppConfigChange,
+  onAppConfigSave,
+  onMarkAppConfigDirty,
   onProviderViewChange,
   onProviderFormDirtyChange,
   onEditingConfigChange,
@@ -139,7 +150,7 @@ export function ProvidersSettingsTab({
               <div className="space-y-2">
                 <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
                   <Bot size={14} />
-                  <span>Common LLM</span>
+                  <span>{t('settings.commonLlm')}</span>
                 </div>
                 <div className="space-y-3">
                   {agentConfigs.map((config) => (
@@ -159,7 +170,9 @@ export function ProvidersSettingsTab({
                               {providerLabels[config.provider] ?? config.provider}
                             </Badge>
                             <Badge variant="default" className="text-[10px] shrink-0 bg-accent/10 text-accent border-accent/20">
-                              {`subagents ${(config.subagentAllowedTools ?? DEFAULT_SUBAGENT_TOOL_NAMES).length}`}
+                              {t('settings.subagentsCount', {
+                                count: (config.subagentAllowedTools ?? DEFAULT_SUBAGENT_TOOL_NAMES).length,
+                              })}
                             </Badge>
                           </div>
                           <p className="mt-0.5 text-xs text-text-tertiary truncate">
@@ -202,6 +215,17 @@ export function ProvidersSettingsTab({
                 </div>
               </div>
             </div>
+          )}
+
+          {appConfig && (
+            <ImageGenerationSettingsPanel
+              appConfig={appConfig}
+              agentConfigs={agentConfigs}
+              loading={appConfigLoading}
+              onChange={onAppConfigChange}
+              onMarkDirty={onMarkAppConfigDirty}
+              onSave={onAppConfigSave}
+            />
           )}
         </div>
       )}

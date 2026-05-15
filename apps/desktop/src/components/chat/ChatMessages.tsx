@@ -46,7 +46,7 @@ import type {
 import { ToolCallCard } from "./ToolCallCard";
 import { isBoardOnlyToolRender } from "./toolRenderers";
 import {
-  FileDiffPreview,
+  FileDiffSummaryPanel,
   extractFileDiffArtifacts,
   mergeFileDiffArtifactsByPath,
   type FileDiffArtifact,
@@ -1544,15 +1544,13 @@ export function ChatMessages({
   }, [messageIndexById, messages, turns]);
 
   const renderFileDiffPreviews = useCallback(
-    (diffs: FileDiffArtifact[] | undefined, keyPrefix: string) => {
+    (diffs: FileDiffArtifact[] | undefined, _keyPrefix: string) => {
       if (!diffs || diffs.length === 0) return null;
       const mergedDiffs = mergeFileDiffArtifactsByPath(diffs);
       return (
         <div className="my-2 flex justify-start" data-testid="turn-file-diff-previews">
-          <div className="w-full max-w-[min(100%,72rem)] space-y-2">
-            {mergedDiffs.map((diff, diffIdx) => (
-              <FileDiffPreview key={`${keyPrefix}-${diff.path}-${diffIdx}`} diff={diff} />
-            ))}
+          <div className="w-full max-w-[min(100%,72rem)]">
+            <FileDiffSummaryPanel diffs={mergedDiffs} />
           </div>
         </div>
       );

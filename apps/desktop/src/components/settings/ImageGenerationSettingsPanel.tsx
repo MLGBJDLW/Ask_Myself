@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Eye, EyeOff, Image as ImageIcon, Save } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, Image as ImageIcon, Save } from "lucide-react";
+import { useTranslation } from "../../i18n";
 import type {
+  AgentConfig,
   AppConfig,
   ImageGenerationConfig,
   PluginManifest,
@@ -20,10 +22,11 @@ import { Input } from "../ui/Input";
 
 interface ImageGenerationSettingsPanelProps {
   appConfig: AppConfig;
+  agentConfigs: AgentConfig[];
   loading: boolean;
   onChange: (config: AppConfig) => void;
   onMarkDirty: () => void;
-  onSave: () => void | Promise<void>;
+  onSave: (config?: AppConfig) => void | Promise<void>;
 }
 
 const DEFAULT_IMAGE_CONFIG: ImageGenerationConfig = {
@@ -43,6 +46,36 @@ function firstOption(options: string[]): string | null {
 
 function firstSize(preset: ImageProviderPreset | null): string | null {
   return preset?.sizeOptions[0]?.value ?? null;
+}
+
+function normalizeUrl(value: string | null | undefined): string {
+  return (value ?? "").trim().replace(/\/+$/, "").toLowerCase();
+}
+
+function isDefaultImageConfig(config: ImageGenerationConfig): boolean {
+  return (
+    !config.apiKey.trim() &&
+    config.provider === DEFAULT_IMAGE_CONFIG.provider &&
+    config.apiStyle === DEFAULT_IMAGE_CONFIG.apiStyle &&
+    normalizeUrl(config.baseUrl) === normalizeUrl(DEFAULT_IMAGE_CONFIG.baseUrl) &&
+    config.model === DEFAULT_IMAGE_CONFIG.model
+  );
+}
+
+function configFromPreset(
+  current: ImageGenerationConfig,
+  preset: ImageProviderPreset,
+): ImageGenerationConfig {
+  return {
+    ...current,
+    provider: preset.provider,
+    apiStyle: preset.apiStyle,
+    baseUrl: preset.baseUrl,
+    model: getDefaultImageModel(preset),
+    size: firstSize(preset),
+    quality: firstOption(preset.qualityOptions),
+    outputFormat: firstOption(preset.outputFormats),
+  };
 }
 
 function isImageProviderPreset(value: unknown): value is ImageProviderPreset {
@@ -83,6 +116,36 @@ function fallbackPresetForConfig(
   );
 }
 
+function presetForAgentConfig(
+  config: AgentConfig,
+  providerPresets: ImageProviderPreset[],
+): ImageProviderPreset | null {
+  if (config.provider === "custom") return null;
+
+  const candidates = providerPresets.filter((preset) => preset.provider === config.provider);
+  if (candidates.length === 0) return null;
+
+  const baseUrl = normalizeUrl(config.baseUrl);
+  if (config.provider === "qwen") {
+    const regionPreset = baseUrl.includes("dashscope-intl")
+      ? candidates.find((preset) => preset.id.includes("intl"))
+      : candidates.find((preset) => preset.id.includes("cn"));
+    if (regionPreset) return regionPreset;
+  }
+
+  return candidates.find((preset) => preset.id !== "custom-openai-images") ?? candidates[0] ?? null;
+}
+
+function findSharedKeySource(
+  provider: string,
+  agentConfigs: AgentConfig[],
+): AgentConfig | null {
+  const candidates = agentConfigs.filter(
+    (config) => config.provider === provider && config.apiKey.trim(),
+  );
+  return candidates.find((config) => config.isDefault) ?? candidates[0] ?? null;
+}
+
 function runtimeCheckVariant(check: PluginRuntimeCheck) {
   if (check.status === "error" || check.severity === "error") return "danger" as const;
   if (check.status === "warning" || check.severity === "warning") return "warning" as const;
@@ -92,14 +155,18 @@ function runtimeCheckVariant(check: PluginRuntimeCheck) {
 
 export function ImageGenerationSettingsPanel({
   appConfig,
+  agentConfigs,
   loading,
   onChange,
   onMarkDirty,
   onSave,
 }: ImageGenerationSettingsPanelProps) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [preferAgentDefaults, setPreferAgentDefaults] = useState(true);
   const [plugin, setPlugin] = useState<PluginManifest | null>(null);
-  const imageConfig = appConfig.imageGeneration ?? DEFAULT_IMAGE_CONFIG;
+  const storedImageConfig = appConfig.imageGeneration ?? DEFAULT_IMAGE_CONFIG;
   const loadPlugin = useCallback(async () => {
     try {
       const plugins = await api.listBuiltinPlugins();
@@ -115,6 +182,19 @@ export function ImageGenerationSettingsPanel({
   }, [loadPlugin]);
 
   const providerPresets = useMemo(() => extractImageProviderPresets(plugin), [plugin]);
+  const preferredAgentPreset = useMemo(() => {
+    const imageCapableConfigs = agentConfigs.filter(
+      (config) => config.apiKey.trim() && presetForAgentConfig(config, providerPresets),
+    );
+    const preferredConfig =
+      imageCapableConfigs.find((config) => config.isDefault) ?? imageCapableConfigs[0] ?? null;
+
+    return preferredConfig ? presetForAgentConfig(preferredConfig, providerPresets) : null;
+  }, [agentConfigs, providerPresets]);
+  const imageConfig =
+    preferAgentDefaults && preferredAgentPreset && isDefaultImageConfig(storedImageConfig)
+      ? configFromPreset(storedImageConfig, preferredAgentPreset)
+      : storedImageConfig;
   const activePreset = useMemo(
     () =>
       findImageProviderPreset({
@@ -127,9 +207,30 @@ export function ImageGenerationSettingsPanel({
   const hasPresetModel =
     activePreset.models.length > 0 &&
     activePreset.models.some((model) => model.id === imageConfig.model);
-  const configured = Boolean(imageConfig.apiKey.trim() && imageConfig.model.trim());
+  const sharedKeySource = useMemo(
+    () => findSharedKeySource(activePreset.provider, agentConfigs),
+    [activePreset.provider, agentConfigs],
+  );
+  const resolvedApiKey = imageConfig.apiKey.trim() || sharedKeySource?.apiKey.trim() || "";
+  const usesSharedProviderKey = !imageConfig.apiKey.trim() && Boolean(sharedKeySource);
+  const configured = Boolean(resolvedApiKey && imageConfig.model.trim());
+  const materializedImageConfig = useMemo(
+    () => ({
+      ...imageConfig,
+      apiKey: resolvedApiKey,
+    }),
+    [imageConfig, resolvedApiKey],
+  );
+  const materializedAppConfig = useMemo(
+    () => ({
+      ...appConfig,
+      imageGeneration: materializedImageConfig,
+    }),
+    [appConfig, materializedImageConfig],
+  );
 
   const updateImageConfig = (next: ImageGenerationConfig) => {
+    setPreferAgentDefaults(false);
     onChange({ ...appConfig, imageGeneration: next });
     onMarkDirty();
   };
@@ -153,21 +254,36 @@ export function ImageGenerationSettingsPanel({
 
   const currentPresetId = activePreset.id;
   const runtimeChecks = (plugin?.runtimeChecks ?? []).filter((check) => check.status !== "unknown");
+  const runtimeCheckLabels: Record<string, string> = {
+    "provider-preset": t('settings.provider'),
+    "api-key": t('settings.apiKey'),
+    "base-url": t('settings.baseUrl'),
+    model: t('settings.model'),
+  };
 
   const handleSave = async () => {
-    await onSave();
+    await onSave(materializedAppConfig);
     void loadPlugin();
   };
 
   return (
-    <div className="rounded-xl border border-border bg-surface-2">
-      <div className="flex items-start gap-3 p-4">
+    <div
+      className="rounded-lg border border-border bg-surface-2"
+      data-testid="image-generation-settings-panel"
+    >
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-label={expanded ? t('settings.collapseImageGeneration') : t('settings.expandImageGeneration')}
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center gap-3 p-3 text-left transition-colors hover:bg-surface-3/40"
+      >
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
           <ImageIcon size={18} />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-semibold text-text-primary">Image generation</h3>
+            <h3 className="text-sm font-semibold text-text-primary">{t('settings.imageGeneration')}</h3>
             <Badge
               variant="default"
               className={
@@ -176,11 +292,18 @@ export function ImageGenerationSettingsPanel({
                   : "border-warning/25 bg-warning/10 text-warning"
               }
             >
-              {configured ? "Configured" : "Needs API key"}
+              {configured ? t('settings.configured') : t('settings.needsApiKey')}
+            </Badge>
+            <Badge variant="default" className="border-border bg-surface-1 text-text-secondary">
+              {usesSharedProviderKey && sharedKeySource
+                ? t('settings.providerApiKeySource', { provider: sharedKeySource.name })
+                : imageConfig.apiKey.trim()
+                  ? t('settings.dedicatedApiKeySource')
+                  : t('settings.noApiKeySource')}
             </Badge>
           </div>
-          <p className="mt-0.5 text-xs text-text-tertiary">
-            {plugin?.description ?? "Dedicated provider for generate_image. This is separate from chat LLM providers."}
+          <p className="mt-0.5 truncate text-xs text-text-tertiary">
+            {activePreset.name} · {imageConfig.model || t('settings.model')}
           </p>
           {runtimeChecks.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -188,32 +311,28 @@ export function ImageGenerationSettingsPanel({
                 <Badge
                   key={check.id}
                   variant={runtimeCheckVariant(check)}
-                  title={check.message}
                   className="text-[10px]"
                 >
-                  {check.label}
+                  {runtimeCheckLabels[check.id] ?? check.label}
                 </Badge>
               ))}
             </div>
           )}
         </div>
-        <Button
-          type="button"
-          variant="primary"
-          size="sm"
-          icon={<Save size={14} />}
-          loading={loading}
-          onClick={() => void handleSave()}
-          disabled={!imageConfig.model.trim() || !imageConfig.apiKey.trim()}
-        >
-          Save
-        </Button>
-      </div>
+        <ChevronDown
+          size={16}
+          className={`shrink-0 text-text-tertiary transition-transform ${expanded ? "rotate-180" : ""}`}
+        />
+      </button>
 
-      <div className="border-t border-border px-4 py-4">
-        <div className="grid gap-4 md:grid-cols-2">
+      {expanded && (
+        <div className="border-t border-border px-4 py-4">
+          <p className="mb-4 text-xs text-text-tertiary">
+            {t('settings.imageGenerationDesc')}
+          </p>
+          <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
-            <label className="text-sm font-medium text-text-primary">Provider</label>
+            <label className="text-sm font-medium text-text-primary">{t('settings.provider')}</label>
             <select
               value={currentPresetId}
               onChange={(event) => applyPreset(event.target.value)}
@@ -227,12 +346,12 @@ export function ImageGenerationSettingsPanel({
             </select>
             <div className="flex items-center gap-2 text-xs text-text-tertiary">
               <ProviderIcon provider={activePreset.provider} size="sm" />
-              <span className="truncate">{activePreset.description}</span>
+              <span className="truncate">{activePreset.name}</span>
             </div>
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-text-primary">API key</label>
+            <label className="text-sm font-medium text-text-primary">{t('settings.apiKey')}</label>
             <div className="relative">
               <Input
                 type={showKey ? "text" : "password"}
@@ -247,15 +366,22 @@ export function ImageGenerationSettingsPanel({
                 type="button"
                 onClick={() => setShowKey((value) => !value)}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary transition-colors hover:text-text-secondary"
-                aria-label={showKey ? "Hide key" : "Show key"}
+                aria-label={showKey ? t('settings.hideKey') : t('settings.showKey')}
               >
                 {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
               </button>
             </div>
+            <p className="text-xs text-text-tertiary">
+              {usesSharedProviderKey && sharedKeySource
+                ? t('settings.providerApiKeySource', { provider: sharedKeySource.name })
+                : imageConfig.apiKey.trim()
+                  ? t('settings.dedicatedApiKeySource')
+                  : t('settings.noApiKeySource')}
+            </p>
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-text-primary">Base URL</label>
+            <label className="text-sm font-medium text-text-primary">{t('settings.baseUrl')}</label>
             <Input
               value={imageConfig.baseUrl ?? ""}
               onChange={(event) =>
@@ -266,7 +392,7 @@ export function ImageGenerationSettingsPanel({
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-text-primary">Model</label>
+            <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
             {activePreset.models.length > 0 && hasPresetModel ? (
               <select
                 value={imageConfig.model}
@@ -294,7 +420,7 @@ export function ImageGenerationSettingsPanel({
 
           {activePreset.sizeOptions.length > 0 && (
             <div className="space-y-2">
-              <label className="text-sm font-medium text-text-primary">Default size</label>
+              <label className="text-sm font-medium text-text-primary">{t('settings.defaultSize')}</label>
               <select
                 value={imageConfig.size ?? ""}
                 onChange={(event) =>
@@ -313,7 +439,7 @@ export function ImageGenerationSettingsPanel({
 
           {activePreset.qualityOptions.length > 0 && (
             <div className="space-y-2">
-              <label className="text-sm font-medium text-text-primary">Quality</label>
+              <label className="text-sm font-medium text-text-primary">{t('settings.quality')}</label>
               <select
                 value={imageConfig.quality ?? ""}
                 onChange={(event) =>
@@ -332,7 +458,7 @@ export function ImageGenerationSettingsPanel({
 
           {activePreset.outputFormats.length > 1 && (
             <div className="space-y-2">
-              <label className="text-sm font-medium text-text-primary">Output format</label>
+              <label className="text-sm font-medium text-text-primary">{t('settings.outputFormat')}</label>
               <select
                 value={imageConfig.outputFormat ?? ""}
                 onChange={(event) =>
@@ -348,8 +474,22 @@ export function ImageGenerationSettingsPanel({
               </select>
             </div>
           )}
+          </div>
+          <div className="mt-4 flex justify-end border-t border-border pt-3">
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              icon={<Save size={14} />}
+              loading={loading}
+              onClick={() => void handleSave()}
+              disabled={!imageConfig.model.trim() || !resolvedApiKey}
+            >
+              {t('common.save')}
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

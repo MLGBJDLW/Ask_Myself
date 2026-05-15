@@ -682,6 +682,7 @@ fn check(
 mod tests {
     use super::*;
     use crate::app_settings::AppConfig;
+    use crate::conversation::SaveAgentConfigInput;
     use crate::db::Database;
 
     #[test]
@@ -750,6 +751,58 @@ mod tests {
         assert_eq!(runtime.model, "gemini-3.1-flash-image-preview");
         assert_eq!(runtime.output_format, "jpeg");
         assert_eq!(runtime.config.api_key, "image-key");
+    }
+
+    #[test]
+    fn resolve_runtime_reuses_same_provider_agent_key_when_image_config_is_unset() {
+        let db = Database::open_memory().expect("open in-memory db");
+        db.save_agent_config(&SaveAgentConfigInput {
+            id: None,
+            name: "Qwen CN".to_string(),
+            provider: "qwen".to_string(),
+            api_key: "qwen-key".to_string(),
+            base_url: Some("https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
+            model: "qwen3.6-plus".to_string(),
+            temperature: None,
+            max_tokens: None,
+            context_window: None,
+            is_default: true,
+            reasoning_enabled: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            max_iterations: None,
+            summarization_model: None,
+            summarization_provider: None,
+            image_generation_model: None,
+            subagent_allowed_tools: None,
+            subagent_allowed_skill_ids: None,
+            subagent_max_parallel: None,
+            subagent_max_calls_per_turn: None,
+            subagent_token_budget: None,
+            tool_timeout_secs: None,
+            agent_timeout_secs: None,
+        })
+        .expect("save qwen config");
+
+        let runtime = resolve_runtime(
+            &db,
+            &ImageGenerationRequest {
+                provider_config_id: None,
+                provider: Some("qwen"),
+                api_style: Some("dashscope_multimodal"),
+                model: None,
+                output_format: None,
+            },
+        )
+        .expect("resolve runtime");
+
+        assert_eq!(runtime.provider, ImageProvider::Qwen);
+        assert_eq!(runtime.config.api_key, "qwen-key");
+        assert_eq!(runtime.model, "qwen-image-2.0-pro");
+        assert_eq!(
+            runtime.config.qwen_endpoint(),
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        );
     }
 
     #[test]
