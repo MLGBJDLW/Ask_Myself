@@ -47,6 +47,10 @@ function diffPathKey(path: string): string {
   return path.replace(/\\/g, '/');
 }
 
+function diffIdentityKey(diff: FileDiffArtifact): string {
+  return diffPathKey(diff.absolutePath || diff.path);
+}
+
 function mergeOperation(current: string, next: string): string {
   if (current === 'create') return 'create';
   if (current === next) return current;
@@ -58,7 +62,7 @@ export function mergeFileDiffArtifactsByPath(diffs: FileDiffArtifact[]): FileDif
   const byPath = new Map<string, FileDiffArtifact>();
 
   for (const diff of diffs) {
-    const key = diffPathKey(diff.path);
+    const key = diffIdentityKey(diff);
     const existing = byPath.get(key);
     if (!existing) {
       const copy = {
@@ -158,6 +162,13 @@ export function extractFileDiffArtifacts(artifacts: ArtifactPayload | undefined)
       if (path && absolutePath) {
         absolutePathsByPath.set(diffPathKey(path), absolutePath);
       }
+    }
+  }
+  if (isRecord(artifacts.checkpoint)) {
+    const path = stringOrNull(artifacts.checkpoint.path);
+    const absolutePath = stringOrNull(artifacts.checkpoint.absolutePath);
+    if (path && absolutePath) {
+      absolutePathsByPath.set(diffPathKey(path), absolutePath);
     }
   }
 
