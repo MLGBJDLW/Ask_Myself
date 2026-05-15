@@ -5,6 +5,7 @@
 //! modules.
 
 pub(crate) mod image_generation;
+pub(crate) mod office_documents;
 
 use crate::app_settings::AppConfig;
 use serde::{Deserialize, Serialize};
@@ -96,6 +97,21 @@ pub struct PluginManifest {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct PluginManifestContext<'a> {
+    pub app_config: Option<&'a AppConfig>,
+    pub office_runtime: Option<&'a crate::office_runtime::OfficeRuntimeReadiness>,
+}
+
+impl<'a> Default for PluginManifestContext<'a> {
+    fn default() -> Self {
+        Self {
+            app_config: None,
+            office_runtime: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct BuiltinPlugin {
     id: &'static str,
     name: &'static str,
@@ -140,13 +156,15 @@ impl BuiltinPlugin {
         }
     }
 
-    fn manifest(self, app_config: Option<&AppConfig>) -> PluginManifest {
+    fn manifest(self, context: PluginManifestContext<'_>) -> PluginManifest {
         let manifest = self.base_manifest();
         if self.id == IMAGE_PLUGIN.id {
             image_generation::enrich_manifest(
                 manifest,
-                app_config.map(|config| &config.image_generation),
+                context.app_config.map(|config| &config.image_generation),
             )
+        } else if self.id == OFFICE_PLUGIN.id {
+            office_documents::enrich_manifest(manifest, context.office_runtime)
         } else {
             manifest
         }
@@ -343,9 +361,18 @@ pub fn builtin_plugin_manifests() -> Vec<PluginManifest> {
 }
 
 pub fn builtin_plugin_manifests_for_config(app_config: Option<&AppConfig>) -> Vec<PluginManifest> {
+    builtin_plugin_manifests_with_context(PluginManifestContext {
+        app_config,
+        office_runtime: None,
+    })
+}
+
+pub fn builtin_plugin_manifests_with_context(
+    context: PluginManifestContext<'_>,
+) -> Vec<PluginManifest> {
     BUILTIN_PLUGINS
         .iter()
-        .map(|plugin| plugin.manifest(app_config))
+        .map(|plugin| plugin.manifest(context))
         .collect()
 }
 
