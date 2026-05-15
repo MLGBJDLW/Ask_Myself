@@ -4,7 +4,7 @@
 //! packages before their implementations are moved behind package-specific
 //! modules.
 
-mod image_generation;
+pub(crate) mod image_generation;
 
 use crate::app_settings::AppConfig;
 use serde::{Deserialize, Serialize};

@@ -11,12 +11,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::app_settings::ImageGenerationConfig;
-use crate::conversation::AgentConfig;
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::image_provider_catalog::{
-    default_image_base_url, default_image_model as catalog_default_image_model,
+use crate::plugins::image_generation::{
+    ImageGenerationRequest, ImageProvider, ResolvedImageConfig,
 };
 
 use super::{Tool, ToolDef, ToolResult};
@@ -59,31 +57,24 @@ struct GenerateImageArgs {
     filename: Option<String>,
 }
 
+impl GenerateImageArgs {
+    fn runtime_request(&self) -> ImageGenerationRequest<'_> {
+        ImageGenerationRequest {
+            provider_config_id: self.provider_config_id.as_deref(),
+            provider: self.provider.as_deref(),
+            api_style: self.api_style.as_deref(),
+            model: self.model.as_deref(),
+            output_format: self.output_format.as_deref(),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct GeneratedImage {
     bytes: Vec<u8>,
     media_type: String,
     provider_image_url: Option<String>,
     usage: Option<Value>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ImageProvider {
-    OpenAi,
-    Google,
-    Qwen,
-}
-
-#[derive(Debug, Clone)]
-struct ResolvedImageConfig {
-    provider: String,
-    api_style: Option<String>,
-    api_key: String,
-    base_url: Option<String>,
-    model: Option<String>,
-    size: Option<String>,
-    quality: Option<String>,
-    output_format: Option<String>,
 }
 
 #[async_trait]
@@ -122,38 +113,14 @@ impl Tool for GenerateImageTool {
             ));
         }
 
-        let config = resolve_config(db, &args)?;
-        if config.api_key.trim().is_empty() {
+        let runtime =
+            crate::plugins::image_generation::resolve_runtime(db, &args.runtime_request())?;
+        if runtime.config.api_key.trim().is_empty() {
             return Ok(error_result(
                 call_id,
                 "The image generation provider has no API key.",
             ));
         }
-
-        let provider = infer_provider(&args, &config);
-        let model = args
-            .model
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                config
-                    .model
-                    .clone()
-                    .filter(|value| !value.trim().is_empty())
-            })
-            .or_else(|| {
-                catalog_default_image_model(
-                    &config.provider,
-                    config.api_style.as_deref(),
-                    config.base_url.as_deref(),
-                )
-            })
-            .unwrap_or_else(|| default_model(provider).to_string());
-        let output_format = normalize_output_format(
-            args.output_format
-                .as_deref()
-                .or(config.output_format.as_deref()),
-        );
 
         let client = reqwest::Client::builder()
             .user_agent(crate::USER_AGENT)
@@ -161,19 +128,32 @@ impl Tool for GenerateImageTool {
             .build()
             .map_err(|e| CoreError::InvalidInput(format!("Failed to build HTTP client: {e}")))?;
 
-        let generated = match provider {
-            ImageProvider::OpenAi => generate_openai_image(&client, &config, &args, &model).await?,
-            ImageProvider::Google => generate_google_image(&client, &config, &args, &model).await?,
-            ImageProvider::Qwen => generate_qwen_image(&client, &config, &args, &model).await?,
+        let generated = match runtime.provider {
+            ImageProvider::OpenAi => {
+                generate_openai_image(
+                    &client,
+                    &runtime.config,
+                    &args,
+                    &runtime.model,
+                    runtime.output_format,
+                )
+                .await?
+            }
+            ImageProvider::Google => {
+                generate_google_image(&client, &runtime.config, &args, &runtime.model).await?
+            }
+            ImageProvider::Qwen => {
+                generate_qwen_image(&client, &runtime.config, &args, &runtime.model).await?
+            }
         };
 
         let media_type = if generated.media_type.trim().is_empty() {
-            media_type_for_format(output_format).to_string()
+            media_type_for_format(runtime.output_format).to_string()
         } else {
             generated.media_type.clone()
         };
         let extension = extension_for_media_type(&media_type)
-            .unwrap_or_else(|| extension_for_format(output_format).to_string());
+            .unwrap_or_else(|| extension_for_format(runtime.output_format).to_string());
         let output_path = resolve_output_path(db, &args, extension)?;
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -181,20 +161,20 @@ impl Tool for GenerateImageTool {
         std::fs::write(&output_path, &generated.bytes)?;
 
         let size_bytes = generated.bytes.len();
-        let provider_name = provider_artifact_name(provider, &config);
-
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: format!(
-                "Generated image saved.\nProvider: {provider_name}\nModel: {model}\nPath: {}\nSize: {} bytes",
+                "Generated image saved.\nProvider: {}\nModel: {}\nPath: {}\nSize: {} bytes",
+                runtime.provider_name,
+                runtime.model,
                 output_path.display(),
                 size_bytes
             ),
             is_error: false,
             artifacts: Some(json!({
                 "kind": "generatedImage",
-                "provider": provider_name,
-                "model": model,
+                "provider": runtime.provider_name,
+                "model": runtime.model,
                 "path": output_path.to_string_lossy(),
                 "mediaType": media_type,
                 "bytes": size_bytes,
@@ -212,259 +192,6 @@ fn error_result(call_id: &str, message: impl Into<String>) -> ToolResult {
         content: message.into(),
         is_error: true,
         artifacts: None,
-    }
-}
-
-fn resolve_config(
-    db: &Database,
-    args: &GenerateImageArgs,
-) -> Result<ResolvedImageConfig, CoreError> {
-    if let Some(id) = args
-        .provider_config_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    {
-        return db.get_agent_config(id).map(agent_config_to_resolved);
-    }
-
-    let app_config = db.load_app_config()?;
-    let image_config = app_config.image_generation;
-    if image_config.is_configured() {
-        if let Some(provider) = requested_provider_hint(args) {
-            if image_config_matches_provider(&image_config, provider) {
-                return Ok(image_config_to_resolved(image_config));
-            }
-        } else {
-            return Ok(image_config_to_resolved(image_config));
-        }
-    }
-
-    if let Some(provider) = requested_provider_hint(args) {
-        let configs = db.list_agent_configs()?;
-        if let Some(config) = configs
-            .into_iter()
-            .find(|config| config_matches_provider(config, provider))
-        {
-            return Ok(agent_config_to_resolved(config));
-        }
-    }
-
-    db.get_default_agent_config()?
-        .map(agent_config_to_resolved)
-        .ok_or_else(|| CoreError::InvalidInput("No default provider config is available.".into()))
-}
-
-fn image_config_to_resolved(config: ImageGenerationConfig) -> ResolvedImageConfig {
-    ResolvedImageConfig {
-        provider: config.provider,
-        api_style: Some(config.api_style).filter(|value| !value.trim().is_empty()),
-        api_key: config.api_key,
-        base_url: config.base_url.filter(|value| !value.trim().is_empty()),
-        model: Some(config.model).filter(|value| !value.trim().is_empty()),
-        size: config.size.filter(|value| !value.trim().is_empty()),
-        quality: config.quality.filter(|value| !value.trim().is_empty()),
-        output_format: config
-            .output_format
-            .filter(|value| !value.trim().is_empty()),
-    }
-}
-
-fn agent_config_to_resolved(config: AgentConfig) -> ResolvedImageConfig {
-    let image_model = config
-        .image_generation_model
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| is_image_generation_model(&config.model).then(|| config.model.clone()));
-
-    ResolvedImageConfig {
-        provider: config.provider,
-        api_style: None,
-        api_key: config.api_key,
-        base_url: config.base_url.filter(|value| !value.trim().is_empty()),
-        model: image_model,
-        size: None,
-        quality: None,
-        output_format: None,
-    }
-}
-
-fn requested_provider_hint(args: &GenerateImageArgs) -> Option<ImageProvider> {
-    let haystack = format!(
-        "{} {}",
-        args.api_style.as_deref().unwrap_or(""),
-        args.provider.as_deref().unwrap_or("")
-    )
-    .to_lowercase();
-    provider_hint_from_text(&haystack)
-}
-
-fn provider_hint_from_text(haystack: &str) -> Option<ImageProvider> {
-    if haystack.contains("qwen")
-        || haystack.contains("dashscope")
-        || haystack.contains("aliyun")
-        || haystack.contains("alibaba")
-    {
-        Some(ImageProvider::Qwen)
-    } else if haystack.contains("google")
-        || haystack.contains("gemini")
-        || haystack.contains("nano_banana")
-        || haystack.contains("banana")
-    {
-        Some(ImageProvider::Google)
-    } else if haystack.contains("openai")
-        || haystack.contains("openai_images")
-        || haystack.contains("images_generation")
-        || haystack.contains("gpt-image")
-        || haystack.contains("zhipu")
-        || haystack.contains("bigmodel")
-        || haystack.contains("cogview")
-        || haystack.contains("glm-image")
-    {
-        Some(ImageProvider::OpenAi)
-    } else {
-        None
-    }
-}
-
-fn image_config_matches_provider(config: &ImageGenerationConfig, provider: ImageProvider) -> bool {
-    let haystack = format!(
-        "{} {} {} {}",
-        config.provider,
-        config.api_style,
-        config.base_url.as_deref().unwrap_or(""),
-        config.model
-    )
-    .to_lowercase();
-    match provider {
-        ImageProvider::OpenAi => {
-            haystack.contains("openai")
-                || haystack.contains("openai_images")
-                || haystack.contains("compatible")
-                || haystack.contains("gpt-image")
-                || haystack.contains("zhipu")
-                || haystack.contains("bigmodel")
-                || haystack.contains("cogview")
-                || haystack.contains("glm-image")
-                || is_image_generation_model(&haystack)
-        }
-        ImageProvider::Google => {
-            haystack.contains("google")
-                || haystack.contains("gemini")
-                || haystack.contains("generativelanguage.googleapis")
-                || haystack.contains("gemini_generate_content")
-        }
-        ImageProvider::Qwen => {
-            haystack.contains("qwen")
-                || haystack.contains("dashscope")
-                || haystack.contains("aliyun")
-                || haystack.contains("alibaba")
-                || haystack.contains("dashscope_multimodal")
-        }
-    }
-}
-
-fn config_matches_provider(config: &AgentConfig, provider: ImageProvider) -> bool {
-    let haystack = format!(
-        "{} {} {}",
-        config.provider,
-        config.base_url.as_deref().unwrap_or(""),
-        config.model
-    )
-    .to_lowercase();
-    match provider {
-        ImageProvider::OpenAi => {
-            haystack.contains("openai")
-                || haystack.contains("compatible")
-                || haystack.contains("gpt-image")
-                || haystack.contains("api.openai.com")
-                || haystack.contains("zhipu")
-                || haystack.contains("bigmodel")
-                || haystack.contains("cogview")
-                || haystack.contains("glm-image")
-                || is_image_generation_model(&haystack)
-        }
-        ImageProvider::Google => {
-            haystack.contains("google")
-                || haystack.contains("gemini")
-                || haystack.contains("generativelanguage.googleapis")
-        }
-        ImageProvider::Qwen => {
-            haystack.contains("qwen")
-                || haystack.contains("dashscope")
-                || haystack.contains("aliyun")
-                || haystack.contains("alibaba")
-        }
-    }
-}
-
-fn infer_provider(args: &GenerateImageArgs, config: &ResolvedImageConfig) -> ImageProvider {
-    if let Some(provider) = requested_provider_hint(args) {
-        return provider;
-    }
-
-    let configured = format!(
-        "{} {} {}",
-        config.api_style.as_deref().unwrap_or(""),
-        config.provider,
-        config.base_url.as_deref().unwrap_or("")
-    )
-    .to_lowercase();
-    if let Some(provider) = provider_hint_from_text(&configured) {
-        return provider;
-    }
-
-    let model = args
-        .model
-        .as_deref()
-        .or(config.model.as_deref())
-        .unwrap_or("")
-        .to_lowercase();
-    provider_hint_from_text(&model).unwrap_or(ImageProvider::OpenAi)
-}
-
-fn is_image_generation_model(model: &str) -> bool {
-    let model = model.to_lowercase();
-    [
-        "gpt-image",
-        "chatgpt-image",
-        "dall-e",
-        "gemini-2.5-flash-image",
-        "gemini-3.1-flash-image",
-        "gemini-3-pro-image",
-        "nano-banana",
-        "nano_banana",
-        "qwen-image",
-        "glm-image",
-        "cogview",
-        "imagen",
-        "flux",
-        "seedream",
-        "ideogram",
-        "stable-image",
-        "sdxl",
-    ]
-    .iter()
-    .any(|needle| model.contains(needle))
-}
-
-fn default_model(provider: ImageProvider) -> &'static str {
-    match provider {
-        ImageProvider::OpenAi => "gpt-image-2",
-        ImageProvider::Google => "gemini-3.1-flash-image-preview",
-        ImageProvider::Qwen => "qwen-image-2.0-pro",
-    }
-}
-
-fn provider_artifact_name(provider: ImageProvider, config: &ResolvedImageConfig) -> String {
-    if !config.provider.trim().is_empty() {
-        return config.provider.trim().to_string();
-    }
-
-    match provider {
-        ImageProvider::OpenAi => "openai".to_string(),
-        ImageProvider::Google => "google".to_string(),
-        ImageProvider::Qwen => "qwen".to_string(),
     }
 }
 
@@ -510,20 +237,11 @@ async fn generate_openai_image(
     config: &ResolvedImageConfig,
     args: &GenerateImageArgs,
     model: &str,
+    output_format: &str,
 ) -> Result<GeneratedImage, CoreError> {
-    let base_url = config
-        .base_url
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| default_image_base_url(&config.provider, config.api_style.as_deref()))
-        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+    let base_url = config.endpoint_base_url("https://api.openai.com/v1");
     let base = base_url.trim_end_matches('/');
     let url = format!("{base}/images/generations");
-    let output_format = normalize_output_format(
-        args.output_format
-            .as_deref()
-            .or(config.output_format.as_deref()),
-    );
     let mut body = json!({
         "model": model,
         "prompt": args.prompt.as_str(),
@@ -604,12 +322,7 @@ async fn generate_google_image(
     args: &GenerateImageArgs,
     model: &str,
 ) -> Result<GeneratedImage, CoreError> {
-    let base_url = config
-        .base_url
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| default_image_base_url(&config.provider, config.api_style.as_deref()))
-        .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string());
+    let base_url = config.endpoint_base_url("https://generativelanguage.googleapis.com/v1beta");
     let base = base_url.trim_end_matches('/');
     let url = format!("{base}/models/{model}:generateContent");
     let mut generation_config = json!({
@@ -691,7 +404,7 @@ async fn generate_qwen_image(
     args: &GenerateImageArgs,
     model: &str,
 ) -> Result<GeneratedImage, CoreError> {
-    let url = qwen_endpoint(config.base_url.as_deref());
+    let url = config.qwen_endpoint();
     let mut parameters = json!({
         "prompt_extend": args.prompt_extend.unwrap_or(true),
         "watermark": args.watermark.unwrap_or(false),
@@ -764,30 +477,6 @@ async fn generate_qwen_image(
     })
 }
 
-fn qwen_endpoint(base_url: Option<&str>) -> String {
-    let default =
-        "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
-    let Some(base_url) = base_url.map(str::trim).filter(|value| !value.is_empty()) else {
-        return default.to_string();
-    };
-    if base_url.ends_with("/generation") {
-        return base_url.to_string();
-    }
-    if base_url.contains("dashscope.aliyuncs.com/compatible-mode")
-        || base_url.contains("dashscope-intl.aliyuncs.com/compatible-mode")
-    {
-        let host = base_url
-            .split("/compatible-mode")
-            .next()
-            .unwrap_or("https://dashscope.aliyuncs.com");
-        return format!("{host}/api/v1/services/aigc/multimodal-generation/generation");
-    }
-    format!(
-        "{}/services/aigc/multimodal-generation/generation",
-        base_url.trim_end_matches('/')
-    )
-}
-
 async fn download_image(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, CoreError> {
     let parsed = Url::parse(url)
         .map_err(|e| CoreError::Llm(format!("Provider returned an invalid image URL: {e}")))?;
@@ -832,14 +521,6 @@ fn provider_error(name: &str, status: reqwest::StatusCode, value: &Value) -> Str
         .and_then(Value::as_str)
         .unwrap_or("no error message returned");
     format!("{name} returned HTTP {status}: {message}")
-}
-
-fn normalize_output_format(value: Option<&str>) -> &'static str {
-    match value.unwrap_or("png").trim().to_lowercase().as_str() {
-        "jpg" | "jpeg" => "jpeg",
-        "webp" => "webp",
-        _ => "png",
-    }
 }
 
 fn media_type_for_format(format: &str) -> &'static str {
