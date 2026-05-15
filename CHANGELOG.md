@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.2...nexa-monorepo-v0.6.3) (2026-05-15)
+
+
+### Features
+
+* **core:** deepen image generation plugin ([7e4da61](https://github.com/MLGBJDLW/Nexa/commit/7e4da61afdb78290c9af422729eeda13da3f969d))
+* **core:** deepen office documents plugin ([c73bdbb](https://github.com/MLGBJDLW/Nexa/commit/c73bdbbf3b099c3d1fb2105aad999d70bc19a53f))
+* **core:** introduce plugin capability metadata ([7e215b7](https://github.com/MLGBJDLW/Nexa/commit/7e215b714e427942e949c0468ae1b853828ef390))
+* **desktop:** compact image and diff panels ([e8a33fe](https://github.com/MLGBJDLW/Nexa/commit/e8a33fed1e88d66d9e907eff9354c44709e42267))
+* **desktop:** redesign app logo ([ac8e8e3](https://github.com/MLGBJDLW/Nexa/commit/ac8e8e3ef13abf7fb6de59a578536d97db88c2f6))
+* **desktop:** refine chat composer layout ([d17755d](https://github.com/MLGBJDLW/Nexa/commit/d17755d7932c024b2713d2188db5e2c830870f06))
+* **desktop:** refine image settings and agent UI ([dee849a](https://github.com/MLGBJDLW/Nexa/commit/dee849a3f31f8fb3483fdf9774dffde0d58dc705))
+
+
+### Bug Fixes
+
+* **core:** route html ppt specs through stdin ([ae32bf1](https://github.com/MLGBJDLW/Nexa/commit/ae32bf135f604e35e30ff4e782df010b9ba77eaa))
+* **desktop:** merge duplicate file diff cards ([e0b1990](https://github.com/MLGBJDLW/Nexa/commit/e0b1990cab73e2f458b8df72803d63129c7fbce6))
+
 ## [0.6.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.1...nexa-monorepo-v0.6.2) (2026-05-13)
 
 
