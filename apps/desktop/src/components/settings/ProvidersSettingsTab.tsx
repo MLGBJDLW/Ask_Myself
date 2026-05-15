@@ -1,4 +1,4 @@
-import { Bot, Image as ImageIcon, Pencil, Plus, Settings2, Star, Trash2, X } from 'lucide-react';
+import { Bot, Pencil, Plus, Settings2, Star, Trash2, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { DEFAULT_SUBAGENT_TOOL_NAMES } from '../../lib/subagentTools';
 import { PROVIDER_PRESETS, type ProviderPreset } from '../../lib/providerPresets';
@@ -57,8 +57,6 @@ export function ProvidersSettingsTab({
     baichuan: t('settings.providerBaichuan'),
     custom: t('settings.providerCustom'),
   };
-  const imageConfigs = agentConfigs.filter((config) => Boolean(config.imageGenerationModel?.trim()));
-
   const showProviderList = () => {
     onProviderFormDirtyChange(false);
     onProviderViewChange('list');
@@ -163,11 +161,6 @@ export function ProvidersSettingsTab({
                             <Badge variant="default" className="text-[10px] shrink-0 bg-accent/10 text-accent border-accent/20">
                               {`subagents ${(config.subagentAllowedTools ?? DEFAULT_SUBAGENT_TOOL_NAMES).length}`}
                             </Badge>
-                            {config.imageGenerationModel && (
-                              <Badge variant="default" className="text-[10px] shrink-0 border-success/20 bg-success/10 text-success">
-                                image
-                              </Badge>
-                            )}
                           </div>
                           <p className="mt-0.5 text-xs text-text-tertiary truncate">
                             {config.model}
@@ -207,37 +200,6 @@ export function ProvidersSettingsTab({
                     </div>
                   ))}
                 </div>
-              </div>
-
-              <div className="rounded-lg border border-border bg-surface-2/70 p-4">
-                <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
-                  <ImageIcon size={14} />
-                  <span>Image generation</span>
-                </div>
-                {imageConfigs.length > 0 ? (
-                  <div className="space-y-2">
-                    {imageConfigs.map((config) => (
-                      <button
-                        key={`${config.id}-image`}
-                        type="button"
-                        onClick={() => { onEditingConfigChange(config); onProviderViewChange('form'); }}
-                        className="flex w-full items-center justify-between gap-3 rounded-md border border-border/70 bg-surface-1 px-3 py-2 text-left transition-colors hover:border-accent/50 hover:bg-surface-3/50"
-                      >
-                        <span className="flex min-w-0 items-center gap-2">
-                          <ProviderIcon provider={config.provider} size="sm" />
-                          <span className="truncate text-sm font-medium text-text-primary">{config.name}</span>
-                        </span>
-                        <span className="min-w-0 truncate font-mono text-xs text-text-tertiary">
-                          {config.imageGenerationModel}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-text-tertiary">
-                    No dedicated image model configured. Edit a provider to set one.
-                  </p>
-                )}
               </div>
             </div>
           )}

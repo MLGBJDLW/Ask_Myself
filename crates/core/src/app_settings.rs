@@ -6,6 +6,48 @@ use serde::{Deserialize, Serialize};
 const APP_CONFIG_KEY: &str = "app_config";
 const WIZARD_STATE_KEY: &str = "wizard_state";
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageGenerationConfig {
+    #[serde(default = "default_image_provider")]
+    pub provider: String,
+    #[serde(default = "default_image_api_style")]
+    pub api_style: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_image_base_url_option")]
+    pub base_url: Option<String>,
+    #[serde(default = "default_image_model")]
+    pub model: String,
+    #[serde(default = "default_image_size_option")]
+    pub size: Option<String>,
+    #[serde(default)]
+    pub quality: Option<String>,
+    #[serde(default = "default_image_output_format_option")]
+    pub output_format: Option<String>,
+}
+
+impl Default for ImageGenerationConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_image_provider(),
+            api_style: default_image_api_style(),
+            api_key: String::new(),
+            base_url: default_image_base_url_option(),
+            model: default_image_model(),
+            size: default_image_size_option(),
+            quality: None,
+            output_format: default_image_output_format_option(),
+        }
+    }
+}
+
+impl ImageGenerationConfig {
+    pub fn is_configured(&self) -> bool {
+        !self.api_key.trim().is_empty() && !self.model.trim().is_empty()
+    }
+}
+
 /// First-run setup wizard state. Persisted in the `app_config` table.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -111,6 +153,10 @@ pub struct AppConfig {
     /// Empty string disables the fallback. Default: `https://mirror.ghproxy.com`.
     #[serde(default = "default_ghproxy_base_url")]
     pub ghproxy_base_url: String,
+
+    /// Dedicated image generation provider settings used by the generate_image tool.
+    #[serde(default)]
+    pub image_generation: ImageGenerationConfig,
 }
 
 fn default_tool_timeout() -> i64 {
@@ -158,6 +204,24 @@ fn default_hf_mirror_base_url() -> String {
 fn default_ghproxy_base_url() -> String {
     "https://mirror.ghproxy.com".to_string()
 }
+fn default_image_provider() -> String {
+    "open_ai".to_string()
+}
+fn default_image_api_style() -> String {
+    "openai_images".to_string()
+}
+fn default_image_base_url_option() -> Option<String> {
+    Some("https://api.openai.com/v1".to_string())
+}
+fn default_image_model() -> String {
+    "gpt-image-2".to_string()
+}
+fn default_image_size_option() -> Option<String> {
+    Some("1024x1024".to_string())
+}
+fn default_image_output_format_option() -> Option<String> {
+    Some("png".to_string())
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -180,8 +244,21 @@ impl Default for AppConfig {
             auto_memory_extraction: true,
             hf_mirror_base_url: default_hf_mirror_base_url(),
             ghproxy_base_url: default_ghproxy_base_url(),
+            image_generation: ImageGenerationConfig::default(),
         }
     }
+}
+
+fn encrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreError> {
+    config.image_generation.api_key =
+        crate::crypto::encrypt_api_key(&config.image_generation.api_key)?;
+    Ok(config)
+}
+
+fn decrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreError> {
+    config.image_generation.api_key =
+        crate::crypto::decrypt_api_key(&config.image_generation.api_key)?;
+    Ok(config)
 }
 
 impl Database {
@@ -203,7 +280,7 @@ impl Database {
         match result {
             Ok(json) => {
                 let config: AppConfig = serde_json::from_str(&json)?;
-                Ok(config)
+                decrypt_app_config_secrets(config)
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(AppConfig::default()),
             Err(e) => Err(CoreError::Database(e)),
@@ -211,7 +288,7 @@ impl Database {
     }
 
     pub fn save_app_config(&self, config: &AppConfig) -> Result<(), CoreError> {
-        let json = serde_json::to_string(config)?;
+        let json = serde_json::to_string(&encrypt_app_config_secrets(config.clone())?)?;
         let conn = self.conn();
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS app_config (

@@ -423,6 +423,16 @@ export function SettingsPage() {
         autoMemoryExtraction: true,
         hfMirrorBaseUrl: 'https://hf-mirror.com',
         ghproxyBaseUrl: 'https://mirror.ghproxy.com',
+        imageGeneration: {
+          provider: 'open_ai',
+          apiStyle: 'openai_images',
+          apiKey: '',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-image-2',
+          size: '1024x1024',
+          quality: null,
+          outputFormat: 'png',
+        },
       });
     }
   }, []);

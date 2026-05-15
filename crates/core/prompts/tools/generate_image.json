@@ -1,6 +1,6 @@
 {
   "name": "generate_image",
-  "description": "Generate an image from a text prompt using a configured image model provider, save it locally, and return a preview artifact. Supports OpenAI Image API compatible providers, Google Gemini/Nano Banana, and Alibaba DashScope/Qwen-Image when the selected provider config contains the right API key/base URL.",
+  "description": "Generate an image from a text prompt using the image generation provider configured in Settings, save it locally, and return a preview artifact. Supports OpenAI Image API compatible providers, Google Gemini/Nano Banana, Alibaba DashScope/Qwen-Image, and Zhipu CogView/GLM Image presets.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -18,15 +18,15 @@
       },
       "provider_config_id": {
         "type": "string",
-        "description": "Optional saved provider config id to use. Defaults to the default agent config."
+        "description": "Optional legacy saved LLM provider config id to use. Normally omit this; the tool defaults to Settings > Image generation."
       },
       "model": {
         "type": "string",
-        "description": "Optional image model. Any model id supported by the selected API adapter is accepted. If omitted, an image-capable model from the saved config is reused; otherwise defaults by adapter: gpt-image-1.5, gemini-2.5-flash-image, or qwen-image-2.0-pro."
+        "description": "Optional image model. Any model id supported by the selected API adapter is accepted. If omitted, the model configured in Settings > Image generation is used."
       },
       "size": {
         "type": "string",
-        "description": "Optional output size. OpenAI style uses 1024x1024; Qwen accepts width*height and x is converted to *."
+        "description": "Optional output size. OpenAI style uses widthxheight, Google accepts aspect/image-size hints such as 16:9|2K, and Qwen accepts width*height with x converted to *."
       },
       "quality": {
         "type": "string",

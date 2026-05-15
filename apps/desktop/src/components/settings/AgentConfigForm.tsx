@@ -218,9 +218,6 @@ export function AgentConfigForm({
   const [summarizationProvider, setSummarizationProvider] = useState<
     string | null
   >(config?.summarizationProvider ?? null);
-  const [imageGenerationModel, setImageGenerationModel] = useState<
-    string | null
-  >(config?.imageGenerationModel ?? null);
   const [subagentAllowedTools, setSubagentAllowedTools] = useState<string[]>(
     (config?.subagentAllowedTools ?? DEFAULT_SUBAGENT_TOOL_NAMES).map(
       canonicalSubagentToolName,
@@ -267,7 +264,7 @@ export function AgentConfigForm({
     maxIterations: config?.maxIterations ?? null,
     summarizationModel: config?.summarizationModel ?? null,
     summarizationProvider: config?.summarizationProvider ?? null,
-    imageGenerationModel: config?.imageGenerationModel ?? null,
+    imageGenerationModel: null,
     subagentAllowedTools: usesDefaultSubagentToolSelection(
       config?.subagentAllowedTools,
     )
@@ -584,7 +581,7 @@ export function AgentConfigForm({
         maxIterations,
         summarizationModel: summarizationModel?.trim() || null,
         summarizationProvider: summarizationProvider || null,
-        imageGenerationModel: imageGenerationModel?.trim() || null,
+        imageGenerationModel: null,
         subagentAllowedTools: usesDefaultSubagentToolSelection(
           subagentAllowedTools,
         )
@@ -619,7 +616,6 @@ export function AgentConfigForm({
       maxIterations,
       summarizationModel,
       summarizationProvider,
-      imageGenerationModel,
       subagentAllowedTools,
       subagentAllowedSkillIds,
       subagentMaxParallel,
@@ -996,28 +992,6 @@ export function AgentConfigForm({
             )}
           </div>
         )}
-      </div>
-
-      {/* Image generation model */}
-      <div className="space-y-3 border-t border-border pt-4">
-        <div>
-          <h4 className="text-sm font-semibold text-text-primary">
-            Image generation
-          </h4>
-          <p className="text-xs text-text-tertiary">
-            Model used by generate_image. Leave empty to use the provider default or an image-capable main model.
-          </p>
-        </div>
-        <div className="space-y-2">
-          <label className="text-sm font-medium text-text-primary">
-            Image model
-          </label>
-          <Input
-            value={imageGenerationModel ?? ""}
-            onChange={(e) => setImageGenerationModel(e.target.value || null)}
-            placeholder="gpt-image-1, gemini-2.5-flash-image, qwen-image"
-          />
-        </div>
       </div>
 
       {/* Max Tool Iterations */}

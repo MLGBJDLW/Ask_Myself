@@ -11,6 +11,7 @@ import { CollapsiblePanel, Section } from './SettingsSection';
 import { ModelCard } from './ModelCard';
 import { NetworkMirrorsPanel } from './NetworkMirrorsPanel';
 import { OfficeRuntimePanel } from './OfficeRuntimePanel';
+import { ImageGenerationSettingsPanel } from './ImageGenerationSettingsPanel';
 
 interface ModelDownloadsSectionProps {
   embedConfig: EmbedderConfig | null;
@@ -251,6 +252,16 @@ export function ModelDownloadsSection({
           onRefresh={onRefreshOfficeRuntime}
           onAskAiPrepare={onAskAiPrepareOfficeRuntime}
         />
+
+        {appConfig && (
+          <ImageGenerationSettingsPanel
+            appConfig={appConfig}
+            loading={appConfigLoading}
+            onChange={onAppConfigChange}
+            onMarkDirty={onMarkModelsDirty}
+            onSave={onAppConfigSave}
+          />
+        )}
 
         {/* Disk Usage Summary */}
         <CollapsiblePanel title={t('settings.modelDiskUsage')}>

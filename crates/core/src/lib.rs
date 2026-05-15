@@ -29,6 +29,7 @@ pub mod evidence_verifier;
 pub mod evolution;
 pub mod feedback;
 pub mod file_checkpoint;
+pub mod image_provider_catalog;
 pub mod index;
 pub mod ingest;
 pub mod intelligence;

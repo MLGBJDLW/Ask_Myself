@@ -405,17 +405,17 @@ export function ChatRunOverview({
 
         <div className="border-t border-border/60 px-3 pb-3 pt-2.5">
           <div className={`grid gap-2 ${showInvestigationPanel ? 'xl:grid-cols-[1.15fr_1fr]' : ''}`}>
-            <section className="rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
+            <section className="flex max-h-40 min-h-0 flex-col overflow-hidden rounded-lg border border-border/60 bg-surface-1/60 px-3 py-2.5">
+              <div className="flex min-h-0 items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
                     <Route className="h-3.5 w-3.5" />
                     {t('chat.taskRunLabel')}
                   </div>
-                  <div className="mt-1 truncate text-sm font-medium text-text-primary">
+                  <div className="mt-1 truncate text-sm font-medium text-text-primary" title={taskRun?.title || title}>
                     {taskRun?.title || title}
                   </div>
-                  <div className="mt-1 max-h-16 overflow-y-auto text-[11px] text-text-tertiary">
+                  <div className="mt-1 max-h-14 overflow-y-auto pr-1 text-[11px] text-text-tertiary">
                     <div className="flex flex-wrap gap-1.5">
                       <span>{taskRun ? taskPhaseLabel(taskRun.phase, t) : routeLabel}</span>
                       {taskRun && routeLabel && <span>{routeLabel}</span>}
@@ -430,12 +430,12 @@ export function ChatRunOverview({
                 </span>
               </div>
               {taskRun?.errorMessage && (
-                <div className="mt-2 rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1.5 text-[11px] text-red-300">
+                <div className="mt-2 max-h-12 shrink-0 overflow-y-auto break-words rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1.5 text-[11px] text-red-300">
                   {taskRun.errorMessage}
                 </div>
               )}
               {recentTaskEvents.length > 0 && (
-                <ul className="mt-2 space-y-1">
+                <ul className="mt-2 min-h-0 space-y-1 overflow-y-auto pr-1">
                   {recentTaskEvents.map(event => {
                     const translatedStatus = eventStatusLabel(event.status, t);
                     return (

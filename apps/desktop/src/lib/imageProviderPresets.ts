@@ -1,0 +1,73 @@
+import imageProviderPresets from "../../../../shared/image-provider-presets.json";
+
+export type ImageApiStyle =
+  | "openai_images"
+  | "gemini_generate_content"
+  | "dashscope_multimodal";
+
+export interface ImageModelPreset {
+  id: string;
+  name: string;
+  recommended?: boolean;
+}
+
+export interface ImageSizeOption {
+  value: string;
+  label: string;
+}
+
+export interface ImageProviderPreset {
+  id: string;
+  name: string;
+  provider: string;
+  apiStyle: ImageApiStyle;
+  baseUrl: string;
+  requiresApiKey: boolean;
+  description: string;
+  models: ImageModelPreset[];
+  sizeOptions: ImageSizeOption[];
+  qualityOptions: string[];
+  outputFormats: string[];
+}
+
+export const IMAGE_PROVIDER_PRESETS: ImageProviderPreset[] =
+  imageProviderPresets as ImageProviderPreset[];
+
+function normalize(value: string | null | undefined): string {
+  return (value ?? "").trim().replace(/\/+$/, "").toLowerCase();
+}
+
+export function findImageProviderPreset(input: {
+  provider?: string | null;
+  apiStyle?: string | null;
+  baseUrl?: string | null;
+}): ImageProviderPreset | null {
+  const provider = (input.provider ?? "").trim();
+  const apiStyle = (input.apiStyle ?? "").trim();
+  const baseUrl = normalize(input.baseUrl);
+
+  if (baseUrl) {
+    const exact = IMAGE_PROVIDER_PRESETS.find(
+      (preset) =>
+        preset.provider === provider &&
+        preset.apiStyle === apiStyle &&
+        normalize(preset.baseUrl) === baseUrl,
+    );
+    if (exact) return exact;
+  }
+
+  const matches = IMAGE_PROVIDER_PRESETS.filter(
+    (preset) =>
+      preset.provider === provider &&
+      (!apiStyle || preset.apiStyle === apiStyle),
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+export function getDefaultImageModel(preset: ImageProviderPreset | null): string {
+  return (
+    preset?.models.find((model) => model.recommended)?.id ??
+    preset?.models[0]?.id ??
+    ""
+  );
+}

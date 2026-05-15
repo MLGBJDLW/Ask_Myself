@@ -1,45 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Nexa">
   <defs>
-    <!-- Deep navy background matching icon.svg -->
-    <linearGradient id="sBg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0A1230"/>
-      <stop offset="100%" stop-color="#16214A"/>
+    <linearGradient id="bg" x1="4" y1="3" x2="28" y2="29" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0B1715"/>
+      <stop offset="1" stop-color="#101616"/>
     </linearGradient>
-    <!-- Teal → sky stroke gradient matching icon.svg -->
-    <linearGradient id="sStroke" x1="0" y1="1" x2="1" y2="0">
-      <stop offset="0%" stop-color="#22D3B0"/>
-      <stop offset="55%" stop-color="#38BDF8"/>
-      <stop offset="100%" stop-color="#7DD3FC"/>
+    <linearGradient id="stroke" x1="8" y1="24" x2="24" y2="8" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DFFFF4"/>
+      <stop offset="0.55" stop-color="#63F0D1"/>
+      <stop offset="1" stop-color="#F7B95F"/>
     </linearGradient>
-    <!-- Center node core -->
-    <radialGradient id="sCore" cx="0.4" cy="0.34" r="0.78">
-      <stop offset="0%" stop-color="#FFFFFF"/>
-      <stop offset="60%" stop-color="#CFEFFF"/>
-      <stop offset="100%" stop-color="#38BDF8"/>
-    </radialGradient>
-    <!-- Soft halo -->
-    <radialGradient id="sHalo" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.55"/>
-      <stop offset="100%" stop-color="#38BDF8" stop-opacity="0"/>
-    </radialGradient>
   </defs>
-
-  <!-- Rounded tile background (rx=6 for 32x32) -->
-  <rect x="0" y="0" width="32" height="32" rx="6" ry="6" fill="url(#sBg)"/>
-
-  <!-- Subtle insight halo behind monogram -->
-  <circle cx="16" cy="16" r="9" fill="url(#sHalo)"/>
-
-  <!-- N monogram strokes (scaled from tray.svg geometry) -->
-  <g fill="none" stroke="url(#sStroke)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M 9 8 L 9 24 L 16 16"/>
-    <path d="M 16 16 L 23 8 L 23 24"/>
-  </g>
-
-  <!-- Vertex nodes (BL, TR) -->
-  <circle cx="9" cy="24" r="1.8" fill="#CFEFFF"/>
-  <circle cx="23" cy="8" r="1.8" fill="#CFEFFF"/>
-
-  <!-- Center node: luminous core -->
-  <circle cx="16" cy="16" r="2.6" fill="url(#sCore)"/>
+  <rect width="32" height="32" rx="7" fill="url(#bg)"/>
+  <path d="M9.2 23.2V8.8L22.8 23.2V8.8" fill="none" stroke="#03100E" stroke-width="5.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M9.2 23.2V8.8L22.8 23.2V8.8" fill="none" stroke="url(#stroke)" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="16" cy="16" r="4.1" fill="#071211"/>
+  <circle cx="16" cy="16" r="2.75" fill="none" stroke="#DFFFF4" stroke-width="1.25"/>
+  <circle cx="16" cy="16" r="1.05" fill="#F7B95F"/>
+  <circle cx="9.2" cy="8.8" r="1.2" fill="#DFFFF4"/>
+  <circle cx="22.8" cy="23.2" r="1.2" fill="#F7B95F"/>
 </svg>

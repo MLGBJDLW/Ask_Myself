@@ -343,6 +343,18 @@ export interface AppConfig {
   autoMemoryExtraction?: boolean;
   hfMirrorBaseUrl?: string;
   ghproxyBaseUrl?: string;
+  imageGeneration?: ImageGenerationConfig;
+}
+
+export interface ImageGenerationConfig {
+  provider: string;
+  apiStyle: string;
+  apiKey: string;
+  baseUrl: string | null;
+  model: string;
+  size: string | null;
+  quality: string | null;
+  outputFormat: string | null;
 }
 
 export type ProviderType =
