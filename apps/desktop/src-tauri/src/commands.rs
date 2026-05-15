@@ -3349,6 +3349,11 @@ pub async fn list_tool_access_map_cmd(
 }
 
 #[tauri::command]
+pub fn list_builtin_plugins_cmd() -> Vec<nexa_core::plugins::PluginManifest> {
+    nexa_core::plugins::builtin_plugin_manifests()
+}
+
+#[tauri::command]
 pub fn list_project_tools_cmd(
     state: tauri::State<'_, AppState>,
     source_scope: Option<Vec<String>>,

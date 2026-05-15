@@ -239,6 +239,7 @@ export interface UpdateAgentTaskArtifactInput {
 export interface ToolCallRequest {
   id: string;
   name: string;
+  plugin?: ToolPluginInfo;
   arguments: string;
 }
 
@@ -427,8 +428,23 @@ export interface AgentEvent {
 export type ApprovalRisk = 'low' | 'medium' | 'high';
 export type ApprovalDecisionValue = 'allow_once' | 'allow_session' | 'deny' | 'never';
 
+export interface ToolPluginInfo {
+  id: string;
+  name: string;
+  capability: string;
+  description: string;
+}
+
+export interface PluginManifest extends ToolPluginInfo {
+  builtIn: boolean;
+  tools: string[];
+  settingsSurfaces: string[];
+  workflows: string[];
+}
+
 export interface ToolAccessInfo {
   name: string;
+  plugin: ToolPluginInfo;
   category: string;
   canRead: boolean;
   canWrite: boolean;
@@ -537,6 +553,7 @@ export interface ToolRunCapabilities {
 export interface ToolRunItem {
   callId: string;
   toolName: string;
+  plugin: ToolPluginInfo;
   status: ToolRunStatus;
   arguments?: string;
   renderKind: ToolRenderKind;

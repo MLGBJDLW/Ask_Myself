@@ -3,7 +3,13 @@ import { RefreshCw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
-import type { ApprovalPolicy, ApprovalPolicyList, ApprovalRisk, ToolAccessInfo } from '../../types';
+import type {
+  ApprovalPolicy,
+  ApprovalPolicyList,
+  ApprovalRisk,
+  ToolAccessInfo,
+  ToolPluginInfo,
+} from '../../types';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 
@@ -24,6 +30,32 @@ function riskVariant(risk: ApprovalRisk) {
   if (risk === 'high') return 'danger' as const;
   if (risk === 'medium') return 'warning' as const;
   return 'success' as const;
+}
+
+interface ToolAccessGroup {
+  plugin: ToolPluginInfo;
+  tools: ToolAccessInfo[];
+  riskLevel: ApprovalRisk;
+  needsApprovalCount: number;
+  canRead: boolean;
+  canWrite: boolean;
+  canExecute: boolean;
+  canAccessNetwork: boolean;
+}
+
+function fallbackPlugin(tool: ToolAccessInfo): ToolPluginInfo {
+  return {
+    id: tool.category || 'tooling',
+    name: tool.category || 'Tooling',
+    capability: tool.category || 'Tooling',
+    description: tool.riskReason,
+  };
+}
+
+function highestRisk(tools: ToolAccessInfo[]): ApprovalRisk {
+  if (tools.some((tool) => tool.riskLevel === 'high')) return 'high';
+  if (tools.some((tool) => tool.riskLevel === 'medium')) return 'medium';
+  return 'low';
 }
 
 export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps) {
@@ -77,13 +109,48 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
     { value: 'allow_all', label: t('settings.toolApprovalAllowAll'), desc: t('settings.toolApprovalAllowAllDesc') },
     { value: 'deny_all', label: t('settings.toolApprovalDenyAll'), desc: t('settings.toolApprovalDenyAllDesc') },
   ];
-  const sortedAccessMap = useMemo(
-    () =>
-      [...accessMap].sort(
-        (left, right) =>
-          riskRank(left.riskLevel) - riskRank(right.riskLevel)
-          || left.name.localeCompare(right.name),
-      ),
+  const accessGroups = useMemo(
+    () => {
+      const groups = new Map<string, ToolAccessGroup>();
+      for (const tool of accessMap) {
+        const plugin = tool.plugin ?? fallbackPlugin(tool);
+        const existing = groups.get(plugin.id);
+        if (existing) {
+          existing.tools.push(tool);
+          existing.riskLevel = highestRisk(existing.tools);
+          existing.needsApprovalCount = existing.tools.filter((item) => item.needsApproval).length;
+          existing.canRead ||= tool.canRead;
+          existing.canWrite ||= tool.canWrite;
+          existing.canExecute ||= tool.canExecute;
+          existing.canAccessNetwork ||= tool.canAccessNetwork;
+        } else {
+          groups.set(plugin.id, {
+            plugin,
+            tools: [tool],
+            riskLevel: tool.riskLevel,
+            needsApprovalCount: tool.needsApproval ? 1 : 0,
+            canRead: tool.canRead,
+            canWrite: tool.canWrite,
+            canExecute: tool.canExecute,
+            canAccessNetwork: tool.canAccessNetwork,
+          });
+        }
+      }
+      return [...groups.values()]
+        .map((group) => ({
+          ...group,
+          tools: [...group.tools].sort(
+            (left, right) =>
+              riskRank(left.riskLevel) - riskRank(right.riskLevel)
+              || left.name.localeCompare(right.name),
+          ),
+        }))
+        .sort(
+          (left, right) =>
+            riskRank(left.riskLevel) - riskRank(right.riskLevel)
+            || left.plugin.name.localeCompare(right.plugin.name),
+        );
+    },
     [accessMap],
   );
 
@@ -189,39 +256,78 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
           </Button>
         </div>
 
-        {sortedAccessMap.length === 0 ? (
+        {accessGroups.length === 0 ? (
           <div className="text-xs text-text-tertiary">{t('settings.toolAccessOverviewNoTools')}</div>
         ) : (
           <div className="max-h-96 space-y-2 overflow-auto pr-1">
-            {sortedAccessMap.map((tool) => (
-              <div key={tool.name} className="rounded-md border border-border/60 bg-surface-1 px-3 py-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="min-w-0">
+            {accessGroups.map((group) => (
+              <details
+                key={group.plugin.id}
+                className="group rounded-md border border-border/60 bg-surface-1"
+                open={group.riskLevel === 'high'}
+              >
+                <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-3 py-2">
+                  <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <span className="truncate font-mono text-xs text-text-primary">{tool.name}</span>
-                      <Badge variant={riskVariant(tool.riskLevel)} className="text-[10px]">
-                        {tool.riskLevel === 'high'
+                      <span className="truncate text-sm font-medium text-text-primary">{group.plugin.name}</span>
+                      <Badge variant={riskVariant(group.riskLevel)} className="text-[10px]">
+                        {group.riskLevel === 'high'
                           ? t('settings.toolRiskHigh')
-                          : tool.riskLevel === 'medium'
+                          : group.riskLevel === 'medium'
                             ? t('settings.toolRiskMedium')
                             : t('settings.toolRiskLow')}
                       </Badge>
-                      <Badge variant={tool.needsApproval ? 'warning' : 'default'} className="text-[10px]">
-                        {tool.needsApproval ? t('settings.toolAccessNeedsApproval') : t('settings.toolAccessNoApproval')}
-                      </Badge>
+                      <span className="text-[11px] text-text-tertiary">{group.tools.length}</span>
+                      {group.needsApprovalCount > 0 && (
+                        <Badge variant="warning" className="text-[10px]">
+                          {t('settings.toolAccessNeedsApproval')} {group.needsApprovalCount}
+                        </Badge>
+                      )}
                     </div>
-                    <div className="mt-1 text-xs leading-relaxed text-text-tertiary">
-                      {tool.riskReason}
+                    <div className="mt-0.5 truncate text-xs text-text-tertiary">
+                      {group.plugin.capability}
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap justify-end gap-1">
-                    {tool.canRead && <Badge variant="default" className="text-[10px]">{t('settings.toolAccessRead')}</Badge>}
-                    {tool.canWrite && <Badge variant="danger" className="text-[10px]">{t('settings.toolAccessWrite')}</Badge>}
-                    {tool.canExecute && <Badge variant="warning" className="text-[10px]">{t('settings.toolAccessExecute')}</Badge>}
-                    {tool.canAccessNetwork && <Badge variant="info" className="text-[10px]">{t('settings.toolAccessNetwork')}</Badge>}
+                    {group.canRead && <Badge variant="default" className="text-[10px]">{t('settings.toolAccessRead')}</Badge>}
+                    {group.canWrite && <Badge variant="danger" className="text-[10px]">{t('settings.toolAccessWrite')}</Badge>}
+                    {group.canExecute && <Badge variant="warning" className="text-[10px]">{t('settings.toolAccessExecute')}</Badge>}
+                    {group.canAccessNetwork && <Badge variant="info" className="text-[10px]">{t('settings.toolAccessNetwork')}</Badge>}
+                  </div>
+                </summary>
+                <div className="border-t border-border/50 px-3 py-2">
+                  <div className="mb-2 text-xs leading-relaxed text-text-tertiary">
+                    {group.plugin.description}
+                  </div>
+                  <div className="grid gap-1.5">
+                    {group.tools.map((tool) => (
+                      <div key={tool.name} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-0/55 px-2 py-1.5">
+                        <div className="min-w-0">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <span className="truncate font-mono text-xs text-text-primary">{tool.name}</span>
+                            <Badge variant={riskVariant(tool.riskLevel)} className="text-[10px]">
+                              {tool.riskLevel === 'high'
+                                ? t('settings.toolRiskHigh')
+                                : tool.riskLevel === 'medium'
+                                  ? t('settings.toolRiskMedium')
+                                  : t('settings.toolRiskLow')}
+                            </Badge>
+                          </div>
+                          <div className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-text-tertiary">
+                            {tool.riskReason}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                          {tool.canRead && <Badge variant="default" className="text-[10px]">{t('settings.toolAccessRead')}</Badge>}
+                          {tool.canWrite && <Badge variant="danger" className="text-[10px]">{t('settings.toolAccessWrite')}</Badge>}
+                          {tool.canExecute && <Badge variant="warning" className="text-[10px]">{t('settings.toolAccessExecute')}</Badge>}
+                          {tool.canAccessNetwork && <Badge variant="info" className="text-[10px]">{t('settings.toolAccessNetwork')}</Badge>}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              </div>
+              </details>
             ))}
           </div>
         )}

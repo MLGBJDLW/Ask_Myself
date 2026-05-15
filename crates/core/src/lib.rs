@@ -49,6 +49,7 @@ pub mod parse;
 pub mod persona;
 pub mod personalization;
 pub mod playbook;
+pub mod plugins;
 pub mod policy_engine;
 pub mod preview;
 pub mod privacy;

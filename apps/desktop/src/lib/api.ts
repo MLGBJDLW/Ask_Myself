@@ -35,6 +35,7 @@ import type {
   AgentTaskArtifactVersion,
   CreateAgentTaskArtifactInput,
   UpdateAgentTaskArtifactInput,
+  PluginManifest,
   ToolAccessInfo,
   ConversationStats,
   ConversationSearchResult,
@@ -669,6 +670,9 @@ export const listAgentTaskArtifactVersions = (artifactId: string) =>
 
 export const listToolAccessMap = () =>
   invoke<ToolAccessInfo[]>('list_tool_access_map_cmd');
+
+export const listBuiltinPlugins = () =>
+  invoke<PluginManifest[]>('list_builtin_plugins_cmd');
 
 export const listProjectTools = (sourceScope?: string[] | null) =>
   invoke<import('../types/project-tool').ProjectToolCatalog>('list_project_tools_cmd', {

@@ -50,6 +50,8 @@ export type {
   ApprovalRequest,
   ApprovalRisk,
   ApprovalDecisionValue,
+  ToolPluginInfo,
+  PluginManifest,
   ToolAccessInfo,
   ApprovalPolicy,
   ApprovalPolicyList,
