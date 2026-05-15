@@ -41,7 +41,7 @@ Keep format-specific generation logic in the format skill. In particular, `creat
 - Use `run_shell` only to execute the bundled renderer/editor scripts or a short command against files that already exist on disk.
 - Do not write a large one-off Python program inside a single `run_shell` argument. If custom code is genuinely needed, create a small script file in the workspace, run it, validate the output, then remove only temporary scratch files the user did not ask to keep.
 - For new Office binaries, keep a reviewable source artifact next to the output whenever possible: `.md` for DOCX body content, `.json` for PPTX/XLSX specs, plus validation/audit output for layout-sensitive work.
-- Large specs should be file-backed, not passed through argv/stdin. This avoids provider JSON-argument failures and makes frontend file diffs/previews useful.
+- Large generated specs should never be passed through argv or `python -c`. For generated or transient PPTX/HTML-deck specs, prefer the renderer stdin contract (`--spec -` plus `run_shell.stdin`) so raw HTML/CSS/JSON is not embedded in argv. Create a separate JSON spec file only when the spec is meant to remain as a durable, reviewable source artifact.
 
 ## Invocation pattern
 For this skill, invoke the bundled document script through `run_shell` with `python` (or `python3`). This is a Python backend requirement for the Office/PDF workflow, not a general restriction on other `run_shell` programs or less-restricted shell access modes:
@@ -69,9 +69,33 @@ For this skill, invoke the bundled document script through `run_shell` with `pyt
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/report.docx create_docx --title "Board Report" --input-md /abs/source/report_content.md
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/model.xlsx create_xlsx --spec /abs/source/workbook_spec.json
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/deck.pptx create_pptx --spec /abs/source/deck_spec.json
-   python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/html_deck.pptx create_html_pptx --spec /abs/source/html_deck_spec.json --outdir /abs/source/html_deck_project --mode hybrid --screenshot auto
+   python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/html_deck.pptx create_html_pptx --spec - --outdir /abs/source/html_deck_project --mode hybrid --screenshot auto
    ```
-   The PPTX commands are wrappers around the PPT skill renderers. `create_xlsx` delegates to the XLSX skill renderer, so complex workbooks should be driven by a reviewable JSON spec rather than one-off Python. Use `create_html_pptx` when the deck needs web-grade layout/CSS exploration plus a PPTX export; it writes `source/*.html`, `manifest.json`, and `qa.json` alongside the final deck.
+   For `create_html_pptx` with `--spec -`, pass the HTML-deck JSON spec through the `run_shell.stdin` field. The `run_shell.args` array should contain only argv tokens, never the raw HTML/CSS/JSON payload. The PPTX commands are wrappers around the PPT skill renderers. `create_xlsx` delegates to the XLSX skill renderer, so complex workbooks should be driven by a reviewable JSON spec rather than one-off Python. Use `create_html_pptx` when the deck needs web-grade layout/CSS exploration plus a PPTX export; it writes `source/*.html`, `manifest.json`, and `qa.json` alongside the final deck.
+
+   `run_shell` shape for generated HTML-first decks:
+   ```json
+   {
+     "program": "python",
+     "args": [
+       "<SKILL_DIR>/scripts/edit_doc.py",
+       "--path",
+       "/abs/source/html_deck.pptx",
+       "create_html_pptx",
+       "--spec",
+       "-",
+       "--outdir",
+       "/abs/source/html_deck_project",
+       "--mode",
+       "hybrid",
+       "--screenshot",
+       "auto"
+     ],
+     "cwd": "/abs/source",
+     "timeout_secs": 120,
+     "stdin": "{ \"slides\": [/* HTML deck JSON spec */] }"
+   }
+   ```
 6. Validate and convert after generation:
    ```
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/report.docx validate

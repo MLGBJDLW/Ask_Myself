@@ -66,7 +66,7 @@ use super::diff_stats::text_diff_artifact;
 use super::path_utils::{
     resolve_existing_directory_in_sources, resolve_path_from_base_in_sources, PathKind,
 };
-use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
+use super::{scoped_sources, tool_contract_error_result, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/run_shell.json");
@@ -264,6 +264,35 @@ fn parse_run_shell_args(arguments: &str) -> Result<RunShellArgs, serde_json::Err
             }
         }
     }
+}
+
+fn run_shell_expected_format() -> Value {
+    json!({
+        "program": "python",
+        "args": [
+            "crates/core/assets/skills/doc-script-editor/scripts/edit_doc.py",
+            "--path",
+            "D:/workspace/deck.pptx",
+            "create_html_pptx",
+            "--spec",
+            "-",
+            "--outdir",
+            "D:/workspace/html_deck_project",
+            "--mode",
+            "hybrid",
+            "--screenshot",
+            "auto"
+        ],
+        "cwd": "D:/workspace",
+        "timeout_secs": 30,
+        "stdin": "{ \"slides\": [/* HTML-first PPTX JSON spec */] }",
+        "rules": [
+            "Use a JSON object with program, args, cwd, optional timeout_secs, and optional stdin.",
+            "args must be an array of argv strings; do not send a single shell command string.",
+            "For generated HTML/PPTX specs or large scripts, pass the payload in stdin and use --spec - or a stdin-reading program.",
+            "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c."
+        ]
+    })
 }
 
 #[derive(Serialize)]
@@ -1549,8 +1578,19 @@ impl Tool for RunShellTool {
         db: &Database,
         source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
-        let parsed = parse_run_shell_args(arguments)
-            .map_err(|e| CoreError::InvalidInput(format!("Invalid run_shell arguments: {e}")))?;
+        let parsed = match parse_run_shell_args(arguments) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                return Ok(tool_contract_error_result(
+                    call_id,
+                    "invalid_run_shell_arguments",
+                    format!(
+                        "Invalid run_shell arguments: {err}. Use argv-style JSON. For HTML/PPTX generation, pass large specs through stdin with --spec - instead of putting HTML or JSON inside args."
+                    ),
+                    run_shell_expected_format(),
+                ));
+            }
+        };
         let shell_access_mode = db
             .load_app_config()
             .map(|cfg| cfg.shell_access_mode)
@@ -1763,6 +1803,35 @@ mod tests {
         assert_eq!(parsed.program, "python");
         assert_eq!(parsed.args, vec![r#"E:\Starting\convert_to_docx.py"#]);
         assert_eq!(parsed.cwd, r#"E:\Starting"#);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_json_returns_run_shell_contract_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = db_with_source(tmp.path());
+        let tool = RunShellTool;
+
+        let result = tool
+            .execute(
+                "bad-run-shell-json",
+                r#"{"program":"python","args":["-c","print("#,
+                &db,
+                &[],
+            )
+            .await
+            .expect("malformed arguments should be returned as a tool result");
+
+        assert!(result.is_error);
+        assert!(result.content.contains("Invalid run_shell arguments"));
+        assert!(result.content.contains("--spec -"));
+        let artifacts = result.artifacts.expect("contract error artifact");
+        assert_eq!(artifacts["kind"], "toolContractError");
+        assert_eq!(artifacts["code"], "invalid_run_shell_arguments");
+        assert!(artifacts["expectedFormat"]["args"].is_array());
+        assert!(artifacts["expectedFormat"]["stdin"]
+            .as_str()
+            .unwrap()
+            .contains("HTML-first PPTX"));
     }
 
     #[test]
