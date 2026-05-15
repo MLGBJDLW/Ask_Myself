@@ -13,7 +13,6 @@ import { useChatSession } from '../lib/useChatSession';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
 import type { AgentConfig, Conversation, ImageAttachment } from '../types/conversation';
-import { extractChunkCitations } from '../lib/citationParser';
 import { formatUserError } from '../lib/userError';
 
 function personaExists(personas: api.PersonaProfile[], id: string): boolean {
@@ -74,10 +73,8 @@ export function ChatPage() {
     (location.state as { collectionContext?: Conversation['collectionContext'] } | null)?.collectionContext
   ) ?? null;
 
-  // Live source-scope selection made in `SourceSelector`, lifted so we can
-  // apply it when `useChatSession.send()` auto-creates a conversation from
-  // the very first message. Seeded with any `initialSourceIds` forwarded from
-  // `location.state` (e.g. HomePage → /chat hand-off).
+  // Source scope forwarded from route state, applied when the first send
+  // auto-creates a conversation.
   const currentSourceIdsRef = useRef<string[]>(initialSourceIds);
   useEffect(() => {
     currentSourceIdsRef.current = initialSourceIds;
@@ -360,7 +357,6 @@ export function ChatPage() {
 
   const [prefillText, setPrefillText] = useState<string>('');
   const prefillKey = useRef(0);
-  const [sourceSummary, setSourceSummary] = useState({ selectedCount: 0, totalCount: 0, loading: true });
   const handleSuggestionClick = useCallback((text: string) => {
     prefillKey.current += 1;
     setPrefillText(text);
@@ -401,39 +397,12 @@ export function ChatPage() {
     pendingChatAction,
   ]);
 
-  const latestTurn = useMemo(
-    () => (chat.turns.length > 0 ? chat.turns[chat.turns.length - 1] : null),
-    [chat.turns],
-  );
-
   const latestUserSkillQuery = useMemo(() => {
     for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
       const message = chat.messages[index];
       if (message.role === 'user') return message.content ?? '';
     }
     return '';
-  }, [chat.messages]);
-
-  const latestAnswerEvidence = useMemo(() => {
-    const latestAssistant = [...chat.messages]
-      .reverse()
-      .find((message) => message.role === 'assistant' && message.content.trim().length > 0);
-
-    if (!latestAssistant) {
-      return { level: 'none' as const, count: 0 };
-    }
-
-    const chunkCitationCount = extractChunkCitations(latestAssistant.content).length;
-    const documentCitationCount = (latestAssistant.content.match(/\[(doc|file|url):/g) ?? []).length;
-    const totalCitations = chunkCitationCount + documentCitationCount;
-
-    if (totalCitations >= 3) {
-      return { level: 'high' as const, count: totalCitations };
-    }
-    if (totalCitations >= 1) {
-      return { level: 'medium' as const, count: totalCitations };
-    }
-    return { level: 'low' as const, count: 0 };
   }, [chat.messages]);
 
   /* ── No provider configured ─────────────────────────────────────── */
@@ -510,12 +479,12 @@ export function ChatPage() {
         ) : (
           <>
             {chat.activeId && (
-              <div className="sticky top-0 z-10 shrink-0 border-b border-border bg-surface-1/90 backdrop-blur px-3 py-2">
-                <div className="flex items-center gap-2">
+              <div className="sticky top-0 z-10 shrink-0 border-b border-border/60 bg-surface-1/80 px-3 py-1.5 backdrop-blur">
+                <div className="flex min-h-8 items-center gap-1.5">
                   <button
                     type="button"
                     onClick={toggleSidebar}
-                    className="p-1.5 rounded-md bg-surface-2/80 border border-border/50
+                    className="flex h-7 w-7 items-center justify-center rounded-md border border-border/50 bg-surface-2/70
                       text-text-tertiary hover:text-text-primary hover:bg-surface-3
                       transition-colors cursor-pointer"
                     title={t('chat.toggleSidebar')}
@@ -524,9 +493,9 @@ export function ChatPage() {
                     {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
                   </button>
                   {chat.agentConfig && agentConfigs.length > 0 && (
-                    <div className="relative min-w-[150px]">
+                    <div className="relative min-w-[140px]">
                       <select
-                        className="h-8 w-full max-w-[220px] cursor-pointer appearance-none rounded-md border border-border bg-surface-2 pl-2 pr-6 text-xs text-text-secondary outline-none transition-colors hover:border-border-hover focus:border-accent"
+                        className="h-7 w-full max-w-[210px] cursor-pointer appearance-none rounded-md border border-border/70 bg-surface-2/80 pl-2 pr-6 text-xs text-text-secondary outline-none transition-colors hover:border-border-hover focus:border-accent"
                         value={chat.agentConfig.id}
                         aria-label={t('settings.defaultModel')}
                         onChange={async (e) => {
@@ -545,10 +514,10 @@ export function ChatPage() {
                     </div>
                   )}
                   {personas.length > 0 && (
-                    <div className="relative min-w-[140px]">
+                    <div className="relative min-w-[132px]">
                       <UserRound className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
                       <select
-                        className="h-8 w-full max-w-[190px] cursor-pointer appearance-none rounded-md border border-border bg-surface-2 pl-7 pr-6 text-xs text-text-secondary outline-none transition-colors hover:border-border-hover focus:border-accent"
+                        className="h-7 w-full max-w-[178px] cursor-pointer appearance-none rounded-md border border-border/70 bg-surface-2/80 pl-7 pr-6 text-xs text-text-secondary outline-none transition-colors hover:border-border-hover focus:border-accent"
                         value={activePersonaId}
                         aria-label={t('settings.personas')}
                         onChange={(e) => setPersona(e.target.value)}
@@ -567,7 +536,6 @@ export function ChatPage() {
                     <SourceSelector
                       conversationId={chat.activeId}
                       initialSelectedIds={initialSourceIds}
-                      onStateChange={setSourceSummary}
                       onSelectionChange={handleSourceSelectionChange}
                     />
                     <SystemPromptEditor
@@ -587,25 +555,12 @@ export function ChatPage() {
             )}
             {chat.activeId && (
               <ChatRunOverview
-                conversationTitle={chat.activeConversation?.title ?? null}
-                collectionContext={collectionContext}
-                sourceSummary={sourceSummary}
                 isStreaming={chat.isStreaming}
-                routeKind={latestTurn?.routeKind ?? null}
-                turnStatus={latestTurn?.status ?? null}
-                evidenceLevel={latestAnswerEvidence.level}
-                evidenceCount={latestAnswerEvidence.count}
                 tokenUsage={chat.tokenUsage}
                 runtimeProfile={chat.runtimeProfile}
                 finishReason={chat.finishReason}
                 contextOverflow={chat.contextOverflow}
-                rateLimited={chat.rateLimited}
-                lastCached={chat.lastCached}
                 isCompacting={isCompacting}
-                onCompact={handleCompactConversation}
-                onStartNewChat={handleNewConversation}
-                taskRun={chat.taskRun}
-                taskEvents={chat.taskEvents}
               />
             )}
             <ChatMessages
