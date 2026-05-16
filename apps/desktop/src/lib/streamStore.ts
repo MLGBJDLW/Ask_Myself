@@ -15,12 +15,20 @@ import type {
 import { durableReplayItemsFromTaskEvents, taskTimelineEventsFromReplaySource } from './streaming/durableReplay';
 import { adaptFrontendRunEvent } from './streaming/legacyAdapter';
 import { applyStreamEventOrdering } from './streaming/ordering';
+import {
+  appendStatusTraceEvent,
+  applyStreamResetProjection,
+  applyTerminalProjection,
+  isPendingStatus,
+  markRoundsToolCallsFinished,
+  markToolCallsFinished,
+  resetActiveStreamBlocks,
+  syncTraceToolEvents,
+} from './streaming/terminalProjection';
 import type {
-  StreamRoundEvent,
   StreamState,
   ToolCallEvent,
   TraceReplyEvent,
-  TraceStatusEvent,
   TraceThinkingEvent,
   TraceToolEvent,
   UsageTotal,
@@ -128,13 +136,6 @@ function finalizeToolCall(
     isError,
     artifacts,
   };
-}
-
-function isPendingStatus(status: ToolCallEvent['status']): boolean {
-  return status === 'running'
-    || status === 'starting'
-    || status === 'preparing'
-    || status === 'approvalPending';
 }
 
 function toolRunStatusToToolCallStatus(status: ToolRunStatus): ToolCallEvent['status'] {
@@ -285,49 +286,6 @@ function createDefaultState(): InternalStreamState {
   };
 }
 
-function markToolCallsFinished(
-  toolCalls: ToolCallEvent[],
-  status: 'done' | 'error',
-  fallbackContent: string,
-): ToolCallEvent[] {
-  return toolCalls.map(tc =>
-    isPendingStatus(tc.status)
-      ? {
-          ...tc,
-          status,
-          argsStatus: status === 'error' ? 'error' : 'done',
-          content: tc.content || fallbackContent,
-          isError: status === 'error',
-        }
-      : tc,
-  );
-}
-
-function markRoundsToolCallsFinished(
-  rounds: StreamRoundEvent[],
-  status: 'done' | 'error',
-  fallbackContent: string,
-): StreamRoundEvent[] {
-  return rounds.map(round => ({
-    ...round,
-    toolCalls: markToolCallsFinished(round.toolCalls, status, fallbackContent),
-  }));
-}
-
-function appendStatusTraceEvent(
-  state: InternalStreamState,
-  text: string,
-  tone: TraceStatusEvent['tone'] = 'muted',
-): void {
-  if (!text.trim()) return;
-  state.traceEvents = [...state.traceEvents, {
-    id: `trace-status-${Date.now()}-${state._traceSeq++}`,
-    kind: 'status',
-    text,
-    tone,
-  }];
-}
-
 function appendThinkingTraceEvent(state: InternalStreamState, delta: string): void {
   if (!delta) return;
   const last = state.traceEvents[state.traceEvents.length - 1];
@@ -455,14 +413,6 @@ function upsertToolTraceEvent(state: InternalStreamState, toolCall: ToolCallEven
   }];
 }
 
-function syncTraceToolEvents(state: InternalStreamState): void {
-  state.traceEvents = state.traceEvents.map(event => {
-    if (event.kind !== 'tool') return event;
-    const latest = state.toolCalls.find(tc => tc.callId === event.toolCall.callId);
-    return latest ? { ...event, toolCall: latest } : event;
-  });
-}
-
 function clearToolPreparingTimer(state: InternalStreamState, callId: string): void {
   const timer = state._toolPreparingTimers[callId];
   if (!timer) return;
@@ -473,13 +423,6 @@ function clearToolPreparingTimer(state: InternalStreamState, callId: string): vo
 function clearToolPreparingTimers(state: InternalStreamState): void {
   Object.values(state._toolPreparingTimers).forEach(timer => clearTimeout(timer));
   state._toolPreparingTimers = {};
-}
-
-function resetActiveStreamBlocks(state: InternalStreamState): void {
-  state._activeAnswerBlockId = null;
-  state._activeAnswerOffset = 0;
-  state._activeThinkingBlockId = null;
-  state._activeThinkingOffset = 0;
 }
 
 function applyStreamBlockDelta(
@@ -743,13 +686,7 @@ class StreamStoreImpl {
         const reason = typeof item.payload.reason === 'string'
           ? item.payload.reason
           : 'Stream restarted.';
-        state.streamText = '';
-        state.streamRounds = [];
-        state.thinkingText = '';
-        state.isThinking = false;
-        state.traceEvents = state.traceEvents.filter(trace => trace.kind === 'status');
-        resetActiveStreamBlocks(state);
-        appendStatusTraceEvent(state, reason, 'muted');
+        applyStreamResetProjection(state, reason);
         continue;
       }
       if (item.eventType === 'terminal') {
@@ -757,25 +694,12 @@ class StreamStoreImpl {
         const message = typeof item.payload.message === 'string'
           ? item.payload.message
           : (isError ? 'Request failed' : 'Task completed');
-        state.isStreaming = false;
-        state.isThinking = false;
-        state.thinkingText = '';
-        state.toolCalls = markToolCallsFinished(
-          state.toolCalls,
-          isError ? 'error' : 'done',
+        applyTerminalProjection(state, {
+          toolStatus: isError ? 'error' : 'done',
           message,
-        );
-        state.streamRounds = markRoundsToolCallsFinished(
-          state.streamRounds,
-          isError ? 'error' : 'done',
-          message,
-        );
-        syncTraceToolEvents(state);
-        if (isError) state.error = message;
-        appendStatusTraceEvent(state, message, isError ? 'error' : 'success');
-        state._activeRoundId = null;
-        state._activeRoundAcceptingStarts = false;
-        resetActiveStreamBlocks(state);
+          traceTone: isError ? 'error' : 'success',
+          errorMessage: isError ? message : undefined,
+        });
         continue;
       }
       if (item.eventType !== 'streamBlockDelta') continue;
@@ -854,16 +778,11 @@ class StreamStoreImpl {
     if (!s) return;
     clearStreamWatchdog(s);
     clearToolPreparingTimers(s);
-    s.isThinking = false;
-    s.thinkingText = '';
-    s.toolCalls = markToolCallsFinished(s.toolCalls, 'error', 'Stopped by user');
-    s.streamRounds = markRoundsToolCallsFinished(s.streamRounds, 'error', 'Stopped by user');
-    syncTraceToolEvents(s);
-    appendStatusTraceEvent(s, 'Stopped by user', 'error');
-    s.isStreaming = false;
-    s._activeRoundId = null;
-    s._activeRoundAcceptingStarts = false;
-    resetActiveStreamBlocks(s);
+    applyTerminalProjection(s, {
+      toolStatus: 'error',
+      message: 'Stopped by user',
+      traceTone: 'error',
+    });
     this.notify(conversationId);
   }
 
@@ -873,17 +792,13 @@ class StreamStoreImpl {
     if (!s) return;
     clearStreamWatchdog(s);
     clearToolPreparingTimers(s);
-    s.isThinking = false;
-    s.thinkingText = '';
-    s.toolCalls = markToolCallsFinished(s.toolCalls, 'error', 'Request failed');
-    s.streamRounds = markRoundsToolCallsFinished(s.streamRounds, 'error', 'Request failed');
-    syncTraceToolEvents(s);
-    appendStatusTraceEvent(s, errorMessage || 'Request failed', 'error');
-    s.error = errorMessage;
-    s.isStreaming = false;
-    s._activeRoundId = null;
-    s._activeRoundAcceptingStarts = false;
-    resetActiveStreamBlocks(s);
+    applyTerminalProjection(s, {
+      toolStatus: 'error',
+      message: errorMessage || 'Request failed',
+      toolFallbackMessage: 'Request failed',
+      traceTone: 'error',
+      errorMessage,
+    });
     this.notify(conversationId);
   }
 
@@ -894,17 +809,12 @@ class StreamStoreImpl {
       const state = this._streams[conversationId];
       if (!state) return;
       clearToolPreparingTimers(state);
-      state.toolCalls = markToolCallsFinished(state.toolCalls, 'error', 'Connection lost');
-      state.streamRounds = markRoundsToolCallsFinished(state.streamRounds, 'error', 'Connection lost');
-      syncTraceToolEvents(state);
-      appendStatusTraceEvent(state, 'Connection lost', 'error');
-      state.thinkingText = '';
-      state.isThinking = false;
-      state.error = 'Connection lost';
-      state.isStreaming = false;
-      state._activeRoundId = null;
-      state._activeRoundAcceptingStarts = false;
-      resetActiveStreamBlocks(state);
+      applyTerminalProjection(state, {
+        toolStatus: 'error',
+        message: 'Connection lost',
+        traceTone: 'error',
+        errorMessage: 'Connection lost',
+      });
       this.notify(conversationId);
     });
   }
@@ -1036,18 +946,8 @@ class StreamStoreImpl {
         const reason = (typeof event.reason === 'string' ? event.reason : '')
           || (typeof raw.reason === 'string' ? raw.reason : '')
           || 'Stream interrupted; retrying without streaming.';
-        s.streamText = '';
-        s.streamRounds = [];
-        s.thinkingText = '';
-        s.isThinking = false;
-        s.toolCalls = [];
         clearToolPreparingTimers(s);
-        s.traceEvents = s.traceEvents.filter(trace => trace.kind === 'status');
-        s.error = null;
-        s._activeRoundId = null;
-        s._activeRoundAcceptingStarts = false;
-        resetActiveStreamBlocks(s);
-        appendStatusTraceEvent(s, reason, 'muted');
+        applyStreamResetProjection(s, reason, { clearTools: true });
         break;
       }
 
@@ -1498,11 +1398,6 @@ class StreamStoreImpl {
       case 'error': {
         clearStreamWatchdog(s);
         clearToolPreparingTimers(s);
-        s.isThinking = false;
-        s.thinkingText = '';
-        s.toolCalls = markToolCallsFinished(s.toolCalls, 'error', 'Interrupted');
-        s.streamRounds = markRoundsToolCallsFinished(s.streamRounds, 'error', 'Interrupted');
-        syncTraceToolEvents(s);
 
         const errMsg = (typeof event.message === 'string' ? event.message
           : (typeof raw.message === 'string' ? raw.message : 'Unknown error'));
@@ -1511,16 +1406,22 @@ class StreamStoreImpl {
         }
         if (/rate.?limit/i.test(errMsg)) {
           s.rateLimited = true;
-          s.error = 'Rate limited';
-          appendStatusTraceEvent(s, 'Rate limited', 'error');
+          applyTerminalProjection(s, {
+            toolStatus: 'error',
+            message: 'Rate limited',
+            toolFallbackMessage: 'Interrupted',
+            traceTone: 'error',
+            errorMessage: 'Rate limited',
+          });
         } else {
-          s.error = errMsg;
-          appendStatusTraceEvent(s, errMsg, 'error');
+          applyTerminalProjection(s, {
+            toolStatus: 'error',
+            message: errMsg,
+            toolFallbackMessage: 'Interrupted',
+            traceTone: 'error',
+            errorMessage: errMsg,
+          });
         }
-        s.isStreaming = false;
-        s._activeRoundId = null;
-        s._activeRoundAcceptingStarts = false;
-        resetActiveStreamBlocks(s);
         break;
       }
     }
