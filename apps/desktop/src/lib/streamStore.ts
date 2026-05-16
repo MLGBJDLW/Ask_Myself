@@ -3,14 +3,12 @@
  * Events are dispatched here by StreamProvider and read by useAgentStream.
  */
 
-import type { AgentFrontendEvent, ApprovalRequest } from '../types';
+import type { AgentFrontendEvent } from '../types';
 import type {
   AgentTaskRun,
   AgentTaskRunEvent,
+  ApprovalRequest,
   ArtifactPayload,
-  ToolPluginInfo,
-  ToolRenderKind,
-  ToolRunCapabilities,
   ToolRunItem,
   ToolRunStatus,
 } from '../types/conversation';
@@ -19,37 +17,17 @@ import {
   isDurableStreamEvent,
   replayItemFromTaskEvent,
 } from './streaming/legacyAdapter';
-
-/* ── Exported types ─────────────────────────────────────────────── */
-
-export interface ToolCallEvent {
-  callId: string;
-  toolName: string;
-  plugin?: ToolPluginInfo;
-  arguments: string;
-  status:
-    | 'preparing'
-    | 'starting'
-    | 'approvalPending'
-    | 'running'
-    | 'done'
-    | 'error'
-    | 'declined'
-    | 'cancelled'
-    | 'timedOut';
-  renderKind?: ToolRenderKind;
-  capabilities?: ToolRunCapabilities;
-  /** Assembly progress of `arguments` before execution. */
-  argsStatus: 'pending' | 'streaming' | 'ready' | 'done' | 'error';
-  /** Number of characters received for `arguments` so far. */
-  argsBytes: number;
-  /** Latest up to 10 heartbeat notes accumulated during tool execution. */
-  progressNotes: string[];
-  content?: string;
-  isError?: boolean;
-  artifacts?: ArtifactPayload;
-  durationMs?: number;
-}
+import type {
+  StreamRoundEvent,
+  StreamState,
+  ToolCallEvent,
+  TraceReplyEvent,
+  TraceStatusEvent,
+  TraceThinkingEvent,
+  TraceToolEvent,
+  UsageTotal,
+} from './streaming/protocol';
+export type { StreamRoundEvent, StreamState, ToolCallEvent, TraceEvent, UsageTotal } from './streaming/protocol';
 
 const PROGRESS_NOTES_MAX = 10;
 const TOOL_PREPARING_DELAY_MS = 150;
@@ -60,9 +38,9 @@ function createToolCall(partial: {
   arguments?: string;
   status?: ToolCallEvent['status'];
   argsStatus?: ToolCallEvent['argsStatus'];
-  renderKind?: ToolRenderKind;
-  capabilities?: ToolRunCapabilities;
-  plugin?: ToolPluginInfo;
+  renderKind?: ToolCallEvent['renderKind'];
+  capabilities?: ToolCallEvent['capabilities'];
+  plugin?: ToolCallEvent['plugin'];
 }): ToolCallEvent {
   const argumentsText = partial.arguments ?? '';
   return {
@@ -77,75 +55,6 @@ function createToolCall(partial: {
     argsBytes: argumentsText.length,
     progressNotes: [],
   };
-}
-
-export interface StreamRoundEvent {
-  id: string;
-  thinking?: string;
-  reply: string;
-  toolCalls: ToolCallEvent[];
-}
-
-export interface TraceThinkingEvent {
-  id: string;
-  kind: 'thinking';
-  text: string;
-  blockId?: string;
-  nextOffset?: number;
-}
-
-export interface TraceReplyEvent {
-  id: string;
-  kind: 'reply';
-  text: string;
-  blockId?: string;
-  nextOffset?: number;
-}
-
-export interface TraceToolEvent {
-  id: string;
-  kind: 'tool';
-  toolCall: ToolCallEvent;
-}
-
-export interface TraceStatusEvent {
-  id: string;
-  kind: 'status';
-  text: string;
-  tone?: 'muted' | 'success' | 'error';
-}
-
-export type TraceEvent = TraceThinkingEvent | TraceReplyEvent | TraceToolEvent | TraceStatusEvent;
-
-export interface UsageTotal {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  thinkingTokens?: number;
-  lastPromptTokens?: number;
-}
-
-export interface StreamState {
-  isStreaming: boolean;
-  streamText: string;
-  streamRounds: StreamRoundEvent[];
-  traceEvents: TraceEvent[];
-  thinkingText: string;
-  isThinking: boolean;
-  toolCalls: ToolCallEvent[];
-  error: string | null;
-  lastUsage: UsageTotal | null;
-  lastCached: boolean;
-  finishReason: string | null;
-  contextOverflow: boolean;
-  rateLimited: boolean;
-  autoCompacted: { summary: string } | null;
-  /** High-risk tool calls awaiting GUI approval. FIFO queue. */
-  pendingApprovals: ApprovalRequest[];
-  /** Durable task run currently associated with this stream. */
-  taskRun: AgentTaskRun | null;
-  /** Recent lifecycle events for the active task run. */
-  taskEvents: AgentTaskRunEvent[];
 }
 
 /* ── Internal types ─────────────────────────────────────────────── */
