@@ -42,6 +42,7 @@ use nexa_core::conversation::{
 };
 use nexa_core::db::Database;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
+use nexa_core::error::CoreError;
 use nexa_core::evolution::{
     AgentProceduralMemory, AppliedSkillChange, SkillChangeProposal, SkillProposalStatus,
 };
@@ -4413,6 +4414,24 @@ pub async fn agent_chat_cmd(
 
         match &result {
             Some(Ok(_)) => {}
+            Some(Err(CoreError::Cancelled(message))) => {
+                warn!("Agent execution cancelled for conversation {conv_id}: {message}");
+                let payload = serde_json::json!({ "reason": message });
+                emit_terminal_agent_error_once(
+                    terminal_emitted.as_ref(),
+                    &db,
+                    &handle,
+                    stream_event_seq.as_ref(),
+                    TerminalAgentError {
+                        conversation_id: &conv_id,
+                        task_run_id: &task_run_id,
+                        turn_id: &turn_id,
+                        message: "Agent execution cancelled.",
+                        status: "cancelled",
+                        payload: Some(&payload),
+                    },
+                );
+            }
             Some(Err(e)) => {
                 warn!("Agent execution failed for conversation {conv_id}: {e}");
                 emit_terminal_agent_error_once(
@@ -4474,6 +4493,12 @@ pub async fn agent_chat_cmd(
                 "timed_out",
                 "Agent execution timed out",
                 Some("Agent execution timed out.".to_string()),
+            )
+        } else if let Some(Err(CoreError::Cancelled(message))) = &result {
+            (
+                "cancelled",
+                "Agent execution cancelled",
+                Some(message.clone()),
             )
         } else if let Some(Err(err)) = &result {
             ("failed", "Agent execution failed", Some(err.to_string()))
