@@ -28,8 +28,9 @@ use crate::intelligence::{
     TaskPlanningInput,
 };
 use crate::llm::{
-    CompletionRequest, ContentPart, LlmProvider, Message, ProviderType, ReasoningEffort, Role,
-    StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
+    stream_chunks_to_provider_events, CompletionRequest, ContentPart, LlmProvider, Message,
+    ProviderStreamEvent, ProviderType, ReasoningEffort, Role, ToolCallDelta, ToolCallRequest,
+    ToolDefinition, Usage,
 };
 use crate::policy_engine::{evaluate_policy_with_baseline, PolicyEffect, PolicySubject};
 use crate::privacy;
@@ -1210,13 +1211,15 @@ impl AgentExecutor {
 
             loop {
                 let mut retry_count = 0u32;
-                let mut stream: futures::stream::BoxStream<'_, Result<StreamChunk, CoreError>> =
+                let mut stream: futures::stream::BoxStream<'_, ProviderStreamEvent> =
                     if force_non_streaming_llm {
                         info!("Initiating LLM completion in non-streaming mode");
                         match self.provider.complete(&current_request).await {
                             Ok(response) => {
                                 context_recovery_attempts = 0;
-                                completion_response_to_agent_stream(response)
+                                stream_chunks_to_provider_events(
+                                    completion_response_to_agent_stream(response),
+                                )
                             }
                             Err(e) => {
                                 let _ = tx
@@ -1246,7 +1249,7 @@ impl AgentExecutor {
                     } else {
                         loop {
                             info!("Initiating LLM stream, attempt {}", retry_count + 1);
-                            match self.provider.stream(&current_request).await {
+                            match self.provider.stream_events(&current_request).await {
                                 Ok(s) => {
                                     info!("LLM stream connected");
                                     context_recovery_attempts = 0;
@@ -1476,7 +1479,7 @@ impl AgentExecutor {
 
                 enum StreamLoopEvent {
                     Steering(Option<AgentSteeringMessage>),
-                    Chunk(Option<Result<crate::llm::StreamChunk, CoreError>>),
+                    Provider(Option<ProviderStreamEvent>),
                 }
 
                 loop {
@@ -1484,7 +1487,7 @@ impl AgentExecutor {
                         maybe_steering = self.wait_for_steering_message(), if self.steering_rx.is_some() && !steering_closed => {
                             StreamLoopEvent::Steering(maybe_steering)
                         }
-                        maybe_chunk = stream.next() => StreamLoopEvent::Chunk(maybe_chunk),
+                        maybe_provider_event = stream.next() => StreamLoopEvent::Provider(maybe_provider_event),
                     };
 
                     match stream_event {
@@ -1495,8 +1498,8 @@ impl AgentExecutor {
                         StreamLoopEvent::Steering(None) => {
                             steering_closed = true;
                         }
-                        StreamLoopEvent::Chunk(None) => break,
-                        StreamLoopEvent::Chunk(Some(Ok(chunk))) => {
+                        StreamLoopEvent::Provider(None) => break,
+                        StreamLoopEvent::Provider(Some(ProviderStreamEvent::Chunk { chunk })) => {
                             chunk_count += 1;
                             // Forward thinking deltas.
                             if let Some(ref thinking) = chunk.thinking_delta {
@@ -1599,7 +1602,9 @@ impl AgentExecutor {
                                 chunk_usage = Some(u);
                             }
                         }
-                        StreamLoopEvent::Chunk(Some(Err(CoreError::StreamIncomplete(detail)))) => {
+                        StreamLoopEvent::Provider(Some(
+                            ProviderStreamEvent::RecoverableError { message: detail },
+                        )) => {
                             warn!("Stream incomplete — response may be truncated ({detail})");
                             info!(
                             "Stream ended incomplete: {chunk_count} chunks, {} chars — {detail}",
@@ -1608,7 +1613,10 @@ impl AgentExecutor {
                             stream_incomplete_detail = Some(detail);
                             break;
                         }
-                        StreamLoopEvent::Chunk(Some(Err(e))) => {
+                        StreamLoopEvent::Provider(Some(ProviderStreamEvent::TerminalError {
+                            message,
+                        })) => {
+                            let e = CoreError::Llm(message);
                             error!("LLM stream error: {e}");
                             let _ = tx
                                 .send(AgentEvent::Error {
