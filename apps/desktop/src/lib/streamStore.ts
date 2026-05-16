@@ -7,7 +7,6 @@ import type { AgentFrontendEvent } from '../types';
 import type {
   AgentTaskRun,
   AgentTaskRunEvent,
-  ApprovalRequest,
   ArtifactPayload,
   ToolRunItem,
 } from '../types/conversation';
@@ -18,6 +17,17 @@ import {
 } from './streaming/blockProjection';
 import { applyDurableReplayToState, taskTimelineEventsFromReplaySource } from './streaming/durableReplay';
 import { adaptFrontendRunEvent } from './streaming/legacyAdapter';
+import {
+  applyApprovalRequestedEvent,
+  applyApprovalResolvedEvent,
+  applyAutoCompactedEvent,
+  applyDoneEvent,
+  applyErrorEvent,
+  applyStatusEvent,
+  applyTaskRunEvent,
+  applyTaskRunUpdatedEvent,
+  applyUsageUpdateEvent,
+} from './streaming/liveProjection';
 import { applyStreamEventOrdering } from './streaming/ordering';
 import {
   clearToolPreparingTimer,
@@ -31,8 +41,6 @@ import {
   applyStreamResetProjection,
   applyTerminalProjection,
   isPendingStatus,
-  markRoundsToolCallsFinished,
-  markToolCallsFinished,
   resetActiveStreamBlocks,
   syncTraceToolEvents,
 } from './streaming/terminalProjection';
@@ -47,7 +55,6 @@ import {
 import type {
   StreamState,
   ToolCallEvent,
-  UsageTotal,
 } from './streaming/protocol';
 import { armStreamWatchdog, clearStreamWatchdog } from './streaming/watchdog';
 export type { StreamRoundEvent, StreamState, ToolCallEvent, TraceEvent, UsageTotal } from './streaming/protocol';
@@ -91,23 +98,6 @@ function normalizeAgentEventType(value: unknown): AgentEventType | null {
     case 'taskRunEvent': return 'taskRunEvent';
     default: return null;
   }
-}
-
-function extractMessageText(message: unknown): string | null {
-  if (!message || typeof message !== 'object') return null;
-  const record = message as Record<string, unknown>;
-  if (typeof record.content === 'string' && record.content.trim().length > 0) {
-    return record.content;
-  }
-  if (!Array.isArray(record.parts)) return null;
-  const text = record.parts
-    .map(part => {
-      if (!part || typeof part !== 'object') return '';
-      const item = part as Record<string, unknown>;
-      return typeof item.text === 'string' ? item.text : '';
-    })
-    .join('');
-  return text.trim().length > 0 ? text : null;
 }
 
 /* ── Store implementation ───────────────────────────────────────── */
@@ -765,144 +755,51 @@ class StreamStoreImpl {
       }
 
       case 'usageUpdate': {
-        const uUsage = event.usageTotal ?? (raw.usage_total as UsageTotal | undefined);
-        if (uUsage) {
-          const uLpt = (raw.lastPromptTokens ?? raw.last_prompt_tokens) as number | undefined;
-          s.lastUsage = { ...uUsage, lastPromptTokens: uLpt ?? uUsage.lastPromptTokens };
-        }
+        applyUsageUpdateEvent(s, event, raw);
         break;
       }
 
       case 'status': {
-        const text = (typeof event.content === 'string' ? event.content : '')
-          || (typeof raw.content === 'string' ? raw.content : '');
-        const tone = event.tone === 'success' || event.tone === 'error'
-          ? event.tone
-          : (raw.tone === 'success' || raw.tone === 'error' ? raw.tone : 'muted');
-        appendStatusTraceEvent(s, text, tone);
+        applyStatusEvent(s, event, raw);
         break;
       }
 
       case 'done': {
         clearStreamWatchdog(s);
         clearToolPreparingTimers(s);
-
-        // Capture final round
-        const finalThinking = s.thinkingText;
-        const finalReply = s.streamText;
-        const hasFinalRound = finalThinking.trim() || finalReply.trim();
-        if (hasFinalRound) {
-          const roundId = `stream-round-${Date.now()}-${s._roundSeq++}`;
-          s.streamRounds = [...s.streamRounds, {
-            id: roundId,
-            thinking: finalThinking || undefined,
-            reply: finalReply,
-            toolCalls: [],
-          }];
-          s.streamText = '';
-        }
-        s.isThinking = false;
-        s.thinkingText = '';
-
-        if (!hasFinalRound) {
-          const doneMessage = event.message ?? raw.message;
-          const doneText = extractMessageText(doneMessage);
-          if (doneText) {
-            s.streamText = doneText;
-            appendReplyTraceEvent(s, doneText);
-          }
-        }
-
-        s.toolCalls = markToolCallsFinished(s.toolCalls, 'done', 'No output');
-        s.streamRounds = markRoundsToolCallsFinished(s.streamRounds, 'done', 'No output');
-        syncTraceToolEvents(s);
-
-        const usage = event.usageTotal ?? (raw.usage_total as UsageTotal | undefined);
-        if (usage) {
-          const lastPrompt = (raw.lastPromptTokens ?? raw.last_prompt_tokens) as number | undefined;
-          s.lastUsage = { ...usage, lastPromptTokens: lastPrompt ?? usage.lastPromptTokens };
-        }
-        s.lastCached = Boolean(raw.cached ?? false);
-        const fr = raw.finishReason ?? raw.finish_reason ?? null;
-        s.finishReason = typeof fr === 'string' ? fr : null;
-        s.isStreaming = false;
-        s._activeRoundId = null;
-        s._activeRoundAcceptingStarts = false;
-        resetActiveStreamBlocks(s);
+        applyDoneEvent(s, event, raw);
         break;
       }
 
       case 'autoCompacted': {
-        const summary = (typeof event.summary === 'string' ? event.summary : '')
-          || (typeof raw.summary === 'string' ? raw.summary : '');
-        s.autoCompacted = { summary };
+        applyAutoCompactedEvent(s, event, raw);
         break;
       }
 
       case 'approvalRequested': {
-        const req = (event.request ?? raw.request) as ApprovalRequest | undefined;
-        if (req && typeof req.id === 'string' && typeof req.toolName === 'string') {
-          if (!s.pendingApprovals.some(p => p.id === req.id)) {
-            s.pendingApprovals = [...s.pendingApprovals, req];
-          }
-        }
+        applyApprovalRequestedEvent(s, event, raw);
         break;
       }
 
       case 'approvalResolved': {
-        const requestId = (typeof event.requestId === 'string' ? event.requestId : undefined)
-          ?? (typeof raw.requestId === 'string' ? raw.requestId : undefined);
-        if (requestId) {
-          s.pendingApprovals = s.pendingApprovals.filter(p => p.id !== requestId);
-        }
+        applyApprovalResolvedEvent(s, event, raw);
         break;
       }
 
       case 'taskRunUpdated': {
-        const taskRun = (event.taskRun ?? raw.taskRun) as AgentTaskRun | undefined;
-        if (taskRun && typeof taskRun.id === 'string') {
-          s.taskRun = taskRun;
-        }
+        applyTaskRunUpdatedEvent(s, event, raw);
         break;
       }
 
       case 'taskRunEvent': {
-        const taskEvent = (event.taskEvent ?? raw.taskEvent) as AgentTaskRunEvent | undefined;
-        if (taskEvent && typeof taskEvent.id === 'string') {
-          if (!s.taskEvents.some(existing => existing.id === taskEvent.id)) {
-            s.taskEvents = [...s.taskEvents, taskEvent].slice(-50);
-          }
-        }
+        applyTaskRunEvent(s, event, raw);
         break;
       }
 
       case 'error': {
         clearStreamWatchdog(s);
         clearToolPreparingTimers(s);
-
-        const errMsg = (typeof event.message === 'string' ? event.message
-          : (typeof raw.message === 'string' ? raw.message : 'Unknown error'));
-        if (/context.*(window|overflow|exceeded)|ContextOverflow/i.test(errMsg)) {
-          s.contextOverflow = true;
-        }
-        if (/rate.?limit/i.test(errMsg)) {
-          s.rateLimited = true;
-          applyTerminalProjection(s, {
-            toolStatus: 'error',
-            message: 'Rate limited',
-            toolFallbackMessage: 'Interrupted',
-            traceTone: 'error',
-            errorMessage: 'Rate limited',
-          });
-        } else {
-          applyTerminalProjection(s, {
-            toolStatus: 'error',
-            message: errMsg,
-            toolFallbackMessage: 'Interrupted',
-            traceTone: 'error',
-            errorMessage: errMsg,
-          });
-        }
+        applyErrorEvent(s, event, raw);
         break;
       }
     }
