@@ -504,6 +504,13 @@ export interface ToolAccessInfo {
   needsApproval: boolean;
   riskLevel: ApprovalRisk;
   riskReason: string;
+  renderKind: ToolRenderKind;
+  inputStreaming: ToolInputStreamingMode;
+  readOnly: boolean;
+  destructive: boolean;
+  concurrencySafe: boolean;
+  interruptBehavior: ToolInterruptBehavior;
+  resourceKeys: string[];
 }
 
 export interface ApprovalRequest {
