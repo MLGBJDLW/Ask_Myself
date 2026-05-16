@@ -93,6 +93,10 @@ impl AgentRunEventKind {
             Self::Error => "error",
         }
     }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Done | Self::Error)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -393,6 +397,10 @@ impl AgentRunEvent {
     pub fn task_event_type(&self) -> &'static str {
         self.kind.task_event_type()
     }
+
+    pub fn is_terminal(&self) -> bool {
+        self.kind.is_terminal()
+    }
 }
 
 fn recovery_metadata(reason: &str) -> (AgentRunEventKind, AgentRunPhase, String, Option<String>) {
@@ -516,5 +524,25 @@ mod tests {
         assert_eq!(run_event.payload["channel"], "answer");
         assert_eq!(run_event.payload["offset"], 3);
         assert_eq!(run_event.payload["delta"], "abc");
+    }
+
+    #[test]
+    fn identifies_terminal_run_events() {
+        let mut done_event = AgentRunEvent::from_agent_event(&AgentEvent::Status {
+            content: "done".to_string(),
+            tone: None,
+        });
+        done_event.kind = AgentRunEventKind::Done;
+        let error_event = AgentRunEvent::from_agent_event(&AgentEvent::Error {
+            message: "failed".to_string(),
+        });
+        let status_event = AgentRunEvent::from_agent_event(&AgentEvent::Status {
+            content: "working".to_string(),
+            tone: None,
+        });
+
+        assert!(done_event.is_terminal());
+        assert!(error_event.is_terminal());
+        assert!(!status_event.is_terminal());
     }
 }

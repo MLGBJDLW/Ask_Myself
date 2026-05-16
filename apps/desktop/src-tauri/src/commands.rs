@@ -3518,6 +3518,7 @@ pub async fn agent_chat_cmd(
         .map_err(|e| e.to_string())?;
     let task_run_id_for_command = task_run.id.clone();
     let stream_event_seq = Arc::new(AtomicU64::new(0));
+    let terminal_emitted = Arc::new(AtomicBool::new(false));
     emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
     if let Ok(event) = state.db.record_agent_task_run_event(
         &task_run.id,
@@ -4083,6 +4084,7 @@ pub async fn agent_chat_cmd(
     let assistant_sort_order = next_sort_order + 1;
     let db_config_for_extraction = db_config.clone();
     let forwarder_event_seq = Arc::clone(&stream_event_seq);
+    let forwarder_terminal_emitted = Arc::clone(&terminal_emitted);
 
     let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(180) as u64;
 
@@ -4128,6 +4130,9 @@ pub async fn agent_chat_cmd(
                     maybe_event = rx.recv() => {
                         match maybe_event {
                             Some(AgentEvent::TextDelta { delta }) => {
+                                if forwarder_terminal_emitted.load(Ordering::SeqCst) {
+                                    continue;
+                                }
                                 if !generating_phase_recorded {
                                     generating_phase_recorded = true;
                                     let _ = event_db.update_agent_task_run_progress(
@@ -4163,6 +4168,9 @@ pub async fn agent_chat_cmd(
                                 }
                             }
                             Some(AgentEvent::Thinking { content }) => {
+                                if forwarder_terminal_emitted.load(Ordering::SeqCst) {
+                                    continue;
+                                }
                                 if !reasoning_phase_recorded {
                                     reasoning_phase_recorded = true;
                                     let _ = event_db.update_agent_task_run_progress(
@@ -4219,6 +4227,13 @@ pub async fn agent_chat_cmd(
                                     Some(&event_turn_id),
                                     &frontend_event,
                                 );
+                                if run_event.is_terminal() {
+                                    if forwarder_terminal_emitted.swap(true, Ordering::SeqCst) {
+                                        continue;
+                                    }
+                                } else if forwarder_terminal_emitted.load(Ordering::SeqCst) {
+                                    continue;
+                                }
                                 record_task_progress_for_agent_event(
                                     &event_db,
                                     &event_handle,
@@ -4237,28 +4252,32 @@ pub async fn agent_chat_cmd(
                                 }
                             }
                             None => {
-                                // Channel closed — flush remaining and exit
-                                stream_emitter.flush_pending(
-                                    &mut pending_delta,
-                                    &stream_conv_id,
-                                    &event_handle,
-                                    &event_db,
-                                    &event_task_run_id,
-                                    Some(&event_turn_id),
-                                );
+                                if !forwarder_terminal_emitted.load(Ordering::SeqCst) {
+                                    // Channel closed — flush remaining and exit
+                                    stream_emitter.flush_pending(
+                                        &mut pending_delta,
+                                        &stream_conv_id,
+                                        &event_handle,
+                                        &event_db,
+                                        &event_task_run_id,
+                                        Some(&event_turn_id),
+                                    );
+                                }
                                 break;
                             }
                         }
                     }
                     _ = tick.tick() => {
-                        stream_emitter.flush_pending(
-                            &mut pending_delta,
-                            &stream_conv_id,
-                            &event_handle,
-                            &event_db,
-                            &event_task_run_id,
-                            Some(&event_turn_id),
-                        );
+                        if !forwarder_terminal_emitted.load(Ordering::SeqCst) {
+                            stream_emitter.flush_pending(
+                                &mut pending_delta,
+                                &stream_conv_id,
+                                &event_handle,
+                                &event_db,
+                                &event_task_run_id,
+                                Some(&event_turn_id),
+                            );
+                        }
                     }
                 }
             }
@@ -4343,54 +4362,58 @@ pub async fn agent_chat_cmd(
             Some(Ok(_)) => {}
             Some(Err(e)) => {
                 warn!("Agent execution failed for conversation {conv_id}: {e}");
-                let terminal_event = AgentEvent::Error {
-                    message: "Agent execution failed unexpectedly.".to_string(),
-                };
-                let run_event = emit_agent_frontend_event(
-                    &handle,
-                    &stream_event_seq,
-                    &conv_id,
-                    &task_run_id,
-                    Some(&turn_id),
-                    terminal_event,
-                );
-                record_agent_run_task_event(
-                    &db,
-                    &handle,
-                    &conv_id,
-                    &task_run_id,
-                    &run_event,
-                    "error",
-                    "Agent execution failed unexpectedly.",
-                    Some("failed"),
-                    None,
-                );
+                if !terminal_emitted.swap(true, Ordering::SeqCst) {
+                    let terminal_event = AgentEvent::Error {
+                        message: "Agent execution failed unexpectedly.".to_string(),
+                    };
+                    let run_event = emit_agent_frontend_event(
+                        &handle,
+                        &stream_event_seq,
+                        &conv_id,
+                        &task_run_id,
+                        Some(&turn_id),
+                        terminal_event,
+                    );
+                    record_agent_run_task_event(
+                        &db,
+                        &handle,
+                        &conv_id,
+                        &task_run_id,
+                        &run_event,
+                        "error",
+                        "Agent execution failed unexpectedly.",
+                        Some("failed"),
+                        None,
+                    );
+                }
             }
             None => {
                 warn!("Agent execution timed out for conversation {conv_id}");
-                let terminal_event = AgentEvent::Error {
-                    message: "Agent execution timed out.".to_string(),
-                };
-                let run_event = emit_agent_frontend_event(
-                    &handle,
-                    &stream_event_seq,
-                    &conv_id,
-                    &task_run_id,
-                    Some(&turn_id),
-                    terminal_event,
-                );
-                let payload = serde_json::json!({ "reason": "timeout" });
-                record_agent_run_task_event(
-                    &db,
-                    &handle,
-                    &conv_id,
-                    &task_run_id,
-                    &run_event,
-                    "error",
-                    "Agent execution timed out.",
-                    Some("timed_out"),
-                    Some(&payload),
-                );
+                if !terminal_emitted.swap(true, Ordering::SeqCst) {
+                    let terminal_event = AgentEvent::Error {
+                        message: "Agent execution timed out.".to_string(),
+                    };
+                    let run_event = emit_agent_frontend_event(
+                        &handle,
+                        &stream_event_seq,
+                        &conv_id,
+                        &task_run_id,
+                        Some(&turn_id),
+                        terminal_event,
+                    );
+                    let payload = serde_json::json!({ "reason": "timeout" });
+                    record_agent_run_task_event(
+                        &db,
+                        &handle,
+                        &conv_id,
+                        &task_run_id,
+                        &run_event,
+                        "error",
+                        "Agent execution timed out.",
+                        Some("timed_out"),
+                        Some(&payload),
+                    );
+                }
             }
         }
 
