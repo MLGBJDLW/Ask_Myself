@@ -1568,6 +1568,17 @@ impl AgentExecutor {
                             message,
                         })) => {
                             warn!("LLM stream cancelled: {message}");
+                            emit_error_and_finalize_turn(
+                                &tx,
+                                db,
+                                &mut trace,
+                                turn_id,
+                                route_plan.kind,
+                                &persisted_trace_items,
+                                message.clone(),
+                                message.clone(),
+                            )
+                            .await;
                             return Err(CoreError::Cancelled(message));
                         }
                         StreamLoopEvent::Provider(Some(ProviderStreamEvent::TerminalError {
