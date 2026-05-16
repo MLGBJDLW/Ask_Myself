@@ -204,12 +204,24 @@ impl AgentRunEvent {
                     .unwrap_or_else(|| "Execution plan updated".to_string()),
                 Some("running".to_string()),
             ),
-            AgentEvent::Done { .. } => (
-                AgentRunEventKind::Done,
-                AgentRunPhase::Done,
-                "Final answer produced".to_string(),
-                Some("completed".to_string()),
-            ),
+            AgentEvent::Done { finish_reason, .. } => {
+                let status = match finish_reason.as_deref() {
+                    Some("cancelled") => "cancelled",
+                    Some("timed_out") => "timed_out",
+                    _ => "completed",
+                };
+                let label = match status {
+                    "cancelled" => "Request cancelled by user.",
+                    "timed_out" => "Agent execution timed out.",
+                    _ => "Final answer produced",
+                };
+                (
+                    AgentRunEventKind::Done,
+                    AgentRunPhase::Done,
+                    label.to_string(),
+                    Some(status.to_string()),
+                )
+            }
             AgentEvent::UsageUpdate { .. } => (
                 AgentRunEventKind::UsageUpdated,
                 AgentRunPhase::Accounting,
@@ -487,6 +499,7 @@ fn plan_phase(phase: &str) -> AgentRunPhase {
 mod tests {
     use super::*;
     use crate::agent::{ToolRunItem, ToolRunStatus};
+    use crate::llm::{Message, Role, Usage};
     use crate::tools::{
         ToolInputStreamingMode, ToolInterruptBehavior, ToolRenderKind, ToolRunCapabilities,
     };
@@ -583,6 +596,21 @@ mod tests {
         assert!(done_event.is_terminal());
         assert!(error_event.is_terminal());
         assert!(!status_event.is_terminal());
+    }
+
+    #[test]
+    fn done_event_preserves_cancelled_finish_reason() {
+        let run_event = AgentRunEvent::from_agent_event(&AgentEvent::Done {
+            message: Message::text(Role::Assistant, "Request cancelled by user."),
+            usage_total: Usage::default(),
+            last_prompt_tokens: 0,
+            cached: false,
+            finish_reason: Some("cancelled".to_string()),
+        });
+
+        assert_eq!(run_event.kind, AgentRunEventKind::Done);
+        assert_eq!(run_event.status.as_deref(), Some("cancelled"));
+        assert_eq!(run_event.label, "Request cancelled by user.");
     }
 
     #[test]

@@ -1032,7 +1032,7 @@ impl AgentExecutor {
                             usage_total: total_usage.clone(),
                             last_prompt_tokens,
                             cached: false,
-                            finish_reason: last_finish_reason.clone(),
+                            finish_reason: Some("cancelled".to_string()),
                         })
                         .await;
 

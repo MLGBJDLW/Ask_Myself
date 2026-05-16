@@ -289,13 +289,15 @@ impl<'a> AgentTaskRuntime<'a> {
                 None,
                 None,
             ),
-            AgentRunEventKind::Done => self.db.finish_agent_task_run(
-                run_id,
-                TaskRunStatus::Completed.as_str(),
-                Some(&event.label),
-                None,
-                None,
-            ),
+            AgentRunEventKind::Done => {
+                let (status, summary) = match event.status.as_deref() {
+                    Some("cancelled") => (TaskRunStatus::Cancelled, "Agent execution cancelled"),
+                    Some("timed_out") => (TaskRunStatus::TimedOut, "Agent execution timed out"),
+                    _ => (TaskRunStatus::Completed, event.label.as_str()),
+                };
+                self.db
+                    .finish_agent_task_run(run_id, status.as_str(), Some(summary), None, None)
+            }
             AgentRunEventKind::Error => {
                 let (status, summary) = match event.status.as_deref() {
                     Some("cancelled") => (TaskRunStatus::Cancelled, "Agent execution cancelled"),
@@ -325,7 +327,7 @@ mod tests {
     use crate::agent::AgentEvent;
     use crate::agent_run::AgentRunEvent;
     use crate::conversation::{ConversationMessage, CreateConversationInput};
-    use crate::llm::Role;
+    use crate::llm::{Message, Role, Usage};
 
     fn create_started_run(db: &Database, suffix: &str) -> (String, String) {
         let conversation = db
@@ -485,5 +487,21 @@ mod tests {
             assert_eq!(stored_event.status.as_deref(), Some(status));
             assert_eq!(run.status, status);
         }
+
+        let (run_id, turn_id) = create_started_run(&db, "done-cancelled");
+        let done_event = AgentRunEvent::from_agent_event(&AgentEvent::Done {
+            message: Message::text(Role::Assistant, "Request cancelled by user."),
+            usage_total: Usage::default(),
+            last_prompt_tokens: 0,
+            cached: false,
+            finish_reason: Some("cancelled".to_string()),
+        })
+        .with_context(Some(&run_id), Some(&turn_id), Some(4));
+
+        let stored_event = runtime.apply_run_event(&run_id, &done_event).unwrap();
+        let run = db.get_agent_task_run(&run_id).unwrap();
+
+        assert_eq!(stored_event.status.as_deref(), Some("cancelled"));
+        assert_eq!(run.status, "cancelled");
     }
 }

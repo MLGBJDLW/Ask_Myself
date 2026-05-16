@@ -520,6 +520,29 @@ test('dispatches canonical cancelled terminal errors without surfacing failed st
   streamStore.clearStream(conversationId);
 });
 
+test('dispatches cancelled done terminal events without surfacing failed state', () => {
+  const conversationId = 'conversation-no-state-cancelled-done-terminal';
+
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: runEvent({
+      eventSeq: 1,
+      kind: 'done',
+      phase: 'done',
+      label: 'Request cancelled by user.',
+      status: 'cancelled',
+      payload: { finishReason: 'cancelled' },
+    }),
+  } as AgentFrontendEvent);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'cancelled done terminal event should create stream state');
+  assertEqual(restored.isStreaming, false, 'cancelled done terminal event stops streaming');
+  assertEqual(restored.error, null, 'cancelled done terminal event should not set failed error');
+
+  streamStore.clearStream(conversationId);
+});
+
 test('live ordering ignores duplicate and late events while marking gaps', () => {
   const conversationId = 'conversation-live-ordering';
   const event = (eventSeq: number, offset: number, delta: string): AgentFrontendEvent => frontendEvent(runEvent({

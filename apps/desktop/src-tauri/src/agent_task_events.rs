@@ -324,12 +324,28 @@ pub(crate) fn record_task_progress_for_agent_event(
         }
         AgentEvent::Done { finish_reason, .. } => {
             let payload = serde_json::json!({ "finishReason": finish_reason });
+            let status = run_event.status.as_deref().unwrap_or("completed");
+            let label = match status {
+                "cancelled" => "Agent execution cancelled",
+                "timed_out" => "Agent execution timed out",
+                _ => "Final answer produced",
+            };
+            let progress_status = if status == "completed" {
+                "running"
+            } else {
+                status
+            };
+            let progress_phase = if status == "completed" {
+                "finalizing"
+            } else {
+                "done"
+            };
             let _ = db.update_agent_task_run_progress(
                 task_run_id,
-                Some("running"),
-                Some("finalizing"),
+                Some(progress_status),
+                Some(progress_phase),
                 None,
-                Some("Finalizing answer"),
+                Some(label),
                 None,
                 None,
             );
@@ -338,8 +354,8 @@ pub(crate) fn record_task_progress_for_agent_event(
                 &task_event_ctx,
                 run_event,
                 "status",
-                "Final answer produced",
-                Some("completed"),
+                label,
+                Some(status),
                 Some(&payload),
             );
         }

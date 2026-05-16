@@ -70,6 +70,7 @@ export function applyDoneEvent(
   event: AgentFrontendEvent,
   raw: RawFrontendEvent,
 ): void {
+  const terminalStatus = terminalRunStatus(event, raw);
   const finalThinking = state.thinkingText;
   const finalReply = state.streamText;
   const hasFinalRound = finalThinking.trim() || finalReply.trim();
@@ -95,8 +96,18 @@ export function applyDoneEvent(
     }
   }
 
-  state.toolCalls = markToolCallsFinished(state.toolCalls, 'done', 'No output');
-  state.streamRounds = markRoundsToolCallsFinished(state.streamRounds, 'done', 'No output');
+  const toolStatus = terminalStatus === 'cancelled'
+    ? 'cancelled'
+    : terminalStatus === 'timed_out'
+      ? 'timedOut'
+      : 'done';
+  const toolFallback = terminalStatus === 'cancelled'
+    ? 'Cancelled'
+    : terminalStatus === 'timed_out'
+      ? 'Timed out'
+      : 'No output';
+  state.toolCalls = markToolCallsFinished(state.toolCalls, toolStatus, toolFallback);
+  state.streamRounds = markRoundsToolCallsFinished(state.streamRounds, toolStatus, toolFallback);
   syncTraceToolEvents(state);
 
   applyUsageUpdateEvent(state, event, raw);
@@ -104,6 +115,7 @@ export function applyDoneEvent(
   const finishReason = raw.finishReason ?? raw.finish_reason ?? null;
   state.finishReason = typeof finishReason === 'string' ? finishReason : null;
   state.isStreaming = false;
+  if (terminalStatus === 'cancelled') state.error = null;
   state._activeRoundId = null;
   state._activeRoundAcceptingStarts = false;
   resetActiveStreamBlocks(state);
