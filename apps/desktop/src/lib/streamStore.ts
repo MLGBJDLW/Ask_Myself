@@ -14,6 +14,7 @@ import type {
 } from '../types/conversation';
 import { durableReplayItemsFromTaskEvents, taskTimelineEventsFromReplaySource } from './streaming/durableReplay';
 import { adaptFrontendRunEvent } from './streaming/legacyAdapter';
+import { applyStreamEventOrdering } from './streaming/ordering';
 import type {
   StreamRoundEvent,
   StreamState,
@@ -961,17 +962,10 @@ class StreamStoreImpl {
     }
     if (!s.isStreaming && !isTaskLifecycleEvent && !isTerminalEvent) return;
 
-    const eventSeqRaw = event.eventSeq ?? raw.eventSeq;
-    const eventSeq = typeof eventSeqRaw === 'number'
-      ? eventSeqRaw
-      : Number.parseInt(String(eventSeqRaw ?? ''), 10);
-    if (Number.isFinite(eventSeq) && eventSeq > 0) {
-      if (eventSeq <= s._lastEventSeq) return;
-      if (s._lastEventSeq > 0 && eventSeq > s._lastEventSeq + 1 && !s._eventSeqGapRecorded) {
-        s._eventSeqGapRecorded = true;
-        appendStatusTraceEvent(s, 'Stream event gap detected; replay may be required.', 'muted');
-      }
-      s._lastEventSeq = eventSeq;
+    const ordering = applyStreamEventOrdering(s, event.eventSeq ?? raw.eventSeq);
+    if (!ordering.accepted) return;
+    if (ordering.gapDetected) {
+      appendStatusTraceEvent(s, 'Stream event gap detected; replay may be required.', 'muted');
     }
 
     // Reset inactivity timeout on every event, including empty keepalive

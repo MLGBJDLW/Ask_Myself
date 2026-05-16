@@ -341,6 +341,37 @@ test('dispatches canonical terminal errors without an active stream state', () =
   streamStore.clearStream(conversationId);
 });
 
+test('live ordering ignores duplicate and late events while marking gaps', () => {
+  const conversationId = 'conversation-live-ordering';
+  const event = (eventSeq: number, offset: number, delta: string): AgentFrontendEvent => frontendEvent(runEvent({
+    eventSeq,
+    kind: 'outputDelta',
+    payload: {
+      blockId: 'answer-block',
+      channel: 'answer',
+      offset,
+      delta,
+    },
+  }));
+
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, event(1, 0, 'A'));
+  streamStore.dispatch(conversationId, event(1, 1, 'duplicate'));
+  streamStore.dispatch(conversationId, event(3, 1, 'C'));
+  streamStore.dispatch(conversationId, event(2, 2, 'late'));
+
+  const state = streamStore.getStream(conversationId);
+  assert(state, 'ordered stream state should exist');
+  assertEqual(state.streamText, 'AC', 'duplicate and late deltas are ignored');
+  assert(
+    state.traceEvents.some(trace =>
+      trace.kind === 'status' && trace.text.includes('Stream event gap detected')),
+    'gap should be marked in trace events',
+  );
+
+  streamStore.clearStream(conversationId);
+});
+
 async function main(): Promise<void> {
   for (const { name, fn } of tests) {
     try {
