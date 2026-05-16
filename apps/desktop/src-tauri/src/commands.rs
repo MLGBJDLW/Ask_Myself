@@ -107,6 +107,49 @@ pub struct AgentState {
     pub running: TokioMutex<HashMap<String, RunningAgentTask>>,
 }
 
+struct TerminalAgentError<'a> {
+    conversation_id: &'a str,
+    task_run_id: &'a str,
+    turn_id: &'a str,
+    message: &'a str,
+    status: &'a str,
+    payload: Option<&'a serde_json::Value>,
+}
+
+fn emit_terminal_agent_error_once(
+    terminal_emitted: &AtomicBool,
+    db: &Database,
+    app_handle: &AppHandle,
+    stream_event_seq: &AtomicU64,
+    error: TerminalAgentError<'_>,
+) {
+    if terminal_emitted.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let run_event = emit_agent_frontend_event(
+        app_handle,
+        stream_event_seq,
+        error.conversation_id,
+        error.task_run_id,
+        Some(error.turn_id),
+        AgentEvent::Error {
+            message: error.message.to_string(),
+        },
+    );
+    record_agent_run_task_event(
+        db,
+        app_handle,
+        error.conversation_id,
+        error.task_run_id,
+        &run_event,
+        "error",
+        error.message,
+        Some(error.status),
+        error.payload,
+    );
+}
+
 /// State for the MCP server manager.
 pub struct McpManagerState {
     pub manager: TokioMutex<nexa_core::mcp::McpManager>,
@@ -4372,58 +4415,38 @@ pub async fn agent_chat_cmd(
             Some(Ok(_)) => {}
             Some(Err(e)) => {
                 warn!("Agent execution failed for conversation {conv_id}: {e}");
-                if !terminal_emitted.swap(true, Ordering::SeqCst) {
-                    let terminal_event = AgentEvent::Error {
-                        message: "Agent execution failed unexpectedly.".to_string(),
-                    };
-                    let run_event = emit_agent_frontend_event(
-                        &handle,
-                        &stream_event_seq,
-                        &conv_id,
-                        &task_run_id,
-                        Some(&turn_id),
-                        terminal_event,
-                    );
-                    record_agent_run_task_event(
-                        &db,
-                        &handle,
-                        &conv_id,
-                        &task_run_id,
-                        &run_event,
-                        "error",
-                        "Agent execution failed unexpectedly.",
-                        Some("failed"),
-                        None,
-                    );
-                }
+                emit_terminal_agent_error_once(
+                    terminal_emitted.as_ref(),
+                    &db,
+                    &handle,
+                    stream_event_seq.as_ref(),
+                    TerminalAgentError {
+                        conversation_id: &conv_id,
+                        task_run_id: &task_run_id,
+                        turn_id: &turn_id,
+                        message: "Agent execution failed unexpectedly.",
+                        status: "failed",
+                        payload: None,
+                    },
+                );
             }
             None => {
                 warn!("Agent execution timed out for conversation {conv_id}");
-                if !terminal_emitted.swap(true, Ordering::SeqCst) {
-                    let terminal_event = AgentEvent::Error {
-                        message: "Agent execution timed out.".to_string(),
-                    };
-                    let run_event = emit_agent_frontend_event(
-                        &handle,
-                        &stream_event_seq,
-                        &conv_id,
-                        &task_run_id,
-                        Some(&turn_id),
-                        terminal_event,
-                    );
-                    let payload = serde_json::json!({ "reason": "timeout" });
-                    record_agent_run_task_event(
-                        &db,
-                        &handle,
-                        &conv_id,
-                        &task_run_id,
-                        &run_event,
-                        "error",
-                        "Agent execution timed out.",
-                        Some("timed_out"),
-                        Some(&payload),
-                    );
-                }
+                let payload = serde_json::json!({ "reason": "timeout" });
+                emit_terminal_agent_error_once(
+                    terminal_emitted.as_ref(),
+                    &db,
+                    &handle,
+                    stream_event_seq.as_ref(),
+                    TerminalAgentError {
+                        conversation_id: &conv_id,
+                        task_run_id: &task_run_id,
+                        turn_id: &turn_id,
+                        message: "Agent execution timed out.",
+                        status: "timed_out",
+                        payload: Some(&payload),
+                    },
+                );
             }
         }
 
