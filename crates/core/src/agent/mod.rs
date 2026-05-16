@@ -35,6 +35,8 @@ use crate::llm::{
 use crate::policy_engine::{evaluate_policy_with_baseline, PolicyEffect, PolicySubject};
 use crate::privacy;
 use crate::skills::Skill;
+use crate::task_run::AgentTaskRuntime;
+use crate::task_timeline::TaskTimelineEvent;
 use crate::tools::{ToolCategory, ToolInputStreamingMode, ToolInterruptBehavior, ToolRegistry};
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
@@ -2083,13 +2085,13 @@ impl AgentExecutor {
                                 None,
                                 Some(&task_artifacts),
                             );
-                            let _ = db.record_agent_task_run_event(
-                                &task_run.id,
-                                "verification",
+                            let timeline_event = TaskTimelineEvent::verification(
                                 "Evidence audit completed",
                                 verification_artifact["overallStatus"].as_str(),
                                 Some(&verification_artifact),
                             );
+                            let _ = AgentTaskRuntime::new(db)
+                                .record_timeline_event(&task_run.id, &timeline_event);
                         }
                     }
                 }

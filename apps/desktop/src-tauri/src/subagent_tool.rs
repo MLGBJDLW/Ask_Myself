@@ -16,6 +16,8 @@ use nexa_core::error::CoreError;
 use nexa_core::llm::{create_provider, CompletionRequest, ContentPart, ProviderConfig, Usage};
 use nexa_core::search;
 use nexa_core::skills::Skill;
+use nexa_core::task_run::AgentTaskRuntime;
+use nexa_core::task_timeline::TaskTimelineEvent;
 use nexa_core::tools::{Tool, ToolRegistry, ToolResult};
 use nexa_core::workflow_catalog::{
     workflow_template_by_id, workflow_template_id_values, WorkflowTemplateDefinition,
@@ -857,8 +859,9 @@ fn record_subtask_event(
     status: &str,
     payload: Option<&serde_json::Value>,
 ) {
+    let timeline_event = TaskTimelineEvent::subtask(label, status, payload);
     if let Err(err) =
-        db.record_agent_task_run_event(parent_run_id, "subtask", label, Some(status), payload)
+        AgentTaskRuntime::new(db).record_timeline_event(parent_run_id, &timeline_event)
     {
         warn!("Failed to record subtask event for {parent_run_id}: {err}");
     }

@@ -10,6 +10,7 @@ use crate::agent_run::{AgentRunEvent, AgentRunEventKind};
 use crate::conversation::{AgentSubtaskRun, AgentTaskRun, AgentTaskRunEvent};
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::task_timeline::TaskTimelineEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -164,6 +165,21 @@ impl<'a> AgentTaskRuntime<'a> {
         self.db.record_agent_task_run_event(
             run_id,
             event.task_event_type(),
+            &event.label,
+            event.status.as_deref(),
+            Some(&payload),
+        )
+    }
+
+    pub fn record_timeline_event(
+        &self,
+        run_id: &str,
+        event: &TaskTimelineEvent,
+    ) -> Result<AgentTaskRunEvent, CoreError> {
+        let payload = event.task_event_payload();
+        self.db.record_agent_task_run_event(
+            run_id,
+            event.event_type(),
             &event.label,
             event.status.as_deref(),
             Some(&payload),
@@ -375,6 +391,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(subtask.status, "completed");
+
+        let timeline_event = runtime
+            .record_timeline_event(
+                &run.id,
+                &TaskTimelineEvent::subtask(
+                    "Collect evidence",
+                    "completed",
+                    Some(&serde_json::json!({ "subtaskRunId": subtask.id })),
+                ),
+            )
+            .unwrap();
+        assert_eq!(timeline_event.event_type, "subtask");
+        assert_eq!(
+            timeline_event.payload.unwrap()["taskTimeline"]["kind"],
+            "subtask"
+        );
 
         let run = db.get_agent_task_run(&run.id).unwrap();
         assert_eq!(run.phase, "routing");

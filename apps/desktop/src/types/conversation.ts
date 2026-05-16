@@ -125,13 +125,26 @@ export interface AgentRunEvent {
   payload: ArtifactPayload | null;
 }
 
+export type TaskTimelineEventKind = 'subtask' | 'verification';
+
+export interface TaskTimelineEvent {
+  version: number;
+  kind: TaskTimelineEventKind;
+  label: string;
+  status?: string | null;
+  payload: ArtifactPayload | null;
+}
+
 export interface AgentTaskRunEvent {
   id: string;
   runId: string;
   eventType: string;
   label: string;
   status?: string | null;
-  payload?: (Record<string, unknown> & { agentRun?: AgentRunEvent }) | unknown[] | null;
+  payload?: (Record<string, unknown> & {
+    agentRun?: AgentRunEvent;
+    taskTimeline?: TaskTimelineEvent;
+  }) | unknown[] | null;
   createdAt: string;
 }
 

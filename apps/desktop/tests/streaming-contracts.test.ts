@@ -5,6 +5,10 @@ import {
 } from '../src/lib/streaming/durableReplay';
 import { armStreamWatchdog, clearStreamWatchdog } from '../src/lib/streaming/watchdog';
 import { streamStore } from '../src/lib/streamStore';
+import {
+  isTaskTimelineEvent,
+  taskTimelinePayloadFromTaskEvent,
+} from '../src/lib/streaming/taskTimeline';
 import type {
   AgentFrontendEvent,
   AgentRunEvent,
@@ -292,6 +296,60 @@ test('keeps lifecycle status run events out of durable stream replay', () => {
   assertEqual(replay[0].event.eventType, 'stream', 'only stream event replays');
   assertEqual(timeline.length, 1, 'lifecycle status remains in task timeline');
   assertEqual(timeline[0].id, 'queued', 'queued status remains visible as task event');
+});
+
+test('keeps typed task timeline events out of durable stream replay', () => {
+  const events = [
+    taskEvent({
+      id: 'subtask',
+      eventType: 'subtask',
+      label: 'Collect evidence',
+      status: 'completed',
+      payload: {
+        taskTimeline: {
+          version: 1,
+          kind: 'subtask',
+          label: 'Collect evidence',
+          status: 'completed',
+          payload: { subtaskRunId: 'subtask-1' },
+        },
+      },
+    }),
+    taskEvent({
+      id: 'verification',
+      eventType: 'verification',
+      label: 'Evidence audit completed',
+      status: 'passed',
+      payload: {
+        taskTimeline: {
+          version: 1,
+          kind: 'verification',
+          label: 'Evidence audit completed',
+          status: 'passed',
+          payload: { kind: 'verification', overallStatus: 'passed' },
+        },
+      },
+    }),
+  ];
+
+  const replay = durableReplayItemsFromTaskEvents(events);
+  const timeline = taskTimelineEventsFromReplaySource(events);
+  const subtaskTimeline = taskTimelinePayloadFromTaskEvent(events[0]);
+
+  assertEqual(replay.length, 0, 'timeline events should not replay as stream output');
+  assertEqual(timeline.length, 2, 'timeline events remain visible');
+  assert(isTaskTimelineEvent(events[0]), 'subtask event should expose timeline payload');
+  assert(subtaskTimeline, 'subtask timeline payload should parse');
+  assertEqual(subtaskTimeline.kind, 'subtask', 'timeline kind');
+  assert(
+    subtaskTimeline.payload && typeof subtaskTimeline.payload === 'object' && !Array.isArray(subtaskTimeline.payload),
+    'timeline payload should be a record',
+  );
+  assertEqual(
+    (subtaskTimeline.payload as Record<string, unknown>).subtaskRunId,
+    'subtask-1',
+    'timeline payload',
+  );
 });
 
 test('projects canonical terminal errors as durable replay terminal items', () => {

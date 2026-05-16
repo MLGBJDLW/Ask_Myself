@@ -11,6 +11,7 @@ import {
   applyTerminalProjection,
   type StreamTerminalProjectionState,
 } from './terminalProjection';
+import { isTaskTimelineEvent } from './taskTimeline';
 
 export interface DurableReplayProjectionState extends StreamTerminalProjectionState {
   _lastEventSeq: number;
@@ -18,7 +19,7 @@ export interface DurableReplayProjectionState extends StreamTerminalProjectionSt
 
 export function taskTimelineEventsFromReplaySource(events: AgentTaskRunEvent[]): AgentTaskRunEvent[] {
   return events
-    .filter(event => !isDurableStreamEvent(event))
+    .filter(event => isTaskTimelineEvent(event) || !isDurableStreamEvent(event))
     .slice(-50);
 }
 

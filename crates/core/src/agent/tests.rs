@@ -1552,12 +1552,14 @@ async fn test_run_persists_typed_task_plan_on_task_run() {
     assert_eq!(artifacts["verification"]["kind"], "verification");
 
     let events = db.get_agent_task_run_events(&task_run.id).unwrap();
-    assert!(events
+    let verification_event = events
         .iter()
-        .any(|event| event.event_type == "plan" && event.status.as_deref() == Some("completed")));
-    assert!(events
-        .iter()
-        .any(|event| event.event_type == "verification"));
+        .find(|event| event.event_type == "verification")
+        .expect("task run should record a verification timeline event");
+    assert_eq!(
+        verification_event.payload.as_ref().unwrap()["taskTimeline"]["kind"],
+        "verification"
+    );
 }
 
 #[tokio::test]
