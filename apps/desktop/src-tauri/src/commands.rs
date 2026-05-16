@@ -4230,7 +4230,6 @@ pub async fn agent_chat_cmd(
                                 stream_emitter.emit_event(
                                     &event_handle,
                                     &stream_conv_id,
-                                    frontend_event,
                                     run_event,
                                 );
                                 if rotates_blocks {

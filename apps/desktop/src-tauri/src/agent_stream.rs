@@ -18,8 +18,6 @@ struct AgentFrontendEvent {
     conversation_id: String,
     #[serde(rename = "runEvent")]
     run_event: AgentRunEvent,
-    #[serde(flatten)]
-    event: AgentEvent,
 }
 
 pub(crate) fn emit_agent_frontend_event(
@@ -40,7 +38,6 @@ pub(crate) fn emit_agent_frontend_event(
     let payload = AgentFrontendEvent {
         conversation_id: conversation_id.to_string(),
         run_event: run_event.clone(),
-        event,
     };
     emit_app_event(handle, "agent:event", &payload);
     run_event
@@ -306,13 +303,11 @@ impl StreamBlockEmitter {
         &self,
         handle: &AppHandle,
         conversation_id: &str,
-        event: AgentEvent,
         run_event: AgentRunEvent,
     ) {
         let payload = AgentFrontendEvent {
             conversation_id: conversation_id.to_string(),
             run_event,
-            event,
         };
         emit_app_event(handle, "agent:event", &payload);
     }
@@ -378,16 +373,9 @@ impl StreamBlockEmitter {
                 current_offset,
                 chunk,
             );
-            let event = AgentEvent::StreamBlockDelta {
-                block_id: block_id.clone(),
-                channel,
-                offset: current_offset,
-                delta: chunk.to_string(),
-            };
             let payload = AgentFrontendEvent {
                 conversation_id: conversation_id.to_string(),
                 run_event: run_event.clone(),
-                event,
             };
             emit_app_event(handle, "agent:event", &payload);
 
