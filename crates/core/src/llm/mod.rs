@@ -305,7 +305,7 @@ fn provider_stream_event_from_chunk_result(
 ) -> ProviderStreamEvent {
     match item {
         Ok(chunk) => ProviderStreamEvent::Chunk { chunk },
-        Err(CoreError::StreamIncomplete(message)) => {
+        Err(CoreError::StreamIncomplete(message) | CoreError::TransientLlm(message)) => {
             ProviderStreamEvent::RecoverableError { message }
         }
         Err(error) => ProviderStreamEvent::TerminalError {
@@ -536,6 +536,23 @@ mod tests {
         assert!(matches!(
             &events[1],
             ProviderStreamEvent::RecoverableError { message } if message == "connection closed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_chunk_adapter_classifies_transient_llm_as_recoverable() {
+        let source = Box::pin(stream::iter(vec![Err(CoreError::TransientLlm(
+            "temporary network failure".to_string(),
+        ))]));
+
+        let events = stream_chunks_to_provider_events(source)
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(matches!(
+            &events[0],
+            ProviderStreamEvent::RecoverableError { message }
+                if message == "temporary network failure"
         ));
     }
 
