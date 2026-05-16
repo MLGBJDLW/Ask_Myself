@@ -1,0 +1,16 @@
+{
+  "placeholder": "Saisir une commande...",
+  "noResults": "Aucune commande trouvée",
+  "navigation": "Navigation",
+  "actions": "Actions",
+  "recentQueries": "Recherches récentes",
+  "scanAll": "Analyser toutes les sources",
+  "rebuildEmbeddings": "Reconstruire l'index vectoriel",
+  "scanningAll": "Analyse de toutes les sources en cours…",
+  "scanComplete": "Analyse terminée",
+  "scanError": "Échec de l'analyse",
+  "rebuildingEmbeddings": "Reconstruction de l'index vectoriel en cours…",
+  "rebuildComplete": "Reconstruction vectorielle terminée",
+  "rebuildError": "Échec de la reconstruction vectorielle",
+  "shortcuts": "Raccourcis clavier"
+}

@@ -1,0 +1,23 @@
+{
+  "available": "Mise à jour disponible",
+  "version": "La version {version} est disponible",
+  "downloading": "Téléchargement de la mise à jour...",
+  "ready": "Mise à jour prête. Redémarrez pour appliquer.",
+  "error": "Échec de la vérification des mises à jour",
+  "downloadFailed": "Échec du téléchargement de la mise à jour",
+  "installFailed": "Échec de l'installation de la mise à jour",
+  "checkNow": "Rechercher des mises à jour",
+  "downloadInstall": "Télécharger et installer",
+  "restart": "Redémarrer maintenant",
+  "dismiss": "Plus tard",
+  "upToDate": "Vous êtes à jour",
+  "appUpdate": "Mise à jour de l’application",
+  "appUpdateDescription": "Consultez la version installée, les nouvelles versions, les notes de version et l’installation depuis un seul endroit.",
+  "currentVersion": "Version actuelle",
+  "latestVersion": "Dernière version",
+  "status": "État",
+  "lastChecked": "Dernière vérification {time}",
+  "notChecked": "Pas encore vérifié",
+  "releaseNotes": "Notes de version",
+  "details": "Détails"
+}

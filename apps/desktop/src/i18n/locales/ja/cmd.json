@@ -1,0 +1,16 @@
+{
+  "placeholder": "コマンドを入力...",
+  "noResults": "一致するコマンドがありません",
+  "navigation": "ナビゲーション",
+  "actions": "アクション",
+  "recentQueries": "最近の検索",
+  "scanAll": "すべてのデータソースをスキャン",
+  "rebuildEmbeddings": "ベクトルインデックスを再構築",
+  "scanningAll": "すべてのデータソースをスキャン中…",
+  "scanComplete": "スキャン完了",
+  "scanError": "スキャンに失敗しました",
+  "rebuildingEmbeddings": "ベクトルインデックスを再構築中…",
+  "rebuildComplete": "ベクトル再構築完了",
+  "rebuildError": "ベクトル再構築に失敗しました",
+  "shortcuts": "キーボードショートカット"
+}

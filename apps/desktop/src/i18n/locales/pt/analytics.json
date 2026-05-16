@@ -1,0 +1,22 @@
+{
+  "title": "Análise",
+  "totalSessions": "Sessões totais",
+  "successRate": "Taxa de sucesso",
+  "cacheHitRate": "Taxa de cache",
+  "totalTokens": "Tokens totais",
+  "avgIterations": "Iterações méd.",
+  "avgContextUsage": "Uso de contexto méd.",
+  "topTools": "Ferramentas mais usadas",
+  "recentSessions": "Sessões recentes",
+  "noData": "Sem dados de rastreamento",
+  "outcome": "Resultado",
+  "iterations": "Iterações",
+  "tools": "Ferramentas",
+  "tokens": "Tokens",
+  "last7Days": "Últimos 7 dias",
+  "sessionsLast7Days": "Sessões (7d)",
+  "tokensLast7Days": "Tokens (7d)",
+  "toolName": "Ferramenta",
+  "count": "Contagem",
+  "message": "Mensagem"
+}

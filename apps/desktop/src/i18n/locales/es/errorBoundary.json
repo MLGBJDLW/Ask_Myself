@@ -1,0 +1,6 @@
+{
+  "title": "Algo salió mal",
+  "description": "Ocurrió un error inesperado. Puede intentar reiniciar la aplicación.",
+  "restart": "Reiniciar",
+  "details": "Detalles del error"
+}

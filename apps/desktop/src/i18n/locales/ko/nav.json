@@ -1,0 +1,13 @@
+{
+  "search": "검색",
+  "sources": "데이터 소스",
+  "playbooks": "컴렉션",
+  "settings": "설정",
+  "collapse": "접기",
+  "expand": "펼치기",
+  "commandPalette": "명령 팔레트",
+  "mainNav": "주요 탐색",
+  "chat": "Chat",
+  "knowledge": "Knowledge",
+  "tasks": "작업"
+}

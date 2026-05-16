@@ -1,0 +1,6 @@
+{
+  "title": "Une erreur est survenue",
+  "description": "Une erreur inattendue s'est produite. Vous pouvez essayer de redémarrer l'application.",
+  "restart": "Redémarrer",
+  "details": "Détails de l'erreur"
+}

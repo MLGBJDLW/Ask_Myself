@@ -1,0 +1,23 @@
+{
+  "available": "Atualização disponível",
+  "version": "A versão {version} está disponível",
+  "downloading": "Baixando atualização...",
+  "ready": "Atualização pronta. Reinicie para aplicar.",
+  "error": "Falha ao verificar atualizações",
+  "downloadFailed": "Falha ao baixar atualização",
+  "installFailed": "Falha ao instalar atualização",
+  "checkNow": "Verificar atualizações",
+  "downloadInstall": "Baixar e instalar",
+  "restart": "Reiniciar agora",
+  "dismiss": "Mais tarde",
+  "upToDate": "Você está atualizado",
+  "appUpdate": "Atualização do app",
+  "appUpdateDescription": "Veja a versão instalada, novas versões, notas de lançamento e instalação em um único lugar.",
+  "currentVersion": "Versão atual",
+  "latestVersion": "Versão mais recente",
+  "status": "Status",
+  "lastChecked": "Última verificação {time}",
+  "notChecked": "Ainda não verificado",
+  "releaseNotes": "Notas da versão",
+  "details": "Detalhes"
+}

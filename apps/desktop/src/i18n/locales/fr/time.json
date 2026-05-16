@@ -1,0 +1,9 @@
+{
+  "justNow": "à l'instant",
+  "minuteShort": "min",
+  "hourShort": "h",
+  "dayShort": "j",
+  "monthShort": "mo",
+  "minutesAgo": "il y a {n}min",
+  "hoursAgo": "il y a {n}h"
+}

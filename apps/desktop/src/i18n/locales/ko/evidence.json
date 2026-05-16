@@ -1,0 +1,7 @@
+{
+  "videoTranscript": "영상 전사",
+  "frameOcr": "프레임 텍스트",
+  "jumpToTimestamp": "타임스탬프로 이동",
+  "duration": "재생 시간",
+  "audioTranscript": "오디오 전사"
+}

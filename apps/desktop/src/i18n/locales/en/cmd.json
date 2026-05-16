@@ -1,0 +1,16 @@
+{
+  "placeholder": "Type a command...",
+  "noResults": "No matching commands",
+  "navigation": "Navigation",
+  "actions": "Actions",
+  "recentQueries": "Recent Searches",
+  "scanAll": "Scan all sources",
+  "rebuildEmbeddings": "Rebuild vector index",
+  "scanningAll": "Scanning all sources…",
+  "scanComplete": "Scan complete",
+  "scanError": "Scan failed",
+  "rebuildingEmbeddings": "Rebuilding vector index…",
+  "rebuildComplete": "Vector rebuild complete",
+  "rebuildError": "Vector rebuild failed",
+  "shortcuts": "Keyboard Shortcuts"
+}

@@ -1,0 +1,23 @@
+{
+  "available": "アップデートがあります",
+  "version": "バージョン {version} が利用可能です",
+  "downloading": "アップデートをダウンロード中...",
+  "ready": "アップデート準備完了。再起動して適用します。",
+  "error": "アップデートの確認に失敗しました",
+  "downloadFailed": "アップデートのダウンロードに失敗しました",
+  "installFailed": "アップデートのインストールに失敗しました",
+  "checkNow": "アップデートを確認",
+  "downloadInstall": "ダウンロードしてインストール",
+  "restart": "今すぐ再起動",
+  "dismiss": "後で",
+  "upToDate": "最新の状態です",
+  "appUpdate": "アプリのアップデート",
+  "appUpdateDescription": "現在のバージョン、新しいリリース、リリースノート、インストール操作をこの場所で管理します。",
+  "currentVersion": "現在のバージョン",
+  "latestVersion": "最新バージョン",
+  "status": "ステータス",
+  "lastChecked": "最終確認 {time}",
+  "notChecked": "まだ確認していません",
+  "releaseNotes": "リリースノート",
+  "details": "詳細"
+}

@@ -1,0 +1,16 @@
+{
+  "placeholder": "输入命令...",
+  "noResults": "未找到匹配命令",
+  "navigation": "导航",
+  "actions": "操作",
+  "recentQueries": "最近搜索",
+  "scanAll": "扫描所有数据源",
+  "rebuildEmbeddings": "重建向量索引",
+  "scanningAll": "正在扫描所有数据源…",
+  "scanComplete": "扫描完成",
+  "scanError": "扫描失败",
+  "rebuildingEmbeddings": "正在重建向量索引…",
+  "rebuildComplete": "向量重建完成",
+  "rebuildError": "向量重建失败",
+  "shortcuts": "快捷键"
+}

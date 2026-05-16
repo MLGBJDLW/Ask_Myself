@@ -1,0 +1,22 @@
+{
+  "title": "歡迎使用 Nexa",
+  "subtitle": "你的個人知識助手",
+  "description": "新增文件、連接 AI，開始向自己的知識庫提問。",
+  "getStarted": "開始使用",
+  "addSource": "新增知識來源",
+  "addSourceDescription": "選擇一個包含文件的資料夾（筆記、PDF、Word 等）",
+  "selectFolder": "選擇資料夾",
+  "folderSelected": "已新增資料夾：{folder}",
+  "configureAI": "連接 AI 服務",
+  "configureAIDescription": "設定一個 AI 模型來回答你的問題",
+  "selectProvider": "選擇服務商",
+  "apiKey": "API 金鑰",
+  "testConnection": "測試連接",
+  "connectionSuccess": "連接成功！",
+  "connectionFailed": "連接失敗",
+  "allSet": "一切就緒！",
+  "allSetDescription": "開始探索你的知識庫",
+  "startUsing": "開始使用 Nexa",
+  "skip": "暫時跳過",
+  "step": "第 {current} 步，共 {total} 步"
+}

@@ -1,0 +1,19 @@
+{
+  "play": "Воспроизвести",
+  "pause": "Пауза",
+  "transcript": "Транскрипция",
+  "noTranscript": "Транскрипция недоступна",
+  "processing": "Обработка видео...",
+  "extractingAudio": "Извлечение аудио...",
+  "extractingSubtitles": "Извлечение субтитров...",
+  "transcribing": "Транскрипция речи...",
+  "extractingFrames": "Извлечение кадров...",
+  "runningOcr": "Запуск OCR...",
+  "processingComplete": "Обработка завершена",
+  "clickToSeek": "Нажмите для перехода",
+  "videoDetails": "Сведения о видео",
+  "resolution": "Разрешение",
+  "codec": "Кодек",
+  "framerate": "Частота кадров",
+  "transcriptHint": "Загрузите модель Whisper в настройках и повторно просканируйте источники, чтобы включить транскрипцию."
+}

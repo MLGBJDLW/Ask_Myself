@@ -1,0 +1,20 @@
+{
+  "save": "保存",
+  "cancel": "キャンセル",
+  "delete": "削除",
+  "edit": "編集",
+  "close": "閉じる",
+  "confirm": "確認",
+  "loading": "読み込み中...",
+  "error": "エラー",
+  "success": "成功",
+  "add": "追加",
+  "create": "作成",
+  "remove": "削除",
+  "collapse": "折りたたむ",
+  "expand": "展開する",
+  "clear": "クリア",
+  "selectAll": "すべて選択",
+  "clearAll": "すべてクリア",
+  "undo": "元に戻す"
+}

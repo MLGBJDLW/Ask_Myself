@@ -1,0 +1,22 @@
+{
+  "title": "Bienvenue dans Nexa",
+  "subtitle": "Votre assistant de connaissances personnel",
+  "description": "Ajoutez vos documents, connectez une IA et commencez à interroger vos propres connaissances.",
+  "getStarted": "Commencer",
+  "addSource": "Ajouter vos connaissances",
+  "addSourceDescription": "Sélectionnez un dossier contenant vos documents (notes, PDF, docs)",
+  "selectFolder": "Sélectionner un dossier",
+  "folderSelected": "Dossier ajouté : {folder}",
+  "configureAI": "Connecter un fournisseur IA",
+  "configureAIDescription": "Configurez un modèle IA pour répondre à vos questions",
+  "selectProvider": "Sélectionner un fournisseur",
+  "apiKey": "Clé API",
+  "testConnection": "Tester la connexion",
+  "connectionSuccess": "Connexion réussie !",
+  "connectionFailed": "Échec de la connexion",
+  "allSet": "Tout est prêt !",
+  "allSetDescription": "Commencez à explorer vos connaissances",
+  "startUsing": "Commencer à utiliser Nexa",
+  "skip": "Passer pour le moment",
+  "step": "Étape {current} sur {total}"
+}

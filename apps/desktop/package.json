@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite",
     "dev:autoport": "node ./scripts/tauri-dev-autoport.mjs",
-    "build": "tsc -b && vite build",
-    "test": "npm run test:streaming",
+    "build": "npm run i18n:check && tsc -b && vite build",
+    "test": "npm run i18n:check && npm run test:streaming",
+    "i18n:generate": "node ./scripts/i18n-namespaces.mjs generate",
+    "i18n:check": "node ./scripts/i18n-namespaces.mjs check",
     "test:streaming": "node ./scripts/run-streaming-contracts.mjs",
     "preview": "vite preview",
     "tauri": "tauri",

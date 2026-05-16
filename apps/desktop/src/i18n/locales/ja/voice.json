@@ -1,0 +1,14 @@
+{
+  "startRecording": "音声入力を開始",
+  "stopRecording": "録音を停止",
+  "processing": "文字起こし中...",
+  "error": "音声入力が利用できません",
+  "permissionDenied": "マイクの使用が拒否されました",
+  "noModel": "設定でWhisperモデルをダウンロードしてください",
+  "microphoneSection": "音声入力",
+  "microphoneDevice": "マイク",
+  "microphoneDeviceDesc": "音声入力に使用するマイクを選択",
+  "microphoneDefault": "システムデフォルト",
+  "microphoneRefresh": "デバイスを更新",
+  "microphoneDeviceN": "デバイス"
+}

@@ -1,0 +1,22 @@
+{
+  "title": "Аналитика",
+  "totalSessions": "Всего сессий",
+  "successRate": "Успешность",
+  "cacheHitRate": "Попадания в кэш",
+  "totalTokens": "Всего токенов",
+  "avgIterations": "Ср. итераций",
+  "avgContextUsage": "Ср. использование контекста",
+  "topTools": "Популярные инструменты",
+  "recentSessions": "Последние сессии",
+  "noData": "Нет данных трассировки",
+  "outcome": "Результат",
+  "iterations": "Итерации",
+  "tools": "Инструменты",
+  "tokens": "Токены",
+  "last7Days": "За 7 дней",
+  "sessionsLast7Days": "Сессии (7д)",
+  "tokensLast7Days": "Токены (7д)",
+  "toolName": "Инструмент",
+  "count": "Количество",
+  "message": "Сообщение"
+}

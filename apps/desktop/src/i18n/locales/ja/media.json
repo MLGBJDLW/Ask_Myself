@@ -1,0 +1,19 @@
+{
+  "play": "再生",
+  "pause": "一時停止",
+  "transcript": "文字起こし",
+  "noTranscript": "文字起こしがありません",
+  "processing": "動画を処理中...",
+  "extractingAudio": "音声を抽出中...",
+  "extractingSubtitles": "字幕を抽出中...",
+  "transcribing": "音声を文字起こし中...",
+  "extractingFrames": "フレームを抽出中...",
+  "runningOcr": "OCRを実行中...",
+  "processingComplete": "処理完了",
+  "clickToSeek": "クリックでシーク",
+  "videoDetails": "動画の詳細",
+  "resolution": "解像度",
+  "codec": "コーデック",
+  "framerate": "フレームレート",
+  "transcriptHint": "設定で Whisper モデルをダウンロードしてからソースを再スキャンすると文字起こしが有効になります。"
+}

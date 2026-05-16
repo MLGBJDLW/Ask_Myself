@@ -1,0 +1,23 @@
+{
+  "available": "Update Available",
+  "version": "Version {version} is available",
+  "downloading": "Downloading update...",
+  "ready": "Update ready. Restart to apply.",
+  "error": "Update check failed",
+  "downloadFailed": "Update download failed",
+  "installFailed": "Update install failed",
+  "checkNow": "Check for Updates",
+  "downloadInstall": "Download & Install",
+  "restart": "Restart Now",
+  "dismiss": "Later",
+  "upToDate": "You're up to date",
+  "appUpdate": "App update",
+  "appUpdateDescription": "Check the installed version, review available releases, and install updates from one predictable place.",
+  "currentVersion": "Current version",
+  "latestVersion": "Latest version",
+  "status": "Status",
+  "lastChecked": "Last checked {time}",
+  "notChecked": "Not checked yet",
+  "releaseNotes": "Release notes",
+  "details": "Details"
+}

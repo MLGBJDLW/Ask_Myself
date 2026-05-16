@@ -1,0 +1,16 @@
+{
+  "placeholder": "Befehl eingeben...",
+  "noResults": "Keine passenden Befehle",
+  "navigation": "Navigation",
+  "actions": "Aktionen",
+  "recentQueries": "Letzte Suchanfragen",
+  "scanAll": "Alle Quellen scannen",
+  "rebuildEmbeddings": "Vektorindex neu erstellen",
+  "scanningAll": "Alle Quellen werden gescannt…",
+  "scanComplete": "Scan abgeschlossen",
+  "scanError": "Scan fehlgeschlagen",
+  "rebuildingEmbeddings": "Vektorindex wird neu erstellt…",
+  "rebuildComplete": "Vektorneuerstellung abgeschlossen",
+  "rebuildError": "Vektorneuerstellung fehlgeschlagen",
+  "shortcuts": "Tastaturkürzel"
+}

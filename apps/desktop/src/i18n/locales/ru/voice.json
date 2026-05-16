@@ -1,0 +1,14 @@
+{
+  "startRecording": "Начать голосовой ввод",
+  "stopRecording": "Остановить запись",
+  "processing": "Транскрипция...",
+  "error": "Голосовой ввод недоступен",
+  "permissionDenied": "Доступ к микрофону запрещён",
+  "noModel": "Загрузите модель Whisper в Настройках",
+  "microphoneSection": "Голосовой ввод",
+  "microphoneDevice": "Микрофон",
+  "microphoneDeviceDesc": "Выберите микрофон для голосового ввода",
+  "microphoneDefault": "Системный по умолчанию",
+  "microphoneRefresh": "Обновить устройства",
+  "microphoneDeviceN": "Устройство"
+}

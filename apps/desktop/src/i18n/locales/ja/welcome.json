@@ -1,0 +1,22 @@
+{
+  "title": "Nexa へようこそ",
+  "subtitle": "あなたの個人ナレッジアシスタント",
+  "description": "ドキュメントを追加し、AI に接続して、自分のナレッジに質問を始めましょう。",
+  "getStarted": "始めましょう",
+  "addSource": "ナレッジを追加",
+  "addSourceDescription": "ドキュメントを含むフォルダを選択してください（メモ、PDF、Wordなど）",
+  "selectFolder": "フォルダを選択",
+  "folderSelected": "フォルダを追加しました：{folder}",
+  "configureAI": "AI プロバイダーに接続",
+  "configureAIDescription": "質問に答える AI モデルを設定します",
+  "selectProvider": "プロバイダーを選択",
+  "apiKey": "API キー",
+  "testConnection": "接続テスト",
+  "connectionSuccess": "接続成功！",
+  "connectionFailed": "接続に失敗しました",
+  "allSet": "準備完了！",
+  "allSetDescription": "ナレッジの探索を始めましょう",
+  "startUsing": "Nexa を使い始める",
+  "skip": "スキップ",
+  "step": "ステップ {current} / {total}"
+}

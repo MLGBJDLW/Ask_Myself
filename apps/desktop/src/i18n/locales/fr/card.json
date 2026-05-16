@@ -1,0 +1,11 @@
+{
+  "relevance": "Pertinence",
+  "upvote": "Approuver",
+  "downvote": "Désapprouver",
+  "pin": "Épingler",
+  "expand": "Voir plus",
+  "collapse": "Réduire",
+  "openFile": "Ouvrir le fichier",
+  "showInFolder": "Afficher dans le dossier",
+  "fileNotFound": "Fichier introuvable"
+}

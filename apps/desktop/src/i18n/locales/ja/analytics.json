@@ -1,0 +1,22 @@
+{
+  "title": "分析",
+  "totalSessions": "セッション合計",
+  "successRate": "成功率",
+  "cacheHitRate": "キャッシュヒット率",
+  "totalTokens": "トークン合計",
+  "avgIterations": "平均イテレーション",
+  "avgContextUsage": "平均コンテキスト使用率",
+  "topTools": "よく使うツール",
+  "recentSessions": "最近のセッション",
+  "noData": "トレースデータがありません",
+  "outcome": "結果",
+  "iterations": "イテレーション",
+  "tools": "ツール",
+  "tokens": "トークン",
+  "last7Days": "過去7日間",
+  "sessionsLast7Days": "セッション（7日）",
+  "tokensLast7Days": "トークン（7日）",
+  "toolName": "ツール",
+  "count": "回数",
+  "message": "メッセージ"
+}

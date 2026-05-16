@@ -1,0 +1,11 @@
+{
+  "relevance": "相关度",
+  "upvote": "点赞",
+  "downvote": "踩",
+  "pin": "收藏",
+  "expand": "展开更多",
+  "collapse": "收起",
+  "openFile": "打开文件",
+  "showInFolder": "在文件夹中显示",
+  "fileNotFound": "文件不存在"
+}

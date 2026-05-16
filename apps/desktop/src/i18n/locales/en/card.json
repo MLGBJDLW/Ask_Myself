@@ -1,0 +1,11 @@
+{
+  "relevance": "Relevance",
+  "upvote": "Upvote",
+  "downvote": "Downvote",
+  "pin": "Pin",
+  "expand": "Show more",
+  "collapse": "Show less",
+  "openFile": "Open file",
+  "showInFolder": "Show in folder",
+  "fileNotFound": "File not found"
+}

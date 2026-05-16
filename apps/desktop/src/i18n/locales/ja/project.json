@@ -1,0 +1,20 @@
+{
+  "allConversations": "すべての会話",
+  "createNew": "新規プロジェクト",
+  "name": "プロジェクト名",
+  "namePlaceholder": "プロジェクト名を入力…",
+  "description": "説明",
+  "moveToProject": "プロジェクトに移動",
+  "removeFromProject": "プロジェクトから削除",
+  "delete": "プロジェクトを削除",
+  "deleteConfirm": "プロジェクトを削除しますか？",
+  "deleteConfirmDesc": "このプロジェクトの会話は未分類になります。この操作は元に戻せません。",
+  "noProjects": "プロジェクトなし",
+  "settings": "プロジェクト設定",
+  "systemPrompt": "プロジェクトシステムプロンプト",
+  "manageProjects": "プロジェクト管理",
+  "created": "プロジェクトを作成しました",
+  "deleted": "プロジェクトを削除しました",
+  "moved": "会話をプロジェクトに移動しました",
+  "removed": "会話をプロジェクトから削除しました"
+}

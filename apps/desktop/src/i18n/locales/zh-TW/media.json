@@ -1,0 +1,19 @@
+{
+  "play": "播放",
+  "pause": "暫停",
+  "transcript": "逐字稿",
+  "noTranscript": "沒有可用的逐字稿",
+  "processing": "正在處理影片...",
+  "extractingAudio": "正在提取音訊...",
+  "extractingSubtitles": "正在提取字幕...",
+  "transcribing": "正在轉錄語音...",
+  "extractingFrames": "正在提取影格...",
+  "runningOcr": "正在執行 OCR...",
+  "processingComplete": "處理完成",
+  "clickToSeek": "點擊跳轉",
+  "videoDetails": "影片詳情",
+  "resolution": "解析度",
+  "codec": "編解碼器",
+  "framerate": "幀率",
+  "transcriptHint": "在設定中下載 Whisper 模型後重新掃描資料來源以啟用轉錄功能。"
+}

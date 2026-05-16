@@ -1,0 +1,9 @@
+{
+  "justNow": "ahora",
+  "minuteShort": "min",
+  "hourShort": "h",
+  "dayShort": "d",
+  "monthShort": "me",
+  "minutesAgo": "hace {n}min",
+  "hoursAgo": "hace {n}h"
+}

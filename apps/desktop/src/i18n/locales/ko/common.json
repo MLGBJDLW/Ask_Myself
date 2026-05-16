@@ -1,0 +1,20 @@
+{
+  "save": "저장",
+  "cancel": "취소",
+  "delete": "삭제",
+  "edit": "편집",
+  "close": "닫기",
+  "confirm": "확인",
+  "loading": "로딩 중...",
+  "error": "오류",
+  "success": "성공",
+  "add": "추가",
+  "create": "만들기",
+  "remove": "제거",
+  "collapse": "접기",
+  "expand": "펼치기",
+  "clear": "지우기",
+  "selectAll": "모두 선택",
+  "clearAll": "모두 지우기",
+  "undo": "실행 취소"
+}

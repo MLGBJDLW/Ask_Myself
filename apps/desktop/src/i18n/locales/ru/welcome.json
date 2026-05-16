@@ -1,0 +1,22 @@
+{
+  "title": "Добро пожаловать в Nexa",
+  "subtitle": "Ваш персональный ассистент знаний",
+  "description": "Добавьте документы, подключите ИИ и начните задавать вопросы по своей базе знаний.",
+  "getStarted": "Начать",
+  "addSource": "Добавить знания",
+  "addSourceDescription": "Выберите папку с вашими документами (заметки, PDF, Word)",
+  "selectFolder": "Выбрать папку",
+  "folderSelected": "Папка добавлена: {folder}",
+  "configureAI": "Подключить ИИ-провайдера",
+  "configureAIDescription": "Настройте модель ИИ для ответов на ваши вопросы",
+  "selectProvider": "Выбрать провайдера",
+  "apiKey": "API-ключ",
+  "testConnection": "Проверить подключение",
+  "connectionSuccess": "Подключение успешно!",
+  "connectionFailed": "Ошибка подключения",
+  "allSet": "Всё готово!",
+  "allSetDescription": "Начните исследовать свои знания",
+  "startUsing": "Начать использовать Nexa",
+  "skip": "Пропустить",
+  "step": "Шаг {current} из {total}"
+}

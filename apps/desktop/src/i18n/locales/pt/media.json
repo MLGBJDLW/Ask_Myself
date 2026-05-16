@@ -1,0 +1,19 @@
+{
+  "play": "Reproduzir",
+  "pause": "Pausar",
+  "transcript": "Transcrição",
+  "noTranscript": "Nenhuma transcrição disponível",
+  "processing": "Processando vídeo...",
+  "extractingAudio": "Extraindo áudio...",
+  "extractingSubtitles": "Extraindo legendas...",
+  "transcribing": "Transcrevendo fala...",
+  "extractingFrames": "Extraindo quadros...",
+  "runningOcr": "Executando OCR...",
+  "processingComplete": "Processamento concluído",
+  "clickToSeek": "Clique para saltar",
+  "videoDetails": "Detalhes do vídeo",
+  "resolution": "Resolução",
+  "codec": "Codec",
+  "framerate": "Taxa de quadros",
+  "transcriptHint": "Baixe o modelo Whisper nas Configurações e escaneie novamente as fontes para ativar a transcrição."
+}
