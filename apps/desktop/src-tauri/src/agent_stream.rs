@@ -37,12 +37,20 @@ pub(crate) fn emit_agent_frontend_event(
         turn_id,
         Some(event_seq),
     );
+    emit_agent_run_frontend_event(handle, conversation_id, &run_event);
+    run_event
+}
+
+pub(crate) fn emit_agent_run_frontend_event(
+    handle: &AppHandle,
+    conversation_id: &str,
+    run_event: &AgentRunEvent,
+) {
     let payload = AgentFrontendEvent {
         conversation_id: conversation_id.to_string(),
         run_event: run_event.clone(),
     };
     emit_app_event(handle, "agent:event", &payload);
-    run_event
 }
 
 pub(crate) enum PendingStreamDelta {
@@ -307,11 +315,7 @@ impl StreamBlockEmitter {
         conversation_id: &str,
         run_event: AgentRunEvent,
     ) {
-        let payload = AgentFrontendEvent {
-            conversation_id: conversation_id.to_string(),
-            run_event,
-        };
-        emit_app_event(handle, "agent:event", &payload);
+        emit_agent_run_frontend_event(handle, conversation_id, &run_event);
     }
 
     pub(crate) fn flush_pending(

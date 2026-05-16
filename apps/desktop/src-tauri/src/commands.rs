@@ -6,17 +6,15 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use crate::agent_stream::{
-    agent_event_rotates_stream_blocks, compact_agent_event_for_frontend, emit_agent_frontend_event,
-    PendingStreamDelta, StreamBlockEmitter,
-};
 #[cfg(test)]
 use crate::agent_stream::{
-    split_text_by_utf8_bytes, MAX_FRONTEND_ARTIFACT_STRING_CHARS, MAX_FRONTEND_TOOL_CONTENT_CHARS,
+    compact_agent_event_for_frontend, split_text_by_utf8_bytes, MAX_FRONTEND_ARTIFACT_STRING_CHARS,
+    MAX_FRONTEND_TOOL_CONTENT_CHARS,
 };
+use crate::agent_stream::{emit_agent_frontend_event, emit_agent_run_frontend_event};
+use crate::agent_stream_bridge::AgentStreamForwarder;
 use crate::agent_task_events::{
     emit_agent_task_run_update, record_agent_run_status_task_event, record_agent_run_task_event,
-    record_task_progress_for_agent_event,
 };
 use crate::app_events::emit_app_event;
 use crate::subagent_tool::{
@@ -26,7 +24,7 @@ use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
     AgentSteeringMessage, CancellationToken, ConfirmationCallback,
 };
-use nexa_core::agent_run::AgentRunPhase;
+use nexa_core::agent_run::{AgentRunEvent, AgentRunPhase};
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
 use nexa_core::approval::{
     ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
@@ -128,16 +126,16 @@ fn emit_terminal_agent_error_once(
         return;
     }
 
-    let run_event = emit_agent_frontend_event(
-        app_handle,
-        stream_event_seq,
-        error.conversation_id,
+    let event_seq = stream_event_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let run_event = AgentRunEvent::terminal_error(
         error.task_run_id,
         Some(error.turn_id),
-        AgentEvent::Error {
-            message: error.message.to_string(),
-        },
+        event_seq,
+        error.message,
+        error.status,
+        error.payload,
     );
+    emit_agent_run_frontend_event(app_handle, error.conversation_id, &run_event);
     record_agent_run_task_event(
         db,
         app_handle,
@@ -4161,181 +4159,21 @@ pub async fn agent_chat_cmd(
 
     let task = tokio::spawn(async move {
         let cancel_token = cancel_token_clone;
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
+        let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
 
         // Forward events to the frontend in a separate task.
-        let event_handle = handle.clone();
-        let stream_conv_id = conv_id.clone();
-        let event_db = db.clone();
-        let event_task_run_id = task_run_id.clone();
-        let event_turn_id = turn_id.clone();
-        let event_forwarder = tokio::spawn(async move {
-            let mut pending_delta: Option<PendingStreamDelta> = None;
-            let mut stream_emitter = StreamBlockEmitter::new(forwarder_event_seq);
-            let mut reasoning_phase_recorded = false;
-            let mut generating_phase_recorded = false;
-            let mut tick = tokio::time::interval(Duration::from_millis(16));
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            tick.tick().await; // consume immediate first tick
-
-            loop {
-                tokio::select! {
-                    biased;
-                    maybe_event = rx.recv() => {
-                        match maybe_event {
-                            Some(AgentEvent::TextDelta { delta }) => {
-                                if forwarder_terminal_emitted.load(Ordering::SeqCst) {
-                                    continue;
-                                }
-                                if !generating_phase_recorded {
-                                    generating_phase_recorded = true;
-                                    let _ = event_db.update_agent_task_run_progress(
-                                        &event_task_run_id,
-                                        Some("running"),
-                                        Some("generating"),
-                                        None,
-                                        Some("Generating answer"),
-                                        None,
-                                        None,
-                                    );
-                                    emit_agent_task_run_update(
-                                        &event_db,
-                                        &event_handle,
-                                        &stream_conv_id,
-                                        &event_task_run_id,
-                                    );
-                                }
-                                match &mut pending_delta {
-                                    Some(PendingStreamDelta::Text(text)) => text.push_str(&delta),
-                                    Some(PendingStreamDelta::Thinking(_)) => {
-                                        stream_emitter.flush_pending(
-                                            &mut pending_delta,
-                                            &stream_conv_id,
-                                            &event_handle,
-                                            &event_db,
-                                            &event_task_run_id,
-                                            Some(&event_turn_id),
-                                        );
-                                        pending_delta = Some(PendingStreamDelta::Text(delta));
-                                    }
-                                    None => pending_delta = Some(PendingStreamDelta::Text(delta)),
-                                }
-                            }
-                            Some(AgentEvent::Thinking { content }) => {
-                                if forwarder_terminal_emitted.load(Ordering::SeqCst) {
-                                    continue;
-                                }
-                                if !reasoning_phase_recorded {
-                                    reasoning_phase_recorded = true;
-                                    let _ = event_db.update_agent_task_run_progress(
-                                        &event_task_run_id,
-                                        Some("running"),
-                                        Some("reasoning"),
-                                        None,
-                                        Some("Reasoning"),
-                                        None,
-                                        None,
-                                    );
-                                    emit_agent_task_run_update(
-                                        &event_db,
-                                        &event_handle,
-                                        &stream_conv_id,
-                                        &event_task_run_id,
-                                    );
-                                }
-                                match &mut pending_delta {
-                                    Some(PendingStreamDelta::Thinking(thinking)) => {
-                                        thinking.push_str(&content)
-                                    }
-                                    Some(PendingStreamDelta::Text(_)) => {
-                                        stream_emitter.flush_pending(
-                                            &mut pending_delta,
-                                            &stream_conv_id,
-                                            &event_handle,
-                                            &event_db,
-                                            &event_task_run_id,
-                                            Some(&event_turn_id),
-                                        );
-                                        pending_delta = Some(PendingStreamDelta::Thinking(content));
-                                    }
-                                    None => {
-                                        pending_delta = Some(PendingStreamDelta::Thinking(content))
-                                    }
-                                }
-                            }
-                            Some(other) => {
-                                let frontend_event = compact_agent_event_for_frontend(other);
-                                // Flush buffered stream deltas before forwarding
-                                // structural events so the UI keeps provider order.
-                                stream_emitter.flush_pending(
-                                    &mut pending_delta,
-                                    &stream_conv_id,
-                                    &event_handle,
-                                    &event_db,
-                                    &event_task_run_id,
-                                    Some(&event_turn_id),
-                                );
-                                let rotates_blocks = agent_event_rotates_stream_blocks(&frontend_event);
-                                let run_event = stream_emitter.next_run_event(
-                                    &event_task_run_id,
-                                    Some(&event_turn_id),
-                                    &frontend_event,
-                                );
-                                if run_event.is_terminal() {
-                                    if forwarder_terminal_emitted.swap(true, Ordering::SeqCst) {
-                                        continue;
-                                    }
-                                } else if forwarder_terminal_emitted.load(Ordering::SeqCst) {
-                                    continue;
-                                }
-                                record_task_progress_for_agent_event(
-                                    &event_db,
-                                    &event_handle,
-                                    &stream_conv_id,
-                                    &event_task_run_id,
-                                    &frontend_event,
-                                    &run_event,
-                                );
-                                stream_emitter.emit_event(
-                                    &event_handle,
-                                    &stream_conv_id,
-                                    run_event,
-                                );
-                                if rotates_blocks {
-                                    stream_emitter.rotate_blocks();
-                                }
-                            }
-                            None => {
-                                if !forwarder_terminal_emitted.load(Ordering::SeqCst) {
-                                    // Channel closed — flush remaining and exit
-                                    stream_emitter.flush_pending(
-                                        &mut pending_delta,
-                                        &stream_conv_id,
-                                        &event_handle,
-                                        &event_db,
-                                        &event_task_run_id,
-                                        Some(&event_turn_id),
-                                    );
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    _ = tick.tick() => {
-                        if !forwarder_terminal_emitted.load(Ordering::SeqCst) {
-                            stream_emitter.flush_pending(
-                                &mut pending_delta,
-                                &stream_conv_id,
-                                &event_handle,
-                                &event_db,
-                                &event_task_run_id,
-                                Some(&event_turn_id),
-                            );
-                        }
-                    }
-                }
-            }
-        });
+        let event_forwarder = tokio::spawn(
+            AgentStreamForwarder::new(
+                handle.clone(),
+                db.clone(),
+                conv_id.clone(),
+                task_run_id.clone(),
+                turn_id.clone(),
+                forwarder_event_seq,
+                forwarder_terminal_emitted,
+            )
+            .run(rx),
+        );
 
         // Run the agent.  The executor now saves ALL messages (intermediate
         // tool-call assistants, tool results, and the final answer) to the DB

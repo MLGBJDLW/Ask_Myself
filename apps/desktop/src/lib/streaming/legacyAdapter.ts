@@ -126,9 +126,10 @@ export function adaptFrontendRunEvent(event: AgentFrontendEvent): AgentFrontendE
 
 export interface ReplayStreamItem {
   event: AgentTaskRunEvent;
-  eventType: 'streamBlockDelta' | 'streamReset' | 'status' | 'terminal';
+  eventType: 'streamBlockDelta' | 'streamReset' | 'status' | 'terminal' | 'frontend';
   payload: PayloadRecord;
   eventSeq: number;
+  frontendEvent?: AgentFrontendEvent;
 }
 
 export function replayItemFromTaskEvent(event: AgentTaskRunEvent): ReplayStreamItem | null {
@@ -189,7 +190,21 @@ export function replayItemFromTaskEvent(event: AgentTaskRunEvent): ReplayStreamI
         eventSeq: runEvent.eventSeq,
       };
     }
-    return null;
+    if (runEvent.kind === 'status') {
+      return null;
+    }
+    const frontendEvent = adaptFrontendRunEvent({
+      conversationId: '',
+      runEvent,
+    } as AgentFrontendEvent);
+    if (!frontendEvent.type) return null;
+    return {
+      event,
+      eventType: 'frontend',
+      payload: frontendEvent as unknown as PayloadRecord,
+      eventSeq: runEvent.eventSeq,
+      frontendEvent,
+    };
   }
 
   const eventSeqRaw = payload.eventSeq;

@@ -1,21 +1,22 @@
 import type { AgentTaskRunEvent } from '../../types/conversation';
 import { applyStreamBlockDelta } from './blockProjection';
+import { normalizeAgentEventType } from './eventTypes';
 import {
   isDurableStreamEvent,
   replayItemFromTaskEvent,
   type ReplayStreamItem,
 } from './legacyAdapter';
+import { applyLiveStreamEvent } from './liveEventReducer';
 import {
   appendStatusTraceEvent,
   applyStreamResetProjection,
   applyTerminalProjection,
-  type StreamTerminalProjectionState,
 } from './terminalProjection';
+import type { InternalStreamState } from './state';
 import { isTaskTimelineEvent } from './taskTimeline';
+import { createToolCall, insertPendingToolCall, type ToolPreparingPayload } from './toolProjection';
 
-export interface DurableReplayProjectionState extends StreamTerminalProjectionState {
-  _lastEventSeq: number;
-}
+export type DurableReplayProjectionState = InternalStreamState;
 
 export function taskTimelineEventsFromReplaySource(events: AgentTaskRunEvent[]): AgentTaskRunEvent[] {
   return events
@@ -78,6 +79,16 @@ export function applyDurableReplayToState(
       continue;
     }
 
+    if (item.eventType === 'frontend' && item.frontendEvent) {
+      const eventType = normalizeAgentEventType(item.frontendEvent.type);
+      if (!eventType) continue;
+      const raw = item.frontendEvent as typeof item.frontendEvent & Record<string, unknown>;
+      applyLiveStreamEvent(state, eventType, item.frontendEvent, raw, {
+        scheduleToolPreparing: payload => applyToolPreparingReplay(state, payload),
+      });
+      continue;
+    }
+
     if (item.eventType !== 'streamBlockDelta') continue;
     const channel = item.payload.channel === 'answer' || item.payload.channel === 'thinking'
       ? item.payload.channel
@@ -98,4 +109,26 @@ export function applyDurableReplayToState(
       );
     }
   }
+}
+
+function applyToolPreparingReplay(
+  state: DurableReplayProjectionState,
+  payload: ToolPreparingPayload,
+): void {
+  if (state.toolCalls.some(tc => tc.callId === payload.callId)) {
+    return;
+  }
+
+  const roundThinking = state.thinkingText.trim() ? state.thinkingText : '';
+  if (roundThinking) state.thinkingText = '';
+  state.isThinking = false;
+
+  const preparingCall = createToolCall({
+    callId: payload.callId,
+    toolName: payload.toolName,
+    status: 'preparing',
+    argsStatus: 'pending',
+  });
+  preparingCall.argsBytes = Math.max(0, payload.argsBytes);
+  insertPendingToolCall(state, preparingCall, roundThinking);
 }

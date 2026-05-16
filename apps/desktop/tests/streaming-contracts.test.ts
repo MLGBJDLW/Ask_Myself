@@ -16,6 +16,7 @@ import type {
   AgentRunPhase,
   AgentTaskRun,
   AgentTaskRunEvent,
+  ToolRunItem,
 } from '../src/types/conversation';
 
 type TestFn = () => void | Promise<void>;
@@ -95,6 +96,40 @@ function taskRun(status: string): AgentTaskRun {
     title: 'Streaming contract test',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:01.000Z',
+  };
+}
+
+function toolRun(input: {
+  callId: string;
+  status: ToolRunItem['status'];
+  content?: string;
+  progressNote?: string;
+}): ToolRunItem {
+  return {
+    callId: input.callId,
+    toolName: 'search_knowledge_base',
+    plugin: {
+      id: 'knowledge',
+      name: 'Knowledge',
+      capability: 'search',
+      description: 'Search local knowledge',
+    },
+    status: input.status,
+    arguments: '{"query":"nexa"}',
+    renderKind: 'search',
+    capabilities: {
+      inputStreaming: 'none',
+      renderKind: 'search',
+      readOnly: true,
+      destructive: false,
+      concurrencySafe: true,
+      interruptBehavior: 'block',
+      resourceKeys: ['source:notes'],
+    },
+    content: input.content,
+    isError: input.status === 'failed',
+    progressNote: input.progressNote,
+    durationMs: input.status === 'completed' ? 42 : undefined,
   };
 }
 
@@ -374,6 +409,126 @@ test('projects canonical terminal errors as durable replay terminal items', () =
   assertEqual(replay[0].eventType, 'terminal', 'terminal replay event type');
   assertEqual(replay[0].payload.kind, 'error', 'terminal kind');
   assertEqual(replay[0].payload.message, 'Agent execution timed out.', 'terminal message');
+});
+
+test('durable replay restores canonical tool run events through live projection', () => {
+  const conversationId = 'conversation-tool-replay';
+
+  streamStore.restoreFromTaskEvents(conversationId, taskRun('completed'), [
+    taskEvent({
+      id: 'output',
+      eventType: 'stream',
+      payload: {
+        agentRun: runEvent({
+          eventSeq: 1,
+          kind: 'outputDelta',
+          payload: { blockId: 'answer-block', channel: 'answer', offset: 0, delta: 'Checking' },
+        }),
+      },
+    }),
+    taskEvent({
+      id: 'tool-start',
+      eventType: 'tool',
+      payload: {
+        agentRun: runEvent({
+          eventSeq: 2,
+          kind: 'toolStarted',
+          phase: 'tooling',
+          label: 'search_knowledge_base',
+          status: 'running',
+          payload: { type: 'toolRunStarted', run: toolRun({ callId: 'call-1', status: 'running' }) },
+        }),
+      },
+    }),
+    taskEvent({
+      id: 'tool-done',
+      eventType: 'tool',
+      payload: {
+        agentRun: runEvent({
+          eventSeq: 3,
+          kind: 'toolCompleted',
+          phase: 'tooling',
+          label: 'search_knowledge_base',
+          status: 'completed',
+          payload: {
+            type: 'toolRunCompleted',
+            run: toolRun({ callId: 'call-1', status: 'completed', content: 'Found 2 notes' }),
+          },
+        }),
+      },
+    }),
+  ]);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'tool replay should create stream state');
+  assertEqual(restored.toolCalls.length, 1, 'tool call count');
+  assertEqual(restored.toolCalls[0].status, 'done', 'tool status');
+  assertEqual(restored.toolCalls[0].content, 'Found 2 notes', 'tool content');
+  assert(
+    restored.traceEvents.some(event => event.kind === 'tool' && event.toolCall.callId === 'call-1'),
+    'tool replay should restore trace tool event',
+  );
+
+  streamStore.clearStream(conversationId);
+});
+
+test('durable replay restores canonical usage and approval events through live projection', () => {
+  const conversationId = 'conversation-usage-approval-replay';
+
+  streamStore.restoreFromTaskEvents(conversationId, taskRun('waiting_approval'), [
+    taskEvent({
+      id: 'usage',
+      eventType: 'stream',
+      payload: {
+        agentRun: runEvent({
+          eventSeq: 1,
+          kind: 'usageUpdated',
+          phase: 'accounting',
+          label: 'Token usage updated',
+          payload: {
+            type: 'usageUpdate',
+            usageTotal: { promptTokens: 10, completionTokens: 4, totalTokens: 14 },
+            lastPromptTokens: 10,
+          },
+        }),
+      },
+    }),
+    taskEvent({
+      id: 'approval',
+      eventType: 'approval',
+      payload: {
+        agentRun: runEvent({
+          eventSeq: 2,
+          kind: 'approvalRequested',
+          phase: 'approval',
+          label: 'write_file',
+          status: 'pending',
+          payload: {
+            type: 'approvalRequested',
+            request: {
+              id: 'approval-1',
+              toolName: 'write_file',
+              permissionKey: 'file:write',
+              targetKind: 'file',
+              targetValue: 'README.md',
+              argumentsPreview: '{}',
+              riskLevel: 'high',
+              reason: 'Writes to workspace',
+            },
+          },
+        }),
+      },
+    }),
+  ]);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'usage/approval replay should create stream state');
+  assert(restored.lastUsage, 'usage should be restored');
+  assertEqual(restored.lastUsage.totalTokens, 14, 'usage total');
+  assertEqual(restored.pendingApprovals.length, 1, 'approval count');
+  assertEqual(restored.pendingApprovals[0].id, 'approval-1', 'approval id');
+
+  streamStore.clearStream(conversationId);
 });
 
 test('watchdog arms, fires, and clears timeout handles', async () => {
