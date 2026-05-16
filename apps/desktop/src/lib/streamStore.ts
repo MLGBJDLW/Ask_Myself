@@ -190,9 +190,10 @@ class StreamStoreImpl {
     clearStreamWatchdog(s);
     clearToolPreparingTimers(s);
     applyTerminalProjection(s, {
-      toolStatus: 'error',
+      toolStatus: 'cancelled',
       message: 'Stopped by user',
       traceTone: 'error',
+      errorMessage: null,
     });
     this.notify(conversationId);
   }

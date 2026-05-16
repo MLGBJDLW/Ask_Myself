@@ -31,9 +31,11 @@ export function isPendingStatus(status: ToolCallEvent['status']): boolean {
     || status === 'approvalPending';
 }
 
+type TerminalToolStatus = 'done' | 'error' | 'cancelled' | 'timedOut';
+
 export function markToolCallsFinished(
   toolCalls: ToolCallEvent[],
-  status: 'done' | 'error',
+  status: TerminalToolStatus,
   fallbackContent: string,
 ): ToolCallEvent[] {
   return toolCalls.map(tc =>
@@ -41,9 +43,9 @@ export function markToolCallsFinished(
       ? {
           ...tc,
           status,
-          argsStatus: status === 'error' ? 'error' : 'done',
+          argsStatus: status === 'error' || status === 'timedOut' ? 'error' : 'done',
           content: tc.content || fallbackContent,
-          isError: status === 'error',
+          isError: status === 'error' || status === 'timedOut',
         }
       : tc,
   );
@@ -51,7 +53,7 @@ export function markToolCallsFinished(
 
 export function markRoundsToolCallsFinished(
   rounds: StreamRoundEvent[],
-  status: 'done' | 'error',
+  status: TerminalToolStatus,
   fallbackContent: string,
 ): StreamRoundEvent[] {
   return rounds.map(round => ({
@@ -110,7 +112,7 @@ export function applyStreamResetProjection(
 export function applyTerminalProjection(
   state: StreamTerminalProjectionState,
   input: {
-    toolStatus: 'done' | 'error';
+    toolStatus: TerminalToolStatus;
     message: string;
     toolFallbackMessage?: string;
     traceTone: 'success' | 'error';

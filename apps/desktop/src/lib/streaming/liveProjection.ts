@@ -36,6 +36,11 @@ function extractMessageText(message: unknown): string | null {
   return text.trim().length > 0 ? text : null;
 }
 
+function terminalRunStatus(event: AgentFrontendEvent, raw: RawFrontendEvent): string | null {
+  const status = event.runEvent?.status ?? raw.status;
+  return typeof status === 'string' ? status : null;
+}
+
 export function applyUsageUpdateEvent(
   state: InternalStreamState,
   event: AgentFrontendEvent,
@@ -181,6 +186,27 @@ export function applyErrorEvent(
 ): void {
   const errMsg = (typeof event.message === 'string' ? event.message
     : (typeof raw.message === 'string' ? raw.message : 'Unknown error'));
+  const terminalStatus = terminalRunStatus(event, raw);
+  if (terminalStatus === 'cancelled') {
+    applyTerminalProjection(state, {
+      toolStatus: 'cancelled',
+      message: errMsg,
+      toolFallbackMessage: 'Cancelled',
+      traceTone: 'error',
+      errorMessage: null,
+    });
+    return;
+  }
+  if (terminalStatus === 'timed_out') {
+    applyTerminalProjection(state, {
+      toolStatus: 'timedOut',
+      message: errMsg,
+      toolFallbackMessage: 'Timed out',
+      traceTone: 'error',
+      errorMessage: errMsg,
+    });
+    return;
+  }
   if (/context.*(window|overflow|exceeded)|ContextOverflow/i.test(errMsg)) {
     state.contextOverflow = true;
   }

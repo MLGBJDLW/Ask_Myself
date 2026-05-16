@@ -56,14 +56,24 @@ export function applyDurableReplayToState(
 
     if (item.eventType === 'terminal') {
       const isError = item.payload.kind === 'error';
+      const status = typeof item.payload.status === 'string' ? item.payload.status : null;
       const message = typeof item.payload.message === 'string'
         ? item.payload.message
         : (isError ? 'Request failed' : 'Task completed');
       applyTerminalProjection(state, {
-        toolStatus: isError ? 'error' : 'done',
+        toolStatus: status === 'cancelled'
+          ? 'cancelled'
+          : status === 'timed_out'
+            ? 'timedOut'
+            : isError ? 'error' : 'done',
         message,
+        toolFallbackMessage: status === 'cancelled'
+          ? 'Cancelled'
+          : status === 'timed_out'
+            ? 'Timed out'
+            : undefined,
         traceTone: isError ? 'error' : 'success',
-        errorMessage: isError ? message : undefined,
+        errorMessage: status === 'cancelled' ? null : (isError ? message : undefined),
       });
       continue;
     }

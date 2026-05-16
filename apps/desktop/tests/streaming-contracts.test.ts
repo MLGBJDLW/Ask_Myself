@@ -430,6 +430,34 @@ test('restoreFromTaskEvents projects terminal error replay into stream state', (
   streamStore.clearStream(conversationId);
 });
 
+test('restoreFromTaskEvents preserves cancelled terminal replay status', () => {
+  const conversationId = 'conversation-cancelled-terminal-restore';
+
+  streamStore.restoreFromTaskEvents(conversationId, taskRun('cancelled'), [
+    taskEvent({
+      id: 'terminal-cancelled',
+      eventType: 'error',
+      payload: {
+        agentRun: runEvent({
+          eventSeq: 1,
+          kind: 'error',
+          phase: 'done',
+          label: 'Agent execution cancelled.',
+          status: 'cancelled',
+          payload: { type: 'error', message: 'Agent execution cancelled.' },
+        }),
+      },
+    }),
+  ]);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'cancelled stream state should exist');
+  assertEqual(restored.isStreaming, false, 'cancelled terminal replay stops streaming');
+  assertEqual(restored.error, null, 'cancelled terminal replay does not surface as an error');
+
+  streamStore.clearStream(conversationId);
+});
+
 test('dispatches canonical terminal errors without an active stream state', () => {
   const conversationId = 'conversation-no-state-terminal';
 
@@ -453,6 +481,29 @@ test('dispatches canonical terminal errors without an active stream state', () =
     restored.traceEvents.some(event => event.kind === 'status' && event.tone === 'error'),
     'terminal event should add an error status trace',
   );
+
+  streamStore.clearStream(conversationId);
+});
+
+test('dispatches canonical cancelled terminal errors without surfacing failed state', () => {
+  const conversationId = 'conversation-no-state-cancelled-terminal';
+
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: runEvent({
+      eventSeq: 1,
+      kind: 'error',
+      phase: 'done',
+      label: 'Agent execution cancelled.',
+      status: 'cancelled',
+      payload: { message: 'Agent execution cancelled.' },
+    }),
+  } as AgentFrontendEvent);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'cancelled terminal event should create stream state');
+  assertEqual(restored.isStreaming, false, 'cancelled terminal event stops streaming');
+  assertEqual(restored.error, null, 'cancelled terminal event should not set failed error');
 
   streamStore.clearStream(conversationId);
 });
