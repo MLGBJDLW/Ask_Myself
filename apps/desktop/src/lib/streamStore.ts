@@ -27,6 +27,8 @@ import type {
   TraceToolEvent,
   UsageTotal,
 } from './streaming/protocol';
+import { armStreamWatchdog, clearStreamWatchdog } from './streaming/watchdog';
+import type { StreamTimeoutHandle } from './streaming/watchdog';
 export type { StreamRoundEvent, StreamState, ToolCallEvent, TraceEvent, UsageTotal } from './streaming/protocol';
 
 const PROGRESS_NOTES_MAX = 10;
@@ -71,21 +73,9 @@ interface InternalStreamState extends StreamState {
   _activeThinkingOffset: number;
   _activeRoundId: string | null;
   _activeRoundAcceptingStarts: boolean;
-  _timeoutId: ReturnType<typeof setTimeout> | null;
+  _timeoutId: StreamTimeoutHandle | null;
   _toolPreparingTimers: Record<string, ReturnType<typeof setTimeout>>;
 }
-
-/* ── Constants ──────────────────────────────────────────────────── */
-
-function resolveStreamTimeoutMs(): number {
-  if (typeof window === 'undefined') return 120_000;
-  const override = (window as Window & { __ASK_STREAM_TIMEOUT_MS__?: unknown }).__ASK_STREAM_TIMEOUT_MS__;
-  return typeof override === 'number' && Number.isFinite(override) && override > 0
-    ? override
-    : 120_000;
-}
-
-const STREAM_TIMEOUT_MS = resolveStreamTimeoutMs();
 
 /* ── Helper functions ───────────────────────────────────────────── */
 
@@ -733,7 +723,7 @@ class StreamStoreImpl {
     )) {
       return;
     }
-    if (existing?._timeoutId) clearTimeout(existing._timeoutId);
+    if (existing) clearStreamWatchdog(existing);
     if (existing) clearToolPreparingTimers(existing);
 
     const state = createDefaultState();
@@ -803,7 +793,7 @@ class StreamStoreImpl {
   startStream(conversationId: string): void {
     const existing = this._streams[conversationId];
     if (existing) {
-      if (existing._timeoutId) clearTimeout(existing._timeoutId);
+      clearStreamWatchdog(existing);
       clearToolPreparingTimers(existing);
     }
 
@@ -818,7 +808,7 @@ class StreamStoreImpl {
   clearStream(conversationId: string): void {
     const existing = this._streams[conversationId];
     if (!existing) return;
-    if (existing._timeoutId) clearTimeout(existing._timeoutId);
+    clearStreamWatchdog(existing);
     clearToolPreparingTimers(existing);
     delete this._streams[conversationId];
     this.notify(conversationId);
@@ -845,7 +835,7 @@ class StreamStoreImpl {
   stopStream(conversationId: string): void {
     const s = this._streams[conversationId];
     if (!s) return;
-    if (s._timeoutId) clearTimeout(s._timeoutId);
+    clearStreamWatchdog(s);
     clearToolPreparingTimers(s);
     s.isThinking = false;
     s.thinkingText = '';
@@ -857,7 +847,6 @@ class StreamStoreImpl {
     s._activeRoundId = null;
     s._activeRoundAcceptingStarts = false;
     resetActiveStreamBlocks(s);
-    s._timeoutId = null;
     this.notify(conversationId);
   }
 
@@ -865,7 +854,7 @@ class StreamStoreImpl {
   sendError(conversationId: string, errorMessage: string): void {
     const s = this._streams[conversationId];
     if (!s) return;
-    if (s._timeoutId) clearTimeout(s._timeoutId);
+    clearStreamWatchdog(s);
     clearToolPreparingTimers(s);
     s.isThinking = false;
     s.thinkingText = '';
@@ -878,15 +867,13 @@ class StreamStoreImpl {
     s._activeRoundId = null;
     s._activeRoundAcceptingStarts = false;
     resetActiveStreamBlocks(s);
-    s._timeoutId = null;
     this.notify(conversationId);
   }
 
   private resetTimeout(conversationId: string): void {
     const s = this._streams[conversationId];
     if (!s) return;
-    if (s._timeoutId) clearTimeout(s._timeoutId);
-    s._timeoutId = setTimeout(() => {
+    armStreamWatchdog(s, () => {
       const state = this._streams[conversationId];
       if (!state) return;
       clearToolPreparingTimers(state);
@@ -901,9 +888,8 @@ class StreamStoreImpl {
       state._activeRoundId = null;
       state._activeRoundAcceptingStarts = false;
       resetActiveStreamBlocks(state);
-      state._timeoutId = null;
       this.notify(conversationId);
-    }, STREAM_TIMEOUT_MS);
+    });
   }
 
   private scheduleToolPreparing(
@@ -1406,7 +1392,7 @@ class StreamStoreImpl {
       }
 
       case 'done': {
-        if (s._timeoutId) clearTimeout(s._timeoutId);
+        clearStreamWatchdog(s);
         clearToolPreparingTimers(s);
 
         // Capture final round
@@ -1451,7 +1437,6 @@ class StreamStoreImpl {
         s._activeRoundId = null;
         s._activeRoundAcceptingStarts = false;
         resetActiveStreamBlocks(s);
-        s._timeoutId = null;
         break;
       }
 
@@ -1500,7 +1485,7 @@ class StreamStoreImpl {
       }
 
       case 'error': {
-        if (s._timeoutId) clearTimeout(s._timeoutId);
+        clearStreamWatchdog(s);
         clearToolPreparingTimers(s);
         s.isThinking = false;
         s.thinkingText = '';
@@ -1525,7 +1510,6 @@ class StreamStoreImpl {
         s._activeRoundId = null;
         s._activeRoundAcceptingStarts = false;
         resetActiveStreamBlocks(s);
-        s._timeoutId = null;
         break;
       }
     }
