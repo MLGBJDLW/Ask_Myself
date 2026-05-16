@@ -518,7 +518,7 @@ pub async fn generate_title_cmd(
         db_config.summarization_provider.as_deref()
     {
         let summ_config = ProviderConfig {
-            provider_type: parse_provider_type(summ_provider_name),
+            provider_type: provider_type_for_parts(summ_provider_name, None),
             api_key: Some(db_config.api_key.clone()),
             base_url: db_config.base_url.clone(),
             org_id: None,
@@ -666,7 +666,7 @@ pub async fn compact_conversation_cmd(
     let summarization_provider: Option<Box<dyn nexa_core::llm::LlmProvider>> =
         if let Some(ref summ_provider_name) = db_config.summarization_provider {
             let summ_config = ProviderConfig {
-                provider_type: parse_provider_type(summ_provider_name),
+                provider_type: provider_type_for_parts(summ_provider_name, None),
                 api_key: Some(db_config.api_key.clone()),
                 base_url: db_config.base_url.clone(),
                 org_id: None,

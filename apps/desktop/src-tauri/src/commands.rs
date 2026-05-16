@@ -68,6 +68,7 @@ use nexa_core::project_memory::{
     CreateProjectMemoryInput, ProjectMemory, UpdateProjectMemoryInput,
 };
 use nexa_core::provider_catalog::{load_provider_presets, preset_model_ids, ProviderPreset};
+use nexa_core::provider_registry::provider_type_for_parts;
 use nexa_core::search::{self, SearchResult};
 use nexa_core::skills::{DiscoveredSkillBundle, SaveSkillInput, Skill};
 use nexa_core::source_tree::SourceTree;
@@ -514,26 +515,6 @@ pub fn init_watcher(app_handle: tauri::AppHandle, db: &Database) {
 
 // ── Agent Helpers ───────────────────────────────────────────────────────
 
-/// Map a provider string from the DB to a [`ProviderType`] enum variant.
-fn parse_provider_type(s: &str) -> ProviderType {
-    match s.to_lowercase().as_str() {
-        "openai" | "open_ai" => ProviderType::OpenAi,
-        "anthropic" => ProviderType::Anthropic,
-        "google" | "gemini" => ProviderType::Google,
-        "deepseek" | "deep_seek" => ProviderType::DeepSeek,
-        "ollama" => ProviderType::Ollama,
-        "lmstudio" | "lm_studio" => ProviderType::LmStudio,
-        "azure" | "azure_openai" | "azure_open_ai" | "azureopenai" => ProviderType::AzureOpenAi,
-        "zhipu" | "glm" => ProviderType::Zhipu,
-        "moonshot" | "kimi" => ProviderType::Moonshot,
-        "qwen" | "tongyi" => ProviderType::Qwen,
-        "doubao" => ProviderType::Doubao,
-        "yi" | "lingyiwanwu" => ProviderType::Yi,
-        "baichuan" => ProviderType::Baichuan,
-        _ => ProviderType::Custom,
-    }
-}
-
 fn normalize_optional_base_url(base_url: Option<String>) -> Option<String> {
     base_url.and_then(|value| {
         let trimmed = value.trim().trim_end_matches('/').to_string();
@@ -543,17 +524,6 @@ fn normalize_optional_base_url(base_url: Option<String>) -> Option<String> {
             Some(trimmed)
         }
     })
-}
-
-fn provider_type_for_parts(provider: &str, base_url: Option<&str>) -> ProviderType {
-    let parsed = parse_provider_type(provider);
-    if parsed == ProviderType::Custom {
-        let base_url_lower = base_url.unwrap_or_default().to_lowercase();
-        if base_url_lower.contains("deepseek") {
-            return ProviderType::DeepSeek;
-        }
-    }
-    parsed
 }
 
 fn provider_type_for_config(config: &DbAgentConfig) -> ProviderType {

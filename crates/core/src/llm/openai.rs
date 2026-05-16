@@ -15,6 +15,7 @@ use super::{
     ToolCallRequest, ToolDefinition, Usage,
 };
 use crate::error::CoreError;
+use crate::provider_catalog::model_supports_reasoning_from_catalog;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
@@ -219,7 +220,15 @@ struct OaiErrorBody {
 // ---------------------------------------------------------------------------
 
 /// Check if the model is an OpenAI reasoning model.
-fn is_reasoning_model(model: &str) -> bool {
+fn is_reasoning_model(model: &str, provider_type: Option<&ProviderType>) -> bool {
+    if let Some(provider_type) = provider_type {
+        if let Some(supports_reasoning) =
+            model_supports_reasoning_from_catalog(*provider_type, model)
+        {
+            return supports_reasoning;
+        }
+    }
+
     let m = model.to_lowercase();
     m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") || m.starts_with("gpt-5")
 }
@@ -493,7 +502,7 @@ fn convert_tools(tools: &[ToolDefinition]) -> Vec<OaiTool> {
 }
 
 fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
-    let is_reasoning = is_reasoning_model(&request.model);
+    let is_reasoning = is_reasoning_model(&request.model, request.provider_type.as_ref());
     let is_deepseek = is_deepseek_reasoner(&request.model);
     let model_lower = request.model.to_lowercase();
     let is_deepseek_provider = matches!(request.provider_type, Some(ProviderType::DeepSeek))
@@ -1079,6 +1088,38 @@ mod tests {
         };
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
         assert_eq!(body["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn openai_reasoning_detection_prefers_catalog_then_legacy_fallback() {
+        let request = CompletionRequest {
+            model: "gpt-5.5-pro".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: Some(ReasoningEffort::High),
+            provider_type: Some(ProviderType::OpenAi),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(body["max_tokens"], 100);
+        assert!(body.get("max_completion_tokens").is_none());
+        assert!(body.get("temperature").is_some());
+
+        let request = CompletionRequest {
+            model: "gpt-5-future".to_string(),
+            ..request
+        };
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["max_completion_tokens"], 100);
+        assert!(body.get("max_tokens").is_none());
+        assert!(body.get("temperature").is_none());
     }
 
     #[test]

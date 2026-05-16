@@ -554,7 +554,7 @@ fn spawn_learned_success_capture(
             let app_cfg = db.load_app_config().unwrap_or_default();
             if let Some(ref summ_provider_name) = db_config.summarization_provider {
                 let summ_config = ProviderConfig {
-                    provider_type: parse_provider_type(summ_provider_name),
+                    provider_type: provider_type_for_parts(summ_provider_name, None),
                     api_key: Some(db_config.api_key.clone()),
                     base_url: db_config.base_url.clone(),
                     org_id: None,

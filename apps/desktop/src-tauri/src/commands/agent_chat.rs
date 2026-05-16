@@ -417,7 +417,7 @@ pub async fn agent_chat_cmd(
     let summarization_provider: Option<Box<dyn nexa_core::llm::LlmProvider>> =
         if let Some(ref summ_provider_name) = db_config.summarization_provider {
             let summ_config = ProviderConfig {
-                provider_type: parse_provider_type(summ_provider_name),
+                provider_type: provider_type_for_parts(summ_provider_name, None),
                 api_key: Some(db_config.api_key.clone()),
                 base_url: db_config.base_url.clone(),
                 org_id: None,
@@ -912,7 +912,7 @@ pub async fn agent_chat_cmd(
                 let extract_provider_config =
                     if let Some(ref sp) = db_config_for_extraction.summarization_provider {
                         ProviderConfig {
-                            provider_type: parse_provider_type(sp),
+                            provider_type: provider_type_for_parts(sp, None),
                             api_key: Some(db_config_for_extraction.api_key.clone()),
                             base_url: db_config_for_extraction.base_url.clone(),
                             org_id: None,
