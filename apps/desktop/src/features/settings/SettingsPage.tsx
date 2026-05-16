@@ -39,8 +39,8 @@ import { OcrSettingsSection } from '../../components/settings/OcrSettingsSection
 import { ProvidersSettingsTab, type ProviderView } from '../../components/settings/ProvidersSettingsTab';
 import { VideoSettingsSection } from '../../components/settings/VideoSettingsSection';
 import type { ProviderPreset } from '../../lib/providerPresets';
-import { useMicrophoneDevices } from '../../lib/useMicrophoneDevices';
 import { useUpdater } from '../../lib/useUpdater';
+import { useVoiceInputRuntime, withWhisperModel } from '../voice';
 
 /* ── Settings page ────────────────────────────────────────────────── */
 type SettingsTab = 'appearance' | 'models_embedding' | 'providers' | 'agent_quality' | 'media' | 'data_privacy' | 'extensions';
@@ -74,7 +74,6 @@ export function SettingsPage() {
   const navigate = useNavigate();
   const updater = useUpdater(false);
   const [appVersion, setAppVersion] = useState('');
-  const { devices: micDevices, selectedDeviceId: micDeviceId, setSelectedDeviceId: setMicDeviceId, refresh: refreshMics } = useMicrophoneDevices();
   const tabStripRef = useRef<HTMLDivElement | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>('appearance');
   const [developerMode, setDeveloperModeState] = useState(getStoredDeveloperMode);
@@ -260,7 +259,6 @@ export function SettingsPage() {
 
   /* ── Video state ──────────────────────────────────────────────────── */
   const [videoConfig, setVideoConfig] = useState<VideoConfig | null>(null);
-  const [whisperModelExists, setWhisperModelExists] = useState<boolean | null>(null);
   const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
   const [videoDownloading, setVideoDownloading] = useState(false);
   const videoProgress = progress.videoDownload;
@@ -269,6 +267,20 @@ export function SettingsPage() {
   const [deleteModelConfirmOpen, setDeleteModelConfirmOpen] = useState(false);
   const [ffmpegDownloading, setFfmpegDownloading] = useState(false);
   const ffmpegProgress = progress.ffmpegDownload;
+  const voiceInputRuntime = useVoiceInputRuntime({ videoConfig });
+  const {
+    devices: micDevices,
+    selectedDeviceId: micDeviceId,
+    setSelectedDeviceId: setMicDeviceId,
+    refresh: refreshMics,
+  } = voiceInputRuntime.microphones;
+  const {
+    modelExists: whisperModelExists,
+    refresh: refreshWhisperReadiness,
+    reset: resetWhisperReadiness,
+    download: downloadWhisperModel,
+    deleteModel: deleteWhisperModel,
+  } = voiceInputRuntime.whisper;
 
   useEffect(() => {
     if (!rebuildEmbedLoading) {
@@ -587,9 +599,7 @@ export function SettingsPage() {
       const cfg = await api.getVideoConfig();
       setVideoConfig(cfg);
       const cfgKey = JSON.stringify(cfg);
-      getModelStatus('whisper', cfgKey, () => api.checkWhisperModel(cfg))
-        .then(setWhisperModelExists)
-        .catch(() => setWhisperModelExists(false));
+      void refreshWhisperReadiness(cfg);
       getModelStatus('ffmpeg', cfgKey, () => api.checkFfmpeg(cfg))
         .then(setFfmpegAvailable)
         .catch(() => setFfmpegAvailable(false));
@@ -597,7 +607,7 @@ export function SettingsPage() {
     } catch {
       return false;
     }
-  }, []);
+  }, [refreshWhisperReadiness]);
 
   useEffect(() => {
     if ((activeTab === 'models_embedding' || activeTab === 'media') && !videoConfig) {
@@ -614,9 +624,7 @@ export function SettingsPage() {
     if (videoDownloading) return;
     setVideoDownloading(true);
     try {
-      await api.downloadWhisperModel(videoConfig);
-      setWhisperModelExists(true);
-      invalidateModelStatus('whisper');
+      await downloadWhisperModel(videoConfig);
     } catch (e) {
       toast.error(t('settings.videoDownloadFail') + ': ' + String(e));
     } finally {
@@ -626,9 +634,7 @@ export function SettingsPage() {
 
   const handleWhisperDelete = async () => {
     try {
-      await api.deleteWhisperModel();
-      setWhisperModelExists(false);
-      invalidateModelStatus('whisper');
+      await deleteWhisperModel();
       toast.success(t('settings.videoDeleteSuccess'));
     } catch (e) {
       toast.error(String(e));
@@ -666,8 +672,7 @@ export function SettingsPage() {
     try {
       await api.saveVideoConfig(videoConfig);
       markClean('video');
-      const exists = await api.checkWhisperModel(videoConfig);
-      setWhisperModelExists(exists);
+      await refreshWhisperReadiness(videoConfig);
       toast.success(t('settings.ocrSaved'));
     } catch {
       toast.error(t('settings.ocrSaveError'));
@@ -1523,13 +1528,11 @@ export function SettingsPage() {
           onWhisperDownload={handleWhisperDownload}
           onWhisperModelChange={(whisperModel) => {
             if (!videoConfig) return;
-            const updated = { ...videoConfig, whisperModel };
+            const updated = withWhisperModel(videoConfig, whisperModel);
             setVideoConfig(updated);
-            setWhisperModelExists(null);
+            resetWhisperReadiness();
             markDirty('video');
-            api.checkWhisperModel(updated)
-              .then(setWhisperModelExists)
-              .catch(() => setWhisperModelExists(false));
+            void refreshWhisperReadiness(updated);
           }}
           onPrepareOfficeRuntime={handlePrepareOfficeRuntime}
           onRefreshOfficeRuntime={() => {
