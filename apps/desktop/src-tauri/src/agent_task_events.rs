@@ -9,8 +9,7 @@ use serde::Serialize;
 use tauri::AppHandle;
 
 use crate::agent_stream::{
-    compact_agent_event_for_frontend, payload_with_agent_run_protocol, truncate_task_event_text,
-    MAX_TASK_EVENT_TEXT_CHARS,
+    compact_agent_event_for_frontend, truncate_task_event_text, MAX_TASK_EVENT_TEXT_CHARS,
 };
 use crate::app_events::emit_app_event;
 
@@ -95,7 +94,7 @@ fn record_and_emit_agent_run_task_event(
     status: Option<&str>,
     payload: Option<&serde_json::Value>,
 ) {
-    let payload = payload_with_agent_run_protocol(run_event, payload);
+    let payload = run_event.task_event_payload(payload);
     record_and_emit_task_event(ctx, event_type, label, status, Some(&payload));
 }
 

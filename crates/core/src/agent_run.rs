@@ -420,6 +420,23 @@ impl AgentRunEvent {
         self.kind.task_event_type()
     }
 
+    pub fn task_event_payload(&self, payload: Option<&serde_json::Value>) -> serde_json::Value {
+        let mut map = match payload {
+            Some(serde_json::Value::Object(existing)) => existing.clone(),
+            Some(existing) => {
+                let mut map = serde_json::Map::new();
+                map.insert("data".to_string(), existing.clone());
+                map
+            }
+            None => serde_json::Map::new(),
+        };
+        map.insert(
+            "agentRun".to_string(),
+            serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({})),
+        );
+        serde_json::Value::Object(map)
+    }
+
     pub fn is_terminal(&self) -> bool {
         self.kind.is_terminal()
     }
@@ -587,5 +604,27 @@ mod tests {
         assert_eq!(run_event.event_seq, 3);
         assert_eq!(run_event.status.as_deref(), Some("queued"));
         assert_eq!(run_event.payload["detail"], "queued");
+    }
+
+    #[test]
+    fn wraps_task_event_payload_with_agent_run_protocol() {
+        let run_event = AgentRunEvent::output_delta(
+            "run-1",
+            Some("turn-1"),
+            9,
+            "block-1",
+            StreamBlockChannel::Answer,
+            0,
+            "hello",
+        );
+
+        let payload = run_event.task_event_payload(Some(&serde_json::json!({
+            "callId": "call-1"
+        })));
+
+        assert_eq!(payload["callId"], "call-1");
+        assert_eq!(payload["agentRun"]["version"], AGENT_RUN_EVENT_VERSION);
+        assert_eq!(payload["agentRun"]["kind"], "outputDelta");
+        assert_eq!(payload["agentRun"]["eventSeq"], 9);
     }
 }

@@ -379,7 +379,7 @@ impl StreamBlockEmitter {
             };
             emit_app_event(handle, "agent:event", &payload);
 
-            let durable_payload = payload_with_agent_run_protocol(&run_event, None);
+            let durable_payload = run_event.task_event_payload(None);
             let _ = db.record_agent_task_run_event(
                 task_run_id,
                 run_event.task_event_type(),
@@ -433,24 +433,4 @@ pub(crate) fn truncate_task_event_text(value: &str, max_chars: usize) -> String 
         .collect::<String>();
     out.push_str("\n[truncated]");
     out
-}
-
-pub(crate) fn payload_with_agent_run_protocol(
-    run_event: &AgentRunEvent,
-    payload: Option<&serde_json::Value>,
-) -> serde_json::Value {
-    let mut map = match payload {
-        Some(serde_json::Value::Object(existing)) => existing.clone(),
-        Some(existing) => {
-            let mut map = serde_json::Map::new();
-            map.insert("data".to_string(), existing.clone());
-            map
-        }
-        None => serde_json::Map::new(),
-    };
-    map.insert(
-        "agentRun".to_string(),
-        serde_json::to_value(run_event).unwrap_or_else(|_| serde_json::json!({})),
-    );
-    serde_json::Value::Object(map)
 }

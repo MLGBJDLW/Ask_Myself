@@ -161,7 +161,7 @@ impl<'a> AgentTaskRuntime<'a> {
         event: &AgentRunEvent,
     ) -> Result<AgentTaskRunEvent, CoreError> {
         self.update_progress_from_event(run_id, event)?;
-        let payload = serde_json::json!({ "agentRun": event });
+        let payload = event.task_event_payload(None);
         self.db.record_agent_task_run_event(
             run_id,
             event.task_event_type(),
