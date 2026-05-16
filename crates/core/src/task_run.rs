@@ -160,7 +160,7 @@ impl<'a> AgentTaskRuntime<'a> {
         event: &AgentRunEvent,
     ) -> Result<AgentTaskRunEvent, CoreError> {
         self.update_progress_from_event(run_id, event)?;
-        let payload = serde_json::to_value(event)?;
+        let payload = serde_json::json!({ "agentRun": event });
         self.db.record_agent_task_run_event(
             run_id,
             event.task_event_type(),
@@ -262,6 +262,15 @@ impl<'a> AgentTaskRuntime<'a> {
                     None,
                 )
             }
+            AgentRunEventKind::RecoveryAttempt => self.db.update_agent_task_run_progress(
+                run_id,
+                Some(TaskRunStatus::Running.as_str()),
+                Some("recovering"),
+                None,
+                Some(&event.label),
+                None,
+                None,
+            ),
             AgentRunEventKind::Done => self.db.finish_agent_task_run(
                 run_id,
                 TaskRunStatus::Completed.as_str(),

@@ -14,6 +14,11 @@ import type {
   ToolRunItem,
   ToolRunStatus,
 } from '../types/conversation';
+import {
+  adaptFrontendRunEvent,
+  isDurableStreamEvent,
+  replayItemFromTaskEvent,
+} from './streaming/legacyAdapter';
 
 /* ── Exported types ─────────────────────────────────────────────── */
 
@@ -150,6 +155,7 @@ interface InternalStreamState extends StreamState {
   _roundSeq: number;
   _traceSeq: number;
   _lastEventSeq: number;
+  _eventSeqGapRecorded: boolean;
   _activeAnswerBlockId: string | null;
   _activeAnswerOffset: number;
   _activeThinkingBlockId: string | null;
@@ -370,6 +376,7 @@ function createDefaultState(): InternalStreamState {
     _roundSeq: 0,
     _traceSeq: 0,
     _lastEventSeq: 0,
+    _eventSeqGapRecorded: false,
     _activeAnswerBlockId: null,
     _activeAnswerOffset: 0,
     _activeThinkingBlockId: null,
@@ -624,13 +631,6 @@ function taskRunIsActive(taskRun: AgentTaskRun): boolean {
   return ['queued', 'running', 'waiting_approval'].includes(taskRun.status);
 }
 
-function taskEventPayloadRecord(event: AgentTaskRunEvent): Record<string, unknown> | null {
-  const payload = event.payload;
-  return payload && !Array.isArray(payload) && typeof payload === 'object'
-    ? payload as Record<string, unknown>
-    : null;
-}
-
 function insertPendingToolCall(
   state: InternalStreamState,
   toolCall: ToolCallEvent,
@@ -831,28 +831,25 @@ class StreamStoreImpl {
     state.isStreaming = taskRunIsActive(taskRun);
     state.taskRun = taskRun;
     state.taskEvents = taskEvents
-      .filter(event => event.eventType !== 'streamBlockDelta' && event.eventType !== 'streamReset')
+      .filter(event => !isDurableStreamEvent(event))
       .slice(-50);
 
     const replayEvents = taskEvents
-      .map((event) => {
-        const payload = taskEventPayloadRecord(event);
-        if (!payload) return null;
-        const eventSeqRaw = payload.eventSeq;
-        const eventSeq = typeof eventSeqRaw === 'number'
-          ? eventSeqRaw
-          : Number.parseInt(String(eventSeqRaw ?? ''), 10);
-        return { event, payload, eventSeq: Number.isFinite(eventSeq) ? eventSeq : 0 };
-      })
-      .filter((item): item is { event: AgentTaskRunEvent; payload: Record<string, unknown>; eventSeq: number } =>
-        Boolean(item && item.eventSeq > 0),
-      )
+      .map(replayItemFromTaskEvent)
+      .filter((item): item is NonNullable<ReturnType<typeof replayItemFromTaskEvent>> => Boolean(item))
       .sort((a, b) => a.eventSeq - b.eventSeq);
 
     for (const item of replayEvents) {
       if (item.eventSeq <= state._lastEventSeq) continue;
       state._lastEventSeq = item.eventSeq;
-      if (item.event.eventType === 'streamReset') {
+      if (item.eventType === 'status') {
+        const reason = typeof item.payload.reason === 'string'
+          ? item.payload.reason
+          : 'Stream recovery update.';
+        appendStatusTraceEvent(state, reason, 'muted');
+        continue;
+      }
+      if (item.eventType === 'streamReset') {
         const reason = typeof item.payload.reason === 'string'
           ? item.payload.reason
           : 'Stream restarted.';
@@ -865,7 +862,7 @@ class StreamStoreImpl {
         appendStatusTraceEvent(state, reason, 'muted');
         continue;
       }
-      if (item.event.eventType !== 'streamBlockDelta') continue;
+      if (item.eventType !== 'streamBlockDelta') continue;
       const channel = item.payload.channel === 'answer' || item.payload.channel === 'thinking'
         ? item.payload.channel
         : null;
@@ -1035,13 +1032,21 @@ class StreamStoreImpl {
 
   /** Process an incoming agent event. */
   dispatch(conversationId: string, event: AgentFrontendEvent): void {
-    const s = this._streams[conversationId];
-    if (!s) return;
-
+    event = adaptFrontendRunEvent(event);
     const raw = event as AgentFrontendEvent & Record<string, unknown>;
     const eventType = normalizeAgentEventType(raw.type);
     if (!eventType) return;
     const isTaskLifecycleEvent = eventType === 'taskRunUpdated' || eventType === 'taskRunEvent';
+
+    let s = this._streams[conversationId];
+    if (!s) {
+      if (!event.runEvent && !isTaskLifecycleEvent && eventType !== 'done' && eventType !== 'error') {
+        return;
+      }
+      s = createDefaultState();
+      s.isStreaming = eventType !== 'done' && eventType !== 'error';
+      this._streams[conversationId] = s;
+    }
     if (!s.isStreaming && !isTaskLifecycleEvent) return;
 
     const eventSeqRaw = event.eventSeq ?? raw.eventSeq;
@@ -1050,6 +1055,10 @@ class StreamStoreImpl {
       : Number.parseInt(String(eventSeqRaw ?? ''), 10);
     if (Number.isFinite(eventSeq) && eventSeq > 0) {
       if (eventSeq <= s._lastEventSeq) return;
+      if (s._lastEventSeq > 0 && eventSeq > s._lastEventSeq + 1 && !s._eventSeqGapRecorded) {
+        s._eventSeqGapRecorded = true;
+        appendStatusTraceEvent(s, 'Stream event gap detected; replay may be required.', 'muted');
+      }
       s._lastEventSeq = eventSeq;
     }
 

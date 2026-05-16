@@ -1,7 +1,7 @@
 //! LLM provider types and traits for the agent framework.
 
 use async_trait::async_trait;
-use futures::stream::BoxStream;
+use futures::{stream::BoxStream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
@@ -280,6 +280,19 @@ pub struct StreamChunk {
     pub thinking_delta: Option<String>,
 }
 
+/// Provider-normalized stream event.
+///
+/// Existing providers still implement `stream()` in terms of `StreamChunk`.
+/// This adapter Interface gives the agent layer a seam for provider-level
+/// recovery policy without requiring every provider to change at once.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ProviderStreamEvent {
+    Chunk { chunk: StreamChunk },
+    RecoverableError { message: String },
+    TerminalError { message: String },
+}
+
 /// Incremental tool call data received during streaming.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -360,6 +373,23 @@ pub trait LlmProvider: Send + Sync {
         &self,
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError>;
+
+    /// Provider-level stream Interface with normalized error classification.
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let stream = self.stream(request).await?;
+        Ok(Box::pin(stream.map(|item| match item {
+            Ok(chunk) => ProviderStreamEvent::Chunk { chunk },
+            Err(CoreError::StreamIncomplete(message)) => {
+                ProviderStreamEvent::RecoverableError { message }
+            }
+            Err(error) => ProviderStreamEvent::TerminalError {
+                message: error.to_string(),
+            },
+        })))
+    }
 
     /// Quick connectivity / auth check.
     async fn health_check(&self) -> Result<(), CoreError>;

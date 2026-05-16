@@ -752,7 +752,7 @@ export function ChatMessages({
             content=""
             sections={sections}
             isStreaming={isStreaming}
-            defaultExpanded={isStreaming}
+            defaultExpanded
             collapseOnFinish={isStreaming}
           />
         </div>

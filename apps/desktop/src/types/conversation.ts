@@ -107,6 +107,7 @@ export type AgentRunEventKind =
   | 'toolCompleted'
   | 'approvalRequested'
   | 'approvalResolved'
+  | 'recoveryAttempt'
   | 'usageUpdated'
   | 'autoCompacted'
   | 'done'
@@ -114,9 +115,9 @@ export type AgentRunEventKind =
 
 export interface AgentRunEvent {
   version: number;
-  runId?: string | null;
-  turnId?: string | null;
-  eventSeq?: number | null;
+  runId: string;
+  turnId: string;
+  eventSeq: number;
   kind: AgentRunEventKind;
   phase: AgentRunPhase;
   label: string;
@@ -524,6 +525,7 @@ export interface ApprovalPolicyList {
 
 export interface AgentFrontendEvent {
   conversationId: string;
+  runEvent?: AgentRunEvent;
   type: AgentEvent['type'];
   eventSeq?: number;
   summary?: string;
