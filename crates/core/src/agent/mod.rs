@@ -58,7 +58,9 @@ use self::context_pipeline::ContextPipeline;
 use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
 use self::sampling::{completion_response_to_agent_stream, llm_streaming_disabled_by_env};
-use self::stream_recovery::{StreamRecoveryDecision, StreamRecoveryPolicy};
+use self::stream_recovery::{
+    StreamConnectRetryDecision, StreamRecoveryDecision, StreamRecoveryPolicy,
+};
 use self::tool_runtime::{build_tool_run_item, tool_call_execution_batches};
 use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
 use self::trace_builder::{
@@ -1170,7 +1172,6 @@ impl AgentExecutor {
             }
 
             // -- 4a. Stream LLM response (with rate-limit retry) ----------------
-            const MAX_LLM_RETRIES: u32 = 3;
             let stream_recovery_policy = StreamRecoveryPolicy::default();
             let current_request = CompletionRequest {
                 model: model.to_string(),
@@ -1253,108 +1254,116 @@ impl AgentExecutor {
                                     break s;
                                 }
                                 Err(CoreError::RateLimited { retry_after_secs }) => {
-                                    retry_count += 1;
-                                    if retry_count > MAX_LLM_RETRIES {
-                                        let _ = tx
-                                            .send(AgentEvent::Error {
-                                                message: format!(
-                                                    "Rate limited after {} retries",
-                                                    MAX_LLM_RETRIES
-                                                ),
-                                            })
-                                            .await;
-                                        if let Some(ref mut t) = trace {
-                                            t.finish(
-                                                TraceOutcome::Error,
-                                                Some("rate limited".to_string()),
+                                    match stream_recovery_policy
+                                        .decide_after_rate_limit(retry_count, retry_after_secs)
+                                    {
+                                        StreamConnectRetryDecision::Retry {
+                                            attempt,
+                                            delay,
+                                            thinking_message,
+                                        } => {
+                                            retry_count = attempt;
+                                            warn!(
+                                                "Rate limited. Retry {} after {}s",
+                                                retry_count,
+                                                delay.as_secs()
                                             );
-                                            if let Err(te) = db.save_agent_trace(t) {
-                                                warn!("Failed to save agent trace: {te}");
+                                            let _ = tx
+                                                .send(AgentEvent::Thinking {
+                                                    content: thinking_message,
+                                                })
+                                                .await;
+                                            tokio::time::sleep(delay).await;
+                                        }
+                                        StreamConnectRetryDecision::GiveUp {
+                                            user_message,
+                                            trace_message,
+                                        } => {
+                                            let _ = tx
+                                                .send(AgentEvent::Error {
+                                                    message: user_message,
+                                                })
+                                                .await;
+                                            if let Some(ref mut t) = trace {
+                                                t.finish(TraceOutcome::Error, Some(trace_message));
+                                                if let Err(te) = db.save_agent_trace(t) {
+                                                    warn!("Failed to save agent trace: {te}");
+                                                }
                                             }
+                                            if let Some(tid) = turn_id {
+                                                let trace = build_turn_trace(
+                                                    route_plan.kind,
+                                                    &persisted_trace_items,
+                                                );
+                                                let _ = db.finalize_conversation_turn(
+                                                    tid,
+                                                    "error",
+                                                    None,
+                                                    Some(&trace),
+                                                );
+                                            }
+                                            return Err(CoreError::RateLimited {
+                                                retry_after_secs,
+                                            });
                                         }
-                                        if let Some(tid) = turn_id {
-                                            let trace = build_turn_trace(
-                                                route_plan.kind,
-                                                &persisted_trace_items,
-                                            );
-                                            let _ = db.finalize_conversation_turn(
-                                                tid,
-                                                "error",
-                                                None,
-                                                Some(&trace),
-                                            );
-                                        }
-                                        return Err(CoreError::RateLimited { retry_after_secs });
                                     }
-                                    // Use server's Retry-After, falling back to exponential backoff.
-                                    let wait = if retry_after_secs > 0 {
-                                        retry_after_secs
-                                    } else {
-                                        2u64.pow(retry_count)
-                                    };
-                                    warn!(
-                                        "Rate limited. Retry {}/{} after {}s",
-                                        retry_count, MAX_LLM_RETRIES, wait
-                                    );
-                                    let _ = tx
-                                        .send(AgentEvent::Thinking {
-                                            content: format!(
-                                                "Rate limited. Retrying in {}s...",
-                                                wait
-                                            ),
-                                        })
-                                        .await;
-                                    tokio::time::sleep(Duration::from_secs(wait)).await;
                                 }
                                 Err(CoreError::TransientLlm(msg)) => {
-                                    retry_count += 1;
-                                    if retry_count > MAX_LLM_RETRIES {
-                                        let _ = tx
-                                            .send(AgentEvent::Error {
-                                                message: format!(
-                                                    "Transient error after {} retries: {}",
-                                                    MAX_LLM_RETRIES, msg
-                                                ),
-                                            })
-                                            .await;
-                                        let err_msg = format!(
-                                            "Transient error after {} retries: {}",
-                                            MAX_LLM_RETRIES, msg
-                                        );
-                                        if let Some(ref mut t) = trace {
-                                            t.finish(TraceOutcome::Error, Some(err_msg.clone()));
-                                            if let Err(te) = db.save_agent_trace(t) {
-                                                warn!("Failed to save agent trace: {te}");
+                                    match stream_recovery_policy
+                                        .decide_after_transient_error(retry_count, &msg)
+                                    {
+                                        StreamConnectRetryDecision::Retry {
+                                            attempt,
+                                            delay,
+                                            thinking_message,
+                                        } => {
+                                            retry_count = attempt;
+                                            warn!(
+                                                "Transient error (retry {}): {}. Retrying after {}s",
+                                                retry_count,
+                                                msg,
+                                                delay.as_secs()
+                                            );
+                                            let _ = tx
+                                                .send(AgentEvent::Thinking {
+                                                    content: thinking_message,
+                                                })
+                                                .await;
+                                            tokio::time::sleep(delay).await;
+                                        }
+                                        StreamConnectRetryDecision::GiveUp {
+                                            user_message,
+                                            trace_message,
+                                        } => {
+                                            let _ = tx
+                                                .send(AgentEvent::Error {
+                                                    message: user_message,
+                                                })
+                                                .await;
+                                            if let Some(ref mut t) = trace {
+                                                t.finish(
+                                                    TraceOutcome::Error,
+                                                    Some(trace_message.clone()),
+                                                );
+                                                if let Err(te) = db.save_agent_trace(t) {
+                                                    warn!("Failed to save agent trace: {te}");
+                                                }
                                             }
+                                            if let Some(tid) = turn_id {
+                                                let trace = build_turn_trace(
+                                                    route_plan.kind,
+                                                    &persisted_trace_items,
+                                                );
+                                                let _ = db.finalize_conversation_turn(
+                                                    tid,
+                                                    "error",
+                                                    None,
+                                                    Some(&trace),
+                                                );
+                                            }
+                                            return Err(CoreError::Llm(trace_message));
                                         }
-                                        if let Some(tid) = turn_id {
-                                            let trace = build_turn_trace(
-                                                route_plan.kind,
-                                                &persisted_trace_items,
-                                            );
-                                            let _ = db.finalize_conversation_turn(
-                                                tid,
-                                                "error",
-                                                None,
-                                                Some(&trace),
-                                            );
-                                        }
-                                        return Err(CoreError::Llm(err_msg));
                                     }
-                                    let wait = 2u64.pow(retry_count - 1); // 1s, 2s, 4s
-                                    warn!(
-                                        "Transient error (retry {}/{}): {}. Retrying after {}s",
-                                        retry_count, MAX_LLM_RETRIES, msg, wait
-                                    );
-                                    let _ = tx
-                                        .send(AgentEvent::Thinking {
-                                            content: format!(
-                                                "Connection error. Retrying in {}s...",
-                                                wait
-                                            ),
-                                        })
-                                        .await;
-                                    tokio::time::sleep(Duration::from_secs(wait)).await;
                                 }
                                 Err(e) if is_context_overflow_error(&e) => {
                                     if context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
