@@ -1,6 +1,8 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use log::warn;
 use nexa_core::agent::AgentEvent;
-use nexa_core::agent_run::AgentRunEvent;
+use nexa_core::agent_run::{AgentRunEvent, AgentRunPhase};
 use nexa_core::conversation::{AgentTaskRun, AgentTaskRunEvent};
 use nexa_core::db::Database;
 use serde::Serialize;
@@ -118,6 +120,41 @@ pub(crate) fn record_agent_run_task_event(
         &task_event_ctx,
         run_event,
         event_type,
+        label,
+        status,
+        payload,
+    );
+}
+
+pub(crate) fn record_agent_run_status_task_event(
+    db: &Database,
+    app_handle: &AppHandle,
+    conversation_id: &str,
+    task_run_id: &str,
+    turn_id: Option<&str>,
+    event_seq: &AtomicU64,
+    phase: AgentRunPhase,
+    label: &str,
+    status: Option<&str>,
+    payload: Option<&serde_json::Value>,
+) {
+    let next_seq = event_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let run_event = AgentRunEvent::status_update(
+        task_run_id,
+        turn_id,
+        next_seq,
+        phase,
+        label,
+        status,
+        payload,
+    );
+    record_agent_run_task_event(
+        db,
+        app_handle,
+        conversation_id,
+        task_run_id,
+        &run_event,
+        run_event.task_event_type(),
         label,
         status,
         payload,

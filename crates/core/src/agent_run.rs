@@ -347,6 +347,28 @@ impl AgentRunEvent {
         }
     }
 
+    pub fn status_update(
+        run_id: &str,
+        turn_id: Option<&str>,
+        event_seq: u64,
+        phase: AgentRunPhase,
+        label: &str,
+        status: Option<&str>,
+        payload: Option<&serde_json::Value>,
+    ) -> Self {
+        Self {
+            version: AGENT_RUN_EVENT_VERSION,
+            run_id: run_id.to_string(),
+            turn_id: turn_id.unwrap_or_default().to_string(),
+            event_seq,
+            kind: AgentRunEventKind::Status,
+            phase,
+            label: label.to_string(),
+            status: status.map(str::to_string),
+            payload: payload.cloned().unwrap_or_else(|| serde_json::json!({})),
+        }
+    }
+
     pub fn from_task_payload(payload: &serde_json::Value, fallback_run_id: &str) -> Option<Self> {
         if let Some(agent_run) = payload.get("agentRun") {
             return serde_json::from_value::<Self>(agent_run.clone()).ok();
@@ -544,5 +566,26 @@ mod tests {
         assert!(done_event.is_terminal());
         assert!(error_event.is_terminal());
         assert!(!status_event.is_terminal());
+    }
+
+    #[test]
+    fn builds_canonical_status_update() {
+        let payload = serde_json::json!({ "detail": "queued" });
+        let run_event = AgentRunEvent::status_update(
+            "run-1",
+            Some("turn-1"),
+            3,
+            AgentRunPhase::Routing,
+            "Task queued",
+            Some("queued"),
+            Some(&payload),
+        );
+
+        assert_eq!(run_event.version, AGENT_RUN_EVENT_VERSION);
+        assert_eq!(run_event.kind, AgentRunEventKind::Status);
+        assert_eq!(run_event.task_event_type(), "status");
+        assert_eq!(run_event.event_seq, 3);
+        assert_eq!(run_event.status.as_deref(), Some("queued"));
+        assert_eq!(run_event.payload["detail"], "queued");
     }
 }

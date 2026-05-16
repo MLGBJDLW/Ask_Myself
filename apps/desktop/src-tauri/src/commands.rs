@@ -15,8 +15,8 @@ use crate::agent_stream::{
     split_text_by_utf8_bytes, MAX_FRONTEND_ARTIFACT_STRING_CHARS, MAX_FRONTEND_TOOL_CONTENT_CHARS,
 };
 use crate::agent_task_events::{
-    emit_agent_task_event, emit_agent_task_run_update, record_agent_run_task_event,
-    record_task_progress_for_agent_event,
+    emit_agent_task_event, emit_agent_task_run_update, record_agent_run_status_task_event,
+    record_agent_run_task_event, record_task_progress_for_agent_event,
 };
 use crate::app_events::emit_app_event;
 use crate::subagent_tool::{
@@ -26,6 +26,7 @@ use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
     AgentSteeringMessage, CancellationToken, ConfirmationCallback,
 };
+use nexa_core::agent_run::AgentRunPhase;
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
 use nexa_core::approval::{
     ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
@@ -3520,15 +3521,18 @@ pub async fn agent_chat_cmd(
     let stream_event_seq = Arc::new(AtomicU64::new(0));
     let terminal_emitted = Arc::new(AtomicBool::new(false));
     emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
-    if let Ok(event) = state.db.record_agent_task_run_event(
+    record_agent_run_status_task_event(
+        &state.db,
+        &app_handle,
+        &conversation_id,
         &task_run.id,
-        "status",
+        Some(&turn.id),
+        &stream_event_seq,
+        AgentRunPhase::Routing,
         "Task queued",
         Some("queued"),
         None,
-    ) {
-        emit_agent_task_event(&app_handle, &conversation_id, event);
-    }
+    );
 
     // 6. Build prompt sections from conversation context.
     let source_scope_ids = state
@@ -4095,15 +4099,18 @@ pub async fn agent_chat_cmd(
         .mark_agent_task_run_started(&task_run.id, "initializing")
         .map_err(|e| e.to_string())?;
     emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
-    if let Ok(event) = state.db.record_agent_task_run_event(
+    record_agent_run_status_task_event(
+        &state.db,
+        &app_handle,
+        &conversation_id,
         &task_run.id,
-        "status",
+        Some(&turn_id),
+        &stream_event_seq,
+        AgentRunPhase::Routing,
         "Agent started",
         Some("running"),
         None,
-    ) {
-        emit_agent_task_event(&app_handle, &conversation_id, event);
-    }
+    );
 
     let task = tokio::spawn(async move {
         let cancel_token = cancel_token_clone;
@@ -4459,15 +4466,18 @@ pub async fn agent_chat_cmd(
             task_error.as_deref(),
             Some(&task_artifacts),
         );
-        let _ = db
-            .record_agent_task_run_event(
-                &task_run_id,
-                "status",
-                task_summary,
-                Some(task_status),
-                Some(&task_artifacts),
-            )
-            .map(|event| emit_agent_task_event(&handle, &conv_id, event));
+        record_agent_run_status_task_event(
+            &db,
+            &handle,
+            &conv_id,
+            &task_run_id,
+            Some(&turn_id),
+            &stream_event_seq,
+            AgentRunPhase::Done,
+            task_summary,
+            Some(task_status),
+            Some(&task_artifacts),
+        );
         emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
 
         // Repair orphaned tool_calls in DB after timeout or error.
