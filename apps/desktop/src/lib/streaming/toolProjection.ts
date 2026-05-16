@@ -19,6 +19,12 @@ export type StreamToolProjectionState = InternalStreamState;
 
 type RawFrontendEvent = AgentFrontendEvent & Record<string, unknown>;
 
+export interface ToolPreparingPayload {
+  callId: string;
+  toolName: string;
+  argsBytes: number;
+}
+
 export function createToolCall(partial: {
   callId: string;
   toolName: string;
@@ -280,6 +286,51 @@ export function applyToolRunEvent(state: StreamToolProjectionState, run: ToolRun
       state._activeRoundAcceptingStarts = false;
     }
   }
+}
+
+export function extractToolPreparingPayload(
+  event: AgentFrontendEvent,
+  raw: RawFrontendEvent,
+): ToolPreparingPayload | null {
+  const callId = (
+    (typeof event.callId === 'string' && event.callId)
+    || (typeof raw.call_id === 'string' ? raw.call_id : '')
+  ).trim();
+  if (!callId) return null;
+  const toolNameRaw = (typeof event.toolName === 'string' && event.toolName)
+    || (typeof raw.tool_name === 'string' ? raw.tool_name : '');
+  const toolName = toolNameRaw.trim() ? toolNameRaw : 'unknown_tool';
+  const argsBytesRaw = event.argsBytes ?? raw.args_bytes ?? raw.argsBytes ?? 0;
+  const argsBytes = typeof argsBytesRaw === 'number'
+    ? argsBytesRaw
+    : Number.parseInt(String(argsBytesRaw), 10);
+  return {
+    callId,
+    toolName,
+    argsBytes: Number.isFinite(argsBytes) ? argsBytes : 0,
+  };
+}
+
+export function extractToolRunPayload(
+  event: AgentFrontendEvent,
+  raw: RawFrontendEvent,
+): ToolRunItem | null {
+  const runRaw = event.run ?? raw.run;
+  if (!runRaw || typeof runRaw !== 'object') return null;
+  const run = runRaw as ToolRunItem;
+  const callId = (run.callId || '').trim();
+  if (!callId) return null;
+  return run;
+}
+
+export function toolPreparingPayloadFromRun(run: ToolRunItem): ToolPreparingPayload | null {
+  const callId = (run.callId || '').trim();
+  if (!callId || run.status !== 'preparing') return null;
+  return {
+    callId,
+    toolName: (run.toolName || '').trim() || 'unknown_tool',
+    argsBytes: typeof run.arguments === 'string' ? run.arguments.length : 0,
+  };
 }
 
 function patchStartedToolCall(

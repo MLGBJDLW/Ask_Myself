@@ -7,7 +7,6 @@ import type { AgentFrontendEvent } from '../types';
 import type {
   AgentTaskRun,
   AgentTaskRunEvent,
-  ToolRunItem,
 } from '../types/conversation';
 import {
   applyStreamBlockDeltaEvent,
@@ -53,7 +52,10 @@ import {
   applyToolCallStartEvent,
   applyToolRunEvent,
   createToolCall,
+  extractToolPreparingPayload,
+  extractToolRunPayload,
   insertPendingToolCall,
+  toolPreparingPayloadFromRun,
 } from './streaming/toolProjection';
 import type {
   StreamState,
@@ -342,23 +344,13 @@ class StreamStoreImpl {
 
       case 'toolCallPreparing': {
         try {
-          const callId = (
-            (typeof event.callId === 'string' && event.callId)
-            || (typeof raw.call_id === 'string' ? raw.call_id : '')
-          ).trim();
-          if (!callId) break;
-          const toolNameRaw = (typeof event.toolName === 'string' && event.toolName)
-            || (typeof raw.tool_name === 'string' ? raw.tool_name : '');
-          const toolName = toolNameRaw.trim() ? toolNameRaw : 'unknown_tool';
-          const argsBytesRaw = event.argsBytes ?? raw.args_bytes ?? raw.argsBytes ?? 0;
-          const argsBytes = typeof argsBytesRaw === 'number'
-            ? argsBytesRaw
-            : Number.parseInt(String(argsBytesRaw), 10);
+          const payload = extractToolPreparingPayload(event, raw);
+          if (!payload) break;
           this.scheduleToolPreparing(
             conversationId,
-            callId,
-            toolName,
-            Number.isFinite(argsBytes) ? argsBytes : 0,
+            payload.callId,
+            payload.toolName,
+            payload.argsBytes,
           );
         } catch (err) {
           console.error('[streamStore] toolCallPreparing error:', err);
@@ -370,23 +362,21 @@ class StreamStoreImpl {
       case 'toolRunUpdated':
       case 'toolRunCompleted': {
         try {
-          const runRaw = event.run ?? raw.run;
-          if (!runRaw || typeof runRaw !== 'object') break;
-          const run = runRaw as ToolRunItem;
-          const callId = (run.callId || '').trim();
-          if (!callId) break;
+          const run = extractToolRunPayload(event, raw);
+          if (!run) break;
 
-          if (run.status === 'preparing') {
+          const preparing = toolPreparingPayloadFromRun(run);
+          if (preparing) {
             this.scheduleToolPreparing(
               conversationId,
-              callId,
-              (run.toolName || '').trim() || 'unknown_tool',
-              typeof run.arguments === 'string' ? run.arguments.length : 0,
+              preparing.callId,
+              preparing.toolName,
+              preparing.argsBytes,
             );
             break;
           }
 
-          clearToolPreparingTimer(s, callId);
+          clearToolPreparingTimer(s, run.callId.trim());
           applyToolRunEvent(s, run);
         } catch (err) {
           console.error('[streamStore] toolRun event error:', err);
