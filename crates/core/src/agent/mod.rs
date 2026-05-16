@@ -28,12 +28,15 @@ use crate::intelligence::{
     TaskPlanningInput,
 };
 use crate::llm::{
-    CompletionRequest, ContentPart, LlmProvider, Message, ProviderType, ReasoningEffort, Role,
-    StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
+    stream_chunks_to_provider_events, CompletionRequest, ContentPart, LlmProvider, Message,
+    ProviderStreamEvent, ProviderType, ReasoningEffort, Role, ToolCallDelta, ToolCallRequest,
+    ToolDefinition, Usage,
 };
 use crate::policy_engine::{evaluate_policy_with_baseline, PolicyEffect, PolicySubject};
 use crate::privacy;
 use crate::skills::Skill;
+use crate::task_run::AgentTaskRuntime;
+use crate::task_timeline::TaskTimelineEvent;
 use crate::tools::{ToolCategory, ToolInputStreamingMode, ToolInterruptBehavior, ToolRegistry};
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
@@ -45,6 +48,7 @@ pub mod loop_guard;
 pub mod route;
 mod sampling;
 pub mod scratchpad;
+mod stream_recovery;
 mod tool_runtime;
 pub mod tool_scheduler;
 mod trace_builder;
@@ -54,6 +58,10 @@ use self::context_pipeline::ContextPipeline;
 use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
 use self::sampling::{completion_response_to_agent_stream, llm_streaming_disabled_by_env};
+use self::stream_recovery::{
+    ContextOverflowRecoveryDecision, StreamConnectRetryDecision, StreamRecoveryDecision,
+    StreamRecoveryPolicy,
+};
 use self::tool_runtime::{build_tool_run_item, tool_call_execution_batches};
 use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
 use self::trace_builder::{
@@ -69,7 +77,6 @@ pub use self::events::{AgentEvent, StreamBlockChannel, ToolRunItem, ToolRunStatu
 // Re-export so consumers don't need to depend on tokio-util directly.
 pub use tokio_util::sync::CancellationToken;
 
-const MAX_CONTEXT_RECOVERY_ATTEMPTS: u32 = 2;
 const MISSING_REASONING_CONTENT_PLACEHOLDER: &str =
     "[reasoning content unavailable in local history]";
 
@@ -82,25 +89,37 @@ struct SteeringDrainContext<'a> {
     privacy_cfg: &'a privacy::PrivacyConfig,
 }
 
-fn is_context_overflow_error(err: &CoreError) -> bool {
-    match err {
-        CoreError::ContextOverflow(..) => true,
-        CoreError::Llm(message) | CoreError::TransientLlm(message) => {
-            let lower = message.to_lowercase();
-            lower.contains("context length")
-                || lower.contains("context window")
-                || lower.contains("prompt_too_long")
-                || lower.contains("prompt is too long")
-                || lower.contains("maximum context")
-                || lower.contains("too many tokens")
-                || (lower.contains("token limit") && lower.contains("input"))
-        }
-        _ => false,
-    }
-}
-
 fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
     tool_scheduler::compact_tool_result_for_context(tool_name, content)
+}
+
+async fn emit_error_and_finalize_turn(
+    tx: &mpsc::Sender<AgentEvent>,
+    db: &Database,
+    trace: &mut Option<AgentTrace>,
+    turn_id: Option<&str>,
+    route_kind: AgentRouteKind,
+    persisted_trace_items: &[PersistedTraceItem],
+    frontend_message: String,
+    trace_message: String,
+) {
+    let _ = tx
+        .send(AgentEvent::Error {
+            message: frontend_message,
+        })
+        .await;
+
+    if let Some(active_trace) = trace {
+        active_trace.finish(TraceOutcome::Error, Some(trace_message));
+        if let Err(err) = db.save_agent_trace(active_trace) {
+            warn!("Failed to save agent trace: {err}");
+        }
+    }
+
+    if let Some(tid) = turn_id {
+        let trace = build_turn_trace(route_kind, persisted_trace_items);
+        let _ = db.finalize_conversation_turn(tid, "error", None, Some(&trace));
+    }
 }
 
 /// User input injected into an already-running agent turn.
@@ -723,13 +742,6 @@ impl AgentExecutor {
                     Some(&task_plan_value),
                     None,
                 );
-                let _ = db.record_agent_task_run_event(
-                    &task_run.id,
-                    "plan",
-                    "Typed task plan created",
-                    Some("completed"),
-                    Some(&task_plan_value),
-                );
             }
         }
 
@@ -866,8 +878,9 @@ impl AgentExecutor {
                     if let Err(e) = db.add_message(&conv_msg) {
                         error!("Failed to persist message: {e}");
                         let _ = tx
-                            .send(AgentEvent::Error {
-                                message: format!("Warning: message was not saved to history: {e}"),
+                            .send(AgentEvent::Status {
+                                content: format!("Warning: message was not saved to history: {e}"),
+                                tone: Some("warning".to_string()),
                             })
                             .await;
                     }
@@ -995,10 +1008,11 @@ impl AgentExecutor {
                         if let Err(e) = db.add_message(&conv_msg) {
                             error!("Failed to persist message: {e}");
                             let _ = tx
-                                .send(AgentEvent::Error {
-                                    message: format!(
+                                .send(AgentEvent::Status {
+                                    content: format!(
                                         "Warning: message was not saved to history: {e}"
                                     ),
+                                    tone: Some("warning".to_string()),
                                 })
                                 .await;
                         }
@@ -1018,7 +1032,7 @@ impl AgentExecutor {
                             usage_total: total_usage.clone(),
                             last_prompt_tokens,
                             cached: false,
-                            finish_reason: last_finish_reason.clone(),
+                            finish_reason: Some("cancelled".to_string()),
                         })
                         .await;
 
@@ -1172,8 +1186,7 @@ impl AgentExecutor {
             }
 
             // -- 4a. Stream LLM response (with rate-limit retry) ----------------
-            const MAX_LLM_RETRIES: u32 = 3;
-            const MAX_STREAM_DISCONNECT_RETRIES: u32 = 2;
+            let stream_recovery_policy = StreamRecoveryPolicy::default();
             let current_request = CompletionRequest {
                 model: model.to_string(),
                 messages: messages.clone(),
@@ -1210,249 +1223,192 @@ impl AgentExecutor {
 
             loop {
                 let mut retry_count = 0u32;
-                let mut stream: futures::stream::BoxStream<'_, Result<StreamChunk, CoreError>> =
+                let mut stream: futures::stream::BoxStream<'_, ProviderStreamEvent> =
                     if force_non_streaming_llm {
                         info!("Initiating LLM completion in non-streaming mode");
                         match self.provider.complete(&current_request).await {
                             Ok(response) => {
                                 context_recovery_attempts = 0;
-                                completion_response_to_agent_stream(response)
+                                stream_chunks_to_provider_events(
+                                    completion_response_to_agent_stream(response),
+                                )
                             }
                             Err(e) => {
-                                let _ = tx
-                                    .send(AgentEvent::Error {
-                                        message: e.to_string(),
-                                    })
-                                    .await;
-                                if let Some(ref mut t) = trace {
-                                    t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                    if let Err(te) = db.save_agent_trace(t) {
-                                        warn!("Failed to save agent trace: {te}");
-                                    }
-                                }
-                                if let Some(tid) = turn_id {
-                                    let trace =
-                                        build_turn_trace(route_plan.kind, &persisted_trace_items);
-                                    let _ = db.finalize_conversation_turn(
-                                        tid,
-                                        "error",
-                                        None,
-                                        Some(&trace),
-                                    );
-                                }
+                                emit_error_and_finalize_turn(
+                                    &tx,
+                                    db,
+                                    &mut trace,
+                                    turn_id,
+                                    route_plan.kind,
+                                    &persisted_trace_items,
+                                    e.to_string(),
+                                    e.to_string(),
+                                )
+                                .await;
                                 return Err(e);
                             }
                         }
                     } else {
                         loop {
                             info!("Initiating LLM stream, attempt {}", retry_count + 1);
-                            match self.provider.stream(&current_request).await {
+                            match self.provider.stream_events(&current_request).await {
                                 Ok(s) => {
                                     info!("LLM stream connected");
                                     context_recovery_attempts = 0;
                                     break s;
                                 }
                                 Err(CoreError::RateLimited { retry_after_secs }) => {
-                                    retry_count += 1;
-                                    if retry_count > MAX_LLM_RETRIES {
-                                        let _ = tx
-                                            .send(AgentEvent::Error {
-                                                message: format!(
-                                                    "Rate limited after {} retries",
-                                                    MAX_LLM_RETRIES
-                                                ),
-                                            })
-                                            .await;
-                                        if let Some(ref mut t) = trace {
-                                            t.finish(
-                                                TraceOutcome::Error,
-                                                Some("rate limited".to_string()),
+                                    match stream_recovery_policy
+                                        .decide_after_rate_limit(retry_count, retry_after_secs)
+                                    {
+                                        StreamConnectRetryDecision::Retry {
+                                            attempt,
+                                            delay,
+                                            thinking_message,
+                                        } => {
+                                            retry_count = attempt;
+                                            warn!(
+                                                "Rate limited. Retry {} after {}s",
+                                                retry_count,
+                                                delay.as_secs()
                                             );
-                                            if let Err(te) = db.save_agent_trace(t) {
-                                                warn!("Failed to save agent trace: {te}");
-                                            }
+                                            let _ = tx
+                                                .send(AgentEvent::Thinking {
+                                                    content: thinking_message,
+                                                })
+                                                .await;
+                                            tokio::time::sleep(delay).await;
                                         }
-                                        if let Some(tid) = turn_id {
-                                            let trace = build_turn_trace(
+                                        StreamConnectRetryDecision::GiveUp {
+                                            user_message,
+                                            trace_message,
+                                        } => {
+                                            emit_error_and_finalize_turn(
+                                                &tx,
+                                                db,
+                                                &mut trace,
+                                                turn_id,
                                                 route_plan.kind,
                                                 &persisted_trace_items,
-                                            );
-                                            let _ = db.finalize_conversation_turn(
-                                                tid,
-                                                "error",
-                                                None,
-                                                Some(&trace),
-                                            );
+                                                user_message,
+                                                trace_message,
+                                            )
+                                            .await;
+                                            return Err(CoreError::RateLimited {
+                                                retry_after_secs,
+                                            });
                                         }
-                                        return Err(CoreError::RateLimited { retry_after_secs });
                                     }
-                                    // Use server's Retry-After, falling back to exponential backoff.
-                                    let wait = if retry_after_secs > 0 {
-                                        retry_after_secs
-                                    } else {
-                                        2u64.pow(retry_count)
-                                    };
-                                    warn!(
-                                        "Rate limited. Retry {}/{} after {}s",
-                                        retry_count, MAX_LLM_RETRIES, wait
-                                    );
-                                    let _ = tx
-                                        .send(AgentEvent::Thinking {
-                                            content: format!(
-                                                "Rate limited. Retrying in {}s...",
-                                                wait
-                                            ),
-                                        })
-                                        .await;
-                                    tokio::time::sleep(Duration::from_secs(wait)).await;
                                 }
                                 Err(CoreError::TransientLlm(msg)) => {
-                                    retry_count += 1;
-                                    if retry_count > MAX_LLM_RETRIES {
-                                        let _ = tx
-                                            .send(AgentEvent::Error {
-                                                message: format!(
-                                                    "Transient error after {} retries: {}",
-                                                    MAX_LLM_RETRIES, msg
-                                                ),
-                                            })
-                                            .await;
-                                        let err_msg = format!(
-                                            "Transient error after {} retries: {}",
-                                            MAX_LLM_RETRIES, msg
-                                        );
-                                        if let Some(ref mut t) = trace {
-                                            t.finish(TraceOutcome::Error, Some(err_msg.clone()));
-                                            if let Err(te) = db.save_agent_trace(t) {
-                                                warn!("Failed to save agent trace: {te}");
-                                            }
+                                    match stream_recovery_policy
+                                        .decide_after_transient_error(retry_count, &msg)
+                                    {
+                                        StreamConnectRetryDecision::Retry {
+                                            attempt,
+                                            delay,
+                                            thinking_message,
+                                        } => {
+                                            retry_count = attempt;
+                                            warn!(
+                                                "Transient error (retry {}): {}. Retrying after {}s",
+                                                retry_count,
+                                                msg,
+                                                delay.as_secs()
+                                            );
+                                            let _ = tx
+                                                .send(AgentEvent::Thinking {
+                                                    content: thinking_message,
+                                                })
+                                                .await;
+                                            tokio::time::sleep(delay).await;
                                         }
-                                        if let Some(tid) = turn_id {
-                                            let trace = build_turn_trace(
+                                        StreamConnectRetryDecision::GiveUp {
+                                            user_message,
+                                            trace_message,
+                                        } => {
+                                            emit_error_and_finalize_turn(
+                                                &tx,
+                                                db,
+                                                &mut trace,
+                                                turn_id,
                                                 route_plan.kind,
                                                 &persisted_trace_items,
-                                            );
-                                            let _ = db.finalize_conversation_turn(
-                                                tid,
-                                                "error",
-                                                None,
-                                                Some(&trace),
-                                            );
+                                                user_message,
+                                                trace_message.clone(),
+                                            )
+                                            .await;
+                                            return Err(CoreError::Llm(trace_message));
                                         }
-                                        return Err(CoreError::Llm(err_msg));
                                     }
-                                    let wait = 2u64.pow(retry_count - 1); // 1s, 2s, 4s
-                                    warn!(
-                                        "Transient error (retry {}/{}): {}. Retrying after {}s",
-                                        retry_count, MAX_LLM_RETRIES, msg, wait
-                                    );
-                                    let _ = tx
-                                        .send(AgentEvent::Thinking {
-                                            content: format!(
-                                                "Connection error. Retrying in {}s...",
-                                                wait
-                                            ),
-                                        })
-                                        .await;
-                                    tokio::time::sleep(Duration::from_secs(wait)).await;
                                 }
-                                Err(e) if is_context_overflow_error(&e) => {
-                                    if context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
-                                        let message = format!(
-                                            "Context compression circuit breaker opened after {} recovery attempt(s): {}",
-                                            MAX_CONTEXT_RECOVERY_ATTEMPTS,
-                                            e
-                                        );
-                                        let _ = tx.send(AgentEvent::Error { message }).await;
-                                        if let Some(ref mut t) = trace {
-                                            t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                            if let Err(te) = db.save_agent_trace(t) {
-                                                warn!("Failed to save agent trace: {te}");
+                                Err(e) if StreamRecoveryPolicy::is_context_overflow_error(&e) => {
+                                    match stream_recovery_policy.decide_after_context_overflow(
+                                        context_recovery_attempts,
+                                        &e,
+                                    ) {
+                                        ContextOverflowRecoveryDecision::Compact {
+                                            attempt,
+                                            status_message,
+                                        } => {
+                                            context_recovery_attempts = attempt;
+                                            let _ = tx
+                                                .send(AgentEvent::Status {
+                                                    content: status_message,
+                                                    tone: Some("muted".to_string()),
+                                                })
+                                                .await;
+                                            let recovered = self
+                                                .recover_context_overflow(&mut messages, model, &tx)
+                                                .await?;
+                                            if !recovered {
+                                                emit_error_and_finalize_turn(
+                                                    &tx,
+                                                    db,
+                                                    &mut trace,
+                                                    turn_id,
+                                                    route_plan.kind,
+                                                    &persisted_trace_items,
+                                                    format!(
+                                                        "Context overflow could not be reduced further: {}",
+                                                        e
+                                                    ),
+                                                    e.to_string(),
+                                                )
+                                                .await;
+                                                return Err(e);
                                             }
                                         }
-                                        if let Some(tid) = turn_id {
-                                            let trace = build_turn_trace(
+                                        ContextOverflowRecoveryDecision::GiveUp {
+                                            user_message,
+                                        } => {
+                                            emit_error_and_finalize_turn(
+                                                &tx,
+                                                db,
+                                                &mut trace,
+                                                turn_id,
                                                 route_plan.kind,
                                                 &persisted_trace_items,
-                                            );
-                                            let _ = db.finalize_conversation_turn(
-                                                tid,
-                                                "error",
-                                                None,
-                                                Some(&trace),
-                                            );
-                                        }
-                                        return Err(e);
-                                    }
-
-                                    context_recovery_attempts += 1;
-                                    let _ = tx
-                                        .send(AgentEvent::Status {
-                                            content: format!(
-                                                "Context window overflow detected. Compacting history and retrying ({}/{})",
-                                                context_recovery_attempts, MAX_CONTEXT_RECOVERY_ATTEMPTS
-                                            ),
-                                            tone: Some("muted".to_string()),
-                                        })
-                                        .await;
-                                    let recovered = self
-                                        .recover_context_overflow(&mut messages, model, &tx)
-                                        .await?;
-                                    if !recovered {
-                                        let _ = tx
-                                            .send(AgentEvent::Error {
-                                                message: format!(
-                                                    "Context overflow could not be reduced further: {}",
-                                                    e
-                                                ),
-                                            })
+                                                user_message,
+                                                e.to_string(),
+                                            )
                                             .await;
-                                        if let Some(ref mut t) = trace {
-                                            t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                            if let Err(te) = db.save_agent_trace(t) {
-                                                warn!("Failed to save agent trace: {te}");
-                                            }
+                                            return Err(e);
                                         }
-                                        if let Some(tid) = turn_id {
-                                            let trace = build_turn_trace(
-                                                route_plan.kind,
-                                                &persisted_trace_items,
-                                            );
-                                            let _ = db.finalize_conversation_turn(
-                                                tid,
-                                                "error",
-                                                None,
-                                                Some(&trace),
-                                            );
-                                        }
-                                        return Err(e);
                                     }
                                 }
                                 Err(e) => {
-                                    let _ = tx
-                                        .send(AgentEvent::Error {
-                                            message: e.to_string(),
-                                        })
-                                        .await;
-                                    // Trace: error
-                                    if let Some(ref mut t) = trace {
-                                        t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                        if let Err(te) = db.save_agent_trace(t) {
-                                            warn!("Failed to save agent trace: {te}");
-                                        }
-                                    }
-                                    if let Some(tid) = turn_id {
-                                        let trace = build_turn_trace(
-                                            route_plan.kind,
-                                            &persisted_trace_items,
-                                        );
-                                        let _ = db.finalize_conversation_turn(
-                                            tid,
-                                            "error",
-                                            None,
-                                            Some(&trace),
-                                        );
-                                    }
+                                    emit_error_and_finalize_turn(
+                                        &tx,
+                                        db,
+                                        &mut trace,
+                                        turn_id,
+                                        route_plan.kind,
+                                        &persisted_trace_items,
+                                        e.to_string(),
+                                        e.to_string(),
+                                    )
+                                    .await;
                                     return Err(e);
                                 }
                             }
@@ -1476,7 +1432,7 @@ impl AgentExecutor {
 
                 enum StreamLoopEvent {
                     Steering(Option<AgentSteeringMessage>),
-                    Chunk(Option<Result<crate::llm::StreamChunk, CoreError>>),
+                    Provider(Option<ProviderStreamEvent>),
                 }
 
                 loop {
@@ -1484,7 +1440,7 @@ impl AgentExecutor {
                         maybe_steering = self.wait_for_steering_message(), if self.steering_rx.is_some() && !steering_closed => {
                             StreamLoopEvent::Steering(maybe_steering)
                         }
-                        maybe_chunk = stream.next() => StreamLoopEvent::Chunk(maybe_chunk),
+                        maybe_provider_event = stream.next() => StreamLoopEvent::Provider(maybe_provider_event),
                     };
 
                     match stream_event {
@@ -1495,8 +1451,8 @@ impl AgentExecutor {
                         StreamLoopEvent::Steering(None) => {
                             steering_closed = true;
                         }
-                        StreamLoopEvent::Chunk(None) => break,
-                        StreamLoopEvent::Chunk(Some(Ok(chunk))) => {
+                        StreamLoopEvent::Provider(None) => break,
+                        StreamLoopEvent::Provider(Some(ProviderStreamEvent::Chunk { chunk })) => {
                             chunk_count += 1;
                             // Forward thinking deltas.
                             if let Some(ref thinking) = chunk.thinking_delta {
@@ -1599,7 +1555,9 @@ impl AgentExecutor {
                                 chunk_usage = Some(u);
                             }
                         }
-                        StreamLoopEvent::Chunk(Some(Err(CoreError::StreamIncomplete(detail)))) => {
+                        StreamLoopEvent::Provider(Some(
+                            ProviderStreamEvent::RecoverableError { message: detail },
+                        )) => {
                             warn!("Stream incomplete — response may be truncated ({detail})");
                             info!(
                             "Stream ended incomplete: {chunk_count} chunks, {} chars — {detail}",
@@ -1608,26 +1566,39 @@ impl AgentExecutor {
                             stream_incomplete_detail = Some(detail);
                             break;
                         }
-                        StreamLoopEvent::Chunk(Some(Err(e))) => {
+                        StreamLoopEvent::Provider(Some(ProviderStreamEvent::Cancelled {
+                            message,
+                        })) => {
+                            warn!("LLM stream cancelled: {message}");
+                            emit_error_and_finalize_turn(
+                                &tx,
+                                db,
+                                &mut trace,
+                                turn_id,
+                                route_plan.kind,
+                                &persisted_trace_items,
+                                message.clone(),
+                                message.clone(),
+                            )
+                            .await;
+                            return Err(CoreError::Cancelled(message));
+                        }
+                        StreamLoopEvent::Provider(Some(ProviderStreamEvent::TerminalError {
+                            message,
+                        })) => {
+                            let e = CoreError::Llm(message);
                             error!("LLM stream error: {e}");
-                            let _ = tx
-                                .send(AgentEvent::Error {
-                                    message: e.to_string(),
-                                })
-                                .await;
-                            // Trace: error
-                            if let Some(ref mut t) = trace {
-                                t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                if let Err(te) = db.save_agent_trace(t) {
-                                    warn!("Failed to save agent trace: {te}");
-                                }
-                            }
-                            if let Some(tid) = turn_id {
-                                let trace =
-                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
-                                let _ =
-                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
-                            }
+                            emit_error_and_finalize_turn(
+                                &tx,
+                                db,
+                                &mut trace,
+                                turn_id,
+                                route_plan.kind,
+                                &persisted_trace_items,
+                                e.to_string(),
+                                e.to_string(),
+                            )
+                            .await;
                             return Err(e);
                         }
                     }
@@ -1709,98 +1680,101 @@ impl AgentExecutor {
                 }
 
                 if let Some(detail) = stream_incomplete_detail {
-                    if !force_non_streaming_llm && sampling_retries < MAX_STREAM_DISCONNECT_RETRIES
-                    {
-                        sampling_retries += 1;
-                        let recovery_note = format!(
-                        "Stream interrupted; reconnecting model stream ({sampling_retries}/{MAX_STREAM_DISCONNECT_RETRIES})."
-                    );
-                        let _ = tx
-                            .send(AgentEvent::Status {
-                                content: format!("{recovery_note} ({detail})"),
-                                tone: Some("muted".to_string()),
-                            })
-                            .await;
-                        let _ = tx
-                            .send(AgentEvent::StreamReset {
-                                reason: recovery_note.clone(),
-                            })
-                            .await;
-                        accumulated_content.truncate(accumulated_len_before_iteration);
-                        let delay_ms =
-                            250_u64.saturating_mul(2_u64.saturating_pow(sampling_retries - 1));
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                        continue;
-                    }
-
-                    let recovery_note =
-                        "Stream interrupted repeatedly; switching this turn to non-streaming mode.";
-                    let _ = tx
-                        .send(AgentEvent::Status {
-                            content: format!("{recovery_note} ({detail})"),
-                            tone: Some("muted".to_string()),
-                        })
-                        .await;
-
-                    match self.provider.complete(&current_request).await {
-                        Ok(response) => {
-                            force_non_streaming_llm = true;
+                    match stream_recovery_policy.decide_after_incomplete(
+                        force_non_streaming_llm,
+                        sampling_retries,
+                        &detail,
+                    ) {
+                        StreamRecoveryDecision::Reconnect {
+                            attempt,
+                            status_message,
+                            reset_reason,
+                            delay,
+                        } => {
+                            sampling_retries = attempt;
+                            let _ = tx
+                                .send(AgentEvent::Status {
+                                    content: status_message,
+                                    tone: Some("muted".to_string()),
+                                })
+                                .await;
                             let _ = tx
                                 .send(AgentEvent::StreamReset {
-                                    reason: recovery_note.to_string(),
+                                    reason: reset_reason,
                                 })
                                 .await;
-
                             accumulated_content.truncate(accumulated_len_before_iteration);
-                            full_content = response.content;
-                            accumulated_content.push_str(&full_content);
-                            iteration_thinking = response.thinking.unwrap_or_default();
-                            tool_calls = response.tool_calls.unwrap_or_default();
-                            preparing_call_ids.clear();
-                            started_call_ids.clear();
-                            tool_run_started_ids.clear();
-                            chunk_usage = Some(response.usage);
-                            last_finish_reason =
-                                Some(format!("{:?}", response.finish_reason).to_lowercase());
-
-                            if !iteration_thinking.is_empty() {
-                                let _ = tx
-                                    .send(AgentEvent::Thinking {
-                                        content: iteration_thinking.clone(),
-                                    })
-                                    .await;
-                            }
-                            if !full_content.is_empty() {
-                                let _ = tx
-                                    .send(AgentEvent::TextDelta {
-                                        delta: full_content.clone(),
-                                    })
-                                    .await;
-                            }
+                            tokio::time::sleep(delay).await;
+                            continue;
                         }
-                        Err(err) => {
-                            let message =
-                                format!("Stream interrupted and non-streaming retry failed: {err}");
+                        StreamRecoveryDecision::NonStreamingFallback {
+                            status_message,
+                            reset_reason,
+                        } => {
                             let _ = tx
-                                .send(AgentEvent::Error {
-                                    message: message.clone(),
+                                .send(AgentEvent::Status {
+                                    content: status_message,
+                                    tone: Some("muted".to_string()),
                                 })
                                 .await;
-                            if let Some(ref mut t) = trace {
-                                t.finish(TraceOutcome::Error, Some(message.clone()));
-                                if let Err(te) = db.save_agent_trace(t) {
-                                    warn!("Failed to save agent trace: {te}");
+
+                            match self.provider.complete(&current_request).await {
+                                Ok(response) => {
+                                    force_non_streaming_llm = true;
+                                    let _ = tx
+                                        .send(AgentEvent::StreamReset {
+                                            reason: reset_reason,
+                                        })
+                                        .await;
+
+                                    accumulated_content.truncate(accumulated_len_before_iteration);
+                                    full_content = response.content;
+                                    accumulated_content.push_str(&full_content);
+                                    iteration_thinking = response.thinking.unwrap_or_default();
+                                    tool_calls = response.tool_calls.unwrap_or_default();
+                                    preparing_call_ids.clear();
+                                    started_call_ids.clear();
+                                    tool_run_started_ids.clear();
+                                    chunk_usage = Some(response.usage);
+                                    last_finish_reason = Some(
+                                        format!("{:?}", response.finish_reason).to_lowercase(),
+                                    );
+
+                                    if !iteration_thinking.is_empty() {
+                                        let _ = tx
+                                            .send(AgentEvent::Thinking {
+                                                content: iteration_thinking.clone(),
+                                            })
+                                            .await;
+                                    }
+                                    if !full_content.is_empty() {
+                                        let _ = tx
+                                            .send(AgentEvent::TextDelta {
+                                                delta: full_content.clone(),
+                                            })
+                                            .await;
+                                    }
+                                }
+                                Err(err) => {
+                                    let message = format!(
+                                        "Stream interrupted and non-streaming retry failed: {err}"
+                                    );
+                                    emit_error_and_finalize_turn(
+                                        &tx,
+                                        db,
+                                        &mut trace,
+                                        turn_id,
+                                        route_plan.kind,
+                                        &persisted_trace_items,
+                                        message.clone(),
+                                        message,
+                                    )
+                                    .await;
+                                    return Err(CoreError::StreamIncomplete(format!(
+                                        "{detail}; fallback failed: {err}"
+                                    )));
                                 }
                             }
-                            if let Some(tid) = turn_id {
-                                let trace =
-                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
-                                let _ =
-                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
-                            }
-                            return Err(CoreError::StreamIncomplete(format!(
-                                "{detail}; fallback failed: {err}"
-                            )));
                         }
                     }
                 }
@@ -2082,13 +2056,13 @@ impl AgentExecutor {
                                 None,
                                 Some(&task_artifacts),
                             );
-                            let _ = db.record_agent_task_run_event(
-                                &task_run.id,
-                                "verification",
+                            let timeline_event = TaskTimelineEvent::verification(
                                 "Evidence audit completed",
                                 verification_artifact["overallStatus"].as_str(),
                                 Some(&verification_artifact),
                             );
+                            let _ = AgentTaskRuntime::new(db)
+                                .record_timeline_event(&task_run.id, &timeline_event);
                         }
                     }
                 }
@@ -3476,8 +3450,9 @@ impl AgentExecutor {
                     if let Err(e) = db.add_message(&conv_msg) {
                         error!("Failed to persist message: {e}");
                         let _ = tx
-                            .send(AgentEvent::Error {
-                                message: format!("Warning: message was not saved to history: {e}"),
+                            .send(AgentEvent::Status {
+                                content: format!("Warning: message was not saved to history: {e}"),
+                                tone: Some("warning".to_string()),
                             })
                             .await;
                     }

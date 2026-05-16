@@ -52,6 +52,9 @@ pub enum CoreError {
     #[error("Stream interrupted: {0}")]
     StreamIncomplete(String),
 
+    #[error("Operation cancelled: {0}")]
+    Cancelled(String),
+
     #[error("MCP error: {0}")]
     Mcp(String),
 }

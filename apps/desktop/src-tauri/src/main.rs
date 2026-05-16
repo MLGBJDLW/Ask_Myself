@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_stream;
+mod agent_task_events;
+mod app_events;
 mod commands;
 mod subagent_tool;
 

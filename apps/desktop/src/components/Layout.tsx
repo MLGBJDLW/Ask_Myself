@@ -26,6 +26,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import { useTranslation } from '../i18n';
 import { useUpdater } from '../lib/useUpdater';
 import { useTheme } from '../lib/ThemeProvider';
+import { isLightTheme } from '../lib/theme';
 import type { TranslationKey } from '../i18n';
 
 function useAppVersion() {
@@ -374,7 +375,7 @@ export function Layout() {
       )}
 
       {/* Toast notifications */}
-      <Toaster theme={theme === 'light' ? 'light' : 'dark'} richColors position="bottom-right" />
+      <Toaster theme={isLightTheme(theme) ? 'light' : 'dark'} richColors position="bottom-right" />
     </div>
   );
 }

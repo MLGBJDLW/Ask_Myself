@@ -6,14 +6,27 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
+use crate::agent_stream::{
+    agent_event_rotates_stream_blocks, compact_agent_event_for_frontend, emit_agent_frontend_event,
+    PendingStreamDelta, StreamBlockEmitter,
+};
+#[cfg(test)]
+use crate::agent_stream::{
+    split_text_by_utf8_bytes, MAX_FRONTEND_ARTIFACT_STRING_CHARS, MAX_FRONTEND_TOOL_CONTENT_CHARS,
+};
+use crate::agent_task_events::{
+    emit_agent_task_run_update, record_agent_run_status_task_event, record_agent_run_task_event,
+    record_task_progress_for_agent_event,
+};
+use crate::app_events::emit_app_event;
 use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, SubagentBatchTool, SubagentTool,
 };
 use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
-    AgentSteeringMessage, CancellationToken, ConfirmationCallback, StreamBlockChannel,
+    AgentSteeringMessage, CancellationToken, ConfirmationCallback,
 };
-use nexa_core::agent_run::AgentRunEvent;
+use nexa_core::agent_run::AgentRunPhase;
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
 use nexa_core::approval::{
     ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
@@ -29,6 +42,7 @@ use nexa_core::conversation::{
 };
 use nexa_core::db::Database;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
+use nexa_core::error::CoreError;
 use nexa_core::evolution::{
     AgentProceduralMemory, AppliedSkillChange, SkillChangeProposal, SkillProposalStatus,
 };
@@ -37,7 +51,7 @@ use nexa_core::index::IndexStats;
 use nexa_core::ingest::{self, EmbedResult, IngestResult};
 use nexa_core::llm::{
     create_provider, model_supports_vision, CompletionRequest, ContentPart, Message,
-    ProviderConfig, ProviderType, ReasoningEffort, Role, Usage,
+    ProviderConfig, ProviderType, ReasoningEffort, Role,
 };
 use nexa_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 use nexa_core::persona::{PersonaProfile, SavePersonaInput};
@@ -64,7 +78,7 @@ use nexa_core::tools::default_tool_registry;
 use nexa_core::watcher::{FileWatcher, WatcherEventKind};
 use nexa_core::workflow_catalog::{workflow_catalog, WorkflowCatalogTemplate};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
@@ -85,11 +99,56 @@ pub struct RunningAgentTask {
     pub task: tokio::task::JoinHandle<()>,
     pub steering_tx: tokio::sync::mpsc::UnboundedSender<AgentSteeringMessage>,
     pub task_run_id: String,
+    pub turn_id: String,
+    pub stream_event_seq: Arc<AtomicU64>,
 }
 
 pub struct AgentState {
     /// Map of conversation_id → running agent task state.
     pub running: TokioMutex<HashMap<String, RunningAgentTask>>,
+}
+
+struct TerminalAgentError<'a> {
+    conversation_id: &'a str,
+    task_run_id: &'a str,
+    turn_id: &'a str,
+    message: &'a str,
+    status: &'a str,
+    payload: Option<&'a serde_json::Value>,
+}
+
+fn emit_terminal_agent_error_once(
+    terminal_emitted: &AtomicBool,
+    db: &Database,
+    app_handle: &AppHandle,
+    stream_event_seq: &AtomicU64,
+    error: TerminalAgentError<'_>,
+) {
+    if terminal_emitted.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let run_event = emit_agent_frontend_event(
+        app_handle,
+        stream_event_seq,
+        error.conversation_id,
+        error.task_run_id,
+        Some(error.turn_id),
+        AgentEvent::Error {
+            message: error.message.to_string(),
+        },
+    );
+    record_agent_run_task_event(
+        db,
+        app_handle,
+        error.conversation_id,
+        error.task_run_id,
+        &run_event,
+        "error",
+        error.message,
+        Some(error.status),
+        error.payload,
+    );
 }
 
 /// State for the MCP server manager.
@@ -176,246 +235,12 @@ pub struct BatchProgress {
     pub current_file: Option<String>,
 }
 
-fn emit_app_event<T: Serialize + ?Sized>(app_handle: &AppHandle, event: &str, payload: &T) {
-    let windows = app_handle.webview_windows();
-    if windows.is_empty() {
-        return;
-    }
-
-    for (label, window) in windows {
-        if let Err(err) = window.emit(event, payload) {
-            let msg = err.to_string();
-            let lower = msg.to_ascii_lowercase();
-            if lower.contains("0x80070578")
-                || lower.contains("invalid window handle")
-                || lower.contains("invalid window")
-            {
-                continue;
-            }
-            warn!("Failed to emit event '{event}' to window '{label}': {msg}");
-        }
-    }
-}
-
 /// Progress for FTS index operations.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FtsProgress {
     pub operation: String,
     pub phase: String,
-}
-
-/// Envelope for agent stream events sent to frontend.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentFrontendEvent {
-    conversation_id: String,
-    #[serde(rename = "eventSeq", skip_serializing_if = "Option::is_none")]
-    event_seq: Option<u64>,
-    #[serde(flatten)]
-    event: AgentEvent,
-}
-
-fn emit_agent_frontend_event(
-    handle: &AppHandle,
-    event_seq: &AtomicU64,
-    conversation_id: &str,
-    event: AgentEvent,
-) {
-    let payload = AgentFrontendEvent {
-        conversation_id: conversation_id.to_string(),
-        event_seq: Some(event_seq.fetch_add(1, Ordering::SeqCst) + 1),
-        event,
-    };
-    emit_app_event(handle, "agent:event", &payload);
-}
-
-enum PendingStreamDelta {
-    Text(String),
-    Thinking(String),
-}
-
-struct StreamBlockEmitter {
-    event_seq: Arc<AtomicU64>,
-    answer_block_id: String,
-    thinking_block_id: String,
-    answer_offset: usize,
-    thinking_offset: usize,
-}
-
-impl StreamBlockEmitter {
-    fn new(event_seq: Arc<AtomicU64>) -> Self {
-        Self {
-            event_seq,
-            answer_block_id: new_stream_block_id(StreamBlockChannel::Answer),
-            thinking_block_id: new_stream_block_id(StreamBlockChannel::Thinking),
-            answer_offset: 0,
-            thinking_offset: 0,
-        }
-    }
-
-    fn rotate_blocks(&mut self) {
-        self.answer_block_id = new_stream_block_id(StreamBlockChannel::Answer);
-        self.thinking_block_id = new_stream_block_id(StreamBlockChannel::Thinking);
-        self.answer_offset = 0;
-        self.thinking_offset = 0;
-    }
-
-    fn emit_event(&self, handle: &AppHandle, conversation_id: &str, event: AgentEvent) -> u64 {
-        let event_seq = self.event_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        let payload = AgentFrontendEvent {
-            conversation_id: conversation_id.to_string(),
-            event_seq: Some(event_seq),
-            event,
-        };
-        emit_app_event(handle, "agent:event", &payload);
-        event_seq
-    }
-
-    fn flush_pending(
-        &mut self,
-        pending: &mut Option<PendingStreamDelta>,
-        conversation_id: &str,
-        handle: &AppHandle,
-        db: &Database,
-        task_run_id: &str,
-    ) {
-        let Some(delta) = pending.take() else {
-            return;
-        };
-        match delta {
-            PendingStreamDelta::Text(delta) if !delta.is_empty() => self.emit_block_delta(
-                conversation_id,
-                handle,
-                db,
-                task_run_id,
-                StreamBlockChannel::Answer,
-                delta,
-            ),
-            PendingStreamDelta::Thinking(content) if !content.is_empty() => self.emit_block_delta(
-                conversation_id,
-                handle,
-                db,
-                task_run_id,
-                StreamBlockChannel::Thinking,
-                content,
-            ),
-            _ => {}
-        }
-    }
-
-    fn emit_block_delta(
-        &mut self,
-        conversation_id: &str,
-        handle: &AppHandle,
-        db: &Database,
-        task_run_id: &str,
-        channel: StreamBlockChannel,
-        delta: String,
-    ) {
-        let (block_id, offset) = match channel {
-            StreamBlockChannel::Answer => (self.answer_block_id.clone(), self.answer_offset),
-            StreamBlockChannel::Thinking => (self.thinking_block_id.clone(), self.thinking_offset),
-        };
-        let delta_len = delta.len();
-        let event_seq = self.event_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        let event = AgentEvent::StreamBlockDelta {
-            block_id: block_id.clone(),
-            channel,
-            offset,
-            delta: delta.clone(),
-        };
-        let payload = AgentFrontendEvent {
-            conversation_id: conversation_id.to_string(),
-            event_seq: Some(event_seq),
-            event,
-        };
-        emit_app_event(handle, "agent:event", &payload);
-
-        let channel_label = stream_block_channel_label(channel);
-        let durable_payload = serde_json::json!({
-            "eventSeq": event_seq,
-            "blockId": block_id,
-            "channel": channel_label,
-            "offset": offset,
-            "delta": delta,
-        });
-        let _ = db.record_agent_task_run_event(
-            task_run_id,
-            "streamBlockDelta",
-            channel_label,
-            Some("running"),
-            Some(&durable_payload),
-        );
-
-        match channel {
-            StreamBlockChannel::Answer => self.answer_offset += delta_len,
-            StreamBlockChannel::Thinking => self.thinking_offset += delta_len,
-        }
-    }
-}
-
-fn new_stream_block_id(channel: StreamBlockChannel) -> String {
-    format!(
-        "stream-{}-{}",
-        stream_block_channel_label(channel),
-        Uuid::new_v4()
-    )
-}
-
-fn stream_block_channel_label(channel: StreamBlockChannel) -> &'static str {
-    match channel {
-        StreamBlockChannel::Answer => "answer",
-        StreamBlockChannel::Thinking => "thinking",
-    }
-}
-
-fn agent_event_rotates_stream_blocks(event: &AgentEvent) -> bool {
-    matches!(
-        event,
-        AgentEvent::StreamReset { .. }
-            | AgentEvent::ToolCallStart { .. }
-            | AgentEvent::ToolRunStarted { .. }
-            | AgentEvent::ToolCallResult { .. }
-            | AgentEvent::ToolRunCompleted { .. }
-    )
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentTaskRunUpdatedEvent {
-    conversation_id: String,
-    #[serde(rename = "type")]
-    event_type: &'static str,
-    task_run: AgentTaskRun,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentTaskRunEventEnvelope {
-    conversation_id: String,
-    #[serde(rename = "type")]
-    event_type: &'static str,
-    task_event: AgentTaskRunEvent,
-}
-
-struct TaskEventEmitContext<'a> {
-    db: &'a Database,
-    app_handle: &'a AppHandle,
-    conversation_id: &'a str,
-    task_run_id: &'a str,
-}
-
-fn truncate_task_event_text(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    let mut out = value
-        .chars()
-        .take(max_chars.saturating_sub(32))
-        .collect::<String>();
-    out.push_str("\n[truncated]");
-    out
 }
 
 fn task_title_from_message(message: &str) -> String {
@@ -448,86 +273,6 @@ fn build_current_turn_time_section() -> String {
         now.format("%A"),
         now.format("%:z"),
     )
-}
-
-fn emit_agent_task_run_update(
-    db: &Database,
-    app_handle: &AppHandle,
-    conversation_id: &str,
-    task_run_id: &str,
-) {
-    match db.get_agent_task_run(task_run_id) {
-        Ok(task_run) => {
-            let payload = AgentTaskRunUpdatedEvent {
-                conversation_id: conversation_id.to_string(),
-                event_type: "taskRunUpdated",
-                task_run,
-            };
-            emit_app_event(app_handle, "agent:event", &payload);
-        }
-        Err(err) => warn!("Failed to load task run {task_run_id} for event: {err}"),
-    }
-}
-
-fn emit_agent_task_event(
-    app_handle: &AppHandle,
-    conversation_id: &str,
-    task_event: AgentTaskRunEvent,
-) {
-    let payload = AgentTaskRunEventEnvelope {
-        conversation_id: conversation_id.to_string(),
-        event_type: "taskRunEvent",
-        task_event,
-    };
-    emit_app_event(app_handle, "agent:event", &payload);
-}
-
-fn record_and_emit_task_event(
-    ctx: &TaskEventEmitContext<'_>,
-    event_type: &str,
-    label: &str,
-    status: Option<&str>,
-    payload: Option<&serde_json::Value>,
-) {
-    match ctx
-        .db
-        .record_agent_task_run_event(ctx.task_run_id, event_type, label, status, payload)
-    {
-        Ok(event) => emit_agent_task_event(ctx.app_handle, ctx.conversation_id, event),
-        Err(err) => warn!("Failed to record task event for {}: {err}", ctx.task_run_id),
-    }
-}
-
-fn payload_with_agent_run_protocol(
-    run_event: &AgentRunEvent,
-    payload: Option<&serde_json::Value>,
-) -> serde_json::Value {
-    let mut map = match payload {
-        Some(serde_json::Value::Object(existing)) => existing.clone(),
-        Some(existing) => {
-            let mut map = serde_json::Map::new();
-            map.insert("data".to_string(), existing.clone());
-            map
-        }
-        None => serde_json::Map::new(),
-    };
-    map.insert(
-        "agentRun".to_string(),
-        serde_json::to_value(run_event).unwrap_or_else(|_| serde_json::json!({})),
-    );
-    serde_json::Value::Object(map)
-}
-
-fn record_and_emit_agent_run_task_event(
-    ctx: &TaskEventEmitContext<'_>,
-    run_event: &AgentRunEvent,
-    event_type: &str,
-    label: &str,
-    status: Option<&str>,
-    payload: Option<&serde_json::Value>,
-) {
-    let payload = payload_with_agent_run_protocol(run_event, payload);
-    record_and_emit_task_event(ctx, event_type, label, status, Some(&payload));
 }
 
 fn build_final_task_artifacts(
@@ -577,257 +322,6 @@ fn build_selected_skills_artifact(skills: &[Skill]) -> serde_json::Value {
             })
             .collect::<Vec<_>>(),
     })
-}
-
-fn record_task_progress_for_agent_event(
-    db: &Database,
-    app_handle: &AppHandle,
-    conversation_id: &str,
-    task_run_id: &str,
-    event: &AgentEvent,
-) {
-    let task_event_ctx = TaskEventEmitContext {
-        db,
-        app_handle,
-        conversation_id,
-        task_run_id,
-    };
-    let run_event =
-        AgentRunEvent::from_agent_event(event).with_context(Some(task_run_id), None, None);
-
-    match event {
-        AgentEvent::StreamReset { reason } => {
-            record_and_emit_agent_run_task_event(
-                &task_event_ctx,
-                &run_event,
-                "status",
-                reason,
-                Some("running"),
-                None,
-            );
-        }
-        AgentEvent::ToolCallStart {
-            call_id,
-            tool_name,
-            arguments,
-        } => {
-            let _ = db.update_agent_task_run_progress(
-                task_run_id,
-                Some("running"),
-                Some("tooling"),
-                None,
-                Some(&format!("Running {tool_name}")),
-                None,
-                None,
-            );
-            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
-            let payload = serde_json::json!({
-                "callId": call_id,
-                "toolName": tool_name,
-                "arguments": truncate_task_event_text(arguments, 4000),
-            });
-            record_and_emit_agent_run_task_event(
-                &task_event_ctx,
-                &run_event,
-                "tool",
-                tool_name,
-                Some("running"),
-                Some(&payload),
-            );
-        }
-        AgentEvent::ToolCallProgress { call_id, note } => {
-            let payload = serde_json::json!({ "callId": call_id, "note": note });
-            record_and_emit_agent_run_task_event(
-                &task_event_ctx,
-                &run_event,
-                "toolProgress",
-                note,
-                Some("running"),
-                Some(&payload),
-            );
-        }
-        AgentEvent::ToolCallResult {
-            call_id,
-            tool_name,
-            content,
-            is_error,
-            artifacts,
-        } => {
-            let status = if *is_error { "failed" } else { "completed" };
-            let payload = serde_json::json!({
-                "callId": call_id,
-                "toolName": tool_name,
-                "isError": is_error,
-                "content": truncate_task_event_text(content, 4000),
-                "artifacts": artifacts,
-            });
-            record_and_emit_agent_run_task_event(
-                &task_event_ctx,
-                &run_event,
-                "tool",
-                tool_name,
-                Some(status),
-                Some(&payload),
-            );
-        }
-        AgentEvent::Status { content, tone } => {
-            if let Some(route) = content.strip_prefix("Route selected: ") {
-                let _ = db.update_agent_task_run_progress(
-                    task_run_id,
-                    Some("running"),
-                    Some("routing"),
-                    Some(route.trim()),
-                    Some("Route selected"),
-                    None,
-                    None,
-                );
-                emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
-            }
-            record_and_emit_agent_run_task_event(
-                &task_event_ctx,
-                &run_event,
-                "status",
-                content,
-                tone.as_deref(),
-                None,
-            );
-        }
-        AgentEvent::PlanUpdated {
-            plan,
-            phase,
-            summary,
-        } => {
-            let phase = phase.as_deref().unwrap_or("planning");
-            let summary = summary.as_deref().unwrap_or("Execution plan updated");
-            let _ = db.update_agent_task_run_progress(
-                task_run_id,
-                Some("running"),
-                Some(phase),
-                None,
-                Some(summary),
-                Some(plan),
-                None,
-            );
-            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
-            record_and_emit_agent_run_task_event(
-                &task_event_ctx,
-                &run_event,
-                "plan",
-                summary,
-                Some("running"),
-                Some(plan),
-            );
-        }
-        AgentEvent::Done { finish_reason, .. } => {
-            let payload = serde_json::json!({ "finishReason": finish_reason });
-            let _ = db.update_agent_task_run_progress(
-                task_run_id,
-                Some("running"),
-                Some("finalizing"),
-                None,
-                Some("Finalizing answer"),
-                None,
-                None,
-            );
-            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
-            record_and_emit_agent_run_task_event(
-                &task_event_ctx,
-                &run_event,
-                "status",
-                "Final answer produced",
-                Some("completed"),
-                Some(&payload),
-            );
-        }
-        AgentEvent::Error { message } => {
-            let _ = db.update_agent_task_run_progress(
-                task_run_id,
-                Some("failed"),
-                Some("done"),
-                None,
-                Some("Agent execution failed"),
-                None,
-                None,
-            );
-            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
-            record_and_emit_agent_run_task_event(
-                &task_event_ctx,
-                &run_event,
-                "error",
-                message,
-                Some("failed"),
-                None,
-            );
-        }
-        AgentEvent::AutoCompacted { evicted_count } => {
-            let payload = serde_json::json!({ "evictedCount": evicted_count });
-            record_and_emit_agent_run_task_event(
-                &task_event_ctx,
-                &run_event,
-                "status",
-                "Conversation context compacted",
-                Some("completed"),
-                Some(&payload),
-            );
-        }
-        AgentEvent::ApprovalRequested { request } => {
-            let _ = db.update_agent_task_run_progress(
-                task_run_id,
-                Some("waiting_approval"),
-                Some("approval"),
-                None,
-                Some(&format!("Waiting for approval: {}", request.tool_name)),
-                None,
-                None,
-            );
-            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
-            let payload = serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({}));
-            record_and_emit_agent_run_task_event(
-                &task_event_ctx,
-                &run_event,
-                "approval",
-                &request.tool_name,
-                Some("pending"),
-                Some(&payload),
-            );
-        }
-        AgentEvent::ApprovalResolved {
-            request_id,
-            decision,
-        } => {
-            let _ = db.update_agent_task_run_progress(
-                task_run_id,
-                Some("running"),
-                Some("tooling"),
-                None,
-                Some("Approval resolved"),
-                None,
-                None,
-            );
-            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
-            let payload = serde_json::json!({
-                "requestId": request_id,
-                "decision": decision,
-            });
-            record_and_emit_agent_run_task_event(
-                &task_event_ctx,
-                &run_event,
-                "approval",
-                "Approval resolved",
-                Some("completed"),
-                Some(&payload),
-            );
-        }
-        AgentEvent::TextDelta { .. }
-        | AgentEvent::StreamBlockDelta { .. }
-        | AgentEvent::Thinking { .. }
-        | AgentEvent::ToolRunStarted { .. }
-        | AgentEvent::ToolRunUpdated { .. }
-        | AgentEvent::ToolRunCompleted { .. }
-        | AgentEvent::ToolCallPreparing { .. }
-        | AgentEvent::ToolCallArgsDelta { .. }
-        | AgentEvent::UsageUpdate { .. } => {}
-    }
 }
 
 /// Initialise the file watcher, start watching all sources with
@@ -4071,16 +3565,20 @@ pub async fn agent_chat_cmd(
         .map_err(|e| e.to_string())?;
     let task_run_id_for_command = task_run.id.clone();
     let stream_event_seq = Arc::new(AtomicU64::new(0));
+    let terminal_emitted = Arc::new(AtomicBool::new(false));
     emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
-    if let Ok(event) = state.db.record_agent_task_run_event(
+    record_agent_run_status_task_event(
+        &state.db,
+        &app_handle,
+        &conversation_id,
         &task_run.id,
-        "status",
+        Some(&turn.id),
+        &stream_event_seq,
+        AgentRunPhase::Routing,
         "Task queued",
         Some("queued"),
         None,
-    ) {
-        emit_agent_task_event(&app_handle, &conversation_id, event);
-    }
+    );
 
     // 6. Build prompt sections from conversation context.
     let source_scope_ids = state
@@ -4305,6 +3803,8 @@ pub async fn agent_chat_cmd(
         let db_handle = state.db.clone();
         let app_handle_cb = app_handle.clone();
         let approval_event_seq = Arc::clone(&stream_event_seq);
+        let approval_task_run_id = task_run.id.clone();
+        let approval_turn_id = turn.id.clone();
         let pending = approval_state.pending.clone();
         let session_store = approval_state.session_store.clone();
         let stream_conv_id = conversation_id.clone();
@@ -4316,6 +3816,8 @@ pub async fn agent_chat_cmd(
             let store = session_store.clone();
             let conv = stream_conv_id.clone();
             let event_seq = Arc::clone(&approval_event_seq);
+            let task_run_id = approval_task_run_id.clone();
+            let turn_id = approval_turn_id.clone();
             Box::pin(async move {
                 // 0. Global mode short-circuit.
                 if let Some(d) = approval_mode.short_circuit() {
@@ -4358,6 +3860,8 @@ pub async fn agent_chat_cmd(
                     &handle,
                     &event_seq,
                     &conv,
+                    &task_run_id,
+                    Some(&turn_id),
                     AgentEvent::ApprovalRequested {
                         request: req.clone(),
                     },
@@ -4408,6 +3912,17 @@ pub async fn agent_chat_cmd(
     let mut tools = default_tool_registry();
 
     // Register MCP tools from currently enabled servers.
+    emit_agent_frontend_event(
+        &app_handle,
+        &stream_event_seq,
+        &conversation_id,
+        &task_run.id,
+        Some(&turn.id),
+        AgentEvent::Status {
+            content: "Loading tools and MCP servers".to_string(),
+            tone: None,
+        },
+    );
     {
         let mut mcp_manager = mcp_state.manager.lock().await;
         match sync_enabled_mcp_servers(&state.db, &mut mcp_manager).await {
@@ -4619,6 +4134,8 @@ pub async fn agent_chat_cmd(
     let assistant_sort_order = next_sort_order + 1;
     let db_config_for_extraction = db_config.clone();
     let forwarder_event_seq = Arc::clone(&stream_event_seq);
+    let forwarder_terminal_emitted = Arc::clone(&terminal_emitted);
+    let command_stream_event_seq = Arc::clone(&stream_event_seq);
 
     let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(180) as u64;
 
@@ -4629,15 +4146,18 @@ pub async fn agent_chat_cmd(
         .mark_agent_task_run_started(&task_run.id, "initializing")
         .map_err(|e| e.to_string())?;
     emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
-    if let Ok(event) = state.db.record_agent_task_run_event(
+    record_agent_run_status_task_event(
+        &state.db,
+        &app_handle,
+        &conversation_id,
         &task_run.id,
-        "status",
+        Some(&turn_id),
+        &stream_event_seq,
+        AgentRunPhase::Routing,
         "Agent started",
         Some("running"),
         None,
-    ) {
-        emit_agent_task_event(&app_handle, &conversation_id, event);
-    }
+    );
 
     let task = tokio::spawn(async move {
         let cancel_token = cancel_token_clone;
@@ -4648,6 +4168,7 @@ pub async fn agent_chat_cmd(
         let stream_conv_id = conv_id.clone();
         let event_db = db.clone();
         let event_task_run_id = task_run_id.clone();
+        let event_turn_id = turn_id.clone();
         let event_forwarder = tokio::spawn(async move {
             let mut pending_delta: Option<PendingStreamDelta> = None;
             let mut stream_emitter = StreamBlockEmitter::new(forwarder_event_seq);
@@ -4663,6 +4184,9 @@ pub async fn agent_chat_cmd(
                     maybe_event = rx.recv() => {
                         match maybe_event {
                             Some(AgentEvent::TextDelta { delta }) => {
+                                if forwarder_terminal_emitted.load(Ordering::SeqCst) {
+                                    continue;
+                                }
                                 if !generating_phase_recorded {
                                     generating_phase_recorded = true;
                                     let _ = event_db.update_agent_task_run_progress(
@@ -4690,6 +4214,7 @@ pub async fn agent_chat_cmd(
                                             &event_handle,
                                             &event_db,
                                             &event_task_run_id,
+                                            Some(&event_turn_id),
                                         );
                                         pending_delta = Some(PendingStreamDelta::Text(delta));
                                     }
@@ -4697,6 +4222,9 @@ pub async fn agent_chat_cmd(
                                 }
                             }
                             Some(AgentEvent::Thinking { content }) => {
+                                if forwarder_terminal_emitted.load(Ordering::SeqCst) {
+                                    continue;
+                                }
                                 if !reasoning_phase_recorded {
                                     reasoning_phase_recorded = true;
                                     let _ = event_db.update_agent_task_run_progress(
@@ -4726,6 +4254,7 @@ pub async fn agent_chat_cmd(
                                             &event_handle,
                                             &event_db,
                                             &event_task_run_id,
+                                            Some(&event_turn_id),
                                         );
                                         pending_delta = Some(PendingStreamDelta::Thinking(content));
                                     }
@@ -4735,13 +4264,7 @@ pub async fn agent_chat_cmd(
                                 }
                             }
                             Some(other) => {
-                                record_task_progress_for_agent_event(
-                                    &event_db,
-                                    &event_handle,
-                                    &stream_conv_id,
-                                    &event_task_run_id,
-                                    &other,
-                                );
+                                let frontend_event = compact_agent_event_for_frontend(other);
                                 // Flush buffered stream deltas before forwarding
                                 // structural events so the UI keeps provider order.
                                 stream_emitter.flush_pending(
@@ -4750,52 +4273,65 @@ pub async fn agent_chat_cmd(
                                     &event_handle,
                                     &event_db,
                                     &event_task_run_id,
+                                    Some(&event_turn_id),
                                 );
-                                let reset_reason = match &other {
-                                    AgentEvent::StreamReset { reason } => Some(reason.clone()),
-                                    _ => None,
-                                };
-                                let rotates_blocks = agent_event_rotates_stream_blocks(&other);
-                                let event_seq =
-                                    stream_emitter.emit_event(&event_handle, &stream_conv_id, other);
-                                if let Some(reason) = reset_reason {
-                                    let durable_payload = serde_json::json!({
-                                        "eventSeq": event_seq,
-                                        "reason": reason,
-                                    });
-                                    let _ = event_db.record_agent_task_run_event(
-                                        &event_task_run_id,
-                                        "streamReset",
-                                        "Stream reset",
-                                        Some("running"),
-                                        Some(&durable_payload),
-                                    );
+                                let rotates_blocks = agent_event_rotates_stream_blocks(&frontend_event);
+                                let run_event = stream_emitter.next_run_event(
+                                    &event_task_run_id,
+                                    Some(&event_turn_id),
+                                    &frontend_event,
+                                );
+                                if run_event.is_terminal() {
+                                    if forwarder_terminal_emitted.swap(true, Ordering::SeqCst) {
+                                        continue;
+                                    }
+                                } else if forwarder_terminal_emitted.load(Ordering::SeqCst) {
+                                    continue;
                                 }
+                                record_task_progress_for_agent_event(
+                                    &event_db,
+                                    &event_handle,
+                                    &stream_conv_id,
+                                    &event_task_run_id,
+                                    &frontend_event,
+                                    &run_event,
+                                );
+                                stream_emitter.emit_event(
+                                    &event_handle,
+                                    &stream_conv_id,
+                                    run_event,
+                                );
                                 if rotates_blocks {
                                     stream_emitter.rotate_blocks();
                                 }
                             }
                             None => {
-                                // Channel closed — flush remaining and exit
-                                stream_emitter.flush_pending(
-                                    &mut pending_delta,
-                                    &stream_conv_id,
-                                    &event_handle,
-                                    &event_db,
-                                    &event_task_run_id,
-                                );
+                                if !forwarder_terminal_emitted.load(Ordering::SeqCst) {
+                                    // Channel closed — flush remaining and exit
+                                    stream_emitter.flush_pending(
+                                        &mut pending_delta,
+                                        &stream_conv_id,
+                                        &event_handle,
+                                        &event_db,
+                                        &event_task_run_id,
+                                        Some(&event_turn_id),
+                                    );
+                                }
                                 break;
                             }
                         }
                     }
                     _ = tick.tick() => {
-                        stream_emitter.flush_pending(
-                            &mut pending_delta,
-                            &stream_conv_id,
-                            &event_handle,
-                            &event_db,
-                            &event_task_run_id,
-                        );
+                        if !forwarder_terminal_emitted.load(Ordering::SeqCst) {
+                            stream_emitter.flush_pending(
+                                &mut pending_delta,
+                                &stream_conv_id,
+                                &event_handle,
+                                &event_db,
+                                &event_task_run_id,
+                                Some(&event_turn_id),
+                            );
+                        }
                     }
                 }
             }
@@ -4855,6 +4391,8 @@ pub async fn agent_chat_cmd(
                         &handle,
                         &stream_event_seq,
                         &conv_id,
+                        &task_run_id,
+                        Some(&turn_id),
                         AgentEvent::Thinking {
                             content: String::new(),
                         },
@@ -4876,51 +4414,56 @@ pub async fn agent_chat_cmd(
 
         match &result {
             Some(Ok(_)) => {}
-            Some(Err(e)) => {
-                warn!("Agent execution failed for conversation {conv_id}: {e}");
-                emit_agent_frontend_event(
+            Some(Err(CoreError::Cancelled(message))) => {
+                warn!("Agent execution cancelled for conversation {conv_id}: {message}");
+                let payload = serde_json::json!({ "reason": message });
+                emit_terminal_agent_error_once(
+                    terminal_emitted.as_ref(),
+                    &db,
                     &handle,
-                    &stream_event_seq,
-                    &conv_id,
-                    AgentEvent::Error {
-                        message: "Agent execution failed unexpectedly.".to_string(),
+                    stream_event_seq.as_ref(),
+                    TerminalAgentError {
+                        conversation_id: &conv_id,
+                        task_run_id: &task_run_id,
+                        turn_id: &turn_id,
+                        message: "Agent execution cancelled.",
+                        status: "cancelled",
+                        payload: Some(&payload),
                     },
                 );
-                // Send Done so the frontend exits streaming state.
-                emit_agent_frontend_event(
+            }
+            Some(Err(e)) => {
+                warn!("Agent execution failed for conversation {conv_id}: {e}");
+                emit_terminal_agent_error_once(
+                    terminal_emitted.as_ref(),
+                    &db,
                     &handle,
-                    &stream_event_seq,
-                    &conv_id,
-                    AgentEvent::Done {
-                        message: Message::text(Role::Assistant, ""),
-                        usage_total: Usage::default(),
-                        last_prompt_tokens: 0,
-                        cached: false,
-                        finish_reason: Some("error".to_string()),
+                    stream_event_seq.as_ref(),
+                    TerminalAgentError {
+                        conversation_id: &conv_id,
+                        task_run_id: &task_run_id,
+                        turn_id: &turn_id,
+                        message: "Agent execution failed unexpectedly.",
+                        status: "failed",
+                        payload: None,
                     },
                 );
             }
             None => {
                 warn!("Agent execution timed out for conversation {conv_id}");
-                emit_agent_frontend_event(
+                let payload = serde_json::json!({ "reason": "timeout" });
+                emit_terminal_agent_error_once(
+                    terminal_emitted.as_ref(),
+                    &db,
                     &handle,
-                    &stream_event_seq,
-                    &conv_id,
-                    AgentEvent::Error {
-                        message: "Agent execution timed out.".to_string(),
-                    },
-                );
-                // Send Done so the frontend exits streaming state.
-                emit_agent_frontend_event(
-                    &handle,
-                    &stream_event_seq,
-                    &conv_id,
-                    AgentEvent::Done {
-                        message: Message::text(Role::Assistant, ""),
-                        usage_total: Usage::default(),
-                        last_prompt_tokens: 0,
-                        cached: false,
-                        finish_reason: Some("timeout".to_string()),
+                    stream_event_seq.as_ref(),
+                    TerminalAgentError {
+                        conversation_id: &conv_id,
+                        task_run_id: &task_run_id,
+                        turn_id: &turn_id,
+                        message: "Agent execution timed out.",
+                        status: "timed_out",
+                        payload: Some(&payload),
                     },
                 );
             }
@@ -4951,6 +4494,12 @@ pub async fn agent_chat_cmd(
                 "Agent execution timed out",
                 Some("Agent execution timed out.".to_string()),
             )
+        } else if let Some(Err(CoreError::Cancelled(message))) = &result {
+            (
+                "cancelled",
+                "Agent execution cancelled",
+                Some(message.clone()),
+            )
         } else if let Some(Err(err)) = &result {
             ("failed", "Agent execution failed", Some(err.to_string()))
         } else {
@@ -4968,15 +4517,18 @@ pub async fn agent_chat_cmd(
             task_error.as_deref(),
             Some(&task_artifacts),
         );
-        let _ = db
-            .record_agent_task_run_event(
-                &task_run_id,
-                "status",
-                task_summary,
-                Some(task_status),
-                Some(&task_artifacts),
-            )
-            .map(|event| emit_agent_task_event(&handle, &conv_id, event));
+        record_agent_run_status_task_event(
+            &db,
+            &handle,
+            &conv_id,
+            &task_run_id,
+            Some(&turn_id),
+            &stream_event_seq,
+            AgentRunPhase::Done,
+            task_summary,
+            Some(task_status),
+            Some(&task_artifacts),
+        );
         emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
 
         // Repair orphaned tool_calls in DB after timeout or error.
@@ -5060,6 +4612,8 @@ pub async fn agent_chat_cmd(
                 task,
                 steering_tx,
                 task_run_id: task_run_id_for_command,
+                turn_id: turn.id.clone(),
+                stream_event_seq: Arc::clone(&command_stream_event_seq),
             },
         );
     }
@@ -5114,6 +4668,8 @@ pub async fn agent_stop_cmd(
     let mut running = agent_state.running.lock().await;
     if let Some(task_state) = running.remove(&conversation_id) {
         let task_run_id = task_state.task_run_id.clone();
+        let turn_id = task_state.turn_id.clone();
+        let stream_event_seq = Arc::clone(&task_state.stream_event_seq);
         let _ = state.db.update_agent_task_run_progress(
             &task_run_id,
             Some("cancelling"),
@@ -5123,16 +4679,28 @@ pub async fn agent_stop_cmd(
             None,
             None,
         );
-        let _ = state
-            .db
-            .record_agent_task_run_event(
-                &task_run_id,
-                "status",
-                "Stop requested",
-                Some("cancelling"),
-                None,
-            )
-            .map(|event| emit_agent_task_event(&app_handle, &conversation_id, event));
+        let run_event = emit_agent_frontend_event(
+            &app_handle,
+            stream_event_seq.as_ref(),
+            &conversation_id,
+            &task_run_id,
+            Some(&turn_id),
+            AgentEvent::Status {
+                content: "Stop requested".to_string(),
+                tone: Some("muted".to_string()),
+            },
+        );
+        record_agent_run_task_event(
+            &state.db,
+            &app_handle,
+            &conversation_id,
+            &task_run_id,
+            &run_event,
+            run_event.task_event_type(),
+            "Stop requested",
+            Some("cancelling"),
+            None,
+        );
         emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run_id);
 
         // Signal cooperative cancellation first so the agent can save
@@ -5158,15 +4726,18 @@ pub async fn agent_stop_cmd(
                     None,
                     Some(&artifacts),
                 );
-                let _ = db
-                    .record_agent_task_run_event(
-                        &task_run_id,
-                        "status",
-                        "Stopped by user",
-                        Some("cancelled"),
-                        Some(&artifacts),
-                    )
-                    .map(|event| emit_agent_task_event(&handle, &conv_id, event));
+                record_agent_run_status_task_event(
+                    &db,
+                    &handle,
+                    &conv_id,
+                    &task_run_id,
+                    Some(&turn_id),
+                    stream_event_seq.as_ref(),
+                    AgentRunPhase::Done,
+                    "Stopped by user",
+                    Some("cancelled"),
+                    Some(&artifacts),
+                );
                 emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
             }
         });
@@ -6515,5 +6086,50 @@ mod tests {
             warning.as_deref(),
             Some("Plain text extracted with fallback.\nRich Office preview unavailable.")
         );
+    }
+
+    #[test]
+    fn split_text_by_utf8_bytes_preserves_cjk_boundaries() {
+        let text = "ab中文cd";
+        let chunks = split_text_by_utf8_bytes(text, 4);
+
+        assert_eq!(chunks.concat(), text);
+        assert!(chunks.iter().all(|chunk| chunk.len() <= 4));
+        assert_eq!(chunks, vec!["ab", "中", "文c", "d"]);
+    }
+
+    #[test]
+    fn compact_agent_event_caps_tool_payloads_for_frontend() {
+        let content = "x".repeat(MAX_FRONTEND_TOOL_CONTENT_CHARS + 100);
+        let artifact_text = "y".repeat(MAX_FRONTEND_ARTIFACT_STRING_CHARS + 100);
+        let event = AgentEvent::ToolCallResult {
+            call_id: "call-1".to_string(),
+            tool_name: "read_files".to_string(),
+            content,
+            is_error: false,
+            artifacts: Some(serde_json::json!({
+                "large": artifact_text,
+            })),
+        };
+
+        let compacted = compact_agent_event_for_frontend(event);
+
+        match compacted {
+            AgentEvent::ToolCallResult {
+                content,
+                artifacts: Some(artifacts),
+                ..
+            } => {
+                assert!(content.contains("[truncated]"));
+                assert!(content.chars().count() <= MAX_FRONTEND_TOOL_CONTENT_CHARS);
+                let large = artifacts
+                    .get("large")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("large artifact string");
+                assert!(large.contains("[truncated]"));
+                assert!(large.chars().count() <= MAX_FRONTEND_ARTIFACT_STRING_CHARS);
+            }
+            other => panic!("unexpected compacted event: {other:?}"),
+        }
     }
 }

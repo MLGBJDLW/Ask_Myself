@@ -29,6 +29,7 @@ import {
 import { toast } from 'sonner';
 import { useTranslation } from '../i18n';
 import * as api from '../lib/api';
+import { isDurableStreamEvent } from '../lib/streaming/legacyAdapter';
 import type {
   AgentExecutionGraph,
   AgentTaskArtifact,
@@ -392,9 +393,7 @@ export function TaskCenterPage() {
           }),
         );
         if (cancelled) return;
-        setEvents(nextEvents.filter((event) =>
-          event.eventType !== 'streamBlockDelta' && event.eventType !== 'streamReset',
-        ));
+        setEvents(nextEvents.filter((event) => !isDurableStreamEvent(event)));
         setGraph(nextGraph);
         setArtifacts(nextArtifacts);
         setSavedArtifacts(nextSavedArtifacts);

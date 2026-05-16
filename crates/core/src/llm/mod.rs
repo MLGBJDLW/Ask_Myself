@@ -1,7 +1,7 @@
 //! LLM provider types and traits for the agent framework.
 
 use async_trait::async_trait;
-use futures::stream::BoxStream;
+use futures::{stream::BoxStream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
@@ -280,6 +280,42 @@ pub struct StreamChunk {
     pub thinking_delta: Option<String>,
 }
 
+/// Provider-normalized stream event.
+///
+/// Existing providers still implement `stream()` in terms of `StreamChunk`.
+/// This adapter Interface gives the agent layer a seam for provider-level
+/// recovery policy without requiring every provider to change at once.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ProviderStreamEvent {
+    Chunk { chunk: StreamChunk },
+    RecoverableError { message: String },
+    Cancelled { message: String },
+    TerminalError { message: String },
+}
+
+/// Convert a legacy chunk stream into provider-normalized stream events.
+pub fn stream_chunks_to_provider_events<'a>(
+    stream: BoxStream<'a, Result<StreamChunk, CoreError>>,
+) -> BoxStream<'a, ProviderStreamEvent> {
+    Box::pin(stream.map(provider_stream_event_from_chunk_result))
+}
+
+fn provider_stream_event_from_chunk_result(
+    item: Result<StreamChunk, CoreError>,
+) -> ProviderStreamEvent {
+    match item {
+        Ok(chunk) => ProviderStreamEvent::Chunk { chunk },
+        Err(CoreError::StreamIncomplete(message) | CoreError::TransientLlm(message)) => {
+            ProviderStreamEvent::RecoverableError { message }
+        }
+        Err(CoreError::Cancelled(message)) => ProviderStreamEvent::Cancelled { message },
+        Err(error) => ProviderStreamEvent::TerminalError {
+            message: error.to_string(),
+        },
+    }
+}
+
 /// Incremental tool call data received during streaming.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -360,6 +396,15 @@ pub trait LlmProvider: Send + Sync {
         &self,
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError>;
+
+    /// Provider-level stream Interface with normalized error classification.
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let stream = self.stream(request).await?;
+        Ok(stream_chunks_to_provider_events(stream))
+    }
 
     /// Quick connectivity / auth check.
     async fn health_check(&self) -> Result<(), CoreError>;
@@ -457,5 +502,92 @@ pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool 
             // Custom/OpenRouter: default to true unless clearly text-only
             !(m.contains("gpt-3.5") || m.contains("text-davinci") || m.contains("text-embedding"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::{stream, StreamExt};
+
+    fn text_chunk(delta: &str) -> StreamChunk {
+        StreamChunk {
+            delta: delta.to_string(),
+            tool_call_delta: None,
+            finish_reason: None,
+            usage: None,
+            thinking_delta: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_chunk_adapter_classifies_stream_incomplete_as_recoverable() {
+        let source = Box::pin(stream::iter(vec![
+            Ok(text_chunk("hello")),
+            Err(CoreError::StreamIncomplete("connection closed".to_string())),
+        ]));
+
+        let events = stream_chunks_to_provider_events(source)
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(matches!(
+            &events[0],
+            ProviderStreamEvent::Chunk { chunk } if chunk.delta == "hello"
+        ));
+        assert!(matches!(
+            &events[1],
+            ProviderStreamEvent::RecoverableError { message } if message == "connection closed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_chunk_adapter_classifies_transient_llm_as_recoverable() {
+        let source = Box::pin(stream::iter(vec![Err(CoreError::TransientLlm(
+            "temporary network failure".to_string(),
+        ))]));
+
+        let events = stream_chunks_to_provider_events(source)
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(matches!(
+            &events[0],
+            ProviderStreamEvent::RecoverableError { message }
+                if message == "temporary network failure"
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_chunk_adapter_classifies_cancelled_separately() {
+        let source = Box::pin(stream::iter(vec![Err(CoreError::Cancelled(
+            "user stopped request".to_string(),
+        ))]));
+
+        let events = stream_chunks_to_provider_events(source)
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(matches!(
+            &events[0],
+            ProviderStreamEvent::Cancelled { message } if message == "user stopped request"
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_chunk_adapter_classifies_other_errors_as_terminal() {
+        let source = Box::pin(stream::iter(vec![Err(CoreError::Llm(
+            "provider refused request".to_string(),
+        ))]));
+
+        let events = stream_chunks_to_provider_events(source)
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(matches!(
+            &events[0],
+            ProviderStreamEvent::TerminalError { message }
+                if message == "LLM error: provider refused request"
+        ));
     }
 }

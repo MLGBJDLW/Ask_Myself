@@ -5,9 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{AgentEvent, ToolRunStatus};
+use crate::agent::{AgentEvent, StreamBlockChannel, ToolRunStatus};
 
-pub const AGENT_RUN_EVENT_VERSION: u16 = 1;
+pub const AGENT_RUN_EVENT_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +51,7 @@ pub enum AgentRunEventKind {
     ToolCompleted,
     ApprovalRequested,
     ApprovalResolved,
+    RecoveryAttempt,
     UsageUpdated,
     AutoCompacted,
     Done,
@@ -71,6 +72,7 @@ impl AgentRunEventKind {
             Self::ToolCompleted => "toolCompleted",
             Self::ApprovalRequested => "approvalRequested",
             Self::ApprovalResolved => "approvalResolved",
+            Self::RecoveryAttempt => "recoveryAttempt",
             Self::UsageUpdated => "usageUpdated",
             Self::AutoCompacted => "autoCompacted",
             Self::Done => "done",
@@ -87,8 +89,13 @@ impl AgentRunEventKind {
                 "tool"
             }
             Self::ApprovalRequested | Self::ApprovalResolved => "approval",
+            Self::RecoveryAttempt => "status",
             Self::Error => "error",
         }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Done | Self::Error)
     }
 }
 
@@ -96,12 +103,9 @@ impl AgentRunEventKind {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRunEvent {
     pub version: u16,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_seq: Option<u64>,
+    pub run_id: String,
+    pub turn_id: String,
+    pub event_seq: u64,
     pub kind: AgentRunEventKind,
     pub phase: AgentRunPhase,
     pub label: String,
@@ -119,12 +123,7 @@ impl AgentRunEvent {
                 "Assistant response".to_string(),
                 Some("streaming".to_string()),
             ),
-            AgentEvent::StreamReset { reason } => (
-                AgentRunEventKind::StreamReset,
-                AgentRunPhase::Responding,
-                reason.clone(),
-                Some("running".to_string()),
-            ),
+            AgentEvent::StreamReset { reason } => recovery_metadata(reason),
             AgentEvent::ToolCallPreparing { tool_name, .. }
             | AgentEvent::ToolCallArgsDelta { tool_name, .. } => (
                 AgentRunEventKind::ToolPreparing,
@@ -205,12 +204,24 @@ impl AgentRunEvent {
                     .unwrap_or_else(|| "Execution plan updated".to_string()),
                 Some("running".to_string()),
             ),
-            AgentEvent::Done { .. } => (
-                AgentRunEventKind::Done,
-                AgentRunPhase::Done,
-                "Final answer produced".to_string(),
-                Some("completed".to_string()),
-            ),
+            AgentEvent::Done { finish_reason, .. } => {
+                let status = match finish_reason.as_deref() {
+                    Some("cancelled") => "cancelled",
+                    Some("timed_out") => "timed_out",
+                    _ => "completed",
+                };
+                let label = match status {
+                    "cancelled" => "Request cancelled by user.",
+                    "timed_out" => "Agent execution timed out.",
+                    _ => "Final answer produced",
+                };
+                (
+                    AgentRunEventKind::Done,
+                    AgentRunPhase::Done,
+                    label.to_string(),
+                    Some(status.to_string()),
+                )
+            }
             AgentEvent::UsageUpdate { .. } => (
                 AgentRunEventKind::UsageUpdated,
                 AgentRunPhase::Accounting,
@@ -249,9 +260,9 @@ impl AgentRunEvent {
 
         Self {
             version: AGENT_RUN_EVENT_VERSION,
-            run_id: None,
-            turn_id: None,
-            event_seq: None,
+            run_id: String::new(),
+            turn_id: String::new(),
+            event_seq: 0,
             kind,
             phase,
             label,
@@ -266,14 +277,202 @@ impl AgentRunEvent {
         turn_id: Option<&str>,
         event_seq: Option<u64>,
     ) -> Self {
-        self.run_id = run_id.map(ToString::to_string);
-        self.turn_id = turn_id.map(ToString::to_string);
-        self.event_seq = event_seq;
+        if let Some(run_id) = run_id {
+            self.run_id = run_id.to_string();
+        }
+        if let Some(turn_id) = turn_id {
+            self.turn_id = turn_id.to_string();
+        }
+        if let Some(event_seq) = event_seq {
+            self.event_seq = event_seq;
+        }
         self
+    }
+
+    pub fn output_delta(
+        run_id: &str,
+        turn_id: Option<&str>,
+        event_seq: u64,
+        block_id: &str,
+        channel: StreamBlockChannel,
+        offset: usize,
+        delta: &str,
+    ) -> Self {
+        let channel_label = match channel {
+            StreamBlockChannel::Answer => "answer",
+            StreamBlockChannel::Thinking => "thinking",
+        };
+        Self {
+            version: AGENT_RUN_EVENT_VERSION,
+            run_id: run_id.to_string(),
+            turn_id: turn_id.unwrap_or_default().to_string(),
+            event_seq,
+            kind: AgentRunEventKind::OutputDelta,
+            phase: AgentRunPhase::Responding,
+            label: "Assistant response".to_string(),
+            status: Some("streaming".to_string()),
+            payload: serde_json::json!({
+                "blockId": block_id,
+                "channel": channel_label,
+                "offset": offset,
+                "delta": delta,
+            }),
+        }
+    }
+
+    pub fn stream_reset(run_id: &str, turn_id: Option<&str>, event_seq: u64, reason: &str) -> Self {
+        Self {
+            version: AGENT_RUN_EVENT_VERSION,
+            run_id: run_id.to_string(),
+            turn_id: turn_id.unwrap_or_default().to_string(),
+            event_seq,
+            kind: AgentRunEventKind::StreamReset,
+            phase: AgentRunPhase::Responding,
+            label: reason.to_string(),
+            status: Some("running".to_string()),
+            payload: serde_json::json!({ "reason": reason }),
+        }
+    }
+
+    pub fn recovery_attempt(
+        run_id: &str,
+        turn_id: Option<&str>,
+        event_seq: u64,
+        reason: &str,
+        attempt: Option<u32>,
+        mode: Option<&str>,
+    ) -> Self {
+        Self {
+            version: AGENT_RUN_EVENT_VERSION,
+            run_id: run_id.to_string(),
+            turn_id: turn_id.unwrap_or_default().to_string(),
+            event_seq,
+            kind: AgentRunEventKind::RecoveryAttempt,
+            phase: AgentRunPhase::Responding,
+            label: reason.to_string(),
+            status: Some("recovering".to_string()),
+            payload: serde_json::json!({
+                "reason": reason,
+                "attempt": attempt,
+                "mode": mode,
+            }),
+        }
+    }
+
+    pub fn status_update(
+        run_id: &str,
+        turn_id: Option<&str>,
+        event_seq: u64,
+        phase: AgentRunPhase,
+        label: &str,
+        status: Option<&str>,
+        payload: Option<&serde_json::Value>,
+    ) -> Self {
+        Self {
+            version: AGENT_RUN_EVENT_VERSION,
+            run_id: run_id.to_string(),
+            turn_id: turn_id.unwrap_or_default().to_string(),
+            event_seq,
+            kind: AgentRunEventKind::Status,
+            phase,
+            label: label.to_string(),
+            status: status.map(str::to_string),
+            payload: payload.cloned().unwrap_or_else(|| serde_json::json!({})),
+        }
+    }
+
+    pub fn from_task_payload(payload: &serde_json::Value, fallback_run_id: &str) -> Option<Self> {
+        if let Some(agent_run) = payload.get("agentRun") {
+            return serde_json::from_value::<Self>(agent_run.clone()).ok();
+        }
+
+        let event_type = payload
+            .get("eventType")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let event_seq = payload
+            .get("eventSeq")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+
+        match event_type {
+            "streamReset" => {
+                let reason = payload
+                    .get("reason")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Stream restarted.");
+                Some(Self::stream_reset(fallback_run_id, None, event_seq, reason))
+            }
+            "streamBlockDelta" => {
+                let block_id = payload.get("blockId")?.as_str()?;
+                let channel = match payload.get("channel")?.as_str()? {
+                    "thinking" => StreamBlockChannel::Thinking,
+                    _ => StreamBlockChannel::Answer,
+                };
+                let offset = payload
+                    .get("offset")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let delta = payload.get("delta")?.as_str()?;
+                Some(Self::output_delta(
+                    fallback_run_id,
+                    None,
+                    event_seq,
+                    block_id,
+                    channel,
+                    offset,
+                    delta,
+                ))
+            }
+            _ => None,
+        }
     }
 
     pub fn task_event_type(&self) -> &'static str {
         self.kind.task_event_type()
+    }
+
+    pub fn task_event_payload(&self, payload: Option<&serde_json::Value>) -> serde_json::Value {
+        let mut map = match payload {
+            Some(serde_json::Value::Object(existing)) => existing.clone(),
+            Some(existing) => {
+                let mut map = serde_json::Map::new();
+                map.insert("data".to_string(), existing.clone());
+                map
+            }
+            None => serde_json::Map::new(),
+        };
+        map.insert(
+            "agentRun".to_string(),
+            serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({})),
+        );
+        serde_json::Value::Object(map)
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        self.kind.is_terminal()
+    }
+}
+
+fn recovery_metadata(reason: &str) -> (AgentRunEventKind, AgentRunPhase, String, Option<String>) {
+    if reason.to_ascii_lowercase().contains("retry")
+        || reason.to_ascii_lowercase().contains("fallback")
+        || reason.to_ascii_lowercase().contains("interrupted")
+        || reason.contains("断")
+    {
+        (
+            AgentRunEventKind::RecoveryAttempt,
+            AgentRunPhase::Responding,
+            reason.to_string(),
+            Some("recovering".to_string()),
+        )
+    } else {
+        (
+            AgentRunEventKind::StreamReset,
+            AgentRunPhase::Responding,
+            reason.to_string(),
+            Some("running".to_string()),
+        )
     }
 }
 
@@ -300,6 +499,7 @@ fn plan_phase(phase: &str) -> AgentRunPhase {
 mod tests {
     use super::*;
     use crate::agent::{ToolRunItem, ToolRunStatus};
+    use crate::llm::{Message, Role, Usage};
     use crate::tools::{
         ToolInputStreamingMode, ToolInterruptBehavior, ToolRenderKind, ToolRunCapabilities,
     };
@@ -316,8 +516,9 @@ mod tests {
         assert_eq!(run_event.kind, AgentRunEventKind::Status);
         assert_eq!(run_event.phase, AgentRunPhase::Routing);
         assert_eq!(run_event.task_event_type(), "status");
-        assert_eq!(run_event.run_id.as_deref(), Some("run-1"));
-        assert_eq!(run_event.event_seq, Some(7));
+        assert_eq!(run_event.version, 2);
+        assert_eq!(run_event.run_id, "run-1");
+        assert_eq!(run_event.event_seq, 7);
     }
 
     #[test]
@@ -355,5 +556,103 @@ mod tests {
             run_event.payload["run"]["toolName"],
             "search_knowledge_base"
         );
+    }
+
+    #[test]
+    fn builds_canonical_output_delta() {
+        let run_event = AgentRunEvent::output_delta(
+            "run-1",
+            Some("turn-1"),
+            9,
+            "block-1",
+            StreamBlockChannel::Answer,
+            3,
+            "abc",
+        );
+
+        assert_eq!(run_event.kind, AgentRunEventKind::OutputDelta);
+        assert_eq!(run_event.task_event_type(), "stream");
+        assert_eq!(run_event.payload["blockId"], "block-1");
+        assert_eq!(run_event.payload["channel"], "answer");
+        assert_eq!(run_event.payload["offset"], 3);
+        assert_eq!(run_event.payload["delta"], "abc");
+    }
+
+    #[test]
+    fn identifies_terminal_run_events() {
+        let mut done_event = AgentRunEvent::from_agent_event(&AgentEvent::Status {
+            content: "done".to_string(),
+            tone: None,
+        });
+        done_event.kind = AgentRunEventKind::Done;
+        let error_event = AgentRunEvent::from_agent_event(&AgentEvent::Error {
+            message: "failed".to_string(),
+        });
+        let status_event = AgentRunEvent::from_agent_event(&AgentEvent::Status {
+            content: "working".to_string(),
+            tone: None,
+        });
+
+        assert!(done_event.is_terminal());
+        assert!(error_event.is_terminal());
+        assert!(!status_event.is_terminal());
+    }
+
+    #[test]
+    fn done_event_preserves_cancelled_finish_reason() {
+        let run_event = AgentRunEvent::from_agent_event(&AgentEvent::Done {
+            message: Message::text(Role::Assistant, "Request cancelled by user."),
+            usage_total: Usage::default(),
+            last_prompt_tokens: 0,
+            cached: false,
+            finish_reason: Some("cancelled".to_string()),
+        });
+
+        assert_eq!(run_event.kind, AgentRunEventKind::Done);
+        assert_eq!(run_event.status.as_deref(), Some("cancelled"));
+        assert_eq!(run_event.label, "Request cancelled by user.");
+    }
+
+    #[test]
+    fn builds_canonical_status_update() {
+        let payload = serde_json::json!({ "detail": "queued" });
+        let run_event = AgentRunEvent::status_update(
+            "run-1",
+            Some("turn-1"),
+            3,
+            AgentRunPhase::Routing,
+            "Task queued",
+            Some("queued"),
+            Some(&payload),
+        );
+
+        assert_eq!(run_event.version, AGENT_RUN_EVENT_VERSION);
+        assert_eq!(run_event.kind, AgentRunEventKind::Status);
+        assert_eq!(run_event.task_event_type(), "status");
+        assert_eq!(run_event.event_seq, 3);
+        assert_eq!(run_event.status.as_deref(), Some("queued"));
+        assert_eq!(run_event.payload["detail"], "queued");
+    }
+
+    #[test]
+    fn wraps_task_event_payload_with_agent_run_protocol() {
+        let run_event = AgentRunEvent::output_delta(
+            "run-1",
+            Some("turn-1"),
+            9,
+            "block-1",
+            StreamBlockChannel::Answer,
+            0,
+            "hello",
+        );
+
+        let payload = run_event.task_event_payload(Some(&serde_json::json!({
+            "callId": "call-1"
+        })));
+
+        assert_eq!(payload["callId"], "call-1");
+        assert_eq!(payload["agentRun"]["version"], AGENT_RUN_EVENT_VERSION);
+        assert_eq!(payload["agentRun"]["kind"], "outputDelta");
+        assert_eq!(payload["agentRun"]["eventSeq"], 9);
     }
 }

@@ -112,6 +112,72 @@
   --shadow-glow: 0 0 20px rgba(20,184,166,0.12);
 }
 
+/* ── Aurora theme ────────────────────────────────────────────────── */
+.theme-aurora {
+  --color-surface-0: #101412;
+  --color-surface-1: #161d19;
+  --color-surface-2: #1e2a24;
+  --color-surface-3: #2c3e35;
+  --color-surface-4: #3f564b;
+
+  --color-text-primary: #f4f7ef;
+  --color-text-secondary: #bdd0c2;
+  --color-text-tertiary: #7f9688;
+  --color-text-inverse: #101412;
+
+  --color-accent: #ff7a5c;
+  --color-accent-hover: #ffa36f;
+  --color-accent-subtle: #ff7a5c24;
+
+  --color-success: #74d99f;
+  --color-warning: #f6c65b;
+  --color-danger: #ff6b7a;
+  --color-danger-hover: #ff8f98;
+  --color-info: #6fc7d8;
+
+  --color-border: #dfffe614;
+  --color-border-hover: #dfffe628;
+  --color-border-active: #ff7a5c88;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.34);
+  --shadow-md: 0 4px 14px rgba(0,0,0,0.42);
+  --shadow-lg: 0 10px 30px rgba(0,0,0,0.52);
+  --shadow-glow: 0 0 24px rgba(255,122,92,0.18);
+}
+
+/* ── Bloom theme ─────────────────────────────────────────────────── */
+.theme-bloom {
+  --color-surface-0: #fbfcf7;
+  --color-surface-1: #f2f6ec;
+  --color-surface-2: #e5ecdf;
+  --color-surface-3: #cbd8c9;
+  --color-surface-4: #9daf9f;
+
+  --color-text-primary: #1a211b;
+  --color-text-secondary: #536355;
+  --color-text-tertiary: #7e907f;
+  --color-text-inverse: #fffafb;
+
+  --color-accent: #b83263;
+  --color-accent-hover: #db3c73;
+  --color-accent-subtle: #b832631a;
+
+  --color-success: #15803d;
+  --color-warning: #b7791f;
+  --color-danger: #d2264a;
+  --color-danger-hover: #e54865;
+  --color-info: #0f766e;
+
+  --color-border: #1a211b12;
+  --color-border-hover: #1a211b24;
+  --color-border-active: #b8326377;
+
+  --shadow-sm: 0 1px 2px rgba(40,48,38,0.06);
+  --shadow-md: 0 5px 14px rgba(40,48,38,0.09);
+  --shadow-lg: 0 12px 24px rgba(40,48,38,0.12);
+  --shadow-glow: 0 0 22px rgba(184,50,99,0.12);
+}
+
 /* Global base styles */
 html {
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';

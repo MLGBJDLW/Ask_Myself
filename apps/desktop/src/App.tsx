@@ -94,7 +94,7 @@ function AppShell() {
 
   useEffect(() => {
     api.getWizardState()
-      .then(state => setWizardCompleted(Boolean(state?.completed)))
+      .then(state => setWizardCompleted(state == null ? true : Boolean(state.completed)))
       .catch(() => setWizardCompleted(true)); // Fail-open: don't block on I/O errors.
   }, []);
 
@@ -106,7 +106,7 @@ function AppShell() {
   useEffect(() => {
     if (wizardCompleted === false) {
       api.getWizardState()
-        .then(state => setWizardCompleted(Boolean(state?.completed)))
+        .then(state => setWizardCompleted(state == null ? true : Boolean(state.completed)))
         .catch(() => {});
     }
   }, [location.pathname, wizardCompleted]);

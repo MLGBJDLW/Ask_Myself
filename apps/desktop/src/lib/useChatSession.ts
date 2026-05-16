@@ -100,7 +100,15 @@ function isOptimisticSteeringMessage(message: ConversationMessage): boolean {
 }
 
 function taskRunCanResumeStream(run: AgentTaskRun): boolean {
-  return ['queued', 'running', 'waiting_approval'].includes(run.status);
+  return ['queued', 'running', 'waiting_approval', 'cancelling'].includes(run.status);
+}
+
+function hasPersistedResultAfterLatestUser(messages: ConversationMessage[]): boolean {
+  const lastUserIdx = messages.map(message => message.role).lastIndexOf('user');
+  if (lastUserIdx < 0) return false;
+  return messages
+    .slice(lastUserIdx + 1)
+    .some(message => message.role === 'assistant' || message.role === 'tool');
 }
 
 function streamHasVisiblePreview(conversationId: string): boolean {
@@ -485,7 +493,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     autoCompacted,
     taskRun: streamTaskRun,
     taskEvents: streamTaskEvents,
-    clearPreview,
     reset,
   } = useAgentStream(activeId);
 
@@ -760,7 +767,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             setCustomSystemPrompt(conv.systemPrompt ?? '');
           }
           if (msgs.some(msg => msg.role === 'assistant' || msg.role === 'tool')) {
-            requestAnimationFrame(() => clearPreview());
+            requestAnimationFrame(() => streamStore.clearPreview(completedConversationId));
           }
         }
       }).catch((e) => {
@@ -802,7 +809,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       }
     }
     return () => { cancelled = true; };
-  }, [activeId, clearPreview, isStreaming, loadConversations, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
+  }, [activeId, isStreaming, loadConversations, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
 
   /* ── Sync stream errors to chatError ────────────────────────────── */
   useEffect(() => {
@@ -1232,22 +1239,25 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   const isViewingStreamingConversation =
     activeId != null && streamingConversationRef.current === activeId;
+  const hasPersistedStreamResult = hasPersistedResultAfterLatestUser(messages);
+  const shouldShowLivePreview =
+    isViewingStreamingConversation && (isStreaming || !hasPersistedStreamResult);
   const activeConversation = activeId
     ? conversations.find((conversation) => conversation.id === activeId) ?? null
     : null;
   const activeTurns = turns;
-  const activeIsStreaming = isViewingStreamingConversation && isStreaming;
-  const activeStreamText = isViewingStreamingConversation ? streamText : '';
-  const activeStreamRounds = isViewingStreamingConversation ? streamRounds : [];
-  const activeTraceEvents = isViewingStreamingConversation ? traceEvents : [];
-  const activeThinkingText = isViewingStreamingConversation ? thinkingText : '';
-  const activeIsThinking = isViewingStreamingConversation ? isThinking : false;
-  const activeToolCalls = isViewingStreamingConversation ? toolCalls : [];
+  const activeIsStreaming = shouldShowLivePreview && isStreaming;
+  const activeStreamText = shouldShowLivePreview ? streamText : '';
+  const activeStreamRounds = shouldShowLivePreview ? streamRounds : [];
+  const activeTraceEvents = shouldShowLivePreview ? traceEvents : [];
+  const activeThinkingText = shouldShowLivePreview ? thinkingText : '';
+  const activeIsThinking = shouldShowLivePreview ? isThinking : false;
+  const activeToolCalls = shouldShowLivePreview ? toolCalls : [];
   const latestPersistedTaskRun = taskRuns.length > 0 ? taskRuns[taskRuns.length - 1] : null;
   const activeTaskRun = isViewingStreamingConversation
     ? (streamTaskRun ?? latestPersistedTaskRun)
     : latestPersistedTaskRun;
-  const activeTaskEvents = isViewingStreamingConversation ? streamTaskEvents : [];
+  const activeTaskEvents = shouldShowLivePreview ? streamTaskEvents : [];
   const scopedLastUsage = usageConversationRef.current === activeId ? lastUsage : null;
   const scopedLastCached = usageConversationRef.current === activeId ? lastCached : false;
   const scopedFinishReason = usageConversationRef.current === activeId ? finishReason : null;

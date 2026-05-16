@@ -63,6 +63,7 @@ pub mod skills;
 pub mod source_tree;
 pub mod sources;
 pub mod task_run;
+pub mod task_timeline;
 pub mod tool_access;
 pub mod tools;
 pub mod trace;

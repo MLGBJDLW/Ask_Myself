@@ -107,6 +107,7 @@ export type AgentRunEventKind =
   | 'toolCompleted'
   | 'approvalRequested'
   | 'approvalResolved'
+  | 'recoveryAttempt'
   | 'usageUpdated'
   | 'autoCompacted'
   | 'done'
@@ -114,11 +115,21 @@ export type AgentRunEventKind =
 
 export interface AgentRunEvent {
   version: number;
-  runId?: string | null;
-  turnId?: string | null;
-  eventSeq?: number | null;
+  runId: string;
+  turnId: string;
+  eventSeq: number;
   kind: AgentRunEventKind;
   phase: AgentRunPhase;
+  label: string;
+  status?: string | null;
+  payload: ArtifactPayload | null;
+}
+
+export type TaskTimelineEventKind = 'subtask' | 'verification';
+
+export interface TaskTimelineEvent {
+  version: number;
+  kind: TaskTimelineEventKind;
   label: string;
   status?: string | null;
   payload: ArtifactPayload | null;
@@ -130,7 +141,10 @@ export interface AgentTaskRunEvent {
   eventType: string;
   label: string;
   status?: string | null;
-  payload?: (Record<string, unknown> & { agentRun?: AgentRunEvent }) | unknown[] | null;
+  payload?: (Record<string, unknown> & {
+    agentRun?: AgentRunEvent;
+    taskTimeline?: TaskTimelineEvent;
+  }) | unknown[] | null;
   createdAt: string;
 }
 
@@ -524,7 +538,8 @@ export interface ApprovalPolicyList {
 
 export interface AgentFrontendEvent {
   conversationId: string;
-  type: AgentEvent['type'];
+  runEvent?: AgentRunEvent;
+  type?: AgentEvent['type'];
   eventSeq?: number;
   summary?: string;
   delta?: string;
