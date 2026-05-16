@@ -7,7 +7,6 @@ import type { AgentFrontendEvent } from '../types';
 import type {
   AgentTaskRun,
   AgentTaskRunEvent,
-  ArtifactPayload,
   ToolRunItem,
 } from '../types/conversation';
 import {
@@ -40,21 +39,19 @@ import {
   appendStatusTraceEvent,
   applyStreamResetProjection,
   applyTerminalProjection,
-  isPendingStatus,
   resetActiveStreamBlocks,
-  syncTraceToolEvents,
 } from './streaming/terminalProjection';
 import {
+  applyToolCallArgsDeltaEvent,
+  applyToolCallProgressEvent,
+  applyToolCallResultEvent,
+  applyToolCallStartEvent,
   applyToolRunEvent,
   createToolCall,
   insertPendingToolCall,
-  PROGRESS_NOTES_MAX,
-  resolveToolCallResult,
-  upsertToolTraceEvent,
 } from './streaming/toolProjection';
 import type {
   StreamState,
-  ToolCallEvent,
 } from './streaming/protocol';
 import { armStreamWatchdog, clearStreamWatchdog } from './streaming/watchdog';
 export type { StreamRoundEvent, StreamState, ToolCallEvent, TraceEvent, UsageTotal } from './streaming/protocol';
@@ -477,280 +474,22 @@ class StreamStoreImpl {
       }
 
       case 'toolCallStart': {
-        try {
-        s.isThinking = false;
-
-        // Capture and reset thinking segment
-        const roundThinking = s.thinkingText.trim() ? s.thinkingText : '';
-        if (roundThinking) s.thinkingText = '';
-
-        const incomingCallId = (
-          (typeof event.callId === 'string' && event.callId)
-          || (typeof raw.call_id === 'string' ? raw.call_id : '')
-        ).trim();
-        const callId = incomingCallId || `tool-call-${Date.now()}-${s._toolCallSeq++}`;
-        if (incomingCallId) clearToolPreparingTimer(s, incomingCallId);
-        const toolNameRaw = (typeof event.toolName === 'string' && event.toolName)
-          || (typeof raw.tool_name === 'string' ? raw.tool_name : '');
-        const toolName = toolNameRaw.trim() ? toolNameRaw : 'unknown_tool';
-        const argsRaw = event.arguments ?? raw.arguments;
-        const argumentsText = typeof argsRaw === 'string'
-          ? argsRaw
-          : (argsRaw == null ? '' : String(argsRaw));
-
-        const nextCall: ToolCallEvent = createToolCall({
-          callId,
-          toolName,
-          arguments: argumentsText,
-          status: 'starting',
-          argsStatus: 'ready',
-        });
-
-        // If there's accumulated text, start a new round with it
-        if (s.streamText.trim().length > 0) {
-          const roundId = `stream-round-${Date.now()}-${s._roundSeq++}`;
-          s._activeRoundId = roundId;
-          s._activeRoundAcceptingStarts = true;
-          s.streamRounds = [...s.streamRounds, {
-            id: roundId,
-            thinking: roundThinking || undefined,
-            reply: s.streamText,
-            toolCalls: [nextCall],
-          }];
-          s.streamText = '';
-        } else if (s._activeRoundId && s._activeRoundAcceptingStarts) {
-          // Merge into existing active round — verify target exists
-          const mergeRoundId = s._activeRoundId;
-          const targetRound = s.streamRounds.find(r => r.id === mergeRoundId);
-          if (targetRound) {
-            s.streamRounds = s.streamRounds.map(round => {
-              if (round.id !== mergeRoundId) return round;
-              const existingIdx = round.toolCalls.findIndex(tc => tc.callId === nextCall.callId);
-              const mergedThinking = roundThinking ? ((round.thinking || '') + roundThinking) : round.thinking;
-              if (existingIdx >= 0) {
-                const nextToolCalls = [...round.toolCalls];
-                const prev = nextToolCalls[existingIdx];
-                const mergedArgs = argumentsText || prev.arguments;
-                nextToolCalls[existingIdx] = {
-                  ...prev,
-                  toolName,
-                  arguments: mergedArgs,
-                  argsBytes: Math.max(prev.argsBytes, mergedArgs.length),
-                  status: prev.status === 'preparing' ? 'starting' : prev.status,
-                  argsStatus: isPendingStatus(prev.status) ? 'ready' : prev.argsStatus,
-                };
-                return { ...round, thinking: mergedThinking, toolCalls: nextToolCalls };
-              }
-              return { ...round, thinking: mergedThinking, toolCalls: [...round.toolCalls, nextCall] };
-            });
-          } else {
-            // Merge target missing — fall back to new round
-            console.error('[streamStore] merge target round not found, creating new round');
-            const roundId = `stream-round-${Date.now()}-${s._roundSeq++}`;
-            s._activeRoundId = roundId;
-            s._activeRoundAcceptingStarts = true;
-            s.streamRounds = [...s.streamRounds, {
-              id: roundId,
-              thinking: roundThinking || undefined,
-              reply: '',
-              toolCalls: [nextCall],
-            }];
-          }
-        } else {
-          const roundId = `stream-round-${Date.now()}-${s._roundSeq++}`;
-          s._activeRoundId = roundId;
-          s._activeRoundAcceptingStarts = true;
-          s.streamRounds = [...s.streamRounds, {
-            id: roundId,
-            thinking: roundThinking || undefined,
-            reply: '',
-            toolCalls: [nextCall],
-          }];
-        }
-
-        // Update flat toolCalls list
-        const existing = s.toolCalls.findIndex(tc => tc.callId === callId);
-        if (existing >= 0) {
-          s.toolCalls = [...s.toolCalls];
-          const prev = s.toolCalls[existing];
-          const mergedArgs = argumentsText || prev.arguments;
-          s.toolCalls[existing] = {
-            ...prev,
-            toolName,
-            arguments: mergedArgs,
-            argsBytes: Math.max(prev.argsBytes, mergedArgs.length),
-            status: prev.status === 'preparing' ? 'starting' : prev.status,
-            argsStatus: isPendingStatus(prev.status) ? 'ready' : prev.argsStatus,
-          };
-          upsertToolTraceEvent(s, s.toolCalls[existing]);
-        } else {
-          s.toolCalls = [...s.toolCalls, nextCall];
-          upsertToolTraceEvent(s, nextCall);
-        }
-        resetActiveStreamBlocks(s);
-        } catch (err) {
-          console.error('[streamStore] toolCallStart error, creating fallback round:', err);
-          // Fallback: create a simple new round with the tool call
-          const fallbackCallId = `tool-call-${Date.now()}-${s._toolCallSeq++}`;
-          const fallbackCall: ToolCallEvent = createToolCall({
-            callId: fallbackCallId,
-            toolName: 'unknown_tool',
-            status: 'starting',
-            argsStatus: 'ready',
-          });
-          const roundId = `stream-round-${Date.now()}-${s._roundSeq++}`;
-          s._activeRoundId = roundId;
-          s._activeRoundAcceptingStarts = false;
-          s.streamRounds = [...s.streamRounds, {
-            id: roundId, reply: '', toolCalls: [fallbackCall],
-          }];
-          s.toolCalls = [...s.toolCalls, fallbackCall];
-          upsertToolTraceEvent(s, fallbackCall);
-          s.isThinking = false;
-          s.thinkingText = '';
-          resetActiveStreamBlocks(s);
-        }
+        applyToolCallStartEvent(s, event, raw);
         break;
       }
 
       case 'toolCallArgsDelta': {
-        try {
-          const callId = (
-            (typeof event.callId === 'string' && event.callId)
-            || (typeof raw.call_id === 'string' ? raw.call_id : '')
-          ).trim();
-          if (!callId) break;
-          const deltaRaw = event.argumentsDelta
-            ?? (raw.arguments_delta as string | undefined)
-            ?? (raw.argumentsDelta as string | undefined)
-            ?? '';
-          const delta = typeof deltaRaw === 'string' ? deltaRaw : String(deltaRaw ?? '');
-          if (!delta) break;
-          const patchCall = (tc: ToolCallEvent): ToolCallEvent => {
-            const nextArgs = tc.arguments + delta;
-            return {
-              ...tc,
-              arguments: nextArgs,
-              argsBytes: nextArgs.length,
-              argsStatus: isPendingStatus(tc.status) ? 'streaming' : tc.argsStatus,
-            };
-          };
-
-          let foundInFlat = false;
-          s.toolCalls = s.toolCalls.map(tc => {
-            if (tc.callId !== callId) return tc;
-            foundInFlat = true;
-            return patchCall(tc);
-          });
-
-          if (!foundInFlat) {
-            // Legacy partial-argument deltas are only accepted after a stable
-            // tool row exists. Avoid creating UI cards from incomplete JSON.
-            break;
-          } else {
-            s.streamRounds = s.streamRounds.map(round => {
-              const idx = round.toolCalls.findIndex(tc => tc.callId === callId);
-              if (idx < 0) return round;
-              const nextCalls = [...round.toolCalls];
-              nextCalls[idx] = patchCall(nextCalls[idx]);
-              return { ...round, toolCalls: nextCalls };
-            });
-            const latest = s.toolCalls.find(tc => tc.callId === callId);
-            if (latest) upsertToolTraceEvent(s, latest);
-          }
-        } catch (err) {
-          console.error('[streamStore] toolCallArgsDelta error:', err);
-        }
+        applyToolCallArgsDeltaEvent(s, event, raw);
         break;
       }
 
       case 'toolCallProgress': {
-        try {
-          const callId = (
-            (typeof event.callId === 'string' && event.callId)
-            || (typeof raw.call_id === 'string' ? raw.call_id : '')
-          ).trim();
-          if (!callId) break;
-          const noteRaw = event.note
-            ?? (raw.note as string | undefined)
-            ?? '';
-          const note = typeof noteRaw === 'string' ? noteRaw.trim() : '';
-          if (!note) break;
-
-          const patchCall = (tc: ToolCallEvent): ToolCallEvent => {
-            const nextNotes = tc.progressNotes.length >= PROGRESS_NOTES_MAX
-              ? [...tc.progressNotes.slice(-(PROGRESS_NOTES_MAX - 1)), note]
-              : [...tc.progressNotes, note];
-            const nextStatus: ToolCallEvent['status'] =
-              tc.status === 'starting' || tc.status === 'preparing' || tc.status === 'approvalPending'
-                ? 'running'
-                : tc.status;
-            const nextArgsStatus: ToolCallEvent['argsStatus'] =
-              tc.argsStatus === 'streaming' || tc.argsStatus === 'pending'
-                ? 'ready'
-                : tc.argsStatus;
-            return { ...tc, progressNotes: nextNotes, status: nextStatus, argsStatus: nextArgsStatus };
-          };
-
-          let matched = false;
-          s.toolCalls = s.toolCalls.map(tc => {
-            if (tc.callId !== callId) return tc;
-            matched = true;
-            return patchCall(tc);
-          });
-          if (!matched) break;
-
-          s.streamRounds = s.streamRounds.map(round => {
-            const idx = round.toolCalls.findIndex(tc => tc.callId === callId);
-            if (idx < 0) return round;
-            const nextCalls = [...round.toolCalls];
-            nextCalls[idx] = patchCall(nextCalls[idx]);
-            return { ...round, toolCalls: nextCalls };
-          });
-          const latest = s.toolCalls.find(tc => tc.callId === callId);
-          if (latest) upsertToolTraceEvent(s, latest);
-        } catch (err) {
-          console.error('[streamStore] toolCallProgress error:', err);
-        }
+        applyToolCallProgressEvent(s, event, raw);
         break;
       }
 
       case 'toolCallResult': {
-        try {
-        const resultCallId = (typeof event.callId === 'string' && event.callId)
-          || (typeof raw.call_id === 'string' ? raw.call_id : '') || '';
-        if (resultCallId) clearToolPreparingTimer(s, resultCallId);
-        const resultIsError = (typeof event.isError === 'boolean' ? event.isError : undefined)
-          ?? (typeof raw.is_error === 'boolean' ? raw.is_error : undefined);
-        const resultContent = (typeof event.content === 'string' ? event.content : undefined)
-          ?? (typeof raw.content === 'string' ? raw.content : undefined);
-        const resultArtifacts = (event.artifacts && typeof event.artifacts === 'object')
-          ? event.artifacts
-          : ((raw.artifacts && typeof raw.artifacts === 'object') ? raw.artifacts as ArtifactPayload : undefined);
-
-        const { next: nextToolCalls } = resolveToolCallResult(
-          s.toolCalls, resultCallId, resultIsError, resultContent, resultArtifacts,
-        );
-        s.toolCalls = nextToolCalls;
-        syncTraceToolEvents(s);
-
-        // Update rounds
-        const roundsCopy = [...s.streamRounds];
-        for (let i = roundsCopy.length - 1; i >= 0; i -= 1) {
-          const round = roundsCopy[i];
-          const resolved = resolveToolCallResult(
-            round.toolCalls, resultCallId, resultIsError, resultContent, resultArtifacts,
-          );
-          if (resolved.matched) {
-            roundsCopy[i] = { ...round, toolCalls: resolved.next };
-            s.streamRounds = roundsCopy;
-            break;
-          }
-        }
-        s._activeRoundAcceptingStarts = false;
-        } catch (err) {
-          console.error('[streamStore] toolCallResult error:', err);
-        }
+        applyToolCallResultEvent(s, event, raw);
         break;
       }
 
