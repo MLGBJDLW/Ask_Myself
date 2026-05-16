@@ -63,6 +63,16 @@ export function adaptFrontendRunEvent(event: AgentFrontendEvent): AgentFrontendE
     ...event,
     eventSeq: runEvent.eventSeq,
   };
+  const legacyType = stringValue(payload.type);
+
+  if (legacyType && legacyType !== 'streamBlockDelta') {
+    return {
+      ...payload,
+      ...base,
+      type: legacyType as AgentFrontendEvent['type'],
+      eventSeq: runEvent.eventSeq,
+    };
+  }
 
   if (runEvent.kind === 'outputDelta') {
     return {
@@ -92,7 +102,6 @@ export function adaptFrontendRunEvent(event: AgentFrontendEvent): AgentFrontendE
     };
   }
 
-  const legacyType = stringValue(payload.type);
   if (legacyType) {
     return {
       ...payload,

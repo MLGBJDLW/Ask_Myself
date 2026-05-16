@@ -114,6 +114,24 @@ test('adapts canonical outputDelta into the legacy frontend stream shape', () =>
   assertEqual(event.delta, 'hello', 'delta');
 });
 
+test('preserves legacy textDelta payloads carried by outputDelta run events', () => {
+  const event = adaptFrontendRunEvent({
+    conversationId: 'conversation-1',
+    runEvent: runEvent({
+      eventSeq: 7,
+      kind: 'outputDelta',
+      payload: {
+        type: 'textDelta',
+        delta: 'legacy text',
+      },
+    }),
+  } as AgentFrontendEvent);
+
+  assertEqual(event.type, 'textDelta', 'event type');
+  assertEqual(event.eventSeq, 7, 'eventSeq');
+  assertEqual(event.delta, 'legacy text', 'delta');
+});
+
 test('adapts recoveryAttempt into a muted status update', () => {
   const event = adaptFrontendRunEvent(frontendEvent(runEvent({
     eventSeq: 8,
