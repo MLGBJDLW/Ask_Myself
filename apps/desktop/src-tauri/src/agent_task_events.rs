@@ -222,7 +222,7 @@ pub(crate) fn record_task_progress_for_agent_event(
             record_and_emit_agent_run_task_event(
                 &task_event_ctx,
                 run_event,
-                "toolProgress",
+                run_event.task_event_type(),
                 note,
                 Some("running"),
                 Some(&payload),
