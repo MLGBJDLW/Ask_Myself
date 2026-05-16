@@ -1,10 +1,12 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use log::warn;
 use nexa_core::agent::{AgentEvent, StreamBlockChannel, ToolRunItem};
 use nexa_core::agent_run::AgentRunEvent;
 use nexa_core::db::Database;
 use nexa_core::llm::{ContentPart, Message};
+use nexa_core::task_run::AgentTaskRuntime;
 use serde::Serialize;
 use tauri::AppHandle;
 use uuid::Uuid;
@@ -361,7 +363,6 @@ impl StreamBlockEmitter {
             StreamBlockChannel::Answer => (self.answer_block_id.clone(), self.answer_offset),
             StreamBlockChannel::Thinking => (self.thinking_block_id.clone(), self.thinking_offset),
         };
-        let channel_label = stream_block_channel_label(channel);
         for chunk in split_text_by_utf8_bytes(&delta, MAX_STREAM_BLOCK_DELTA_BYTES) {
             let event_seq = self.event_seq.fetch_add(1, Ordering::SeqCst) + 1;
             let run_event = AgentRunEvent::output_delta(
@@ -379,14 +380,9 @@ impl StreamBlockEmitter {
             };
             emit_app_event(handle, "agent:event", &payload);
 
-            let durable_payload = run_event.task_event_payload(None);
-            let _ = db.record_agent_task_run_event(
-                task_run_id,
-                run_event.task_event_type(),
-                channel_label,
-                Some("running"),
-                Some(&durable_payload),
-            );
+            if let Err(err) = AgentTaskRuntime::new(db).apply_run_event(task_run_id, &run_event) {
+                warn!("Failed to record stream block event for {task_run_id}: {err}");
+            }
             current_offset += chunk.len();
         }
 
