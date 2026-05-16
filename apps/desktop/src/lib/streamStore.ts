@@ -20,6 +20,13 @@ import { applyDurableReplayToState, taskTimelineEventsFromReplaySource } from '.
 import { adaptFrontendRunEvent } from './streaming/legacyAdapter';
 import { applyStreamEventOrdering } from './streaming/ordering';
 import {
+  clearToolPreparingTimer,
+  clearToolPreparingTimers,
+  createDefaultState,
+  taskRunIsActive,
+  type InternalStreamState,
+} from './streaming/state';
+import {
   appendStatusTraceEvent,
   applyStreamResetProjection,
   applyTerminalProjection,
@@ -43,28 +50,9 @@ import type {
   UsageTotal,
 } from './streaming/protocol';
 import { armStreamWatchdog, clearStreamWatchdog } from './streaming/watchdog';
-import type { StreamTimeoutHandle } from './streaming/watchdog';
 export type { StreamRoundEvent, StreamState, ToolCallEvent, TraceEvent, UsageTotal } from './streaming/protocol';
 
 const TOOL_PREPARING_DELAY_MS = 150;
-
-/* ── Internal types ─────────────────────────────────────────────── */
-
-interface InternalStreamState extends StreamState {
-  _toolCallSeq: number;
-  _roundSeq: number;
-  _traceSeq: number;
-  _lastEventSeq: number;
-  _eventSeqGapRecorded: boolean;
-  _activeAnswerBlockId: string | null;
-  _activeAnswerOffset: number;
-  _activeThinkingBlockId: string | null;
-  _activeThinkingOffset: number;
-  _activeRoundId: string | null;
-  _activeRoundAcceptingStarts: boolean;
-  _timeoutId: StreamTimeoutHandle | null;
-  _toolPreparingTimers: Record<string, ReturnType<typeof setTimeout>>;
-}
 
 /* ── Helper functions ───────────────────────────────────────────── */
 
@@ -120,57 +108,6 @@ function extractMessageText(message: unknown): string | null {
     })
     .join('');
   return text.trim().length > 0 ? text : null;
-}
-
-function createDefaultState(): InternalStreamState {
-  return {
-    isStreaming: false,
-    streamText: '',
-    streamRounds: [],
-    traceEvents: [],
-    thinkingText: '',
-    isThinking: false,
-    toolCalls: [],
-    error: null,
-    lastUsage: null,
-    lastCached: false,
-    finishReason: null,
-    contextOverflow: false,
-    rateLimited: false,
-    autoCompacted: null,
-    pendingApprovals: [],
-    taskRun: null,
-    taskEvents: [],
-    _toolCallSeq: 0,
-    _roundSeq: 0,
-    _traceSeq: 0,
-    _lastEventSeq: 0,
-    _eventSeqGapRecorded: false,
-    _activeAnswerBlockId: null,
-    _activeAnswerOffset: 0,
-    _activeThinkingBlockId: null,
-    _activeThinkingOffset: 0,
-    _activeRoundId: null,
-    _activeRoundAcceptingStarts: false,
-    _timeoutId: null,
-    _toolPreparingTimers: {},
-  };
-}
-
-function clearToolPreparingTimer(state: InternalStreamState, callId: string): void {
-  const timer = state._toolPreparingTimers[callId];
-  if (!timer) return;
-  clearTimeout(timer);
-  delete state._toolPreparingTimers[callId];
-}
-
-function clearToolPreparingTimers(state: InternalStreamState): void {
-  Object.values(state._toolPreparingTimers).forEach(timer => clearTimeout(timer));
-  state._toolPreparingTimers = {};
-}
-
-function taskRunIsActive(taskRun: AgentTaskRun): boolean {
-  return ['queued', 'running', 'waiting_approval'].includes(taskRun.status);
 }
 
 /* ── Store implementation ───────────────────────────────────────── */
