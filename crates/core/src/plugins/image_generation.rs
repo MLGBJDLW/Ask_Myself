@@ -355,7 +355,6 @@ fn is_image_generation_model(model: &str) -> bool {
         "chatgpt-image",
         "dall-e",
         "gemini-2.5-flash-image",
-        "gemini-3.1-flash-image",
         "gemini-3-pro-image",
         "nano-banana",
         "nano_banana",
@@ -376,7 +375,7 @@ fn is_image_generation_model(model: &str) -> bool {
 fn default_model(provider: ImageProvider) -> &'static str {
     match provider {
         ImageProvider::OpenAi => "gpt-image-2",
-        ImageProvider::Google => "gemini-3.1-flash-image-preview",
+        ImageProvider::Google => "gemini-3-pro-image-preview",
         ImageProvider::Qwen => "qwen-image-2.0-pro",
     }
 }
@@ -727,7 +726,7 @@ mod tests {
             api_style: "gemini_generate_content".to_string(),
             api_key: "image-key".to_string(),
             base_url: Some("https://generativelanguage.googleapis.com/v1beta".to_string()),
-            model: "gemini-3.1-flash-image-preview".to_string(),
+            model: "gemini-3-pro-image-preview".to_string(),
             size: Some("16:9|2K".to_string()),
             quality: None,
             output_format: Some("png".to_string()),
@@ -748,7 +747,7 @@ mod tests {
 
         assert_eq!(runtime.provider, ImageProvider::Google);
         assert_eq!(runtime.provider_name, "google");
-        assert_eq!(runtime.model, "gemini-3.1-flash-image-preview");
+        assert_eq!(runtime.model, "gemini-3-pro-image-preview");
         assert_eq!(runtime.output_format, "jpeg");
         assert_eq!(runtime.config.api_key, "image-key");
     }

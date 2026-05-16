@@ -335,3 +335,17 @@ test("hides the direct-response route banner until the first reply chunk arrives
   ).toBeVisible();
   await expect(page.getByText("Route selected: DirectResponse")).toHaveCount(0);
 });
+
+test("hides low-value file-operation route status", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("e2e-route-status", "Route selected: FileOperation");
+    localStorage.setItem("e2e-route-text-delay", "120");
+  });
+
+  await page.goto("/chat");
+
+  await expect(
+    page.getByText("The timeout branch did not return early.").first(),
+  ).toBeVisible();
+  await expect(page.getByText("Route selected: FileOperation")).toHaveCount(0);
+});

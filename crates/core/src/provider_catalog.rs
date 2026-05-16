@@ -126,8 +126,8 @@ mod tests {
 
         assert_eq!(ids.first(), Some(&"deepseek-v4-pro"));
         assert!(ids.contains(&"deepseek-v4-flash"));
-        assert!(ids.contains(&"deepseek-reasoner"));
-        assert!(ids.contains(&"deepseek-chat"));
+        assert!(!ids.contains(&"deepseek-reasoner"));
+        assert!(!ids.contains(&"deepseek-chat"));
 
         let pro = deepseek
             .models
@@ -166,6 +166,8 @@ mod tests {
         assert_eq!(ids.first(), Some(&"gpt-5.5"));
         assert!(ids.contains(&"gpt-5.5-pro"));
         assert!(ids.contains(&"gpt-5.4"));
+        assert!(ids.contains(&"gpt-5.4-mini"));
+        assert!(ids.contains(&"gpt-5.4-nano"));
 
         let gpt_55 = openai
             .models

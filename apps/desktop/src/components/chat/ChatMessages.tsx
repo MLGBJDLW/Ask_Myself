@@ -44,7 +44,7 @@ import type {
   TraceEvent,
 } from "../../lib/useAgentStream";
 import { ToolCallCard } from "./ToolCallCard";
-import { isBoardOnlyToolRender } from "./toolRenderers";
+import { isBoardOnlyToolRender, isFileChangeToolRender } from "./toolRenderers";
 import {
   FileDiffSummaryPanel,
   extractFileDiffArtifacts,
@@ -278,16 +278,46 @@ function formatRouteKind(routeKind: string): string {
 }
 
 function shouldHideRouteKind(routeKind: string | null | undefined): boolean {
-  return (
-    (routeKind ?? "").replace(/\s+/g, "").toLowerCase() === "directresponse"
-  );
+  const normalized = (routeKind ?? "").replace(/\s+/g, "").toLowerCase();
+  return normalized === "directresponse" || normalized === "fileoperation";
 }
 
 function shouldHideTraceStatus(text: string | null | undefined): boolean {
   const normalized = (text ?? "").replace(/\s+/g, "").toLowerCase();
   return (
     normalized === "routeselected:directresponse" ||
-    normalized === "route:directresponse"
+    normalized === "route:directresponse" ||
+    normalized === "routeselected:fileoperation" ||
+    normalized === "route:fileoperation"
+  );
+}
+
+const LOW_SIGNAL_TRACE_TOOLS = new Set([
+  "read_file",
+  "read_files",
+  "list_dir",
+  "glob_files",
+  "grep_files",
+  "search_files",
+  "get_chunk_context",
+  "get_document_info",
+  "list_documents",
+  "list_sources",
+  "prepare_document_tools",
+  "tool_search",
+]);
+
+function normalizeToolName(toolName: string | null | undefined): string {
+  return (toolName ?? "").trim().toLowerCase();
+}
+
+function isUnsuccessfulToolStatus(status?: string | null): boolean {
+  return (
+    status === "error" ||
+    status === "failed" ||
+    status === "declined" ||
+    status === "cancelled" ||
+    status === "timedOut"
   );
 }
 
@@ -296,6 +326,19 @@ function isBoardOnlyToolCall(
   renderKind?: ToolRenderKind,
 ): boolean {
   return isBoardOnlyToolRender(toolName, renderKind);
+}
+
+function shouldRenderTraceToolCall(
+  toolName: string | null | undefined,
+  renderKind?: ToolRenderKind,
+  status?: string | null,
+  isError?: boolean,
+): boolean {
+  if (isBoardOnlyToolCall(toolName, renderKind)) return false;
+  if (isError || isUnsuccessfulToolStatus(status)) return true;
+
+  if (isFileChangeToolRender(toolName, renderKind)) return false;
+  return !LOW_SIGNAL_TRACE_TOOLS.has(normalizeToolName(toolName));
 }
 
 function formatTurnStatus(status: string): string {
@@ -913,7 +956,14 @@ export function ChatMessages({
           });
           continue;
         }
-        if (isBoardOnlyToolCall(item.toolCall.toolName, item.toolCall.renderKind)) {
+        if (
+          !shouldRenderTraceToolCall(
+            item.toolCall.toolName,
+            item.toolCall.renderKind,
+            item.toolCall.status,
+            item.toolCall.isError,
+          )
+        ) {
           continue;
         }
         fallbackSections.push({
@@ -984,7 +1034,14 @@ export function ChatMessages({
                     ),
                   };
                 }
-                if (isBoardOnlyToolCall(item.toolCall.toolName, item.toolCall.renderKind)) {
+                if (
+                  !shouldRenderTraceToolCall(
+                    item.toolCall.toolName,
+                    item.toolCall.renderKind,
+                    item.toolCall.status,
+                    item.toolCall.isError,
+                  )
+                ) {
                   return [];
                 }
                 return {
@@ -1027,25 +1084,27 @@ export function ChatMessages({
       for (const idx of currentGroup) {
         const msg = messages[idx];
         const thinking = messageThinkingText.get(idx) ?? "";
-        const renderedToolCalls = msg.toolCalls
-          .filter((tc) => !isBoardOnlyToolCall(tc.name))
-          .map((tc, toolIdx) => {
-            const toolResult = messageToolCalls
-              .get(idx)
-              ?.find((tr) => tr.toolCallId === tc.id);
-            return (
-              <ToolCallCard
-                key={`persisted-trace-${msg.id}-${tc.id || tc.name || toolIdx}`}
-                toolName={tc.name || "unknown_tool"}
-                arguments={tc.arguments || ""}
-                status={toolResult ? "done" : "running"}
-                plugin={tc.plugin}
-                content={toolResult?.content}
-                artifacts={toolResult?.artifacts ?? undefined}
-                trace={true}
-              />
-            );
-          });
+        const renderedToolCalls = msg.toolCalls.flatMap((tc, toolIdx) => {
+          const toolResult = messageToolCalls
+            .get(idx)
+            ?.find((tr) => tr.toolCallId === tc.id);
+          const status = toolResult ? "done" : "running";
+          if (!shouldRenderTraceToolCall(tc.name, undefined, status)) {
+            return [];
+          }
+          return (
+            <ToolCallCard
+              key={`persisted-trace-${msg.id}-${tc.id || tc.name || toolIdx}`}
+              toolName={tc.name || "unknown_tool"}
+              arguments={tc.arguments || ""}
+              status={status}
+              plugin={tc.plugin}
+              content={toolResult?.content}
+              artifacts={toolResult?.artifacts ?? undefined}
+              trace={true}
+            />
+          );
+        });
 
         if (thinking) {
           activeSections.push({ text: thinking });
@@ -1151,7 +1210,15 @@ export function ChatMessages({
         return event.text.trim().length > 0 ? [{ text: event.text }] : [];
       }
       if (event.kind === "tool") {
-        if (isBoardOnlyToolCall(event.toolCall.toolName, event.toolCall.renderKind)) return [];
+        if (
+          !shouldRenderTraceToolCall(
+            event.toolCall.toolName,
+            event.toolCall.renderKind,
+            event.toolCall.status,
+            event.toolCall.isError,
+          )
+        )
+          return [];
         return [
           {
             text: "",
@@ -1211,7 +1278,16 @@ export function ChatMessages({
         sections.push({ text: round.thinking });
       }
       for (const tc of round.toolCalls) {
-        if (isBoardOnlyToolCall(tc.toolName, tc.renderKind)) continue;
+        if (
+          !shouldRenderTraceToolCall(
+            tc.toolName,
+            tc.renderKind,
+            tc.status,
+            tc.isError,
+          )
+        ) {
+          continue;
+        }
         sections.push({
           text: "",
           node: (
