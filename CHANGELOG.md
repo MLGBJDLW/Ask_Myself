@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.4...nexa-monorepo-v0.6.5) (2026-05-16)
+
+
+### Features
+
+* compact chat trace UI ([4f32b22](https://github.com/MLGBJDLW/Nexa/commit/4f32b222766d2980747acdea6c231549d82178e1))
+* **desktop:** refresh model catalog and trace UI ([181e8fc](https://github.com/MLGBJDLW/Nexa/commit/181e8fc1750bf8fa88d8768664bb8bd9d651026d))
+
 ## [0.6.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.3...nexa-monorepo-v0.6.4) (2026-05-16)
 
 
