@@ -48,6 +48,7 @@ pub mod loop_guard;
 pub mod route;
 mod sampling;
 pub mod scratchpad;
+mod stream_recovery;
 mod tool_runtime;
 pub mod tool_scheduler;
 mod trace_builder;
@@ -57,6 +58,7 @@ use self::context_pipeline::ContextPipeline;
 use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
 use self::sampling::{completion_response_to_agent_stream, llm_streaming_disabled_by_env};
+use self::stream_recovery::{StreamRecoveryDecision, StreamRecoveryPolicy};
 use self::tool_runtime::{build_tool_run_item, tool_call_execution_batches};
 use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
 use self::trace_builder::{
@@ -1169,7 +1171,7 @@ impl AgentExecutor {
 
             // -- 4a. Stream LLM response (with rate-limit retry) ----------------
             const MAX_LLM_RETRIES: u32 = 3;
-            const MAX_STREAM_DISCONNECT_RETRIES: u32 = 2;
+            let stream_recovery_policy = StreamRecoveryPolicy::default();
             let current_request = CompletionRequest {
                 model: model.to_string(),
                 messages: messages.clone(),
@@ -1712,98 +1714,113 @@ impl AgentExecutor {
                 }
 
                 if let Some(detail) = stream_incomplete_detail {
-                    if !force_non_streaming_llm && sampling_retries < MAX_STREAM_DISCONNECT_RETRIES
-                    {
-                        sampling_retries += 1;
-                        let recovery_note = format!(
-                        "Stream interrupted; reconnecting model stream ({sampling_retries}/{MAX_STREAM_DISCONNECT_RETRIES})."
-                    );
-                        let _ = tx
-                            .send(AgentEvent::Status {
-                                content: format!("{recovery_note} ({detail})"),
-                                tone: Some("muted".to_string()),
-                            })
-                            .await;
-                        let _ = tx
-                            .send(AgentEvent::StreamReset {
-                                reason: recovery_note.clone(),
-                            })
-                            .await;
-                        accumulated_content.truncate(accumulated_len_before_iteration);
-                        let delay_ms =
-                            250_u64.saturating_mul(2_u64.saturating_pow(sampling_retries - 1));
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                        continue;
-                    }
-
-                    let recovery_note =
-                        "Stream interrupted repeatedly; switching this turn to non-streaming mode.";
-                    let _ = tx
-                        .send(AgentEvent::Status {
-                            content: format!("{recovery_note} ({detail})"),
-                            tone: Some("muted".to_string()),
-                        })
-                        .await;
-
-                    match self.provider.complete(&current_request).await {
-                        Ok(response) => {
-                            force_non_streaming_llm = true;
+                    match stream_recovery_policy.decide_after_incomplete(
+                        force_non_streaming_llm,
+                        sampling_retries,
+                        &detail,
+                    ) {
+                        StreamRecoveryDecision::Reconnect {
+                            attempt,
+                            status_message,
+                            reset_reason,
+                            delay,
+                        } => {
+                            sampling_retries = attempt;
+                            let _ = tx
+                                .send(AgentEvent::Status {
+                                    content: status_message,
+                                    tone: Some("muted".to_string()),
+                                })
+                                .await;
                             let _ = tx
                                 .send(AgentEvent::StreamReset {
-                                    reason: recovery_note.to_string(),
+                                    reason: reset_reason,
                                 })
                                 .await;
-
                             accumulated_content.truncate(accumulated_len_before_iteration);
-                            full_content = response.content;
-                            accumulated_content.push_str(&full_content);
-                            iteration_thinking = response.thinking.unwrap_or_default();
-                            tool_calls = response.tool_calls.unwrap_or_default();
-                            preparing_call_ids.clear();
-                            started_call_ids.clear();
-                            tool_run_started_ids.clear();
-                            chunk_usage = Some(response.usage);
-                            last_finish_reason =
-                                Some(format!("{:?}", response.finish_reason).to_lowercase());
-
-                            if !iteration_thinking.is_empty() {
-                                let _ = tx
-                                    .send(AgentEvent::Thinking {
-                                        content: iteration_thinking.clone(),
-                                    })
-                                    .await;
-                            }
-                            if !full_content.is_empty() {
-                                let _ = tx
-                                    .send(AgentEvent::TextDelta {
-                                        delta: full_content.clone(),
-                                    })
-                                    .await;
-                            }
+                            tokio::time::sleep(delay).await;
+                            continue;
                         }
-                        Err(err) => {
-                            let message =
-                                format!("Stream interrupted and non-streaming retry failed: {err}");
+                        StreamRecoveryDecision::NonStreamingFallback {
+                            status_message,
+                            reset_reason,
+                        } => {
                             let _ = tx
-                                .send(AgentEvent::Error {
-                                    message: message.clone(),
+                                .send(AgentEvent::Status {
+                                    content: status_message,
+                                    tone: Some("muted".to_string()),
                                 })
                                 .await;
-                            if let Some(ref mut t) = trace {
-                                t.finish(TraceOutcome::Error, Some(message.clone()));
-                                if let Err(te) = db.save_agent_trace(t) {
-                                    warn!("Failed to save agent trace: {te}");
+
+                            match self.provider.complete(&current_request).await {
+                                Ok(response) => {
+                                    force_non_streaming_llm = true;
+                                    let _ = tx
+                                        .send(AgentEvent::StreamReset {
+                                            reason: reset_reason,
+                                        })
+                                        .await;
+
+                                    accumulated_content.truncate(accumulated_len_before_iteration);
+                                    full_content = response.content;
+                                    accumulated_content.push_str(&full_content);
+                                    iteration_thinking = response.thinking.unwrap_or_default();
+                                    tool_calls = response.tool_calls.unwrap_or_default();
+                                    preparing_call_ids.clear();
+                                    started_call_ids.clear();
+                                    tool_run_started_ids.clear();
+                                    chunk_usage = Some(response.usage);
+                                    last_finish_reason = Some(
+                                        format!("{:?}", response.finish_reason).to_lowercase(),
+                                    );
+
+                                    if !iteration_thinking.is_empty() {
+                                        let _ = tx
+                                            .send(AgentEvent::Thinking {
+                                                content: iteration_thinking.clone(),
+                                            })
+                                            .await;
+                                    }
+                                    if !full_content.is_empty() {
+                                        let _ = tx
+                                            .send(AgentEvent::TextDelta {
+                                                delta: full_content.clone(),
+                                            })
+                                            .await;
+                                    }
+                                }
+                                Err(err) => {
+                                    let message = format!(
+                                        "Stream interrupted and non-streaming retry failed: {err}"
+                                    );
+                                    let _ = tx
+                                        .send(AgentEvent::Error {
+                                            message: message.clone(),
+                                        })
+                                        .await;
+                                    if let Some(ref mut t) = trace {
+                                        t.finish(TraceOutcome::Error, Some(message.clone()));
+                                        if let Err(te) = db.save_agent_trace(t) {
+                                            warn!("Failed to save agent trace: {te}");
+                                        }
+                                    }
+                                    if let Some(tid) = turn_id {
+                                        let trace = build_turn_trace(
+                                            route_plan.kind,
+                                            &persisted_trace_items,
+                                        );
+                                        let _ = db.finalize_conversation_turn(
+                                            tid,
+                                            "error",
+                                            None,
+                                            Some(&trace),
+                                        );
+                                    }
+                                    return Err(CoreError::StreamIncomplete(format!(
+                                        "{detail}; fallback failed: {err}"
+                                    )));
                                 }
                             }
-                            if let Some(tid) = turn_id {
-                                let trace =
-                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
-                                let _ =
-                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
-                            }
-                            return Err(CoreError::StreamIncomplete(format!(
-                                "{detail}; fallback failed: {err}"
-                            )));
                         }
                     }
                 }
