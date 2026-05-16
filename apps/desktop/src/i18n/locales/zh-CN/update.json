@@ -1,0 +1,23 @@
+{
+  "available": "有可用更新",
+  "version": "版本 {version} 可用",
+  "downloading": "正在下载更新...",
+  "ready": "更新已就绪，重启以应用。",
+  "error": "检查更新失败",
+  "downloadFailed": "下载更新失败",
+  "installFailed": "安装更新失败",
+  "checkNow": "检查更新",
+  "downloadInstall": "下载并安装",
+  "restart": "立即重启",
+  "dismiss": "稍后",
+  "upToDate": "已是最新版本",
+  "appUpdate": "应用更新",
+  "appUpdateDescription": "在一个固定位置查看当前版本、检查新版本、阅读发布说明并安装更新。",
+  "currentVersion": "当前版本",
+  "latestVersion": "最新版本",
+  "status": "状态",
+  "lastChecked": "上次检查 {time}",
+  "notChecked": "尚未检查",
+  "releaseNotes": "发布说明",
+  "details": "详细信息"
+}

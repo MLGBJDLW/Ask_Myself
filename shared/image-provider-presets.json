@@ -33,10 +33,9 @@
     "apiStyle": "gemini_generate_content",
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
     "requiresApiKey": true,
-    "description": "Gemini Nano Banana image models through generateContent.",
+    "description": "Gemini image models through generateContent.",
     "models": [
-      { "id": "gemini-3.1-flash-image-preview", "name": "Gemini 3.1 Flash Image Preview", "recommended": true },
-      { "id": "gemini-3-pro-image-preview", "name": "Gemini 3 Pro Image Preview" },
+      { "id": "gemini-3-pro-image-preview", "name": "Gemini 3 Pro Image Preview", "recommended": true },
       { "id": "gemini-2.5-flash-image", "name": "Gemini 2.5 Flash Image" }
     ],
     "sizeOptions": [

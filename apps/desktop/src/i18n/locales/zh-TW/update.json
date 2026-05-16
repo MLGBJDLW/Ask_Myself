@@ -1,0 +1,23 @@
+{
+  "available": "有可用更新",
+  "version": "版本 {version} 可用",
+  "downloading": "正在下載更新...",
+  "ready": "更新已就緒，重新啟動以套用。",
+  "error": "檢查更新失敗",
+  "downloadFailed": "下載更新失敗",
+  "installFailed": "安裝更新失敗",
+  "checkNow": "檢查更新",
+  "downloadInstall": "下載並安裝",
+  "restart": "立即重新啟動",
+  "dismiss": "稍後",
+  "upToDate": "已是最新版本",
+  "appUpdate": "應用程式更新",
+  "appUpdateDescription": "在固定位置查看目前版本、檢查新版本、閱讀發行說明並安裝更新。",
+  "currentVersion": "目前版本",
+  "latestVersion": "最新版本",
+  "status": "狀態",
+  "lastChecked": "上次檢查 {time}",
+  "notChecked": "尚未檢查",
+  "releaseNotes": "發行說明",
+  "details": "詳細資訊"
+}

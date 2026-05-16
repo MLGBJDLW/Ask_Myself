@@ -1,0 +1,22 @@
+{
+  "title": "分析",
+  "totalSessions": "總會話數",
+  "successRate": "成功率",
+  "cacheHitRate": "快取命中率",
+  "totalTokens": "總 Token 數",
+  "avgIterations": "平均迭代數",
+  "avgContextUsage": "平均上下文使用率",
+  "topTools": "最常用工具",
+  "recentSessions": "最近會話",
+  "noData": "暫無追蹤資料",
+  "outcome": "結果",
+  "iterations": "迭代",
+  "tools": "工具",
+  "tokens": "Token",
+  "last7Days": "近 7 天",
+  "sessionsLast7Days": "會話數（7天）",
+  "tokensLast7Days": "Token（7天）",
+  "toolName": "工具",
+  "count": "次數",
+  "message": "訊息"
+}

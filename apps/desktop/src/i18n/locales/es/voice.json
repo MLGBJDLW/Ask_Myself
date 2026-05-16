@@ -1,0 +1,14 @@
+{
+  "startRecording": "Iniciar entrada de voz",
+  "stopRecording": "Detener grabación",
+  "processing": "Transcribiendo...",
+  "error": "Entrada de voz no disponible",
+  "permissionDenied": "Permiso de micrófono denegado",
+  "noModel": "Descarga un modelo Whisper en Ajustes",
+  "microphoneSection": "Entrada de voz",
+  "microphoneDevice": "Micrófono",
+  "microphoneDeviceDesc": "Selecciona qué micrófono usar para la entrada de voz",
+  "microphoneDefault": "Predeterminado del sistema",
+  "microphoneRefresh": "Actualizar dispositivos",
+  "microphoneDeviceN": "Dispositivo"
+}

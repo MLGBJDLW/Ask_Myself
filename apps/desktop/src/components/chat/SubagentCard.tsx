@@ -92,20 +92,20 @@ export function SubagentCard({
   const displayRole = run.roleName?.trim() || run.role?.trim() || t('chat.helperDefaultLabel');
 
   return (
-    <div className="rounded-xl border border-border/70 bg-surface-0/80 shadow-sm">
+    <div className={`rounded-lg border bg-surface-0/55 ${compact ? 'border-border/45' : 'border-border/60'}`}>
       <button
         type="button"
         onClick={() => setExpanded(prev => !prev)}
-        className="flex w-full items-start gap-3 px-4 py-3 text-left"
+        className={`flex w-full items-start gap-2.5 text-left transition-colors hover:bg-surface-0/45 ${compact ? 'px-2.5 py-2' : 'px-3 py-2.5'}`}
         aria-expanded={expanded}
       >
-        <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-surface-1 text-accent">
-          <Bot className="h-4 w-4" />
+        <span className={`mt-0.5 inline-flex shrink-0 items-center justify-center rounded-lg border border-border/55 bg-surface-1/70 text-accent ${compact ? 'h-6 w-6' : 'h-7 w-7'}`}>
+          <Bot className={compact ? 'h-3.5 w-3.5' : 'h-4 w-4'} />
         </span>
 
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold text-text-primary">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className={`${compact ? 'text-xs' : 'text-[13px]'} font-semibold text-text-primary`}>
               {displayRole}
             </span>
             {run.roleId && (
@@ -131,8 +131,8 @@ export function SubagentCard({
             )}
           </div>
 
-          <div className="mt-1 text-sm text-text-primary">{run.task}</div>
-          <div className="mt-1 text-[12px] text-text-tertiary">{summaryText}</div>
+          <div className={`mt-1 text-text-primary ${compact ? 'text-xs' : 'text-sm'}`}>{run.task}</div>
+          <div className={`mt-0.5 text-text-tertiary ${compact ? 'text-[11px]' : 'text-[12px]'}`}>{summaryText}</div>
         </div>
 
         <ChevronDown
@@ -141,41 +141,41 @@ export function SubagentCard({
       </button>
 
       {expanded && (
-        <div className="border-t border-border/60 px-4 py-3">
-          <div className="flex flex-wrap gap-2">
+        <div className={`border-t border-border/40 ${compact ? 'px-2.5 py-2' : 'px-3 py-2.5'}`}>
+          <div className="flex flex-wrap gap-1.5">
             {run.expectedOutput && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
                 <Flag className="h-3 w-3" />
                 {run.expectedOutput}
               </span>
             )}
             {run.parallelGroup && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
                 parallel: {run.parallelGroup}
               </span>
             )}
             {run.deliverableStyle && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
                 style: {run.deliverableStyle}
               </span>
             )}
             {run.finishReason && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
                 finish: {run.finishReason}
               </span>
             )}
             {typeof run.usageTotal?.totalTokens === 'number' && run.usageTotal.totalTokens > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
                 {run.usageTotal.totalTokens.toLocaleString()} tokens
               </span>
             )}
             {run.sourceScopeApplied && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
                 source scope inherited
               </span>
             )}
             {run.evidenceChunkIds && run.evidenceChunkIds.length > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
                 evidence: {run.evidenceChunkIds.length}
               </span>
             )}
@@ -359,25 +359,28 @@ export function SubagentCard({
               <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
                 Inner trace
               </div>
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 {run.toolEvents.map((event, index) => (
                   <div
                     key={`${run.id}-${event.callId}-${event.phase}-${index}`}
-                    className="rounded-lg border border-border/60 bg-surface-1 px-3 py-2"
+                    className={`border-l py-1 pl-2.5 pr-1 ${event.isError ? 'border-danger/35' : 'border-border/35'}`}
                   >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs font-medium text-text-primary">{toolLabel(event.toolName)}</span>
-                      <span className="rounded-full border border-border/60 bg-surface-0 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.14em] text-text-tertiary">
+                    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                      <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/55 bg-surface-0/45 px-2 py-0.5 text-[11px] font-medium text-text-secondary">
+                        <Wrench className="h-3 w-3 shrink-0 text-text-tertiary" />
+                        <span className="truncate">{toolLabel(event.toolName)}</span>
+                      </span>
+                      <span className="rounded-full border border-border/55 bg-surface-0/45 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-text-tertiary">
                         {event.phase}
                       </span>
                       {event.isError && (
-                        <span className="rounded-full border border-danger/25 bg-danger/10 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.14em] text-danger">
+                        <span className="rounded-full border border-danger/25 bg-danger/10 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-danger">
                           error
                         </span>
                       )}
                     </div>
                     {(event.content || event.arguments) && (
-                      <pre className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap text-[11px] text-text-tertiary">
+                      <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-md bg-surface-0/35 px-2 py-1 text-[11px] text-text-tertiary">
                         {event.content || event.arguments}
                       </pre>
                     )}

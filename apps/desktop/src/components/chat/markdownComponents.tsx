@@ -6,7 +6,7 @@ import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { useTranslation } from '../../i18n';
 import { openFileInDefaultApp } from '../../lib/api';
-import { canPreviewInApp, useFilePreview } from '../../lib/filePreviewContext';
+import { canPreviewInApp, useFilePreview } from '../../features/preview';
 import { sourceHost } from '../../lib/sourceDisplay';
 import { FileBadge } from '../ui/FileBadge';
 import { CitationChip } from './EvidenceCard';

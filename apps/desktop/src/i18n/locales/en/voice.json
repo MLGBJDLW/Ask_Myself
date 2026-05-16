@@ -1,0 +1,14 @@
+{
+  "startRecording": "Start voice input",
+  "stopRecording": "Stop recording",
+  "processing": "Transcribing...",
+  "error": "Voice input unavailable",
+  "permissionDenied": "Microphone permission denied",
+  "noModel": "Please download a Whisper model in Settings",
+  "microphoneSection": "Voice Input",
+  "microphoneDevice": "Microphone",
+  "microphoneDeviceDesc": "Select which microphone to use for voice input",
+  "microphoneDefault": "System Default",
+  "microphoneRefresh": "Refresh devices",
+  "microphoneDeviceN": "Device"
+}

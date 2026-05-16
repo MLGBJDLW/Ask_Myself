@@ -1,0 +1,14 @@
+{
+  "startRecording": "Démarrer la saisie vocale",
+  "stopRecording": "Arrêter l’enregistrement",
+  "processing": "Transcription...",
+  "error": "Saisie vocale indisponible",
+  "permissionDenied": "Accès au microphone refusé",
+  "noModel": "Veuillez télécharger un modèle Whisper dans les Paramètres",
+  "microphoneSection": "Entrée vocale",
+  "microphoneDevice": "Microphone",
+  "microphoneDeviceDesc": "Sélectionnez le microphone à utiliser pour la saisie vocale",
+  "microphoneDefault": "Par défaut du système",
+  "microphoneRefresh": "Actualiser les appareils",
+  "microphoneDeviceN": "Appareil"
+}

@@ -1,0 +1,19 @@
+{
+  "play": "播放",
+  "pause": "暂停",
+  "transcript": "转录稿",
+  "noTranscript": "没有可用的转录稿",
+  "processing": "正在处理视频...",
+  "extractingAudio": "正在提取音频...",
+  "extractingSubtitles": "正在提取字幕...",
+  "transcribing": "正在转录语音...",
+  "extractingFrames": "正在提取帧...",
+  "runningOcr": "正在运行 OCR...",
+  "processingComplete": "处理完成",
+  "clickToSeek": "点击跳转",
+  "videoDetails": "视频详情",
+  "resolution": "分辨率",
+  "codec": "编解码器",
+  "framerate": "帧率",
+  "transcriptHint": "在设置中下载 Whisper 模型后重新扫描数据源以启用转录功能。"
+}

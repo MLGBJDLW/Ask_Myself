@@ -1,0 +1,22 @@
+{
+  "title": "Nexa에 오신 것을 환영합니다",
+  "subtitle": "나만의 지식 어시스턴트",
+  "description": "문서를 추가하고 AI를 연결하여 나만의 지식에 대해 질문해 보세요.",
+  "getStarted": "시작하기",
+  "addSource": "지식 추가",
+  "addSourceDescription": "문서가 있는 폴더를 선택하세요 (노트, PDF, Word 등)",
+  "selectFolder": "폴더 선택",
+  "folderSelected": "폴더 추가됨: {folder}",
+  "configureAI": "AI 제공자 연결",
+  "configureAIDescription": "질문에 답할 AI 모델을 설정하세요",
+  "selectProvider": "제공자 선택",
+  "apiKey": "API 키",
+  "testConnection": "연결 테스트",
+  "connectionSuccess": "연결 성공!",
+  "connectionFailed": "연결 실패",
+  "allSet": "모든 준비 완료!",
+  "allSetDescription": "지식 탐색을 시작하세요",
+  "startUsing": "Nexa 사용 시작",
+  "skip": "나중에 하기",
+  "step": "{total}단계 중 {current}단계"
+}

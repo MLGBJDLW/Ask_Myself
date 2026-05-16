@@ -25,6 +25,7 @@ export interface ReasoningCapability {
 
 export interface ProviderCapabilities {
   reasoning?: ReasoningCapability | null;
+  vision?: boolean | null;
 }
 
 export interface ProviderModelPreset {
@@ -49,73 +50,6 @@ export interface ProviderPreset {
 
 export const PROVIDER_PRESETS: ProviderPreset[] =
   providerPresets as ProviderPreset[];
-
-const OPENAI_O_REASONING: ReasoningCapability = {
-  effortLevels: ["low", "medium", "high"],
-  defaultEffort: "medium",
-  thinkingBudget: { enabled: false },
-};
-
-const OPENAI_GPT55_REASONING: ReasoningCapability = {
-  effortLevels: ["none", "low", "medium", "high", "xhigh"],
-  defaultEffort: "medium",
-  thinkingBudget: { enabled: false },
-};
-
-const OPENAI_GPT5_FRONTIER_REASONING: ReasoningCapability = {
-  effortLevels: ["none", "low", "medium", "high", "xhigh"],
-  defaultEffort: "none",
-  thinkingBudget: { enabled: false },
-};
-
-const OPENAI_GPT5_PRO_REASONING: ReasoningCapability = {
-  effortLevels: ["medium", "high", "xhigh"],
-  defaultEffort: "medium",
-  thinkingBudget: { enabled: false },
-};
-
-const OPENAI_GPT51_REASONING: ReasoningCapability = {
-  effortLevels: ["none", "low", "medium", "high"],
-  defaultEffort: "none",
-  thinkingBudget: { enabled: false },
-};
-
-const OPENAI_GPT5_REASONING: ReasoningCapability = {
-  effortLevels: ["minimal", "low", "medium", "high"],
-  defaultEffort: "medium",
-  thinkingBudget: { enabled: false },
-};
-
-const OPENAI_CODEX_REASONING: ReasoningCapability = {
-  effortLevels: ["low", "medium", "high", "xhigh"],
-  defaultEffort: "high",
-  thinkingBudget: { enabled: false },
-};
-
-const DEEPSEEK_REASONING: ReasoningCapability = {
-  effortLevels: ["high", "max"],
-  defaultEffort: "high",
-  thinkingBudget: { enabled: false },
-};
-
-const ANTHROPIC_BUDGET_REASONING: ReasoningCapability = {
-  thinkingBudget: {
-    enabled: true,
-    defaultTokens: 10000,
-    minTokens: 1024,
-    step: 1024,
-  },
-};
-
-const GEMINI_BUDGET_REASONING: ReasoningCapability = {
-  thinkingBudget: {
-    enabled: true,
-    defaultTokens: 10000,
-    minTokens: 128,
-    maxTokens: 32768,
-    step: 128,
-  },
-};
 
 function normalizePresetBaseUrl(baseUrl: string | null | undefined): string {
   return (baseUrl ?? "").trim().replace(/\/+$/, "").toLowerCase();
@@ -153,21 +87,6 @@ function normalizeModelId(model: string | null | undefined): string {
   return (model ?? "").trim().toLowerCase();
 }
 
-function hasExplicitReasoningCapability(
-  capabilities: ProviderCapabilities | undefined,
-): boolean {
-  return Object.prototype.hasOwnProperty.call(capabilities ?? {}, "reasoning");
-}
-
-function getExplicitReasoningCapability(
-  capabilities: ProviderCapabilities | undefined,
-): ReasoningCapability | null | undefined {
-  if (!hasExplicitReasoningCapability(capabilities)) {
-    return undefined;
-  }
-  return capabilities?.reasoning ?? null;
-}
-
 export function findProviderModelPreset(input: {
   provider: string;
   baseUrl?: string | null;
@@ -184,74 +103,40 @@ export function findProviderModelPreset(input: {
   );
 }
 
-function inferReasoningCapability(input: {
-  provider: string;
-  model?: string | null;
-}): ReasoningCapability | null {
-  const provider = input.provider.trim();
-  const model = normalizeModelId(input.model);
+function hasCapabilities(capabilities: ProviderCapabilities): boolean {
+  return Object.keys(capabilities).length > 0;
+}
 
-  if (!model) {
+function mergeCapabilities(
+  providerCapabilities: ProviderCapabilities | undefined,
+  modelCapabilities: ProviderCapabilities | undefined,
+): ProviderCapabilities | null {
+  const merged: ProviderCapabilities = {};
+
+  if (providerCapabilities) {
+    Object.assign(merged, providerCapabilities);
+  }
+  if (modelCapabilities) {
+    Object.assign(merged, modelCapabilities);
+  }
+
+  return hasCapabilities(merged) ? merged : null;
+}
+
+export function getProviderModelCapabilities(input: {
+  provider: string;
+  baseUrl?: string | null;
+  model?: string | null;
+}): ProviderCapabilities | null {
+  const preset = findProviderPreset(input);
+  if (!preset) {
     return null;
   }
 
-  if (model.includes("deepseek")) {
-    if (model.includes("deepseek-chat")) {
-      return null;
-    }
-    if (
-      model.includes("deepseek-v4") ||
-      model.includes("deepseek-reasoner") ||
-      model.includes("deepseek-r1")
-    ) {
-      return DEEPSEEK_REASONING;
-    }
-  }
-
-  if (
-    provider === "open_ai" ||
-    provider === "azure_open_ai" ||
-    provider === "custom"
-  ) {
-    if (/^o[134]/.test(model)) {
-      return OPENAI_O_REASONING;
-    }
-    if (/^gpt-5.*codex/.test(model)) {
-      return OPENAI_CODEX_REASONING;
-    }
-    if (model.startsWith("gpt-5.5-pro")) {
-      return null;
-    }
-    if (/^gpt-5\.(2|4).*?-pro$/.test(model)) {
-      return OPENAI_GPT5_PRO_REASONING;
-    }
-    if (model.startsWith("gpt-5.5")) {
-      return OPENAI_GPT55_REASONING;
-    }
-    if (model.startsWith("gpt-5.4") || model.startsWith("gpt-5.2")) {
-      return OPENAI_GPT5_FRONTIER_REASONING;
-    }
-    if (model.startsWith("gpt-5.1")) {
-      return OPENAI_GPT51_REASONING;
-    }
-    if (model.startsWith("gpt-5")) {
-      return OPENAI_GPT5_REASONING;
-    }
-  }
-
-  if (provider === "google") {
-    if (model.includes("gemini-2.5") || model.startsWith("gemini-3")) {
-      return GEMINI_BUDGET_REASONING;
-    }
-  }
-
-  if (provider === "anthropic") {
-    if (/^claude-(opus|sonnet|haiku)-4/.test(model) || model.includes("claude-3-7")) {
-      return ANTHROPIC_BUDGET_REASONING;
-    }
-  }
-
-  return null;
+  return mergeCapabilities(
+    preset.capabilities,
+    findProviderModelPreset(input)?.capabilities,
+  );
 }
 
 export function getReasoningCapability(input: {
@@ -259,21 +144,5 @@ export function getReasoningCapability(input: {
   baseUrl?: string | null;
   model?: string | null;
 }): ReasoningCapability | null {
-  const preset = findProviderPreset(input);
-  const modelPreset = findProviderModelPreset(input);
-  const modelCapability = getExplicitReasoningCapability(
-    modelPreset?.capabilities,
-  );
-  if (modelCapability !== undefined) {
-    return modelCapability;
-  }
-
-  const providerCapability = getExplicitReasoningCapability(
-    preset?.capabilities,
-  );
-  if (providerCapability !== undefined) {
-    return providerCapability;
-  }
-
-  return inferReasoningCapability(input);
+  return getProviderModelCapabilities(input)?.reasoning ?? null;
 }

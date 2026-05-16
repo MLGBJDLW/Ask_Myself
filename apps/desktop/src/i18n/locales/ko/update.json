@@ -1,0 +1,23 @@
+{
+  "available": "업데이트 사용 가능",
+  "version": "버전 {version}을 사용할 수 있습니다",
+  "downloading": "업데이트 다운로드 중...",
+  "ready": "업데이트 준비 완료. 재시작하여 적용합니다.",
+  "error": "업데이트 확인 실패",
+  "downloadFailed": "업데이트 다운로드 실패",
+  "installFailed": "업데이트 설치 실패",
+  "checkNow": "업데이트 확인",
+  "downloadInstall": "다운로드 및 설치",
+  "restart": "지금 재시작",
+  "dismiss": "나중에",
+  "upToDate": "최신 상태입니다",
+  "appUpdate": "앱 업데이트",
+  "appUpdateDescription": "현재 버전, 새 릴리스, 릴리스 노트, 설치 작업을 한 곳에서 관리합니다.",
+  "currentVersion": "현재 버전",
+  "latestVersion": "최신 버전",
+  "status": "상태",
+  "lastChecked": "마지막 확인 {time}",
+  "notChecked": "아직 확인하지 않음",
+  "releaseNotes": "릴리스 노트",
+  "details": "세부 정보"
+}

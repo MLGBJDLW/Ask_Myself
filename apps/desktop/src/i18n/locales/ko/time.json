@@ -1,0 +1,9 @@
+{
+  "justNow": "방금",
+  "minuteShort": "분",
+  "hourShort": "시",
+  "dayShort": "일",
+  "monthShort": "월",
+  "minutesAgo": "{n}분 전",
+  "hoursAgo": "{n}시간 전"
+}

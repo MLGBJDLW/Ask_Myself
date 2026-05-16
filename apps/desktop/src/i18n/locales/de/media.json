@@ -1,0 +1,19 @@
+{
+  "play": "Abspielen",
+  "pause": "Pause",
+  "transcript": "Transkript",
+  "noTranscript": "Kein Transkript verfügbar",
+  "processing": "Video wird verarbeitet...",
+  "extractingAudio": "Audio wird extrahiert...",
+  "extractingSubtitles": "Untertitel werden extrahiert...",
+  "transcribing": "Sprache wird transkribiert...",
+  "extractingFrames": "Frames werden extrahiert...",
+  "runningOcr": "OCR wird ausgeführt...",
+  "processingComplete": "Verarbeitung abgeschlossen",
+  "clickToSeek": "Klicken zum Springen",
+  "videoDetails": "Videodetails",
+  "resolution": "Auflösung",
+  "codec": "Codec",
+  "framerate": "Bildrate",
+  "transcriptHint": "Laden Sie das Whisper-Modell in den Einstellungen herunter und scannen Sie die Quellen erneut, um die Transkription zu aktivieren."
+}

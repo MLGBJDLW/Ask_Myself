@@ -1,0 +1,19 @@
+{
+  "play": "Lecture",
+  "pause": "Pause",
+  "transcript": "Transcription",
+  "noTranscript": "Aucune transcription disponible",
+  "processing": "Traitement de la vidéo...",
+  "extractingAudio": "Extraction de l’audio...",
+  "extractingSubtitles": "Extraction des sous-titres...",
+  "transcribing": "Transcription de la parole...",
+  "extractingFrames": "Extraction des images...",
+  "runningOcr": "Exécution de l’OCR...",
+  "processingComplete": "Traitement terminé",
+  "clickToSeek": "Cliquer pour atteindre",
+  "videoDetails": "Détails de la vidéo",
+  "resolution": "Résolution",
+  "codec": "Codec",
+  "framerate": "Images par seconde",
+  "transcriptHint": "Téléchargez le modèle Whisper dans les paramètres puis relancez l'analyse des sources pour activer la transcription."
+}

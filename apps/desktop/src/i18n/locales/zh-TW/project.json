@@ -1,0 +1,20 @@
+{
+  "allConversations": "所有對話",
+  "createNew": "新建專案",
+  "name": "專案名稱",
+  "namePlaceholder": "輸入專案名稱…",
+  "description": "描述",
+  "moveToProject": "移動到專案",
+  "removeFromProject": "從專案中移除",
+  "delete": "刪除專案",
+  "deleteConfirm": "刪除專案？",
+  "deleteConfirmDesc": "此專案中的對話將變為未分組。此操作不可撤銷。",
+  "noProjects": "沒有專案",
+  "settings": "專案設定",
+  "systemPrompt": "專案系統提示詞",
+  "manageProjects": "管理專案",
+  "created": "專案已建立",
+  "deleted": "專案已刪除",
+  "moved": "對話已移動到專案",
+  "removed": "對話已從專案中移除"
+}

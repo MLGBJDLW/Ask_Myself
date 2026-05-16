@@ -1,0 +1,9 @@
+{
+  "justNow": "gerade",
+  "minuteShort": "Min",
+  "hourShort": "Std",
+  "dayShort": "T",
+  "monthShort": "Mon",
+  "minutesAgo": "vor {n}Min",
+  "hoursAgo": "vor {n}Std"
+}

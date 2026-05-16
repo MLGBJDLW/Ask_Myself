@@ -1,0 +1,14 @@
+{
+  "startRecording": "開始語音輸入",
+  "stopRecording": "停止錄音",
+  "processing": "轉錄中...",
+  "error": "語音輸入無法使用",
+  "permissionDenied": "麥克風權限遭拒",
+  "noModel": "請在設定中下載 Whisper 模型",
+  "microphoneSection": "語音輸入",
+  "microphoneDevice": "麥克風",
+  "microphoneDeviceDesc": "選擇用於語音輸入的麥克風",
+  "microphoneDefault": "系統預設",
+  "microphoneRefresh": "重新整理裝置",
+  "microphoneDeviceN": "裝置"
+}

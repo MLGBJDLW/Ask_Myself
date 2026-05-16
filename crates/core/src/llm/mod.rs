@@ -5,6 +5,8 @@ use futures::{stream::BoxStream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
+use crate::provider_catalog::model_supports_vision_from_catalog;
+use crate::provider_registry::{provider_adapter_for_type, ProviderAdapterKind};
 
 pub mod anthropic;
 pub mod google;
@@ -429,21 +431,11 @@ fn normalize_base_url(base_url: Option<String>) -> Option<String> {
 pub fn create_provider(mut config: ProviderConfig) -> Result<Box<dyn LlmProvider>, CoreError> {
     config.base_url = normalize_base_url(config.base_url);
 
-    match config.provider_type {
-        ProviderType::OpenAi
-        | ProviderType::DeepSeek
-        | ProviderType::LmStudio
-        | ProviderType::AzureOpenAi
-        | ProviderType::Zhipu
-        | ProviderType::Moonshot
-        | ProviderType::Qwen
-        | ProviderType::Doubao
-        | ProviderType::Yi
-        | ProviderType::Baichuan
-        | ProviderType::Custom => Ok(Box::new(openai::OpenAiProvider::new(config)?)),
-        ProviderType::Anthropic => Ok(Box::new(anthropic::AnthropicProvider::new(config)?)),
-        ProviderType::Google => Ok(Box::new(google::GeminiProvider::new(config)?)),
-        ProviderType::Ollama => Ok(Box::new(ollama::OllamaProvider::new(config)?)),
+    match provider_adapter_for_type(config.provider_type) {
+        ProviderAdapterKind::OpenAiCompatible => Ok(Box::new(openai::OpenAiProvider::new(config)?)),
+        ProviderAdapterKind::Anthropic => Ok(Box::new(anthropic::AnthropicProvider::new(config)?)),
+        ProviderAdapterKind::Google => Ok(Box::new(google::GeminiProvider::new(config)?)),
+        ProviderAdapterKind::Ollama => Ok(Box::new(ollama::OllamaProvider::new(config)?)),
     }
 }
 
@@ -451,6 +443,10 @@ pub fn create_provider(mut config: ProviderConfig) -> Result<Box<dyn LlmProvider
 /// Defaults to `true` for most modern models; only returns `false` for models
 /// known to lack vision support (text-only, embedding-only, older generations).
 pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool {
+    if let Some(supports_vision) = model_supports_vision_from_catalog(*provider_type, model) {
+        return supports_vision;
+    }
+
     let m = model.to_lowercase();
     match provider_type {
         ProviderType::OpenAi | ProviderType::AzureOpenAi => {
@@ -518,6 +514,21 @@ mod tests {
             usage: None,
             thinking_delta: None,
         }
+    }
+
+    #[test]
+    fn vision_support_prefers_provider_catalog_then_fallback() {
+        assert!(model_supports_vision(&ProviderType::OpenAi, "gpt-5.5"));
+        assert!(!model_supports_vision(
+            &ProviderType::DeepSeek,
+            "deepseek-v4-pro"
+        ));
+        assert!(model_supports_vision(&ProviderType::Qwen, "qwen3-vl-plus"));
+        assert!(!model_supports_vision(&ProviderType::Qwen, "qwen3.6-plus"));
+        assert!(model_supports_vision(
+            &ProviderType::LmStudio,
+            "local-vision-model"
+        ));
     }
 
     #[tokio::test]

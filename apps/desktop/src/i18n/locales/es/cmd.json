@@ -1,0 +1,16 @@
+{
+  "placeholder": "Escribir un comando...",
+  "noResults": "No se encontraron comandos",
+  "navigation": "Navegación",
+  "actions": "Acciones",
+  "recentQueries": "Búsquedas recientes",
+  "scanAll": "Escanear todas las fuentes",
+  "rebuildEmbeddings": "Reconstruir índice vectorial",
+  "scanningAll": "Escaneando todas las fuentes…",
+  "scanComplete": "Escaneo completado",
+  "scanError": "Error en el escaneo",
+  "rebuildingEmbeddings": "Reconstruyendo índice vectorial…",
+  "rebuildComplete": "Reconstrucción vectorial completada",
+  "rebuildError": "Error en la reconstrucción vectorial",
+  "shortcuts": "Atajos de teclado"
+}

@@ -5,6 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::llm::ProviderType;
+use crate::provider_registry::provider_type_from_key;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThinkingBudgetCapability {
@@ -30,11 +33,45 @@ pub struct ReasoningCapability {
     pub thinking_budget: Option<ThinkingBudgetCapability>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCapabilities {
     #[serde(default)]
     pub reasoning: Option<ReasoningCapability>,
+    #[serde(default)]
+    pub vision: Option<bool>,
+    #[serde(skip)]
+    reasoning_declared: bool,
+    #[serde(skip)]
+    vision_declared: bool,
+}
+
+impl<'de> Deserialize<'de> for ProviderCapabilities {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RawProviderCapabilities {
+            #[serde(default)]
+            reasoning: Option<ReasoningCapability>,
+            #[serde(default)]
+            vision: Option<bool>,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let reasoning_declared = value.get("reasoning").is_some();
+        let vision_declared = value.get("vision").is_some();
+        let raw = RawProviderCapabilities::deserialize(value).map_err(serde::de::Error::custom)?;
+
+        Ok(Self {
+            reasoning: raw.reasoning,
+            vision: raw.vision,
+            reasoning_declared,
+            vision_declared,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -102,12 +139,91 @@ pub fn preset_model_ids(provider: &str, base_url: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+pub fn model_capabilities_from_catalog(
+    provider_type: ProviderType,
+    model: &str,
+) -> Option<ProviderCapabilities> {
+    let model = normalize_model_id(model);
+    if model.is_empty() {
+        return None;
+    }
+
+    load_provider_presets()
+        .ok()?
+        .into_iter()
+        .find_map(|preset| {
+            let preset_provider_type = provider_type_from_key(&preset.provider)?;
+            if preset_provider_type != provider_type {
+                return None;
+            }
+            let model_preset = preset
+                .models
+                .iter()
+                .find(|candidate| normalize_model_id(&candidate.id) == model)?;
+            Some(merge_capabilities(
+                preset.capabilities.as_ref(),
+                model_preset.capabilities.as_ref(),
+            ))
+        })
+}
+
+pub fn model_supports_reasoning_from_catalog(
+    provider_type: ProviderType,
+    model: &str,
+) -> Option<bool> {
+    model_capabilities_from_catalog(provider_type, model)
+        .map(|capabilities| capabilities.reasoning.is_some())
+}
+
+pub fn model_supports_vision_from_catalog(
+    provider_type: ProviderType,
+    model: &str,
+) -> Option<bool> {
+    model_capabilities_from_catalog(provider_type, model)
+        .and_then(|capabilities| capabilities.vision)
+}
+
+fn merge_capabilities(
+    provider_capabilities: Option<&ProviderCapabilities>,
+    model_capabilities: Option<&ProviderCapabilities>,
+) -> ProviderCapabilities {
+    let mut merged = ProviderCapabilities::default();
+
+    if let Some(capabilities) = provider_capabilities {
+        if capabilities.reasoning_declared {
+            merged.reasoning = capabilities.reasoning.clone();
+            merged.reasoning_declared = true;
+        }
+        if capabilities.vision_declared {
+            merged.vision = capabilities.vision;
+            merged.vision_declared = true;
+        }
+    }
+
+    if let Some(capabilities) = model_capabilities {
+        if capabilities.reasoning_declared {
+            merged.reasoning = capabilities.reasoning.clone();
+            merged.reasoning_declared = true;
+        }
+        if capabilities.vision_declared {
+            merged.vision = capabilities.vision;
+            merged.vision_declared = true;
+        }
+    }
+
+    merged
+}
+
 fn normalize_base_url(base_url: Option<&str>) -> String {
     base_url
         .unwrap_or_default()
         .trim()
         .trim_end_matches('/')
         .to_ascii_lowercase()
+}
+
+fn normalize_model_id(model: &str) -> String {
+    model.trim().to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -126,8 +242,8 @@ mod tests {
 
         assert_eq!(ids.first(), Some(&"deepseek-v4-pro"));
         assert!(ids.contains(&"deepseek-v4-flash"));
-        assert!(ids.contains(&"deepseek-reasoner"));
-        assert!(ids.contains(&"deepseek-chat"));
+        assert!(!ids.contains(&"deepseek-reasoner"));
+        assert!(!ids.contains(&"deepseek-chat"));
 
         let pro = deepseek
             .models
@@ -166,6 +282,8 @@ mod tests {
         assert_eq!(ids.first(), Some(&"gpt-5.5"));
         assert!(ids.contains(&"gpt-5.5-pro"));
         assert!(ids.contains(&"gpt-5.4"));
+        assert!(ids.contains(&"gpt-5.4-mini"));
+        assert!(ids.contains(&"gpt-5.4-nano"));
 
         let gpt_55 = openai
             .models
@@ -190,5 +308,53 @@ mod tests {
             ]
         );
         assert_eq!(reasoning.default_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn provider_catalog_drives_vision_capabilities() {
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::OpenAi, "gpt-5.5"),
+            Some(true)
+        );
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::DeepSeek, "deepseek-v4-pro"),
+            Some(false)
+        );
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3-vl-plus"),
+            Some(true)
+        );
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3.6-plus"),
+            Some(false)
+        );
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::LmStudio, "custom-vl-model"),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_catalog_drives_reasoning_capabilities() {
+        assert_eq!(
+            model_supports_reasoning_from_catalog(ProviderType::OpenAi, "gpt-5.5"),
+            Some(true)
+        );
+        assert_eq!(
+            model_supports_reasoning_from_catalog(ProviderType::OpenAi, "gpt-5.5-pro"),
+            Some(false)
+        );
+        assert_eq!(
+            model_supports_reasoning_from_catalog(ProviderType::DeepSeek, "deepseek-v4-pro"),
+            Some(true)
+        );
+        assert_eq!(
+            model_supports_reasoning_from_catalog(ProviderType::OpenAi, "grok-4.3"),
+            Some(false)
+        );
+        assert_eq!(
+            model_supports_reasoning_from_catalog(ProviderType::LmStudio, "custom-reasoner"),
+            None
+        );
     }
 }

@@ -1,0 +1,20 @@
+{
+  "save": "Enregistrer",
+  "cancel": "Annuler",
+  "delete": "Supprimer",
+  "edit": "Modifier",
+  "close": "Fermer",
+  "confirm": "Confirmer",
+  "loading": "Chargement...",
+  "error": "Erreur",
+  "success": "Succès",
+  "add": "Ajouter",
+  "create": "Créer",
+  "remove": "Retirer",
+  "collapse": "Réduire",
+  "expand": "Développer",
+  "clear": "Effacer",
+  "selectAll": "Tout sélectionner",
+  "clearAll": "Tout effacer",
+  "undo": "Annuler"
+}

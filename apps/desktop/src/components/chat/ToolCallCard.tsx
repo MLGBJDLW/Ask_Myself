@@ -939,147 +939,180 @@ export function ToolCallCard({
   const StatusIcon = statusConfig.icon;
   const traceActive = isPending && !shouldReduceMotion;
   const traceSoft = status !== 'error';
+  const expandableDetails = Boolean(
+    formattedArgs ||
+    content ||
+    searchItems ||
+    subagentRun ||
+    subagentBatch ||
+    subagentJudgement ||
+    planArtifact ||
+    verificationArtifact ||
+    fileDiff ||
+    diffStats ||
+    generatedImage ||
+    workPlanArtifact ||
+    contextManifest ||
+    streamingArgsPreview,
+  );
+  const failedStatus =
+    status === 'error' ||
+    status === 'declined' ||
+    status === 'cancelled' ||
+    status === 'timedOut';
+  const traceToneClass = failedStatus
+    ? 'border-danger/25 bg-danger/10 hover:bg-danger/15'
+    : isPending
+      ? 'border-accent/25 bg-accent/10 hover:bg-accent/15'
+      : 'border-border/45 bg-surface-0/35 hover:border-border/70 hover:bg-surface-0/55';
+  const traceDetailBorderClass = failedStatus
+    ? 'border-danger/25'
+    : isPending
+      ? 'border-accent/25'
+      : 'border-border/35';
+  const tracePreviewText = isPending && latestProgressNote ? latestProgressNote : headerSummary;
 
   if (trace) {
-    const canExpand = Boolean(
-      formattedArgs ||
-      content ||
-      searchItems ||
-      subagentRun ||
-      subagentBatch ||
-      subagentJudgement ||
-      planArtifact ||
-      verificationArtifact ||
-      fileDiff ||
-      diffStats ||
-      generatedImage ||
-      workPlanArtifact ||
-      contextManifest ||
-      streamingArgsPreview,
-    );
     return (
-      <div className="rounded-lg border border-border/45 bg-surface-0/35">
+      <div className="my-1 max-w-full">
         <button
           type="button"
-          onClick={() => canExpand && setExpanded((prev) => !prev)}
-          className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-surface-0/45 cursor-pointer disabled:cursor-default"
-          disabled={!canExpand}
+          onClick={() => expandableDetails && setExpanded((prev) => !prev)}
+          aria-expanded={expandableDetails ? expanded : undefined}
+          className={`group inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-left transition-colors disabled:cursor-default ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          disabled={!expandableDetails}
           title={capabilitySummary ?? undefined}
         >
           <Icon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[12px] font-medium text-text-primary">{briefLabel}</span>
-            {isPending && latestProgressNote ? (
-              <span className="block truncate text-[11px] text-text-tertiary/80 italic">{latestProgressNote}</span>
-            ) : null}
+          <span className="min-w-0 max-w-[13rem] truncate text-[11px] font-medium text-text-secondary group-hover:text-text-primary sm:max-w-[17rem]">
+            {briefLabel}
           </span>
-          <span className={`inline-flex items-center gap-1 text-[11px] ${statusConfig.color}`}>
+          <span
+            className={`hidden min-w-0 max-w-[18rem] truncate text-[11px] text-text-tertiary sm:inline ${isPending && latestProgressNote ? 'italic' : ''}`}
+          >
+            {tracePreviewText}
+          </span>
+          <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] ${statusConfig.color}`}>
             <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`} />
-            <span>{headerSummary}</span>
+            <span className="hidden md:inline">{statusConfig.text}</span>
           </span>
           {diffStats ? (
             <DiffStatsTicker stats={diffStats} compact />
           ) : showPendingDiffStats ? (
             <PendingDiffTicker compact />
           ) : null}
-          {canExpand && (
+          {expandableDetails && (
             expanded
               ? <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
               : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
           )}
         </button>
 
-        {expanded && canExpand && (
-          <div className="border-t border-border/35 px-3 py-2 space-y-2">
-            {streamingArgsPreview && (
-              <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-text-tertiary bg-surface-0/40 rounded-md px-2 py-1">
-                {streamingArgsPreview}
-              </pre>
-            )}
-            {workPlanArtifact && <WorkPlanPanel plan={workPlanArtifact} compact />}
-            {contextManifest && <ContextManifestPanel manifest={contextManifest} compact />}
-            {generatedImage ? (
-              <div className="space-y-2">
-                <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
-                  <img
-                    src={generatedImage.dataUrl || (generatedImage.path ? convertFileSrc(generatedImage.path) : '')}
-                    alt={generatedImage.prompt || t('chat.generatedImageAlt')}
-                    className="max-h-64 w-full object-contain"
-                  />
-                </div>
-                {generatedImage.path && (
-                  <div className="break-all text-[11px] text-text-secondary">{generatedImage.path}</div>
-                )}
-              </div>
-            ) : subagentRun ? (
-              <SubagentCard run={subagentRun} defaultOpen />
-            ) : subagentBatch ? (
-              <div className="space-y-2">
-                {subagentBatch.runs.map((run) => (
-                  <SubagentCard key={run.id} run={run} compact defaultOpen />
-                ))}
-              </div>
-            ) : subagentJudgement ? (
-              <div className="rounded-lg border border-border/60 bg-surface-0/70 px-3 py-2">
-                <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
-                  <span className="font-medium text-text-primary">
-                    {subagentJudgement.task || t('chat.subagentJudgementFallback')}
-                  </span>
-                  <span className="rounded-full border border-border/60 bg-surface-1 px-2 py-0.5">
-                    {subagentJudgement.decisionMode}
-                  </span>
-                  {subagentJudgement.confidence && (
-                    <span className="rounded-full border border-border/60 bg-surface-1 px-2 py-0.5">
-                      {t('chat.subagentConfidence', { value: subagentJudgement.confidence })}
-                    </span>
-                  )}
-                </div>
-                <div className="text-sm text-text-primary">{subagentJudgement.summary}</div>
-                {subagentJudgement.rationale && (
-                  <div className="mt-2 text-xs text-text-secondary">{subagentJudgement.rationale}</div>
-                )}
-              </div>
-            ) : searchItems ? (
-              <>
-                {trustBoundary && <TrustBoundaryPills boundary={trustBoundary} />}
-                <SearchResultCards items={searchItems} />
-              </>
-            ) : planArtifact ? (
-              <PlanPanel plan={planArtifact} />
-            ) : verificationArtifact ? (
-              <VerificationPanel verification={verificationArtifact} />
-            ) : fileDiff ? (
-              <FileDiffPreview diff={fileDiff} compact />
-            ) : diffStats ? (
-              <>
-                <DiffStatsSummaryPanel stats={diffStats} />
-                {content && (
+        <AnimatePresence initial={false}>
+          {expanded && expandableDetails && (
+            <motion.div
+              {...getSoftCollapseMotion(!!shouldReduceMotion)}
+              className="overflow-hidden"
+            >
+              <div className={`ml-4 mt-1 space-y-2 border-l py-1.5 pl-3 pr-1 ${traceDetailBorderClass}`}>
+                {streamingArgsPreview ? (
+                  <pre className="whitespace-pre-wrap break-words rounded-md bg-surface-0/35 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary">
+                    {streamingArgsPreview}
+                  </pre>
+                ) : formattedArgs ? (
+                  <div className="break-words rounded-md bg-surface-0/35 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary">
+                    {formattedArgs}
+                  </div>
+                ) : null}
+                {workPlanArtifact && <WorkPlanPanel plan={workPlanArtifact} compact />}
+                {contextManifest && <ContextManifestPanel manifest={contextManifest} compact />}
+                {generatedImage ? (
+                  <div className="space-y-2">
+                    <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
+                      <img
+                        src={generatedImage.dataUrl || (generatedImage.path ? convertFileSrc(generatedImage.path) : '')}
+                        alt={generatedImage.prompt || t('chat.generatedImageAlt')}
+                        className="max-h-64 w-full object-contain"
+                      />
+                    </div>
+                    {generatedImage.path && (
+                      <div className="break-all text-[11px] text-text-secondary">{generatedImage.path}</div>
+                    )}
+                  </div>
+                ) : subagentRun ? (
+                  <SubagentCard run={subagentRun} compact defaultOpen />
+                ) : subagentBatch ? (
+                  <div className="space-y-2">
+                    {subagentBatch.runs.map((run) => (
+                      <SubagentCard key={run.id} run={run} compact defaultOpen />
+                    ))}
+                  </div>
+                ) : subagentJudgement ? (
+                  <div className="border-l border-border/50 pl-3">
+                    <div className="mb-1 flex flex-wrap items-center gap-1.5 text-xs text-text-secondary">
+                      <span className="font-medium text-text-primary">
+                        {subagentJudgement.task || t('chat.subagentJudgementFallback')}
+                      </span>
+                      <span className="rounded-full border border-border/60 bg-surface-0/55 px-2 py-0.5">
+                        {subagentJudgement.decisionMode}
+                      </span>
+                      {subagentJudgement.confidence && (
+                        <span className="rounded-full border border-border/60 bg-surface-0/55 px-2 py-0.5">
+                          {t('chat.subagentConfidence', { value: subagentJudgement.confidence })}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-sm text-text-primary">{subagentJudgement.summary}</div>
+                    {subagentJudgement.rationale && (
+                      <div className="mt-2 text-xs text-text-secondary">{subagentJudgement.rationale}</div>
+                    )}
+                  </div>
+                ) : searchItems ? (
+                  <>
+                    {trustBoundary && <TrustBoundaryPills boundary={trustBoundary} />}
+                    <SearchResultCards items={searchItems} />
+                  </>
+                ) : planArtifact ? (
+                  <PlanPanel plan={planArtifact} />
+                ) : verificationArtifact ? (
+                  <VerificationPanel verification={verificationArtifact} />
+                ) : fileDiff ? (
+                  <FileDiffPreview diff={fileDiff} compact />
+                ) : diffStats ? (
+                  <>
+                    <DiffStatsSummaryPanel stats={diffStats} />
+                    {content && (
+                      <pre className={`whitespace-pre-wrap break-words text-[11px] leading-relaxed ${isError ? 'text-danger' : 'text-text-secondary'}`}>
+                        {content}
+                      </pre>
+                    )}
+                  </>
+                ) : content ? (
                   <pre className={`whitespace-pre-wrap break-words text-[11px] leading-relaxed ${isError ? 'text-danger' : 'text-text-secondary'}`}>
                     {content}
                   </pre>
-                )}
-              </>
-            ) : content ? (
-              <pre className={`whitespace-pre-wrap break-words text-[11px] leading-relaxed ${isError ? 'text-danger' : 'text-text-secondary'}`}>
-                {content}
-              </pre>
-            ) : null}
-          </div>
-        )}
+                ) : null}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     );
   }
 
   if (compact) {
     return (
-      <div className="rounded border border-border/40 overflow-hidden">
+      <div className="my-1 max-w-full">
         <button
-          onClick={() => setExpanded((p) => !p)}
-          className="flex items-center gap-1.5 w-full px-2 py-1 text-left hover:bg-surface-2/50 transition-colors cursor-pointer"
+          type="button"
+          onClick={() => expandableDetails && setExpanded((p) => !p)}
+          aria-expanded={expandableDetails ? expanded : undefined}
+          disabled={!expandableDetails}
+          className={`inline-flex min-h-6 max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 text-left transition-colors disabled:cursor-default ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
         >
           <Icon className="h-3 w-3 shrink-0 text-text-tertiary" />
-          <span className="text-[11px] font-medium text-text-secondary truncate">{briefLabel}</span>
-          <span className="text-[10px] text-text-tertiary truncate flex-1">{headerSummary}</span>
+          <span className="max-w-[12rem] truncate text-[11px] font-medium text-text-secondary">{briefLabel}</span>
+          <span className="hidden max-w-[16rem] truncate text-[10px] text-text-tertiary sm:inline">{headerSummary}</span>
           {diffStats ? (
             <DiffStatsTicker stats={diffStats} compact />
           ) : showPendingDiffStats ? (
@@ -1088,42 +1121,87 @@ export function ToolCallCard({
           <StatusIcon
             className={`h-3 w-3 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
           />
+          {expandableDetails && (
+            expanded
+              ? <ChevronUp className="h-3 w-3 shrink-0 text-text-tertiary" />
+              : <ChevronDown className="h-3 w-3 shrink-0 text-text-tertiary" />
+          )}
         </button>
-        {expanded && (content || fileDiff || diffStats || generatedImage || workPlanArtifact || contextManifest) && (
-          <div className="border-t border-border/30 px-2 py-1.5">
-            {formattedArgs && (
-              <div className="mb-1 rounded bg-surface-0/60 px-1.5 py-0.5 text-[10px] text-text-tertiary break-words">
-                {formattedArgs}
-              </div>
-            )}
-            {workPlanArtifact && <WorkPlanPanel plan={workPlanArtifact} compact />}
-            {contextManifest && <ContextManifestPanel manifest={contextManifest} compact />}
-            {generatedImage ? (
-              <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
-                <img
-                  src={generatedImage.dataUrl || (generatedImage.path ? convertFileSrc(generatedImage.path) : '')}
-                  alt={generatedImage.prompt || t('chat.generatedImageAlt')}
-                  className="max-h-32 w-full object-contain"
-                />
-              </div>
-            ) : fileDiff ? (
-              <FileDiffPreview diff={fileDiff} compact />
-            ) : diffStats ? (
-              <div className="space-y-1.5">
-                <DiffStatsSummaryPanel stats={diffStats} />
-                {content && (
+        <AnimatePresence initial={false}>
+          {expanded && expandableDetails && (
+            <motion.div
+              {...getSoftCollapseMotion(!!shouldReduceMotion)}
+              className="overflow-hidden"
+            >
+              <div className={`ml-4 mt-1 space-y-1.5 border-l py-1 pl-2.5 pr-1 ${traceDetailBorderClass}`}>
+                {streamingArgsPreview ? (
+                  <pre className="whitespace-pre-wrap break-words rounded bg-surface-0/40 px-1.5 py-0.5 text-[10px] text-text-tertiary">
+                    {streamingArgsPreview}
+                  </pre>
+                ) : formattedArgs ? (
+                  <div className="break-words rounded bg-surface-0/40 px-1.5 py-0.5 text-[10px] text-text-tertiary">
+                    {formattedArgs}
+                  </div>
+                ) : null}
+                {workPlanArtifact && <WorkPlanPanel plan={workPlanArtifact} compact />}
+                {contextManifest && <ContextManifestPanel manifest={contextManifest} compact />}
+                {generatedImage ? (
+                  <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
+                    <img
+                      src={generatedImage.dataUrl || (generatedImage.path ? convertFileSrc(generatedImage.path) : '')}
+                      alt={generatedImage.prompt || t('chat.generatedImageAlt')}
+                      className="max-h-32 w-full object-contain"
+                    />
+                  </div>
+                ) : subagentRun ? (
+                  <SubagentCard run={subagentRun} compact defaultOpen />
+                ) : subagentBatch ? (
+                  <div className="space-y-1.5">
+                    {subagentBatch.runs.map((run) => (
+                      <SubagentCard key={run.id} run={run} compact defaultOpen />
+                    ))}
+                  </div>
+                ) : subagentJudgement ? (
+                  <div className="border-l border-border/50 pl-2.5">
+                    <div className="mb-1 flex flex-wrap items-center gap-1.5 text-[11px] text-text-secondary">
+                      <span className="font-medium text-text-primary">
+                        {subagentJudgement.task || t('chat.subagentJudgementFallback')}
+                      </span>
+                      <span className="rounded-full border border-border/60 bg-surface-0/55 px-1.5 py-0.5">
+                        {subagentJudgement.decisionMode}
+                      </span>
+                    </div>
+                    <div className="text-xs text-text-primary">{subagentJudgement.summary}</div>
+                  </div>
+                ) : searchItems ? (
+                  <>
+                    {trustBoundary && <TrustBoundaryPills boundary={trustBoundary} />}
+                    <SearchResultCards items={searchItems} />
+                  </>
+                ) : planArtifact ? (
+                  <PlanPanel plan={planArtifact} />
+                ) : verificationArtifact ? (
+                  <VerificationPanel verification={verificationArtifact} />
+                ) : fileDiff ? (
+                  <FileDiffPreview diff={fileDiff} compact />
+                ) : diffStats ? (
+                  <div className="space-y-1.5">
+                    <DiffStatsSummaryPanel stats={diffStats} />
+                    {content && (
+                      <pre className={`text-[11px] whitespace-pre-wrap break-words max-h-32 overflow-y-auto ${isError ? 'text-danger' : 'text-text-tertiary'}`}>
+                        {content}
+                      </pre>
+                    )}
+                  </div>
+                ) : content ? (
                   <pre className={`text-[11px] whitespace-pre-wrap break-words max-h-32 overflow-y-auto ${isError ? 'text-danger' : 'text-text-tertiary'}`}>
                     {content}
                   </pre>
-                )}
+                ) : null}
               </div>
-            ) : content ? (
-              <pre className={`text-[11px] whitespace-pre-wrap break-words max-h-32 overflow-y-auto ${isError ? 'text-danger' : 'text-text-tertiary'}`}>
-                {content}
-              </pre>
-            ) : null}
-          </div>
-        )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     );
   }
@@ -1147,32 +1225,32 @@ export function ToolCallCard({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="my-2 rounded-xl border border-border/70 bg-surface-1/80 p-3"
+        className="my-2 rounded-lg border border-border/60 bg-surface-0/55 p-3"
       >
-        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs text-text-secondary">
           <span className="font-medium text-text-primary">
             {subagentBatch.batchGoal || t('chat.subagentParallelRun')}
           </span>
           {typeof subagentBatch.effectiveMaxParallel === 'number' && (
-            <span className="rounded-full border border-border/60 bg-surface-0 px-2 py-1">
+            <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
               {t('chat.subagentParallelCount', { count: String(subagentBatch.effectiveMaxParallel) })}
             </span>
           )}
           {subagentBatch.workflowTemplateLabel && (
             <span
-              className="rounded-full border border-border/60 bg-surface-0 px-2 py-1"
+              className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5"
               title={subagentBatch.workflowTemplateDescription ?? undefined}
             >
               {subagentBatch.workflowTemplateLabel}
             </span>
           )}
           {typeof subagentBatch.completedRuns === 'number' && (
-            <span className="rounded-full border border-border/60 bg-surface-0 px-2 py-1">
+            <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
               {t('chat.subagentCompletedCount', { count: String(subagentBatch.completedRuns) })}
             </span>
           )}
           {typeof subagentBatch.failedRuns === 'number' && subagentBatch.failedRuns > 0 && (
-            <span className="rounded-full border border-danger/25 bg-danger/10 px-2 py-1 text-danger">
+            <span className="rounded-full border border-danger/25 bg-danger/10 px-2 py-0.5 text-danger">
               {t('chat.subagentFailedCount', { count: String(subagentBatch.failedRuns) })}
             </span>
           )}
@@ -1192,31 +1270,31 @@ export function ToolCallCard({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="my-2 rounded-xl border border-border/70 bg-surface-1/80 p-3"
+        className="my-2 rounded-lg border border-border/60 bg-surface-0/55 p-3"
       >
-        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+        <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-text-secondary">
           <span className="font-medium text-text-primary">
             {subagentJudgement.task || t('chat.subagentJudgementFallback')}
           </span>
-          <span className="rounded-full border border-border/60 bg-surface-0 px-2 py-1">
+          <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
             {subagentJudgement.decisionMode}
           </span>
           {subagentJudgement.confidence && (
-            <span className="rounded-full border border-border/60 bg-surface-0 px-2 py-1">
+            <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
               {t('chat.subagentConfidence', { value: subagentJudgement.confidence })}
             </span>
           )}
           {subagentJudgement.winnerIds.length > 0 && (
-            <span className="rounded-full border border-accent/25 bg-accent/10 px-2 py-1 text-accent">
+            <span className="rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-accent">
               {t('chat.subagentWinners', { value: subagentJudgement.winnerIds.join(', ') })}
             </span>
           )}
         </div>
-        <div className="rounded-lg border border-border/60 bg-surface-0/70 px-3 py-2 text-sm text-text-primary">
+        <div className="border-l border-border/50 pl-3 text-sm text-text-primary">
           {subagentJudgement.summary}
         </div>
         {subagentJudgement.rationale && (
-          <div className="mt-2 rounded-lg border border-border/60 bg-surface-0/55 px-3 py-2 text-xs text-text-secondary">
+          <div className="mt-2 border-l border-border/35 pl-3 text-xs text-text-secondary">
             {subagentJudgement.rationale}
           </div>
         )}
@@ -1246,17 +1324,18 @@ export function ToolCallCard({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className="chat-trace-panel bg-surface-1 border border-border rounded-lg overflow-hidden my-2"
+      className="chat-trace-panel my-1 overflow-hidden rounded-md border border-border/50 bg-surface-0/45"
       data-trace-soft={traceSoft ? 'true' : 'false'}
       data-trace-active={traceActive ? 'true' : 'false'}
     >
       {/* Header */}
       <button
-        onClick={() => setExpanded((p) => !p)}
-        aria-expanded={expanded}
-        aria-label={expanded ? t('common.collapse') : t('common.expand')}
+        onClick={() => expandableDetails && setExpanded((p) => !p)}
+        aria-expanded={expandableDetails ? expanded : undefined}
+        aria-label={expandableDetails ? (expanded ? t('common.collapse') : t('common.expand')) : briefLabel}
+        disabled={!expandableDetails}
         className="flex items-center gap-2 w-full px-3 py-2 text-left hover:bg-surface-2
-          transition-colors duration-fast ease-out cursor-pointer"
+          transition-colors duration-fast ease-out cursor-pointer disabled:cursor-default disabled:hover:bg-transparent"
       >
         <Icon className="h-4 w-4 shrink-0 text-text-tertiary" />
         <span className="text-xs font-medium text-text-primary truncate">{briefLabel}</span>
@@ -1271,7 +1350,7 @@ export function ToolCallCard({
         <StatusIcon
           className={`h-3.5 w-3.5 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
         />
-        {(content || streamingArgsPreview || fileDiff || diffStats || generatedImage || workPlanArtifact || contextManifest) ? (
+        {expandableDetails ? (
           expanded ? (
             <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
           ) : (
@@ -1288,7 +1367,7 @@ export function ToolCallCard({
 
       {/* Expandable result */}
       <AnimatePresence>
-        {expanded && (content || streamingArgsPreview || fileDiff || diffStats || generatedImage || workPlanArtifact || contextManifest) && (
+        {expanded && expandableDetails && (
           <motion.div
             {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"

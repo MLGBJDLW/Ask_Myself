@@ -1,0 +1,20 @@
+{
+  "allConversations": "All Conversations",
+  "createNew": "New Project",
+  "name": "Project Name",
+  "namePlaceholder": "Enter project name...",
+  "description": "Description",
+  "moveToProject": "Move to Project",
+  "removeFromProject": "Remove from Project",
+  "delete": "Delete Project",
+  "deleteConfirm": "Delete project?",
+  "deleteConfirmDesc": "Conversations in this project will become ungrouped. This cannot be undone.",
+  "noProjects": "No projects yet",
+  "settings": "Project Settings",
+  "systemPrompt": "Project System Prompt",
+  "manageProjects": "Manage Projects",
+  "created": "Project created",
+  "deleted": "Project deleted",
+  "moved": "Conversation moved to project",
+  "removed": "Conversation removed from project"
+}

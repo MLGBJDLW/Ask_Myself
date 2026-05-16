@@ -3,7 +3,7 @@ import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { FileText, Film, Music, Clock, ExternalLink, Copy, Check, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { openFileInDefaultApp, showInFileExplorer, getEvidenceCard } from '../../lib/api';
-import { canPreviewInApp, useFilePreview } from '../../lib/filePreviewContext';
+import { canPreviewInApp, useFilePreview } from '../../features/preview';
 import { getSoftDropdownMotion } from '../../lib/uiMotion';
 import { VideoPreviewModal } from '../media/VideoPreviewModal';
 import { SaveToPlaybookButton } from '../SaveToPlaybookButton';

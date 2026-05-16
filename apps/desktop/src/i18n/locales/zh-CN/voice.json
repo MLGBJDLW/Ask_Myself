@@ -1,0 +1,14 @@
+{
+  "startRecording": "开始语音输入",
+  "stopRecording": "停止录音",
+  "processing": "转录中...",
+  "error": "语音输入不可用",
+  "permissionDenied": "麦克风权限被拒绝",
+  "noModel": "请在设置中下载 Whisper 模型",
+  "microphoneSection": "语音输入",
+  "microphoneDevice": "麦克风",
+  "microphoneDeviceDesc": "选择用于语音输入的麦克风",
+  "microphoneDefault": "系统默认",
+  "microphoneRefresh": "刷新设备",
+  "microphoneDeviceN": "设备"
+}

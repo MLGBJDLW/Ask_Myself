@@ -1,9 +1,8 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useCallback, useEffect } from 'react';
 import { Mic, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
-import { useVoiceRecorder } from '../../lib/useVoiceRecorder';
-import * as api from '../../lib/api';
+import { useVoiceInputRuntime, type VoiceRuntimeErrorCode } from '../../features/voice';
 
 interface VoiceInputButtonProps {
   onTranscript: (text: string) => void;
@@ -12,14 +11,9 @@ interface VoiceInputButtonProps {
 
 export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonProps) {
   const { t } = useTranslation();
-  const savedDeviceId = typeof window !== 'undefined'
-    ? localStorage.getItem('nexa-mic-device-id')
-    : null;
-  const { isRecording, isProcessing, startRecording, stopRecording, cancelRecording, recordingDuration } =
-    useVoiceRecorder(savedDeviceId);
-  const [transcribing, setTranscribing] = useState(false);
-
-  const busy = isProcessing || transcribing;
+  const voiceRuntime = useVoiceInputRuntime();
+  const { isRecording, busy, cancelRecording, recordingDuration, toggleRecording, formatDuration } =
+    voiceRuntime;
 
   // Cancel on Escape
   useEffect(() => {
@@ -33,58 +27,28 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     return () => window.removeEventListener('keydown', handler);
   }, [isRecording, cancelRecording]);
 
+  const showRuntimeError = useCallback((code: VoiceRuntimeErrorCode, message?: string) => {
+    if (code === 'whisper_model_missing') {
+      toast.error(t('voice.noModel'));
+    } else if (code === 'permission_denied') {
+      toast.error(t('voice.permissionDenied'));
+    } else if (code === 'transcription_failed' && message) {
+      toast.error(message);
+    } else if (code !== 'busy') {
+      toast.error(t('voice.error'));
+    }
+  }, [t]);
+
   const handleClick = useCallback(async () => {
     if (busy) return;
 
-    if (isRecording) {
-      // Stop and transcribe
-      const wav = await stopRecording();
-      if (!wav) return;
-
-      setTranscribing(true);
-      try {
-        const text = await api.transcribeAudioBuffer(Array.from(wav));
-        if (text.trim()) {
-          onTranscript(text.trim());
-        }
-      } catch (e) {
-        toast.error(String(e));
-      } finally {
-        setTranscribing(false);
-      }
-      return;
+    const result = await toggleRecording();
+    if (result.status === 'transcribed') {
+      onTranscript(result.text);
+    } else if (result.status === 'error') {
+      showRuntimeError(result.code, result.message);
     }
-
-    // Start: check model first
-    try {
-      const config = await api.getVideoConfig();
-      // TODO: migrate to modelStatusCache
-      const exists = await api.checkWhisperModel(config);
-      if (!exists) {
-        toast.error(t('voice.noModel'));
-        return;
-      }
-    } catch {
-      toast.error(t('voice.error'));
-      return;
-    }
-
-    try {
-      await startRecording();
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'NotAllowedError') {
-        toast.error(t('voice.permissionDenied'));
-      } else {
-        toast.error(t('voice.error'));
-      }
-    }
-  }, [isRecording, busy, stopRecording, startRecording, onTranscript, t]);
-
-  const formatDuration = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
+  }, [busy, onTranscript, showRuntimeError, toggleRecording]);
 
   const label = busy
     ? t('voice.processing')

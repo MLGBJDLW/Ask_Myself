@@ -1,0 +1,20 @@
+{
+  "allConversations": "Todas as conversas",
+  "createNew": "Novo projeto",
+  "name": "Nome do projeto",
+  "namePlaceholder": "Digite o nome do projeto…",
+  "description": "Descrição",
+  "moveToProject": "Mover para o projeto",
+  "removeFromProject": "Remover do projeto",
+  "delete": "Excluir projeto",
+  "deleteConfirm": "Excluir projeto?",
+  "deleteConfirmDesc": "As conversas neste projeto ficarão desagrupadas. Esta ação não pode ser desfeita.",
+  "noProjects": "Nenhum projeto",
+  "settings": "Configurações do projeto",
+  "systemPrompt": "Prompt do sistema do projeto",
+  "manageProjects": "Gerenciar projetos",
+  "created": "Projeto criado",
+  "deleted": "Projeto excluído",
+  "moved": "Conversa movida para o projeto",
+  "removed": "Conversa removida do projeto"
+}

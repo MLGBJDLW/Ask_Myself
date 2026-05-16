@@ -1,0 +1,23 @@
+{
+  "available": "Update verfügbar",
+  "version": "Version {version} ist verfügbar",
+  "downloading": "Update wird heruntergeladen...",
+  "ready": "Update bereit. Neustart zum Anwenden.",
+  "error": "Update-Prüfung fehlgeschlagen",
+  "downloadFailed": "Update-Download fehlgeschlagen",
+  "installFailed": "Update-Installation fehlgeschlagen",
+  "checkNow": "Nach Updates suchen",
+  "downloadInstall": "Herunterladen & Installieren",
+  "restart": "Jetzt neu starten",
+  "dismiss": "Später",
+  "upToDate": "Sie sind auf dem neuesten Stand",
+  "appUpdate": "App-Update",
+  "appUpdateDescription": "Prüfen Sie installierte Version, neue Releases, Versionshinweise und Installation an einem festen Ort.",
+  "currentVersion": "Aktuelle Version",
+  "latestVersion": "Neueste Version",
+  "status": "Status",
+  "lastChecked": "Zuletzt geprüft {time}",
+  "notChecked": "Noch nicht geprüft",
+  "releaseNotes": "Versionshinweise",
+  "details": "Details"
+}

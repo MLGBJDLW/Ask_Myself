@@ -1,0 +1,20 @@
+{
+  "allConversations": "Alle Unterhaltungen",
+  "createNew": "Neues Projekt",
+  "name": "Projektname",
+  "namePlaceholder": "Projektname eingeben…",
+  "description": "Beschreibung",
+  "moveToProject": "Zum Projekt verschieben",
+  "removeFromProject": "Aus Projekt entfernen",
+  "delete": "Projekt löschen",
+  "deleteConfirm": "Projekt löschen?",
+  "deleteConfirmDesc": "Unterhaltungen in diesem Projekt werden ungruppiert. Diese Aktion kann nicht rückgängig gemacht werden.",
+  "noProjects": "Keine Projekte",
+  "settings": "Projekteinstellungen",
+  "systemPrompt": "Projekt-Systemprompt",
+  "manageProjects": "Projekte verwalten",
+  "created": "Projekt erstellt",
+  "deleted": "Projekt gelöscht",
+  "moved": "Unterhaltung zum Projekt verschoben",
+  "removed": "Unterhaltung aus Projekt entfernt"
+}

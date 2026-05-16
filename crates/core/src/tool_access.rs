@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::approval::ApprovalRisk;
 use crate::plugins::ToolPluginInfo;
 use crate::tools::{
-    default_tool_registry, fallback_tool_access_profile, ToolAccessProfile, ToolRegistry,
+    default_tool_registry, ToolCapabilityDescriptor, ToolInputStreamingMode, ToolInterruptBehavior,
+    ToolRegistry, ToolRenderKind,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -21,17 +22,22 @@ pub struct ToolAccessInfo {
     pub needs_approval: bool,
     pub risk_level: ApprovalRisk,
     pub risk_reason: String,
+    pub render_kind: ToolRenderKind,
+    pub input_streaming: ToolInputStreamingMode,
+    pub read_only: bool,
+    pub destructive: bool,
+    pub concurrency_safe: bool,
+    pub interrupt_behavior: ToolInterruptBehavior,
+    pub resource_keys: Vec<String>,
 }
 
 impl ToolAccessInfo {
-    fn from_profile(
-        name: impl Into<String>,
-        plugin: ToolPluginInfo,
-        profile: ToolAccessProfile,
-    ) -> Self {
+    fn from_descriptor(descriptor: ToolCapabilityDescriptor) -> Self {
+        let profile = descriptor.access_profile;
+        let capabilities = descriptor.capabilities;
         Self {
-            name: name.into(),
-            plugin,
+            name: descriptor.name,
+            plugin: descriptor.package,
             category: profile.category,
             can_read: profile.can_read,
             can_write: profile.can_write,
@@ -40,6 +46,13 @@ impl ToolAccessInfo {
             needs_approval: profile.needs_approval,
             risk_level: profile.risk_level,
             risk_reason: profile.risk_reason,
+            render_kind: descriptor.ui.render_kind,
+            input_streaming: capabilities.input_streaming,
+            read_only: capabilities.read_only,
+            destructive: capabilities.destructive,
+            concurrency_safe: capabilities.concurrency_safe,
+            interrupt_behavior: capabilities.interrupt_behavior,
+            resource_keys: descriptor.resources.keys,
         }
     }
 }
@@ -90,14 +103,7 @@ where
 }
 
 fn describe_tool_access_with_registry(registry: &ToolRegistry, name: &str) -> ToolAccessInfo {
-    ToolAccessInfo::from_profile(
-        name,
-        registry.plugin_info(name),
-        registry
-            .get(name)
-            .map(|tool| tool.access_profile(&serde_json::Value::Null))
-            .unwrap_or_else(|| fallback_tool_access_profile(name, &serde_json::Value::Null)),
-    )
+    ToolAccessInfo::from_descriptor(registry.capability_descriptor(name, &serde_json::Value::Null))
 }
 
 fn risk_rank(risk: ApprovalRisk) -> u8 {
@@ -180,12 +186,15 @@ mod tests {
         let web_search = by_name("mcp__web_search__search");
         assert_eq!(web_search.plugin.id, "web-research");
         assert_eq!(web_search.category, "web");
+        assert_eq!(web_search.render_kind, ToolRenderKind::Mcp);
+        assert!(web_search.read_only);
         assert!(web_search.can_access_network);
         assert!(!web_search.can_write);
 
         let unknown_mcp = by_name("mcp__unknown__dangerous");
         assert_eq!(unknown_mcp.plugin.id, "mcp-connectors");
         assert_eq!(unknown_mcp.category, "mcp");
+        assert!(!unknown_mcp.read_only);
         assert_eq!(unknown_mcp.risk_level, ApprovalRisk::High);
     }
 
@@ -198,6 +207,7 @@ mod tests {
             "cwd": "."
         });
         let profile = registry.access_profile("run_shell", &args);
+        let descriptor = registry.capability_descriptor("run_shell", &serde_json::Value::Null);
         let info = describe_tool_access("run_shell");
 
         assert_eq!(info.category, profile.category);
@@ -207,5 +217,21 @@ mod tests {
         assert_eq!(info.can_access_network, profile.can_access_network);
         assert_eq!(info.needs_approval, profile.needs_approval);
         assert_eq!(info.risk_level, profile.risk_level);
+        assert_eq!(info.render_kind, descriptor.ui.render_kind);
+        assert_eq!(
+            info.input_streaming,
+            descriptor.capabilities.input_streaming
+        );
+        assert_eq!(info.read_only, descriptor.capabilities.read_only);
+        assert_eq!(info.destructive, descriptor.capabilities.destructive);
+        assert_eq!(
+            info.concurrency_safe,
+            descriptor.capabilities.concurrency_safe
+        );
+        assert_eq!(
+            info.interrupt_behavior,
+            descriptor.capabilities.interrupt_behavior
+        );
+        assert_eq!(info.resource_keys, descriptor.resources.keys);
     }
 }

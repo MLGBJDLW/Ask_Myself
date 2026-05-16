@@ -333,7 +333,7 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('keeps the live thinking and tool preview mounted until delayed persisted messages load', async ({ page }) => {
+test('keeps the live thinking mounted until delayed persisted messages load', async ({ page }) => {
   await page.goto('/chat/conv-done-preview');
 
   await page.getByTestId('chat-input-textarea').fill('Summarize the retry guidance.');
@@ -341,11 +341,11 @@ test('keeps the live thinking and tool preview mounted until delayed persisted m
 
   await page.waitForTimeout(120);
   await expect(page.getByText('Checking the retry note first.')).toBeVisible();
-  await expect(page.getByText('read_file')).toBeVisible();
+  await expect(page.getByText('read_file')).toHaveCount(0);
 
   await page.waitForTimeout(140);
   await expect(page.getByText('Checking the retry note first.')).toBeVisible({ timeout: 50 });
-  await expect(page.getByText('read_file')).toBeVisible({ timeout: 50 });
+  await expect(page.getByText('read_file')).toHaveCount(0);
 
   await page.waitForTimeout(520);
   await expect(page.getByText('Final answer: keep retries bounded and show the limit.')).toBeVisible({ timeout: 50 });

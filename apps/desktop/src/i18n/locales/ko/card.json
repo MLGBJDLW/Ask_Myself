@@ -1,0 +1,11 @@
+{
+  "relevance": "관련도",
+  "upvote": "추천",
+  "downvote": "비추천",
+  "pin": "고정",
+  "expand": "더 보기",
+  "collapse": "접기",
+  "openFile": "파일 열기",
+  "showInFolder": "폴더에서 보기",
+  "fileNotFound": "파일을 찾을 수 없습니다"
+}

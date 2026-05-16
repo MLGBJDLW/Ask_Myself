@@ -1,0 +1,9 @@
+{
+  "justNow": "刚刚",
+  "minuteShort": "分",
+  "hourShort": "时",
+  "dayShort": "天",
+  "monthShort": "月",
+  "minutesAgo": "{n}分钟前",
+  "hoursAgo": "{n}小时前"
+}

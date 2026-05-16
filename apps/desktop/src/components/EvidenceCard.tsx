@@ -22,7 +22,7 @@ import { SaveToPlaybookButton } from './SaveToPlaybookButton';
 import { Tooltip } from './ui/Tooltip';
 import { useTranslation } from '../i18n';
 import { openFileInDefaultApp, showInFileExplorer } from '../lib/api';
-import { canPreviewInApp, useFilePreview } from '../lib/filePreviewContext';
+import { canPreviewInApp, useFilePreview } from '../features/preview';
 import { VideoPreviewModal } from './media/VideoPreviewModal';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { isWebUrl, sourceBasename, sourceDirectory, sourceKindLabel } from '../lib/sourceDisplay';

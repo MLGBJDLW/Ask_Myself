@@ -1,0 +1,20 @@
+{
+  "save": "保存",
+  "cancel": "取消",
+  "delete": "删除",
+  "edit": "编辑",
+  "close": "关闭",
+  "confirm": "确认",
+  "loading": "加载中...",
+  "error": "错误",
+  "success": "成功",
+  "add": "添加",
+  "create": "创建",
+  "remove": "移除",
+  "collapse": "收起",
+  "expand": "展开",
+  "clear": "清除",
+  "selectAll": "全选",
+  "clearAll": "清除全部",
+  "undo": "撤销"
+}

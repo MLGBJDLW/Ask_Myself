@@ -7,6 +7,9 @@
     "requiresApiKey": true,
     "icon": "🤖",
     "description": "GPT-5.5, GPT-5.4, GPT-4.1, o3/o4 series",
+    "capabilities": {
+      "vision": true
+    },
     "models": [
       {
         "id": "gpt-5.5",
@@ -69,6 +72,46 @@
               "xhigh"
             ],
             "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "gpt-5.4-mini",
+        "name": "GPT-5.4 Mini",
+        "tagKey": "providers.tagFast",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "none",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "gpt-5.4-nano",
+        "name": "GPT-5.4 Nano",
+        "tagKey": "providers.tagCheapest",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "none",
             "thinkingBudget": {
               "enabled": false
             }
@@ -250,6 +293,9 @@
     "requiresApiKey": true,
     "icon": "🧠",
     "description": "Claude Opus 4.7/4.6, Sonnet 4.6/4.5, Haiku 4.5",
+    "capabilities": {
+      "vision": true
+    },
     "models": [
       {
         "id": "claude-opus-4-7",
@@ -399,7 +445,10 @@
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
     "requiresApiKey": true,
     "icon": "✨",
-    "description": "Gemini 3.1 preview, Gemini 2.5 Pro/Flash",
+    "description": "Gemini 3 preview, Gemini 2.5 Pro/Flash",
+    "capabilities": {
+      "vision": true
+    },
     "models": [
       {
         "id": "gemini-2.5-pro",
@@ -451,8 +500,8 @@
         }
       },
       {
-        "id": "gemini-3.1-pro-preview",
-        "name": "Gemini 3.1 Pro Preview",
+        "id": "gemini-3-pro-preview",
+        "name": "Gemini 3 Pro Preview",
         "tagKey": "providers.tagPreview",
         "capabilities": {
           "reasoning": {
@@ -483,28 +532,12 @@
         }
       },
       {
-        "id": "gemini-3.1-flash-lite-preview",
-        "name": "Gemini 3.1 Flash-Lite Preview",
-        "tagKey": "providers.tagPreview",
-        "capabilities": {
-          "reasoning": {
-            "thinkingBudget": {
-              "enabled": true,
-              "defaultTokens": 10000,
-              "minTokens": 128,
-              "maxTokens": 32768,
-              "step": 128
-            }
-          }
-        }
-      },
-      {
         "id": "gemini-2.0-flash",
         "name": "Gemini 2.0 Flash"
       },
       {
-        "id": "gemini-1.5-pro",
-        "name": "Gemini 1.5 Pro (2M Context)"
+        "id": "gemini-2.0-flash-lite",
+        "name": "Gemini 2.0 Flash-Lite"
       }
     ]
   },
@@ -515,7 +548,10 @@
     "baseUrl": "https://api.deepseek.com",
     "requiresApiKey": true,
     "icon": "🔎",
-    "description": "DeepSeek V4 Pro/Flash, Reasoner",
+    "description": "DeepSeek V4 Pro/Flash",
+    "capabilities": {
+      "vision": false
+    },
     "models": [
       {
         "id": "deepseek-v4-pro",
@@ -551,30 +587,6 @@
             }
           }
         }
-      },
-      {
-        "id": "deepseek-reasoner",
-        "name": "DeepSeek Reasoner (legacy V4 Flash thinking alias)",
-        "tagKey": "providers.tagReasoning",
-        "capabilities": {
-          "reasoning": {
-            "effortLevels": [
-              "high",
-              "max"
-            ],
-            "defaultEffort": "high",
-            "thinkingBudget": {
-              "enabled": false
-            }
-          }
-        }
-      },
-      {
-        "id": "deepseek-chat",
-        "name": "DeepSeek Chat (legacy V4 Flash alias)",
-        "capabilities": {
-          "reasoning": null
-        }
       }
     ]
   },
@@ -585,44 +597,16 @@
     "baseUrl": "https://api.x.ai/v1",
     "requiresApiKey": true,
     "icon": "🚀",
-    "description": "Grok 4.1 Fast, Grok 4, Grok Code",
+    "description": "Grok 4.3",
+    "capabilities": {
+      "vision": true
+    },
     "models": [
       {
-        "id": "grok-4-1-fast-reasoning",
-        "name": "Grok 4.1 Fast Reasoning",
+        "id": "grok-4.3",
+        "name": "Grok 4.3",
         "tagKey": "providers.tagLatest",
         "recommended": true
-      },
-      {
-        "id": "grok-4-1-fast-non-reasoning",
-        "name": "Grok 4.1 Fast",
-        "tagKey": "providers.tagFast"
-      },
-      {
-        "id": "grok-4-fast-reasoning",
-        "name": "Grok 4 Fast Reasoning"
-      },
-      {
-        "id": "grok-4-fast-non-reasoning",
-        "name": "Grok 4 Fast"
-      },
-      {
-        "id": "grok-code-fast-1",
-        "name": "Grok Code Fast 1",
-        "tagKey": "providers.tagCode"
-      },
-      {
-        "id": "grok-4",
-        "name": "Grok 4",
-        "tagKey": "providers.tagFlagship"
-      },
-      {
-        "id": "grok-3",
-        "name": "Grok 3"
-      },
-      {
-        "id": "grok-3-mini",
-        "name": "Grok 3 Mini"
       }
     ]
   },
@@ -633,8 +617,16 @@
     "baseUrl": "https://api.mistral.ai/v1",
     "requiresApiKey": true,
     "icon": "🌪️",
-    "description": "Mistral Large 3, Medium 3.1, Devstral 2",
+    "description": "Mistral Medium 3.5, Large 3, Small 4, Devstral 2",
+    "capabilities": {
+      "vision": false
+    },
     "models": [
+      {
+        "id": "mistral-medium-3-5",
+        "name": "Mistral Medium 3.5",
+        "tagKey": "providers.tagLatest"
+      },
       {
         "id": "mistral-large-2512",
         "name": "Mistral Large 3",
@@ -647,8 +639,8 @@
         "tagKey": "providers.tagBestBalance"
       },
       {
-        "id": "mistral-small-2506",
-        "name": "Mistral Small 3.2",
+        "id": "mistral-small-2603",
+        "name": "Mistral Small 4",
         "tagKey": "providers.tagFast"
       },
       {
@@ -676,6 +668,9 @@
     "requiresApiKey": false,
     "icon": "🦙",
     "description": "Local models, no API key",
+    "capabilities": {
+      "vision": false
+    },
     "models": [
       {
         "id": "llama3.3:latest",
@@ -713,6 +708,9 @@
     "requiresApiKey": false,
     "icon": "💻",
     "description": "Local models via LM Studio",
+    "capabilities": {
+      "vision": false
+    },
     "models": []
   },
   {
@@ -722,13 +720,21 @@
     "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
     "requiresApiKey": true,
     "icon": "🔵",
-    "description": "GLM-5, GLM-4.7, GLM-4.6V",
+    "description": "GLM-5.1, GLM-5, GLM-4.7, GLM-4.6V",
+    "capabilities": {
+      "vision": false
+    },
     "models": [
+      {
+        "id": "glm-5.1",
+        "name": "GLM-5.1",
+        "tagKey": "providers.tagLatest",
+        "recommended": true
+      },
       {
         "id": "glm-5",
         "name": "GLM-5",
-        "tagKey": "providers.tagLatest",
-        "recommended": true
+        "tagKey": "providers.tagBest"
       },
       {
         "id": "glm-5-turbo",
@@ -752,12 +758,18 @@
       {
         "id": "glm-4.6v",
         "name": "GLM-4.6V",
-        "tagKey": "providers.tagVision"
+        "tagKey": "providers.tagVision",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "glm-4.1v-thinking-flashx",
         "name": "GLM-4.1V Thinking FlashX",
-        "tagKey": "providers.tagVision"
+        "tagKey": "providers.tagVision",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "glm-4-long",
@@ -772,13 +784,21 @@
     "baseUrl": "https://api.moonshot.cn/v1",
     "requiresApiKey": true,
     "icon": "🌙",
-    "description": "Kimi K2.5, K2 Thinking, K2",
+    "description": "Kimi K2.6, K2.5, K2 Thinking",
+    "capabilities": {
+      "vision": false
+    },
     "models": [
+      {
+        "id": "kimi-k2.6",
+        "name": "Kimi K2.6",
+        "tagKey": "providers.tagLatest",
+        "recommended": true
+      },
       {
         "id": "kimi-k2.5",
         "name": "Kimi K2.5",
-        "tagKey": "providers.tagLatest",
-        "recommended": true
+        "tagKey": "providers.tagBest"
       },
       {
         "id": "kimi-k2-thinking",
@@ -803,7 +823,10 @@
     "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "requiresApiKey": true,
     "icon": "🪶",
-    "description": "Qwen3.6 Plus, Qwen3-Max, QwQ, Qwen3-VL",
+    "description": "Qwen3.6 Plus/Flash, Qwen3-Max, QwQ, Qwen3-VL",
+    "capabilities": {
+      "vision": false
+    },
     "models": [
       {
         "id": "qwen3-max-2026-01-23",
@@ -832,6 +855,11 @@
         "recommended": true
       },
       {
+        "id": "qwen3.6-flash",
+        "name": "Qwen3.6 Flash",
+        "tagKey": "providers.tagFast"
+      },
+      {
         "id": "qwen3.5-flash",
         "name": "Qwen3.5 Flash",
         "tagKey": "providers.tagFast"
@@ -854,17 +882,26 @@
       {
         "id": "qwen3-vl-plus",
         "name": "Qwen3 VL Plus",
-        "tagKey": "providers.tagVision"
+        "tagKey": "providers.tagVision",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "qwen3-vl-flash",
         "name": "Qwen3 VL Flash",
-        "tagKey": "providers.tagVision"
+        "tagKey": "providers.tagVision",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "qvq-max",
         "name": "QVQ Max",
-        "tagKey": "providers.tagVision"
+        "tagKey": "providers.tagVision",
+        "capabilities": {
+          "vision": true
+        }
       }
     ]
   },
@@ -875,7 +912,10 @@
     "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
     "requiresApiKey": true,
     "icon": "🫘",
-    "description": "Doubao-Seed 1.6, 1.6 Thinking, 1.6 Flash",
+    "description": "Doubao-Seed 1.6, Seed-Code",
+    "capabilities": {
+      "vision": false
+    },
     "models": [
       {
         "id": "doubao-seed-1-6-251015",
@@ -887,6 +927,11 @@
         "id": "doubao-seed-1-6-thinking",
         "name": "Doubao-Seed 1.6 Thinking",
         "tagKey": "providers.tagReasoning"
+      },
+      {
+        "id": "doubao-seed-code-preview-251028",
+        "name": "Doubao-Seed Code Preview",
+        "tagKey": "providers.tagCode"
       },
       {
         "id": "doubao-seed-1-6-flash-250828",
@@ -903,6 +948,9 @@
     "requiresApiKey": true,
     "icon": "🧊",
     "description": "01.AI Yi series",
+    "capabilities": {
+      "vision": false
+    },
     "models": [
       {
         "id": "yi-large",
@@ -932,7 +980,10 @@
     "baseUrl": "https://api.baichuan-ai.com/v1",
     "requiresApiKey": true,
     "icon": "🌊",
-    "description": "Baichuan-M3, M3-Plus, Baichuan4 Turbo",
+    "description": "Baichuan-M3/M2 medical models",
+    "capabilities": {
+      "vision": false
+    },
     "models": [
       {
         "id": "Baichuan-M3-Plus",
@@ -946,13 +997,13 @@
         "tagKey": "providers.tagBestBalance"
       },
       {
-        "id": "Baichuan4-Turbo",
-        "name": "Baichuan 4 Turbo",
-        "tagKey": "providers.tagFast"
+        "id": "Baichuan-M2-Plus",
+        "name": "Baichuan M2 Plus"
       },
       {
-        "id": "Baichuan4",
-        "name": "Baichuan 4"
+        "id": "Baichuan-M2",
+        "name": "Baichuan M2",
+        "tagKey": "providers.tagFast"
       }
     ]
   }

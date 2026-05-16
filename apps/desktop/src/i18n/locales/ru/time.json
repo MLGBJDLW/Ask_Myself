@@ -1,0 +1,9 @@
+{
+  "justNow": "только что",
+  "minuteShort": "мин",
+  "hourShort": "ч",
+  "dayShort": "д",
+  "monthShort": "мес",
+  "minutesAgo": "{n}мин назад",
+  "hoursAgo": "{n}ч назад"
+}

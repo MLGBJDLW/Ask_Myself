@@ -1,0 +1,11 @@
+{
+  "relevance": "関連度",
+  "upvote": "高評価",
+  "downvote": "低評価",
+  "pin": "ピン留め",
+  "expand": "さらに表示",
+  "collapse": "折りたたむ",
+  "openFile": "ファイルを開く",
+  "showInFolder": "フォルダーで表示",
+  "fileNotFound": "ファイルが見つかりません"
+}

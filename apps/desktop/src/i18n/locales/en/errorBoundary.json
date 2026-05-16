@@ -1,0 +1,6 @@
+{
+  "title": "Something went wrong",
+  "description": "An unexpected error occurred. You can try restarting the application.",
+  "restart": "Restart",
+  "details": "Error details"
+}

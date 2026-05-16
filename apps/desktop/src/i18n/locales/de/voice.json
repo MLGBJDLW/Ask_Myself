@@ -1,0 +1,14 @@
+{
+  "startRecording": "Spracheingabe starten",
+  "stopRecording": "Aufnahme stoppen",
+  "processing": "Transkribieren...",
+  "error": "Spracheingabe nicht verfügbar",
+  "permissionDenied": "Mikrofonzugriff verweigert",
+  "noModel": "Bitte laden Sie ein Whisper-Modell in den Einstellungen herunter",
+  "microphoneSection": "Spracheingabe",
+  "microphoneDevice": "Mikrofon",
+  "microphoneDeviceDesc": "Mikrofon für die Spracheingabe auswählen",
+  "microphoneDefault": "Systemstandard",
+  "microphoneRefresh": "Geräte aktualisieren",
+  "microphoneDeviceN": "Gerät"
+}

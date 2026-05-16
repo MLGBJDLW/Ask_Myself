@@ -1,0 +1,19 @@
+{
+  "play": "재생",
+  "pause": "일시정지",
+  "transcript": "자막",
+  "noTranscript": "사용 가능한 자막이 없습니다",
+  "processing": "동영상 처리 중...",
+  "extractingAudio": "오디오 추출 중...",
+  "extractingSubtitles": "자막 추출 중...",
+  "transcribing": "음성 변환 중...",
+  "extractingFrames": "프레임 추출 중...",
+  "runningOcr": "OCR 실행 중...",
+  "processingComplete": "처리 완료",
+  "clickToSeek": "클릭하여 이동",
+  "videoDetails": "동영상 세부 정보",
+  "resolution": "해상도",
+  "codec": "코덱",
+  "framerate": "프레임 속도",
+  "transcriptHint": "설정에서 Whisper 모델을 다운로드한 후 소스를 다시 스캔하면 전사 기능이 활성화됩니다."
+}

@@ -1,0 +1,22 @@
+{
+  "title": "Willkommen bei Nexa",
+  "subtitle": "Ihr persönlicher Wissensassistent",
+  "description": "Fügen Sie Ihre Dokumente hinzu, verbinden Sie eine KI und stellen Sie Fragen zu Ihrem eigenen Wissen.",
+  "getStarted": "Loslegen",
+  "addSource": "Wissen hinzufügen",
+  "addSourceDescription": "Wählen Sie einen Ordner mit Ihren Dokumenten aus (Notizen, PDFs, Docs)",
+  "selectFolder": "Ordner auswählen",
+  "folderSelected": "Ordner hinzugefügt: {folder}",
+  "configureAI": "KI-Anbieter verbinden",
+  "configureAIDescription": "Richten Sie ein KI-Modell ein, das Ihre Fragen beantwortet",
+  "selectProvider": "Anbieter auswählen",
+  "apiKey": "API-Schlüssel",
+  "testConnection": "Verbindung testen",
+  "connectionSuccess": "Verbindung erfolgreich!",
+  "connectionFailed": "Verbindung fehlgeschlagen",
+  "allSet": "Alles bereit!",
+  "allSetDescription": "Erkunden Sie Ihr Wissen",
+  "startUsing": "Nexa verwenden",
+  "skip": "Vorerst überspringen",
+  "step": "Schritt {current} von {total}"
+}

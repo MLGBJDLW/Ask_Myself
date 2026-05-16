@@ -1,0 +1,19 @@
+{
+  "play": "Play",
+  "pause": "Pause",
+  "transcript": "Transcript",
+  "noTranscript": "No transcript available",
+  "processing": "Processing video...",
+  "extractingAudio": "Extracting audio...",
+  "extractingSubtitles": "Extracting subtitles...",
+  "transcribing": "Transcribing speech...",
+  "extractingFrames": "Extracting frames...",
+  "runningOcr": "Running OCR...",
+  "processingComplete": "Processing complete",
+  "clickToSeek": "Click to seek",
+  "videoDetails": "Video Details",
+  "resolution": "Resolution",
+  "codec": "Codec",
+  "framerate": "Frame Rate",
+  "transcriptHint": "Re-scan sources after downloading the Whisper model in Settings to enable transcription."
+}

@@ -223,7 +223,7 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('keeps persisted tool-round replies interleaved with their tool trace', async ({ page }) => {
+test('keeps persisted tool-round replies interleaved with trace thinking', async ({ page }) => {
   await page.goto('/chat/conv-persisted-round-replies');
 
   const chatLogText = await page.getByLabel('Chat messages').textContent();
@@ -232,8 +232,8 @@ test('keeps persisted tool-round replies interleaved with their tool trace', asy
   const text = chatLogText ?? '';
   expect(text.indexOf('phase one thinking')).toBeGreaterThanOrEqual(0);
   expect(text.indexOf('first-round-reply')).toBeGreaterThan(text.indexOf('phase one thinking'));
-  expect(text.indexOf('read_file')).toBeGreaterThan(text.indexOf('first-round-reply'));
-  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('read_file'));
+  expect(text.indexOf('read_file')).toBe(-1);
+  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('first-round-reply'));
   expect(text.indexOf('final-round-reply')).toBeGreaterThan(text.indexOf('phase two thinking'));
 
   await expect(

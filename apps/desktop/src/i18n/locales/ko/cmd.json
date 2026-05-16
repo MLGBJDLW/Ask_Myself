@@ -1,0 +1,16 @@
+{
+  "placeholder": "명령 입력...",
+  "noResults": "일치하는 명령이 없습니다",
+  "navigation": "탐색",
+  "actions": "작업",
+  "recentQueries": "최근 검색",
+  "scanAll": "모든 데이터 소스 스캔",
+  "rebuildEmbeddings": "벡터 인덱스 재구축",
+  "scanningAll": "모든 데이터 소스 스캔 중…",
+  "scanComplete": "스캔 완료",
+  "scanError": "스캔 실패",
+  "rebuildingEmbeddings": "벡터 인덱스 재구축 중…",
+  "rebuildComplete": "벡터 재구축 완료",
+  "rebuildError": "벡터 재구축 실패",
+  "shortcuts": "키보드 단축키"
+}

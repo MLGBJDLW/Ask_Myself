@@ -381,6 +381,49 @@ impl AgentRunEvent {
         }
     }
 
+    pub fn terminal_error(
+        run_id: &str,
+        turn_id: Option<&str>,
+        event_seq: u64,
+        message: &str,
+        status: &str,
+        payload: Option<&serde_json::Value>,
+    ) -> Self {
+        let mut payload_map = match payload {
+            Some(serde_json::Value::Object(existing)) => existing.clone(),
+            Some(existing) => {
+                let mut map = serde_json::Map::new();
+                map.insert("data".to_string(), existing.clone());
+                map
+            }
+            None => serde_json::Map::new(),
+        };
+        payload_map.insert(
+            "type".to_string(),
+            serde_json::Value::String("error".to_string()),
+        );
+        payload_map.insert(
+            "message".to_string(),
+            serde_json::Value::String(message.to_string()),
+        );
+        payload_map.insert(
+            "status".to_string(),
+            serde_json::Value::String(status.to_string()),
+        );
+
+        Self {
+            version: AGENT_RUN_EVENT_VERSION,
+            run_id: run_id.to_string(),
+            turn_id: turn_id.unwrap_or_default().to_string(),
+            event_seq,
+            kind: AgentRunEventKind::Error,
+            phase: AgentRunPhase::Done,
+            label: message.to_string(),
+            status: Some(status.to_string()),
+            payload: serde_json::Value::Object(payload_map),
+        }
+    }
+
     pub fn from_task_payload(payload: &serde_json::Value, fallback_run_id: &str) -> Option<Self> {
         if let Some(agent_run) = payload.get("agentRun") {
             return serde_json::from_value::<Self>(agent_run.clone()).ok();
@@ -632,6 +675,28 @@ mod tests {
         assert_eq!(run_event.event_seq, 3);
         assert_eq!(run_event.status.as_deref(), Some("queued"));
         assert_eq!(run_event.payload["detail"], "queued");
+    }
+
+    #[test]
+    fn terminal_error_preserves_non_failed_status() {
+        let payload = serde_json::json!({ "reason": "timeout" });
+        let run_event = AgentRunEvent::terminal_error(
+            "run-1",
+            Some("turn-1"),
+            11,
+            "Agent execution timed out.",
+            "timed_out",
+            Some(&payload),
+        );
+
+        assert_eq!(run_event.version, AGENT_RUN_EVENT_VERSION);
+        assert_eq!(run_event.kind, AgentRunEventKind::Error);
+        assert_eq!(run_event.phase, AgentRunPhase::Done);
+        assert_eq!(run_event.event_seq, 11);
+        assert_eq!(run_event.status.as_deref(), Some("timed_out"));
+        assert_eq!(run_event.payload["type"], "error");
+        assert_eq!(run_event.payload["message"], "Agent execution timed out.");
+        assert_eq!(run_event.payload["reason"], "timeout");
     }
 
     #[test]
