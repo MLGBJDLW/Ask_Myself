@@ -18,6 +18,7 @@ pub mod app_settings;
 pub mod approval;
 pub mod behavioral_eval;
 pub mod cache;
+pub mod capability_package;
 pub mod compile;
 pub mod context_pack;
 pub mod conversation;
