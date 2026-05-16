@@ -254,6 +254,46 @@ test('keeps non-stream task timeline events while filtering durable stream event
   assertEqual(timeline[1].id, 'tool', 'keeps tool event');
 });
 
+test('keeps lifecycle status run events out of durable stream replay', () => {
+  const events = [
+    taskEvent({
+      id: 'queued',
+      eventType: 'status',
+      label: 'Task queued',
+      status: 'queued',
+      payload: {
+        agentRun: runEvent({
+          eventSeq: 1,
+          kind: 'status',
+          phase: 'routing',
+          label: 'Task queued',
+          status: 'queued',
+          payload: {},
+        }),
+      },
+    }),
+    taskEvent({
+      id: 'output',
+      eventType: 'stream',
+      payload: {
+        agentRun: runEvent({
+          eventSeq: 2,
+          kind: 'outputDelta',
+          payload: { blockId: 'b', channel: 'answer', offset: 0, delta: 'x' },
+        }),
+      },
+    }),
+  ];
+
+  const replay = durableReplayItemsFromTaskEvents(events);
+  const timeline = taskTimelineEventsFromReplaySource(events);
+
+  assertEqual(replay.length, 1, 'lifecycle status should not replay as stream');
+  assertEqual(replay[0].event.eventType, 'stream', 'only stream event replays');
+  assertEqual(timeline.length, 1, 'lifecycle status remains in task timeline');
+  assertEqual(timeline[0].id, 'queued', 'queued status remains visible as task event');
+});
+
 test('projects canonical terminal errors as durable replay terminal items', () => {
   const replay = durableReplayItemsFromTaskEvents([
     taskEvent({
