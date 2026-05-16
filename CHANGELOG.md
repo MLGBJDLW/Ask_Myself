@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.6.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.3...nexa-monorepo-v0.6.4) (2026-05-16)
+
+
+### Features
+
+* **desktop:** add Aurora and Bloom themes ([aed3400](https://github.com/MLGBJDLW/Nexa/commit/aed3400a20d4586fa71ddd4561a3c797dce73842))
+* **desktop:** unify agent streaming protocol ([fba1a83](https://github.com/MLGBJDLW/Nexa/commit/fba1a831dd9bf457c235ff67e7cf129ddbf55d0b))
+* **streaming:** classify cancelled provider streams ([49d60a7](https://github.com/MLGBJDLW/Nexa/commit/49d60a76dd01d93403b32167fed63973a599929c))
+* **streaming:** formalize task timeline events ([bedbc9f](https://github.com/MLGBJDLW/Nexa/commit/bedbc9ff77796fa5e705439e7c3d84c7cb163182))
+* **streaming:** persist lifecycle status with run events ([fc4192f](https://github.com/MLGBJDLW/Nexa/commit/fc4192f14184f35a175c30e0fe0c537fdff85c9e))
+
+
+### Bug Fixes
+
+* **desktop:** accept canonical terminal stream events ([f7dfa21](https://github.com/MLGBJDLW/Nexa/commit/f7dfa21a77d82e72fbd2ed9cb1a8b7fd4f03edcc))
+* **desktop:** align Nexa bundle identity ([b40082d](https://github.com/MLGBJDLW/Nexa/commit/b40082da6e3c44ef3a8c052c0685245f798e6da5))
+* **desktop:** harden agent streaming payloads ([e92367d](https://github.com/MLGBJDLW/Nexa/commit/e92367db3ae4922871cb2514b97c1055ed8c9951))
+* **desktop:** persist canonical terminal errors ([eab2591](https://github.com/MLGBJDLW/Nexa/commit/eab2591226b5774dbbfbfce9083b14652b537f21))
+* **desktop:** preserve legacy text delta run payloads ([284f9ba](https://github.com/MLGBJDLW/Nexa/commit/284f9ba5799135aea398784d25f0a224ebe5efa4))
+* **desktop:** replay canonical terminal stream events ([32ad0f9](https://github.com/MLGBJDLW/Nexa/commit/32ad0f94ef112e144ca6c37ff037446276d07249))
+* **streaming:** avoid duplicate legacy plan task events ([716f6e3](https://github.com/MLGBJDLW/Nexa/commit/716f6e3126f063d034f1e43a544daebc8ba2a3d6))
+* **streaming:** classify tool progress as tool events ([c69cf87](https://github.com/MLGBJDLW/Nexa/commit/c69cf87f7b02bbd8141e061520919e9201d2d79d))
+* **streaming:** classify transient stream errors as recoverable ([398c9a4](https://github.com/MLGBJDLW/Nexa/commit/398c9a441302ae8845c57a06694f1afecc4a7050))
+* **streaming:** finalize cancelled provider streams ([7ff2f76](https://github.com/MLGBJDLW/Nexa/commit/7ff2f760279bd0c50c1b2b747466cc393f4c9e39))
+* **streaming:** gate duplicate terminal run events ([7270ad8](https://github.com/MLGBJDLW/Nexa/commit/7270ad8a633d836fee889a258fbc16b3e6a81685))
+* **streaming:** hide completed live preview after persistence ([049354d](https://github.com/MLGBJDLW/Nexa/commit/049354de8b5c9ec6dfda0d9210f20977d157d9f7))
+* **streaming:** keep cancelling runs resumable ([5896e0b](https://github.com/MLGBJDLW/Nexa/commit/5896e0b570f7201f1bb5ef2f486394dde297fc6c))
+* **streaming:** keep persistence warnings nonterminal ([485c203](https://github.com/MLGBJDLW/Nexa/commit/485c2035d3feefae3db6481f74071bdc57134513))
+* **streaming:** preserve cancelled done terminals ([5b975f4](https://github.com/MLGBJDLW/Nexa/commit/5b975f46837fc2be85772cd539716daeb64cbb93))
+* **streaming:** preserve cancelled provider task status ([18e9ad1](https://github.com/MLGBJDLW/Nexa/commit/18e9ad1b248ffd9a8c170591fccf71dcef9eeb57))
+* **streaming:** preserve cancelled terminal projection ([d825464](https://github.com/MLGBJDLW/Nexa/commit/d825464d8e58268502bb9c583b880d7763f031f7))
+* **streaming:** preserve terminal task statuses ([f0d1b2a](https://github.com/MLGBJDLW/Nexa/commit/f0d1b2ae08d1524243b730a8f990413b54f23832))
+* **streaming:** record stop lifecycle as run events ([926b74b](https://github.com/MLGBJDLW/Nexa/commit/926b74bec13a7c5b07ec70b820d58aa243d32767))
+
 ## [0.6.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.2...nexa-monorepo-v0.6.3) (2026-05-15)
 
 
