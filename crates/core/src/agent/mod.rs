@@ -724,13 +724,6 @@ impl AgentExecutor {
                     Some(&task_plan_value),
                     None,
                 );
-                let _ = db.record_agent_task_run_event(
-                    &task_run.id,
-                    "plan",
-                    "Typed task plan created",
-                    Some("completed"),
-                    Some(&task_plan_value),
-                );
             }
         }
 
