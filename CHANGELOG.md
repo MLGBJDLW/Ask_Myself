@@ -1,5 +1,294 @@
 # Changelog
 
+## [0.6.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.2...nexa-monorepo-v0.6.3) (2026-05-15)
+
+
+### Features
+
+* **core:** deepen image generation plugin ([7e4da61](https://github.com/MLGBJDLW/Nexa/commit/7e4da61afdb78290c9af422729eeda13da3f969d))
+* **core:** deepen office documents plugin ([c73bdbb](https://github.com/MLGBJDLW/Nexa/commit/c73bdbbf3b099c3d1fb2105aad999d70bc19a53f))
+* **core:** introduce plugin capability metadata ([7e215b7](https://github.com/MLGBJDLW/Nexa/commit/7e215b714e427942e949c0468ae1b853828ef390))
+* **desktop:** compact image and diff panels ([e8a33fe](https://github.com/MLGBJDLW/Nexa/commit/e8a33fed1e88d66d9e907eff9354c44709e42267))
+* **desktop:** redesign app logo ([ac8e8e3](https://github.com/MLGBJDLW/Nexa/commit/ac8e8e3ef13abf7fb6de59a578536d97db88c2f6))
+* **desktop:** refine chat composer layout ([d17755d](https://github.com/MLGBJDLW/Nexa/commit/d17755d7932c024b2713d2188db5e2c830870f06))
+* **desktop:** refine image settings and agent UI ([dee849a](https://github.com/MLGBJDLW/Nexa/commit/dee849a3f31f8fb3483fdf9774dffde0d58dc705))
+
+
+### Bug Fixes
+
+* **core:** route html ppt specs through stdin ([ae32bf1](https://github.com/MLGBJDLW/Nexa/commit/ae32bf135f604e35e30ff4e782df010b9ba77eaa))
+* **desktop:** merge duplicate file diff cards ([e0b1990](https://github.com/MLGBJDLW/Nexa/commit/e0b1990cab73e2f458b8df72803d63129c7fbce6))
+
+## [0.6.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.1...nexa-monorepo-v0.6.2) (2026-05-13)
+
+
+### Features
+
+* **desktop:** streamline agent panels and image settings ([42728ec](https://github.com/MLGBJDLW/Nexa/commit/42728ecd709747e44a68ac63b1673bdeeca58e45))
+* **pptx:** add html-first deck pipeline ([05cb0fb](https://github.com/MLGBJDLW/Nexa/commit/05cb0fb684bd347b75108dcd555ed681411a691b))
+* **pptx:** add transitions and spec discipline ([44eea2e](https://github.com/MLGBJDLW/Nexa/commit/44eea2e58c4ae0efc974f0b3243adb90bdebf573))
+* **xlsx:** add internal model renderer and formula lint ([a02bed8](https://github.com/MLGBJDLW/Nexa/commit/a02bed83f804969f717944b8978ada330d0d47ca))
+
+
+### Bug Fixes
+
+* **agent:** harden tool arguments and steering ([43ba9f8](https://github.com/MLGBJDLW/Nexa/commit/43ba9f86dd269835bc3e5977e1f02a512a555350))
+* **preview:** resolve shell file changes by absolute path ([6cda889](https://github.com/MLGBJDLW/Nexa/commit/6cda889db20b6170833946d01426699cb88bc0fa))
+
+## [0.6.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.0...nexa-monorepo-v0.6.1) (2026-05-12)
+
+
+### Features
+
+* add project tool management panel ([97c783c](https://github.com/MLGBJDLW/Nexa/commit/97c783c8ff4a3f9abaf9ac842f4c31edaa959bcd))
+* add typed stream block protocol ([e6f68b6](https://github.com/MLGBJDLW/Nexa/commit/e6f68b6be40410205b2917da174c28d759a7e964))
+* **agent:** harden scoped context and citations ([def9453](https://github.com/MLGBJDLW/Nexa/commit/def94537ef43665b907cfd996d80a44cea72e2f7))
+* show tool capability overview ([1229661](https://github.com/MLGBJDLW/Nexa/commit/12296612bd68c4fb9cc89c9639408439e4ffa099))
+* upgrade tool architecture ([cef69f3](https://github.com/MLGBJDLW/Nexa/commit/cef69f31724f1a595830e328b1f7a5e14f5bc40b))
+
+
+### Bug Fixes
+
+* localize project tool settings ([abba345](https://github.com/MLGBJDLW/Nexa/commit/abba345050ed66e6f5ccb0dcc5af34e01bbd7701))
+
+## [0.6.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.5.2...nexa-monorepo-v0.6.0) (2026-05-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* harden agent streaming and slim runtime
+* add resource-scoped tool scheduling
+* enforce tool runtime capabilities
+* upgrade tool runtime lifecycle
+
+### Features
+
+* add resource-scoped tool scheduling ([70d1b62](https://github.com/MLGBJDLW/Nexa/commit/70d1b62418846e8ca99953c5edd79ed0d49987d4))
+* **agent:** refactor loop control plane ([9c6d228](https://github.com/MLGBJDLW/Nexa/commit/9c6d228a6520198de1246ec385f54406794d71e0))
+* enforce tool runtime capabilities ([5ba0bc0](https://github.com/MLGBJDLW/Nexa/commit/5ba0bc0f4170318f5ea75a154148fd69b6b13f37))
+* harden agent streaming and slim runtime ([4255344](https://github.com/MLGBJDLW/Nexa/commit/4255344f438a7c3b753be83d1352af99dd4e0890))
+* **preview:** add structured PDF preview ([a3662d9](https://github.com/MLGBJDLW/Nexa/commit/a3662d9a003edd8964ac6c78676752cdfa85ef1f))
+* upgrade tool runtime lifecycle ([6833e99](https://github.com/MLGBJDLW/Nexa/commit/6833e990d2247e89937c3c28a14be61723070533))
+
+
+### Bug Fixes
+
+* **agent:** restart streams and simplify document runtime ([f48ecb2](https://github.com/MLGBJDLW/Nexa/commit/f48ecb2442fedd8db569001b5f7287cfc335211e))
+
+## [0.5.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.5.1...nexa-monorepo-v0.5.2) (2026-05-11)
+
+
+### Features
+
+* add structured Office previews ([833c5e4](https://github.com/MLGBJDLW/Nexa/commit/833c5e4b0119adf1df493ea14dac4c69dff5b650))
+* **agent:** advance task plans during execution ([9d5cf8a](https://github.com/MLGBJDLW/Nexa/commit/9d5cf8ad35a9cb2dfe39cc765eda7a43e1ed5386))
+* **chat:** improve attachments personas and previews ([1f95090](https://github.com/MLGBJDLW/Nexa/commit/1f9509022a33907001b1cfbc920f5c8e6ad878c0))
+* **office:** strengthen artifact skill guidance ([8591f73](https://github.com/MLGBJDLW/Nexa/commit/8591f7376a81e37f6f6bbe53572b6b33410d7474))
+* **tools:** add image generation adapter ([0cb9c52](https://github.com/MLGBJDLW/Nexa/commit/0cb9c5296662d05ce7360aeb375484eb824eabb3))
+
+## [0.5.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.5.0...nexa-monorepo-v0.5.1) (2026-05-10)
+
+
+### Features
+
+* improve PPT design and office tooling workflows ([24181fb](https://github.com/MLGBJDLW/Nexa/commit/24181fb7c7f0a4f4d5a7bb0613aba49b8f84eff3))
+
+## [0.5.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.4.2...nexa-monorepo-v0.5.0) (2026-05-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* upgrade PPT skill pipeline
+
+### Features
+
+* add rich office file previews ([fd5312d](https://github.com/MLGBJDLW/Nexa/commit/fd5312d3ad7b96e19e205d23bd6bb29228be8de1))
+* **agent:** improve memory skills and source diagnostics ([3e217c2](https://github.com/MLGBJDLW/Nexa/commit/3e217c2bfef11e8844445095bbc04e7a2d26464b))
+* **chat:** show run_shell file diffs ([18a0e3b](https://github.com/MLGBJDLW/Nexa/commit/18a0e3b80e8da6081da1110d53412a2470ef58dc))
+* materialize user skill resources in desktop ([6a81ee3](https://github.com/MLGBJDLW/Nexa/commit/6a81ee3fab736f08458071c80b82d7d4f5ca6b7c))
+* **ppt:** support stdin deck specs ([b7638ed](https://github.com/MLGBJDLW/Nexa/commit/b7638ed8d1623282ca6d55753c565b9c7674b1e1))
+* upgrade PPT skill pipeline ([cf07101](https://github.com/MLGBJDLW/Nexa/commit/cf0710141e56c88d72ba3864ce2ec252a78c6b0f))
+
+## [0.4.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.4.1...nexa-monorepo-v0.4.2) (2026-05-09)
+
+
+### Bug Fixes
+
+* **agent:** restore full tool visibility by default ([5375ce1](https://github.com/MLGBJDLW/Nexa/commit/5375ce17056a31865b52aa5085f9d96b598c058e))
+* **chat:** keep file diffs attached to turns ([65be7ea](https://github.com/MLGBJDLW/Nexa/commit/65be7ead8d84cbe9fb0860ad929671eb95693b5b))
+
+## [0.4.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.4.0...nexa-monorepo-v0.4.1) (2026-05-09)
+
+
+### Features
+
+* upgrade RAG governance and context packing ([4757e7b](https://github.com/MLGBJDLW/Nexa/commit/4757e7b1c7f71e8bacdbf6d7848ff8b6691b0731))
+
+
+### Bug Fixes
+
+* improve file diff previews and skill lookup ([d861df4](https://github.com/MLGBJDLW/Nexa/commit/d861df492224b746c86d107467d6d0b8d5e16e08))
+
+## [0.4.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.7...nexa-monorepo-v0.4.0) (2026-05-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* prepare 0.4.0 release
+
+### Features
+
+* add file search and multi-edit tools ([e76e5eb](https://github.com/MLGBJDLW/Nexa/commit/e76e5eba076af8c530a0f91caaa4cf853014be68))
+* allow custom project icon colors ([e56f06b](https://github.com/MLGBJDLW/Nexa/commit/e56f06bc8c4c6f61f7e1dfcf250aee10f97f1efe))
+* **chat:** surface task progress and file diffs ([08db148](https://github.com/MLGBJDLW/Nexa/commit/08db148b628b552c143cacb2362f950f10e596b9))
+* **desktop:** streamline settings and project controls ([716f444](https://github.com/MLGBJDLW/Nexa/commit/716f44486608d88c7b02d13d1bc121cfc27d210f))
+* prepare 0.4.0 release ([b6f18af](https://github.com/MLGBJDLW/Nexa/commit/b6f18af90d15b04f4b709d985dad1d038170335b))
+* show animated diff stats in tool cards ([510e94b](https://github.com/MLGBJDLW/Nexa/commit/510e94b9c879fd4cab043bd91acf4f372d944124))
+
+
+### Bug Fixes
+
+* align tool policy and namespacing ([a2a704a](https://github.com/MLGBJDLW/Nexa/commit/a2a704a92576c554e16273ab428e1548c65f20cf))
+* **core:** tighten retrieval and source tree ordering ([89992d3](https://github.com/MLGBJDLW/Nexa/commit/89992d3930c676590619e11def9ba51e4a09a195))
+
+## [0.3.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.6...nexa-monorepo-v0.3.7) (2026-05-06)
+
+
+### Features
+
+* **core:** add durable agent task primitives ([55fa94e](https://github.com/MLGBJDLW/Nexa/commit/55fa94e96b09ab9c31feca2d6bfb0906424170d5))
+* **desktop:** add agent task center ([1eb264b](https://github.com/MLGBJDLW/Nexa/commit/1eb264bf7a40959d36e9edccfbcdf3ea8bc3e237))
+* **desktop:** surface agent workflow controls ([d49a960](https://github.com/MLGBJDLW/Nexa/commit/d49a960b48adb36c7a21d29cf65c310332279e74))
+
+
+### Bug Fixes
+
+* restrict task board to update_plan progress ([d52ce9f](https://github.com/MLGBJDLW/Nexa/commit/d52ce9fa33c56f04a06400824e6cb7e3ed26c285))
+
+## [0.3.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.5...nexa-monorepo-v0.3.6) (2026-05-04)
+
+
+### Features
+
+* allow unlimited agent turn timeout ([29a037f](https://github.com/MLGBJDLW/Nexa/commit/29a037fd25364f40e1cde6550ec87e24e71d0bd8))
+* **core:** add typed agent planning and evidence audit ([77af537](https://github.com/MLGBJDLW/Nexa/commit/77af537a6a902f214efeb8ba4dca4d7d814a3ac6))
+* **core:** persist subtask runs and memory lifecycle ([f4a9c0c](https://github.com/MLGBJDLW/Nexa/commit/f4a9c0c107761c92569d148e7464eabd3b0fd80e))
+* **desktop:** surface delegated subtask execution ([85e8325](https://github.com/MLGBJDLW/Nexa/commit/85e8325487d51103ac5430fb385dfad06f406867))
+* Upgrade agent intelligence architecture ([7db3e0b](https://github.com/MLGBJDLW/Nexa/commit/7db3e0b04ecf19bfdd40eedf71119cc2ed793a9c))
+
+
+### Bug Fixes
+
+* **ci:** resolve clippy warnings ([bb21140](https://github.com/MLGBJDLW/Nexa/commit/bb211402b8f62107821042657c026902046da9dc))
+* preserve steering message order ([ed5d49b](https://github.com/MLGBJDLW/Nexa/commit/ed5d49b280b288215c47fa340ce5f284eca878c1))
+* respect open access in file tools ([46469ea](https://github.com/MLGBJDLW/Nexa/commit/46469ea40d7cc3e41859fc7620f1a04fd5ed6521))
+* show only plan progress in task board ([44b3387](https://github.com/MLGBJDLW/Nexa/commit/44b3387b078af7fd7eedca64ccfb9d9cdbea8bf7))
+
+## [0.3.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.4...nexa-monorepo-v0.3.5) (2026-05-04)
+
+
+### Features
+
+* **chat:** add project context memory and task board ([8b40dde](https://github.com/MLGBJDLW/Nexa/commit/8b40dde1428047d2d58fec1bb07f978117e2aa27))
+* **core:** add custom personas and skill activation ([324e9db](https://github.com/MLGBJDLW/Nexa/commit/324e9db548e15c279a0f7eb58205d6b979e85fe7))
+* **desktop:** expose custom persona management ([2f1fbda](https://github.com/MLGBJDLW/Nexa/commit/2f1fbda00941c90e5206fb706427e196dc17d4b7))
+* **shell:** support stdin payloads for run_shell ([d9795cd](https://github.com/MLGBJDLW/Nexa/commit/d9795cd7a4092841ab82b57acba29e61d237d9cd))
+* **sources:** add file tree preview and manual indexing control ([3061d2e](https://github.com/MLGBJDLW/Nexa/commit/3061d2e600998b18d8f2d6a41bc6036ba9431b02))
+
+
+### Bug Fixes
+
+* **desktop:** localize persona settings copy ([9518e3b](https://github.com/MLGBJDLW/Nexa/commit/9518e3b6901f1429952549057fc942431f68e09a))
+* **sources:** promote file tree into responsive detail tab ([8e7d2be](https://github.com/MLGBJDLW/Nexa/commit/8e7d2be36d9e68fc28ba563fd70235ffbb9dce7c))
+* **sources:** soften source detail expansion animation ([55fc46a](https://github.com/MLGBJDLW/Nexa/commit/55fc46ac5b389b3892415001196a743fb6ff9a8a))
+* **ui:** soften motion effects ([3d8e089](https://github.com/MLGBJDLW/Nexa/commit/3d8e0896e74c2bea4f2d60538aa9fbcec5a9e1fb))
+
+## [0.3.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.3...nexa-monorepo-v0.3.4) (2026-05-02)
+
+
+### Features
+
+* **chat:** restore compact from command palette ([c96ffcf](https://github.com/MLGBJDLW/Nexa/commit/c96ffcf0b5244af79771a279d33a8a06ac6b506a))
+* **sources:** allow refreshing source root paths ([7967fbe](https://github.com/MLGBJDLW/Nexa/commit/7967fbe4b66da8945a22f97252ee41de74aa74de))
+* **tools:** run simple filesystem commands natively ([933ec30](https://github.com/MLGBJDLW/Nexa/commit/933ec30177baebdd4d038ea28d0fdf19bf4d9964))
+
+
+### Bug Fixes
+
+* **chat:** make steering messages visible and durable ([84c4777](https://github.com/MLGBJDLW/Nexa/commit/84c47770c320b149e621a078cddce0c81d0b2dec))
+* **tools:** make edit_file tolerant of common edit shapes ([4e9b273](https://github.com/MLGBJDLW/Nexa/commit/4e9b2734fed2d15956be97e6f5baa15e53721d21))
+
+## [0.3.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.2...nexa-monorepo-v0.3.3) (2026-05-01)
+
+
+### Features
+
+* add in-app file preview editor ([30af330](https://github.com/MLGBJDLW/Nexa/commit/30af3303d13038ce85a22aa4738d56f9cf137faa))
+* add selected text agent edits ([6f9482f](https://github.com/MLGBJDLW/Nexa/commit/6f9482fa21733734e3cca66700f35ef1041a2b5c))
+
+
+### Bug Fixes
+
+* harden release workflow and office clippy ([7237fb2](https://github.com/MLGBJDLW/Nexa/commit/7237fb27bd602288c17471f1ce12869efb0c1175))
+* restore release PR flow and enlarge file preview ([8923c91](https://github.com/MLGBJDLW/Nexa/commit/8923c91d6919daf9ae07ed37da041899dcf35d79))
+* restore release PR flow and enlarge file preview ([e9d94fd](https://github.com/MLGBJDLW/Nexa/commit/e9d94fdcf5b32fa97195338ba39ac9da325c4bb8))
+* route office text edits through document skills ([458de61](https://github.com/MLGBJDLW/Nexa/commit/458de611d844646dc8b1c2ec7c294cce2311a2b5))
+
+## [0.3.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.1...nexa-monorepo-v0.3.2) (2026-05-01)
+
+
+### Features
+
+* add behavioral evals and file checkpoints ([281e0ad](https://github.com/MLGBJDLW/Nexa/commit/281e0adc1ce4556be642bce2cfad6f6305d9891d))
+* add desktop automation and role workflows ([252ebac](https://github.com/MLGBJDLW/Nexa/commit/252ebac091ff6edb929cc9bb0ef2f8e0774d700b))
+* collapse long settings panels ([ce9d555](https://github.com/MLGBJDLW/Nexa/commit/ce9d555334555c6779fd2f58c711d0709ea1a700))
+
+## [0.3.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.3.0...nexa-monorepo-v0.3.1) (2026-04-30)
+
+
+### Features
+
+* improve agent run overview and time context ([342afd7](https://github.com/MLGBJDLW/Nexa/commit/342afd72a78952f3311dddc0ee07baee245b1856))
+
+## [0.3.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.11...nexa-monorepo-v0.3.0) (2026-04-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* improve settings model tools
+* move office document workflows to skills
+
+### Features
+
+* improve settings model tools ([4be717c](https://github.com/MLGBJDLW/Nexa/commit/4be717cc96e447a9b3f273c351ce60740b07bf9d))
+* move office document workflows to skills ([7367881](https://github.com/MLGBJDLW/Nexa/commit/736788139cd7aeea6be9a6dccec2f88a19ef30e6))
+
+## [0.2.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.10...nexa-monorepo-v0.2.11) (2026-04-25)
+
+
+### Features
+
+* **agent:** add controlled self-evolution harness ([95b8f3d](https://github.com/MLGBJDLW/Nexa/commit/95b8f3da58906e438b064ce220bb93ddde107f9b))
+* harden agent runtime contracts ([86ca794](https://github.com/MLGBJDLW/Nexa/commit/86ca79451d0cd3441a3e2ad7ef5680df202891f8))
+* **office:** add document tools readiness setup ([6c8ef75](https://github.com/MLGBJDLW/Nexa/commit/6c8ef75f704a7f20755d03b7c009c393c1b7b9e3))
+* **office:** adopt python-first document workflows ([0cec8fc](https://github.com/MLGBJDLW/Nexa/commit/0cec8fcc5f004e30cc5ca7d111c4fd1e510f4ea3))
+* **office:** prepare optional document tools ([b020c6d](https://github.com/MLGBJDLW/Nexa/commit/b020c6d83fbdb454be27f2d259e9f0d9bc47a1e2))
+
+
+### Bug Fixes
+
+* **agent:** harden tools and provider switching ([897c52a](https://github.com/MLGBJDLW/Nexa/commit/897c52a037e2a7ee6920ddcff64593d3612376b3))
+* **agent:** recover interrupted streams and improve docx generation ([d9d9939](https://github.com/MLGBJDLW/Nexa/commit/d9d9939092dcb6d2619b900cefc0e4007f762a4f))
+
+## [0.2.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.9...nexa-monorepo-v0.2.10) (2026-04-25)
+
+
+### Bug Fixes
+
+* match reasoning controls to model capabilities ([f66d1a3](https://github.com/MLGBJDLW/Nexa/commit/f66d1a337f3384d9f7811701f820aa920438833d))
+* sync providers skills and release notes ([06a197e](https://github.com/MLGBJDLW/Nexa/commit/06a197eb2bbabbbba41d6d19b4ad8a89330c3f66))
+* update OpenAI presets for GPT-5.5 ([203efbc](https://github.com/MLGBJDLW/Nexa/commit/203efbcff1ce66665f18a011364b8596471d0d7b))
+
 ## [0.2.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.2.8...nexa-monorepo-v0.2.9) (2026-04-24)
 
 
