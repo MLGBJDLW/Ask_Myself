@@ -59,7 +59,8 @@ use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
 use self::sampling::{completion_response_to_agent_stream, llm_streaming_disabled_by_env};
 use self::stream_recovery::{
-    StreamConnectRetryDecision, StreamRecoveryDecision, StreamRecoveryPolicy,
+    ContextOverflowRecoveryDecision, StreamConnectRetryDecision, StreamRecoveryDecision,
+    StreamRecoveryPolicy,
 };
 use self::tool_runtime::{build_tool_run_item, tool_call_execution_batches};
 use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
@@ -76,7 +77,6 @@ pub use self::events::{AgentEvent, StreamBlockChannel, ToolRunItem, ToolRunStatu
 // Re-export so consumers don't need to depend on tokio-util directly.
 pub use tokio_util::sync::CancellationToken;
 
-const MAX_CONTEXT_RECOVERY_ATTEMPTS: u32 = 2;
 const MISSING_REASONING_CONTENT_PLACEHOLDER: &str =
     "[reasoning content unavailable in local history]";
 
@@ -87,23 +87,6 @@ struct SteeringDrainContext<'a> {
     model: &'a str,
     sort_order: &'a mut i64,
     privacy_cfg: &'a privacy::PrivacyConfig,
-}
-
-fn is_context_overflow_error(err: &CoreError) -> bool {
-    match err {
-        CoreError::ContextOverflow(..) => true,
-        CoreError::Llm(message) | CoreError::TransientLlm(message) => {
-            let lower = message.to_lowercase();
-            lower.contains("context length")
-                || lower.contains("context window")
-                || lower.contains("prompt_too_long")
-                || lower.contains("prompt is too long")
-                || lower.contains("maximum context")
-                || lower.contains("too many tokens")
-                || (lower.contains("token limit") && lower.contains("input"))
-        }
-        _ => false,
-    }
 }
 
 fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
@@ -1365,76 +1348,86 @@ impl AgentExecutor {
                                         }
                                     }
                                 }
-                                Err(e) if is_context_overflow_error(&e) => {
-                                    if context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
-                                        let message = format!(
-                                            "Context compression circuit breaker opened after {} recovery attempt(s): {}",
-                                            MAX_CONTEXT_RECOVERY_ATTEMPTS,
-                                            e
-                                        );
-                                        let _ = tx.send(AgentEvent::Error { message }).await;
-                                        if let Some(ref mut t) = trace {
-                                            t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                            if let Err(te) = db.save_agent_trace(t) {
-                                                warn!("Failed to save agent trace: {te}");
+                                Err(e) if StreamRecoveryPolicy::is_context_overflow_error(&e) => {
+                                    match stream_recovery_policy.decide_after_context_overflow(
+                                        context_recovery_attempts,
+                                        &e,
+                                    ) {
+                                        ContextOverflowRecoveryDecision::Compact {
+                                            attempt,
+                                            status_message,
+                                        } => {
+                                            context_recovery_attempts = attempt;
+                                            let _ = tx
+                                                .send(AgentEvent::Status {
+                                                    content: status_message,
+                                                    tone: Some("muted".to_string()),
+                                                })
+                                                .await;
+                                            let recovered = self
+                                                .recover_context_overflow(&mut messages, model, &tx)
+                                                .await?;
+                                            if !recovered {
+                                                let _ = tx
+                                                    .send(AgentEvent::Error {
+                                                        message: format!(
+                                                            "Context overflow could not be reduced further: {}",
+                                                            e
+                                                        ),
+                                                    })
+                                                    .await;
+                                                if let Some(ref mut t) = trace {
+                                                    t.finish(
+                                                        TraceOutcome::Error,
+                                                        Some(e.to_string()),
+                                                    );
+                                                    if let Err(te) = db.save_agent_trace(t) {
+                                                        warn!("Failed to save agent trace: {te}");
+                                                    }
+                                                }
+                                                if let Some(tid) = turn_id {
+                                                    let trace = build_turn_trace(
+                                                        route_plan.kind,
+                                                        &persisted_trace_items,
+                                                    );
+                                                    let _ = db.finalize_conversation_turn(
+                                                        tid,
+                                                        "error",
+                                                        None,
+                                                        Some(&trace),
+                                                    );
+                                                }
+                                                return Err(e);
                                             }
                                         }
-                                        if let Some(tid) = turn_id {
-                                            let trace = build_turn_trace(
-                                                route_plan.kind,
-                                                &persisted_trace_items,
-                                            );
-                                            let _ = db.finalize_conversation_turn(
-                                                tid,
-                                                "error",
-                                                None,
-                                                Some(&trace),
-                                            );
-                                        }
-                                        return Err(e);
-                                    }
-
-                                    context_recovery_attempts += 1;
-                                    let _ = tx
-                                        .send(AgentEvent::Status {
-                                            content: format!(
-                                                "Context window overflow detected. Compacting history and retrying ({}/{})",
-                                                context_recovery_attempts, MAX_CONTEXT_RECOVERY_ATTEMPTS
-                                            ),
-                                            tone: Some("muted".to_string()),
-                                        })
-                                        .await;
-                                    let recovered = self
-                                        .recover_context_overflow(&mut messages, model, &tx)
-                                        .await?;
-                                    if !recovered {
-                                        let _ = tx
-                                            .send(AgentEvent::Error {
-                                                message: format!(
-                                                    "Context overflow could not be reduced further: {}",
-                                                    e
-                                                ),
-                                            })
-                                            .await;
-                                        if let Some(ref mut t) = trace {
-                                            t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                            if let Err(te) = db.save_agent_trace(t) {
-                                                warn!("Failed to save agent trace: {te}");
+                                        ContextOverflowRecoveryDecision::GiveUp {
+                                            user_message,
+                                        } => {
+                                            let _ = tx
+                                                .send(AgentEvent::Error {
+                                                    message: user_message,
+                                                })
+                                                .await;
+                                            if let Some(ref mut t) = trace {
+                                                t.finish(TraceOutcome::Error, Some(e.to_string()));
+                                                if let Err(te) = db.save_agent_trace(t) {
+                                                    warn!("Failed to save agent trace: {te}");
+                                                }
                                             }
+                                            if let Some(tid) = turn_id {
+                                                let trace = build_turn_trace(
+                                                    route_plan.kind,
+                                                    &persisted_trace_items,
+                                                );
+                                                let _ = db.finalize_conversation_turn(
+                                                    tid,
+                                                    "error",
+                                                    None,
+                                                    Some(&trace),
+                                                );
+                                            }
+                                            return Err(e);
                                         }
-                                        if let Some(tid) = turn_id {
-                                            let trace = build_turn_trace(
-                                                route_plan.kind,
-                                                &persisted_trace_items,
-                                            );
-                                            let _ = db.finalize_conversation_turn(
-                                                tid,
-                                                "error",
-                                                None,
-                                                Some(&trace),
-                                            );
-                                        }
-                                        return Err(e);
                                     }
                                 }
                                 Err(e) => {

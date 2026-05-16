@@ -1,5 +1,8 @@
 use std::time::Duration;
 
+use crate::error::CoreError;
+
+pub(super) const MAX_CONTEXT_RECOVERY_ATTEMPTS: u32 = 2;
 pub(super) const MAX_STREAM_DISCONNECT_RETRIES: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,8 +32,20 @@ pub(super) enum StreamConnectRetryDecision {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ContextOverflowRecoveryDecision {
+    Compact {
+        attempt: u32,
+        status_message: String,
+    },
+    GiveUp {
+        user_message: String,
+    },
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct StreamRecoveryPolicy {
+    max_context_recovery_attempts: u32,
     max_connect_retries: u32,
     max_disconnect_retries: u32,
 }
@@ -38,6 +53,7 @@ pub(super) struct StreamRecoveryPolicy {
 impl Default for StreamRecoveryPolicy {
     fn default() -> Self {
         Self {
+            max_context_recovery_attempts: MAX_CONTEXT_RECOVERY_ATTEMPTS,
             max_connect_retries: 3,
             max_disconnect_retries: MAX_STREAM_DISCONNECT_RETRIES,
         }
@@ -45,6 +61,47 @@ impl Default for StreamRecoveryPolicy {
 }
 
 impl StreamRecoveryPolicy {
+    pub(super) fn is_context_overflow_error(error: &CoreError) -> bool {
+        match error {
+            CoreError::ContextOverflow(..) => true,
+            CoreError::Llm(message) | CoreError::TransientLlm(message) => {
+                let lower = message.to_lowercase();
+                lower.contains("context length")
+                    || lower.contains("context window")
+                    || lower.contains("prompt_too_long")
+                    || lower.contains("prompt is too long")
+                    || lower.contains("maximum context")
+                    || lower.contains("too many tokens")
+                    || (lower.contains("token limit") && lower.contains("input"))
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn decide_after_context_overflow(
+        self,
+        completed_attempts: u32,
+        error: &CoreError,
+    ) -> ContextOverflowRecoveryDecision {
+        if completed_attempts >= self.max_context_recovery_attempts {
+            return ContextOverflowRecoveryDecision::GiveUp {
+                user_message: format!(
+                    "Context compression circuit breaker opened after {} recovery attempt(s): {}",
+                    self.max_context_recovery_attempts, error
+                ),
+            };
+        }
+
+        let attempt = completed_attempts + 1;
+        ContextOverflowRecoveryDecision::Compact {
+            attempt,
+            status_message: format!(
+                "Context window overflow detected. Compacting history and retrying ({}/{})",
+                attempt, self.max_context_recovery_attempts
+            ),
+        }
+    }
+
     pub(super) fn decide_after_rate_limit(
         self,
         completed_retries: u32,
@@ -146,6 +203,45 @@ mod tests {
                         .to_string(),
                 reset_reason: "Stream interrupted; reconnecting model stream (1/2).".to_string(),
                 delay: Duration::from_millis(250),
+            }
+        );
+    }
+
+    #[test]
+    fn detects_context_overflow_errors_from_structured_and_provider_messages() {
+        assert!(StreamRecoveryPolicy::is_context_overflow_error(
+            &CoreError::ContextOverflow(10, 5)
+        ));
+        assert!(StreamRecoveryPolicy::is_context_overflow_error(
+            &CoreError::Llm("maximum context length exceeded".to_string())
+        ));
+        assert!(!StreamRecoveryPolicy::is_context_overflow_error(
+            &CoreError::Llm("provider refused request".to_string())
+        ));
+    }
+
+    #[test]
+    fn context_overflow_compacts_until_recovery_budget_is_used() {
+        let compact = StreamRecoveryPolicy::default()
+            .decide_after_context_overflow(1, &CoreError::ContextOverflow(10, 5));
+        let give_up = StreamRecoveryPolicy::default()
+            .decide_after_context_overflow(2, &CoreError::ContextOverflow(10, 5));
+
+        assert_eq!(
+            compact,
+            ContextOverflowRecoveryDecision::Compact {
+                attempt: 2,
+                status_message:
+                    "Context window overflow detected. Compacting history and retrying (2/2)"
+                        .to_string(),
+            }
+        );
+        assert_eq!(
+            give_up,
+            ContextOverflowRecoveryDecision::GiveUp {
+                user_message:
+                    "Context compression circuit breaker opened after 2 recovery attempt(s): LLM context window exceeded: 10 tokens > 5 max"
+                        .to_string(),
             }
         );
     }
