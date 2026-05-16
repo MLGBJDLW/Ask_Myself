@@ -878,8 +878,9 @@ impl AgentExecutor {
                     if let Err(e) = db.add_message(&conv_msg) {
                         error!("Failed to persist message: {e}");
                         let _ = tx
-                            .send(AgentEvent::Error {
-                                message: format!("Warning: message was not saved to history: {e}"),
+                            .send(AgentEvent::Status {
+                                content: format!("Warning: message was not saved to history: {e}"),
+                                tone: Some("warning".to_string()),
                             })
                             .await;
                     }
@@ -1007,10 +1008,11 @@ impl AgentExecutor {
                         if let Err(e) = db.add_message(&conv_msg) {
                             error!("Failed to persist message: {e}");
                             let _ = tx
-                                .send(AgentEvent::Error {
-                                    message: format!(
+                                .send(AgentEvent::Status {
+                                    content: format!(
                                         "Warning: message was not saved to history: {e}"
                                     ),
+                                    tone: Some("warning".to_string()),
                                 })
                                 .await;
                         }
@@ -3448,8 +3450,9 @@ impl AgentExecutor {
                     if let Err(e) = db.add_message(&conv_msg) {
                         error!("Failed to persist message: {e}");
                         let _ = tx
-                            .send(AgentEvent::Error {
-                                message: format!("Warning: message was not saved to history: {e}"),
+                            .send(AgentEvent::Status {
+                                content: format!("Warning: message was not saved to history: {e}"),
+                                tone: Some("warning".to_string()),
                             })
                             .await;
                     }
