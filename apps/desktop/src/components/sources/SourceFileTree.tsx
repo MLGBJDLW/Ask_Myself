@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../../lib/api';
-import { canPreviewInApp, useFilePreview } from '../../lib/filePreviewContext';
+import { canPreviewInApp, useFilePreview } from '../../features/preview';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 

@@ -17,7 +17,7 @@ import { Layout } from "./components/Layout";
 import { CommandPalette } from "./components/CommandPalette";
 import { StreamProvider } from "./lib/StreamProvider";
 import { ProgressProvider } from "./lib/ProgressProvider";
-import { FilePreviewProvider } from "./lib/FilePreviewProvider";
+import { FilePreviewProvider } from "./features/preview";
 import * as api from "./lib/api";
 import { useAutoCompile } from "./lib/useAutoCompile";
 import { useAutoHealthCheck } from "./lib/useAutoHealthCheck";

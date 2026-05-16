@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { Tooltip } from './Tooltip';
 import { openFileInDefaultApp, showInFileExplorer } from '../../lib/api';
-import { canPreviewInApp, useFilePreview } from '../../lib/filePreviewContext';
+import { canPreviewInApp, useFilePreview } from '../../features/preview';
 
 interface FileBadgeProps {
   path: string;

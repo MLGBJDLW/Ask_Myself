@@ -14,7 +14,7 @@ import { Skeleton, CardSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { undoableAction } from '../lib/undoToast';
-import { canPreviewInApp, useFilePreview } from '../lib/filePreviewContext';
+import { canPreviewInApp, useFilePreview } from '../features/preview';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { isWebUrl, sourceBasename } from '../lib/sourceDisplay';
 

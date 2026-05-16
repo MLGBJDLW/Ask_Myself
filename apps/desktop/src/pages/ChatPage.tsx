@@ -4,8 +4,9 @@ import { Settings, PanelLeftClose, PanelLeftOpen, UserRound } from 'lucide-react
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
-import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatMessages, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard } from '../components/chat';
+import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
+import { ChatMessages } from '../features/chat';
 import { useApprovalQueue } from '../lib/useApprovalQueue';
 import { useTranslation } from '../i18n';
 import { EmptyState } from '../components/ui/EmptyState';
