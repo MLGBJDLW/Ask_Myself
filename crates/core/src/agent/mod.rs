@@ -1612,6 +1612,12 @@ impl AgentExecutor {
                             stream_incomplete_detail = Some(detail);
                             break;
                         }
+                        StreamLoopEvent::Provider(Some(ProviderStreamEvent::Cancelled {
+                            message,
+                        })) => {
+                            warn!("LLM stream cancelled: {message}");
+                            return Err(CoreError::Cancelled(message));
+                        }
                         StreamLoopEvent::Provider(Some(ProviderStreamEvent::TerminalError {
                             message,
                         })) => {

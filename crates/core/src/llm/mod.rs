@@ -290,6 +290,7 @@ pub struct StreamChunk {
 pub enum ProviderStreamEvent {
     Chunk { chunk: StreamChunk },
     RecoverableError { message: String },
+    Cancelled { message: String },
     TerminalError { message: String },
 }
 
@@ -308,6 +309,7 @@ fn provider_stream_event_from_chunk_result(
         Err(CoreError::StreamIncomplete(message) | CoreError::TransientLlm(message)) => {
             ProviderStreamEvent::RecoverableError { message }
         }
+        Err(CoreError::Cancelled(message)) => ProviderStreamEvent::Cancelled { message },
         Err(error) => ProviderStreamEvent::TerminalError {
             message: error.to_string(),
         },
@@ -553,6 +555,22 @@ mod tests {
             &events[0],
             ProviderStreamEvent::RecoverableError { message }
                 if message == "temporary network failure"
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_chunk_adapter_classifies_cancelled_separately() {
+        let source = Box::pin(stream::iter(vec![Err(CoreError::Cancelled(
+            "user stopped request".to_string(),
+        ))]));
+
+        let events = stream_chunks_to_provider_events(source)
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(matches!(
+            &events[0],
+            ProviderStreamEvent::Cancelled { message } if message == "user stopped request"
         ));
     }
 
