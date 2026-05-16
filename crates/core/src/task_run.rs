@@ -20,6 +20,7 @@ pub enum TaskRunStatus {
     WaitingApproval,
     Completed,
     Failed,
+    TimedOut,
     Cancelled,
 }
 
@@ -31,6 +32,7 @@ impl TaskRunStatus {
             Self::WaitingApproval => "waiting_approval",
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::TimedOut => "timed_out",
             Self::Cancelled => "cancelled",
         }
     }
@@ -294,13 +296,20 @@ impl<'a> AgentTaskRuntime<'a> {
                 None,
                 None,
             ),
-            AgentRunEventKind::Error => self.db.finish_agent_task_run(
-                run_id,
-                TaskRunStatus::Failed.as_str(),
-                Some("Agent execution failed"),
-                Some(&event.label),
-                None,
-            ),
+            AgentRunEventKind::Error => {
+                let (status, summary) = match event.status.as_deref() {
+                    Some("cancelled") => (TaskRunStatus::Cancelled, "Agent execution cancelled"),
+                    Some("timed_out") => (TaskRunStatus::TimedOut, "Agent execution timed out"),
+                    _ => (TaskRunStatus::Failed, "Agent execution failed"),
+                };
+                self.db.finish_agent_task_run(
+                    run_id,
+                    status.as_str(),
+                    Some(summary),
+                    Some(&event.label),
+                    None,
+                )
+            }
             AgentRunEventKind::OutputDelta
             | AgentRunEventKind::StreamReset
             | AgentRunEventKind::Thinking
@@ -317,6 +326,50 @@ mod tests {
     use crate::agent_run::AgentRunEvent;
     use crate::conversation::{ConversationMessage, CreateConversationInput};
     use crate::llm::Role;
+
+    fn create_started_run(db: &Database, suffix: &str) -> (String, String) {
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".to_string(),
+                model: "gpt-4o".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let message = ConversationMessage {
+            id: format!("msg-{suffix}"),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "Investigate my notes.".to_string(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&message).unwrap();
+        let turn = db
+            .create_conversation_turn(&conversation.id, &message.id, None)
+            .unwrap();
+        let runtime = AgentTaskRuntime::new(db);
+        let run = runtime
+            .create_run(CreateTaskRunInput {
+                conversation_id: &conversation.id,
+                turn_id: &turn.id,
+                user_message_id: &message.id,
+                title: "Investigate my notes",
+                provider: Some("openai"),
+                model: Some("gpt-4o"),
+            })
+            .unwrap();
+        runtime.start_run(&run.id, "routing").unwrap();
+        (run.id, turn.id)
+    }
 
     #[test]
     fn runtime_applies_run_events_and_subtasks() {
@@ -411,5 +464,26 @@ mod tests {
         let run = db.get_agent_task_run(&run.id).unwrap();
         assert_eq!(run.phase, "routing");
         assert_eq!(run.route_kind.as_deref(), Some("KnowledgeRetrieval"));
+    }
+
+    #[test]
+    fn runtime_preserves_terminal_error_statuses() {
+        let db = Database::open_memory().unwrap();
+        let runtime = AgentTaskRuntime::new(&db);
+
+        for (seq, status) in [(1, "failed"), (2, "cancelled"), (3, "timed_out")] {
+            let (run_id, turn_id) = create_started_run(&db, status);
+            let mut run_event = AgentRunEvent::from_agent_event(&AgentEvent::Error {
+                message: format!("terminal {status}"),
+            })
+            .with_context(Some(&run_id), Some(&turn_id), Some(seq));
+            run_event.status = Some(status.to_string());
+
+            let stored_event = runtime.apply_run_event(&run_id, &run_event).unwrap();
+            let run = db.get_agent_task_run(&run_id).unwrap();
+
+            assert_eq!(stored_event.status.as_deref(), Some(status));
+            assert_eq!(run.status, status);
+        }
     }
 }
