@@ -76,7 +76,7 @@ interface InternalStreamState extends StreamState {
 
 /* ── Helper functions ───────────────────────────────────────────── */
 
-type AgentEventType = AgentFrontendEvent['type'];
+type AgentEventType = NonNullable<AgentFrontendEvent['type']>;
 
 function normalizeAgentEventType(value: unknown): AgentEventType | null {
   if (typeof value !== 'string') return null;
@@ -948,17 +948,18 @@ class StreamStoreImpl {
     const eventType = normalizeAgentEventType(raw.type);
     if (!eventType) return;
     const isTaskLifecycleEvent = eventType === 'taskRunUpdated' || eventType === 'taskRunEvent';
+    const isTerminalEvent = eventType === 'done' || eventType === 'error';
 
     let s = this._streams[conversationId];
     if (!s) {
-      if (!event.runEvent && !isTaskLifecycleEvent && eventType !== 'done' && eventType !== 'error') {
+      if (!event.runEvent && !isTaskLifecycleEvent && !isTerminalEvent) {
         return;
       }
       s = createDefaultState();
-      s.isStreaming = eventType !== 'done' && eventType !== 'error';
+      s.isStreaming = !isTerminalEvent;
       this._streams[conversationId] = s;
     }
-    if (!s.isStreaming && !isTaskLifecycleEvent) return;
+    if (!s.isStreaming && !isTaskLifecycleEvent && !isTerminalEvent) return;
 
     const eventSeqRaw = event.eventSeq ?? raw.eventSeq;
     const eventSeq = typeof eventSeqRaw === 'number'

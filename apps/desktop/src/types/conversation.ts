@@ -526,7 +526,7 @@ export interface ApprovalPolicyList {
 export interface AgentFrontendEvent {
   conversationId: string;
   runEvent?: AgentRunEvent;
-  type: AgentEvent['type'];
+  type?: AgentEvent['type'];
   eventSeq?: number;
   summary?: string;
   delta?: string;

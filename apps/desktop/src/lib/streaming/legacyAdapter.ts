@@ -2,6 +2,7 @@ import type { AgentFrontendEvent } from '../../types';
 import type { AgentRunEvent, AgentTaskRunEvent } from '../../types/conversation';
 
 type PayloadRecord = Record<string, unknown>;
+type LegacyAgentEventType = NonNullable<AgentFrontendEvent['type']>;
 
 function asRecord(value: unknown): PayloadRecord | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -15,6 +16,42 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function fallbackTypeForRunEvent(kind: AgentRunEvent['kind']): LegacyAgentEventType | null {
+  switch (kind) {
+    case 'outputDelta':
+      return 'streamBlockDelta';
+    case 'streamReset':
+      return 'streamReset';
+    case 'thinking':
+      return 'thinking';
+    case 'status':
+    case 'recoveryAttempt':
+      return 'status';
+    case 'toolPreparing':
+      return 'toolCallPreparing';
+    case 'toolStarted':
+      return 'toolRunStarted';
+    case 'toolProgress':
+      return 'toolRunUpdated';
+    case 'toolCompleted':
+      return 'toolRunCompleted';
+    case 'approvalRequested':
+      return 'approvalRequested';
+    case 'approvalResolved':
+      return 'approvalResolved';
+    case 'usageUpdated':
+      return 'usageUpdate';
+    case 'autoCompacted':
+      return 'autoCompacted';
+    case 'done':
+      return 'done';
+    case 'error':
+      return 'error';
+    default:
+      return null;
+  }
 }
 
 export function adaptFrontendRunEvent(event: AgentFrontendEvent): AgentFrontendEvent {
@@ -65,7 +102,17 @@ export function adaptFrontendRunEvent(event: AgentFrontendEvent): AgentFrontendE
     };
   }
 
-  return base;
+  const fallbackType = fallbackTypeForRunEvent(runEvent.kind);
+  if (!fallbackType) return base;
+
+  return {
+    ...base,
+    type: fallbackType,
+    content: fallbackType === 'status' ? runEvent.label : event.content,
+    message: fallbackType === 'error' || fallbackType === 'done'
+      ? (payload.message as AgentFrontendEvent['message'] | undefined) ?? runEvent.label
+      : event.message,
+  };
 }
 
 export interface ReplayStreamItem {

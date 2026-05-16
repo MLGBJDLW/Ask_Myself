@@ -129,6 +129,24 @@ test('adapts recoveryAttempt into a muted status update', () => {
   assertEqual(event.tone, 'muted', 'tone');
 });
 
+test('adapts canonical terminal events without a legacy envelope type', () => {
+  const event = adaptFrontendRunEvent({
+    conversationId: 'conversation-1',
+    runEvent: runEvent({
+      eventSeq: 9,
+      kind: 'error',
+      phase: 'done',
+      label: 'Agent execution timed out.',
+      status: 'failed',
+      payload: { message: 'Agent execution timed out.' },
+    }),
+  } as AgentFrontendEvent);
+
+  assertEqual(event.type, 'error', 'event type');
+  assertEqual(event.eventSeq, 9, 'eventSeq');
+  assertEqual(event.message, 'Agent execution timed out.', 'message');
+});
+
 test('builds durable replay items from canonical and legacy task events in eventSeq order', () => {
   const events = [
     taskEvent({
@@ -291,6 +309,33 @@ test('restoreFromTaskEvents projects terminal error replay into stream state', (
   assert(
     restored.traceEvents.some(event => event.kind === 'status' && event.tone === 'error'),
     'terminal replay should add an error status trace',
+  );
+
+  streamStore.clearStream(conversationId);
+});
+
+test('dispatches canonical terminal errors without an active stream state', () => {
+  const conversationId = 'conversation-no-state-terminal';
+
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: runEvent({
+      eventSeq: 1,
+      kind: 'error',
+      phase: 'done',
+      label: 'Agent execution timed out.',
+      status: 'failed',
+      payload: { message: 'Agent execution timed out.' },
+    }),
+  } as AgentFrontendEvent);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'terminal event should create stream state');
+  assertEqual(restored.isStreaming, false, 'terminal event stops streaming');
+  assertEqual(restored.error, 'Agent execution timed out.', 'terminal event error');
+  assert(
+    restored.traceEvents.some(event => event.kind === 'status' && event.tone === 'error'),
+    'terminal event should add an error status trace',
   );
 
   streamStore.clearStream(conversationId);
