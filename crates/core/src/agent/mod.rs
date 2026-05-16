@@ -93,6 +93,35 @@ fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
     tool_scheduler::compact_tool_result_for_context(tool_name, content)
 }
 
+async fn emit_error_and_finalize_turn(
+    tx: &mpsc::Sender<AgentEvent>,
+    db: &Database,
+    trace: &mut Option<AgentTrace>,
+    turn_id: Option<&str>,
+    route_kind: AgentRouteKind,
+    persisted_trace_items: &[PersistedTraceItem],
+    frontend_message: String,
+    trace_message: String,
+) {
+    let _ = tx
+        .send(AgentEvent::Error {
+            message: frontend_message,
+        })
+        .await;
+
+    if let Some(active_trace) = trace {
+        active_trace.finish(TraceOutcome::Error, Some(trace_message));
+        if let Err(err) = db.save_agent_trace(active_trace) {
+            warn!("Failed to save agent trace: {err}");
+        }
+    }
+
+    if let Some(tid) = turn_id {
+        let trace = build_turn_trace(route_kind, persisted_trace_items);
+        let _ = db.finalize_conversation_turn(tid, "error", None, Some(&trace));
+    }
+}
+
 /// User input injected into an already-running agent turn.
 ///
 /// Steering messages are intentionally consumed only between LLM/tool rounds,
@@ -1203,27 +1232,17 @@ impl AgentExecutor {
                                 )
                             }
                             Err(e) => {
-                                let _ = tx
-                                    .send(AgentEvent::Error {
-                                        message: e.to_string(),
-                                    })
-                                    .await;
-                                if let Some(ref mut t) = trace {
-                                    t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                    if let Err(te) = db.save_agent_trace(t) {
-                                        warn!("Failed to save agent trace: {te}");
-                                    }
-                                }
-                                if let Some(tid) = turn_id {
-                                    let trace =
-                                        build_turn_trace(route_plan.kind, &persisted_trace_items);
-                                    let _ = db.finalize_conversation_turn(
-                                        tid,
-                                        "error",
-                                        None,
-                                        Some(&trace),
-                                    );
-                                }
+                                emit_error_and_finalize_turn(
+                                    &tx,
+                                    db,
+                                    &mut trace,
+                                    turn_id,
+                                    route_plan.kind,
+                                    &persisted_trace_items,
+                                    e.to_string(),
+                                    e.to_string(),
+                                )
+                                .await;
                                 return Err(e);
                             }
                         }
@@ -1262,29 +1281,17 @@ impl AgentExecutor {
                                             user_message,
                                             trace_message,
                                         } => {
-                                            let _ = tx
-                                                .send(AgentEvent::Error {
-                                                    message: user_message,
-                                                })
-                                                .await;
-                                            if let Some(ref mut t) = trace {
-                                                t.finish(TraceOutcome::Error, Some(trace_message));
-                                                if let Err(te) = db.save_agent_trace(t) {
-                                                    warn!("Failed to save agent trace: {te}");
-                                                }
-                                            }
-                                            if let Some(tid) = turn_id {
-                                                let trace = build_turn_trace(
-                                                    route_plan.kind,
-                                                    &persisted_trace_items,
-                                                );
-                                                let _ = db.finalize_conversation_turn(
-                                                    tid,
-                                                    "error",
-                                                    None,
-                                                    Some(&trace),
-                                                );
-                                            }
+                                            emit_error_and_finalize_turn(
+                                                &tx,
+                                                db,
+                                                &mut trace,
+                                                turn_id,
+                                                route_plan.kind,
+                                                &persisted_trace_items,
+                                                user_message,
+                                                trace_message,
+                                            )
+                                            .await;
                                             return Err(CoreError::RateLimited {
                                                 retry_after_secs,
                                             });
@@ -1318,32 +1325,17 @@ impl AgentExecutor {
                                             user_message,
                                             trace_message,
                                         } => {
-                                            let _ = tx
-                                                .send(AgentEvent::Error {
-                                                    message: user_message,
-                                                })
-                                                .await;
-                                            if let Some(ref mut t) = trace {
-                                                t.finish(
-                                                    TraceOutcome::Error,
-                                                    Some(trace_message.clone()),
-                                                );
-                                                if let Err(te) = db.save_agent_trace(t) {
-                                                    warn!("Failed to save agent trace: {te}");
-                                                }
-                                            }
-                                            if let Some(tid) = turn_id {
-                                                let trace = build_turn_trace(
-                                                    route_plan.kind,
-                                                    &persisted_trace_items,
-                                                );
-                                                let _ = db.finalize_conversation_turn(
-                                                    tid,
-                                                    "error",
-                                                    None,
-                                                    Some(&trace),
-                                                );
-                                            }
+                                            emit_error_and_finalize_turn(
+                                                &tx,
+                                                db,
+                                                &mut trace,
+                                                turn_id,
+                                                route_plan.kind,
+                                                &persisted_trace_items,
+                                                user_message,
+                                                trace_message.clone(),
+                                            )
+                                            .await;
                                             return Err(CoreError::Llm(trace_message));
                                         }
                                     }
@@ -1368,93 +1360,53 @@ impl AgentExecutor {
                                                 .recover_context_overflow(&mut messages, model, &tx)
                                                 .await?;
                                             if !recovered {
-                                                let _ = tx
-                                                    .send(AgentEvent::Error {
-                                                        message: format!(
-                                                            "Context overflow could not be reduced further: {}",
-                                                            e
-                                                        ),
-                                                    })
-                                                    .await;
-                                                if let Some(ref mut t) = trace {
-                                                    t.finish(
-                                                        TraceOutcome::Error,
-                                                        Some(e.to_string()),
-                                                    );
-                                                    if let Err(te) = db.save_agent_trace(t) {
-                                                        warn!("Failed to save agent trace: {te}");
-                                                    }
-                                                }
-                                                if let Some(tid) = turn_id {
-                                                    let trace = build_turn_trace(
-                                                        route_plan.kind,
-                                                        &persisted_trace_items,
-                                                    );
-                                                    let _ = db.finalize_conversation_turn(
-                                                        tid,
-                                                        "error",
-                                                        None,
-                                                        Some(&trace),
-                                                    );
-                                                }
+                                                emit_error_and_finalize_turn(
+                                                    &tx,
+                                                    db,
+                                                    &mut trace,
+                                                    turn_id,
+                                                    route_plan.kind,
+                                                    &persisted_trace_items,
+                                                    format!(
+                                                        "Context overflow could not be reduced further: {}",
+                                                        e
+                                                    ),
+                                                    e.to_string(),
+                                                )
+                                                .await;
                                                 return Err(e);
                                             }
                                         }
                                         ContextOverflowRecoveryDecision::GiveUp {
                                             user_message,
                                         } => {
-                                            let _ = tx
-                                                .send(AgentEvent::Error {
-                                                    message: user_message,
-                                                })
-                                                .await;
-                                            if let Some(ref mut t) = trace {
-                                                t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                                if let Err(te) = db.save_agent_trace(t) {
-                                                    warn!("Failed to save agent trace: {te}");
-                                                }
-                                            }
-                                            if let Some(tid) = turn_id {
-                                                let trace = build_turn_trace(
-                                                    route_plan.kind,
-                                                    &persisted_trace_items,
-                                                );
-                                                let _ = db.finalize_conversation_turn(
-                                                    tid,
-                                                    "error",
-                                                    None,
-                                                    Some(&trace),
-                                                );
-                                            }
+                                            emit_error_and_finalize_turn(
+                                                &tx,
+                                                db,
+                                                &mut trace,
+                                                turn_id,
+                                                route_plan.kind,
+                                                &persisted_trace_items,
+                                                user_message,
+                                                e.to_string(),
+                                            )
+                                            .await;
                                             return Err(e);
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    let _ = tx
-                                        .send(AgentEvent::Error {
-                                            message: e.to_string(),
-                                        })
-                                        .await;
-                                    // Trace: error
-                                    if let Some(ref mut t) = trace {
-                                        t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                        if let Err(te) = db.save_agent_trace(t) {
-                                            warn!("Failed to save agent trace: {te}");
-                                        }
-                                    }
-                                    if let Some(tid) = turn_id {
-                                        let trace = build_turn_trace(
-                                            route_plan.kind,
-                                            &persisted_trace_items,
-                                        );
-                                        let _ = db.finalize_conversation_turn(
-                                            tid,
-                                            "error",
-                                            None,
-                                            Some(&trace),
-                                        );
-                                    }
+                                    emit_error_and_finalize_turn(
+                                        &tx,
+                                        db,
+                                        &mut trace,
+                                        turn_id,
+                                        route_plan.kind,
+                                        &persisted_trace_items,
+                                        e.to_string(),
+                                        e.to_string(),
+                                    )
+                                    .await;
                                     return Err(e);
                                 }
                             }
@@ -1623,24 +1575,17 @@ impl AgentExecutor {
                         })) => {
                             let e = CoreError::Llm(message);
                             error!("LLM stream error: {e}");
-                            let _ = tx
-                                .send(AgentEvent::Error {
-                                    message: e.to_string(),
-                                })
-                                .await;
-                            // Trace: error
-                            if let Some(ref mut t) = trace {
-                                t.finish(TraceOutcome::Error, Some(e.to_string()));
-                                if let Err(te) = db.save_agent_trace(t) {
-                                    warn!("Failed to save agent trace: {te}");
-                                }
-                            }
-                            if let Some(tid) = turn_id {
-                                let trace =
-                                    build_turn_trace(route_plan.kind, &persisted_trace_items);
-                                let _ =
-                                    db.finalize_conversation_turn(tid, "error", None, Some(&trace));
-                            }
+                            emit_error_and_finalize_turn(
+                                &tx,
+                                db,
+                                &mut trace,
+                                turn_id,
+                                route_plan.kind,
+                                &persisted_trace_items,
+                                e.to_string(),
+                                e.to_string(),
+                            )
+                            .await;
                             return Err(e);
                         }
                     }
@@ -1801,29 +1746,17 @@ impl AgentExecutor {
                                     let message = format!(
                                         "Stream interrupted and non-streaming retry failed: {err}"
                                     );
-                                    let _ = tx
-                                        .send(AgentEvent::Error {
-                                            message: message.clone(),
-                                        })
-                                        .await;
-                                    if let Some(ref mut t) = trace {
-                                        t.finish(TraceOutcome::Error, Some(message.clone()));
-                                        if let Err(te) = db.save_agent_trace(t) {
-                                            warn!("Failed to save agent trace: {te}");
-                                        }
-                                    }
-                                    if let Some(tid) = turn_id {
-                                        let trace = build_turn_trace(
-                                            route_plan.kind,
-                                            &persisted_trace_items,
-                                        );
-                                        let _ = db.finalize_conversation_turn(
-                                            tid,
-                                            "error",
-                                            None,
-                                            Some(&trace),
-                                        );
-                                    }
+                                    emit_error_and_finalize_turn(
+                                        &tx,
+                                        db,
+                                        &mut trace,
+                                        turn_id,
+                                        route_plan.kind,
+                                        &persisted_trace_items,
+                                        message.clone(),
+                                        message,
+                                    )
+                                    .await;
                                     return Err(CoreError::StreamIncomplete(format!(
                                         "{detail}; fallback failed: {err}"
                                     )));
