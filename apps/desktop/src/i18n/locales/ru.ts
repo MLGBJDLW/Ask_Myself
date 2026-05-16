@@ -784,7 +784,7 @@ export const ru: TranslationKeys = {
   'chat.askAiScopedHint': 'Ask AI останется в пределах этого набора источников',
   'chat.traceOutputReady': 'Output ready',
   'chat.toolTimeout': 'Вызов инструмента истёк по тайм-ауту.',
-  'chat.connectionLost': 'Соединение потеряно — нет ответа в течение 30 секунд. Вы можете повторить сообщение.',
+  'chat.connectionLost': 'Соединение потеряно — нет ответа в течение 120 секунд. Вы можете повторить сообщение.',
   'chat.toolNoOutput': 'Завершено без явного вывода.',
   'chat.toolInterrupted': 'Вызов инструмента прерван ошибкой агента.',
   'chat.unknownError': 'Неизвестная ошибка',

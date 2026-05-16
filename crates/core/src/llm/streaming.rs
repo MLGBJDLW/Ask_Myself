@@ -331,6 +331,188 @@ fn split_think_tags(
     (visible, thinking)
 }
 
+fn decode_sse_line(line_bytes: &[u8]) -> String {
+    match std::str::from_utf8(line_bytes) {
+        Ok(line) => line.to_string(),
+        Err(e) => {
+            warn!(
+                "Invalid UTF-8 in complete SSE line ({} bytes): {e} — decoding lossy",
+                line_bytes.len()
+            );
+            String::from_utf8_lossy(line_bytes).into_owned()
+        }
+    }
+}
+
+fn drain_complete_sse_lines(buffer: &mut Vec<u8>) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+
+    while let Some(relative_newline) = buffer[start..].iter().position(|byte| *byte == b'\n') {
+        let newline_pos = start + relative_newline;
+        let mut line_bytes = &buffer[start..newline_pos];
+        if line_bytes.ends_with(b"\r") {
+            line_bytes = &line_bytes[..line_bytes.len().saturating_sub(1)];
+        }
+        lines.push(decode_sse_line(line_bytes));
+        start = newline_pos + 1;
+    }
+
+    if start > 0 {
+        buffer.drain(..start);
+    }
+
+    lines
+}
+
+async fn process_sse_line(
+    line: String,
+    tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
+    in_think_block: &mut bool,
+    think_tag_buffer: &mut String,
+) -> Result<bool, CoreError> {
+    if line.is_empty() {
+        return Ok(false);
+    }
+
+    // Only process `data:` lines; ignore `event:`, `id:`, `retry:`, etc.
+    let Some(data) = line
+        .strip_prefix("data: ")
+        .or_else(|| line.strip_prefix("data:"))
+    else {
+        return Ok(false);
+    };
+
+    let data = data.trim();
+
+    // Stream termination signal.
+    if data == "[DONE]" {
+        debug!("SSE [DONE] received");
+        // Flush any held-back buffer content at stream end.
+        if !think_tag_buffer.is_empty() {
+            let tail = std::mem::take(think_tag_buffer);
+            if *in_think_block {
+                let _ = tx
+                    .send(Ok(StreamChunk {
+                        delta: String::new(),
+                        tool_call_delta: None,
+                        finish_reason: None,
+                        usage: None,
+                        thinking_delta: Some(tail),
+                    }))
+                    .await;
+            } else {
+                let _ = tx
+                    .send(Ok(StreamChunk {
+                        delta: tail,
+                        tool_call_delta: None,
+                        finish_reason: None,
+                        usage: None,
+                        thinking_delta: None,
+                    }))
+                    .await;
+            }
+        }
+        return Ok(true);
+    }
+
+    // Parse JSON and send through channel.
+    match serde_json::from_str::<SseChunk>(data) {
+        Ok(sse) => {
+            let choice = sse.choices.as_ref().and_then(|c| c.first());
+            let raw_delta = choice
+                .map(extract_text_delta_from_choice)
+                .unwrap_or_default();
+            let (delta, think_from_tags) =
+                split_think_tags(&raw_delta, in_think_block, think_tag_buffer);
+            let finish_reason = choice
+                .and_then(|c| c.finish_reason.as_deref())
+                .map(parse_finish_reason);
+            let usage = sse.usage.map(|u| Usage {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+                thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
+            });
+
+            // Emit provider-specific reasoning/thinking deltas if present.
+            let mut thinking_delta = choice
+                .and_then(extract_reasoning_from_choice)
+                .filter(|s| !s.is_empty());
+            if let Some(tag_thinking) = think_from_tags {
+                match &mut thinking_delta {
+                    Some(existing) => {
+                        if existing != &tag_thinking {
+                            existing.push_str(&tag_thinking);
+                        }
+                    }
+                    None => thinking_delta = Some(tag_thinking),
+                }
+            }
+
+            // Emit text/finish/usage metadata as one chunk.
+            #[allow(clippy::collapsible_if)]
+            if !delta.is_empty()
+                || finish_reason.is_some()
+                || usage.is_some()
+                || thinking_delta.is_some()
+            {
+                if tx
+                    .send(Ok(StreamChunk {
+                        delta,
+                        tool_call_delta: None,
+                        finish_reason,
+                        usage,
+                        thinking_delta,
+                    }))
+                    .await
+                    .is_err()
+                {
+                    return Ok(true);
+                }
+            }
+
+            // Emit each tool call delta separately so multiple tool calls
+            // in one SSE frame are preserved.
+            if let Some(tool_calls) = choice.and_then(|c| {
+                c.delta
+                    .tool_calls
+                    .as_ref()
+                    .or_else(|| c.message.as_ref().and_then(|m| m.tool_calls.as_ref()))
+            }) {
+                for tc in tool_calls {
+                    if tx
+                        .send(Ok(StreamChunk {
+                            delta: String::new(),
+                            tool_call_delta: Some(map_tool_call_delta(tc)),
+                            finish_reason: None,
+                            usage: None,
+                            thinking_delta: None,
+                        }))
+                        .await
+                        .is_err()
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            // Send parse error through channel but continue processing.
+            warn!("SSE JSON parse error: {e}, data: {data}");
+            if tx
+                .send(Err(CoreError::Llm(format!("SSE JSON parse error: {e}"))))
+                .await
+                .is_err()
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -344,7 +526,7 @@ pub async fn parse_sse_stream(
     tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
 ) -> Result<(), CoreError> {
     let mut byte_stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut buffer: Vec<u8> = Vec::new();
     let mut in_think_block = false;
     let mut think_tag_buffer = String::new();
     let mut first_chunk = true;
@@ -370,168 +552,23 @@ pub async fn parse_sse_stream(
                 CoreError::Llm(format!("Stream read error: {e}"))
             }
         })?;
-        // Lossy UTF-8 decode: a single malformed byte (e.g. provider sending a
-        // surrogate half or mid-multibyte chunk boundary) must not abort the
-        // stream. Invalid sequences become U+FFFD; we warn once per chunk.
-        let text: std::borrow::Cow<'_, str> = match std::str::from_utf8(&chunk) {
-            Ok(s) => std::borrow::Cow::Borrowed(s),
-            Err(e) => {
-                warn!(
-                    "Invalid UTF-8 in SSE stream chunk ({} bytes): {e} — decoding lossy",
-                    chunk.len()
-                );
-                std::borrow::Cow::Owned(String::from_utf8_lossy(&chunk).into_owned())
-            }
-        };
         if first_chunk {
             debug!("First SSE chunk received");
             first_chunk = false;
         }
-        buffer.push_str(&text);
 
-        // Process all complete lines currently in the buffer.
-        while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
-
-            // Skip empty lines (SSE uses double-newline as event separator).
-            if line.is_empty() {
-                continue;
-            }
-
-            // Only process `data:` lines; ignore `event:`, `id:`, `retry:`, etc.
-            let Some(data) = line
-                .strip_prefix("data: ")
-                .or_else(|| line.strip_prefix("data:"))
-            else {
-                continue;
-            };
-
-            let data = data.trim();
-
-            // Stream termination signal.
-            if data == "[DONE]" {
-                debug!("SSE [DONE] received");
-                // Flush any held-back buffer content at stream end.
-                if !think_tag_buffer.is_empty() {
-                    let tail = std::mem::take(&mut think_tag_buffer);
-                    if in_think_block {
-                        let _ = tx
-                            .send(Ok(StreamChunk {
-                                delta: String::new(),
-                                tool_call_delta: None,
-                                finish_reason: None,
-                                usage: None,
-                                thinking_delta: Some(tail),
-                            }))
-                            .await;
-                    } else {
-                        let _ = tx
-                            .send(Ok(StreamChunk {
-                                delta: tail,
-                                tool_call_delta: None,
-                                finish_reason: None,
-                                usage: None,
-                                thinking_delta: None,
-                            }))
-                            .await;
-                    }
-                }
+        buffer.extend_from_slice(&chunk);
+        for line in drain_complete_sse_lines(&mut buffer) {
+            if process_sse_line(line, &tx, &mut in_think_block, &mut think_tag_buffer).await? {
                 return Ok(());
             }
+        }
+    }
 
-            // Parse JSON and send through channel.
-            match serde_json::from_str::<SseChunk>(data) {
-                Ok(sse) => {
-                    let choice = sse.choices.as_ref().and_then(|c| c.first());
-                    let raw_delta = choice
-                        .map(extract_text_delta_from_choice)
-                        .unwrap_or_default();
-                    let (delta, think_from_tags) =
-                        split_think_tags(&raw_delta, &mut in_think_block, &mut think_tag_buffer);
-                    let finish_reason = choice
-                        .and_then(|c| c.finish_reason.as_deref())
-                        .map(parse_finish_reason);
-                    let usage = sse.usage.map(|u| Usage {
-                        prompt_tokens: u.prompt_tokens,
-                        completion_tokens: u.completion_tokens,
-                        total_tokens: u.total_tokens,
-                        thinking_tokens: u
-                            .completion_tokens_details
-                            .and_then(|d| d.reasoning_tokens),
-                    });
-
-                    // Emit provider-specific reasoning/thinking deltas if present.
-                    let mut thinking_delta = choice
-                        .and_then(extract_reasoning_from_choice)
-                        .filter(|s| !s.is_empty());
-                    if let Some(tag_thinking) = think_from_tags {
-                        match &mut thinking_delta {
-                            Some(existing) => {
-                                if existing != &tag_thinking {
-                                    existing.push_str(&tag_thinking);
-                                }
-                            }
-                            None => thinking_delta = Some(tag_thinking),
-                        }
-                    }
-
-                    // Emit text/finish/usage metadata as one chunk.
-                    #[allow(clippy::collapsible_if)]
-                    if !delta.is_empty()
-                        || finish_reason.is_some()
-                        || usage.is_some()
-                        || thinking_delta.is_some()
-                    {
-                        if tx
-                            .send(Ok(StreamChunk {
-                                delta,
-                                tool_call_delta: None,
-                                finish_reason,
-                                usage,
-                                thinking_delta,
-                            }))
-                            .await
-                            .is_err()
-                        {
-                            return Ok(());
-                        }
-                    }
-
-                    // Emit each tool call delta separately so multiple tool calls
-                    // in one SSE frame are preserved.
-                    if let Some(tool_calls) = choice.and_then(|c| {
-                        c.delta
-                            .tool_calls
-                            .as_ref()
-                            .or_else(|| c.message.as_ref().and_then(|m| m.tool_calls.as_ref()))
-                    }) {
-                        for tc in tool_calls {
-                            if tx
-                                .send(Ok(StreamChunk {
-                                    delta: String::new(),
-                                    tool_call_delta: Some(map_tool_call_delta(tc)),
-                                    finish_reason: None,
-                                    usage: None,
-                                    thinking_delta: None,
-                                }))
-                                .await
-                                .is_err()
-                            {
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Send parse error through channel but continue processing.
-                    warn!("SSE JSON parse error: {e}, data: {data}");
-                    let _ = tx
-                        .send(Err(CoreError::Llm(format!("SSE JSON parse error: {e}"))))
-                        .await;
-                    continue;
-                }
-            }
+    if !buffer.is_empty() {
+        let line = decode_sse_line(&buffer);
+        if process_sse_line(line, &tx, &mut in_think_block, &mut think_tag_buffer).await? {
+            return Ok(());
         }
     }
 
@@ -774,5 +811,21 @@ mod tests {
         assert_eq!(vis2, "可见文本");
         assert!(think2.is_none());
         assert!(!in_block);
+    }
+
+    #[test]
+    fn drain_complete_sse_lines_waits_for_split_utf8_character() {
+        let text = "data: 中文\n";
+        let split_inside_first_cjk = text.find('中').expect("find CJK char") + 1;
+        let mut buffer = Vec::new();
+
+        buffer.extend_from_slice(&text.as_bytes()[..split_inside_first_cjk]);
+        assert!(drain_complete_sse_lines(&mut buffer).is_empty());
+
+        buffer.extend_from_slice(&text.as_bytes()[split_inside_first_cjk..]);
+        let lines = drain_complete_sse_lines(&mut buffer);
+
+        assert_eq!(lines, vec!["data: 中文".to_string()]);
+        assert!(buffer.is_empty());
     }
 }

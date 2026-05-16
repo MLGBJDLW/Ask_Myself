@@ -784,7 +784,7 @@ export const ko: TranslationKeys = {
   'chat.askAiScopedHint': 'Ask AI는 현재 소스 범위 안에서만 동작합니다',
   'chat.traceOutputReady': 'Output ready',
   'chat.toolTimeout': '도구 호출 시간이 초과되었습니다.',
-  'chat.connectionLost': '연결이 끊어졌습니다 — 30초 동안 응답이 없습니다. 메시지를 다시 시도할 수 있습니다.',
+  'chat.connectionLost': '연결이 끊어졌습니다 — 120초 동안 응답이 없습니다. 메시지를 다시 시도할 수 있습니다.',
   'chat.toolNoOutput': '명시적 출력 없이 완료되었습니다.',
   'chat.toolInterrupted': '에이전트 오류로 도구 호출이 중단되었습니다.',
   'chat.unknownError': '알 수 없는 오류',

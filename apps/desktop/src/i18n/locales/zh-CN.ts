@@ -784,7 +784,7 @@ export const zhCN: TranslationKeys = {
   'chat.askAiScopedHint': 'Ask AI 会保持在当前来源范围内',
   'chat.traceOutputReady': '已产出结果',
   'chat.toolTimeout': '工具调用超时。',
-  'chat.connectionLost': '连接断开 — 30秒内未收到响应。您可以重试消息。',
+  'chat.connectionLost': '连接断开 — 120秒内未收到响应。您可以重试消息。',
   'chat.toolNoOutput': '已完成，无显式输出。',
   'chat.toolInterrupted': '工具调用被代理错误中断。',
   'chat.unknownError': '未知错误',

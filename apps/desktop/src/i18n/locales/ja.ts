@@ -782,7 +782,7 @@ export const ja: TranslationKeys = {
   'chat.askAiScopedHint': 'Ask AI はこのソース範囲内で動作します',
   'chat.traceOutputReady': 'Output ready',
   'chat.toolTimeout': 'ツール呼び出しがタイムアウトしました。',
-  'chat.connectionLost': '接続が切断されました — 30秒間応答がありません。メッセージを再送できます。',
+  'chat.connectionLost': '接続が切断されました — 120秒間応答がありません。メッセージを再送できます。',
   'chat.toolNoOutput': '明示的な出力なしで完了しました。',
   'chat.toolInterrupted': 'エージェントエラーによりツール呼び出しが中断されました。',
   'chat.unknownError': '不明なエラー',

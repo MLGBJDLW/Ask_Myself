@@ -782,7 +782,7 @@ export const de: TranslationKeys = {
   'chat.askAiScopedHint': 'Ask AI bleibt innerhalb dieses Quellenbereichs',
   'chat.traceOutputReady': 'Output ready',
   'chat.toolTimeout': 'Tool-Aufruf hat das Zeitlimit überschritten.',
-  'chat.connectionLost': 'Verbindung verloren — seit 30 Sekunden keine Antwort. Sie können Ihre Nachricht erneut senden.',
+  'chat.connectionLost': 'Verbindung verloren — seit 120 Sekunden keine Antwort. Sie können Ihre Nachricht erneut senden.',
   'chat.toolNoOutput': 'Ohne explizite Ausgabe abgeschlossen.',
   'chat.toolInterrupted': 'Tool-Aufruf durch Agentenfehler unterbrochen.',
   'chat.unknownError': 'Unbekannter Fehler',

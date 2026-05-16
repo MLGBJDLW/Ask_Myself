@@ -782,7 +782,7 @@ export const fr: TranslationKeys = {
   'chat.askAiScopedHint': 'Ask AI restera dans ce périmètre de sources',
   'chat.traceOutputReady': 'Output ready',
   'chat.toolTimeout': "L'appel d'outil a expiré.",
-  'chat.connectionLost': 'Connexion perdue — aucune réponse reçue depuis 30 secondes. Vous pouvez réessayer votre message.',
+  'chat.connectionLost': 'Connexion perdue — aucune réponse reçue depuis 120 secondes. Vous pouvez réessayer votre message.',
   'chat.toolNoOutput': 'Terminé sans sortie explicite.',
   'chat.toolInterrupted': "Appel d'outil interrompu par une erreur de l'agent.",
   'chat.unknownError': 'Erreur inconnue',

@@ -782,7 +782,7 @@ export const zhTW: TranslationKeys = {
   'chat.askAiScopedHint': 'Ask AI 會維持在目前來源範圍內',
   'chat.traceOutputReady': 'Output ready',
   'chat.toolTimeout': '工具呼叫逾時。',
-  'chat.connectionLost': '連線中斷 — 30秒內未收到回應。您可以重試訊息。',
+  'chat.connectionLost': '連線中斷 — 120秒內未收到回應。您可以重試訊息。',
   'chat.toolNoOutput': '已完成，無明確輸出。',
   'chat.toolInterrupted': '工具呼叫被代理錯誤中斷。',
   'chat.unknownError': '未知錯誤',

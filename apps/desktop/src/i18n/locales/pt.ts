@@ -784,7 +784,7 @@ export const pt: TranslationKeys = {
   'chat.askAiScopedHint': 'Ask AI permanecerá dentro deste escopo de fontes',
   'chat.traceOutputReady': 'Output ready',
   'chat.toolTimeout': 'Chamada de ferramenta expirou.',
-  'chat.connectionLost': 'Conexão perdida — nenhuma resposta recebida por 30 segundos. Você pode reenviar sua mensagem.',
+  'chat.connectionLost': 'Conexão perdida — nenhuma resposta recebida por 120 segundos. Você pode reenviar sua mensagem.',
   'chat.toolNoOutput': 'Concluído sem saída explícita.',
   'chat.toolInterrupted': 'Chamada de ferramenta interrompida por erro do agente.',
   'chat.unknownError': 'Erro desconhecido',

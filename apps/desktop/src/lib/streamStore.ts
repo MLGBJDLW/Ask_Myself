@@ -163,11 +163,11 @@ interface InternalStreamState extends StreamState {
 /* ── Constants ──────────────────────────────────────────────────── */
 
 function resolveStreamTimeoutMs(): number {
-  if (typeof window === 'undefined') return 30_000;
+  if (typeof window === 'undefined') return 120_000;
   const override = (window as Window & { __ASK_STREAM_TIMEOUT_MS__?: unknown }).__ASK_STREAM_TIMEOUT_MS__;
   return typeof override === 'number' && Number.isFinite(override) && override > 0
     ? override
-    : 30_000;
+    : 120_000;
 }
 
 const STREAM_TIMEOUT_MS = resolveStreamTimeoutMs();

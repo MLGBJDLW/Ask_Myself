@@ -11,7 +11,7 @@ use crate::subagent_tool::{
 };
 use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
-    AgentSteeringMessage, CancellationToken, ConfirmationCallback, StreamBlockChannel,
+    AgentSteeringMessage, CancellationToken, ConfirmationCallback, StreamBlockChannel, ToolRunItem,
 };
 use nexa_core::agent_run::AgentRunEvent;
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
@@ -222,6 +222,7 @@ fn emit_agent_frontend_event(
     conversation_id: &str,
     event: AgentEvent,
 ) {
+    let event = compact_agent_event_for_frontend(event);
     let payload = AgentFrontendEvent {
         conversation_id: conversation_id.to_string(),
         event_seq: Some(event_seq.fetch_add(1, Ordering::SeqCst) + 1),
@@ -233,6 +234,217 @@ fn emit_agent_frontend_event(
 enum PendingStreamDelta {
     Text(String),
     Thinking(String),
+}
+
+const MAX_STREAM_BLOCK_DELTA_BYTES: usize = 8 * 1024;
+const MAX_FRONTEND_TOOL_ARGUMENT_CHARS: usize = 16 * 1024;
+const MAX_FRONTEND_TOOL_CONTENT_CHARS: usize = 64 * 1024;
+const MAX_FRONTEND_MESSAGE_TEXT_CHARS: usize = 64 * 1024;
+const MAX_FRONTEND_ARTIFACT_STRING_CHARS: usize = 8 * 1024;
+const MAX_FRONTEND_ARTIFACT_ITEMS: usize = 64;
+const MAX_FRONTEND_ARTIFACT_DEPTH: usize = 6;
+const MAX_TASK_EVENT_TEXT_CHARS: usize = 4_000;
+
+fn split_text_by_utf8_bytes(text: &str, max_bytes: usize) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let max_bytes = max_bytes.max(1);
+    if text.len() <= max_bytes {
+        return vec![text];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    while start < text.len() {
+        let mut end = (start + max_bytes).min(text.len());
+        while end > start && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == start {
+            end = start
+                + text[start..]
+                    .chars()
+                    .next()
+                    .map(char::len_utf8)
+                    .unwrap_or(1);
+        }
+        chunks.push(&text[start..end]);
+        start = end;
+    }
+    chunks
+}
+
+fn compact_json_value_for_frontend(value: &serde_json::Value, depth: usize) -> serde_json::Value {
+    if depth >= MAX_FRONTEND_ARTIFACT_DEPTH {
+        return match value {
+            serde_json::Value::String(text) => serde_json::Value::String(truncate_task_event_text(
+                text,
+                MAX_FRONTEND_ARTIFACT_STRING_CHARS,
+            )),
+            other => serde_json::Value::String(truncate_task_event_text(
+                &other.to_string(),
+                MAX_FRONTEND_ARTIFACT_STRING_CHARS,
+            )),
+        };
+    }
+
+    match value {
+        serde_json::Value::String(text) => serde_json::Value::String(truncate_task_event_text(
+            text,
+            MAX_FRONTEND_ARTIFACT_STRING_CHARS,
+        )),
+        serde_json::Value::Array(items) => {
+            let mut out = items
+                .iter()
+                .take(MAX_FRONTEND_ARTIFACT_ITEMS)
+                .map(|item| compact_json_value_for_frontend(item, depth + 1))
+                .collect::<Vec<_>>();
+            if items.len() > MAX_FRONTEND_ARTIFACT_ITEMS {
+                out.push(serde_json::json!({
+                    "truncated": true,
+                    "omittedItems": items.len() - MAX_FRONTEND_ARTIFACT_ITEMS,
+                }));
+            }
+            serde_json::Value::Array(out)
+        }
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (idx, (key, item)) in map.iter().enumerate() {
+                if idx >= MAX_FRONTEND_ARTIFACT_ITEMS {
+                    out.insert("_truncated".to_string(), serde_json::Value::Bool(true));
+                    out.insert(
+                        "_omittedKeys".to_string(),
+                        serde_json::Value::Number(serde_json::Number::from(
+                            map.len() - MAX_FRONTEND_ARTIFACT_ITEMS,
+                        )),
+                    );
+                    break;
+                }
+                out.insert(
+                    key.clone(),
+                    compact_json_value_for_frontend(item, depth + 1),
+                );
+            }
+            serde_json::Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
+fn compact_tool_run_for_frontend(mut run: ToolRunItem) -> ToolRunItem {
+    run.arguments = run
+        .arguments
+        .map(|arguments| truncate_task_event_text(&arguments, MAX_FRONTEND_TOOL_ARGUMENT_CHARS));
+    run.content = run
+        .content
+        .map(|content| truncate_task_event_text(&content, MAX_FRONTEND_TOOL_CONTENT_CHARS));
+    run.progress_note = run
+        .progress_note
+        .map(|note| truncate_task_event_text(&note, MAX_TASK_EVENT_TEXT_CHARS));
+    run.artifacts = run
+        .artifacts
+        .map(|artifacts| compact_json_value_for_frontend(&artifacts, 0));
+    run
+}
+
+fn compact_message_for_frontend(mut message: Message) -> Message {
+    for part in &mut message.parts {
+        match part {
+            ContentPart::Text { text } => {
+                *text = truncate_task_event_text(text, MAX_FRONTEND_MESSAGE_TEXT_CHARS);
+            }
+            ContentPart::Image { data, .. } => {
+                if data.len() > MAX_TASK_EVENT_TEXT_CHARS {
+                    *data = "[image data omitted from stream event]".to_string();
+                }
+            }
+        }
+    }
+    message.reasoning_content = message
+        .reasoning_content
+        .map(|text| truncate_task_event_text(&text, MAX_TASK_EVENT_TEXT_CHARS));
+    message
+}
+
+fn compact_agent_event_for_frontend(event: AgentEvent) -> AgentEvent {
+    match event {
+        AgentEvent::ToolCallStart {
+            call_id,
+            tool_name,
+            arguments,
+        } => AgentEvent::ToolCallStart {
+            call_id,
+            tool_name,
+            arguments: truncate_task_event_text(&arguments, MAX_FRONTEND_TOOL_ARGUMENT_CHARS),
+        },
+        AgentEvent::ToolCallArgsDelta {
+            call_id,
+            tool_name,
+            arguments_delta,
+            index,
+        } => AgentEvent::ToolCallArgsDelta {
+            call_id,
+            tool_name,
+            arguments_delta: truncate_task_event_text(
+                &arguments_delta,
+                MAX_FRONTEND_TOOL_ARGUMENT_CHARS,
+            ),
+            index,
+        },
+        AgentEvent::ToolCallResult {
+            call_id,
+            tool_name,
+            content,
+            is_error,
+            artifacts,
+        } => AgentEvent::ToolCallResult {
+            call_id,
+            tool_name,
+            content: truncate_task_event_text(&content, MAX_FRONTEND_TOOL_CONTENT_CHARS),
+            is_error,
+            artifacts: artifacts.map(|value| compact_json_value_for_frontend(&value, 0)),
+        },
+        AgentEvent::ToolRunStarted { run } => AgentEvent::ToolRunStarted {
+            run: compact_tool_run_for_frontend(run),
+        },
+        AgentEvent::ToolRunUpdated { run } => AgentEvent::ToolRunUpdated {
+            run: compact_tool_run_for_frontend(run),
+        },
+        AgentEvent::ToolRunCompleted { run } => AgentEvent::ToolRunCompleted {
+            run: compact_tool_run_for_frontend(run),
+        },
+        AgentEvent::Thinking { content } => AgentEvent::Thinking {
+            content: truncate_task_event_text(&content, MAX_FRONTEND_TOOL_CONTENT_CHARS),
+        },
+        AgentEvent::Status { content, tone } => AgentEvent::Status {
+            content: truncate_task_event_text(&content, MAX_TASK_EVENT_TEXT_CHARS),
+            tone,
+        },
+        AgentEvent::PlanUpdated {
+            plan,
+            phase,
+            summary,
+        } => AgentEvent::PlanUpdated {
+            plan: compact_json_value_for_frontend(&plan, 0),
+            phase,
+            summary: summary.map(|text| truncate_task_event_text(&text, MAX_TASK_EVENT_TEXT_CHARS)),
+        },
+        AgentEvent::Done {
+            message,
+            usage_total,
+            last_prompt_tokens,
+            cached,
+            finish_reason,
+        } => AgentEvent::Done {
+            message: compact_message_for_frontend(message),
+            usage_total,
+            last_prompt_tokens,
+            cached,
+            finish_reason,
+        },
+        other => other,
+    }
 }
 
 struct StreamBlockEmitter {
@@ -313,44 +525,46 @@ impl StreamBlockEmitter {
         channel: StreamBlockChannel,
         delta: String,
     ) {
-        let (block_id, offset) = match channel {
+        let (block_id, mut current_offset) = match channel {
             StreamBlockChannel::Answer => (self.answer_block_id.clone(), self.answer_offset),
             StreamBlockChannel::Thinking => (self.thinking_block_id.clone(), self.thinking_offset),
         };
-        let delta_len = delta.len();
-        let event_seq = self.event_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        let event = AgentEvent::StreamBlockDelta {
-            block_id: block_id.clone(),
-            channel,
-            offset,
-            delta: delta.clone(),
-        };
-        let payload = AgentFrontendEvent {
-            conversation_id: conversation_id.to_string(),
-            event_seq: Some(event_seq),
-            event,
-        };
-        emit_app_event(handle, "agent:event", &payload);
-
         let channel_label = stream_block_channel_label(channel);
-        let durable_payload = serde_json::json!({
-            "eventSeq": event_seq,
-            "blockId": block_id,
-            "channel": channel_label,
-            "offset": offset,
-            "delta": delta,
-        });
-        let _ = db.record_agent_task_run_event(
-            task_run_id,
-            "streamBlockDelta",
-            channel_label,
-            Some("running"),
-            Some(&durable_payload),
-        );
+        for chunk in split_text_by_utf8_bytes(&delta, MAX_STREAM_BLOCK_DELTA_BYTES) {
+            let event_seq = self.event_seq.fetch_add(1, Ordering::SeqCst) + 1;
+            let event = AgentEvent::StreamBlockDelta {
+                block_id: block_id.clone(),
+                channel,
+                offset: current_offset,
+                delta: chunk.to_string(),
+            };
+            let payload = AgentFrontendEvent {
+                conversation_id: conversation_id.to_string(),
+                event_seq: Some(event_seq),
+                event,
+            };
+            emit_app_event(handle, "agent:event", &payload);
+
+            let durable_payload = serde_json::json!({
+                "eventSeq": event_seq,
+                "blockId": block_id,
+                "channel": channel_label,
+                "offset": current_offset,
+                "delta": chunk,
+            });
+            let _ = db.record_agent_task_run_event(
+                task_run_id,
+                "streamBlockDelta",
+                channel_label,
+                Some("running"),
+                Some(&durable_payload),
+            );
+            current_offset += chunk.len();
+        }
 
         match channel {
-            StreamBlockChannel::Answer => self.answer_offset += delta_len,
-            StreamBlockChannel::Thinking => self.thinking_offset += delta_len,
+            StreamBlockChannel::Answer => self.answer_offset = current_offset,
+            StreamBlockChannel::Thinking => self.thinking_offset = current_offset,
         }
     }
 }
@@ -586,6 +800,7 @@ fn record_task_progress_for_agent_event(
     task_run_id: &str,
     event: &AgentEvent,
 ) {
+    let event = compact_agent_event_for_frontend(event.clone());
     let task_event_ctx = TaskEventEmitContext {
         db,
         app_handle,
@@ -593,9 +808,9 @@ fn record_task_progress_for_agent_event(
         task_run_id,
     };
     let run_event =
-        AgentRunEvent::from_agent_event(event).with_context(Some(task_run_id), None, None);
+        AgentRunEvent::from_agent_event(&event).with_context(Some(task_run_id), None, None);
 
-    match event {
+    match &event {
         AgentEvent::StreamReset { reason } => {
             record_and_emit_agent_run_task_event(
                 &task_event_ctx,
@@ -624,7 +839,7 @@ fn record_task_progress_for_agent_event(
             let payload = serde_json::json!({
                 "callId": call_id,
                 "toolName": tool_name,
-                "arguments": truncate_task_event_text(arguments, 4000),
+                "arguments": truncate_task_event_text(arguments, MAX_TASK_EVENT_TEXT_CHARS),
             });
             record_and_emit_agent_run_task_event(
                 &task_event_ctx,
@@ -658,7 +873,7 @@ fn record_task_progress_for_agent_event(
                 "callId": call_id,
                 "toolName": tool_name,
                 "isError": is_error,
-                "content": truncate_task_event_text(content, 4000),
+                "content": truncate_task_event_text(content, MAX_TASK_EVENT_TEXT_CHARS),
                 "artifacts": artifacts,
             });
             record_and_emit_agent_run_task_event(
@@ -4408,6 +4623,15 @@ pub async fn agent_chat_cmd(
     let mut tools = default_tool_registry();
 
     // Register MCP tools from currently enabled servers.
+    emit_agent_frontend_event(
+        &app_handle,
+        &stream_event_seq,
+        &conversation_id,
+        AgentEvent::Status {
+            content: "Loading tools and MCP servers".to_string(),
+            tone: None,
+        },
+    );
     {
         let mut mcp_manager = mcp_state.manager.lock().await;
         match sync_enabled_mcp_servers(&state.db, &mut mcp_manager).await {
@@ -4735,12 +4959,13 @@ pub async fn agent_chat_cmd(
                                 }
                             }
                             Some(other) => {
+                                let frontend_event = compact_agent_event_for_frontend(other);
                                 record_task_progress_for_agent_event(
                                     &event_db,
                                     &event_handle,
                                     &stream_conv_id,
                                     &event_task_run_id,
-                                    &other,
+                                    &frontend_event,
                                 );
                                 // Flush buffered stream deltas before forwarding
                                 // structural events so the UI keeps provider order.
@@ -4751,13 +4976,13 @@ pub async fn agent_chat_cmd(
                                     &event_db,
                                     &event_task_run_id,
                                 );
-                                let reset_reason = match &other {
+                                let reset_reason = match &frontend_event {
                                     AgentEvent::StreamReset { reason } => Some(reason.clone()),
                                     _ => None,
                                 };
-                                let rotates_blocks = agent_event_rotates_stream_blocks(&other);
+                                let rotates_blocks = agent_event_rotates_stream_blocks(&frontend_event);
                                 let event_seq =
-                                    stream_emitter.emit_event(&event_handle, &stream_conv_id, other);
+                                    stream_emitter.emit_event(&event_handle, &stream_conv_id, frontend_event);
                                 if let Some(reason) = reset_reason {
                                     let durable_payload = serde_json::json!({
                                         "eventSeq": event_seq,
@@ -6515,5 +6740,50 @@ mod tests {
             warning.as_deref(),
             Some("Plain text extracted with fallback.\nRich Office preview unavailable.")
         );
+    }
+
+    #[test]
+    fn split_text_by_utf8_bytes_preserves_cjk_boundaries() {
+        let text = "ab中文cd";
+        let chunks = split_text_by_utf8_bytes(text, 4);
+
+        assert_eq!(chunks.concat(), text);
+        assert!(chunks.iter().all(|chunk| chunk.len() <= 4));
+        assert_eq!(chunks, vec!["ab", "中", "文c", "d"]);
+    }
+
+    #[test]
+    fn compact_agent_event_caps_tool_payloads_for_frontend() {
+        let content = "x".repeat(MAX_FRONTEND_TOOL_CONTENT_CHARS + 100);
+        let artifact_text = "y".repeat(MAX_FRONTEND_ARTIFACT_STRING_CHARS + 100);
+        let event = AgentEvent::ToolCallResult {
+            call_id: "call-1".to_string(),
+            tool_name: "read_files".to_string(),
+            content,
+            is_error: false,
+            artifacts: Some(serde_json::json!({
+                "large": artifact_text,
+            })),
+        };
+
+        let compacted = compact_agent_event_for_frontend(event);
+
+        match compacted {
+            AgentEvent::ToolCallResult {
+                content,
+                artifacts: Some(artifacts),
+                ..
+            } => {
+                assert!(content.contains("[truncated]"));
+                assert!(content.chars().count() <= MAX_FRONTEND_TOOL_CONTENT_CHARS);
+                let large = artifacts
+                    .get("large")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("large artifact string");
+                assert!(large.contains("[truncated]"));
+                assert!(large.chars().count() <= MAX_FRONTEND_ARTIFACT_STRING_CHARS);
+            }
+            other => panic!("unexpected compacted event: {other:?}"),
+        }
     }
 }
