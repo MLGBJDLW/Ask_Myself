@@ -70,7 +70,7 @@ export function adaptFrontendRunEvent(event: AgentFrontendEvent): AgentFrontendE
 
 export interface ReplayStreamItem {
   event: AgentTaskRunEvent;
-  eventType: 'streamBlockDelta' | 'streamReset' | 'status';
+  eventType: 'streamBlockDelta' | 'streamReset' | 'status' | 'terminal';
   payload: PayloadRecord;
   eventSeq: number;
 }
@@ -119,6 +119,20 @@ export function replayItemFromTaskEvent(event: AgentTaskRunEvent): ReplayStreamI
         eventSeq: runEvent.eventSeq,
       };
     }
+    if (runEvent.kind === 'done' || runEvent.kind === 'error') {
+      return {
+        event,
+        eventType: 'terminal',
+        payload: {
+          eventSeq: runEvent.eventSeq,
+          kind: runEvent.kind,
+          status: runEvent.status,
+          message: stringValue(runPayload.message) ?? runEvent.label,
+          finishReason: stringValue(runPayload.finishReason),
+        },
+        eventSeq: runEvent.eventSeq,
+      };
+    }
     return null;
   }
 
@@ -141,4 +155,3 @@ export function isDurableStreamEvent(event: AgentTaskRunEvent): boolean {
   const item = replayItemFromTaskEvent(event);
   return item?.eventType === 'streamBlockDelta' || item?.eventType === 'streamReset';
 }
-

@@ -751,6 +751,32 @@ class StreamStoreImpl {
         appendStatusTraceEvent(state, reason, 'muted');
         continue;
       }
+      if (item.eventType === 'terminal') {
+        const isError = item.payload.kind === 'error';
+        const message = typeof item.payload.message === 'string'
+          ? item.payload.message
+          : (isError ? 'Request failed' : 'Task completed');
+        state.isStreaming = false;
+        state.isThinking = false;
+        state.thinkingText = '';
+        state.toolCalls = markToolCallsFinished(
+          state.toolCalls,
+          isError ? 'error' : 'done',
+          message,
+        );
+        state.streamRounds = markRoundsToolCallsFinished(
+          state.streamRounds,
+          isError ? 'error' : 'done',
+          message,
+        );
+        syncTraceToolEvents(state);
+        if (isError) state.error = message;
+        appendStatusTraceEvent(state, message, isError ? 'error' : 'success');
+        state._activeRoundId = null;
+        state._activeRoundAcceptingStarts = false;
+        resetActiveStreamBlocks(state);
+        continue;
+      }
       if (item.eventType !== 'streamBlockDelta') continue;
       const channel = item.payload.channel === 'answer' || item.payload.channel === 'thinking'
         ? item.payload.channel
