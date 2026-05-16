@@ -8,33 +8,16 @@ import type {
   AgentTaskRun,
   AgentTaskRunEvent,
 } from '../types/conversation';
-import {
-  applyStreamBlockDeltaEvent,
-  applyTextDeltaEvent,
-  applyThinkingEvent,
-} from './streaming/blockProjection';
 import { applyDurableReplayToState, taskTimelineEventsFromReplaySource } from './streaming/durableReplay';
-import { adaptFrontendRunEvent } from './streaming/legacyAdapter';
-import {
-  applyApprovalRequestedEvent,
-  applyApprovalResolvedEvent,
-  applyAutoCompactedEvent,
-  applyDoneEvent,
-  applyErrorEvent,
-  applyStatusEvent,
-  applyStreamResetEvent,
-  applyTaskRunEvent,
-  applyTaskRunUpdatedEvent,
-  applyUsageUpdateEvent,
-} from './streaming/liveProjection';
 import {
   isTaskLifecycleEventType,
   isTerminalEventType,
   normalizeAgentEventType,
 } from './streaming/eventTypes';
+import { adaptFrontendRunEvent } from './streaming/legacyAdapter';
+import { applyLiveStreamEvent } from './streaming/liveEventReducer';
 import { applyStreamEventOrdering } from './streaming/ordering';
 import {
-  clearToolPreparingTimer,
   clearToolPreparingTimers,
   createDefaultState,
   taskRunIsActive,
@@ -46,16 +29,8 @@ import {
   resetActiveStreamBlocks,
 } from './streaming/terminalProjection';
 import {
-  applyToolCallArgsDeltaEvent,
-  applyToolCallProgressEvent,
-  applyToolCallResultEvent,
-  applyToolCallStartEvent,
-  applyToolRunEvent,
   createToolCall,
-  extractToolPreparingPayload,
-  extractToolRunPayload,
   insertPendingToolCall,
-  toolPreparingPayloadFromRun,
 } from './streaming/toolProjection';
 import type {
   StreamState,
@@ -320,139 +295,16 @@ class StreamStoreImpl {
       this.resetTimeout(conversationId);
     }
 
-    switch (eventType) {
-      case 'streamBlockDelta': {
-        applyStreamBlockDeltaEvent(s, event, raw);
-        break;
-      }
-
-      case 'thinking': {
-        applyThinkingEvent(s, event, raw);
-        break;
-      }
-
-      case 'textDelta': {
-        applyTextDeltaEvent(s, event, raw);
-        break;
-      }
-
-      case 'streamReset': {
-        clearToolPreparingTimers(s);
-        applyStreamResetEvent(s, event, raw);
-        break;
-      }
-
-      case 'toolCallPreparing': {
-        try {
-          const payload = extractToolPreparingPayload(event, raw);
-          if (!payload) break;
-          this.scheduleToolPreparing(
-            conversationId,
-            payload.callId,
-            payload.toolName,
-            payload.argsBytes,
-          );
-        } catch (err) {
-          console.error('[streamStore] toolCallPreparing error:', err);
-        }
-        break;
-      }
-
-      case 'toolRunStarted':
-      case 'toolRunUpdated':
-      case 'toolRunCompleted': {
-        try {
-          const run = extractToolRunPayload(event, raw);
-          if (!run) break;
-
-          const preparing = toolPreparingPayloadFromRun(run);
-          if (preparing) {
-            this.scheduleToolPreparing(
-              conversationId,
-              preparing.callId,
-              preparing.toolName,
-              preparing.argsBytes,
-            );
-            break;
-          }
-
-          clearToolPreparingTimer(s, run.callId.trim());
-          applyToolRunEvent(s, run);
-        } catch (err) {
-          console.error('[streamStore] toolRun event error:', err);
-        }
-        break;
-      }
-
-      case 'toolCallStart': {
-        applyToolCallStartEvent(s, event, raw);
-        break;
-      }
-
-      case 'toolCallArgsDelta': {
-        applyToolCallArgsDeltaEvent(s, event, raw);
-        break;
-      }
-
-      case 'toolCallProgress': {
-        applyToolCallProgressEvent(s, event, raw);
-        break;
-      }
-
-      case 'toolCallResult': {
-        applyToolCallResultEvent(s, event, raw);
-        break;
-      }
-
-      case 'usageUpdate': {
-        applyUsageUpdateEvent(s, event, raw);
-        break;
-      }
-
-      case 'status': {
-        applyStatusEvent(s, event, raw);
-        break;
-      }
-
-      case 'done': {
-        clearStreamWatchdog(s);
-        clearToolPreparingTimers(s);
-        applyDoneEvent(s, event, raw);
-        break;
-      }
-
-      case 'autoCompacted': {
-        applyAutoCompactedEvent(s, event, raw);
-        break;
-      }
-
-      case 'approvalRequested': {
-        applyApprovalRequestedEvent(s, event, raw);
-        break;
-      }
-
-      case 'approvalResolved': {
-        applyApprovalResolvedEvent(s, event, raw);
-        break;
-      }
-
-      case 'taskRunUpdated': {
-        applyTaskRunUpdatedEvent(s, event, raw);
-        break;
-      }
-
-      case 'taskRunEvent': {
-        applyTaskRunEvent(s, event, raw);
-        break;
-      }
-
-      case 'error': {
-        clearStreamWatchdog(s);
-        clearToolPreparingTimers(s);
-        applyErrorEvent(s, event, raw);
-        break;
-      }
-    }
+    applyLiveStreamEvent(s, eventType, event, raw, {
+      scheduleToolPreparing: payload => {
+        this.scheduleToolPreparing(
+          conversationId,
+          payload.callId,
+          payload.toolName,
+          payload.argsBytes,
+        );
+      },
+    });
 
     this.scheduleNotify(conversationId);
   }
