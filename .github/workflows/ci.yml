@@ -63,6 +63,10 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Frontend streaming contracts
+        working-directory: apps/desktop
+        run: npm test
+
       - name: TypeScript check
         working-directory: apps/desktop
         run: npx tsc --noEmit
