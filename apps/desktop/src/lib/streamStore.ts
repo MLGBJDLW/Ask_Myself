@@ -28,6 +28,11 @@ import {
   applyTaskRunUpdatedEvent,
   applyUsageUpdateEvent,
 } from './streaming/liveProjection';
+import {
+  isTaskLifecycleEventType,
+  isTerminalEventType,
+  normalizeAgentEventType,
+} from './streaming/eventTypes';
 import { applyStreamEventOrdering } from './streaming/ordering';
 import {
   clearToolPreparingTimer,
@@ -57,45 +62,6 @@ import { armStreamWatchdog, clearStreamWatchdog } from './streaming/watchdog';
 export type { StreamRoundEvent, StreamState, ToolCallEvent, TraceEvent, UsageTotal } from './streaming/protocol';
 
 const TOOL_PREPARING_DELAY_MS = 150;
-
-/* ── Helper functions ───────────────────────────────────────────── */
-
-type AgentEventType = NonNullable<AgentFrontendEvent['type']>;
-
-function normalizeAgentEventType(value: unknown): AgentEventType | null {
-  if (typeof value !== 'string') return null;
-  const raw = value.trim();
-  if (!raw) return null;
-
-  const lowered = raw
-    .replace(/[_\s-]+([a-zA-Z0-9])/g, (_m, ch: string) => ch.toUpperCase())
-    .replace(/^([A-Z])/, (_m, ch: string) => ch.toLowerCase());
-
-  switch (lowered) {
-    case 'thinking': return 'thinking';
-    case 'textDelta': return 'textDelta';
-    case 'streamBlockDelta': return 'streamBlockDelta';
-    case 'streamReset': return 'streamReset';
-    case 'toolCallPreparing': return 'toolCallPreparing';
-    case 'toolCallStart': return 'toolCallStart';
-    case 'toolCallArgsDelta': return 'toolCallArgsDelta';
-    case 'toolCallProgress': return 'toolCallProgress';
-    case 'toolCallResult': return 'toolCallResult';
-    case 'toolRunStarted': return 'toolRunStarted';
-    case 'toolRunUpdated': return 'toolRunUpdated';
-    case 'toolRunCompleted': return 'toolRunCompleted';
-    case 'status': return 'status';
-    case 'done': return 'done';
-    case 'error': return 'error';
-    case 'autoCompacted': return 'autoCompacted';
-    case 'usageUpdate': return 'usageUpdate';
-    case 'approvalRequested': return 'approvalRequested';
-    case 'approvalResolved': return 'approvalResolved';
-    case 'taskRunUpdated': return 'taskRunUpdated';
-    case 'taskRunEvent': return 'taskRunEvent';
-    default: return null;
-  }
-}
 
 /* ── Store implementation ───────────────────────────────────────── */
 
@@ -326,8 +292,8 @@ class StreamStoreImpl {
     const raw = event as AgentFrontendEvent & Record<string, unknown>;
     const eventType = normalizeAgentEventType(raw.type);
     if (!eventType) return;
-    const isTaskLifecycleEvent = eventType === 'taskRunUpdated' || eventType === 'taskRunEvent';
-    const isTerminalEvent = eventType === 'done' || eventType === 'error';
+    const isTaskLifecycleEvent = isTaskLifecycleEventType(eventType);
+    const isTerminalEvent = isTerminalEventType(eventType);
 
     let s = this._streams[conversationId];
     if (!s) {
