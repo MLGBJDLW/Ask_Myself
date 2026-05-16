@@ -477,6 +477,8 @@ export const zhTW: TranslationKeys = {
   'settings.appearance.theme.dark': '深色',
   'settings.appearance.theme.light': '淺色',
   'settings.appearance.theme.midnight': '午夜',
+  'settings.appearance.theme.aurora': '極光',
+  'settings.appearance.theme.bloom': '繁花',
   'settings.appearance.language': '語言',
   'settings.appearance.language.description': '選擇顯示語言',
   'settings.developerMode': '開發者模式',

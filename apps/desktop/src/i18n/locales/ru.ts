@@ -479,6 +479,8 @@ export const ru: TranslationKeys = {
   'settings.appearance.theme.dark': 'Тёмная',
   'settings.appearance.theme.light': 'Светлая',
   'settings.appearance.theme.midnight': 'Полночь',
+  'settings.appearance.theme.aurora': 'Аврора',
+  'settings.appearance.theme.bloom': 'Bloom',
   'settings.appearance.language': 'Язык',
   'settings.appearance.language.description': 'Выбрать язык отображения',
   'settings.developerMode': 'Developer mode',

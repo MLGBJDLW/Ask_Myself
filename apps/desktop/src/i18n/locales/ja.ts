@@ -477,6 +477,8 @@ export const ja: TranslationKeys = {
   'settings.appearance.theme.dark': 'ダーク',
   'settings.appearance.theme.light': 'ライト',
   'settings.appearance.theme.midnight': 'ミッドナイト',
+  'settings.appearance.theme.aurora': 'オーロラ',
+  'settings.appearance.theme.bloom': 'Bloom',
   'settings.appearance.language': '言語',
   'settings.appearance.language.description': '表示言語を選択',
   'settings.developerMode': 'Developer mode',

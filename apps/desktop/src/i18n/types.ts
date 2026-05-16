@@ -477,6 +477,8 @@ export interface TranslationKeys {
   'settings.appearance.theme.dark': string;
   'settings.appearance.theme.light': string;
   'settings.appearance.theme.midnight': string;
+  'settings.appearance.theme.aurora': string;
+  'settings.appearance.theme.bloom': string;
   'settings.appearance.language': string;
   'settings.appearance.language.description': string;
   'settings.developerMode': string;

@@ -479,6 +479,8 @@ export const de: TranslationKeys = {
   'settings.appearance.theme.dark': 'Dunkel',
   'settings.appearance.theme.light': 'Hell',
   'settings.appearance.theme.midnight': 'Mitternacht',
+  'settings.appearance.theme.aurora': 'Aurora',
+  'settings.appearance.theme.bloom': 'Bloom',
   'settings.appearance.language': 'Sprache',
   'settings.appearance.language.description': 'Anzeigesprache wählen',
   'settings.developerMode': 'Developer mode',

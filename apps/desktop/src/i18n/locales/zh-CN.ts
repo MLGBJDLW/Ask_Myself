@@ -479,6 +479,8 @@ export const zhCN: TranslationKeys = {
   'settings.appearance.theme.dark': '深色',
   'settings.appearance.theme.light': '浅色',
   'settings.appearance.theme.midnight': '午夜',
+  'settings.appearance.theme.aurora': '极光',
+  'settings.appearance.theme.bloom': '繁花',
   'settings.appearance.language': '语言',
   'settings.appearance.language.description': '选择显示语言',
   'settings.developerMode': '开发者模式',

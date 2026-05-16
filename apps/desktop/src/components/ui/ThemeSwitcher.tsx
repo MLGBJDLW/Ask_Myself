@@ -1,4 +1,4 @@
-import { Moon, Sun, Star } from 'lucide-react';
+import { Moon, Sun, Star, Sparkles, Palette } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { LucideProps } from 'lucide-react';
 import { useTheme } from '../../lib/ThemeProvider';
@@ -10,6 +10,8 @@ const ICON_MAP: Record<ThemeId, React.ComponentType<LucideProps>> = {
   dark: Moon,
   light: Sun,
   midnight: Star,
+  aurora: Sparkles,
+  bloom: Palette,
 };
 
 interface ThemeSwitcherProps {
@@ -24,7 +26,7 @@ export function ThemeSwitcher({ showLabels = true }: ThemeSwitcherProps) {
   const themeLabel = (id: ThemeId) => t(`settings.appearance.theme.${id}` as keyof TranslationKeys);
 
   return (
-    <div className="flex gap-1 rounded-lg bg-surface-2 p-1">
+    <div className="flex flex-wrap gap-1 rounded-lg bg-surface-2 p-1">
       {THEMES.map((themeOption) => {
         const Icon = ICON_MAP[themeOption.id];
         const isActive = theme === themeOption.id;

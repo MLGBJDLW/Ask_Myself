@@ -479,6 +479,8 @@ export const ko: TranslationKeys = {
   'settings.appearance.theme.dark': '다크',
   'settings.appearance.theme.light': '라이트',
   'settings.appearance.theme.midnight': '미드나이트',
+  'settings.appearance.theme.aurora': '오로라',
+  'settings.appearance.theme.bloom': 'Bloom',
   'settings.appearance.language': '언어',
   'settings.appearance.language.description': '표시 언어 선택',
   'settings.developerMode': 'Developer mode',

@@ -3,6 +3,7 @@ import { Smile } from "lucide-react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { useTranslation } from "../../i18n";
 import { useTheme } from "../../lib/ThemeProvider";
+import { isLightTheme } from "../../lib/theme";
 import { getSoftDropdownMotion } from "../../lib/uiMotion";
 
 const LazyPicker = lazy(async () => {
@@ -79,7 +80,7 @@ export function EmojiPicker({ onEmojiSelect, disabled }: EmojiPickerProps) {
                   onEmojiSelect(emoji.native);
                   setOpen(false);
                 }}
-                theme={theme === "light" ? "light" : "dark"}
+                theme={isLightTheme(theme) ? "light" : "dark"}
                 previewPosition="none"
                 skinTonePosition="search"
                 maxFrequentRows={2}
