@@ -100,7 +100,7 @@ function isOptimisticSteeringMessage(message: ConversationMessage): boolean {
 }
 
 function taskRunCanResumeStream(run: AgentTaskRun): boolean {
-  return ['queued', 'running', 'waiting_approval'].includes(run.status);
+  return ['queued', 'running', 'waiting_approval', 'cancelling'].includes(run.status);
 }
 
 function streamHasVisiblePreview(conversationId: string): boolean {

@@ -458,6 +458,18 @@ test('restoreFromTaskEvents preserves cancelled terminal replay status', () => {
   streamStore.clearStream(conversationId);
 });
 
+test('restoreFromTaskEvents keeps cancelling task runs active until terminal event', () => {
+  const conversationId = 'conversation-cancelling-restore';
+
+  streamStore.restoreFromTaskEvents(conversationId, taskRun('cancelling'), []);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'cancelling stream state should exist');
+  assertEqual(restored.isStreaming, true, 'cancelling task run should remain active');
+
+  streamStore.clearStream(conversationId);
+});
+
 test('dispatches canonical terminal errors without an active stream state', () => {
   const conversationId = 'conversation-no-state-terminal';
 

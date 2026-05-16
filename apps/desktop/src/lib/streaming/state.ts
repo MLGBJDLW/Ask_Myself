@@ -54,7 +54,7 @@ export function createDefaultState(): InternalStreamState {
 }
 
 export function taskRunIsActive(taskRun: AgentTaskRun): boolean {
-  return ['queued', 'running', 'waiting_approval'].includes(taskRun.status);
+  return ['queued', 'running', 'waiting_approval', 'cancelling'].includes(taskRun.status);
 }
 
 export function clearToolPreparingTimer(state: InternalStreamState, callId: string): void {
