@@ -15,8 +15,8 @@ use crate::agent_stream::{
     split_text_by_utf8_bytes, MAX_FRONTEND_ARTIFACT_STRING_CHARS, MAX_FRONTEND_TOOL_CONTENT_CHARS,
 };
 use crate::agent_task_events::{
-    emit_agent_task_event, emit_agent_task_run_update, record_agent_run_status_task_event,
-    record_agent_run_task_event, record_task_progress_for_agent_event,
+    emit_agent_task_run_update, record_agent_run_status_task_event, record_agent_run_task_event,
+    record_task_progress_for_agent_event,
 };
 use crate::app_events::emit_app_event;
 use crate::subagent_tool::{
@@ -98,6 +98,8 @@ pub struct RunningAgentTask {
     pub task: tokio::task::JoinHandle<()>,
     pub steering_tx: tokio::sync::mpsc::UnboundedSender<AgentSteeringMessage>,
     pub task_run_id: String,
+    pub turn_id: String,
+    pub stream_event_seq: Arc<AtomicU64>,
 }
 
 pub struct AgentState {
@@ -4089,6 +4091,7 @@ pub async fn agent_chat_cmd(
     let db_config_for_extraction = db_config.clone();
     let forwarder_event_seq = Arc::clone(&stream_event_seq);
     let forwarder_terminal_emitted = Arc::clone(&terminal_emitted);
+    let command_stream_event_seq = Arc::clone(&stream_event_seq);
 
     let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(180) as u64;
 
@@ -4561,6 +4564,8 @@ pub async fn agent_chat_cmd(
                 task,
                 steering_tx,
                 task_run_id: task_run_id_for_command,
+                turn_id: turn.id.clone(),
+                stream_event_seq: Arc::clone(&command_stream_event_seq),
             },
         );
     }
@@ -4615,6 +4620,8 @@ pub async fn agent_stop_cmd(
     let mut running = agent_state.running.lock().await;
     if let Some(task_state) = running.remove(&conversation_id) {
         let task_run_id = task_state.task_run_id.clone();
+        let turn_id = task_state.turn_id.clone();
+        let stream_event_seq = Arc::clone(&task_state.stream_event_seq);
         let _ = state.db.update_agent_task_run_progress(
             &task_run_id,
             Some("cancelling"),
@@ -4624,16 +4631,28 @@ pub async fn agent_stop_cmd(
             None,
             None,
         );
-        let _ = state
-            .db
-            .record_agent_task_run_event(
-                &task_run_id,
-                "status",
-                "Stop requested",
-                Some("cancelling"),
-                None,
-            )
-            .map(|event| emit_agent_task_event(&app_handle, &conversation_id, event));
+        let run_event = emit_agent_frontend_event(
+            &app_handle,
+            stream_event_seq.as_ref(),
+            &conversation_id,
+            &task_run_id,
+            Some(&turn_id),
+            AgentEvent::Status {
+                content: "Stop requested".to_string(),
+                tone: Some("muted".to_string()),
+            },
+        );
+        record_agent_run_task_event(
+            &state.db,
+            &app_handle,
+            &conversation_id,
+            &task_run_id,
+            &run_event,
+            run_event.task_event_type(),
+            "Stop requested",
+            Some("cancelling"),
+            None,
+        );
         emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run_id);
 
         // Signal cooperative cancellation first so the agent can save
@@ -4659,15 +4678,18 @@ pub async fn agent_stop_cmd(
                     None,
                     Some(&artifacts),
                 );
-                let _ = db
-                    .record_agent_task_run_event(
-                        &task_run_id,
-                        "status",
-                        "Stopped by user",
-                        Some("cancelled"),
-                        Some(&artifacts),
-                    )
-                    .map(|event| emit_agent_task_event(&handle, &conv_id, event));
+                record_agent_run_status_task_event(
+                    &db,
+                    &handle,
+                    &conv_id,
+                    &task_run_id,
+                    Some(&turn_id),
+                    stream_event_seq.as_ref(),
+                    AgentRunPhase::Done,
+                    "Stopped by user",
+                    Some("cancelled"),
+                    Some(&artifacts),
+                );
                 emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
             }
         });
