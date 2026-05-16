@@ -97,6 +97,33 @@ fn record_and_emit_agent_run_task_event(
     record_and_emit_task_event(ctx, event_type, label, status, Some(&payload));
 }
 
+pub(crate) fn record_agent_run_task_event(
+    db: &Database,
+    app_handle: &AppHandle,
+    conversation_id: &str,
+    task_run_id: &str,
+    run_event: &AgentRunEvent,
+    event_type: &str,
+    label: &str,
+    status: Option<&str>,
+    payload: Option<&serde_json::Value>,
+) {
+    let task_event_ctx = TaskEventEmitContext {
+        db,
+        app_handle,
+        conversation_id,
+        task_run_id,
+    };
+    record_and_emit_agent_run_task_event(
+        &task_event_ctx,
+        run_event,
+        event_type,
+        label,
+        status,
+        payload,
+    );
+}
+
 pub(crate) fn record_task_progress_for_agent_event(
     db: &Database,
     app_handle: &AppHandle,

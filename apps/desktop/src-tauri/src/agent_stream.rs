@@ -29,7 +29,7 @@ pub(crate) fn emit_agent_frontend_event(
     task_run_id: &str,
     turn_id: Option<&str>,
     event: AgentEvent,
-) {
+) -> AgentRunEvent {
     let event = compact_agent_event_for_frontend(event);
     let event_seq = event_seq.fetch_add(1, Ordering::SeqCst) + 1;
     let run_event = AgentRunEvent::from_agent_event(&event).with_context(
@@ -39,10 +39,11 @@ pub(crate) fn emit_agent_frontend_event(
     );
     let payload = AgentFrontendEvent {
         conversation_id: conversation_id.to_string(),
-        run_event,
+        run_event: run_event.clone(),
         event,
     };
     emit_app_event(handle, "agent:event", &payload);
+    run_event
 }
 
 pub(crate) enum PendingStreamDelta {

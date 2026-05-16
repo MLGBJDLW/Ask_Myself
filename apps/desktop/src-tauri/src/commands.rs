@@ -15,7 +15,8 @@ use crate::agent_stream::{
     split_text_by_utf8_bytes, MAX_FRONTEND_ARTIFACT_STRING_CHARS, MAX_FRONTEND_TOOL_CONTENT_CHARS,
 };
 use crate::agent_task_events::{
-    emit_agent_task_event, emit_agent_task_run_update, record_task_progress_for_agent_event,
+    emit_agent_task_event, emit_agent_task_run_update, record_agent_run_task_event,
+    record_task_progress_for_agent_event,
 };
 use crate::app_events::emit_app_event;
 use crate::subagent_tool::{
@@ -48,7 +49,7 @@ use nexa_core::index::IndexStats;
 use nexa_core::ingest::{self, EmbedResult, IngestResult};
 use nexa_core::llm::{
     create_provider, model_supports_vision, CompletionRequest, ContentPart, Message,
-    ProviderConfig, ProviderType, ReasoningEffort, Role, Usage,
+    ProviderConfig, ProviderType, ReasoningEffort, Role,
 };
 use nexa_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 use nexa_core::persona::{PersonaProfile, SavePersonaInput};
@@ -4343,58 +4344,53 @@ pub async fn agent_chat_cmd(
             Some(Ok(_)) => {}
             Some(Err(e)) => {
                 warn!("Agent execution failed for conversation {conv_id}: {e}");
-                emit_agent_frontend_event(
+                let terminal_event = AgentEvent::Error {
+                    message: "Agent execution failed unexpectedly.".to_string(),
+                };
+                let run_event = emit_agent_frontend_event(
                     &handle,
                     &stream_event_seq,
                     &conv_id,
                     &task_run_id,
                     Some(&turn_id),
-                    AgentEvent::Error {
-                        message: "Agent execution failed unexpectedly.".to_string(),
-                    },
+                    terminal_event,
                 );
-                // Send Done so the frontend exits streaming state.
-                emit_agent_frontend_event(
+                record_agent_run_task_event(
+                    &db,
                     &handle,
-                    &stream_event_seq,
                     &conv_id,
                     &task_run_id,
-                    Some(&turn_id),
-                    AgentEvent::Done {
-                        message: Message::text(Role::Assistant, ""),
-                        usage_total: Usage::default(),
-                        last_prompt_tokens: 0,
-                        cached: false,
-                        finish_reason: Some("error".to_string()),
-                    },
+                    &run_event,
+                    "error",
+                    "Agent execution failed unexpectedly.",
+                    Some("failed"),
+                    None,
                 );
             }
             None => {
                 warn!("Agent execution timed out for conversation {conv_id}");
-                emit_agent_frontend_event(
+                let terminal_event = AgentEvent::Error {
+                    message: "Agent execution timed out.".to_string(),
+                };
+                let run_event = emit_agent_frontend_event(
                     &handle,
                     &stream_event_seq,
                     &conv_id,
                     &task_run_id,
                     Some(&turn_id),
-                    AgentEvent::Error {
-                        message: "Agent execution timed out.".to_string(),
-                    },
+                    terminal_event,
                 );
-                // Send Done so the frontend exits streaming state.
-                emit_agent_frontend_event(
+                let payload = serde_json::json!({ "reason": "timeout" });
+                record_agent_run_task_event(
+                    &db,
                     &handle,
-                    &stream_event_seq,
                     &conv_id,
                     &task_run_id,
-                    Some(&turn_id),
-                    AgentEvent::Done {
-                        message: Message::text(Role::Assistant, ""),
-                        usage_total: Usage::default(),
-                        last_prompt_tokens: 0,
-                        cached: false,
-                        finish_reason: Some("timeout".to_string()),
-                    },
+                    &run_event,
+                    "error",
+                    "Agent execution timed out.",
+                    Some("timed_out"),
+                    Some(&payload),
                 );
             }
         }
