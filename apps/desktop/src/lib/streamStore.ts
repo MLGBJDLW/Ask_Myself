@@ -12,11 +12,8 @@ import type {
   ToolRunItem,
   ToolRunStatus,
 } from '../types/conversation';
-import {
-  adaptFrontendRunEvent,
-  isDurableStreamEvent,
-  replayItemFromTaskEvent,
-} from './streaming/legacyAdapter';
+import { durableReplayItemsFromTaskEvents, taskTimelineEventsFromReplaySource } from './streaming/durableReplay';
+import { adaptFrontendRunEvent } from './streaming/legacyAdapter';
 import type {
   StreamRoundEvent,
   StreamState,
@@ -729,16 +726,9 @@ class StreamStoreImpl {
     const state = createDefaultState();
     state.isStreaming = taskRunIsActive(taskRun);
     state.taskRun = taskRun;
-    state.taskEvents = taskEvents
-      .filter(event => !isDurableStreamEvent(event))
-      .slice(-50);
+    state.taskEvents = taskTimelineEventsFromReplaySource(taskEvents);
 
-    const replayEvents = taskEvents
-      .map(replayItemFromTaskEvent)
-      .filter((item): item is NonNullable<ReturnType<typeof replayItemFromTaskEvent>> => Boolean(item))
-      .sort((a, b) => a.eventSeq - b.eventSeq);
-
-    for (const item of replayEvents) {
+    for (const item of durableReplayItemsFromTaskEvents(taskEvents)) {
       if (item.eventSeq <= state._lastEventSeq) continue;
       state._lastEventSeq = item.eventSeq;
       if (item.eventType === 'status') {
