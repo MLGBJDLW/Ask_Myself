@@ -9,6 +9,7 @@ import type { UsageTotal } from './protocol';
 import type { InternalStreamState } from './state';
 import {
   appendStatusTraceEvent,
+  applyStreamResetProjection,
   applyTerminalProjection,
   markRoundsToolCallsFinished,
   markToolCallsFinished,
@@ -111,6 +112,17 @@ export function applyAutoCompactedEvent(
   const summary = (typeof event.summary === 'string' ? event.summary : '')
     || (typeof raw.summary === 'string' ? raw.summary : '');
   state.autoCompacted = { summary };
+}
+
+export function applyStreamResetEvent(
+  state: InternalStreamState,
+  event: AgentFrontendEvent,
+  raw: RawFrontendEvent,
+): void {
+  const reason = (typeof event.reason === 'string' ? event.reason : '')
+    || (typeof raw.reason === 'string' ? raw.reason : '')
+    || 'Stream interrupted; retrying without streaming.';
+  applyStreamResetProjection(state, reason, { clearTools: true });
 }
 
 export function applyApprovalRequestedEvent(

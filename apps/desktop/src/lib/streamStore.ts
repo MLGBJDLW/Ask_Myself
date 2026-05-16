@@ -10,9 +10,9 @@ import type {
   ToolRunItem,
 } from '../types/conversation';
 import {
-  appendReplyTraceEvent,
-  appendThinkingTraceEvent,
-  applyStreamBlockDelta,
+  applyStreamBlockDeltaEvent,
+  applyTextDeltaEvent,
+  applyThinkingEvent,
 } from './streaming/blockProjection';
 import { applyDurableReplayToState, taskTimelineEventsFromReplaySource } from './streaming/durableReplay';
 import { adaptFrontendRunEvent } from './streaming/legacyAdapter';
@@ -23,6 +23,7 @@ import {
   applyDoneEvent,
   applyErrorEvent,
   applyStatusEvent,
+  applyStreamResetEvent,
   applyTaskRunEvent,
   applyTaskRunUpdatedEvent,
   applyUsageUpdateEvent,
@@ -37,7 +38,6 @@ import {
 } from './streaming/state';
 import {
   appendStatusTraceEvent,
-  applyStreamResetProjection,
   applyTerminalProjection,
   resetActiveStreamBlocks,
 } from './streaming/terminalProjection';
@@ -354,68 +354,23 @@ class StreamStoreImpl {
 
     switch (eventType) {
       case 'streamBlockDelta': {
-        const blockId = (typeof event.blockId === 'string' ? event.blockId : '')
-          || (typeof raw.blockId === 'string' ? raw.blockId : '');
-        const rawChannel = event.channel ?? raw.channel;
-        const channel = rawChannel === 'answer' || rawChannel === 'thinking'
-          ? rawChannel
-          : null;
-        const offsetRaw = event.offset ?? raw.offset;
-        const offset = typeof offsetRaw === 'number'
-          ? offsetRaw
-          : Number.parseInt(String(offsetRaw ?? '0'), 10);
-        const delta = typeof event.delta === 'string'
-          ? event.delta
-          : (typeof raw.delta === 'string' ? raw.delta : '');
-        if (channel && blockId && delta) {
-          applyStreamBlockDelta(
-            s,
-            channel,
-            blockId,
-            Number.isFinite(offset) ? offset : 0,
-            delta,
-          );
-        }
+        applyStreamBlockDeltaEvent(s, event, raw);
         break;
       }
 
       case 'thinking': {
-        try {
-        const delta = typeof event.content === 'string'
-          ? event.content
-          : (typeof raw.content === 'string' ? raw.content : '');
-        if (!delta) break;
-        s.isThinking = true;
-        s.thinkingText += delta;
-        appendThinkingTraceEvent(s, delta);
-        } catch (err) {
-          console.error('[streamStore] thinking error:', err);
-        }
+        applyThinkingEvent(s, event, raw);
         break;
       }
 
       case 'textDelta': {
-        s.isThinking = false;
-        if (s._activeRoundId) {
-          s._activeRoundId = null;
-          s._activeRoundAcceptingStarts = false;
-        }
-        const delta = typeof event.delta === 'string'
-          ? event.delta
-          : (typeof raw.delta === 'string' ? raw.delta : '');
-        if (!delta) break;
-        s.thinkingText = '';
-        s.streamText += delta;
-        appendReplyTraceEvent(s, delta);
+        applyTextDeltaEvent(s, event, raw);
         break;
       }
 
       case 'streamReset': {
-        const reason = (typeof event.reason === 'string' ? event.reason : '')
-          || (typeof raw.reason === 'string' ? raw.reason : '')
-          || 'Stream interrupted; retrying without streaming.';
         clearToolPreparingTimers(s);
-        applyStreamResetProjection(s, reason, { clearTools: true });
+        applyStreamResetEvent(s, event, raw);
         break;
       }
 
