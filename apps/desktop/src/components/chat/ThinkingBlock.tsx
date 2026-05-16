@@ -200,11 +200,7 @@ export function ThinkingBlock({
             {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
           >
-            <div
-              className="chat-trace-panel mt-1.5 ml-4 rounded-r-md border border-border/60 bg-surface-0/45"
-              data-trace-soft="true"
-              data-trace-active={traceActive ? 'true' : 'false'}
-            >
+            <div className={`mt-1 ml-4 border-l pl-3 ${traceActive ? 'border-accent/30' : 'border-border/35'}`}>
               <div
                 ref={scrollContainerRef}
                 onScroll={(e) => {
@@ -213,13 +209,13 @@ export function ThinkingBlock({
                     el.scrollHeight - el.scrollTop - el.clientHeight;
                   userScrolledUpRef.current = distanceFromBottom > 40;
                 }}
-                className="relative max-h-[300px] overflow-y-auto rounded-r-md py-2 pl-3 pr-6 text-xs leading-relaxed text-text-secondary"
+                className="relative max-h-[300px] overflow-y-auto py-1 pr-6 text-xs leading-relaxed text-text-secondary"
               >
-                <div className="border-l-2 border-accent/18 pl-3">
+                <div className="space-y-1">
                   {effectiveSections ? (
                     effectiveSections.map((sec, secIdx) => (
                       <div key={secIdx}>
-                        {secIdx > 0 && <div className="my-2 border-t border-border/20" />}
+                        {secIdx > 0 && <div className="my-1.5 border-t border-border/20" />}
                         {sec.text && (
                           <ReactMarkdown remarkPlugins={[remarkGfm]} components={thinkingMarkdownComponents}>
                             {sec.text}
@@ -241,7 +237,7 @@ export function ThinkingBlock({
               </div>
             </div>
             {children && (
-              <div className="ml-4 mt-1 space-y-0.5 pb-1">
+              <div className="ml-4 mt-1 space-y-0.5 pb-0.5">
                 {children}
               </div>
             )}

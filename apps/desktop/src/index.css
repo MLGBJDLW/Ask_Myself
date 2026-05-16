@@ -319,16 +319,16 @@ body {
   background:
     radial-gradient(140px circle at 0% 0%, var(--color-accent-subtle), transparent 72%),
     radial-gradient(120px circle at 100% 100%, var(--color-accent-subtle), transparent 78%);
-  opacity: 0.3;
+  opacity: 0.14;
   z-index: 0;
 }
 
 .chat-trace-panel[data-trace-soft='true'] {
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
 }
 
 .chat-trace-panel[data-trace-active='true'] {
-  box-shadow: var(--shadow-sm), var(--shadow-glow);
+  box-shadow: var(--shadow-glow);
 }
 
 .chat-trace-panel[data-trace-active='true']::after {

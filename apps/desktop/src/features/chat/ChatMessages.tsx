@@ -513,12 +513,20 @@ function TraceStatusRow({
       : tone === "success"
         ? "border-success/25 bg-success/8 text-success"
         : "border-border/45 bg-surface-0/25 text-text-tertiary";
+  const dotClass =
+    tone === "error"
+      ? "bg-danger"
+      : tone === "success"
+        ? "bg-success"
+        : "bg-text-tertiary/60";
 
   return (
     <div
-      className={`rounded-md border px-3 py-2 text-[11px] leading-relaxed ${toneClass}`}
+      className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] leading-tight ${toneClass}`}
+      title={text}
     >
-      {text}
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
+      <span className="min-w-0 truncate">{text}</span>
     </div>
   );
 }
