@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.5...nexa-monorepo-v0.6.6) (2026-05-17)
+
+
+### Bug Fixes
+
+* improve agent trace UX and unicode edits ([759cc9f](https://github.com/MLGBJDLW/Nexa/commit/759cc9f441c271c7f579b0c57bc7f2f8a720f79d))
+* improve agent trace UX and unicode edits ([2fd141a](https://github.com/MLGBJDLW/Nexa/commit/2fd141a222decdf089ae05a0fd2146a5da81b7be))
+
 ## [0.6.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.4...nexa-monorepo-v0.6.5) (2026-05-16)
 
 
