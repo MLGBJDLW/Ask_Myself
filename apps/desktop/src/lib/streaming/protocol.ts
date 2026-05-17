@@ -29,8 +29,6 @@ export interface ToolCallEvent {
   argsStatus: 'pending' | 'streaming' | 'ready' | 'done' | 'error';
   /** Number of characters received for `arguments` so far. */
   argsBytes: number;
-  /** Latest up to 10 heartbeat notes accumulated during tool execution. */
-  progressNotes: string[];
   content?: string;
   isError?: boolean;
   artifacts?: ArtifactPayload;

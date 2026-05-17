@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, Scissors } from "lucide-react";
+import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, ArchiveRestore, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "../../i18n";
 import type { Conversation, ImageAttachment } from "../../types/conversation";
@@ -570,7 +570,11 @@ export function ChatInput({
                 aria-label={t("chat.compact")}
                 title="/compact"
               >
-                <Scissors className={`h-3.5 w-3.5 ${isCompacting ? "animate-pulse" : ""}`} />
+                {isCompacting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ArchiveRestore className="h-3.5 w-3.5" />
+                )}
               </button>
             )}
             {conversationId && onRestoreCheckpoint && (

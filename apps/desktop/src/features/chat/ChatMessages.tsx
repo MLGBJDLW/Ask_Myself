@@ -283,12 +283,25 @@ function shouldHideRouteKind(routeKind: string | null | undefined): boolean {
 }
 
 function shouldHideTraceStatus(text: string | null | undefined): boolean {
-  const normalized = (text ?? "").replace(/\s+/g, "").toLowerCase();
+  const compact = (text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  const normalized = compact.replace(/\s+/g, "");
   return (
     normalized === "routeselected:directresponse" ||
     normalized === "route:directresponse" ||
     normalized === "routeselected:fileoperation" ||
-    normalized === "route:fileoperation"
+    normalized === "route:fileoperation" ||
+    compact === "loading tools and mcp servers" ||
+    compact === "task queued" ||
+    compact === "queued" ||
+    compact === "排队" ||
+    compact === "排隊" ||
+    compact === "排队中" ||
+    compact === "排隊中" ||
+    compact === "任务已排队" ||
+    compact === "任務已排隊" ||
+    compact === "已使用上下文" ||
+    /^subagent (judge )?queued:/.test(compact) ||
+    /^status:\s*(success|cached|running)(\s*.+)?$/.test(compact)
   );
 }
 
@@ -303,6 +316,9 @@ const LOW_SIGNAL_TRACE_TOOLS = new Set([
   "get_document_info",
   "list_documents",
   "list_sources",
+]);
+
+const INTERNAL_TRACE_TOOLS = new Set([
   "prepare_document_tools",
   "tool_search",
 ]);
@@ -318,6 +334,15 @@ function isUnsuccessfulToolStatus(status?: string | null): boolean {
     status === "declined" ||
     status === "cancelled" ||
     status === "timedOut"
+  );
+}
+
+function isPendingToolStatus(status?: string | null): boolean {
+  return (
+    status === "preparing" ||
+    status === "starting" ||
+    status === "approvalPending" ||
+    status === "running"
   );
 }
 
@@ -337,8 +362,12 @@ function shouldRenderTraceToolCall(
   if (isBoardOnlyToolCall(toolName, renderKind)) return false;
   if (isError || isUnsuccessfulToolStatus(status)) return true;
 
-  if (isFileChangeToolRender(toolName, renderKind)) return false;
-  return !LOW_SIGNAL_TRACE_TOOLS.has(normalizeToolName(toolName));
+  const normalizedToolName = normalizeToolName(toolName);
+  if (INTERNAL_TRACE_TOOLS.has(normalizedToolName)) return false;
+
+  if (isFileChangeToolRender(toolName, renderKind)) return isPendingToolStatus(status);
+  if (LOW_SIGNAL_TRACE_TOOLS.has(normalizedToolName)) return isPendingToolStatus(status);
+  return true;
 }
 
 function formatTurnStatus(status: string): string {
@@ -803,8 +832,8 @@ export function ChatMessages({
             content=""
             sections={sections}
             isStreaming={isStreaming}
-            defaultExpanded
-            collapseOnFinish={isStreaming}
+            defaultExpanded={isStreaming}
+            collapseOnFinish
           />
         </div>
       </div>
@@ -917,23 +946,23 @@ export function ChatMessages({
         });
       }
 
-      const duration = formatTurnDuration(turn);
-      sections.push({
-        text: "",
-        node: (
-          <TraceStatusRow
-            key={`turn-status-${turn.id}`}
-            text={`Status: ${formatTurnStatus(turn.status)}${duration ? ` · ${duration}` : ""}`}
-            tone={
-              turn.status === "error"
-                ? "error"
-                : turn.status === "success" || turn.status === "cached"
-                  ? "success"
-                  : "muted"
-            }
-          />
-        ),
-      });
+      if (
+        turn.status === "error" ||
+        turn.status === "cancelled" ||
+        turn.status === "max_iterations"
+      ) {
+        const duration = formatTurnDuration(turn);
+        sections.push({
+          text: "",
+          node: (
+            <TraceStatusRow
+              key={`turn-status-${turn.id}`}
+              text={`Status: ${formatTurnStatus(turn.status)}${duration ? ` · ${duration}` : ""}`}
+              tone="error"
+            />
+          ),
+        });
+      }
 
       for (const [itemIdx, item] of (trace?.items ?? []).entries()) {
         if (item.kind === "status") {
@@ -1245,7 +1274,6 @@ export function ChatMessages({
                 artifacts={event.toolCall.artifacts}
                 argsStatus={event.toolCall.argsStatus}
                 argsBytes={event.toolCall.argsBytes}
-                progressNotes={event.toolCall.progressNotes}
                 trace={true}
               />
             ),
@@ -1313,7 +1341,6 @@ export function ChatMessages({
               artifacts={tc.artifacts}
               argsStatus={tc.argsStatus}
               argsBytes={tc.argsBytes}
-              progressNotes={tc.progressNotes}
               trace={true}
             />
           ),
@@ -1945,7 +1972,7 @@ export function ChatMessages({
               content=""
               sections={currentThinkingSections}
               isStreaming={currentTraceActive}
-              defaultExpanded
+              defaultExpanded={currentTraceActive}
               collapseOnFinish
             />
           </div>

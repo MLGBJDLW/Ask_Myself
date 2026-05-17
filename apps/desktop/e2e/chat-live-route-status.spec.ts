@@ -54,7 +54,7 @@ test.beforeEach(async ({ page }) => {
       localStorage.getItem("e2e-route-status") ??
       "Route selected: KnowledgeRetrieval";
     const textDelayMs = Number(
-      localStorage.getItem("e2e-route-text-delay") ?? "60",
+      localStorage.getItem("e2e-route-text-delay") ?? "2000",
     );
     const thinkingDelayMs = Number(
       localStorage.getItem("e2e-route-thinking-delay") ?? "20",
@@ -226,6 +226,24 @@ test.beforeEach(async ({ page }) => {
             emitEvent("agent:event", {
               conversationId,
               type: "status",
+              content: "Loading tools and MCP servers",
+              tone: "muted",
+            });
+            emitEvent("agent:event", {
+              conversationId,
+              type: "status",
+              content: "排队中",
+              tone: "muted",
+            });
+            emitEvent("agent:event", {
+              conversationId,
+              type: "status",
+              content: "已使用上下文",
+              tone: "muted",
+            });
+            emitEvent("agent:event", {
+              conversationId,
+              type: "status",
               content: routeStatusText,
               tone: "muted",
             });
@@ -239,6 +257,64 @@ test.beforeEach(async ({ page }) => {
                 content: "Checking the retry path first.",
               });
             }, thinkingDelayMs);
+          }
+
+          if (localStorage.getItem("e2e-route-context-tool") === "1") {
+            const contextToolRun = (status: "running" | "completed") => ({
+              callId: "context-tool-call",
+              toolName: "fetch_url",
+              plugin: {
+                id: "web",
+                name: "Web",
+                capability: "fetch",
+                description: "Fetch URL content",
+              },
+              status,
+              arguments: '{"url":"https://example.com"}',
+              renderKind: "generic",
+              capabilities: {
+                inputStreaming: "none",
+                renderKind: "generic",
+                readOnly: true,
+                destructive: false,
+                concurrencySafe: true,
+                interruptBehavior: "block",
+                resourceKeys: ["url:https://example.com"],
+              },
+              content: status === "completed" ? "Fetched example.com" : undefined,
+              isError: false,
+              artifacts: {
+                contextManifest: {
+                  version: 1,
+                  totalTokenEstimate: 512,
+                  items: [
+                    {
+                      id: "context-1",
+                      role: "evidence",
+                      source: "example.com",
+                      trustLevel: "external",
+                      tokenEstimate: 512,
+                    },
+                  ],
+                },
+              },
+              progressNote: "Preparing context manifest",
+            });
+
+            setTimeout(() => {
+              emitEvent("agent:event", {
+                conversationId,
+                type: "toolRunUpdated",
+                run: contextToolRun("running"),
+              });
+            }, thinkingDelayMs + 20);
+            setTimeout(() => {
+              emitEvent("agent:event", {
+                conversationId,
+                type: "toolRunCompleted",
+                run: contextToolRun("completed"),
+              });
+            }, textDelayMs + 5);
           }
 
           setTimeout(() => {
@@ -310,9 +386,27 @@ test("renders live route status inside the active trace timeline", async ({
   await expect(
     page.getByText("Route selected: KnowledgeRetrieval"),
   ).toBeVisible();
+  await expect(page.getByText("Loading tools and MCP servers")).toHaveCount(0);
+  await expect(page.getByText("排队中")).toHaveCount(0);
+  await expect(page.getByText("已使用上下文")).toHaveCount(0);
   await expect(
     page.getByText("The timeout branch did not return early.").first(),
   ).toBeVisible();
+});
+
+test("hides internal context manifest details from trace tool chips", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("e2e-route-context-tool", "1");
+  });
+
+  await page.goto("/chat");
+
+  await expect(page.getByText("fetch_url")).toBeVisible();
+  const chatLog = page.getByLabel("Chat messages");
+  await expect(chatLog.getByText("Context used", { exact: true })).toHaveCount(0);
+  await expect(chatLog.getByText("Preparing context manifest")).toHaveCount(0);
 });
 
 test("hides the direct-response route banner until the first reply chunk arrives", async ({

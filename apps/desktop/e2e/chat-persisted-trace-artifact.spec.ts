@@ -234,13 +234,14 @@ test.beforeEach(async ({ page }) => {
 
 test('renders persisted trace artifacts as a single unified timeline', async ({ page }) => {
   await page.goto('/chat/conv-persisted-artifact-trace');
-  await page.getByRole('button', { name: /Thinking completed/ }).click();
+  const thinkingToggle = page.getByRole('button', { name: /Thinking completed/ });
+  await expect(thinkingToggle).toHaveAttribute('aria-expanded', 'false');
+  await thinkingToggle.click();
 
   await expect(page.getByText('Investigating retry behaviour from persisted artifacts.')).toBeVisible();
   await expect(page.getByText('search_knowledge_base')).toBeVisible();
   await expect(page.getByText('Recovered from persisted trace data.')).toBeVisible();
   await expect(page.getByText('Final answer from persisted trace artifacts.')).toBeVisible();
-  await expect(page.getByText('Trace plan')).toBeVisible();
   await expect(page.getByText('Draft fix')).toBeVisible();
 
   const chatLogText = await page.getByLabel('Chat messages').textContent();
