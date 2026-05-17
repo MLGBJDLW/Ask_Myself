@@ -15,6 +15,7 @@ use super::diff_stats::diff_stats_from_diff;
 use super::document_utils::{
     edit_guidance_for_path, generated_document_mime, is_binary_file_error,
 };
+use super::text_match::find_text_matches;
 use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
@@ -349,50 +350,6 @@ fn create_diff_artifact(path: &str, file_content: &str) -> serde_json::Value {
     })
 }
 
-fn normalize_line_endings_with_map(input: &str) -> (String, Vec<usize>) {
-    let mut normalized = String::with_capacity(input.len());
-    let mut byte_map = Vec::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut idx = 0usize;
-
-    while idx < bytes.len() {
-        if bytes[idx] == b'\r' && idx + 1 < bytes.len() && bytes[idx + 1] == b'\n' {
-            normalized.push('\n');
-            byte_map.push(idx);
-            idx += 2;
-            continue;
-        }
-
-        let ch = input[idx..]
-            .chars()
-            .next()
-            .expect("idx should always be on a char boundary");
-        normalized.push(ch);
-        byte_map.push(idx);
-        idx += ch.len_utf8();
-    }
-
-    (normalized, byte_map)
-}
-
-fn find_line_ending_normalized_matches(haystack: &str, needle: &str) -> Vec<(usize, usize)> {
-    let (normalized_haystack, haystack_map) = normalize_line_endings_with_map(haystack);
-    let (normalized_needle, _) = normalize_line_endings_with_map(needle);
-    if normalized_needle.is_empty() || normalized_haystack == haystack {
-        return Vec::new();
-    }
-
-    normalized_haystack
-        .match_indices(&normalized_needle)
-        .filter_map(|(start, matched)| {
-            let end = start + matched.len();
-            let original_start = *haystack_map.get(start)?;
-            let original_end = haystack_map.get(end).copied().unwrap_or(haystack.len());
-            Some((original_start, original_end.saturating_sub(original_start)))
-        })
-        .collect()
-}
-
 fn find_replacement_matches(
     content: &str,
     old_str: &str,
@@ -400,17 +357,9 @@ fn find_replacement_matches(
     end_byte: usize,
 ) -> Vec<(usize, usize)> {
     let search_area = &content[start_byte..end_byte];
-    let exact: Vec<(usize, usize)> = search_area
-        .match_indices(old_str)
-        .map(|(offset, matched)| (start_byte + offset, matched.len()))
-        .collect();
-    if !exact.is_empty() {
-        return exact;
-    }
-
-    find_line_ending_normalized_matches(search_area, old_str)
+    find_text_matches(search_area, old_str)
         .into_iter()
-        .map(|(offset, len)| (start_byte + offset, len))
+        .map(|matched| (start_byte + matched.start, matched.len))
         .collect()
 }
 
@@ -958,6 +907,66 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
             "delta\r\ngamma\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_str_replace_tolerates_unicode_quote_variants_in_chinese_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join("公主与恶龙")
+            .join("正文")
+            .join("第5章_我要出门了.md");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "她说：“我要出门了。”\n下一句。\n").unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "action": "str_replace",
+            "old_str": "她说:\"我要出门了。\"",
+            "new_str": "她说：“我要去集市。”"
+        });
+
+        let result = tool
+            .execute("c-unicode-quotes", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "她说：“我要去集市。”\n下一句。\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_str_replace_tolerates_unicode_normalization_variants_across_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("لغات").join("日本語").join("한글.md");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "قال: «مرحبا»\nﾊﾟﾝを買う\nCafe\u{301}\n").unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "action": "str_replace",
+            "old_str": "قال: \"مرحبا\"\nパンを買う\nCafé",
+            "new_str": "multi-script replacement"
+        });
+
+        let result = tool
+            .execute("c-unicode-scripts", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "multi-script replacement\n"
         );
     }
 

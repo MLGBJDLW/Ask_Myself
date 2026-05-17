@@ -224,6 +224,10 @@ test.beforeEach(async ({ page }) => {
 test('renders persisted multi-step traces in chronological order', async ({ page }) => {
   await page.goto('/chat/conv-persisted-order');
 
+  const thinkingToggle = page.locator('button').filter({ hasText: 'Thinking completed' });
+  await expect(thinkingToggle).toHaveAttribute('aria-expanded', 'false');
+  await thinkingToggle.click();
+
   const chatLogText = await page.getByLabel('Chat messages').textContent();
   expect(chatLogText).toBeTruthy();
 
@@ -232,8 +236,4 @@ test('renders persisted multi-step traces in chronological order', async ({ page
   expect(text.indexOf('search_knowledge_base')).toBeGreaterThan(text.indexOf('phase one thinking'));
   expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
   expect(text.indexOf('final-reply-segment')).toBeGreaterThan(text.indexOf('phase two thinking'));
-
-  await expect(
-    page.locator('button[aria-expanded="true"]').filter({ hasText: 'Thinking completed' }),
-  ).toHaveCount(1);
 });

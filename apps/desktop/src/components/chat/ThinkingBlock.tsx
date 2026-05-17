@@ -147,15 +147,6 @@ export function ThinkingBlock({
     }
   }, [isStreaming]);
 
-  const tokenEstimate = Math.round(combinedContent.length / 4); // rough estimate
-  const summaryExcerpt = !isStreaming && !effectiveSections
-    ? combinedContent
-        .replace(/[#>*`_~-]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 88)
-    : '';
-
   const summaryText = isStreaming
     ? t('chat.thinkingElapsed', { seconds: elapsed.toString() })
     : elapsed > 0
@@ -184,12 +175,6 @@ export function ThinkingBlock({
               <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '150ms' }} />
               <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '300ms' }} />
             </span>
-          )}
-          {!isStreaming && tokenEstimate > 0 && (
-            <span className="text-text-tertiary/60">. {t('chat.tokenEstimate', { count: tokenEstimate.toString() })}</span>
-          )}
-          {!isStreaming && summaryExcerpt && (
-            <span className="max-w-[28rem] truncate text-text-tertiary/70">. {summaryExcerpt}</span>
           )}
         </span>
       </button>

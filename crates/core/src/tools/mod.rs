@@ -120,6 +120,7 @@ pub mod session_search_tool;
 pub mod statistics_tool;
 pub mod submit_feedback_tool;
 pub mod summarize_tool;
+pub(crate) mod text_match;
 pub mod tool_search_tool;
 pub mod update_plan_tool;
 pub mod write_note_tool;
@@ -1325,6 +1326,50 @@ mod tests {
             registry.access_profile("create_file", &args)
         );
         assert_eq!(descriptor.access_profile.risk_level, ApprovalRisk::High);
+    }
+
+    #[test]
+    fn read_and_retrieval_tools_stream_ui_previews() {
+        let registry = default_tool_registry();
+        let preview_tools = [
+            "fetch_url",
+            "read_file",
+            "read_files",
+            "list_dir",
+            "glob_files",
+            "grep_files",
+            "search_files",
+            "get_document_info",
+            "compare_documents",
+            "summarize_document",
+            "compile_document",
+            "search_knowledge_base",
+            "retrieve_evidence",
+            "search_playbooks",
+            "search_sessions",
+            "search_by_date",
+            "get_chunk_context",
+            "query_knowledge_graph",
+            "get_related_concepts",
+            "list_documents",
+            "list_sources",
+            "tool_search",
+            "code_intelligence",
+        ];
+
+        for name in preview_tools {
+            let capabilities = registry.run_capabilities(name, &serde_json::Value::Null);
+            assert_eq!(
+                capabilities.input_streaming,
+                ToolInputStreamingMode::UiPreview,
+                "{name} should expose partial arguments for live UI previews"
+            );
+            assert_eq!(
+                capabilities.render_kind,
+                ToolRenderKind::Search,
+                "{name} should use the lightweight retrieval renderer"
+            );
+        }
     }
 
     #[test]

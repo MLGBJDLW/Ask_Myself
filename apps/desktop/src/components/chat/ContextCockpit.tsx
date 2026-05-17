@@ -1,4 +1,4 @@
-import { AlertTriangle, BrainCircuit, ChevronDown, Clock3, Cpu, Gauge, Loader2, Plus, Scissors, ShieldCheck, Wrench, Zap } from 'lucide-react';
+import { AlertTriangle, ArchiveRestore, BrainCircuit, ChevronDown, Clock3, Cpu, Gauge, Loader2, Plus, ShieldCheck, Wrench, Zap } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 
 interface TokenUsage {
@@ -344,7 +344,7 @@ export function ContextCockpit({
                       onClick={onCompact}
                       className="inline-flex items-center gap-1 rounded-md bg-black/10 px-2 py-1 text-[11px] font-medium transition-colors hover:bg-black/15"
                     >
-                      <Scissors className="h-3 w-3" />
+                      <ArchiveRestore className="h-3 w-3" />
                       {t('chat.compact')}
                     </button>
                   )}

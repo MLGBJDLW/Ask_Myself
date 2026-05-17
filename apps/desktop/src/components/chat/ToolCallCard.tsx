@@ -74,41 +74,6 @@ interface GeneratedImageArtifact {
   bytes?: number;
 }
 
-interface WorkPlanTarget {
-  kind?: string;
-  value?: string;
-}
-
-interface WorkPlanStep {
-  id?: string;
-  stage?: string;
-  status?: string;
-}
-
-interface WorkPlanArtifact {
-  version?: number;
-  toolName?: string;
-  risk?: string;
-  requiresReview?: boolean;
-  targets?: WorkPlanTarget[];
-  steps?: WorkPlanStep[];
-}
-
-interface ContextManifestItem {
-  id?: string;
-  role?: string;
-  source?: string;
-  trustLevel?: string;
-  tokenEstimate?: number;
-}
-
-interface ContextManifestArtifact {
-  version?: number;
-  tokenBudget?: number | null;
-  totalTokenEstimate?: number;
-  items?: ContextManifestItem[];
-}
-
 type ToolCallCardStatus =
   | 'preparing'
   | 'starting'
@@ -138,8 +103,6 @@ interface ToolCallCardProps {
   argsStatus?: 'pending' | 'streaming' | 'ready' | 'done' | 'error';
   /** Total characters of `arguments` received so far. */
   argsBytes?: number;
-  /** Accumulated heartbeat notes during tool execution. */
-  progressNotes?: string[];
 }
 
 function formatByteCount(bytes: number): string {
@@ -280,9 +243,26 @@ function DiffStatsSummaryPanel({ stats }: { stats: DiffStatsArtifact }) {
 /* ------------------------------------------------------------------ */
 
 const TOOL_ICONS: Record<string, typeof Search> = {
+  search_playbooks: BookOpen,
+  search_sessions: BookOpen,
+  search_by_date: Search,
   search: Search,
+  code_intelligence: Search,
   grep_files: Search,
   glob_files: FolderOpen,
+  read_files: FileText,
+  read_file: FileText,
+  get_document_info: FileText,
+  compare_documents: Layers,
+  summarize_document: List,
+  retrieve_evidence: BookOpen,
+  query_knowledge_graph: Layers,
+  get_related_concepts: Layers,
+  list_documents: List,
+  list_sources: BookOpen,
+  compile_document: ClipboardList,
+  desktop_automation: Globe,
+  project_tool: Wrench,
   playbook: BookOpen,
   multi_edit: PenLine,
   edit_file: PenLine,
@@ -401,68 +381,6 @@ function extractGeneratedImageArtifact(
   return artifacts as unknown as GeneratedImageArtifact;
 }
 
-function extractWorkPlanArtifact(
-  artifacts: ArtifactPayload | undefined,
-): WorkPlanArtifact | null {
-  if (!isRecord(artifacts)) return null;
-  const workPlan = artifacts.workPlan;
-  if (!isRecord(workPlan)) return null;
-
-  const targets = Array.isArray(workPlan.targets)
-    ? workPlan.targets.filter(isRecord).map((target) => ({
-      kind: typeof target.kind === 'string' ? target.kind : undefined,
-      value: typeof target.value === 'string' ? target.value : undefined,
-    }))
-    : undefined;
-  const steps = Array.isArray(workPlan.steps)
-    ? workPlan.steps.filter(isRecord).map((step) => ({
-      id: typeof step.id === 'string' ? step.id : undefined,
-      stage: typeof step.stage === 'string' ? step.stage : undefined,
-      status: typeof step.status === 'string' ? step.status : undefined,
-    }))
-    : undefined;
-
-  return {
-    version: typeof workPlan.version === 'number' ? workPlan.version : undefined,
-    toolName: typeof workPlan.toolName === 'string' ? workPlan.toolName : undefined,
-    risk: typeof workPlan.risk === 'string' ? workPlan.risk : undefined,
-    requiresReview: typeof workPlan.requiresReview === 'boolean' ? workPlan.requiresReview : undefined,
-    targets,
-    steps,
-  };
-}
-
-function extractContextManifestArtifact(
-  artifacts: ArtifactPayload | undefined,
-): ContextManifestArtifact | null {
-  if (!isRecord(artifacts)) return null;
-  const contextManifest = artifacts.contextManifest;
-  if (!isRecord(contextManifest)) return null;
-
-  const items = Array.isArray(contextManifest.items)
-    ? contextManifest.items.filter(isRecord).map((item) => ({
-      id: typeof item.id === 'string' ? item.id : undefined,
-      role: typeof item.role === 'string' ? item.role : undefined,
-      source: typeof item.source === 'string' ? item.source : undefined,
-      trustLevel: typeof item.trustLevel === 'string' ? item.trustLevel : undefined,
-      tokenEstimate: typeof item.tokenEstimate === 'number' ? item.tokenEstimate : undefined,
-    }))
-    : undefined;
-
-  return {
-    version: typeof contextManifest.version === 'number' ? contextManifest.version : undefined,
-    tokenBudget:
-      typeof contextManifest.tokenBudget === 'number' || contextManifest.tokenBudget === null
-        ? contextManifest.tokenBudget
-        : undefined,
-    totalTokenEstimate:
-      typeof contextManifest.totalTokenEstimate === 'number'
-        ? contextManifest.totalTokenEstimate
-        : undefined,
-    items,
-  };
-}
-
 function verificationStatusLabel(
   status: VerificationOverallStatus,
   t: ReturnType<typeof useTranslation>['t'],
@@ -477,83 +395,6 @@ function verificationStatusLabel(
     case 'pending':
     default:
       return t('chat.verificationPending');
-  }
-}
-
-function workPlanStageLabel(stage: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
-  switch (stage) {
-    case 'planner':
-      return t('chat.workPlanStagePlanner');
-    case 'executor':
-      return t('chat.workPlanStageExecutor');
-    case 'reviewer':
-      return t('chat.workPlanStageReviewer');
-    default:
-      return stage || t('chat.workPlanStagePlanner');
-  }
-}
-
-function workPlanRiskLabel(risk: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
-  switch (risk) {
-    case 'low':
-      return t('chat.workPlanRiskLow');
-    case 'medium':
-      return t('chat.workPlanRiskMedium');
-    case 'high':
-      return t('chat.workPlanRiskHigh');
-    default:
-      return risk || t('chat.workPlanRiskLow');
-  }
-}
-
-function workPlanStepStatusLabel(status: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
-  switch (status) {
-    case 'done':
-      return t('chat.taskRunCompleted');
-    case 'running':
-      return t('chat.taskRunRunning');
-    case 'failed':
-      return t('chat.taskRunFailed');
-    case 'skipped':
-      return t('chat.taskRunUnknown');
-    default:
-      return t('chat.taskRunQueued');
-  }
-}
-
-function contextRoleLabel(role: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
-  switch (role) {
-    case 'instruction':
-      return t('chat.contextManifestRoleInstruction');
-    case 'evidence':
-      return t('chat.contextManifestRoleEvidence');
-    case 'tool_guidance':
-      return t('chat.contextManifestRoleToolGuidance');
-    case 'memory':
-      return t('chat.contextManifestRoleMemory');
-    case 'conversation':
-      return t('chat.contextManifestRoleConversation');
-    case 'source_scope':
-      return t('chat.contextManifestRoleSourceScope');
-    default:
-      return role || t('chat.contextManifestRoleEvidence');
-  }
-}
-
-function contextTrustLabel(trustLevel: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
-  switch (trustLevel) {
-    case 'system':
-      return t('chat.contextManifestTrustSystem');
-    case 'user_selected':
-      return t('chat.contextManifestTrustUserSelected');
-    case 'retrieved_evidence':
-      return t('chat.contextManifestTrustRetrievedEvidence');
-    case 'agent_memory':
-      return t('chat.contextManifestTrustAgentMemory');
-    case 'external':
-      return t('chat.contextManifestTrustExternal');
-    default:
-      return trustLevel || t('chat.contextManifestTrustRetrievedEvidence');
   }
 }
 
@@ -700,101 +541,6 @@ function TrustBoundaryPills({ boundary }: { boundary: TrustBoundaryArtifact }) {
   );
 }
 
-function WorkPlanPanel({ plan, compact = false }: { plan: WorkPlanArtifact; compact?: boolean }) {
-  const { t } = useTranslation();
-  const targets = plan.targets ?? [];
-  const steps = plan.steps ?? [];
-  const visibleTargets = targets.slice(0, compact ? 2 : 4);
-  const visibleSteps = steps.slice(0, compact ? 2 : 3);
-
-  return (
-    <div className="rounded-lg border border-border/60 bg-surface-0/65 px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="font-medium text-text-primary">{t('chat.workPlanLabel')}</span>
-        <span className="rounded-full border border-border/60 bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary">
-          {workPlanRiskLabel(plan.risk, t)}
-        </span>
-        <span className="rounded-full border border-border/60 bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary">
-          {plan.requiresReview ? t('chat.workPlanReviewRequired') : t('chat.workPlanReviewOptional')}
-        </span>
-        {targets.length > 0 && (
-          <span className="text-[11px] text-text-tertiary">
-            {t('chat.workPlanTargetCount', { count: String(targets.length) })}
-          </span>
-        )}
-      </div>
-
-      {visibleTargets.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {visibleTargets.map((target, index) => (
-            <span
-              key={`${target.kind ?? 'target'}-${target.value ?? index}`}
-              className="inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary"
-            >
-              {target.kind && <span className="text-text-tertiary">{target.kind}</span>}
-              {target.value && <span className="truncate">{target.value}</span>}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {visibleSteps.length > 0 && (
-        <div className="mt-2 grid gap-1.5">
-          {visibleSteps.map((step, index) => (
-            <div
-              key={step.id ?? `${step.stage ?? 'step'}-${index}`}
-              className="flex items-center justify-between gap-2 rounded-md border border-border/50 bg-surface-1/70 px-2 py-1"
-            >
-              <span className="text-[11px] font-medium text-text-secondary">
-                {workPlanStageLabel(step.stage, t)}
-              </span>
-              <span className="text-[11px] text-text-tertiary">
-                {workPlanStepStatusLabel(step.status, t)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ContextManifestPanel({ manifest, compact = false }: { manifest: ContextManifestArtifact; compact?: boolean }) {
-  const { t } = useTranslation();
-  const items = manifest.items ?? [];
-  const visibleItems = items.slice(0, compact ? 2 : 4);
-  const tokenEstimate = manifest.totalTokenEstimate ?? items.reduce((sum, item) => sum + (item.tokenEstimate ?? 0), 0);
-
-  return (
-    <div className="rounded-lg border border-border/60 bg-surface-0/65 px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="font-medium text-text-primary">{t('chat.contextManifestLabel')}</span>
-        <span className="text-[11px] text-text-tertiary">
-          {t('chat.contextManifestSummary', {
-            count: String(items.length),
-            tokens: String(tokenEstimate),
-          })}
-        </span>
-      </div>
-
-      {visibleItems.length > 0 && (
-        <div className="mt-2 grid gap-1.5">
-          {visibleItems.map((item, index) => (
-            <div
-              key={item.id ?? `${item.source ?? 'context'}-${index}`}
-              className="flex flex-wrap items-center gap-1.5 rounded-md border border-border/50 bg-surface-1/70 px-2 py-1 text-[11px]"
-            >
-              <span className="font-medium text-text-secondary">{contextRoleLabel(item.role, t)}</span>
-              <span className="text-text-tertiary">{contextTrustLabel(item.trustLevel, t)}</span>
-              {item.source && <span className="min-w-0 truncate text-text-tertiary">{item.source}</span>}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -815,7 +561,6 @@ export function ToolCallCard({
   trace,
   argsStatus,
   argsBytes,
-  progressNotes,
 }: ToolCallCardProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -836,8 +581,6 @@ export function ToolCallCard({
     typeof argsBytes === 'number' ? argsBytes : (args ? args.length : 0),
   );
   const durationLabel = formatDurationMs(durationMs);
-  const latestProgressNote =
-    progressNotes && progressNotes.length > 0 ? progressNotes[progressNotes.length - 1] : null;
   const resourceKeyCount = Array.isArray(capabilities?.resourceKeys)
     ? capabilities.resourceKeys.length
     : 0;
@@ -866,8 +609,6 @@ export function ToolCallCard({
   const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
   const generatedImage = useMemo(() => extractGeneratedImageArtifact(artifacts), [artifacts]);
-  const workPlanArtifact = useMemo(() => extractWorkPlanArtifact(artifacts), [artifacts]);
-  const contextManifest = useMemo(() => extractContextManifestArtifact(artifacts), [artifacts]);
   const showPendingDiffStats = isPending && !diffStats && isFileChangeToolRender(safeToolName, renderKind);
   const isSearchDone =
     safeToolName.toLowerCase().includes('search') && status === 'done' && !!content;
@@ -912,16 +653,12 @@ export function ToolCallCard({
       completed: String(planArtifact.steps.filter(step => step.status === 'completed').length),
       total: String(planArtifact.steps.length),
     })
-    : verificationArtifact
-      ? t('chat.verificationStatus', {
-        status: verificationStatusLabel(verificationArtifact.overallStatus ?? 'pending', t),
-      })
-      : workPlanArtifact
-        ? t('chat.workPlanLabel')
+      : verificationArtifact
+        ? t('chat.verificationStatus', {
+          status: verificationStatusLabel(verificationArtifact.overallStatus ?? 'pending', t),
+        })
       : searchItems
         ? t('search.results', { count: String(searchItems.length) })
-        : contextManifest
-          ? t('chat.contextManifestLabel')
         : diffStats
           ? `${diffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
         : showPendingDiffStats
@@ -951,8 +688,6 @@ export function ToolCallCard({
     fileDiff ||
     diffStats ||
     generatedImage ||
-    workPlanArtifact ||
-    contextManifest ||
     streamingArgsPreview,
   );
   const failedStatus =
@@ -970,7 +705,7 @@ export function ToolCallCard({
     : isPending
       ? 'border-accent/25'
       : 'border-border/35';
-  const tracePreviewText = isPending && latestProgressNote ? latestProgressNote : headerSummary;
+  const tracePreviewText = isPending ? '' : headerSummary;
 
   if (trace) {
     return (
@@ -987,14 +722,13 @@ export function ToolCallCard({
           <span className="min-w-0 max-w-[13rem] truncate text-[11px] font-medium text-text-secondary group-hover:text-text-primary sm:max-w-[17rem]">
             {briefLabel}
           </span>
-          <span
-            className={`hidden min-w-0 max-w-[18rem] truncate text-[11px] text-text-tertiary sm:inline ${isPending && latestProgressNote ? 'italic' : ''}`}
-          >
-            {tracePreviewText}
-          </span>
+          {tracePreviewText && (
+            <span className="hidden min-w-0 max-w-[18rem] truncate text-[11px] text-text-tertiary sm:inline">
+              {tracePreviewText}
+            </span>
+          )}
           <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] ${statusConfig.color}`}>
             <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`} />
-            <span className="hidden md:inline">{statusConfig.text}</span>
           </span>
           {diffStats ? (
             <DiffStatsTicker stats={diffStats} compact />
@@ -1024,8 +758,6 @@ export function ToolCallCard({
                     {formattedArgs}
                   </div>
                 ) : null}
-                {workPlanArtifact && <WorkPlanPanel plan={workPlanArtifact} compact />}
-                {contextManifest && <ContextManifestPanel manifest={contextManifest} compact />}
                 {generatedImage ? (
                   <div className="space-y-2">
                     <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
@@ -1143,8 +875,6 @@ export function ToolCallCard({
                     {formattedArgs}
                   </div>
                 ) : null}
-                {workPlanArtifact && <WorkPlanPanel plan={workPlanArtifact} compact />}
-                {contextManifest && <ContextManifestPanel manifest={contextManifest} compact />}
                 {generatedImage ? (
                   <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
                     <img
@@ -1359,12 +1089,6 @@ export function ToolCallCard({
         ) : null}
       </button>
 
-      {isPending && latestProgressNote && (
-        <div className="border-t border-border/30 bg-surface-0/30 px-3 py-1 text-[11px] italic text-text-tertiary truncate">
-          {latestProgressNote}
-        </div>
-      )}
-
       {/* Expandable result */}
       <AnimatePresence>
         {expanded && expandableDetails && (
@@ -1383,16 +1107,6 @@ export function ToolCallCard({
               {formattedArgs && !streamingArgsPreview && (
                 <div className="mb-2 rounded-md bg-surface-0/60 px-2 py-1 text-[11px] text-text-tertiary break-words">
                   {formattedArgs}
-                </div>
-              )}
-              {workPlanArtifact && (
-                <div className="mb-2">
-                  <WorkPlanPanel plan={workPlanArtifact} />
-                </div>
-              )}
-              {contextManifest && (
-                <div className="mb-2">
-                  <ContextManifestPanel manifest={contextManifest} />
                 </div>
               )}
               {generatedImage ? (

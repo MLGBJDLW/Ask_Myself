@@ -226,6 +226,13 @@ test.beforeEach(async ({ page }) => {
 test('keeps persisted tool-round replies interleaved with trace thinking', async ({ page }) => {
   await page.goto('/chat/conv-persisted-round-replies');
 
+  const thinkingToggles = page.locator('button').filter({ hasText: 'Thinking completed' });
+  await expect(thinkingToggles).toHaveCount(2);
+  await expect(thinkingToggles.nth(0)).toHaveAttribute('aria-expanded', 'false');
+  await expect(thinkingToggles.nth(1)).toHaveAttribute('aria-expanded', 'false');
+  await thinkingToggles.nth(0).click();
+  await thinkingToggles.nth(1).click();
+
   const chatLogText = await page.getByLabel('Chat messages').textContent();
   expect(chatLogText).toBeTruthy();
 
@@ -235,8 +242,4 @@ test('keeps persisted tool-round replies interleaved with trace thinking', async
   expect(text.indexOf('read_file')).toBe(-1);
   expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('first-round-reply'));
   expect(text.indexOf('final-round-reply')).toBeGreaterThan(text.indexOf('phase two thinking'));
-
-  await expect(
-    page.locator('button[aria-expanded="true"]').filter({ hasText: 'Thinking completed' }),
-  ).toHaveCount(2);
 });

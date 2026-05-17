@@ -13,8 +13,6 @@ import {
   type StreamTerminalProjectionState,
 } from './terminalProjection';
 
-export const PROGRESS_NOTES_MAX = 10;
-
 export type StreamToolProjectionState = InternalStreamState;
 
 type RawFrontendEvent = AgentFrontendEvent & Record<string, unknown>;
@@ -46,7 +44,6 @@ export function createToolCall(partial: {
     capabilities: partial.capabilities,
     argsStatus: partial.argsStatus ?? 'ready',
     argsBytes: argumentsText.length,
-    progressNotes: [],
   };
 }
 
@@ -96,15 +93,6 @@ function argsStatusForToolRun(run: ToolRunItem, status: ToolCallEvent['status'])
   return run.arguments ? 'ready' : 'pending';
 }
 
-function appendProgressNote(notes: string[], note: string | undefined): string[] {
-  const trimmed = (note ?? '').trim();
-  if (!trimmed) return notes;
-  const next = notes.length >= PROGRESS_NOTES_MAX
-    ? [...notes.slice(-(PROGRESS_NOTES_MAX - 1)), trimmed]
-    : [...notes, trimmed];
-  return next;
-}
-
 function patchToolCallFromRun(prev: ToolCallEvent, run: ToolRunItem): ToolCallEvent {
   const status = toolRunStatusToToolCallStatus(run.status);
   const argumentsText = run.arguments ?? prev.arguments;
@@ -118,7 +106,6 @@ function patchToolCallFromRun(prev: ToolCallEvent, run: ToolRunItem): ToolCallEv
     plugin: run.plugin ?? prev.plugin,
     argsStatus: argsStatusForToolRun(run, status),
     argsBytes: Math.max(prev.argsBytes, argumentsText.length),
-    progressNotes: appendProgressNote(prev.progressNotes, run.progressNote),
     content: run.content ?? prev.content,
     isError: run.isError ?? prev.isError,
     artifacts: run.artifacts ?? prev.artifacts,
@@ -537,7 +524,6 @@ export function applyToolCallProgressEvent(
     if (!note) return;
 
     const patchCall = (tc: ToolCallEvent): ToolCallEvent => {
-      const nextNotes = appendProgressNote(tc.progressNotes, note);
       const nextStatus: ToolCallEvent['status'] =
         tc.status === 'starting' || tc.status === 'preparing' || tc.status === 'approvalPending'
           ? 'running'
@@ -546,7 +532,7 @@ export function applyToolCallProgressEvent(
         tc.argsStatus === 'streaming' || tc.argsStatus === 'pending'
           ? 'ready'
           : tc.argsStatus;
-      return { ...tc, progressNotes: nextNotes, status: nextStatus, argsStatus: nextArgsStatus };
+      return { ...tc, status: nextStatus, argsStatus: nextArgsStatus };
     };
 
     let matched = false;

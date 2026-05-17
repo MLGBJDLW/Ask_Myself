@@ -14,6 +14,7 @@ use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
 use super::diff_stats::{changed_line_count, diff_stats_artifact, text_diff_artifact};
 use super::document_utils::{edit_guidance_for_path, is_binary_file_error};
 use super::path_utils::resolve_existing_file_for_file_access;
+use super::text_match::{find_text_matches, TextMatch, TextMatchKind};
 use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
@@ -288,8 +289,8 @@ fn apply_one_edit(content: &str, edit: &MultiEditOperation) -> Result<AppliedEdi
     let segment = &content[range_start..range_end];
     let after = &content[range_end..];
 
-    let (search, replacement) = choose_line_ending_match(segment, old_str, new_str);
-    let match_count = segment.match_indices(&search).count();
+    let matches = find_text_matches(segment, old_str);
+    let match_count = matches.len();
     if match_count == 0 {
         return Err("old_str not found.".to_string());
     }
@@ -299,11 +300,12 @@ fn apply_one_edit(content: &str, edit: &MultiEditOperation) -> Result<AppliedEdi
         ));
     }
 
-    let changed_segment = if edit.replace_all {
-        segment.replace(&search, &replacement)
+    let selected_matches = if edit.replace_all {
+        matches.as_slice()
     } else {
-        segment.replacen(&search, &replacement, 1)
+        &matches[..1]
     };
+    let changed_segment = replace_matches(segment, selected_matches, new_str);
 
     Ok(AppliedEdit {
         content: format!("{before}{changed_segment}{after}"),
@@ -311,16 +313,29 @@ fn apply_one_edit(content: &str, edit: &MultiEditOperation) -> Result<AppliedEdi
     })
 }
 
-fn choose_line_ending_match(segment: &str, old_str: &str, new_str: &str) -> (String, String) {
-    if segment.contains(old_str) || !old_str.contains('\n') {
-        return (old_str.to_string(), new_str.to_string());
+fn replace_matches(segment: &str, matches: &[TextMatch], new_str: &str) -> String {
+    let mut changed = String::with_capacity(segment.len());
+    let mut cursor = 0usize;
+    for matched in matches {
+        changed.push_str(&segment[cursor..matched.start]);
+        changed.push_str(&replacement_for_match(segment, matched, new_str));
+        cursor = matched.start + matched.len;
     }
+    changed.push_str(&segment[cursor..]);
+    changed
+}
 
-    let old_crlf = old_str.replace('\n', "\r\n");
-    if segment.contains(&old_crlf) {
-        (old_crlf, new_str.replace('\n', "\r\n"))
+fn replacement_for_match(segment: &str, matched: &TextMatch, new_str: &str) -> String {
+    let original = &segment[matched.start..matched.start + matched.len];
+    if matches!(
+        matched.kind,
+        TextMatchKind::LineEndingNormalized | TextMatchKind::VisualNormalized
+    ) && original.contains("\r\n")
+        && new_str.contains('\n')
+    {
+        new_str.replace('\n', "\r\n")
     } else {
-        (old_str.to_string(), new_str.to_string())
+        new_str.to_string()
     }
 }
 
@@ -572,6 +587,34 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
             "delta\r\ngamma\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_edit_tolerates_unicode_quote_variants() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("chapter.md");
+        std::fs::write(&file, "她说：“我要出门了。”\n下一句。\n").unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = MultiEditTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "edits": [{
+                "old_str": "她说:\"我要出门了。\"",
+                "new_str": "她说：“我要去集市。”"
+            }]
+        });
+
+        let result = tool
+            .execute("multi-unicode-quotes", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "她说：“我要去集市。”\n下一句。\n"
         );
     }
 }
