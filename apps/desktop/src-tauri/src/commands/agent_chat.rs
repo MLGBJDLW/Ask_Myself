@@ -851,6 +851,10 @@ pub async fn agent_chat_cmd(
             });
         let task_artifacts =
             build_final_task_artifacts(previous_task_artifacts, trace_artifacts, &subtask_runs);
+        let verification_status = task_artifacts
+            .get("verification")
+            .and_then(|verification| verification.get("overallStatus"))
+            .and_then(|status| status.as_str());
         let (task_status, task_summary, task_error): (&str, &str, Option<String>) = if timed_out {
             (
                 "timed_out",
@@ -870,6 +874,9 @@ pub async fn agent_chat_cmd(
                 Some("cancelled") => ("cancelled", "Stopped by user", None),
                 Some("error") => ("failed", "Agent execution failed", None),
                 Some("cached") => ("completed", "Answered from cache", None),
+                _ if verification_status.is_some_and(|status| status != "passed") => {
+                    ("completed", "Task completed with verification gap", None)
+                }
                 _ => ("completed", "Task completed", None),
             }
         };

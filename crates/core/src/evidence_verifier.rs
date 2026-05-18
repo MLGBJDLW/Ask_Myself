@@ -10,11 +10,20 @@ use serde::{Deserialize, Serialize};
 use crate::cache::extract_citations;
 use crate::intelligence::{AgentTaskPlan, EvidenceMode};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeVerificationSignals {
+    pub required: bool,
+    pub reasons: Vec<String>,
+    pub verification_artifact_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct EvidenceSignals {
     pub successful_evidence_tool_calls: usize,
     pub verification_tool_recorded: bool,
+    pub runtime_verification: RuntimeVerificationSignals,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,6 +62,7 @@ pub struct EvidenceAudit {
     pub overall_status: String,
     pub checks: Vec<VerificationCheck>,
     pub counts: EvidenceAuditCounts,
+    pub runtime_gate: RuntimeVerificationSignals,
     pub citation_count: usize,
     pub explicit_insufficiency: bool,
     pub updated_at: String,
@@ -93,6 +103,11 @@ impl EvidenceAudit {
                 "failed": self.counts.failed,
                 "pending": self.counts.pending,
                 "skipped": self.counts.skipped,
+            },
+            "runtimeGate": {
+                "required": self.runtime_gate.required,
+                "reasons": self.runtime_gate.reasons,
+                "verificationArtifactStatus": self.runtime_gate.verification_artifact_status,
             },
             "citationCount": self.citation_count,
             "explicitInsufficiency": self.explicit_insufficiency,
@@ -196,6 +211,21 @@ pub fn audit_final_answer(
         }),
     ));
 
+    let runtime_gate = signals.runtime_verification.clone();
+    checks.push(check(
+        "Runtime completion gate",
+        if runtime_gate.required {
+            match runtime_gate.verification_artifact_status.as_deref() {
+                Some("passed") => VerificationStatus::Passed,
+                Some("failed") => VerificationStatus::Failed,
+                _ => VerificationStatus::Pending,
+            }
+        } else {
+            VerificationStatus::Skipped
+        },
+        Some(runtime_gate_details(&runtime_gate)),
+    ));
+
     checks.push(check(
         "Contradiction check",
         if plan.evidence_policy.contradiction_check {
@@ -225,9 +255,31 @@ pub fn audit_final_answer(
         overall_status,
         checks,
         counts,
+        runtime_gate,
         citation_count,
         explicit_insufficiency,
         updated_at: Utc::now().to_rfc3339(),
+    }
+}
+
+fn runtime_gate_details(gate: &RuntimeVerificationSignals) -> String {
+    if !gate.required {
+        return "No runtime-sensitive mutation requiring explicit verification was observed."
+            .to_string();
+    }
+
+    let reason = if gate.reasons.is_empty() {
+        "runtime-sensitive mutation".to_string()
+    } else {
+        gate.reasons.join("; ")
+    };
+    match gate.verification_artifact_status.as_deref() {
+        Some(status) => {
+            format!("Observed {reason}. Latest explicit verification artifact status: {status}.")
+        }
+        None => {
+            format!("Observed {reason}. No explicit record_verification artifact was observed.")
+        }
     }
 }
 
@@ -314,6 +366,7 @@ mod tests {
             EvidenceSignals {
                 successful_evidence_tool_calls: 1,
                 verification_tool_recorded: false,
+                ..EvidenceSignals::default()
             },
         );
 
@@ -333,6 +386,7 @@ mod tests {
             EvidenceSignals {
                 successful_evidence_tool_calls: 2,
                 verification_tool_recorded: true,
+                ..EvidenceSignals::default()
             },
         );
 
@@ -349,10 +403,70 @@ mod tests {
             EvidenceSignals {
                 successful_evidence_tool_calls: 0,
                 verification_tool_recorded: false,
+                ..EvidenceSignals::default()
             },
         );
 
         assert_ne!(audit.overall_status, "failed");
         assert!(audit.explicit_insufficiency);
+    }
+
+    #[test]
+    fn runtime_gate_blocks_fully_verified_mutation_without_artifact() {
+        let mut plan = build_task_plan(TaskPlanningInput {
+            user_query: "Update the parser implementation.",
+            route_kind: "CodebaseOperation",
+            has_sources: true,
+            source_scope_count: 1,
+            collection_context: false,
+        });
+        plan.evidence_policy.require_verification = true;
+
+        let audit = audit_final_answer(
+            &plan,
+            "Updated the parser and ran the focused tests.",
+            EvidenceSignals {
+                successful_evidence_tool_calls: 1,
+                verification_tool_recorded: false,
+                runtime_verification: RuntimeVerificationSignals {
+                    required: true,
+                    reasons: vec!["edit_file modified source files".to_string()],
+                    verification_artifact_status: None,
+                },
+            },
+        );
+
+        assert_ne!(audit.overall_status, "passed");
+        let gate = audit
+            .checks
+            .iter()
+            .find(|check| check.name == "Runtime completion gate")
+            .expect("runtime gate check");
+        assert_eq!(gate.status, VerificationStatus::Pending);
+        assert_eq!(audit.to_artifact()["runtimeGate"]["required"], true);
+    }
+
+    #[test]
+    fn runtime_gate_passes_when_explicit_verification_artifact_passed() {
+        let audit = audit_final_answer(
+            &knowledge_plan(),
+            "The retry guard changed because the timeout moved. [cite:chunk-1]",
+            EvidenceSignals {
+                successful_evidence_tool_calls: 1,
+                verification_tool_recorded: true,
+                runtime_verification: RuntimeVerificationSignals {
+                    required: true,
+                    reasons: vec!["multi_edit modified source files".to_string()],
+                    verification_artifact_status: Some("passed".to_string()),
+                },
+            },
+        );
+
+        let gate = audit
+            .checks
+            .iter()
+            .find(|check| check.name == "Runtime completion gate")
+            .expect("runtime gate check");
+        assert_eq!(gate.status, VerificationStatus::Passed);
     }
 }

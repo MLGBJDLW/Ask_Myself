@@ -180,6 +180,11 @@ test.beforeEach(async ({ page }) => {
           const userText = String(args.message ?? '');
           const toolCallId = nextId('tool-fetch');
           const toolArgs = JSON.stringify({ path: 'notes/retries.md' });
+          const createToolCallId = nextId('tool-create');
+          const createToolArgs = JSON.stringify({
+            path: 'notes/retry-summary.md',
+            content: 'Keep retries bounded and show the limit.',
+          });
 
           const userMessage: Message = {
             id: nextId('m-user'),
@@ -201,7 +206,10 @@ test.beforeEach(async ({ page }) => {
             role: 'assistant',
             content: '',
             toolCallId: null,
-            toolCalls: [{ id: toolCallId, name: 'read_file', arguments: toolArgs }],
+            toolCalls: [
+              { id: toolCallId, name: 'read_file', arguments: toolArgs },
+              { id: createToolCallId, name: 'create_file', arguments: createToolArgs },
+            ],
             artifacts: null,
             tokenCount: 0,
             createdAt: new Date().toISOString(),
@@ -223,6 +231,20 @@ test.beforeEach(async ({ page }) => {
             thinking: null,
             imageAttachments: null,
           };
+          const createToolMessage: Message = {
+            id: nextId('m-tool-create'),
+            conversationId,
+            role: 'tool',
+            content: 'Created notes/retry-summary.md',
+            toolCallId: createToolCallId,
+            toolCalls: [],
+            artifacts: null,
+            tokenCount: 0,
+            createdAt: new Date().toISOString(),
+            sortOrder: currentMessages.length + 3,
+            thinking: null,
+            imageAttachments: null,
+          };
           const finalAssistantMessage: Message = {
             id: nextId('m-assistant-final'),
             conversationId,
@@ -233,7 +255,7 @@ test.beforeEach(async ({ page }) => {
             artifacts: null,
             tokenCount: 0,
             createdAt: new Date().toISOString(),
-            sortOrder: currentMessages.length + 3,
+            sortOrder: currentMessages.length + 4,
             thinking: 'Writing the final recommendation.',
             imageAttachments: null,
           };
@@ -275,12 +297,35 @@ test.beforeEach(async ({ page }) => {
           }, 100);
 
           setTimeout(() => {
+            emitEvent('agent:event', {
+              conversationId,
+              type: 'toolCallStart',
+              callId: createToolCallId,
+              toolName: 'create_file',
+              arguments: createToolArgs,
+            });
+          }, 70);
+
+          setTimeout(() => {
+            emitEvent('agent:event', {
+              conversationId,
+              type: 'toolCallResult',
+              callId: createToolCallId,
+              toolName: 'create_file',
+              content: createToolMessage.content,
+              isError: false,
+              artifacts: null,
+            });
+          }, 110);
+
+          setTimeout(() => {
             refreshDelayActive = true;
             messagesByConversation[conversationId] = [
               ...currentMessages,
               userMessage,
               assistantToolMessage,
               toolMessage,
+              createToolMessage,
               finalAssistantMessage,
             ];
             emitEvent('agent:event', {
@@ -341,14 +386,19 @@ test('keeps the live thinking mounted until delayed persisted messages load', as
 
   await page.waitForTimeout(120);
   await expect(page.getByText('Checking the retry note first.')).toBeVisible();
-  await expect(page.getByText('read_file')).toHaveCount(0);
+  await expect(page.getByText(/read_file/)).toHaveCount(1);
+  await expect(page.getByText(/create_file/)).toHaveCount(1);
 
   await page.waitForTimeout(140);
   await expect(page.getByText('Checking the retry note first.')).toBeVisible({ timeout: 50 });
-  await expect(page.getByText('read_file')).toHaveCount(0);
+  await expect(page.getByText(/read_file/)).toHaveCount(1);
+  await expect(page.getByText(/create_file/)).toHaveCount(1);
 
   await page.waitForTimeout(520);
   await expect(page.getByText('Final answer: keep retries bounded and show the limit.')).toBeVisible({ timeout: 50 });
 
   await expect(page.getByText('Final answer: keep retries bounded and show the limit.')).toBeVisible();
+  await page.locator('button').filter({ hasText: /Thinking completed|Thought for/ }).first().click();
+  await expect(page.getByText(/read_file/)).toHaveCount(1);
+  await expect(page.getByText(/create_file/)).toHaveCount(1);
 });

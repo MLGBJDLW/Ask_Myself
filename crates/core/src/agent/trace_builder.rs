@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::evidence_verifier::EvidenceSignals;
+use crate::evidence_verifier::{EvidenceSignals, RuntimeVerificationSignals};
+use crate::tool_visibility_policy::ToolVisibilityDecision;
 use crate::tools::{ToolRegistry, ToolRenderKind, ToolRunCapabilities};
 
 use super::route::AgentRouteKind;
@@ -31,6 +32,7 @@ pub(super) enum PersistedTraceItem {
     Tool { tool_call: PersistedTraceToolCall },
     Status { text: String, tone: String },
     Loop { event: TurnLoopEvent },
+    ToolVisibility { decision: ToolVisibilityDecision },
 }
 
 pub(super) fn append_persisted_trace_thinking(items: &mut Vec<PersistedTraceItem>, text: &str) {
@@ -99,6 +101,15 @@ pub(super) fn append_persisted_trace_loop_event(
     items.push(PersistedTraceItem::Loop { event });
 }
 
+pub(super) fn append_persisted_trace_visibility(
+    items: &mut Vec<PersistedTraceItem>,
+    decision: &ToolVisibilityDecision,
+) {
+    items.push(PersistedTraceItem::ToolVisibility {
+        decision: decision.clone(),
+    });
+}
+
 pub(super) fn build_trace_artifacts(items: &[PersistedTraceItem]) -> Option<serde_json::Value> {
     if items.is_empty() {
         return None;
@@ -137,6 +148,8 @@ pub(super) fn build_turn_trace_with_verification(
 pub(super) fn evidence_signals_from_trace(items: &[PersistedTraceItem]) -> EvidenceSignals {
     let mut successful_evidence_tool_calls = 0usize;
     let mut verification_tool_recorded = false;
+    let mut verification_artifact_status: Option<String> = None;
+    let mut runtime_verification_reasons: Vec<String> = Vec::new();
 
     for item in items {
         let PersistedTraceItem::Tool { tool_call } = item else {
@@ -148,13 +161,68 @@ pub(super) fn evidence_signals_from_trace(items: &[PersistedTraceItem]) -> Evide
         }
         if ok && tool_call.tool_name == "record_verification" {
             verification_tool_recorded = true;
+            if let Some(status) = verification_status_from_artifacts(tool_call.artifacts.as_ref()) {
+                verification_artifact_status = Some(status.to_string());
+            }
+        }
+        if ok {
+            push_runtime_verification_reason(tool_call, &mut runtime_verification_reasons);
         }
     }
 
     EvidenceSignals {
         successful_evidence_tool_calls,
         verification_tool_recorded,
+        runtime_verification: RuntimeVerificationSignals {
+            required: !runtime_verification_reasons.is_empty(),
+            reasons: runtime_verification_reasons,
+            verification_artifact_status,
+        },
     }
+}
+
+fn push_runtime_verification_reason(tool_call: &PersistedTraceToolCall, reasons: &mut Vec<String>) {
+    let reason = match tool_call.tool_name.as_str() {
+        "edit_file" | "multi_edit" => {
+            Some(format!("{} modified source files", tool_call.tool_name))
+        }
+        "create_file" => Some("create_file created or overwrote files".to_string()),
+        "write_note" => Some("write_note created or updated local files".to_string()),
+        "run_shell" if artifact_has_file_changes(tool_call.artifacts.as_ref()) => {
+            Some("run_shell changed files".to_string())
+        }
+        _ => None,
+    };
+
+    if let Some(reason) = reason {
+        if !reasons.iter().any(|existing| existing == &reason) {
+            reasons.push(reason);
+        }
+    }
+}
+
+fn verification_status_from_artifacts(artifacts: Option<&serde_json::Value>) -> Option<&str> {
+    let artifacts = artifacts?;
+    if artifacts.get("kind").and_then(|value| value.as_str()) == Some("verification") {
+        return artifacts
+            .get("overallStatus")
+            .and_then(|value| value.as_str());
+    }
+    artifacts
+        .get("verification")
+        .and_then(|value| value.get("overallStatus"))
+        .and_then(|value| value.as_str())
+}
+
+fn artifact_has_file_changes(artifacts: Option<&serde_json::Value>) -> bool {
+    let Some(artifacts) = artifacts else {
+        return false;
+    };
+    artifacts.get("kind").and_then(|value| value.as_str()) == Some("fileChangeSet")
+        || artifacts
+            .get("fileChanges")
+            .and_then(|value| value.as_array())
+            .is_some_and(|changes| !changes.is_empty())
 }
 
 fn is_evidence_oriented_tool(tool_name: &str) -> bool {
@@ -192,6 +260,13 @@ mod tests {
     use super::*;
 
     fn done_tool(tool_name: &str) -> PersistedTraceItem {
+        done_tool_with_artifacts(tool_name, None)
+    }
+
+    fn done_tool_with_artifacts(
+        tool_name: &str,
+        artifacts: Option<serde_json::Value>,
+    ) -> PersistedTraceItem {
         PersistedTraceItem::Tool {
             tool_call: PersistedTraceToolCall {
                 call_id: format!("{tool_name}-1"),
@@ -210,7 +285,7 @@ mod tests {
                 },
                 content: Some("ok".to_string()),
                 is_error: Some(false),
-                artifacts: None,
+                artifacts,
             },
         }
     }
@@ -227,5 +302,59 @@ mod tests {
 
         assert_eq!(signals.successful_evidence_tool_calls, 3);
         assert!(!signals.verification_tool_recorded);
+        assert!(!signals.runtime_verification.required);
+    }
+
+    #[test]
+    fn evidence_signals_require_runtime_verification_for_file_mutations() {
+        let items = vec![done_tool("edit_file")];
+
+        let signals = evidence_signals_from_trace(&items);
+
+        assert!(signals.runtime_verification.required);
+        assert!(signals
+            .runtime_verification
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("edit_file")));
+    }
+
+    #[test]
+    fn evidence_signals_require_runtime_verification_for_shell_file_changes() {
+        let items = vec![done_tool_with_artifacts(
+            "run_shell",
+            Some(serde_json::json!({
+                "kind": "fileChangeSet",
+                "fileChanges": [{ "path": "deck.pptx", "operation": "create" }]
+            })),
+        )];
+
+        let signals = evidence_signals_from_trace(&items);
+
+        assert!(signals.runtime_verification.required);
+        assert_eq!(
+            signals.runtime_verification.reasons,
+            vec!["run_shell changed files".to_string()]
+        );
+    }
+
+    #[test]
+    fn evidence_signals_capture_explicit_verification_artifact_status() {
+        let items = vec![done_tool_with_artifacts(
+            "record_verification",
+            Some(serde_json::json!({
+                "kind": "verification",
+                "overallStatus": "passed",
+                "checks": [{ "name": "tests", "status": "passed" }]
+            })),
+        )];
+
+        let signals = evidence_signals_from_trace(&items);
+
+        assert!(signals.verification_tool_recorded);
+        assert_eq!(
+            signals.runtime_verification.verification_artifact_status,
+            Some("passed".to_string())
+        );
     }
 }

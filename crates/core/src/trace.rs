@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::tool_visibility_policy::ToolVisibilityDecision;
+
 /// A single agent session trace (one user message → full agent response).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTrace {
@@ -33,6 +35,9 @@ pub struct AgentTrace {
     /// Typed task plan injected into the turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_plan: Option<serde_json::Value>,
+    /// Typed policy decision that selected the route and visible tool categories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_visibility_decision: Option<ToolVisibilityDecision>,
     /// How many times context was compacted during the session.
     pub compaction_count: u32,
     pub outcome: TraceOutcome,
@@ -101,6 +106,7 @@ impl AgentTrace {
             cache_hit: false,
             route_kind: None,
             task_plan: None,
+            tool_visibility_decision: None,
             compaction_count: 0,
             outcome: TraceOutcome::Success,
             error_message: None,

@@ -1,11 +1,10 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { Plug, Zap, AlertTriangle } from 'lucide-react';
+import { Plug, AlertTriangle } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
 import { getSoftDropdownMotion } from '../../lib/uiMotion';
-import type { McpServer, McpToolInfo, Skill } from '../../types/extensions';
-import type { AgentTaskRun } from '../../types/conversation';
+import type { McpServer, McpToolInfo } from '../../types/extensions';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -15,39 +14,6 @@ interface ServerWithTools {
   server: McpServer;
   tools: McpToolInfo[];
   error?: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function parseSelectedSkillsSnapshot(taskRun?: AgentTaskRun | null): Skill[] | null {
-  const artifacts = asRecord(taskRun?.artifacts);
-  const selectedSkills = asRecord(artifacts?.selectedSkills);
-  const rawSkills = selectedSkills?.skills;
-  if (!Array.isArray(rawSkills)) return null;
-
-  return rawSkills
-    .map((raw): Skill | null => {
-      const item = asRecord(raw);
-      if (!item) return null;
-      const id = item.id;
-      const name = item.name;
-      if (typeof id !== 'string' || typeof name !== 'string') return null;
-      return {
-        id,
-        name,
-        description: typeof item.description === 'string' ? item.description : '',
-        content: '',
-        enabled: item.enabled !== false,
-        createdAt: '',
-        updatedAt: '',
-        builtin: item.builtin === true,
-      };
-    })
-    .filter((skill): skill is Skill => skill !== null);
 }
 
 /* ------------------------------------------------------------------ */
@@ -119,14 +85,8 @@ function ChipDropdown({
 
 export function ActiveExtensions({
   conversationId,
-  skillQuery = '',
-  personaId,
-  taskRun,
 }: {
   conversationId?: string;
-  skillQuery?: string;
-  personaId?: string;
-  taskRun?: AgentTaskRun | null;
 }) {
   const { t } = useTranslation();
   const copy = {
@@ -134,21 +94,13 @@ export function ActiveExtensions({
     toolCount: (count: number) => t('settings.extensions.toolCount', { count }),
   };
   const [serversWithTools, setServersWithTools] = useState<ServerWithTools[]>([]);
-  const [skills, setSkills] = useState<Skill[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const selectedSkillsSnapshot = useMemo(() => parseSelectedSkillsSnapshot(taskRun), [taskRun]);
 
   const loadData = useCallback(async () => {
     try {
-      const [allServers, allSkills] = await Promise.all([
-        api.listMcpServers(),
-        selectedSkillsSnapshot !== null
-          ? Promise.resolve(selectedSkillsSnapshot)
-          : api.listSelectedSkills(skillQuery, personaId),
-      ]);
+      const allServers = await api.listMcpServers();
 
       const safeServers = Array.isArray(allServers) ? allServers : [];
-      const safeSkills = Array.isArray(allSkills) ? allSkills : [];
       const enabled = safeServers.filter((s) => s.enabled);
       const withTools = await Promise.all(
         enabled.map(async (server) => {
@@ -163,13 +115,12 @@ export function ActiveExtensions({
       );
 
       setServersWithTools(withTools);
-      setSkills(safeSkills);
     } catch {
       // Silently fail — extensions info is non-critical
     } finally {
       setLoaded(true);
     }
-  }, [personaId, selectedSkillsSnapshot, skillQuery]);
+  }, []);
 
   useEffect(() => {
     void loadData();
@@ -179,9 +130,8 @@ export function ActiveExtensions({
 
   const totalTools = serversWithTools.reduce((sum, s) => sum + s.tools.length, 0);
   const hasMcp = serversWithTools.length > 0;
-  const hasSkills = skills.length > 0;
 
-  if (!hasMcp && !hasSkills) return null;
+  if (!hasMcp) return null;
 
   return (
     <>
@@ -231,28 +181,6 @@ export function ActiveExtensions({
               </div>
             ))}
           </div>
-        </ChipDropdown>
-      )}
-
-      {/* Skills chip */}
-      {hasSkills && (
-        <ChipDropdown
-          icon={<Zap size={14} className="text-warning" />}
-          label={t('chat.skillsSummary', { count: skills.length })}
-          active={skills.length > 0}
-        >
-          <div className="px-3 py-2 border-b border-border">
-            <p className="text-xs font-medium text-text-primary">
-              {t('chat.skillsSummary', { count: skills.length })}
-            </p>
-          </div>
-          <ul className="p-2 space-y-px">
-            {skills.map((skill) => (
-              <li key={skill.id} className="text-xs text-text-secondary px-1 py-0.5">
-                • {skill.name}
-              </li>
-            ))}
-          </ul>
         </ChipDropdown>
       )}
     </>

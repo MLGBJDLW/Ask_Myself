@@ -1,0 +1,774 @@
+//! Typed routing and tool-visibility policy.
+//!
+//! Route selection and dynamic tool visibility both consume the same decision
+//! so prompt routing and offered tools cannot drift independently.
+
+use serde::{Deserialize, Serialize};
+
+use crate::tools::ToolCategory;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolVisibilityRouteKind {
+    DirectResponse,
+    KnowledgeRetrieval,
+    CollectionFocused,
+    ConversationRecall,
+    CodebaseOperation,
+    FileOperation,
+    WebLookup,
+    SourceManagement,
+}
+
+impl ToolVisibilityRouteKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectResponse => "DirectResponse",
+            Self::KnowledgeRetrieval => "KnowledgeRetrieval",
+            Self::CollectionFocused => "CollectionFocused",
+            Self::ConversationRecall => "ConversationRecall",
+            Self::CodebaseOperation => "CodebaseOperation",
+            Self::FileOperation => "FileOperation",
+            Self::WebLookup => "WebLookup",
+            Self::SourceManagement => "SourceManagement",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolVisibilitySignalKind {
+    CollectionContext,
+    Question,
+    CodeOrToolOperation,
+    FileOperation,
+    FileWorkspace,
+    SourceManagement,
+    WebLookup,
+    ConversationRecall,
+    KnowledgeWork,
+    Automation,
+    DocumentAnalysis,
+    LinkedSources,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolVisibilitySignal {
+    pub kind: ToolVisibilitySignalKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_terms: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ToolVisibilityEffect {
+    MatchedSignal { signal: ToolVisibilitySignalKind },
+    ActivatedCategory { category: ToolCategory },
+    SelectedRoute { route: ToolVisibilityRouteKind },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolVisibilityDecisionLogEntry {
+    pub rule_id: String,
+    pub effect: ToolVisibilityEffect,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_terms: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolVisibilityDecision {
+    pub route: ToolVisibilityRouteKind,
+    pub active_categories: Vec<ToolCategory>,
+    pub route_categories: Vec<ToolCategory>,
+    pub signals: Vec<ToolVisibilitySignal>,
+    pub log: Vec<ToolVisibilityDecisionLogEntry>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ToolVisibilityInput<'a> {
+    pub query: &'a str,
+    pub system_prompt: &'a str,
+    pub has_sources: bool,
+}
+
+pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityDecision {
+    let query = input.query.to_lowercase();
+    let collection_context = system_prompt_has_collection_context(input.system_prompt);
+    let mut signals = Vec::new();
+    let mut log = Vec::new();
+
+    if collection_context {
+        push_signal(
+            &mut signals,
+            &mut log,
+            "signal.collection_context",
+            ToolVisibilitySignalKind::CollectionContext,
+            Vec::new(),
+            "system prompt contains an active collection context block",
+        );
+    }
+    push_term_signal(
+        &query,
+        QUESTION_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.question",
+        ToolVisibilitySignalKind::Question,
+        "query asks for explanation, analysis, comparison, or summary",
+    );
+    push_term_signal(
+        &query,
+        CODE_OR_TOOL_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.code_or_tool",
+        ToolVisibilitySignalKind::CodeOrToolOperation,
+        "query mentions code, tooling, shell, diagnostics, or agent operation",
+    );
+    push_term_signal(
+        &query,
+        FILE_ROUTE_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.file_operation",
+        ToolVisibilitySignalKind::FileOperation,
+        "query mentions file, directory, document, or edit operations",
+    );
+    push_term_signal(
+        &query,
+        FILE_WORKSPACE_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.file_workspace",
+        ToolVisibilitySignalKind::FileWorkspace,
+        "query mentions file-workspace tools such as search, notes, replacement, or grep",
+    );
+    push_term_signal(
+        &query,
+        SOURCE_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.source_management",
+        ToolVisibilitySignalKind::SourceManagement,
+        "query mentions source indexing or reindexing",
+    );
+    push_term_signal(
+        &query,
+        WEB_ROUTE_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.web_lookup",
+        ToolVisibilitySignalKind::WebLookup,
+        "query mentions URL or web inspection",
+    );
+    push_term_signal(
+        &query,
+        CONVERSATION_RECALL_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.conversation_recall",
+        ToolVisibilitySignalKind::ConversationRecall,
+        "query asks about earlier conversation context",
+    );
+    push_term_signal(
+        &query,
+        KNOWLEDGE_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.knowledge",
+        ToolVisibilitySignalKind::KnowledgeWork,
+        "query mentions memory, evidence, playbooks, collections, skills, or knowledge artifacts",
+    );
+    push_term_signal(
+        &query,
+        AUTOMATION_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.automation",
+        ToolVisibilitySignalKind::Automation,
+        "query mentions browser or desktop automation",
+    );
+    push_term_signal(
+        &query,
+        DOCUMENT_ANALYSIS_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.document_analysis",
+        ToolVisibilitySignalKind::DocumentAnalysis,
+        "query mentions document analysis, comparison, statistics, citations, or summaries",
+    );
+    if input.has_sources {
+        push_signal(
+            &mut signals,
+            &mut log,
+            "signal.linked_sources",
+            ToolVisibilitySignalKind::LinkedSources,
+            Vec::new(),
+            "turn has an active source scope",
+        );
+    }
+
+    let route = select_route(input.has_sources, &signals);
+    log.push(ToolVisibilityDecisionLogEntry {
+        rule_id: "route.select".to_string(),
+        effect: ToolVisibilityEffect::SelectedRoute { route },
+        reason: route_reason(route).to_string(),
+        matched_terms: Vec::new(),
+    });
+
+    let mut active_categories = Vec::new();
+    activate_category(
+        &mut active_categories,
+        &mut log,
+        "category.always_core",
+        ToolCategory::Core,
+        "core tools are always visible",
+    );
+    activate_category(
+        &mut active_categories,
+        &mut log,
+        "category.always_mcp",
+        ToolCategory::Mcp,
+        "MCP tools are always visible",
+    );
+
+    if has_signal(&signals, ToolVisibilitySignalKind::CodeOrToolOperation)
+        || has_signal(&signals, ToolVisibilitySignalKind::FileOperation)
+        || has_signal(&signals, ToolVisibilitySignalKind::FileWorkspace)
+    {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.filesystem",
+            ToolCategory::FileSystem,
+            "code/tool/file signals need filesystem and shell-capable tools",
+        );
+    }
+    if has_signal(&signals, ToolVisibilitySignalKind::SourceManagement) || input.has_sources {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.source_management",
+            ToolCategory::SourceManagement,
+            if input.has_sources {
+                "linked sources make source management tools relevant"
+            } else {
+                "source-management signal matched"
+            },
+        );
+    }
+    if has_signal(&signals, ToolVisibilitySignalKind::KnowledgeWork)
+        || (input.has_sources && has_signal(&signals, ToolVisibilitySignalKind::Question))
+    {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.knowledge",
+            ToolCategory::Knowledge,
+            "knowledge or sourced-question signals need retrieval and evidence tools",
+        );
+    }
+    if has_signal(&signals, ToolVisibilitySignalKind::WebLookup) {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.web",
+            ToolCategory::Web,
+            "web lookup signal matched",
+        );
+    }
+    if has_signal(&signals, ToolVisibilitySignalKind::Automation) {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.automation",
+            ToolCategory::Automation,
+            "automation signal matched",
+        );
+    }
+    if has_signal(&signals, ToolVisibilitySignalKind::DocumentAnalysis)
+        || (input.has_sources && has_signal(&signals, ToolVisibilitySignalKind::Question))
+    {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.document_analysis",
+            ToolCategory::DocumentAnalysis,
+            "document-analysis or sourced-question signals need comparison and summary tools",
+        );
+    }
+
+    let route_categories = route_categories(route);
+    for category in &route_categories {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.route_requirement",
+            *category,
+            "selected route requires this tool category",
+        );
+    }
+
+    ToolVisibilityDecision {
+        route,
+        active_categories,
+        route_categories,
+        signals,
+        log,
+    }
+}
+
+pub fn system_prompt_has_collection_context(system_prompt: &str) -> bool {
+    system_prompt
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("## Collection Context"))
+}
+
+fn select_route(has_sources: bool, signals: &[ToolVisibilitySignal]) -> ToolVisibilityRouteKind {
+    if has_signal(signals, ToolVisibilitySignalKind::CollectionContext) {
+        return ToolVisibilityRouteKind::CollectionFocused;
+    }
+    if has_signal(signals, ToolVisibilitySignalKind::SourceManagement) {
+        return ToolVisibilityRouteKind::SourceManagement;
+    }
+    if has_signal(signals, ToolVisibilitySignalKind::CodeOrToolOperation) {
+        return ToolVisibilityRouteKind::CodebaseOperation;
+    }
+    if has_signal(signals, ToolVisibilitySignalKind::FileOperation) {
+        return ToolVisibilityRouteKind::FileOperation;
+    }
+    if has_signal(signals, ToolVisibilitySignalKind::ConversationRecall) {
+        return ToolVisibilityRouteKind::ConversationRecall;
+    }
+    if has_signal(signals, ToolVisibilitySignalKind::WebLookup) {
+        return ToolVisibilityRouteKind::WebLookup;
+    }
+    if has_sources && has_signal(signals, ToolVisibilitySignalKind::Question) {
+        return ToolVisibilityRouteKind::KnowledgeRetrieval;
+    }
+    ToolVisibilityRouteKind::DirectResponse
+}
+
+fn route_categories(route: ToolVisibilityRouteKind) -> Vec<ToolCategory> {
+    match route {
+        ToolVisibilityRouteKind::CollectionFocused
+        | ToolVisibilityRouteKind::ConversationRecall
+        | ToolVisibilityRouteKind::KnowledgeRetrieval => {
+            vec![ToolCategory::Knowledge, ToolCategory::DocumentAnalysis]
+        }
+        ToolVisibilityRouteKind::SourceManagement => vec![ToolCategory::SourceManagement],
+        ToolVisibilityRouteKind::CodebaseOperation | ToolVisibilityRouteKind::FileOperation => {
+            vec![ToolCategory::FileSystem, ToolCategory::DocumentAnalysis]
+        }
+        ToolVisibilityRouteKind::WebLookup => vec![ToolCategory::Web],
+        ToolVisibilityRouteKind::DirectResponse => Vec::new(),
+    }
+}
+
+fn route_reason(route: ToolVisibilityRouteKind) -> &'static str {
+    match route {
+        ToolVisibilityRouteKind::CollectionFocused => {
+            "collection context has highest priority over query text"
+        }
+        ToolVisibilityRouteKind::SourceManagement => {
+            "source/index operations should be handled directly"
+        }
+        ToolVisibilityRouteKind::CodebaseOperation => {
+            "code or tool operations need codebase tooling and verification"
+        }
+        ToolVisibilityRouteKind::FileOperation => {
+            "file/document operations need filesystem-oriented tools"
+        }
+        ToolVisibilityRouteKind::ConversationRecall => {
+            "conversation recall should inspect current conversation context first"
+        }
+        ToolVisibilityRouteKind::WebLookup => "URL or web requests need web tools",
+        ToolVisibilityRouteKind::KnowledgeRetrieval => {
+            "sourced question needs grounded retrieval and evidence synthesis"
+        }
+        ToolVisibilityRouteKind::DirectResponse => {
+            "no specialized policy signal requires a route-specific tool set"
+        }
+    }
+}
+
+fn push_term_signal(
+    query: &str,
+    terms: &[&str],
+    signals: &mut Vec<ToolVisibilitySignal>,
+    log: &mut Vec<ToolVisibilityDecisionLogEntry>,
+    rule_id: &str,
+    kind: ToolVisibilitySignalKind,
+    reason: &str,
+) {
+    let matched_terms = terms
+        .iter()
+        .filter(|term| query.contains(**term))
+        .map(|term| (*term).to_string())
+        .collect::<Vec<_>>();
+    if matched_terms.is_empty() {
+        return;
+    }
+    push_signal(signals, log, rule_id, kind, matched_terms, reason);
+}
+
+fn push_signal(
+    signals: &mut Vec<ToolVisibilitySignal>,
+    log: &mut Vec<ToolVisibilityDecisionLogEntry>,
+    rule_id: &str,
+    kind: ToolVisibilitySignalKind,
+    matched_terms: Vec<String>,
+    reason: &str,
+) {
+    signals.push(ToolVisibilitySignal {
+        kind,
+        matched_terms: matched_terms.clone(),
+    });
+    log.push(ToolVisibilityDecisionLogEntry {
+        rule_id: rule_id.to_string(),
+        effect: ToolVisibilityEffect::MatchedSignal { signal: kind },
+        reason: reason.to_string(),
+        matched_terms,
+    });
+}
+
+fn activate_category(
+    categories: &mut Vec<ToolCategory>,
+    log: &mut Vec<ToolVisibilityDecisionLogEntry>,
+    rule_id: &str,
+    category: ToolCategory,
+    reason: &str,
+) {
+    if categories.contains(&category) {
+        return;
+    }
+    categories.push(category);
+    log.push(ToolVisibilityDecisionLogEntry {
+        rule_id: rule_id.to_string(),
+        effect: ToolVisibilityEffect::ActivatedCategory { category },
+        reason: reason.to_string(),
+        matched_terms: Vec::new(),
+    });
+}
+
+fn has_signal(signals: &[ToolVisibilitySignal], kind: ToolVisibilitySignalKind) -> bool {
+    signals.iter().any(|signal| signal.kind == kind)
+}
+
+const QUESTION_TERMS: &[&str] = &[
+    "?",
+    "what",
+    "why",
+    "how",
+    "which",
+    "where",
+    "when",
+    "who",
+    "tell me",
+    "explain",
+    "analyze",
+    "analysis",
+    "summarize",
+    "compare",
+    "分析",
+    "总结",
+    "为什么",
+    "如何",
+    "怎么",
+    "哪些",
+    "什么",
+    "解释",
+];
+
+const CODE_OR_TOOL_TERMS: &[&str] = &[
+    "run_shell",
+    "run shell",
+    "shell",
+    "terminal",
+    "command",
+    "powershell",
+    "cmd",
+    "cargo",
+    "npm",
+    "pnpm",
+    "node",
+    "python",
+    "git",
+    "tool",
+    "tools",
+    "agent",
+    "subagent",
+    "unavailable",
+    "available",
+    "fix",
+    "debug",
+    "bug",
+    "test",
+    "build",
+    "compile",
+    "运行",
+    "命令",
+    "终端",
+    "调用",
+    "工具",
+    "不可用",
+    "修复",
+    "排查",
+    "测试",
+    "构建",
+    "编译",
+    "代码",
+    "项目",
+    "仓库",
+    "主agent",
+    "子agent",
+];
+
+const FILE_ROUTE_TERMS: &[&str] = &[
+    "file",
+    "read",
+    "edit",
+    "write",
+    "create",
+    "move",
+    "rename",
+    "copy",
+    "delete",
+    "directory",
+    "folder",
+    "document",
+    "word",
+    "docx",
+    "excel",
+    "xlsx",
+    "ppt",
+    "pptx",
+    "office",
+    "文件",
+    "读取",
+    "编辑",
+    "移动",
+    "重命名",
+    "复制",
+    "删除",
+    "目录",
+    "文档",
+    "幻灯片",
+    "表格",
+];
+
+const FILE_WORKSPACE_TERMS: &[&str] = &[
+    "file",
+    "read",
+    "edit",
+    "replace",
+    "write",
+    "create",
+    "find",
+    "grep",
+    "rg",
+    "move",
+    "rename",
+    "copy",
+    "delete",
+    "directory",
+    "folder",
+    "note",
+    "document",
+    "word",
+    "docx",
+    "excel",
+    "xlsx",
+    "ppt",
+    "pptx",
+    "office",
+    "文件",
+    "读取",
+    "编辑",
+    "替换",
+    "查找",
+    "搜索文件",
+    "移动",
+    "重命名",
+    "复制",
+    "删除",
+    "目录",
+    "笔记",
+    "文档",
+    "幻灯片",
+    "表格",
+];
+
+const SOURCE_TERMS: &[&str] = &["source", "index", "reindex", "数据源", "索引"];
+
+const WEB_ROUTE_TERMS: &[&str] = &[
+    "url", "http", "website", "web ", "fetch", "link", "网页", "链接",
+];
+
+const CONVERSATION_RECALL_TERMS: &[&str] = &[
+    "earlier",
+    "previous",
+    "before",
+    "this conversation",
+    "chat history",
+    "we discussed",
+    "刚才",
+    "之前",
+    "上面",
+    "这段对话",
+];
+
+const KNOWLEDGE_TERMS: &[&str] = &[
+    "remember",
+    "memory",
+    "session",
+    "history",
+    "harness",
+    "evolution",
+    "evolve",
+    "playbook",
+    "collection",
+    "collections",
+    "citation",
+    "citations",
+    "evidence",
+    "saved",
+    "bookmark",
+    "skill",
+    "workflow",
+    "compile",
+    "compilation",
+    "entity",
+    "entities",
+    "graph",
+    "knowledge",
+    "health",
+    "archive",
+    "wiki",
+    "concept",
+    "concepts",
+    "收藏",
+    "引用",
+    "证据",
+    "记住",
+    "记忆",
+    "会话",
+    "历史",
+    "进化",
+    "自我",
+    "编译",
+    "实体",
+    "图谱",
+    "知识",
+    "健康",
+    "归档",
+    "概念",
+];
+
+const AUTOMATION_TERMS: &[&str] = &[
+    "browser",
+    "desktop",
+    "automate",
+    "automation",
+    "open url",
+    "open website",
+    "open file",
+    "reveal file",
+    "launch",
+    "http://",
+    "https://",
+    "浏览器",
+    "桌面",
+    "自动化",
+    "打开网页",
+    "打开网站",
+    "打开文件",
+    "定位文件",
+];
+
+const DOCUMENT_ANALYSIS_TERMS: &[&str] = &[
+    "compare",
+    "document",
+    "summarize",
+    "summary",
+    "analyze",
+    "analysis",
+    "evidence",
+    "citation",
+    "statistics",
+    "stats",
+    "info",
+    "分析",
+    "总结",
+    "引用",
+    "文档",
+    "比较",
+    "统计",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codebase_policy_selects_route_categories_and_log() {
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "debug the agent routing bug and run cargo test",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert_eq!(decision.route, ToolVisibilityRouteKind::CodebaseOperation);
+        assert!(decision
+            .active_categories
+            .contains(&ToolCategory::FileSystem));
+        assert!(decision
+            .active_categories
+            .contains(&ToolCategory::DocumentAnalysis));
+        assert!(decision.log.iter().any(|entry| matches!(
+            entry.effect,
+            ToolVisibilityEffect::SelectedRoute {
+                route: ToolVisibilityRouteKind::CodebaseOperation
+            }
+        )));
+    }
+
+    #[test]
+    fn direct_response_keeps_mutation_categories_hidden() {
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "Tell me a quick joke.",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert_eq!(decision.route, ToolVisibilityRouteKind::DirectResponse);
+        assert_eq!(
+            decision.active_categories,
+            vec![ToolCategory::Core, ToolCategory::Mcp]
+        );
+    }
+
+    #[test]
+    fn collection_context_is_structured_signal_not_persona_text() {
+        let persona = decide_tool_visibility(ToolVisibilityInput {
+            query: "Say hello.",
+            system_prompt: "## Active Persona\nPrefer saved evidence when it exists.",
+            has_sources: false,
+        });
+        let collection = decide_tool_visibility(ToolVisibilityInput {
+            query: "Say hello.",
+            system_prompt: "## Collection Context\nSaved evidence: chunk-a",
+            has_sources: false,
+        });
+
+        assert_eq!(persona.route, ToolVisibilityRouteKind::DirectResponse);
+        assert_eq!(collection.route, ToolVisibilityRouteKind::CollectionFocused);
+        assert!(collection
+            .signals
+            .iter()
+            .any(|signal| { signal.kind == ToolVisibilitySignalKind::CollectionContext }));
+    }
+}

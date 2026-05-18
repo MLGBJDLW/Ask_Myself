@@ -29,7 +29,6 @@ import { rehypePlugins } from "../../components/chat/markdownComponents";
 import { useTranslation } from "../../i18n";
 import { useTypewriter } from "../../lib/useTypewriter";
 import { hasTimeGap } from "../../lib/relativeTime";
-import { appTimeMs } from "../../lib/dateTime";
 import {
   preprocessChunkCitations,
   buildCitationMap,
@@ -43,8 +42,25 @@ import type {
   ToolCallEvent,
   TraceEvent,
 } from "../../lib/useAgentStream";
+import {
+  extractPersistedTraceItems,
+  extractTurnTrace,
+} from "../../lib/streaming/persistedTrace";
+import {
+  buildCurrentTimelineSections,
+  buildLiveTraceTimeline,
+  buildRoundTimelineSections,
+  hasRenderableTimelineSections,
+  isCurrentTraceActive,
+  normalizeThinking,
+  persistedTraceItemsToTimelineSections,
+  persistedTraceItemToTimelineSections,
+  toolCallToTimelineSection,
+  turnLifecycleTimelineSections,
+  visibleTraceEventsForTimeline,
+  type TimelineSection,
+} from "../../lib/streaming/timelineViewModel";
 import { ToolCallCard } from "../../components/chat/ToolCallCard";
-import { isBoardOnlyToolRender, isFileChangeToolRender } from "../../components/chat/toolRenderers";
 import {
   FileDiffSummaryPanel,
   extractFileDiffArtifacts,
@@ -63,12 +79,8 @@ import { MessageBubble } from "../../components/chat/MessageBubble";
 import { CitationChip } from "../../components/chat/EvidenceCard";
 import { Skeleton } from "../../components/ui/Skeleton";
 import type {
-  ArtifactPayload,
   ConversationMessage,
   ConversationTurn,
-  ToolPluginInfo,
-  ToolRenderKind,
-  ToolRunCapabilities,
 } from "../../types/conversation";
 
 interface ChatMessagesProps {
@@ -211,53 +223,6 @@ const INSTANT_TRANSITION = { duration: 0 };
 const NEAR_BOTTOM_THRESHOLD = 96;
 const FOLLOW_RELEASE_THRESHOLD = 160;
 
-function normalizeThinking(content: string): string {
-  return content.replace(/\r\n/g, "\n").trim();
-}
-
-function compactThinkingText(content: string): string {
-  return normalizeThinking(content).replace(/\s+/g, " ");
-}
-
-function hasRenderableThinkingSection(section: ThinkingSection): boolean {
-  return Boolean(
-    section.node ||
-      section.toolCallCards ||
-      compactThinkingText(section.text).length > 0,
-  );
-}
-
-function isLowSignalThinkingSection(section: ThinkingSection): boolean {
-  if (section.node || section.toolCallCards) return false;
-  const text = compactThinkingText(section.text);
-  if (!text) return true;
-  if (/^[\p{P}\p{S}\s]+$/u.test(text)) return true;
-
-  const hasCjk = /[\u3400-\u9fff]/.test(text);
-  const wordCount = text.split(/\s+/).filter(Boolean).length;
-  return !hasCjk && text.length <= 12 && wordCount <= 2;
-}
-
-interface PersistedTraceToolCall {
-  callId: string;
-  toolName: string;
-  plugin?: ToolPluginInfo;
-  arguments: string;
-  status: "running" | "done" | "error";
-  renderKind?: ToolRenderKind;
-  capabilities?: ToolRunCapabilities;
-  durationMs?: number;
-  content?: string;
-  isError?: boolean;
-  artifacts?: ArtifactPayload;
-}
-
-type PersistedTraceItem =
-  | { kind: "thinking"; text: string }
-  | { kind: "reply"; text: string }
-  | { kind: "tool"; toolCall: PersistedTraceToolCall }
-  | { kind: "status"; text: string; tone?: "muted" | "success" | "error" };
-
 type MessageTraceGroup =
   | {
       type: "anchor";
@@ -266,231 +231,6 @@ type MessageTraceGroup =
       memberIndexes?: number[];
     }
   | { type: "member" };
-
-type LiveTraceTimelineItem =
-  | { kind: "thinking"; id: string; sections: ThinkingSection[]; isStreaming: boolean }
-  | { kind: "reply"; id: string; content: string; isStreaming: boolean };
-
-function formatRouteKind(routeKind: string): string {
-  return routeKind
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/^./, (char) => char.toUpperCase());
-}
-
-function shouldHideRouteKind(routeKind: string | null | undefined): boolean {
-  const normalized = (routeKind ?? "").replace(/\s+/g, "").toLowerCase();
-  return normalized === "directresponse" || normalized === "fileoperation";
-}
-
-function shouldHideTraceStatus(text: string | null | undefined): boolean {
-  const compact = (text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
-  const normalized = compact.replace(/\s+/g, "");
-  return (
-    normalized === "routeselected:directresponse" ||
-    normalized === "route:directresponse" ||
-    normalized === "routeselected:fileoperation" ||
-    normalized === "route:fileoperation" ||
-    compact === "loading tools and mcp servers" ||
-    compact === "task queued" ||
-    compact === "queued" ||
-    compact === "排队" ||
-    compact === "排隊" ||
-    compact === "排队中" ||
-    compact === "排隊中" ||
-    compact === "任务已排队" ||
-    compact === "任務已排隊" ||
-    compact === "已使用上下文" ||
-    /^subagent (judge )?queued:/.test(compact) ||
-    /^status:\s*(success|cached|running)(\s*.+)?$/.test(compact)
-  );
-}
-
-const LOW_SIGNAL_TRACE_TOOLS = new Set([
-  "read_file",
-  "read_files",
-  "list_dir",
-  "glob_files",
-  "grep_files",
-  "search_files",
-  "get_chunk_context",
-  "get_document_info",
-  "list_documents",
-  "list_sources",
-]);
-
-const INTERNAL_TRACE_TOOLS = new Set([
-  "prepare_document_tools",
-  "tool_search",
-]);
-
-function normalizeToolName(toolName: string | null | undefined): string {
-  return (toolName ?? "").trim().toLowerCase();
-}
-
-function isUnsuccessfulToolStatus(status?: string | null): boolean {
-  return (
-    status === "error" ||
-    status === "failed" ||
-    status === "declined" ||
-    status === "cancelled" ||
-    status === "timedOut"
-  );
-}
-
-function isPendingToolStatus(status?: string | null): boolean {
-  return (
-    status === "preparing" ||
-    status === "starting" ||
-    status === "approvalPending" ||
-    status === "running"
-  );
-}
-
-function isBoardOnlyToolCall(
-  toolName: string | null | undefined,
-  renderKind?: ToolRenderKind,
-): boolean {
-  return isBoardOnlyToolRender(toolName, renderKind);
-}
-
-function shouldRenderTraceToolCall(
-  toolName: string | null | undefined,
-  renderKind?: ToolRenderKind,
-  status?: string | null,
-  isError?: boolean,
-): boolean {
-  if (isBoardOnlyToolCall(toolName, renderKind)) return false;
-  if (isError || isUnsuccessfulToolStatus(status)) return true;
-
-  const normalizedToolName = normalizeToolName(toolName);
-  if (INTERNAL_TRACE_TOOLS.has(normalizedToolName)) return false;
-
-  if (isFileChangeToolRender(toolName, renderKind)) return isPendingToolStatus(status);
-  if (LOW_SIGNAL_TRACE_TOOLS.has(normalizedToolName)) return isPendingToolStatus(status);
-  return true;
-}
-
-function formatTurnStatus(status: string): string {
-  switch (status) {
-    case "success":
-      return "Success";
-    case "cached":
-      return "Cached";
-    case "cancelled":
-      return "Cancelled";
-    case "max_iterations":
-      return "Max iterations";
-    case "error":
-      return "Error";
-    case "running":
-    default:
-      return "Running";
-  }
-}
-
-function formatTurnDuration(turn: ConversationTurn): string | null {
-  if (!turn.finishedAt) return null;
-  const startedAt = appTimeMs(turn.createdAt);
-  const finishedAt = appTimeMs(turn.finishedAt);
-  if (
-    Number.isNaN(startedAt) ||
-    Number.isNaN(finishedAt) ||
-    finishedAt < startedAt
-  )
-    return null;
-  const seconds = Math.max(0, Math.round((finishedAt - startedAt) / 1000));
-  return `${seconds}s`;
-}
-
-function extractPersistedTraceItems(
-  artifacts: ConversationMessage["artifacts"],
-): PersistedTraceItem[] | null {
-  if (!artifacts || Array.isArray(artifacts) || typeof artifacts !== "object")
-    return null;
-  const record = artifacts as Record<string, unknown>;
-  if (record.kind !== "traceTimeline" || !Array.isArray(record.items))
-    return null;
-
-  const items: PersistedTraceItem[] = [];
-  for (const rawItem of record.items) {
-    if (!rawItem || typeof rawItem !== "object") continue;
-    const item = rawItem as Record<string, unknown>;
-    if (item.kind === "thinking" && typeof item.text === "string") {
-      items.push({ kind: "thinking", text: item.text });
-      continue;
-    }
-    if (item.kind === "reply" && typeof item.text === "string") {
-      items.push({ kind: "reply", text: item.text });
-      continue;
-    }
-    if (item.kind === "status" && typeof item.text === "string") {
-      items.push({
-        kind: "status",
-        text: item.text,
-        tone:
-          item.tone === "success" || item.tone === "error"
-            ? item.tone
-            : "muted",
-      });
-      continue;
-    }
-    if (
-      item.kind === "tool" &&
-      item.toolCall &&
-      typeof item.toolCall === "object"
-    ) {
-      const toolCall = item.toolCall as Record<string, unknown>;
-      if (
-        typeof toolCall.callId !== "string" ||
-        typeof toolCall.toolName !== "string"
-      )
-        continue;
-      items.push({
-        kind: "tool",
-        toolCall: {
-          callId: toolCall.callId,
-          toolName: toolCall.toolName,
-          arguments:
-            typeof toolCall.arguments === "string" ? toolCall.arguments : "",
-          status:
-            toolCall.status === "error"
-              ? "error"
-              : toolCall.status === "running"
-                ? "running"
-                : "done",
-            renderKind:
-              typeof toolCall.renderKind === "string"
-                ? (toolCall.renderKind as ToolRenderKind)
-                : undefined,
-            plugin:
-              toolCall.plugin && typeof toolCall.plugin === "object"
-                ? (toolCall.plugin as ToolPluginInfo)
-                : undefined,
-            capabilities:
-              toolCall.capabilities && typeof toolCall.capabilities === "object"
-                ? (toolCall.capabilities as ToolRunCapabilities)
-              : undefined,
-          durationMs:
-            typeof toolCall.durationMs === "number"
-              ? toolCall.durationMs
-              : undefined,
-          content:
-            typeof toolCall.content === "string" ? toolCall.content : undefined,
-          isError:
-            typeof toolCall.isError === "boolean"
-              ? toolCall.isError
-              : undefined,
-          artifacts:
-            toolCall.artifacts && typeof toolCall.artifacts === "object"
-              ? (toolCall.artifacts as ArtifactPayload)
-              : undefined,
-        },
-      });
-    }
-  }
-
-  return items.length > 0 ? items : null;
-}
 
 function collectArtifactValues(value: unknown, out: unknown[]) {
   if (!value) return;
@@ -509,24 +249,6 @@ function collectArtifactValues(value: unknown, out: unknown[]) {
       collectArtifactValues(obj[key], out);
     }
   }
-}
-
-function extractTurnTrace(
-  trace: ConversationTurn["trace"],
-): { routeKind?: string; items: PersistedTraceItem[] } | null {
-  if (!trace || Array.isArray(trace) || typeof trace !== "object") return null;
-  const record = trace as Record<string, unknown>;
-  if (record.kind !== "turnTrace" || !Array.isArray(record.items)) return null;
-  const items = extractPersistedTraceItems({
-    kind: "traceTimeline",
-    items: record.items,
-  } as unknown as ConversationMessage["artifacts"]);
-  if (!items || items.length === 0) return null;
-  return {
-    routeKind:
-      typeof record.routeKind === "string" ? record.routeKind : undefined,
-    items,
-  };
 }
 
 function TraceStatusRow({
@@ -841,6 +563,74 @@ export function ChatMessages({
     [],
   );
 
+  const renderTimelineSection = useCallback(
+    (section: TimelineSection): ThinkingSection | null => {
+      switch (section.kind) {
+        case "thinking":
+          return section.text.trim().length > 0 ? { text: section.text } : null;
+        case "status":
+          return {
+            text: "",
+            node: (
+              <TraceStatusRow
+                key={section.id}
+                text={section.text}
+                tone={section.tone}
+              />
+            ),
+          };
+        case "reply":
+          return {
+            text: "",
+            node: renderTraceReplyNode(section.id, section.text),
+          };
+        case "tool":
+          return {
+            text: "",
+            node: (
+              <ToolCallCard
+                key={section.id}
+                toolName={section.toolCall.toolName}
+                arguments={section.toolCall.arguments}
+                status={section.toolCall.status}
+                plugin={section.toolCall.plugin}
+                renderKind={section.toolCall.renderKind}
+                capabilities={section.toolCall.capabilities}
+                durationMs={section.toolCall.durationMs}
+                content={section.toolCall.content}
+                isError={section.toolCall.isError}
+                artifacts={section.toolCall.artifacts}
+                argsStatus={section.toolCall.argsStatus}
+                argsBytes={section.toolCall.argsBytes}
+                trace={section.trace}
+              />
+            ),
+          };
+        default:
+          return null;
+      }
+    },
+    [renderTraceReplyNode],
+  );
+
+  const renderTimelineSections = useCallback(
+    (sections: TimelineSection[]): ThinkingSection[] =>
+      sections
+        .map(renderTimelineSection)
+        .filter((section): section is ThinkingSection => Boolean(section)),
+    [renderTimelineSection],
+  );
+
+  const renderTimelineTraceNode = useCallback(
+    (key: string, sections: TimelineSection[], isStreaming = false) =>
+      renderThinkingTraceNode(
+        key,
+        renderTimelineSections(sections),
+        isStreaming,
+      ),
+    [renderThinkingTraceNode, renderTimelineSections],
+  );
+
   const messageThinkingText = useMemo(() => {
     const map = new Map<number, string>();
     let lastUserIdx = -1;
@@ -920,8 +710,8 @@ export function ChatMessages({
   const messageTraceGroups = useMemo(() => {
     const map = new Map<number, MessageTraceGroup>();
     const finalAssistantIndexes = new Set<number>();
-    const statusSectionsByAssistant = new Map<number, ThinkingSection[]>();
-    const fallbackSectionsByAssistant = new Map<number, ThinkingSection[]>();
+    const statusSectionsByAssistant = new Map<number, TimelineSection[]>();
+    const fallbackSectionsByAssistant = new Map<number, TimelineSection[]>();
 
     for (const turn of turns) {
       if (!turn.assistantMessageId) continue;
@@ -930,98 +720,24 @@ export function ChatMessages({
 
       finalAssistantIndexes.add(assistantIdx);
 
-      const sections: ThinkingSection[] = [];
-      const fallbackSections: ThinkingSection[] = [];
       const trace = extractTurnTrace(turn.trace);
-      if (trace?.routeKind && !shouldHideRouteKind(trace.routeKind)) {
-        sections.push({
-          text: "",
-          node: (
-            <TraceStatusRow
-              key={`turn-route-${turn.id}`}
-              text={`Route: ${formatRouteKind(trace.routeKind)}`}
-              tone="muted"
-            />
-          ),
-        });
-      }
-
-      if (
-        turn.status === "error" ||
-        turn.status === "cancelled" ||
-        turn.status === "max_iterations"
-      ) {
-        const duration = formatTurnDuration(turn);
-        sections.push({
-          text: "",
-          node: (
-            <TraceStatusRow
-              key={`turn-status-${turn.id}`}
-              text={`Status: ${formatTurnStatus(turn.status)}${duration ? ` · ${duration}` : ""}`}
-              tone="error"
-            />
-          ),
-        });
-      }
+      const sections = turnLifecycleTimelineSections({
+        turn,
+        routeKind: trace?.routeKind,
+      });
+      const fallbackSections: TimelineSection[] = [];
 
       for (const [itemIdx, item] of (trace?.items ?? []).entries()) {
-        if (item.kind === "status") {
-          if (shouldHideTraceStatus(item.text)) continue;
-          sections.push({
-            text: "",
-            node: (
-              <TraceStatusRow
-                key={`turn-status-${turn.id}-${itemIdx}`}
-                text={item.text}
-                tone={item.tone}
-              />
-            ),
-          });
-          continue;
-        }
-        if (item.kind === "thinking") {
-          fallbackSections.push({ text: item.text });
-          continue;
-        }
-        if (item.kind === "reply") {
-          fallbackSections.push({
-            text: "",
-            node: renderTraceReplyNode(
-              `turn-reply-${turn.id}-${itemIdx}`,
-              item.text,
-            ),
-          });
-          continue;
-        }
-        if (
-          !shouldRenderTraceToolCall(
-            item.toolCall.toolName,
-            item.toolCall.renderKind,
-            item.toolCall.status,
-            item.toolCall.isError,
-          )
-        ) {
-          continue;
-        }
-        fallbackSections.push({
-          text: "",
-          node: (
-            <ToolCallCard
-              key={`turn-tool-${turn.id}-${item.toolCall.callId}-${itemIdx}`}
-              toolName={item.toolCall.toolName}
-              arguments={item.toolCall.arguments}
-              status={item.toolCall.status}
-              plugin={item.toolCall.plugin}
-              renderKind={item.toolCall.renderKind}
-              capabilities={item.toolCall.capabilities}
-              durationMs={item.toolCall.durationMs}
-              content={item.toolCall.content}
-              isError={item.toolCall.isError}
-              artifacts={item.toolCall.artifacts}
-              trace={Boolean(trace)}
-            />
-          ),
+        const itemSections = persistedTraceItemToTimelineSections({
+          item,
+          id: `turn-${turn.id}-${item.kind}-${itemIdx}`,
+          trace: Boolean(trace),
         });
+        if (item.kind === "status") {
+          sections.push(...itemSections);
+          continue;
+        }
+        fallbackSections.push(...itemSections);
       }
 
       statusSectionsByAssistant.set(assistantIdx, sections);
@@ -1041,110 +757,60 @@ export function ChatMessages({
         .find((idx) => finalAssistantIndexes.has(idx));
       const anchorIdx = finalAssistantIdx ?? persistedTraceCarrierIdx ?? currentGroup[0];
 
-      const persistedTraceSections: ThinkingSection[] =
+      const persistedTraceSections: TimelineSection[] =
         persistedTraceCarrierIdx == null
           ? []
-          : (extractPersistedTraceItems(messages[persistedTraceCarrierIdx].artifacts) ?? [])
-              .flatMap((item, itemIdx) => {
-                if (item.kind === "status") {
-                  if (shouldHideTraceStatus(item.text)) return [];
-                  return {
-                    text: "",
-                    node: (
-                      <TraceStatusRow
-                        key={`persisted-status-${messages[persistedTraceCarrierIdx].id}-${itemIdx}`}
-                        text={item.text}
-                        tone={item.tone}
-                      />
-                    ),
-                  };
-                }
-                if (item.kind === "thinking") {
-                  return item.text.trim().length > 0 ? { text: item.text } : [];
-                }
-                if (item.kind === "reply") {
-                  return {
-                    text: "",
-                    node: renderTraceReplyNode(
-                      `persisted-reply-${messages[persistedTraceCarrierIdx].id}-${itemIdx}`,
-                      item.text,
-                    ),
-                  };
-                }
-                if (
-                  !shouldRenderTraceToolCall(
-                    item.toolCall.toolName,
-                    item.toolCall.renderKind,
-                    item.toolCall.status,
-                    item.toolCall.isError,
-                  )
-                ) {
-                  return [];
-                }
-                return {
-                  text: "",
-                  node: (
-                    <ToolCallCard
-                      key={`persisted-tool-${messages[persistedTraceCarrierIdx].id}-${item.toolCall.callId}-${itemIdx}`}
-                      toolName={item.toolCall.toolName}
-                      arguments={item.toolCall.arguments}
-                      status={item.toolCall.status}
-                      plugin={item.toolCall.plugin}
-                      renderKind={item.toolCall.renderKind}
-                      capabilities={item.toolCall.capabilities}
-                      durationMs={item.toolCall.durationMs}
-                      content={item.toolCall.content}
-                      isError={item.toolCall.isError}
-                      artifacts={item.toolCall.artifacts}
-                      trace={true}
-                    />
-                  ),
-                };
-              });
+          : persistedTraceItemsToTimelineSections({
+              items: extractPersistedTraceItems(
+                messages[persistedTraceCarrierIdx].artifacts,
+              ),
+              idPrefix: `persisted-${messages[persistedTraceCarrierIdx].id}`,
+              trace: true,
+            });
 
       const statusSections =
         statusSectionsByAssistant.get(anchorIdx) ?? persistedTraceSections;
       const nodes: ReactNode[] = [];
       const hiddenMembers = new Set<number>();
-      let activeSections: ThinkingSection[] = [...statusSections];
-      const hasRenderableSections = (sections: ThinkingSection[]) =>
-        sections.some(
-          (section) =>
-            section.text.trim().length > 0 || Boolean(section.node || section.toolCallCards),
-        );
+      let activeSections: TimelineSection[] = [...statusSections];
       const flushThinkingNode = (key: string) => {
-        if (!hasRenderableSections(activeSections)) return;
-        nodes.push(renderThinkingTraceNode(key, activeSections));
+        if (!hasRenderableTimelineSections(activeSections)) return;
+        nodes.push(renderTimelineTraceNode(key, activeSections));
         activeSections = [];
       };
 
       for (const idx of currentGroup) {
         const msg = messages[idx];
         const thinking = messageThinkingText.get(idx) ?? "";
-        const renderedToolCalls = msg.toolCalls.flatMap((tc, toolIdx) => {
+        const inlineToolSections = msg.toolCalls.flatMap((tc, toolIdx) => {
           const toolResult = messageToolCalls
             .get(idx)
             ?.find((tr) => tr.toolCallId === tc.id);
-          const status = toolResult ? "done" : "running";
-          if (!shouldRenderTraceToolCall(tc.name, undefined, status)) {
-            return [];
-          }
-          return (
-            <ToolCallCard
-              key={`persisted-trace-${msg.id}-${tc.id || tc.name || toolIdx}`}
-              toolName={tc.name || "unknown_tool"}
-              arguments={tc.arguments || ""}
-              status={status}
-              plugin={tc.plugin}
-              content={toolResult?.content}
-              artifacts={toolResult?.artifacts ?? undefined}
-              trace={true}
-            />
-          );
+          const status: ToolCallEvent["status"] = toolResult ? "done" : "running";
+          const argumentsText = tc.arguments || "";
+          return toolCallToTimelineSection({
+            id: `persisted-trace-${msg.id}-${tc.id || tc.name || toolIdx}`,
+            trace: true,
+            toolCall: {
+              callId: tc.id || `${msg.id}-${toolIdx}`,
+              toolName: tc.name || "unknown_tool",
+              arguments: argumentsText,
+              status,
+              plugin: tc.plugin,
+              argsStatus: status === "done" ? "done" : "ready",
+              argsBytes: argumentsText.length,
+              content: toolResult?.content,
+              artifacts: toolResult?.artifacts ?? undefined,
+            },
+          });
         });
 
         if (thinking) {
-          activeSections.push({ text: thinking });
+          activeSections.push({
+            kind: "thinking",
+            id: `message-thinking-${msg.id}`,
+            text: thinking,
+          });
         }
 
         const shouldRenderInlineReply =
@@ -1162,11 +828,8 @@ export function ChatMessages({
           );
         }
 
-        if (renderedToolCalls.length > 0) {
-          activeSections.push({
-            text: "",
-            node: <div className="mt-1 space-y-1">{renderedToolCalls}</div>,
-          });
+        if (inlineToolSections.length > 0) {
+          activeSections.push(...inlineToolSections);
         }
 
         if (idx !== anchorIdx) {
@@ -1181,9 +844,9 @@ export function ChatMessages({
           ...statusSections,
           ...(fallbackSectionsByAssistant.get(anchorIdx) ?? []),
         ];
-        if (hasRenderableSections(fallbackSections)) {
+        if (hasRenderableTimelineSections(fallbackSections)) {
           nodes.push(
-            renderThinkingTraceNode(
+            renderTimelineTraceNode(
               `trace-fallback-${messages[anchorIdx].id}`,
               fallbackSections,
             ),
@@ -1226,256 +889,50 @@ export function ChatMessages({
     messageThinkingText,
     messageToolCalls,
     messages,
-    renderThinkingTraceNode,
+    renderTimelineTraceNode,
     renderTraceReplyNode,
     turns,
   ]);
 
   const visibleTraceEvents = useMemo(
-    () =>
-      traceEvents.filter(
-        (event) =>
-          !(event.kind === "status" && shouldHideTraceStatus(event.text)),
-      ),
+    () => visibleTraceEventsForTimeline(traceEvents),
     [traceEvents],
   );
 
-  const traceEventToSections = useCallback(
-    (event: TraceEvent): ThinkingSection[] => {
-      if (event.kind === "reply") return [];
-      if (event.kind === "thinking") {
-        return event.text.trim().length > 0 ? [{ text: event.text }] : [];
-      }
-      if (event.kind === "tool") {
-        if (
-          !shouldRenderTraceToolCall(
-            event.toolCall.toolName,
-            event.toolCall.renderKind,
-            event.toolCall.status,
-            event.toolCall.isError,
-          )
-        )
-          return [];
-        return [
-          {
-            text: "",
-            node: (
-              <ToolCallCard
-                key={`stream-trace-${event.id}`}
-                toolName={event.toolCall.toolName}
-                arguments={event.toolCall.arguments}
-                status={event.toolCall.status}
-                plugin={event.toolCall.plugin}
-                renderKind={event.toolCall.renderKind}
-                capabilities={event.toolCall.capabilities}
-                durationMs={event.toolCall.durationMs}
-                content={event.toolCall.content}
-                isError={event.toolCall.isError}
-                artifacts={event.toolCall.artifacts}
-                argsStatus={event.toolCall.argsStatus}
-                argsBytes={event.toolCall.argsBytes}
-                trace={true}
-              />
-            ),
-          },
-        ];
-      }
-      return [
-        {
-          text: "",
-          node: (
-            <TraceStatusRow
-              key={`stream-status-${event.id}`}
-              text={event.text}
-              tone={event.tone}
-            />
-          ),
-        },
-      ];
-    },
-    [],
+  const currentTimelineSections = useMemo(
+    () => buildCurrentTimelineSections({ visibleTraceEvents, streamRounds }),
+    [visibleTraceEvents, streamRounds],
   );
 
-  const streamTraceSections = useMemo<ThinkingSection[]>(() => {
-    return visibleTraceEvents.flatMap(traceEventToSections);
-  }, [traceEventToSections, visibleTraceEvents]);
-
-  /**
-   * Build ThinkingSection[] for a single streaming round.
-   *
-   * `streamStore` closes the previous visible reply when the next tool phase
-   * starts, so a round's `reply` belongs before that round's thinking/tool
-   * trace in the rendered timeline.
-   */
-  const buildRoundSections = useCallback(
-    (round: StreamRoundEvent): ThinkingSection[] => {
-      const sections: ThinkingSection[] = [];
-      if (round.thinking?.trim()) {
-        sections.push({ text: round.thinking });
-      }
-      for (const tc of round.toolCalls) {
-        if (
-          !shouldRenderTraceToolCall(
-            tc.toolName,
-            tc.renderKind,
-            tc.status,
-            tc.isError,
-          )
-        ) {
-          continue;
-        }
-        sections.push({
-          text: "",
-          node: (
-            <ToolCallCard
-              key={`round-tool-${round.id}-${tc.callId}`}
-              toolName={tc.toolName}
-              arguments={tc.arguments}
-              status={tc.status}
-              plugin={tc.plugin}
-              renderKind={tc.renderKind}
-              capabilities={tc.capabilities}
-              durationMs={tc.durationMs}
-              content={tc.content}
-              isError={tc.isError}
-              artifacts={tc.artifacts}
-              argsStatus={tc.argsStatus}
-              argsBytes={tc.argsBytes}
-              trace={true}
-            />
-          ),
-        });
-      }
-      return sections;
-    },
-    [],
+  const currentTraceActive = useMemo(
+    () =>
+      isCurrentTraceActive({
+        isStreaming,
+        isThinking,
+        thinkingText,
+        toolCalls,
+        visibleTraceEvents,
+      }),
+    [isStreaming, isThinking, thinkingText, toolCalls, visibleTraceEvents],
   );
 
-  /**
-   * Trace events that are NOT already captured inside a completed round.
-   * We find the last tool trace event whose callId belongs to a round,
-   * then treat everything after that index as "current / in-progress".
-   */
-  const currentThinkingSections = useMemo<ThinkingSection[]>(() => {
-    if (streamRounds.length === 0) return streamTraceSections;
-
-    const roundCallIds = new Set<string>();
-    for (const round of streamRounds) {
-      for (const tc of round.toolCalls) {
-        roundCallIds.add(tc.callId);
-      }
-    }
-
-    // Find last trace event index belonging to a completed round
-    let cutoffIdx = -1;
-    for (let i = visibleTraceEvents.length - 1; i >= 0; i--) {
-      const ev = visibleTraceEvents[i];
-      if (ev.kind === "tool" && roundCallIds.has(ev.toolCall.callId)) {
-        cutoffIdx = i;
-        break;
-      }
-    }
-
-    const currentEvents = visibleTraceEvents.slice(cutoffIdx + 1);
-    return currentEvents.flatMap(traceEventToSections);
-  }, [traceEventToSections, visibleTraceEvents, streamRounds, streamTraceSections]);
-
-  const currentTraceActive = useMemo(() => {
-    if (!isStreaming) return false;
-    const lastVisibleEvent = visibleTraceEvents[visibleTraceEvents.length - 1];
-    if (!lastVisibleEvent) {
-      return (
-        isThinking ||
-        thinkingText.trim().length > 0 ||
-        toolCalls.some((toolCall) =>
-          toolCall.status === "running" ||
-          toolCall.status === "starting" ||
-          toolCall.status === "preparing" ||
-          toolCall.status === "approvalPending")
-      );
-    }
-    return lastVisibleEvent.kind !== "reply";
-  }, [isStreaming, isThinking, thinkingText, toolCalls, visibleTraceEvents]);
-
-  const liveTraceTimeline = useMemo<LiveTraceTimelineItem[]>(() => {
-    const items: LiveTraceTimelineItem[] = [];
-    let activeSections: ThinkingSection[] = [];
-
-    const flushThinking = (id: string, streaming = false) => {
-      const renderableSections = activeSections.filter(
-        (section) =>
-          hasRenderableThinkingSection(section) &&
-          !isLowSignalThinkingSection(section),
-      );
-      activeSections = [];
-      if (renderableSections.length === 0) return;
-      items.push({
-        kind: "thinking",
-        id,
-        sections: renderableSections,
-        isStreaming: streaming,
-      });
-    };
-
-    const appendReply = (id: string, content: string, streaming = false) => {
-      if (!content) return;
-      const lastItem = items[items.length - 1];
-      if (lastItem?.kind === "reply") {
-        items[items.length - 1] = {
-          ...lastItem,
-          content: lastItem.content + content,
-          isStreaming: lastItem.isStreaming || streaming,
-        };
-        return;
-      }
-      items.push({
-        kind: "reply",
-        id,
-        content,
-        isStreaming: streaming,
-      });
-    };
-
-    for (const event of visibleTraceEvents) {
-      if (event.kind === "reply") {
-        flushThinking(`${event.id}-before-reply`);
-        appendReply(event.id, event.text);
-        continue;
-      }
-
-      activeSections = [...activeSections, ...traceEventToSections(event)];
-    }
-
-    flushThinking("trace-thinking-tail");
-
-    if (!isStreaming || items.length === 0) return items;
-
-    const lastItem = items[items.length - 1];
-    if (lastItem.kind === "reply") {
-      items[items.length - 1] = {
-        ...lastItem,
-        content: streamText.trim().length > 0 ? displayedText : lastItem.content,
-        isStreaming: true,
-      };
-      return items;
-    }
-
-    if (currentTraceActive) {
-      items[items.length - 1] = {
-        ...lastItem,
-        isStreaming: true,
-      };
-    }
-
-    return items;
-  }, [
-    currentTraceActive,
-    displayedText,
-    isStreaming,
-    streamText,
-    traceEventToSections,
-    visibleTraceEvents,
-  ]);
+  const liveTraceTimeline = useMemo(
+    () =>
+      buildLiveTraceTimeline({
+        visibleTraceEvents,
+        isStreaming,
+        currentTraceActive,
+        streamText,
+        displayedText,
+      }),
+    [
+      currentTraceActive,
+      displayedText,
+      isStreaming,
+      streamText,
+      visibleTraceEvents,
+    ],
+  );
 
   const getScrollMetrics = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -1922,7 +1379,7 @@ export function ChatMessages({
             transition={shouldReduceMotion ? INSTANT_TRANSITION : SOFT_FADE_TRANSITION}
           >
             {item.kind === "thinking"
-              ? renderThinkingTraceNode(item.id, item.sections, item.isStreaming)
+              ? renderTimelineTraceNode(item.id, item.sections, item.isStreaming)
               : renderTraceReplyNode(
                   item.id,
                   item.content,
@@ -1935,7 +1392,7 @@ export function ChatMessages({
       {!shouldRenderLiveTraceTimeline &&
         shouldRenderStreamRounds &&
         streamRounds.map((round) => {
-          const roundSections = buildRoundSections(round);
+          const roundSections = buildRoundTimelineSections(round);
           const hasThinking = roundSections.length > 0;
           const hasReply = round.reply.trim().length > 0;
           if (!hasThinking && !hasReply) return null;
@@ -1949,7 +1406,7 @@ export function ChatMessages({
                   streamingCitationLookup,
                 )}
               {hasThinking &&
-                renderThinkingTraceNode(
+                renderTimelineTraceNode(
                   `round-thinking-${round.id}`,
                   roundSections,
                   false,
@@ -1959,7 +1416,7 @@ export function ChatMessages({
         })}
 
       {/* ── Current in-progress thinking (not yet in a round) ──────── */}
-      {!shouldRenderLiveTraceTimeline && currentThinkingSections.length > 0 && (
+      {!shouldRenderLiveTraceTimeline && currentTimelineSections.length > 0 && (
         <motion.div
           initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -1970,7 +1427,7 @@ export function ChatMessages({
           <div className="w-full max-w-[min(100%,72rem)]">
             <ThinkingBlock
               content=""
-              sections={currentThinkingSections}
+              sections={renderTimelineSections(currentTimelineSections)}
               isStreaming={currentTraceActive}
               defaultExpanded={currentTraceActive}
               collapseOnFinish

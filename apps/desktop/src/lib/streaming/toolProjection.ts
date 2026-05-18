@@ -2,16 +2,19 @@ import type { AgentFrontendEvent } from '../../types';
 import type {
   ArtifactPayload,
   ToolRunItem,
-  ToolRunStatus,
 } from '../../types/conversation';
 import type { ToolCallEvent, TraceToolEvent } from './protocol';
 import { clearToolPreparingTimer, type InternalStreamState } from './state';
 import {
-  isPendingStatus,
   resetActiveStreamBlocks,
   syncTraceToolEvents,
   type StreamTerminalProjectionState,
 } from './terminalProjection';
+import {
+  argsStatusForToolRun,
+  isPendingToolCallStatus,
+  toolRunStatusToToolCallStatus,
+} from './toolStatus';
 
 export type StreamToolProjectionState = InternalStreamState;
 
@@ -63,36 +66,6 @@ function finalizeToolCall(
   };
 }
 
-function toolRunStatusToToolCallStatus(status: ToolRunStatus): ToolCallEvent['status'] {
-  switch (status) {
-    case 'preparing':
-      return 'preparing';
-    case 'approvalPending':
-      return 'approvalPending';
-    case 'running':
-      return 'running';
-    case 'completed':
-      return 'done';
-    case 'failed':
-      return 'error';
-    case 'declined':
-      return 'declined';
-    case 'cancelled':
-      return 'cancelled';
-    case 'timedOut':
-      return 'timedOut';
-    default:
-      return 'running';
-  }
-}
-
-function argsStatusForToolRun(run: ToolRunItem, status: ToolCallEvent['status']): ToolCallEvent['argsStatus'] {
-  if (status === 'preparing') return run.arguments ? 'streaming' : 'pending';
-  if (status === 'error' || status === 'timedOut') return 'error';
-  if (status === 'done' || status === 'declined' || status === 'cancelled') return 'done';
-  return run.arguments ? 'ready' : 'pending';
-}
-
 function patchToolCallFromRun(prev: ToolCallEvent, run: ToolRunItem): ToolCallEvent {
   const status = toolRunStatusToToolCallStatus(run.status);
   const argumentsText = run.arguments ?? prev.arguments;
@@ -133,7 +106,7 @@ export function resolveToolCallResult(
 
   let fallbackIndex = -1;
   for (let i = updated.length - 1; i >= 0; i -= 1) {
-    if (isPendingStatus(updated[i].status)) {
+    if (isPendingToolCallStatus(updated[i].status)) {
       fallbackIndex = i;
       break;
     }
@@ -247,7 +220,7 @@ export function applyToolRunEvent(state: StreamToolProjectionState, run: ToolRun
     const nextCall = patchToolCallFromRun(base, run);
     insertPendingToolCall(state, nextCall, roundThinking);
     resetActiveStreamBlocks(state);
-    if (!isPendingStatus(nextCall.status)) {
+    if (!isPendingToolCallStatus(nextCall.status)) {
       state._activeRoundAcceptingStarts = false;
     }
     return;
@@ -269,7 +242,7 @@ export function applyToolRunEvent(state: StreamToolProjectionState, run: ToolRun
   const latest = state.toolCalls.find(tc => tc.callId === callId);
   if (latest) {
     upsertToolTraceEvent(state, latest);
-    if (!isPendingStatus(latest.status)) {
+    if (!isPendingToolCallStatus(latest.status)) {
       state._activeRoundAcceptingStarts = false;
     }
   }
@@ -332,7 +305,7 @@ function patchStartedToolCall(
     arguments: mergedArgs,
     argsBytes: Math.max(prev.argsBytes, mergedArgs.length),
     status: prev.status === 'preparing' ? 'starting' : prev.status,
-    argsStatus: isPendingStatus(prev.status) ? 'ready' : prev.argsStatus,
+    argsStatus: isPendingToolCallStatus(prev.status) ? 'ready' : prev.argsStatus,
   };
 }
 
@@ -479,7 +452,7 @@ export function applyToolCallArgsDeltaEvent(
         ...tc,
         arguments: nextArgs,
         argsBytes: nextArgs.length,
-        argsStatus: isPendingStatus(tc.status) ? 'streaming' : tc.argsStatus,
+        argsStatus: isPendingToolCallStatus(tc.status) ? 'streaming' : tc.argsStatus,
       };
     };
 
@@ -525,7 +498,7 @@ export function applyToolCallProgressEvent(
 
     const patchCall = (tc: ToolCallEvent): ToolCallEvent => {
       const nextStatus: ToolCallEvent['status'] =
-        tc.status === 'starting' || tc.status === 'preparing' || tc.status === 'approvalPending'
+        isPendingToolCallStatus(tc.status)
           ? 'running'
           : tc.status;
       const nextArgsStatus: ToolCallEvent['argsStatus'] =

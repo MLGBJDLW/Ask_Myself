@@ -117,7 +117,6 @@ impl AgentStreamForwarder {
                                 &self.app_handle,
                                 &self.conversation_id,
                                 &self.task_run_id,
-                                &frontend_event,
                                 &run_event,
                             );
                             stream_emitter.emit_event(

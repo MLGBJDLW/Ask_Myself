@@ -217,7 +217,11 @@ mod tests {
     #[test]
     fn test_load_builtin_skills() {
         let skills = load_builtin_skills();
-        assert_eq!(skills.len(), 8, "eight bundled SKILL.md files must parse");
+        assert_eq!(
+            skills.len(),
+            13,
+            "thirteen bundled SKILL.md files must parse"
+        );
         for s in &skills {
             assert!(s.builtin);
             assert!(!s.name.is_empty());
@@ -225,6 +229,11 @@ mod tests {
             assert!(!s.content.is_empty());
             assert!(s.id.starts_with("builtin-"));
         }
+        assert!(skills.iter().any(|s| s.id == "builtin-fiction-writing"));
+        assert!(skills.iter().any(|s| s.id == "builtin-speechwriting"));
+        assert!(skills.iter().any(|s| s.id == "builtin-research-synthesis"));
+        assert!(skills.iter().any(|s| s.id == "builtin-editorial-revision"));
+        assert!(skills.iter().any(|s| s.id == "builtin-persona-design"));
         assert!(skills.iter().any(|s| s.id == "builtin-visual-explanations"));
         assert!(skills
             .iter()
@@ -363,7 +372,7 @@ mod tests {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
 
-        let active = get_active_skills_for_query(&db, "", 10).unwrap();
+        let active = get_active_skills_for_query(&db, "", 20).unwrap();
         assert_eq!(active.len(), load_builtin_skills().len());
     }
 
@@ -448,7 +457,7 @@ mod tests {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
 
-        let active = get_active_skills_for_query(&db, "zzzxxx qqqyyy wwwvvv", 10).unwrap();
+        let active = get_active_skills_for_query(&db, "zzzxxx qqqyyy wwwvvv", 20).unwrap();
         assert_eq!(
             active.len(),
             load_builtin_skills().len(),
@@ -481,6 +490,24 @@ mod tests {
         assert_eq!(
             active.first().map(|s| s.id.as_str()),
             Some(saved.id.as_str())
+        );
+    }
+
+    #[test]
+    fn test_builtin_pinned_skill_slug_alias_is_selected() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+
+        let active = get_active_skills_for_query_with_pinned(
+            &db,
+            "unrelated gibberish query",
+            5,
+            &["fiction-writing".to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            active.first().map(|s| s.id.as_str()),
+            Some("builtin-fiction-writing")
         );
     }
 

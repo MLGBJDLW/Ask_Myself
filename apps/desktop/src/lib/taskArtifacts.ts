@@ -33,6 +33,12 @@ export interface VerificationCheckArtifact {
   details?: string | null;
 }
 
+export interface RuntimeVerificationGateArtifact {
+  required: boolean;
+  reasons: string[];
+  verificationArtifactStatus?: VerificationOverallStatus | null;
+}
+
 export interface VerificationArtifact {
   kind: 'verification';
   summary?: string | null;
@@ -45,6 +51,7 @@ export interface VerificationArtifact {
     pending?: number;
     skipped?: number;
   } | null;
+  runtimeGate?: RuntimeVerificationGateArtifact | null;
   updatedAt?: string | null;
 }
 
@@ -146,6 +153,7 @@ function normalizeVerificationArtifact(value: unknown): VerificationArtifact | n
 
   const overall = record.overallStatus;
   const counts = asRecord(record.counts);
+  const runtimeGate = normalizeRuntimeGate(record.runtimeGate);
   return {
     kind: 'verification',
     summary: typeof record.summary === 'string' ? record.summary : null,
@@ -164,7 +172,25 @@ function normalizeVerificationArtifact(value: unknown): VerificationArtifact | n
           skipped: typeof counts.skipped === 'number' ? counts.skipped : undefined,
         }
       : null,
+    runtimeGate,
     updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : null,
+  };
+}
+
+function normalizeRuntimeGate(value: unknown): RuntimeVerificationGateArtifact | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const verificationArtifactStatus = record.verificationArtifactStatus;
+  return {
+    required: record.required === true,
+    reasons: Array.isArray(record.reasons)
+      ? record.reasons.filter((reason): reason is string => typeof reason === 'string')
+      : [],
+    verificationArtifactStatus:
+      typeof verificationArtifactStatus === 'string'
+        && ['pending', 'passed', 'failed', 'partial'].includes(verificationArtifactStatus)
+        ? (verificationArtifactStatus as VerificationOverallStatus)
+        : null,
   };
 }
 

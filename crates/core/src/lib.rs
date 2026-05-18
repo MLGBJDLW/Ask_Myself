@@ -67,6 +67,7 @@ pub mod sources;
 pub mod task_run;
 pub mod task_timeline;
 pub mod tool_access;
+pub mod tool_visibility_policy;
 pub mod tools;
 pub mod trace;
 #[cfg(feature = "video")]

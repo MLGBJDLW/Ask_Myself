@@ -23,6 +23,11 @@ import {
 import { useTranslation } from '../../i18n';
 import { FileBadge } from '../ui/FileBadge';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
+import type { ToolCallEvent } from '../../lib/streaming/protocol';
+import {
+  isPendingToolCallStatus,
+  isUnsuccessfulToolCallStatus,
+} from '../../lib/streaming/toolStatus';
 import { extractPlanArtifact, extractVerificationArtifact } from '../../lib/taskArtifacts';
 import {
   extractSubagentArtifact,
@@ -74,16 +79,7 @@ interface GeneratedImageArtifact {
   bytes?: number;
 }
 
-type ToolCallCardStatus =
-  | 'preparing'
-  | 'starting'
-  | 'approvalPending'
-  | 'running'
-  | 'done'
-  | 'error'
-  | 'declined'
-  | 'cancelled'
-  | 'timedOut';
+type ToolCallCardStatus = ToolCallEvent['status'];
 
 interface ToolCallCardProps {
   toolName?: string;
@@ -100,7 +96,7 @@ interface ToolCallCardProps {
   inline?: boolean;
   trace?: boolean;
   /** Assembly progress of `arguments` before execution. */
-  argsStatus?: 'pending' | 'streaming' | 'ready' | 'done' | 'error';
+  argsStatus?: ToolCallEvent['argsStatus'];
   /** Total characters of `arguments` received so far. */
   argsBytes?: number;
 }
@@ -334,17 +330,12 @@ function getToolBriefLabel(name: string, args?: string): string {
 }
 
 function getToolBriefResult(
-  status: string,
+  status: ToolCallCardStatus,
   t: ReturnType<typeof useTranslation>['t'],
   content?: string,
   toolName?: string,
 ): string {
-  if (
-    status === 'running'
-    || status === 'starting'
-    || status === 'preparing'
-    || status === 'approvalPending'
-  ) return '\u2026';
+  if (isPendingToolCallStatus(status)) return '\u2026';
   if (status === 'error' || status === 'timedOut') return t('chat.toolBriefError');
   if (status === 'declined') return t('chat.toolBriefDeclined');
   if (status === 'cancelled') return t('chat.toolBriefCancelled');
@@ -436,10 +427,7 @@ function buildSubagentRun(
   const task = artifact?.task ?? parsedArgs?.task;
   if (!task) return null;
   const runStatus: 'running' | 'done' | 'error' =
-    status === 'starting'
-    || status === 'preparing'
-    || status === 'approvalPending'
-    || status === 'running'
+    isPendingToolCallStatus(status)
       ? 'running'
       : status === 'done'
         ? 'done'
@@ -572,11 +560,7 @@ export function ToolCallCard({
   const formattedArgs = formatArgs(args);
   const briefLabel = getToolBriefLabel(safeToolName, args);
   const briefResult = getToolBriefResult(status, t, content, safeToolName);
-  const isPending =
-    status === 'running'
-    || status === 'starting'
-    || status === 'preparing'
-    || status === 'approvalPending';
+  const isPending = isPendingToolCallStatus(status);
   const argsByteLabel = formatByteCount(
     typeof argsBytes === 'number' ? argsBytes : (args ? args.length : 0),
   );
@@ -690,11 +674,7 @@ export function ToolCallCard({
     generatedImage ||
     streamingArgsPreview,
   );
-  const failedStatus =
-    status === 'error' ||
-    status === 'declined' ||
-    status === 'cancelled' ||
-    status === 'timedOut';
+  const failedStatus = isUnsuccessfulToolCallStatus(status);
   const traceToneClass = failedStatus
     ? 'border-danger/25 bg-danger/10 hover:bg-danger/15'
     : isPending

@@ -275,6 +275,64 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
             },
         ],
     },
+    BuiltinSkillBundle {
+        slug: "fiction-writing",
+        skill_md: include_str!("../../assets/skills/fiction-writing/SKILL.md"),
+        resources: &[
+            BuiltinSkillResource {
+                path: "references/story-craft-playbook.md",
+                content: include_str!(
+                    "../../assets/skills/fiction-writing/references/story-craft-playbook.md"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "assets/fiction-outline-template.md",
+                content: include_str!(
+                    "../../assets/skills/fiction-writing/assets/fiction-outline-template.md"
+                ),
+            },
+        ],
+    },
+    BuiltinSkillBundle {
+        slug: "speechwriting",
+        skill_md: include_str!("../../assets/skills/speechwriting/SKILL.md"),
+        resources: &[BuiltinSkillResource {
+            path: "references/speech-structures.md",
+            content: include_str!(
+                "../../assets/skills/speechwriting/references/speech-structures.md"
+            ),
+        }],
+    },
+    BuiltinSkillBundle {
+        slug: "research-synthesis",
+        skill_md: include_str!("../../assets/skills/research-synthesis/SKILL.md"),
+        resources: &[BuiltinSkillResource {
+            path: "references/research-patterns.md",
+            content: include_str!(
+                "../../assets/skills/research-synthesis/references/research-patterns.md"
+            ),
+        }],
+    },
+    BuiltinSkillBundle {
+        slug: "editorial-revision",
+        skill_md: include_str!("../../assets/skills/editorial-revision/SKILL.md"),
+        resources: &[BuiltinSkillResource {
+            path: "references/revision-passes.md",
+            content: include_str!(
+                "../../assets/skills/editorial-revision/references/revision-passes.md"
+            ),
+        }],
+    },
+    BuiltinSkillBundle {
+        slug: "persona-design",
+        skill_md: include_str!("../../assets/skills/persona-design/SKILL.md"),
+        resources: &[BuiltinSkillResource {
+            path: "references/persona-patterns.md",
+            content: include_str!(
+                "../../assets/skills/persona-design/references/persona-patterns.md"
+            ),
+        }],
+    },
 ];
 
 pub(crate) fn builtin_skill_bundles() -> &'static [BuiltinSkillBundle] {
