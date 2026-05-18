@@ -190,7 +190,7 @@ impl AgentExecutor {
             evidence_signals_from_trace(persisted_trace_items),
         );
         let verification_artifact = evidence_audit.to_artifact();
-        let verification_passed = verification_artifact["overallStatus"].as_str() != Some("failed");
+        let verification_passed = verification_artifact_passed(&verification_artifact);
         if finalize_task_plan(task_plan, verification_passed) {
             emit_task_plan_update(
                 tx,
@@ -212,11 +212,7 @@ impl AgentExecutor {
                     .as_str()
                     .unwrap_or("pending")
             ),
-            if verification_artifact["overallStatus"].as_str() == Some("failed") {
-                "error"
-            } else {
-                "info"
-            },
+            verification_artifact_tone(&verification_artifact),
         );
 
         if let Some(cid) = conversation_id {
@@ -412,5 +408,34 @@ impl AgentExecutor {
         }
 
         final_msg
+    }
+}
+
+fn verification_artifact_passed(artifact: &serde_json::Value) -> bool {
+    artifact["overallStatus"].as_str() == Some("passed")
+}
+
+fn verification_artifact_tone(artifact: &serde_json::Value) -> &'static str {
+    match artifact["overallStatus"].as_str() {
+        Some("failed") => "error",
+        Some("passed") => "info",
+        _ => "warning",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verification_completion_requires_passed_status() {
+        assert!(verification_artifact_passed(&serde_json::json!({
+            "overallStatus": "passed"
+        })));
+        for status in ["partial", "pending", "failed"] {
+            assert!(!verification_artifact_passed(&serde_json::json!({
+                "overallStatus": status
+            })));
+        }
     }
 }
