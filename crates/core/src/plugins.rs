@@ -96,19 +96,10 @@ pub struct PluginManifest {
     pub runtime_checks: Vec<PluginRuntimeCheck>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct PluginManifestContext<'a> {
     pub app_config: Option<&'a AppConfig>,
     pub office_runtime: Option<&'a crate::office_runtime::OfficeRuntimeReadiness>,
-}
-
-impl<'a> Default for PluginManifestContext<'a> {
-    fn default() -> Self {
-        Self {
-            app_config: None,
-            office_runtime: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -171,7 +162,7 @@ impl BuiltinPlugin {
     }
 
     fn owns_tool(self, name: &str) -> bool {
-        self.tools.iter().any(|tool| *tool == name)
+        self.tools.contains(&name)
     }
 }
 

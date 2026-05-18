@@ -24,7 +24,7 @@ pub(super) struct ModelStepContext<'a> {
 }
 
 pub(super) enum ModelStepOutcome {
-    Completed(ModelStepOutput),
+    Completed(Box<ModelStepOutput>),
     Restart,
 }
 
@@ -114,14 +114,16 @@ impl AgentExecutor {
                         }
                         Err(e) => {
                             emit_error_and_finalize_turn(
-                                &tx,
+                                tx,
                                 db,
                                 trace,
                                 turn_id,
                                 route_kind,
                                 persisted_trace_items,
-                                e.to_string(),
-                                e.to_string(),
+                                TurnErrorMessages {
+                                    frontend_message: e.to_string(),
+                                    trace_message: e.to_string(),
+                                },
                             )
                             .await;
                             return Err(e);
@@ -163,14 +165,16 @@ impl AgentExecutor {
                                         trace_message,
                                     } => {
                                         emit_error_and_finalize_turn(
-                                            &tx,
+                                            tx,
                                             db,
                                             trace,
                                             turn_id,
                                             route_kind,
                                             persisted_trace_items,
-                                            user_message,
-                                            trace_message,
+                                            TurnErrorMessages {
+                                                frontend_message: user_message,
+                                                trace_message,
+                                            },
                                         )
                                         .await;
                                         return Err(CoreError::RateLimited { retry_after_secs });
@@ -205,14 +209,16 @@ impl AgentExecutor {
                                         trace_message,
                                     } => {
                                         emit_error_and_finalize_turn(
-                                            &tx,
+                                            tx,
                                             db,
                                             trace,
                                             turn_id,
                                             route_kind,
                                             persisted_trace_items,
-                                            user_message,
-                                            trace_message.clone(),
+                                            TurnErrorMessages {
+                                                frontend_message: user_message,
+                                                trace_message: trace_message.clone(),
+                                            },
                                         )
                                         .await;
                                         return Err(CoreError::Llm(trace_message));
@@ -235,21 +241,23 @@ impl AgentExecutor {
                                             })
                                             .await;
                                         let recovered = self
-                                            .recover_context_overflow(messages, model, &tx)
+                                            .recover_context_overflow(messages, model, tx)
                                             .await?;
                                         if !recovered {
                                             emit_error_and_finalize_turn(
-                                                    &tx,
+                                                    tx,
                                                     db,
                                                     trace,
                                                     turn_id,
                                                     route_kind,
                                                     persisted_trace_items,
-                                                    format!(
-                                                        "Context overflow could not be reduced further: {}",
-                                                        e
-                                                    ),
-                                                    e.to_string(),
+                                                    TurnErrorMessages {
+                                                        frontend_message: format!(
+                                                            "Context overflow could not be reduced further: {}",
+                                                            e
+                                                        ),
+                                                        trace_message: e.to_string(),
+                                                    },
                                                 )
                                                 .await;
                                             return Err(e);
@@ -257,14 +265,16 @@ impl AgentExecutor {
                                     }
                                     ContextOverflowRecoveryDecision::GiveUp { user_message } => {
                                         emit_error_and_finalize_turn(
-                                            &tx,
+                                            tx,
                                             db,
                                             trace,
                                             turn_id,
                                             route_kind,
                                             persisted_trace_items,
-                                            user_message,
-                                            e.to_string(),
+                                            TurnErrorMessages {
+                                                frontend_message: user_message,
+                                                trace_message: e.to_string(),
+                                            },
                                         )
                                         .await;
                                         return Err(e);
@@ -273,14 +283,16 @@ impl AgentExecutor {
                             }
                             Err(e) => {
                                 emit_error_and_finalize_turn(
-                                    &tx,
+                                    tx,
                                     db,
                                     trace,
                                     turn_id,
                                     route_kind,
                                     persisted_trace_items,
-                                    e.to_string(),
-                                    e.to_string(),
+                                    TurnErrorMessages {
+                                        frontend_message: e.to_string(),
+                                        trace_message: e.to_string(),
+                                    },
                                 )
                                 .await;
                                 return Err(e);
@@ -441,14 +453,16 @@ impl AgentExecutor {
                     StreamLoopEvent::Provider(Some(ProviderStreamEvent::Cancelled { message })) => {
                         warn!("LLM stream cancelled: {message}");
                         emit_error_and_finalize_turn(
-                            &tx,
+                            tx,
                             db,
                             trace,
                             turn_id,
                             route_kind,
                             persisted_trace_items,
-                            message.clone(),
-                            message.clone(),
+                            TurnErrorMessages {
+                                frontend_message: message.clone(),
+                                trace_message: message.clone(),
+                            },
                         )
                         .await;
                         return Err(CoreError::Cancelled(message));
@@ -459,14 +473,16 @@ impl AgentExecutor {
                         let e = CoreError::Llm(message);
                         error!("LLM stream error: {e}");
                         emit_error_and_finalize_turn(
-                            &tx,
+                            tx,
                             db,
                             trace,
                             turn_id,
                             route_kind,
                             persisted_trace_items,
-                            e.to_string(),
-                            e.to_string(),
+                            TurnErrorMessages {
+                                frontend_message: e.to_string(),
+                                trace_message: e.to_string(),
+                            },
                         )
                         .await;
                         return Err(e);
@@ -497,10 +513,10 @@ impl AgentExecutor {
                     let mut steering_ctx = SteeringDrainContext {
                         db,
                         conversation_id,
-                        tx: &tx,
+                        tx,
                         model,
                         sort_order,
-                        privacy_cfg: &privacy_cfg,
+                        privacy_cfg,
                     };
                     self.drain_steering_messages_from(messages, &mut steering_ctx, Some(steering))
                         .await
@@ -621,14 +637,16 @@ impl AgentExecutor {
                                     "Stream interrupted and non-streaming retry failed: {err}"
                                 );
                                 emit_error_and_finalize_turn(
-                                    &tx,
+                                    tx,
                                     db,
                                     trace,
                                     turn_id,
                                     route_kind,
                                     persisted_trace_items,
-                                    message.clone(),
-                                    message,
+                                    TurnErrorMessages {
+                                        frontend_message: message.clone(),
+                                        trace_message: message,
+                                    },
                                 )
                                 .await;
                                 return Err(CoreError::StreamIncomplete(format!(
@@ -643,7 +661,7 @@ impl AgentExecutor {
             break;
         }
 
-        Ok(ModelStepOutcome::Completed(ModelStepOutput {
+        Ok(ModelStepOutcome::Completed(Box::new(ModelStepOutput {
             full_content,
             tool_calls,
             chunk_usage,
@@ -651,6 +669,6 @@ impl AgentExecutor {
             last_finish_reason,
             started_call_ids,
             tool_run_started_ids,
-        }))
+        })))
     }
 }

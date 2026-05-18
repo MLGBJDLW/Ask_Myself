@@ -48,12 +48,13 @@ fn with_suppressed_process_error_dialogs<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
+#[cfg(windows)]
 fn apply_quiet_command_options(cmd: &mut Command) {
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    cmd.creation_flags(CREATE_NO_WINDOW);
 }
+
+#[cfg(not(windows))]
+fn apply_quiet_command_options(_cmd: &mut Command) {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
