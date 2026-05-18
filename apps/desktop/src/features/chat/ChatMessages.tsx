@@ -44,7 +44,7 @@ import type {
   TraceEvent,
 } from "../../lib/useAgentStream";
 import { ToolCallCard } from "../../components/chat/ToolCallCard";
-import { isBoardOnlyToolRender, isFileChangeToolRender } from "../../components/chat/toolRenderers";
+import { isBoardOnlyToolRender } from "../../components/chat/toolRenderers";
 import {
   FileDiffSummaryPanel,
   extractFileDiffArtifacts,
@@ -305,19 +305,6 @@ function shouldHideTraceStatus(text: string | null | undefined): boolean {
   );
 }
 
-const LOW_SIGNAL_TRACE_TOOLS = new Set([
-  "read_file",
-  "read_files",
-  "list_dir",
-  "glob_files",
-  "grep_files",
-  "search_files",
-  "get_chunk_context",
-  "get_document_info",
-  "list_documents",
-  "list_sources",
-]);
-
 const INTERNAL_TRACE_TOOLS = new Set([
   "prepare_document_tools",
   "tool_search",
@@ -334,15 +321,6 @@ function isUnsuccessfulToolStatus(status?: string | null): boolean {
     status === "declined" ||
     status === "cancelled" ||
     status === "timedOut"
-  );
-}
-
-function isPendingToolStatus(status?: string | null): boolean {
-  return (
-    status === "preparing" ||
-    status === "starting" ||
-    status === "approvalPending" ||
-    status === "running"
   );
 }
 
@@ -365,8 +343,6 @@ function shouldRenderTraceToolCall(
   const normalizedToolName = normalizeToolName(toolName);
   if (INTERNAL_TRACE_TOOLS.has(normalizedToolName)) return false;
 
-  if (isFileChangeToolRender(toolName, renderKind)) return isPendingToolStatus(status);
-  if (LOW_SIGNAL_TRACE_TOOLS.has(normalizedToolName)) return isPendingToolStatus(status);
   return true;
 }
 
