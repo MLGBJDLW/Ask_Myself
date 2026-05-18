@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Settings, PanelLeftClose, PanelLeftOpen, UserRound } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -398,14 +398,6 @@ export function ChatPage() {
     pendingChatAction,
   ]);
 
-  const latestUserSkillQuery = useMemo(() => {
-    for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
-      const message = chat.messages[index];
-      if (message.role === 'user') return message.content ?? '';
-    }
-    return '';
-  }, [chat.messages]);
-
   /* ── No provider configured ─────────────────────────────────────── */
   if (!chat.loadingConfig && !chat.agentConfig) {
     return (
@@ -546,9 +538,6 @@ export function ChatPage() {
                     />
                     <ActiveExtensions
                       conversationId={chat.activeId ?? undefined}
-                      skillQuery={latestUserSkillQuery}
-                      personaId={activePersonaId}
-                      taskRun={chat.taskRun}
                     />
                   </div>
                 </div>
