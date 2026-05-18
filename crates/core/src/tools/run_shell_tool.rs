@@ -1,56 +1,16 @@
 //! RunShellTool — execute argv-style commands with a configurable shell access
 //! policy.
 //!
-//! # Security posture
-//!
-//! * **No implicit shell interpreter.** By default, we spawn the program
-//!   directly via `tokio::process::Command`. Shell metacharacters (`;`, `&&`,
-//!   `|`, backticks, globs) are passed to the program as literal arguments,
-//!   never interpreted. Explicit shell execution is only allowed when shell
-//!   access mode is not `restricted`.
-//! * **Program whitelist.** Only programs in [`PROGRAM_WHITELIST`] may run.
-//!   There is no user-extensible "custom" slot — adding programs requires a
-//!   code change (and review). Simple aliases like `copy -> cp` and
-//!   `move -> mv` are normalized before execution.
-//!   When shell access mode is switched away from `restricted` in settings,
-//!   arbitrary bare command names are allowed.
-//! * **Scoped filesystem commands.** For shell-style filesystem programs
-//!   (`pwd`, `ls`, `cat`, `mkdir`, `cp`, `mv`), every path argument is resolved
-//!   relative to the validated `cwd` and must remain inside a registered
-//!   source root while shell access mode remains `restricted`.
-//! * **Git read-only.** When `program == "git"`, the first argument must be in
-//!   [`GIT_READONLY_SUBCOMMANDS`] and write-flavoured args (`push`, `pull`,
-//!   `fetch`, `commit`, `reset`, `--set`, `--unset`, etc.) are rejected even
-//!   if they appear later in the argv.
-//! * **Argv size caps.** Individual args > 8 KB and total argv > 32 KB are
-//!   rejected to prevent argv stuffing. Larger generated scripts or text can
-//!   be passed through the bounded `stdin` field instead of argv.
-//! * **Scoped cwd by default.** In restricted mode, `cwd` is resolved via the
-//!   same helper as `read_file` and `edit_file`, so it must canonicalize
-//!   inside a registered source root. Less-restricted modes may allow any
-//!   existing directory.
-//! * **Scrubbed environment.** The child environment is rebuilt from scratch:
-//!   keys containing secret-like substrings (`KEY`, `SECRET`, `TOKEN`, …) are
-//!   dropped, and only an allow-list of neutral infrastructure vars (`PATH`,
-//!   `LANG`, `HOME`, …) is forwarded.
-//! * **Output caps.** stdout/stderr are each truncated to 64 KB.
-//! * **Timeout.** Default 30s. Set `timeout_secs` to 0 for no per-command
-//!   timeout when a long install/download is intentional. On timeout we rely
-//!   on `kill_on_drop(true)` for cleanup.
-//! * **No hidden console.** On Windows we spawn with `CREATE_NO_WINDOW` so
-//!   interactive programs cannot flash a console or trap input.
-//! * **Configurable confirmation.** Per-call confirmation is controlled by the
-//!   user's shell access mode in Settings.
-//! * **Audit logging.** Each invocation logs program, arg count, cwd, exit
-//!   code, duration, and kill status via `tracing`. **Arg contents are never
-//!   logged** (they may contain sensitive paths or data).
+//! The model-facing contract and validation constants live in
+//! `run_shell_contract`; this module implements that contract. Keep any rule
+//! that affects prompts, schema, recoverable errors, or validation in the
+//! contract module first, then consume it here.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -68,21 +28,22 @@ use super::diff_stats::text_diff_artifact;
 use super::path_utils::{
     resolve_existing_directory_in_sources, resolve_path_from_base_in_sources, PathKind,
 };
-use super::{scoped_sources, tool_contract_error_result, Tool, ToolCategory, ToolDef, ToolResult};
-
-static DEF: OnceLock<ToolDef> = OnceLock::new();
-const DEF_JSON: &str = include_str!("../../prompts/tools/run_shell.json");
+use super::run_shell_contract::{
+    command_args_mix_error, command_program_mix_error, command_shell_operator_error,
+    command_substitution_error, expected_format as run_shell_expected_format,
+    invalid_arguments_message, invalid_shell_selector_type_message, program_not_allowed_message,
+    shell_mix_error, shell_restricted_error, tool_description as run_shell_tool_description,
+    unsupported_shell_selector_message, DEFAULT_TIMEOUT_SECS, FORBIDDEN_ARG_SUBSTRINGS,
+    GIT_FORBIDDEN_TOKENS, GIT_READONLY_SUBCOMMANDS, MAX_OUTPUT_BYTES, MAX_SINGLE_ARG_BYTES,
+    MAX_STDIN_BYTES, MAX_TOTAL_ARGV_BYTES, MIN_TIMEOUT_SECS, PROGRAM_ALIASES, PROGRAM_WHITELIST,
+    TOOL_NAME,
+};
+use super::{scoped_sources, tool_contract_error_result, Tool, ToolCategory, ToolResult};
 
 // ---------------------------------------------------------------------------
 // Security constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
-const MIN_TIMEOUT_SECS: u64 = 1;
-const MAX_OUTPUT_BYTES: usize = 64 * 1024;
-const MAX_SINGLE_ARG_BYTES: usize = 8 * 1024;
-const MAX_TOTAL_ARGV_BYTES: usize = 32 * 1024;
-const MAX_STDIN_BYTES: usize = 1024 * 1024;
 const MAX_FILE_TRACK_FILES: usize = 5_000;
 const MAX_FILE_TRACK_BYTES: u64 = 1024 * 1024;
 const MAX_FILE_TRACK_DIFFS: usize = 30;
@@ -97,65 +58,6 @@ const FILE_TRACK_SKIP_DIRS: &[&str] = &[
     "venv",
     "__pycache__",
 ];
-
-/// Whitelisted program basenames. Matched case-insensitively on Windows,
-/// case-sensitively on Unix. The model may only pass these names exactly.
-const PROGRAM_WHITELIST: &[&str] = &[
-    "python", "python3", "pip", "pip3", "node", "npm", "npx", "git", "pwd", "ls", "cat", "mkdir",
-    "cp", "mv",
-];
-
-/// Accepted aliases that normalize to a canonical program name.
-const PROGRAM_ALIASES: &[(&str, &str)] = &[("copy", "cp"), ("move", "mv")];
-
-/// For `git`, only these subcommands are accepted as `args[0]`.
-const GIT_READONLY_SUBCOMMANDS: &[&str] = &[
-    "status",
-    "diff",
-    "log",
-    "show",
-    "ls-files",
-    "rev-parse",
-    "branch",
-    "tag",
-    "config",
-    "remote",
-    "describe",
-    "blame",
-];
-
-/// Git tokens that may never appear anywhere in argv, even when the primary
-/// subcommand is read-only (defence-in-depth against `git config --unset`
-/// etc.).
-const GIT_FORBIDDEN_TOKENS: &[&str] = &[
-    "push",
-    "pull",
-    "fetch",
-    "commit",
-    "reset",
-    "merge",
-    "rebase",
-    "cherry-pick",
-    "clone",
-    "init",
-    "add",
-    "rm",
-    "mv",
-    "checkout",
-    "switch",
-    "restore",
-    "am",
-    "apply",
-    "stash",
-    "--set",
-    "--unset",
-    "--unset-all",
-    "--add",
-    "--replace-all",
-];
-
-/// Byte substrings forbidden in any arg (defence-in-depth).
-const FORBIDDEN_ARG_SUBSTRINGS: &[&str] = &["\0"];
 
 /// Env-var name fragments (case-insensitive) that cause the key to be stripped.
 const ENV_STRIP_PATTERNS: &[&str] = &[
@@ -273,53 +175,6 @@ fn parse_run_shell_args(arguments: &str) -> Result<RunShellArgs, serde_json::Err
     }
 }
 
-fn run_shell_expected_format() -> Value {
-    json!({
-        "examples": {
-            "simpleCommand": {
-                "command": "git status --short",
-                "cwd": "D:/workspace",
-                "timeout_secs": 30
-            },
-            "shellCommand": {
-                "command": "git status --short && git diff --stat",
-                "shell": "default",
-                "cwd": "D:/workspace",
-                "timeout_secs": 30
-            },
-            "exactArgv": {
-                "program": "python",
-                "args": [
-                    "crates/core/assets/skills/doc-script-editor/scripts/edit_doc.py",
-                    "--path",
-                    "D:/workspace/deck.pptx",
-                    "create_html_pptx",
-                    "--spec",
-                    "-",
-                    "--outdir",
-                    "D:/workspace/html_deck_project",
-                    "--mode",
-                    "hybrid",
-                    "--screenshot",
-                    "auto"
-                ],
-                "cwd": "D:/workspace",
-                "timeout_secs": 30,
-                "stdin": "{ \"slides\": [/* HTML-first PPTX JSON spec */] }"
-            }
-        },
-        "rules": [
-            "Use command for simple one-line commands, or program plus args for exact argv control.",
-            "By default command is parsed into argv and still does not invoke a shell; pipes, chains, redirection, command substitution, and background operators are rejected.",
-            "Use shell only for real shell syntax. shell requires ConfirmAll or Open shell access mode and is rejected in Restricted mode.",
-            "Do not send command together with program or args.",
-            "args must be an array of argv strings.",
-            "For generated HTML/PPTX specs or large scripts, pass the payload in stdin and use --spec - or a stdin-reading program.",
-            "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c."
-        ]
-    })
-}
-
 #[derive(Serialize)]
 struct RunShellOutput {
     exit_code: Option<i32>,
@@ -395,15 +250,7 @@ fn validate_program(program: &str, mode: ShellAccessMode) -> Result<String, Stri
     if !mode.is_restricted() {
         return Ok(program.to_string());
     }
-    let allowed: Vec<&str> = PROGRAM_WHITELIST
-        .iter()
-        .copied()
-        .chain(PROGRAM_ALIASES.iter().map(|(alias, _)| *alias))
-        .collect();
-    Err(format!(
-        "program '{program}' is not in the run_shell whitelist. Allowed: {}",
-        allowed.join(", ")
-    ))
+    Err(program_not_allowed_message(program))
 }
 
 fn normalize_invocation(
@@ -474,15 +321,10 @@ fn parse_shell_selector(value: Option<&Value>) -> Result<Option<CommandShell>, S
                 "cmd" | "cmd.exe" => Ok(Some(CommandShell::Cmd)),
                 "bash" => Ok(Some(CommandShell::Bash)),
                 "sh" => Ok(Some(CommandShell::Sh)),
-                _ => Err(format!(
-                    "unsupported run_shell.shell '{raw}'. Use false/none, default, powershell, pwsh, cmd, bash, or sh"
-                )),
+                _ => Err(unsupported_shell_selector_message(raw)),
             }
         }
-        _ => Err(
-            "run_shell.shell must be a boolean or one of: none, default, powershell, pwsh, cmd, bash, sh"
-                .to_string(),
-        ),
+        _ => Err(invalid_shell_selector_type_message().to_string()),
     }
 }
 
@@ -610,16 +452,10 @@ fn split_simple_command_string(command: &str) -> Result<Vec<String>, String> {
                     push_unquoted_backslash(&mut chars, &mut current)?;
                 }
                 '|' | ';' | '<' | '>' | '`' | '&' => {
-                    return Err(
-                        "run_shell.command only accepts a simple command string; shell operators like pipes, chains, redirection, backticks, and backgrounding are not supported. Use program/args for exact argv, or enable an explicit shell path only when shell interpretation is intentional."
-                            .to_string(),
-                    );
+                    return Err(command_shell_operator_error().to_string());
                 }
                 '$' if matches!(chars.peek(), Some('(')) => {
-                    return Err(
-                        "run_shell.command does not support shell command substitution. Use program/args or stdin instead."
-                            .to_string(),
-                    );
+                    return Err(command_substitution_error().to_string());
                 }
                 _ => {
                     token_started = true;
@@ -700,16 +536,10 @@ fn normalize_run_shell_invocation(
 
     if let Some(shell) = shell {
         if mode.is_restricted() {
-            return Err(
-                "run_shell.shell requires ConfirmAll or Open shell access mode; it is not available in Restricted mode."
-                    .to_string(),
-            );
+            return Err(shell_restricted_error().to_string());
         }
         if program.is_some() || !parsed.args.is_empty() {
-            return Err(
-                "Use run_shell.shell only with command; do not combine shell with program or args."
-                    .to_string(),
-            );
+            return Err(shell_mix_error().to_string());
         }
         let Some(command) = command else {
             return Err("run_shell.shell requires command".to_string());
@@ -718,15 +548,10 @@ fn normalize_run_shell_invocation(
     }
 
     match (command, program) {
-        (Some(_), Some(_)) => {
-            Err("Use either run_shell.command or run_shell program/args, not both.".to_string())
-        }
+        (Some(_), Some(_)) => Err(command_program_mix_error().to_string()),
         (Some(command), None) => {
             if !parsed.args.is_empty() {
-                return Err(
-                    "Do not pass args together with run_shell.command; include arguments in command or use program/args."
-                        .to_string(),
-                );
+                return Err(command_args_mix_error().to_string());
             }
             let parts = split_simple_command_string(command)?;
             let program = &parts[0];
@@ -1871,15 +1696,15 @@ fn error_result(call_id: &str, msg: impl Into<String>) -> ToolResult {
 #[async_trait]
 impl Tool for RunShellTool {
     fn name(&self) -> &str {
-        "run_shell"
+        TOOL_NAME
     }
 
     fn description(&self) -> &str {
-        &ToolDef::from_json(&DEF, DEF_JSON).description
+        run_shell_tool_description()
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
-        ToolDef::from_json(&DEF, DEF_JSON).parameters.clone()
+        super::run_shell_contract::parameters_schema()
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
@@ -1959,9 +1784,7 @@ impl Tool for RunShellTool {
                 return Ok(tool_contract_error_result(
                     call_id,
                     "invalid_run_shell_arguments",
-                    format!(
-                        "Invalid run_shell arguments: {err}. Use command or program/args JSON. For HTML/PPTX generation, pass large specs through stdin with --spec - instead of putting HTML or JSON inside args."
-                    ),
+                    invalid_arguments_message(err),
                     run_shell_expected_format(),
                 ));
             }

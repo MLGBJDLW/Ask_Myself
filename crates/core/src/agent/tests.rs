@@ -224,7 +224,7 @@ fn test_build_system_prompt_preserves_core_rules() {
 #[test]
 fn test_build_system_prompt_skips_blank_sections() {
     let prompt = build_system_prompt(Some("   "), &["", "  ", "\n\n"]);
-    assert_eq!(prompt, DEFAULT_SYSTEM_PROMPT.trim());
+    assert_eq!(prompt, default_system_prompt());
 }
 
 #[test]

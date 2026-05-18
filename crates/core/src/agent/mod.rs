@@ -246,7 +246,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             max_iterations: 25,
-            system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+            system_prompt: default_system_prompt(),
             model: None,
             temperature: Some(0.3),
             max_tokens: Some(4096),
@@ -270,7 +270,7 @@ impl Default for AgentConfig {
     }
 }
 
-const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompts/system.md");
+const DEFAULT_SYSTEM_PROMPT_BASE: &str = include_str!("../../prompts/system.md");
 
 const DEFAULT_MODEL: &str = "gpt-4o-mini";
 
@@ -280,7 +280,7 @@ const DEFAULT_MODEL: &str = "gpt-4o-mini";
 /// is appended as lower-priority instructions, followed by any dynamic sections
 /// such as memory or preference summaries.
 pub fn build_system_prompt(conversation_prompt: Option<&str>, dynamic_sections: &[&str]) -> String {
-    let mut prompt = DEFAULT_SYSTEM_PROMPT.trim().to_string();
+    let mut prompt = default_system_prompt();
 
     if let Some(custom) = conversation_prompt
         .map(str::trim)
@@ -302,6 +302,13 @@ pub fn build_system_prompt(conversation_prompt: Option<&str>, dynamic_sections: 
         prompt.push_str(section);
     }
 
+    prompt
+}
+
+fn default_system_prompt() -> String {
+    let mut prompt = DEFAULT_SYSTEM_PROMPT_BASE.trim().to_string();
+    prompt.push_str("\n\n");
+    prompt.push_str(crate::tools::run_shell_contract::system_prompt_section());
     prompt
 }
 

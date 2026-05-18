@@ -111,6 +111,7 @@ pub mod read_files_tool;
 pub mod record_verification_tool;
 pub mod reindex_tool;
 pub mod related_concepts_tool;
+pub(crate) mod run_shell_contract;
 pub mod run_shell_tool;
 pub mod scratchpad_tool;
 pub mod search_files_tool;
