@@ -3,9 +3,11 @@
 //!
 //! # Security posture
 //!
-//! * **No shell interpreter.** We spawn the program directly via
-//!   `tokio::process::Command`. Shell metacharacters (`;`, `&&`, `|`, backticks,
-//!   globs) are passed to the program as literal arguments, never interpreted.
+//! * **No implicit shell interpreter.** By default, we spawn the program
+//!   directly via `tokio::process::Command`. Shell metacharacters (`;`, `&&`,
+//!   `|`, backticks, globs) are passed to the program as literal arguments,
+//!   never interpreted. Explicit shell execution is only allowed when shell
+//!   access mode is not `restricted`.
 //! * **Program whitelist.** Only programs in [`PROGRAM_WHITELIST`] may run.
 //!   There is no user-extensible "custom" slot — adding programs requires a
 //!   code change (and review). Simple aliases like `copy -> cp` and
@@ -200,6 +202,8 @@ struct RunShellArgs {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
+    shell: Option<Value>,
+    #[serde(default)]
     program: Option<String>,
     #[serde(default)]
     args: Vec<String>,
@@ -277,6 +281,12 @@ fn run_shell_expected_format() -> Value {
                 "cwd": "D:/workspace",
                 "timeout_secs": 30
             },
+            "shellCommand": {
+                "command": "git status --short && git diff --stat",
+                "shell": "default",
+                "cwd": "D:/workspace",
+                "timeout_secs": 30
+            },
             "exactArgv": {
                 "program": "python",
                 "args": [
@@ -300,7 +310,8 @@ fn run_shell_expected_format() -> Value {
         },
         "rules": [
             "Use command for simple one-line commands, or program plus args for exact argv control.",
-            "command is parsed into argv and still does not invoke a shell; pipes, chains, redirection, command substitution, and background operators are rejected.",
+            "By default command is parsed into argv and still does not invoke a shell; pipes, chains, redirection, command substitution, and background operators are rejected.",
+            "Use shell only for real shell syntax. shell requires ConfirmAll or Open shell access mode and is rejected in Restricted mode.",
             "Do not send command together with program or args.",
             "args must be an array of argv strings.",
             "For generated HTML/PPTX specs or large scripts, pass the payload in stdin and use --spec - or a stdin-reading program.",
@@ -418,6 +429,142 @@ fn normalize_invocation(
     Ok((canonical, args.to_vec()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandShell {
+    Default,
+    PowerShell,
+    Pwsh,
+    Cmd,
+    Bash,
+    Sh,
+}
+
+impl CommandShell {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::PowerShell => "powershell",
+            Self::Pwsh => "pwsh",
+            Self::Cmd => "cmd",
+            Self::Bash => "bash",
+            Self::Sh => "sh",
+        }
+    }
+}
+
+fn parse_shell_selector(value: Option<&Value>) -> Result<Option<CommandShell>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value {
+        Value::Null => Ok(None),
+        Value::Bool(false) => Ok(None),
+        Value::Bool(true) => Ok(Some(CommandShell::Default)),
+        Value::String(raw) => {
+            let selector = raw.trim().to_ascii_lowercase();
+            match selector.as_str() {
+                "" | "none" | "argv" | "direct" | "false" => Ok(None),
+                "true" | "default" | "system" | "shell" => Ok(Some(CommandShell::Default)),
+                "powershell" | "windows_powershell" | "windows-powershell" => {
+                    Ok(Some(CommandShell::PowerShell))
+                }
+                "pwsh" | "powershell7" | "powershell-core" | "powershell_core" => {
+                    Ok(Some(CommandShell::Pwsh))
+                }
+                "cmd" | "cmd.exe" => Ok(Some(CommandShell::Cmd)),
+                "bash" => Ok(Some(CommandShell::Bash)),
+                "sh" => Ok(Some(CommandShell::Sh)),
+                _ => Err(format!(
+                    "unsupported run_shell.shell '{raw}'. Use false/none, default, powershell, pwsh, cmd, bash, or sh"
+                )),
+            }
+        }
+        _ => Err(
+            "run_shell.shell must be a boolean or one of: none, default, powershell, pwsh, cmd, bash, sh"
+                .to_string(),
+        ),
+    }
+}
+
+fn shell_invocation(shell: CommandShell, command: &str) -> Result<(String, Vec<String>), String> {
+    match shell {
+        CommandShell::Default => default_shell_invocation(command),
+        CommandShell::PowerShell => Ok((
+            powershell_program().to_string(),
+            powershell_args(command, false),
+        )),
+        CommandShell::Pwsh => Ok(("pwsh".to_string(), powershell_args(command, true))),
+        CommandShell::Cmd => cmd_shell_invocation(command),
+        CommandShell::Bash => Ok((
+            "bash".to_string(),
+            vec!["-lc".to_string(), command.to_string()],
+        )),
+        CommandShell::Sh => Ok((
+            "sh".to_string(),
+            vec!["-c".to_string(), command.to_string()],
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn default_shell_invocation(command: &str) -> Result<(String, Vec<String>), String> {
+    Ok((
+        powershell_program().to_string(),
+        powershell_args(command, false),
+    ))
+}
+
+#[cfg(not(windows))]
+fn default_shell_invocation(command: &str) -> Result<(String, Vec<String>), String> {
+    Ok((
+        "sh".to_string(),
+        vec!["-c".to_string(), command.to_string()],
+    ))
+}
+
+#[cfg(windows)]
+fn powershell_program() -> &'static str {
+    "powershell.exe"
+}
+
+#[cfg(not(windows))]
+fn powershell_program() -> &'static str {
+    "pwsh"
+}
+
+fn powershell_args(command: &str, is_pwsh: bool) -> Vec<String> {
+    let mut args = vec![
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+    ];
+    if cfg!(windows) && !is_pwsh {
+        args.push("-ExecutionPolicy".to_string());
+        args.push("Bypass".to_string());
+    }
+    args.push("-Command".to_string());
+    args.push(command.to_string());
+    args
+}
+
+#[cfg(windows)]
+fn cmd_shell_invocation(command: &str) -> Result<(String, Vec<String>), String> {
+    Ok((
+        "cmd.exe".to_string(),
+        vec![
+            "/D".to_string(),
+            "/S".to_string(),
+            "/C".to_string(),
+            command.to_string(),
+        ],
+    ))
+}
+
+#[cfg(not(windows))]
+fn cmd_shell_invocation(_command: &str) -> Result<(String, Vec<String>), String> {
+    Err("cmd shell is only available on Windows".to_string())
+}
+
 fn split_simple_command_string(command: &str) -> Result<Vec<String>, String> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -438,10 +585,7 @@ fn split_simple_command_string(command: &str) -> Result<Vec<String>, String> {
                 if ch == '"' {
                     quote = None;
                 } else if ch == '\\' {
-                    let next = chars.next().ok_or_else(|| {
-                        "command string ends with an unfinished escape".to_string()
-                    })?;
-                    current.push(next);
+                    push_double_quoted_backslash(&mut chars, &mut current)?;
                 } else {
                     current.push(ch);
                 }
@@ -463,10 +607,7 @@ fn split_simple_command_string(command: &str) -> Result<Vec<String>, String> {
                 }
                 '\\' => {
                     token_started = true;
-                    let next = chars.next().ok_or_else(|| {
-                        "command string ends with an unfinished escape".to_string()
-                    })?;
-                    current.push(next);
+                    push_unquoted_backslash(&mut chars, &mut current)?;
                 }
                 '|' | ';' | '<' | '>' | '`' | '&' => {
                     return Err(
@@ -501,6 +642,50 @@ fn split_simple_command_string(command: &str) -> Result<Vec<String>, String> {
     Ok(parts)
 }
 
+fn push_unquoted_backslash(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    current: &mut String,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let _ = chars;
+        current.push('\\');
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let next = chars
+            .next()
+            .ok_or_else(|| "command string ends with an unfinished escape".to_string())?;
+        current.push(next);
+        Ok(())
+    }
+}
+
+fn push_double_quoted_backslash(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    current: &mut String,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if matches!(chars.peek(), Some('"')) {
+            chars.next();
+            current.push('"');
+        } else {
+            current.push('\\');
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let next = chars
+            .next()
+            .ok_or_else(|| "command string ends with an unfinished escape".to_string())?;
+        current.push(next);
+        Ok(())
+    }
+}
+
 fn normalize_run_shell_invocation(
     parsed: &RunShellArgs,
     mode: ShellAccessMode,
@@ -510,7 +695,27 @@ fn normalize_run_shell_invocation(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let shell = parse_shell_selector(parsed.shell.as_ref())?;
     let program = parsed.program.as_deref().filter(|s| !s.is_empty());
+
+    if let Some(shell) = shell {
+        if mode.is_restricted() {
+            return Err(
+                "run_shell.shell requires ConfirmAll or Open shell access mode; it is not available in Restricted mode."
+                    .to_string(),
+            );
+        }
+        if program.is_some() || !parsed.args.is_empty() {
+            return Err(
+                "Use run_shell.shell only with command; do not combine shell with program or args."
+                    .to_string(),
+            );
+        }
+        let Some(command) = command else {
+            return Err("run_shell.shell requires command".to_string());
+        };
+        return shell_invocation(shell, command);
+    }
 
     match (command, program) {
         (Some(_), Some(_)) => {
@@ -1589,6 +1794,27 @@ fn format_confirmation(
     }
 }
 
+fn format_shell_confirmation(
+    shell: CommandShell,
+    command: &str,
+    cwd: &str,
+    timeout: u64,
+    stdin_bytes: Option<usize>,
+) -> String {
+    let timeout_label = if timeout == 0 {
+        "no timeout".to_string()
+    } else {
+        format!("timeout {timeout}s")
+    };
+    let stdin_note = stdin_bytes
+        .map(|bytes| format!(", stdin {bytes} bytes"))
+        .unwrap_or_default();
+    format!(
+        "Run in {} shell: {command} in {cwd} ({timeout_label}{stdin_note})",
+        shell.label()
+    )
+}
+
 fn format_output(output: &RunShellOutput) -> String {
     let mut result = String::new();
 
@@ -1673,6 +1899,7 @@ impl Tool for RunShellTool {
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|command| !command.is_empty());
+        let shell = parse_shell_selector(args.get("shell")).ok().flatten();
         let args_vec: Vec<String> = args
             .get("args")
             .and_then(|v| v.as_array())
@@ -1693,7 +1920,17 @@ impl Tool for RunShellTool {
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
         let stdin_bytes = args.get("stdin").and_then(|v| v.as_str()).map(str::len);
         if let Some(command) = command {
-            Some(format_confirmation(command, &[], cwd, timeout, stdin_bytes))
+            if let Some(shell) = shell {
+                Some(format_shell_confirmation(
+                    shell,
+                    command,
+                    cwd,
+                    timeout,
+                    stdin_bytes,
+                ))
+            } else {
+                Some(format_confirmation(command, &[], cwd, timeout, stdin_bytes))
+            }
         } else {
             let program = args
                 .get("program")
@@ -1723,7 +1960,7 @@ impl Tool for RunShellTool {
                     call_id,
                     "invalid_run_shell_arguments",
                     format!(
-                        "Invalid run_shell arguments: {err}. Use argv-style JSON. For HTML/PPTX generation, pass large specs through stdin with --spec - instead of putting HTML or JSON inside args."
+                        "Invalid run_shell arguments: {err}. Use command or program/args JSON. For HTML/PPTX generation, pass large specs through stdin with --spec - instead of putting HTML or JSON inside args."
                     ),
                     run_shell_expected_format(),
                 ));
@@ -1954,6 +2191,116 @@ mod tests {
 
         assert_eq!(program, "python");
         assert_eq!(args, vec!["-c", "print('hello world')"]);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_command_string_unix_backslash_escapes_spaces() {
+        let parsed = parse_run_shell_args(
+            r#"{"command":"python path\\ with\\ spaces/script.py","cwd":"/work"}"#,
+        )
+        .expect("Unix escaped path command args should parse");
+
+        let (program, args) = normalize_run_shell_invocation(&parsed, ShellAccessMode::Restricted)
+            .expect("Unix escaped path command should normalize");
+
+        assert_eq!(program, "python");
+        assert_eq!(args, vec!["path with spaces/script.py"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_command_string_preserves_windows_backslash_paths() {
+        let parsed = parse_run_shell_args(
+            r#"{"command":"python C:\\Users\\WYF\\script.py","cwd":"C:\\work"}"#,
+        )
+        .expect("Windows path command args should parse");
+
+        let (program, args) = normalize_run_shell_invocation(&parsed, ShellAccessMode::Restricted)
+            .expect("Windows path command should normalize");
+
+        assert_eq!(program, "python");
+        assert_eq!(args, vec![r#"C:\Users\WYF\script.py"#]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_command_string_preserves_quoted_windows_path_with_spaces() {
+        let parsed = parse_run_shell_args(
+            r#"{"command":"python \"C:\\Program Files\\Ask Myself\\script.py\"","cwd":"C:\\work"}"#,
+        )
+        .expect("quoted Windows path command args should parse");
+
+        let (program, args) = normalize_run_shell_invocation(&parsed, ShellAccessMode::Restricted)
+            .expect("quoted Windows path command should normalize");
+
+        assert_eq!(program, "python");
+        assert_eq!(args, vec![r#"C:\Program Files\Ask Myself\script.py"#]);
+    }
+
+    #[test]
+    fn test_shell_command_rejected_in_restricted_mode() {
+        let parsed = parse_run_shell_args(
+            r#"{"command":"git status --short && git diff --stat","shell":"default","cwd":"C:\\work"}"#,
+        )
+        .expect("shell command args should parse");
+
+        let err = normalize_run_shell_invocation(&parsed, ShellAccessMode::Restricted)
+            .expect_err("restricted mode should reject shell execution");
+
+        assert!(err.contains("ConfirmAll or Open"));
+    }
+
+    #[test]
+    fn test_shell_command_maps_default_shell_in_open_mode() {
+        let command = "git status --short && git diff --stat";
+        let parsed = parse_run_shell_args(&format!(
+            r#"{{"command":"{command}","shell":"default","cwd":"C:\\work"}}"#
+        ))
+        .expect("default shell command args should parse");
+
+        let (program, args) = normalize_run_shell_invocation(&parsed, ShellAccessMode::Open)
+            .expect("default shell command should normalize");
+
+        #[cfg(windows)]
+        {
+            assert_eq!(program, "powershell.exe");
+            assert!(args.contains(&"-Command".to_string()));
+            assert_eq!(args.last().map(String::as_str), Some(command));
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(program, "sh");
+            assert_eq!(args, vec!["-c", command]);
+        }
+    }
+
+    #[test]
+    fn test_explicit_bash_shell_preserves_shell_operators() {
+        let command = "printf hi && printf bye";
+        let parsed = parse_run_shell_args(&format!(
+            r#"{{"command":"{command}","shell":"bash","cwd":"C:\\work"}}"#
+        ))
+        .expect("bash shell command args should parse");
+
+        let (program, args) = normalize_run_shell_invocation(&parsed, ShellAccessMode::ConfirmAll)
+            .expect("bash shell command should normalize");
+
+        assert_eq!(program, "bash");
+        assert_eq!(args, vec!["-lc", command]);
+    }
+
+    #[test]
+    fn test_shell_command_rejects_program_args_mix() {
+        let parsed = parse_run_shell_args(
+            r#"{"command":"git status","shell":"default","program":"git","args":["status"],"cwd":"C:\\work"}"#,
+        )
+        .expect("mixed shell args should parse");
+
+        let err = normalize_run_shell_invocation(&parsed, ShellAccessMode::Open)
+            .expect_err("shell and argv modes should not mix");
+
+        assert!(err.contains("do not combine shell"));
     }
 
     #[test]
@@ -2313,6 +2660,19 @@ mod tests {
         let msg = tool.confirmation_message(&args).expect("message");
         assert!(msg.contains("no timeout"));
         assert!(!msg.contains("timeout 0s"));
+    }
+
+    #[test]
+    fn test_confirmation_message_shows_shell_mode() {
+        let tool = RunShellTool;
+        let args = serde_json::json!({
+            "command": "git status --short && git diff --stat",
+            "shell": "default",
+            "cwd": "."
+        });
+        let msg = tool.confirmation_message(&args).expect("message");
+        assert!(msg.contains("default shell"));
+        assert!(msg.contains("git status --short && git diff --stat"));
     }
 
     // --- bytes_to_clamped_string -------------------------------------------

@@ -150,6 +150,15 @@ impl ToolPermissionKey {
     pub fn from_invocation(invocation: &crate::tools::ToolInvocation) -> Self {
         let args = &invocation.arguments;
         if invocation.tool_name == "run_shell" {
+            let shell_enabled = args.get("shell").is_some_and(|value| match value {
+                serde_json::Value::Null => false,
+                serde_json::Value::Bool(enabled) => *enabled,
+                serde_json::Value::String(raw) => !matches!(
+                    raw.trim().to_ascii_lowercase().as_str(),
+                    "" | "none" | "argv" | "direct" | "false"
+                ),
+                _ => true,
+            });
             if let Some(command) = args
                 .get("command")
                 .and_then(|value| value.as_str())
@@ -162,7 +171,11 @@ impl ToolPermissionKey {
                     (Some(program), None) => program.to_string(),
                     _ => "<unknown>".to_string(),
                 };
-                return Self::new(&invocation.tool_name, "command", target);
+                return Self::new(
+                    &invocation.tool_name,
+                    if shell_enabled { "shell" } else { "command" },
+                    target,
+                );
             }
             let program = args
                 .get("program")
@@ -831,6 +844,21 @@ mod tests {
 
         assert_eq!(req.permission_key, "run_shell|command|git%20status");
         assert_eq!(req.target_kind, "command");
+        assert_eq!(req.target_value, "git status");
+    }
+
+    #[test]
+    fn approval_request_uses_shell_permission_key() {
+        let args = serde_json::json!({
+            "command": "git status --short && git diff --stat",
+            "shell": "default",
+            "cwd": "."
+        });
+
+        let req = ApprovalRequest::new("req-1", "run_shell", &args, ApprovalRisk::High, "test");
+
+        assert_eq!(req.permission_key, "run_shell|shell|git%20status");
+        assert_eq!(req.target_kind, "shell");
         assert_eq!(req.target_value, "git status");
     }
 
