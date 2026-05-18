@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.7...nexa-monorepo-v0.6.8) (2026-05-18)
+
+
+### Bug Fixes
+
+* **core:** Gate Windows process flags by target ([af1035f](https://github.com/MLGBJDLW/Nexa/commit/af1035f5e0bf7ef56f0a32f8d4ee2a0c6cea970c))
+* harden cross-platform release checks ([41cb28c](https://github.com/MLGBJDLW/Nexa/commit/41cb28c927f40ce7d3b19b6ab1c08eb2c4483c6e))
+
 ## [0.6.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.6...nexa-monorepo-v0.6.7) (2026-05-18)
 
 
