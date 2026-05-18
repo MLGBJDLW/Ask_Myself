@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.6...nexa-monorepo-v0.6.7) (2026-05-18)
+
+
+### Features
+
+* **core:** expand persona skills ([892d9f6](https://github.com/MLGBJDLW/Nexa/commit/892d9f6b780e5cc0c4e71e93fec4817c285cb79e))
+* **core:** gate completion on verification artifacts ([f33c837](https://github.com/MLGBJDLW/Nexa/commit/f33c8371c807bae7367bf56c5d6b7351dbfcd9bf))
+
+
+### Bug Fixes
+
+* **core:** accept simple run_shell command strings ([c2a203a](https://github.com/MLGBJDLW/Nexa/commit/c2a203acfc2a031880e91d0457d40ea6263e0143))
+* **core:** support explicit platform shells in run_shell ([61fed8b](https://github.com/MLGBJDLW/Nexa/commit/61fed8bed35e17162be54f9b166266bd4856dc9e))
+* **desktop:** hide conditional skills summary ([819d527](https://github.com/MLGBJDLW/Nexa/commit/819d5276ebf015e87fffd21efa2505fc5ca1c128))
+* **desktop:** keep completed tool traces visible ([2a5b84f](https://github.com/MLGBJDLW/Nexa/commit/2a5b84f9e1c30ae0e9d8bdf35ef7f56c7e78f91c))
+* **desktop:** restore steering and guard downloads ([15327b6](https://github.com/MLGBJDLW/Nexa/commit/15327b6eb8014fea6fd57eb9b1ea44c3f724b45c))
+* **prompt:** tighten routing and shell guidance ([1e61561](https://github.com/MLGBJDLW/Nexa/commit/1e615614072bb2ee1ff8596b0377c94ecad9c8df))
+
 ## [0.6.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.5...nexa-monorepo-v0.6.6) (2026-05-17)
 
 
