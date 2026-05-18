@@ -188,13 +188,26 @@ pub fn select_skills_from_pool_with_pinned(
     let mut out = Vec::new();
     for id in pinned_skill_ids {
         let id = id.trim();
-        if id.is_empty() || !seen.insert(id.to_string()) {
+        if id.is_empty() {
             continue;
         }
-        if let Some(skill) = by_id.get(id) {
-            out.push(skill.clone());
-            if out.len() >= max_skills {
-                return out;
+
+        let builtin_alias;
+        let skill = if let Some(skill) = by_id.get(id) {
+            Some(skill)
+        } else if id.starts_with("builtin-") {
+            None
+        } else {
+            builtin_alias = format!("builtin-{id}");
+            by_id.get(&builtin_alias)
+        };
+
+        if let Some(skill) = skill {
+            if seen.insert(skill.id.clone()) {
+                out.push(skill.clone());
+                if out.len() >= max_skills {
+                    return out;
+                }
             }
         }
     }

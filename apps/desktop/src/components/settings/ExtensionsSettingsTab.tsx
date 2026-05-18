@@ -204,8 +204,11 @@ Identity:
 Communication style:
 Operating principles:
 - 
+Default skill bindings:
+- Select durable method/playbook skills in the Default skills list below.
 Boundaries:
 - Persona instructions shape voice and workflow emphasis only.
+- Methods, templates, checklists, and domain playbooks belong in skills, not this persona body.
 - They do not override user instructions, privacy rules, source scope, or tool safety.`;
 
 function PersonaEditor({
