@@ -228,7 +228,7 @@ pub(crate) fn route_user_turn(
 
     AgentRoutePlan {
         kind: AgentRouteKind::DirectResponse,
-        prompt_section: "## Active Routing Plan\nAnswer the user's question. For factual questions, ALWAYS search the knowledge base first using search_knowledge_base, even if you believe you know the answer. Use tools whenever they would improve answer accuracy or completeness.".to_string(),
+        prompt_section: "## Active Routing Plan\nAnswer the user's question directly when no specialized route applies. For factual questions about the user's indexed documents, notes, projects, memories, or knowledge base, search first using search_knowledge_base. For codebase, file, shell/tool, current-conversation, URL, or web inspection tasks, use the route-appropriate tools instead of forcing knowledge-base retrieval. Use tools whenever they would improve answer accuracy or completeness.".to_string(),
         extra_categories: Vec::new(),
     }
 }
