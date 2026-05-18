@@ -5,6 +5,10 @@ import type {
   TraceStatusEvent,
   TraceToolEvent,
 } from './protocol';
+import {
+  isPendingToolCallStatus,
+  type TerminalToolStatus,
+} from './toolStatus';
 
 export interface StreamTerminalProjectionState {
   isStreaming: boolean;
@@ -24,22 +28,13 @@ export interface StreamTerminalProjectionState {
   _activeRoundAcceptingStarts: boolean;
 }
 
-export function isPendingStatus(status: ToolCallEvent['status']): boolean {
-  return status === 'running'
-    || status === 'starting'
-    || status === 'preparing'
-    || status === 'approvalPending';
-}
-
-type TerminalToolStatus = 'done' | 'error' | 'cancelled' | 'timedOut';
-
 export function markToolCallsFinished(
   toolCalls: ToolCallEvent[],
   status: TerminalToolStatus,
   fallbackContent: string,
 ): ToolCallEvent[] {
   return toolCalls.map(tc =>
-    isPendingStatus(tc.status)
+    isPendingToolCallStatus(tc.status)
       ? {
           ...tc,
           status,

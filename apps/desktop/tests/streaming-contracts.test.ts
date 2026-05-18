@@ -3,6 +3,11 @@ import {
   durableReplayItemsFromTaskEvents,
   taskTimelineEventsFromReplaySource,
 } from '../src/lib/streaming/durableReplay';
+import { extractPersistedTraceItems } from '../src/lib/streaming/persistedTrace';
+import {
+  isPendingToolCallStatus,
+  normalizePersistedToolCallStatus,
+} from '../src/lib/streaming/toolStatus';
 import { armStreamWatchdog, clearStreamWatchdog } from '../src/lib/streaming/watchdog';
 import { streamStore } from '../src/lib/streamStore';
 import {
@@ -529,6 +534,50 @@ test('durable replay restores canonical usage and approval events through live p
   assertEqual(restored.pendingApprovals[0].id, 'approval-1', 'approval id');
 
   streamStore.clearStream(conversationId);
+});
+
+test('normalizes persisted trace tool calls through the shared tool status projection', () => {
+  const items = extractPersistedTraceItems({
+    kind: 'traceTimeline',
+    items: [
+      {
+        kind: 'tool',
+        toolCall: {
+          callId: 'call-1',
+          toolName: 'run_shell',
+          arguments: '{"program":"cargo"}',
+          status: 'failed',
+          renderKind: 'commandExecution',
+          isError: false,
+        },
+      },
+      {
+        kind: 'tool',
+        toolCall: {
+          callId: 'call-2',
+          toolName: 'edit_file',
+          arguments: '',
+          status: 'approval_pending',
+        },
+      },
+    ],
+  });
+
+  assert(items, 'persisted trace items should parse');
+  assertEqual(items.length, 2, 'persisted trace item count');
+  assert(items[0].kind === 'tool', 'first persisted item should be a tool');
+  assertEqual(items[0].toolCall.status, 'error', 'failed trace status normalizes to error');
+  assertEqual(items[0].toolCall.argsStatus, 'error', 'failed trace args status');
+  assert(items[1].kind === 'tool', 'second persisted item should be a tool');
+  assertEqual(items[1].toolCall.status, 'approvalPending', 'approval status normalizes');
+  assert(isPendingToolCallStatus(items[1].toolCall.status), 'approval trace is pending');
+});
+
+test('uses one tool status reducer for run, trace, and card-facing statuses', () => {
+  assertEqual(normalizePersistedToolCallStatus('completed'), 'done', 'completed status');
+  assertEqual(normalizePersistedToolCallStatus('timed_out'), 'timedOut', 'timed out status');
+  assert(isPendingToolCallStatus('preparing'), 'preparing is pending');
+  assert(!isPendingToolCallStatus('done'), 'done is not pending');
 });
 
 test('watchdog arms, fires, and clears timeout handles', async () => {

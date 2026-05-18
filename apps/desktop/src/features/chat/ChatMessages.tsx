@@ -43,6 +43,14 @@ import type {
   ToolCallEvent,
   TraceEvent,
 } from "../../lib/useAgentStream";
+import {
+  extractPersistedTraceItems,
+  extractTurnTrace,
+} from "../../lib/streaming/persistedTrace";
+import {
+  isPendingToolCallStatus,
+  isUnsuccessfulToolCallStatus,
+} from "../../lib/streaming/toolStatus";
 import { ToolCallCard } from "../../components/chat/ToolCallCard";
 import { isBoardOnlyToolRender } from "../../components/chat/toolRenderers";
 import {
@@ -63,12 +71,9 @@ import { MessageBubble } from "../../components/chat/MessageBubble";
 import { CitationChip } from "../../components/chat/EvidenceCard";
 import { Skeleton } from "../../components/ui/Skeleton";
 import type {
-  ArtifactPayload,
   ConversationMessage,
   ConversationTurn,
-  ToolPluginInfo,
   ToolRenderKind,
-  ToolRunCapabilities,
 } from "../../types/conversation";
 
 interface ChatMessagesProps {
@@ -238,26 +243,6 @@ function isLowSignalThinkingSection(section: ThinkingSection): boolean {
   return !hasCjk && text.length <= 12 && wordCount <= 2;
 }
 
-interface PersistedTraceToolCall {
-  callId: string;
-  toolName: string;
-  plugin?: ToolPluginInfo;
-  arguments: string;
-  status: "running" | "done" | "error";
-  renderKind?: ToolRenderKind;
-  capabilities?: ToolRunCapabilities;
-  durationMs?: number;
-  content?: string;
-  isError?: boolean;
-  artifacts?: ArtifactPayload;
-}
-
-type PersistedTraceItem =
-  | { kind: "thinking"; text: string }
-  | { kind: "reply"; text: string }
-  | { kind: "tool"; toolCall: PersistedTraceToolCall }
-  | { kind: "status"; text: string; tone?: "muted" | "success" | "error" };
-
 type MessageTraceGroup =
   | {
       type: "anchor";
@@ -314,16 +299,6 @@ function normalizeToolName(toolName: string | null | undefined): string {
   return (toolName ?? "").trim().toLowerCase();
 }
 
-function isUnsuccessfulToolStatus(status?: string | null): boolean {
-  return (
-    status === "error" ||
-    status === "failed" ||
-    status === "declined" ||
-    status === "cancelled" ||
-    status === "timedOut"
-  );
-}
-
 function isBoardOnlyToolCall(
   toolName: string | null | undefined,
   renderKind?: ToolRenderKind,
@@ -338,7 +313,7 @@ function shouldRenderTraceToolCall(
   isError?: boolean,
 ): boolean {
   if (isBoardOnlyToolCall(toolName, renderKind)) return false;
-  if (isError || isUnsuccessfulToolStatus(status)) return true;
+  if (isError || isUnsuccessfulToolCallStatus(status)) return true;
 
   const normalizedToolName = normalizeToolName(toolName);
   if (INTERNAL_TRACE_TOOLS.has(normalizedToolName)) return false;
@@ -378,96 +353,6 @@ function formatTurnDuration(turn: ConversationTurn): string | null {
   return `${seconds}s`;
 }
 
-function extractPersistedTraceItems(
-  artifacts: ConversationMessage["artifacts"],
-): PersistedTraceItem[] | null {
-  if (!artifacts || Array.isArray(artifacts) || typeof artifacts !== "object")
-    return null;
-  const record = artifacts as Record<string, unknown>;
-  if (record.kind !== "traceTimeline" || !Array.isArray(record.items))
-    return null;
-
-  const items: PersistedTraceItem[] = [];
-  for (const rawItem of record.items) {
-    if (!rawItem || typeof rawItem !== "object") continue;
-    const item = rawItem as Record<string, unknown>;
-    if (item.kind === "thinking" && typeof item.text === "string") {
-      items.push({ kind: "thinking", text: item.text });
-      continue;
-    }
-    if (item.kind === "reply" && typeof item.text === "string") {
-      items.push({ kind: "reply", text: item.text });
-      continue;
-    }
-    if (item.kind === "status" && typeof item.text === "string") {
-      items.push({
-        kind: "status",
-        text: item.text,
-        tone:
-          item.tone === "success" || item.tone === "error"
-            ? item.tone
-            : "muted",
-      });
-      continue;
-    }
-    if (
-      item.kind === "tool" &&
-      item.toolCall &&
-      typeof item.toolCall === "object"
-    ) {
-      const toolCall = item.toolCall as Record<string, unknown>;
-      if (
-        typeof toolCall.callId !== "string" ||
-        typeof toolCall.toolName !== "string"
-      )
-        continue;
-      items.push({
-        kind: "tool",
-        toolCall: {
-          callId: toolCall.callId,
-          toolName: toolCall.toolName,
-          arguments:
-            typeof toolCall.arguments === "string" ? toolCall.arguments : "",
-          status:
-            toolCall.status === "error"
-              ? "error"
-              : toolCall.status === "running"
-                ? "running"
-                : "done",
-            renderKind:
-              typeof toolCall.renderKind === "string"
-                ? (toolCall.renderKind as ToolRenderKind)
-                : undefined,
-            plugin:
-              toolCall.plugin && typeof toolCall.plugin === "object"
-                ? (toolCall.plugin as ToolPluginInfo)
-                : undefined,
-            capabilities:
-              toolCall.capabilities && typeof toolCall.capabilities === "object"
-                ? (toolCall.capabilities as ToolRunCapabilities)
-              : undefined,
-          durationMs:
-            typeof toolCall.durationMs === "number"
-              ? toolCall.durationMs
-              : undefined,
-          content:
-            typeof toolCall.content === "string" ? toolCall.content : undefined,
-          isError:
-            typeof toolCall.isError === "boolean"
-              ? toolCall.isError
-              : undefined,
-          artifacts:
-            toolCall.artifacts && typeof toolCall.artifacts === "object"
-              ? (toolCall.artifacts as ArtifactPayload)
-              : undefined,
-        },
-      });
-    }
-  }
-
-  return items.length > 0 ? items : null;
-}
-
 function collectArtifactValues(value: unknown, out: unknown[]) {
   if (!value) return;
   if (Array.isArray(value)) {
@@ -485,24 +370,6 @@ function collectArtifactValues(value: unknown, out: unknown[]) {
       collectArtifactValues(obj[key], out);
     }
   }
-}
-
-function extractTurnTrace(
-  trace: ConversationTurn["trace"],
-): { routeKind?: string; items: PersistedTraceItem[] } | null {
-  if (!trace || Array.isArray(trace) || typeof trace !== "object") return null;
-  const record = trace as Record<string, unknown>;
-  if (record.kind !== "turnTrace" || !Array.isArray(record.items)) return null;
-  const items = extractPersistedTraceItems({
-    kind: "traceTimeline",
-    items: record.items,
-  } as unknown as ConversationMessage["artifacts"]);
-  if (!items || items.length === 0) return null;
-  return {
-    routeKind:
-      typeof record.routeKind === "string" ? record.routeKind : undefined,
-    items,
-  };
 }
 
 function TraceStatusRow({
@@ -1363,11 +1230,7 @@ export function ChatMessages({
       return (
         isThinking ||
         thinkingText.trim().length > 0 ||
-        toolCalls.some((toolCall) =>
-          toolCall.status === "running" ||
-          toolCall.status === "starting" ||
-          toolCall.status === "preparing" ||
-          toolCall.status === "approvalPending")
+        toolCalls.some((toolCall) => isPendingToolCallStatus(toolCall.status))
       );
     }
     return lastVisibleEvent.kind !== "reply";
