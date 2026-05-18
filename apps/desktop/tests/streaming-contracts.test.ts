@@ -8,6 +8,13 @@ import {
   isPendingToolCallStatus,
   normalizePersistedToolCallStatus,
 } from '../src/lib/streaming/toolStatus';
+import {
+  buildCurrentTimelineSections,
+  buildLiveTraceTimeline,
+  shouldHideTraceStatus,
+  shouldRenderTraceToolCall,
+  visibleTraceEventsForTimeline,
+} from '../src/lib/streaming/timelineViewModel';
 import { armStreamWatchdog, clearStreamWatchdog } from '../src/lib/streaming/watchdog';
 import { streamStore } from '../src/lib/streamStore';
 import {
@@ -23,6 +30,11 @@ import type {
   AgentTaskRunEvent,
   ToolRunItem,
 } from '../src/types/conversation';
+import type {
+  StreamRoundEvent,
+  ToolCallEvent,
+  TraceEvent,
+} from '../src/lib/streaming/protocol';
 
 type TestFn = () => void | Promise<void>;
 
@@ -135,6 +147,21 @@ function toolRun(input: {
     isError: input.status === 'failed',
     progressNote: input.progressNote,
     durationMs: input.status === 'completed' ? 42 : undefined,
+  };
+}
+
+function traceToolCall(input: {
+  callId: string;
+  toolName?: string;
+  status?: ToolCallEvent['status'];
+}): ToolCallEvent {
+  return {
+    callId: input.callId,
+    toolName: input.toolName ?? 'run_shell',
+    arguments: '{}',
+    status: input.status ?? 'done',
+    argsStatus: 'done',
+    argsBytes: 2,
   };
 }
 
@@ -578,6 +605,66 @@ test('uses one tool status reducer for run, trace, and card-facing statuses', ()
   assertEqual(normalizePersistedToolCallStatus('timed_out'), 'timedOut', 'timed out status');
   assert(isPendingToolCallStatus('preparing'), 'preparing is pending');
   assert(!isPendingToolCallStatus('done'), 'done is not pending');
+});
+
+test('timeline view model hides low-signal statuses and internal successful tools', () => {
+  assert(shouldHideTraceStatus('Route selected: DirectResponse'), 'direct response route status should hide');
+  assert(shouldHideTraceStatus('Task queued'), 'queued status should hide');
+  assert(!shouldHideTraceStatus('Running shell command'), 'useful status should remain visible');
+  assert(!shouldRenderTraceToolCall('tool_search', undefined, 'done', false), 'successful tool_search should hide');
+  assert(shouldRenderTraceToolCall('tool_search', undefined, 'error', true), 'failed tool_search should remain visible');
+  assert(!shouldRenderTraceToolCall('update_plan', 'plan', 'done', false), 'board-only plan tool should hide from trace');
+});
+
+test('timeline view model interleaves thinking, tools, and streamed replies', () => {
+  const events: TraceEvent[] = [
+    { id: 'thinking-1', kind: 'thinking', text: 'Checking files' },
+    { id: 'tool-1', kind: 'tool', toolCall: traceToolCall({ callId: 'call-1' }) },
+    { id: 'reply-1', kind: 'reply', text: 'Partial' },
+    { id: 'reply-2', kind: 'reply', text: ' answer' },
+  ];
+
+  const timeline = buildLiveTraceTimeline({
+    visibleTraceEvents: visibleTraceEventsForTimeline(events),
+    isStreaming: true,
+    currentTraceActive: false,
+    streamText: 'Fresh streamed answer',
+    displayedText: 'Fresh streamed answer',
+  });
+
+  assertEqual(timeline.length, 2, 'live timeline item count');
+  assertEqual(timeline[0].kind, 'thinking', 'first item kind');
+  assert(timeline[0].kind === 'thinking', 'first item should be thinking');
+  assertEqual(timeline[0].sections.length, 2, 'thinking section count');
+  assertEqual(timeline[0].sections[1].kind, 'tool', 'tool section should be grouped before reply');
+  assertEqual(timeline[1].kind, 'reply', 'second item kind');
+  assert(timeline[1].kind === 'reply', 'second item should be reply');
+  assertEqual(timeline[1].content, 'Fresh streamed answer', 'streaming reply should replace visible content');
+  assertEqual(timeline[1].isStreaming, true, 'reply remains streaming');
+});
+
+test('timeline view model separates completed round trace from current trace', () => {
+  const round: StreamRoundEvent = {
+    id: 'round-1',
+    thinking: 'Earlier thinking',
+    reply: 'Earlier reply',
+    toolCalls: [traceToolCall({ callId: 'round-call' })],
+  };
+  const events: TraceEvent[] = [
+    { id: 'round-thinking', kind: 'thinking', text: 'Earlier thinking' },
+    { id: 'round-tool', kind: 'tool', toolCall: traceToolCall({ callId: 'round-call' }) },
+    { id: 'current-status', kind: 'status', text: 'Running shell command', tone: 'muted' },
+    { id: 'current-thinking', kind: 'thinking', text: 'Reviewing output' },
+  ];
+
+  const sections = buildCurrentTimelineSections({
+    visibleTraceEvents: visibleTraceEventsForTimeline(events),
+    streamRounds: [round],
+  });
+
+  assertEqual(sections.length, 2, 'current section count');
+  assertEqual(sections[0].id, 'current-status', 'current status remains');
+  assertEqual(sections[1].id, 'current-thinking', 'current thinking remains');
 });
 
 test('watchdog arms, fires, and clears timeout handles', async () => {
