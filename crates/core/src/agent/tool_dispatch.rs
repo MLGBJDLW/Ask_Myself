@@ -140,7 +140,7 @@ impl AgentExecutor {
             artifacts: Option<serde_json::Value>,
         }
 
-        let tool_batches = tool_call_execution_batches(&self.tools, &tool_policy, &tool_calls);
+        let tool_batches = tool_call_execution_batches(&self.tools, &tool_policy, tool_calls);
         let mut completed_for_context: Vec<Option<CompletedToolForContext>> =
             vec![None; tool_calls.len()];
         let mut post_tool_loop_guard_prompt: Option<String> = None;
@@ -149,7 +149,6 @@ impl AgentExecutor {
             let mut tool_futures = FuturesUnordered::new();
             for index in tool_batch {
                 let tc = tool_calls[index].clone();
-                let source_scope = source_scope;
                 let tool_span = info_span!("tool_execution", tool = %tc.name);
                 let progress_tx = tx.clone();
                 let approval_tx = tx.clone();
@@ -654,8 +653,8 @@ impl AgentExecutor {
                 }
                 if advance_task_plan_for_tool_result(task_plan, &tc.name, tool_is_error) {
                     emit_task_plan_update(
-                        &tx,
-                        &task_plan,
+                        tx,
+                        task_plan,
                         if tool_is_error {
                             "recovering"
                         } else {

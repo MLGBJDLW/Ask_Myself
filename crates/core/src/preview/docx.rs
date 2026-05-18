@@ -217,12 +217,10 @@ fn parse_xml(xml: &str) -> Result<XmlNode, String> {
                     node.text.push_str(&String::from_utf8_lossy(event.as_ref()));
                 }
             }
-            Ok(Event::End(_)) => {
-                if stack.len() > 1 {
-                    let node = stack.pop().expect("stack has node");
-                    if let Some(parent) = stack.last_mut() {
-                        parent.children.push(node);
-                    }
+            Ok(Event::End(_)) if stack.len() > 1 => {
+                let node = stack.pop().expect("stack has node");
+                if let Some(parent) = stack.last_mut() {
+                    parent.children.push(node);
                 }
             }
             Ok(Event::Eof) => break,

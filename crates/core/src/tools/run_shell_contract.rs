@@ -169,9 +169,7 @@ pub(crate) fn system_prompt_section() -> &'static str {
 
 pub(crate) fn route_guidance() -> &'static str {
     ROUTE_GUIDANCE.get_or_init(|| {
-        format!(
-            "Use `project_tool list` / `project_tool describe` before ad hoc `run_shell` when a repository may define local lint, test, codegen, diagnostics, export, or validation workflows; `project_tool run` must include the current manifestHash. When `run_shell` is needed, prefer `command` for simple one-line commands, `program` plus `args` for exact argv or stdin-driven scripts, and explicit `shell` only for intentional shell syntax."
-        )
+        "Use `project_tool list` / `project_tool describe` before ad hoc `run_shell` when a repository may define local lint, test, codegen, diagnostics, export, or validation workflows; `project_tool run` must include the current manifestHash. When `run_shell` is needed, prefer `command` for simple one-line commands, `program` plus `args` for exact argv or stdin-driven scripts, and explicit `shell` only for intentional shell syntax.".to_string()
     })
 }
 

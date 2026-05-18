@@ -434,7 +434,7 @@ impl AgentExecutor {
                 mut started_call_ids,
                 mut tool_run_started_ids,
             } = match model_step {
-                model_step::ModelStepOutcome::Completed(output) => output,
+                model_step::ModelStepOutcome::Completed(output) => *output,
                 model_step::ModelStepOutcome::Restart => continue 'react_loop,
             };
             last_finish_reason = step_finish_reason;

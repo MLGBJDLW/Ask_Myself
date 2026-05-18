@@ -353,6 +353,7 @@ pub(super) fn bytes_to_clamped_string(bytes: &[u8], max: usize) -> (String, bool
 // Execution
 // ---------------------------------------------------------------------------
 
+#[cfg(windows)]
 fn apply_os_options(cmd: &mut tokio::process::Command) {
     // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     // `tokio::process::Command` re-exposes `creation_flags` directly on

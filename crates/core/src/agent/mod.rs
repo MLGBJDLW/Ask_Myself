@@ -99,6 +99,11 @@ fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
     tool_scheduler::compact_tool_result_for_context(tool_name, content)
 }
 
+struct TurnErrorMessages {
+    frontend_message: String,
+    trace_message: String,
+}
+
 async fn emit_error_and_finalize_turn(
     tx: &mpsc::Sender<AgentEvent>,
     db: &Database,
@@ -106,9 +111,13 @@ async fn emit_error_and_finalize_turn(
     turn_id: Option<&str>,
     route_kind: AgentRouteKind,
     persisted_trace_items: &[PersistedTraceItem],
-    frontend_message: String,
-    trace_message: String,
+    messages: TurnErrorMessages,
 ) {
+    let TurnErrorMessages {
+        frontend_message,
+        trace_message,
+    } = messages;
+
     let _ = tx
         .send(AgentEvent::Error {
             message: frontend_message,
