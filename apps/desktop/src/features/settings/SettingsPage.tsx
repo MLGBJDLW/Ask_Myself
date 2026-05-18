@@ -86,6 +86,7 @@ export function SettingsPage() {
   const [skillEditorDirty, setSkillEditorDirty] = useState(false);
   const [mcpFormDirty, setMcpFormDirty] = useState(false);
   const [personaEditorDirty, setPersonaEditorDirty] = useState(false);
+  const exclusiveActionsRef = useRef<Set<string>>(new Set());
   const hasDirtyTabs = dirtyTabs.size > 0;
 
   const setDeveloperMode = useCallback((enabled: boolean) => {
@@ -138,6 +139,16 @@ export function SettingsPage() {
       next.delete(tab);
       return next;
     });
+  }, []);
+
+  const runExclusiveAction = useCallback(async (key: string, action: () => Promise<void>) => {
+    if (exclusiveActionsRef.current.has(key)) return;
+    exclusiveActionsRef.current.add(key);
+    try {
+      await action();
+    } finally {
+      exclusiveActionsRef.current.delete(key);
+    }
   }, []);
 
   const settingsNavigationBlocker = useBlocker(
@@ -328,19 +339,21 @@ export function SettingsPage() {
   }, [activeTab, embedConfig?.provider, embedConfig?.localModel]);
 
   const handleDownloadModel = async () => {
-    if (!embedConfig) return;
-    if (downloadLoading) return;
-    setDownloadLoading(true);
-    try {
-      await api.downloadLocalModel(embedConfig.localModel);
-      setLocalModelReady(true);
-      invalidateModelStatus('embed');
-      toast.success(t('settings.embeddingDownloaded'));
-    } catch (e) {
-      toast.error(t('settings.embeddingDownloadFail') + ': ' + String(e));
-    } finally {
-      setDownloadLoading(false);
-    }
+    await runExclusiveAction('download:embedding-model', async () => {
+      if (!embedConfig) return;
+      if (downloadLoading) return;
+      setDownloadLoading(true);
+      try {
+        await api.downloadLocalModel(embedConfig.localModel);
+        setLocalModelReady(true);
+        invalidateModelStatus('embed');
+        toast.success(t('settings.embeddingDownloaded'));
+      } catch (e) {
+        toast.error(t('settings.embeddingDownloadFail') + ': ' + String(e));
+      } finally {
+        setDownloadLoading(false);
+      }
+    });
   };
 
   const handleCancelDownload = async () => {
@@ -488,22 +501,24 @@ export function SettingsPage() {
   }, [activeTab, loadOfficeRuntime]);
 
   const handlePrepareOfficeRuntime = async () => {
-    if (officePreparing) return;
-    setOfficePreparing(true);
-    try {
-      const result = await api.prepareOfficeRuntime();
-      setOfficeRuntime(result.readiness);
-      invalidateModelStatus('office');
-      if (result.success) {
-        toast.success(t('settings.documentToolsInstallSuccess'));
-      } else {
-        toast.error(result.readiness.summary || t('settings.documentToolsInstallFail'));
+    await runExclusiveAction('download:office-runtime', async () => {
+      if (officePreparing) return;
+      setOfficePreparing(true);
+      try {
+        const result = await api.prepareOfficeRuntime();
+        setOfficeRuntime(result.readiness);
+        invalidateModelStatus('office');
+        if (result.success) {
+          toast.success(t('settings.documentToolsInstallSuccess'));
+        } else {
+          toast.error(result.readiness.summary || t('settings.documentToolsInstallFail'));
+        }
+      } catch (e) {
+        toast.error(t('settings.documentToolsInstallFail') + ': ' + String(e));
+      } finally {
+        setOfficePreparing(false);
       }
-    } catch (e) {
-      toast.error(t('settings.documentToolsInstallFail') + ': ' + String(e));
-    } finally {
-      setOfficePreparing(false);
-    }
+    });
   };
 
   const handleAskAiPrepareOfficeRuntime = useCallback(() => {
@@ -564,19 +579,21 @@ export function SettingsPage() {
   }, [ocrDownloading]);
 
   const handleDownloadOcrModels = async () => {
-    if (!ocrConfig) return;
-    if (ocrDownloading) return;
-    setOcrDownloading(true);
-    try {
-      await api.downloadOcrModels(ocrConfig);
-      setOcrModelsExist(true);
-      invalidateModelStatus('ocr');
-      toast.success(t('settings.ocrModelsDownloaded'));
-    } catch (e) {
-      toast.error(t('settings.ocrDownloadFail') + ': ' + String(e));
-    } finally {
-      setOcrDownloading(false);
-    }
+    await runExclusiveAction('download:ocr-models', async () => {
+      if (!ocrConfig) return;
+      if (ocrDownloading) return;
+      setOcrDownloading(true);
+      try {
+        await api.downloadOcrModels(ocrConfig);
+        setOcrModelsExist(true);
+        invalidateModelStatus('ocr');
+        toast.success(t('settings.ocrModelsDownloaded'));
+      } catch (e) {
+        toast.error(t('settings.ocrDownloadFail') + ': ' + String(e));
+      } finally {
+        setOcrDownloading(false);
+      }
+    });
   };
 
   const handleSaveOcrConfig = async () => {
@@ -620,16 +637,18 @@ export function SettingsPage() {
   }, [videoDownloading]);
 
   const handleWhisperDownload = async () => {
-    if (!videoConfig) return;
-    if (videoDownloading) return;
-    setVideoDownloading(true);
-    try {
-      await downloadWhisperModel(videoConfig);
-    } catch (e) {
-      toast.error(t('settings.videoDownloadFail') + ': ' + String(e));
-    } finally {
-      setVideoDownloading(false);
-    }
+    await runExclusiveAction('download:whisper-model', async () => {
+      if (!videoConfig) return;
+      if (videoDownloading) return;
+      setVideoDownloading(true);
+      try {
+        await downloadWhisperModel(videoConfig);
+      } catch (e) {
+        toast.error(t('settings.videoDownloadFail') + ': ' + String(e));
+      } finally {
+        setVideoDownloading(false);
+      }
+    });
   };
 
   const handleWhisperDelete = async () => {
@@ -649,21 +668,23 @@ export function SettingsPage() {
   }, [ffmpegDownloading]);
 
   const handleFfmpegDownload = async () => {
-    if (ffmpegDownloading) return;
-    setFfmpegDownloading(true);
-    try {
-      const path = await api.downloadFfmpeg();
-      setFfmpegAvailable(true);
-      invalidateModelStatus('ffmpeg');
-      toast.success(t('settings.videoFfmpegDownloadComplete'));
-      // Refresh config to pick up the saved ffmpeg path
-      await loadVideoConfig();
-      void path; // path is auto-saved by backend
-    } catch (e) {
-      toast.error(t('settings.videoFfmpegDownloadFailed') + ': ' + String(e));
-    } finally {
-      setFfmpegDownloading(false);
-    }
+    await runExclusiveAction('download:ffmpeg', async () => {
+      if (ffmpegDownloading) return;
+      setFfmpegDownloading(true);
+      try {
+        const path = await api.downloadFfmpeg();
+        setFfmpegAvailable(true);
+        invalidateModelStatus('ffmpeg');
+        toast.success(t('settings.videoFfmpegDownloadComplete'));
+        // Refresh config to pick up the saved ffmpeg path
+        await loadVideoConfig();
+        void path; // path is auto-saved by backend
+      } catch (e) {
+        toast.error(t('settings.videoFfmpegDownloadFailed') + ': ' + String(e));
+      } finally {
+        setFfmpegDownloading(false);
+      }
+    });
   };
 
   const handleVideoSave = async () => {

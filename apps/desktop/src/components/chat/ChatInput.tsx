@@ -193,6 +193,10 @@ export function ChatInput({
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed && attachments.length === 0) return;
+    if (isStreaming && (!trimmed || attachments.length > 0)) {
+      toast.error("Attachments cannot be added while the agent is already running.");
+      return;
+    }
     if (trimmed === "/compact" && attachments.length === 0 && onCompact) {
       onCompact();
       draftsRef.current[draftKey] = { value: "", attachments: [] };
@@ -212,7 +216,7 @@ export function ChatInput({
         textareaRef.current.style.height = "auto";
       }
     }, 0);
-  }, [attachments, draftKey, onCompact, onSend, t, value]);
+  }, [attachments, draftKey, isStreaming, onCompact, onSend, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -602,25 +606,30 @@ export function ChatInput({
               disabled={disabled || isStreaming}
             />
 
-            {isStreaming ? (
+            {isStreaming && (
               <button
                 onClick={onStop}
+                data-testid="chat-stop"
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-danger/10 text-danger transition-colors duration-fast ease-out cursor-pointer hover:bg-danger/20"
                 aria-label={t("chat.stop")}
               >
                 <Square className="h-3.5 w-3.5" />
               </button>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={disabled || (!value.trim() && attachments.length === 0)}
-                data-testid="chat-send"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-text-primary/10 bg-text-primary text-surface-0 shadow-[0_8px_20px_rgba(0,0,0,0.22)] transition-[background-color,border-color,color,box-shadow,transform] duration-fast ease-out cursor-pointer hover:-translate-y-0.5 hover:bg-text-secondary hover:shadow-[0_10px_24px_rgba(0,0,0,0.28)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:pointer-events-none disabled:translate-y-0 disabled:border-border disabled:bg-surface-2 disabled:text-text-tertiary disabled:shadow-none"
-                aria-label={t("chat.send")}
-              >
-                <ArrowUp className="h-4 w-4" strokeWidth={2.4} />
-              </button>
             )}
+            <button
+              onClick={handleSend}
+              disabled={
+                disabled ||
+                (isStreaming
+                  ? !value.trim() || attachments.length > 0
+                  : !value.trim() && attachments.length === 0)
+              }
+              data-testid="chat-send"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-text-primary/10 bg-text-primary text-surface-0 shadow-[0_8px_20px_rgba(0,0,0,0.22)] transition-[background-color,border-color,color,box-shadow,transform] duration-fast ease-out cursor-pointer hover:-translate-y-0.5 hover:bg-text-secondary hover:shadow-[0_10px_24px_rgba(0,0,0,0.28)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:pointer-events-none disabled:translate-y-0 disabled:border-border disabled:bg-surface-2 disabled:text-text-tertiary disabled:shadow-none"
+              aria-label={isStreaming ? t("chat.steeringMessage") : t("chat.send")}
+            >
+              <ArrowUp className="h-4 w-4" strokeWidth={2.4} />
+            </button>
           </div>
         </div>
       </div>
