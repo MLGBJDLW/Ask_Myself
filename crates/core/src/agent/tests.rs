@@ -236,7 +236,10 @@ fn test_route_user_turn_prefers_collection_context() {
         );
 
     assert_eq!(route.kind, AgentRouteKind::CollectionFocused);
-    assert!(route.extra_categories.contains(&ToolCategory::Knowledge));
+    assert!(route
+        .visibility_decision
+        .route_categories
+        .contains(&ToolCategory::Knowledge));
 }
 
 #[test]
@@ -256,7 +259,8 @@ fn test_route_user_turn_prefers_knowledge_retrieval_for_question_with_sources() 
 
     assert_eq!(route.kind, AgentRouteKind::KnowledgeRetrieval);
     assert!(route
-        .extra_categories
+        .visibility_decision
+        .route_categories
         .contains(&ToolCategory::DocumentAnalysis));
 }
 
@@ -265,7 +269,10 @@ fn test_route_user_turn_treats_office_generation_as_file_operation() {
     let route = route_user_turn("请创建一份 Word 商业计划书", "", false);
 
     assert_eq!(route.kind, AgentRouteKind::FileOperation);
-    assert!(route.extra_categories.contains(&ToolCategory::FileSystem));
+    assert!(route
+        .visibility_decision
+        .route_categories
+        .contains(&ToolCategory::FileSystem));
 }
 
 #[test]
@@ -277,7 +284,10 @@ fn test_route_user_turn_treats_tool_repair_as_file_operation() {
     );
 
     assert_eq!(route.kind, AgentRouteKind::CodebaseOperation);
-    assert!(route.extra_categories.contains(&ToolCategory::FileSystem));
+    assert!(route
+        .visibility_decision
+        .route_categories
+        .contains(&ToolCategory::FileSystem));
     assert!(route.prompt_section.contains("code_intelligence"));
     assert!(route.prompt_section.contains("project_tool"));
 }
@@ -1649,21 +1659,32 @@ async fn test_persists_only_final_iteration_thinking_on_final_assistant() {
         .iter()
         .filter(|item| item.get("kind").and_then(|v| v.as_str()) != Some("loop"))
         .collect::<Vec<_>>();
-    assert_eq!(non_loop_items.len(), 4);
+    assert_eq!(non_loop_items.len(), 5);
     assert_eq!(
         non_loop_items[0].get("kind").and_then(|v| v.as_str()),
-        Some("thinking")
+        Some("toolVisibility")
     );
     assert_eq!(
+        non_loop_items[0]["decision"]["route"].as_str(),
+        Some("DirectResponse")
+    );
+    assert!(non_loop_items[0]["decision"]["log"]
+        .as_array()
+        .is_some_and(|log| !log.is_empty()));
+    assert_eq!(
         non_loop_items[1].get("kind").and_then(|v| v.as_str()),
-        Some("tool")
+        Some("thinking")
     );
     assert_eq!(
         non_loop_items[2].get("kind").and_then(|v| v.as_str()),
-        Some("thinking")
+        Some("tool")
     );
     assert_eq!(
         non_loop_items[3].get("kind").and_then(|v| v.as_str()),
+        Some("thinking")
+    );
+    assert_eq!(
+        non_loop_items[4].get("kind").and_then(|v| v.as_str()),
         Some("status")
     );
 }

@@ -173,17 +173,8 @@ impl AgentExecutor {
         debug!("Agent route selected: {:?}", route_plan.kind);
 
         let mut tool_defs = if self.config.dynamic_tool_visibility {
-            let selected = self
-                .tools
-                .select_tools(&user_query_text_for_tools, has_sources);
-            if route_plan.extra_categories.is_empty() {
-                selected
-            } else {
-                let extra_categories: std::collections::HashSet<ToolCategory> =
-                    route_plan.extra_categories.iter().copied().collect();
-                let extra = self.tools.definitions_for_categories(&extra_categories);
-                merge_tool_definitions(selected, extra)
-            }
+            self.tools
+                .select_tools_for_decision(&route_plan.visibility_decision)
         } else {
             self.tools.definitions()
         };
@@ -191,6 +182,7 @@ impl AgentExecutor {
             t.tools_offered = tool_defs.len() as u32;
             t.route_kind = Some(route_plan.kind.as_str().to_string());
             t.task_plan = Some(task_plan_value.clone());
+            t.tool_visibility_decision = Some(route_plan.visibility_decision.clone());
         }
         let mut messages = context::prepare_messages(
             &self.config.system_prompt,
@@ -239,6 +231,10 @@ impl AgentExecutor {
         for event in loop_recorder.events().iter().cloned() {
             append_persisted_trace_loop_event(&mut persisted_trace_items, event);
         }
+        append_persisted_trace_visibility(
+            &mut persisted_trace_items,
+            &route_plan.visibility_decision,
+        );
 
         // --- 3c. Extract user query text and build cache key -----------------
         let user_query_text = &user_query_text_for_tools;

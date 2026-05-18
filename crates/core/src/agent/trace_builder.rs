@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::evidence_verifier::EvidenceSignals;
+use crate::tool_visibility_policy::ToolVisibilityDecision;
 use crate::tools::{ToolRegistry, ToolRenderKind, ToolRunCapabilities};
 
 use super::route::AgentRouteKind;
@@ -31,6 +32,7 @@ pub(super) enum PersistedTraceItem {
     Tool { tool_call: PersistedTraceToolCall },
     Status { text: String, tone: String },
     Loop { event: TurnLoopEvent },
+    ToolVisibility { decision: ToolVisibilityDecision },
 }
 
 pub(super) fn append_persisted_trace_thinking(items: &mut Vec<PersistedTraceItem>, text: &str) {
@@ -97,6 +99,15 @@ pub(super) fn append_persisted_trace_loop_event(
     event: TurnLoopEvent,
 ) {
     items.push(PersistedTraceItem::Loop { event });
+}
+
+pub(super) fn append_persisted_trace_visibility(
+    items: &mut Vec<PersistedTraceItem>,
+    decision: &ToolVisibilityDecision,
+) {
+    items.push(PersistedTraceItem::ToolVisibility {
+        decision: decision.clone(),
+    });
 }
 
 pub(super) fn build_trace_artifacts(items: &[PersistedTraceItem]) -> Option<serde_json::Value> {

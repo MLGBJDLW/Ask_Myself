@@ -37,7 +37,9 @@ use crate::privacy;
 use crate::skills::Skill;
 use crate::task_run::AgentTaskRuntime;
 use crate::task_timeline::TaskTimelineEvent;
-use crate::tools::{ToolCategory, ToolInputStreamingMode, ToolInterruptBehavior, ToolRegistry};
+#[cfg(test)]
+use crate::tools::ToolCategory;
+use crate::tools::{ToolInputStreamingMode, ToolInterruptBehavior, ToolRegistry};
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
 mod answer_cache;
@@ -78,9 +80,10 @@ use self::tool_runtime::{build_tool_run_item, tool_call_execution_batches};
 use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
 use self::trace_builder::{
     append_persisted_trace_loop_event, append_persisted_trace_status,
-    append_persisted_trace_thinking, append_persisted_trace_tool, build_task_run_artifacts,
-    build_trace_artifacts, build_turn_trace, build_turn_trace_with_verification,
-    evidence_signals_from_trace, PersistedTraceItem,
+    append_persisted_trace_thinking, append_persisted_trace_tool,
+    append_persisted_trace_visibility, build_task_run_artifacts, build_trace_artifacts,
+    build_turn_trace, build_turn_trace_with_verification, evidence_signals_from_trace,
+    PersistedTraceItem,
 };
 use self::turn_events::{TurnLoopEvent, TurnLoopRecorder};
 

@@ -13,6 +13,9 @@ use crate::error::CoreError;
 use crate::llm::ToolDefinition;
 use crate::models::Source;
 use crate::plugins::ToolPluginInfo;
+use crate::tool_visibility_policy::{
+    decide_tool_visibility, ToolVisibilityDecision, ToolVisibilityInput,
+};
 
 pub mod capability;
 pub use capability::{
@@ -775,256 +778,29 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Select tool definitions relevant to the current user message.
+    /// Select tool definitions using the shared typed visibility policy.
     ///
-    /// Core and MCP tools are always included. Other categories are activated
-    /// when keywords in the user message suggest they may be needed.
+    /// Core and MCP tools are always included. Other categories come from
+    /// [`ToolVisibilityDecision`], the same decision object used by routing.
     ///
     /// Dynamic visibility is an opt-in prompt compaction mode. The main agent
     /// should normally receive the full registry; this selector exists for
     /// constrained runs and behavioral evaluation.
     pub fn select_tools(&self, user_message: &str, has_sources: bool) -> Vec<ToolDefinition> {
-        let mut categories: HashSet<ToolCategory> = HashSet::new();
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: user_message,
+            system_prompt: "",
+            has_sources,
+        });
+        self.select_tools_for_decision(&decision)
+    }
 
-        // Always-on categories
-        categories.insert(ToolCategory::Core);
-        categories.insert(ToolCategory::Mcp);
-
-        let msg = user_message.to_lowercase();
-        let looks_like_question = msg.contains('?')
-            || msg.contains("what")
-            || msg.contains("why")
-            || msg.contains("how")
-            || msg.contains("which")
-            || msg.contains("where")
-            || msg.contains("when")
-            || msg.contains("who")
-            || msg.contains("tell me")
-            || msg.contains("explain")
-            || msg.contains("analyze")
-            || msg.contains("analysis")
-            || msg.contains("总结")
-            || msg.contains("分析")
-            || msg.contains("为什么")
-            || msg.contains("如何")
-            || msg.contains("怎么")
-            || msg.contains("哪些")
-            || msg.contains("什么")
-            || msg.contains("解释");
-
-        let looks_like_code_or_tool_work = msg.contains("run_shell")
-            || msg.contains("run shell")
-            || msg.contains("shell")
-            || msg.contains("terminal")
-            || msg.contains("command")
-            || msg.contains("powershell")
-            || msg.contains("cmd")
-            || msg.contains("cargo")
-            || msg.contains("npm")
-            || msg.contains("pnpm")
-            || msg.contains("node")
-            || msg.contains("python")
-            || msg.contains("git")
-            || msg.contains("tool")
-            || msg.contains("tools")
-            || msg.contains("agent")
-            || msg.contains("subagent")
-            || msg.contains("unavailable")
-            || msg.contains("available")
-            || msg.contains("fix")
-            || msg.contains("debug")
-            || msg.contains("bug")
-            || msg.contains("test")
-            || msg.contains("build")
-            || msg.contains("compile")
-            || msg.contains("运行")
-            || msg.contains("命令")
-            || msg.contains("终端")
-            || msg.contains("调用")
-            || msg.contains("工具")
-            || msg.contains("不可用")
-            || msg.contains("修复")
-            || msg.contains("排查")
-            || msg.contains("测试")
-            || msg.contains("构建")
-            || msg.contains("编译")
-            || msg.contains("代码")
-            || msg.contains("项目")
-            || msg.contains("仓库")
-            || msg.contains("主agent")
-            || msg.contains("子agent");
-
-        // File operations
-        if msg.contains("file")
-            || msg.contains("read")
-            || msg.contains("edit")
-            || msg.contains("replace")
-            || msg.contains("write")
-            || msg.contains("create")
-            || msg.contains("find")
-            || msg.contains("grep")
-            || msg.contains("rg")
-            || msg.contains("move")
-            || msg.contains("rename")
-            || msg.contains("copy")
-            || msg.contains("delete")
-            || msg.contains("directory")
-            || msg.contains("folder")
-            || msg.contains("note")
-            || msg.contains("文件")
-            || msg.contains("读取")
-            || msg.contains("编辑")
-            || msg.contains("替换")
-            || msg.contains("查找")
-            || msg.contains("搜索文件")
-            || msg.contains("移动")
-            || msg.contains("重命名")
-            || msg.contains("复制")
-            || msg.contains("删除")
-            || msg.contains("目录")
-            || msg.contains("笔记")
-            || msg.contains("document")
-            || msg.contains("文档")
-            || msg.contains("word")
-            || msg.contains("docx")
-            || msg.contains("excel")
-            || msg.contains("xlsx")
-            || msg.contains("ppt")
-            || msg.contains("pptx")
-            || msg.contains("office")
-            || msg.contains("幻灯片")
-            || msg.contains("表格")
-            || looks_like_code_or_tool_work
-        {
-            categories.insert(ToolCategory::FileSystem);
-        }
-
-        // Source management
-        if msg.contains("source")
-            || msg.contains("index")
-            || msg.contains("reindex")
-            || msg.contains("数据源")
-            || msg.contains("索引")
-        {
-            categories.insert(ToolCategory::SourceManagement);
-        }
-
-        // Knowledge / playbook
-        if msg.contains("remember")
-            || msg.contains("memory")
-            || msg.contains("session")
-            || msg.contains("history")
-            || msg.contains("harness")
-            || msg.contains("evolution")
-            || msg.contains("evolve")
-            || msg.contains("playbook")
-            || msg.contains("collection")
-            || msg.contains("collections")
-            || msg.contains("citation")
-            || msg.contains("citations")
-            || msg.contains("evidence")
-            || msg.contains("saved")
-            || msg.contains("bookmark")
-            || msg.contains("skill")
-            || msg.contains("workflow")
-            || msg.contains("compile")
-            || msg.contains("compilation")
-            || msg.contains("entity")
-            || msg.contains("entities")
-            || msg.contains("graph")
-            || msg.contains("knowledge")
-            || msg.contains("health")
-            || msg.contains("archive")
-            || msg.contains("wiki")
-            || msg.contains("concept")
-            || msg.contains("concepts")
-            || msg.contains("收藏")
-            || msg.contains("引用")
-            || msg.contains("证据")
-            || msg.contains("记住")
-            || msg.contains("记忆")
-            || msg.contains("会话")
-            || msg.contains("历史")
-            || msg.contains("进化")
-            || msg.contains("自我")
-            || msg.contains("编译")
-            || msg.contains("实体")
-            || msg.contains("图谱")
-            || msg.contains("知识")
-            || msg.contains("健康")
-            || msg.contains("归档")
-            || msg.contains("概念")
-        {
-            categories.insert(ToolCategory::Knowledge);
-        }
-
-        // Web / URL fetching
-        if msg.contains("url")
-            || msg.contains("http")
-            || msg.contains("website")
-            || msg.contains("web")
-            || msg.contains("fetch")
-            || msg.contains("link")
-            || msg.contains("网页")
-            || msg.contains("链接")
-        {
-            categories.insert(ToolCategory::Web);
-        }
-
-        // Controlled browser / desktop automation
-        if msg.contains("browser")
-            || msg.contains("desktop")
-            || msg.contains("automate")
-            || msg.contains("automation")
-            || msg.contains("open url")
-            || msg.contains("open website")
-            || msg.contains("open file")
-            || msg.contains("reveal file")
-            || msg.contains("launch")
-            || msg.contains("http://")
-            || msg.contains("https://")
-            || msg.contains("浏览器")
-            || msg.contains("桌面")
-            || msg.contains("自动化")
-            || msg.contains("打开网页")
-            || msg.contains("打开网站")
-            || msg.contains("打开文件")
-            || msg.contains("定位文件")
-        {
-            categories.insert(ToolCategory::Automation);
-        }
-
-        // Document analysis / comparison
-        if msg.contains("compare")
-            || msg.contains("document")
-            || msg.contains("summarize")
-            || msg.contains("summary")
-            || msg.contains("analyze")
-            || msg.contains("analysis")
-            || msg.contains("evidence")
-            || msg.contains("citation")
-            || msg.contains("statistics")
-            || msg.contains("stats")
-            || msg.contains("info")
-            || msg.contains("分析")
-            || msg.contains("总结")
-            || msg.contains("引用")
-            || msg.contains("文档")
-            || msg.contains("比较")
-            || msg.contains("统计")
-        {
-            categories.insert(ToolCategory::DocumentAnalysis);
-        }
-
-        // If the conversation has linked sources, source management is likely useful
-        if has_sources {
-            categories.insert(ToolCategory::SourceManagement);
-            if looks_like_question {
-                categories.insert(ToolCategory::Knowledge);
-                categories.insert(ToolCategory::DocumentAnalysis);
-            }
-        }
-
+    pub fn select_tools_for_decision(
+        &self,
+        decision: &ToolVisibilityDecision,
+    ) -> Vec<ToolDefinition> {
+        let categories: HashSet<ToolCategory> =
+            decision.active_categories.iter().copied().collect();
         self.definitions_for_categories(&categories)
     }
 
@@ -1250,6 +1026,38 @@ mod tests {
         assert!(names.iter().any(|name| name == "project_tool"));
         assert!(names.iter().any(|name| name == "search_files"));
         assert!(names.iter().any(|name| name == "run_shell"));
+    }
+
+    #[test]
+    fn select_tools_consumes_typed_visibility_decision() {
+        let registry = default_tool_registry();
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "debug the agent routing bug and run the repository diagnostics",
+            system_prompt: "",
+            has_sources: false,
+        });
+        let via_decision: Vec<String> = registry
+            .select_tools_for_decision(&decision)
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+        let via_selector: Vec<String> = registry
+            .select_tools(
+                "debug the agent routing bug and run the repository diagnostics",
+                false,
+            )
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+
+        assert_eq!(via_decision, via_selector);
+        assert!(decision.log.iter().any(|entry| matches!(
+            entry.effect,
+            crate::tool_visibility_policy::ToolVisibilityEffect::SelectedRoute { .. }
+        )));
+        assert!(decision
+            .active_categories
+            .contains(&ToolCategory::FileSystem));
     }
 
     #[test]
