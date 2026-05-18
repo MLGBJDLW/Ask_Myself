@@ -197,7 +197,10 @@ pub struct RunShellTool;
 
 #[derive(Deserialize)]
 struct RunShellArgs {
-    program: String,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    program: Option<String>,
     #[serde(default)]
     args: Vec<String>,
     cwd: String,
@@ -268,27 +271,38 @@ fn parse_run_shell_args(arguments: &str) -> Result<RunShellArgs, serde_json::Err
 
 fn run_shell_expected_format() -> Value {
     json!({
-        "program": "python",
-        "args": [
-            "crates/core/assets/skills/doc-script-editor/scripts/edit_doc.py",
-            "--path",
-            "D:/workspace/deck.pptx",
-            "create_html_pptx",
-            "--spec",
-            "-",
-            "--outdir",
-            "D:/workspace/html_deck_project",
-            "--mode",
-            "hybrid",
-            "--screenshot",
-            "auto"
-        ],
-        "cwd": "D:/workspace",
-        "timeout_secs": 30,
-        "stdin": "{ \"slides\": [/* HTML-first PPTX JSON spec */] }",
+        "examples": {
+            "simpleCommand": {
+                "command": "git status --short",
+                "cwd": "D:/workspace",
+                "timeout_secs": 30
+            },
+            "exactArgv": {
+                "program": "python",
+                "args": [
+                    "crates/core/assets/skills/doc-script-editor/scripts/edit_doc.py",
+                    "--path",
+                    "D:/workspace/deck.pptx",
+                    "create_html_pptx",
+                    "--spec",
+                    "-",
+                    "--outdir",
+                    "D:/workspace/html_deck_project",
+                    "--mode",
+                    "hybrid",
+                    "--screenshot",
+                    "auto"
+                ],
+                "cwd": "D:/workspace",
+                "timeout_secs": 30,
+                "stdin": "{ \"slides\": [/* HTML-first PPTX JSON spec */] }"
+            }
+        },
         "rules": [
-            "Use a JSON object with program, args, cwd, optional timeout_secs, and optional stdin.",
-            "args must be an array of argv strings; do not send a single shell command string.",
+            "Use command for simple one-line commands, or program plus args for exact argv control.",
+            "command is parsed into argv and still does not invoke a shell; pipes, chains, redirection, command substitution, and background operators are rejected.",
+            "Do not send command together with program or args.",
+            "args must be an array of argv strings.",
             "For generated HTML/PPTX specs or large scripts, pass the payload in stdin and use --spec - or a stdin-reading program.",
             "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c."
         ]
@@ -402,6 +416,121 @@ fn normalize_invocation(
         return Ok(("python3".to_string(), normalized_args));
     }
     Ok((canonical, args.to_vec()))
+}
+
+fn split_simple_command_string(command: &str) -> Result<Vec<String>, String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut token_started = false;
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                } else {
+                    current.push(ch);
+                }
+            }
+            Some('"') => {
+                if ch == '"' {
+                    quote = None;
+                } else if ch == '\\' {
+                    let next = chars.next().ok_or_else(|| {
+                        "command string ends with an unfinished escape".to_string()
+                    })?;
+                    current.push(next);
+                } else {
+                    current.push(ch);
+                }
+            }
+            Some(_) => unreachable!(),
+            None => match ch {
+                '\'' | '"' => {
+                    token_started = true;
+                    quote = Some(ch);
+                }
+                '\n' | '\r' => {
+                    return Err("run_shell.command must be a single-line command".to_string());
+                }
+                c if c.is_whitespace() => {
+                    if token_started {
+                        parts.push(std::mem::take(&mut current));
+                        token_started = false;
+                    }
+                }
+                '\\' => {
+                    token_started = true;
+                    let next = chars.next().ok_or_else(|| {
+                        "command string ends with an unfinished escape".to_string()
+                    })?;
+                    current.push(next);
+                }
+                '|' | ';' | '<' | '>' | '`' | '&' => {
+                    return Err(
+                        "run_shell.command only accepts a simple command string; shell operators like pipes, chains, redirection, backticks, and backgrounding are not supported. Use program/args for exact argv, or enable an explicit shell path only when shell interpretation is intentional."
+                            .to_string(),
+                    );
+                }
+                '$' if matches!(chars.peek(), Some('(')) => {
+                    return Err(
+                        "run_shell.command does not support shell command substitution. Use program/args or stdin instead."
+                            .to_string(),
+                    );
+                }
+                _ => {
+                    token_started = true;
+                    current.push(ch);
+                }
+            },
+        }
+    }
+
+    if let Some(ch) = quote {
+        return Err(format!("command string has an unclosed {ch} quote"));
+    }
+    if token_started {
+        parts.push(current);
+    }
+    if parts.is_empty() {
+        return Err("run_shell requires either command or program".to_string());
+    }
+
+    Ok(parts)
+}
+
+fn normalize_run_shell_invocation(
+    parsed: &RunShellArgs,
+    mode: ShellAccessMode,
+) -> Result<(String, Vec<String>), String> {
+    let command = parsed
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let program = parsed.program.as_deref().filter(|s| !s.is_empty());
+
+    match (command, program) {
+        (Some(_), Some(_)) => {
+            Err("Use either run_shell.command or run_shell program/args, not both.".to_string())
+        }
+        (Some(command), None) => {
+            if !parsed.args.is_empty() {
+                return Err(
+                    "Do not pass args together with run_shell.command; include arguments in command or use program/args."
+                        .to_string(),
+                );
+            }
+            let parts = split_simple_command_string(command)?;
+            let program = &parts[0];
+            let args = parts[1..].to_vec();
+            normalize_invocation(program, &args, mode)
+        }
+        (None, Some(program)) => normalize_invocation(program, &parsed.args, mode),
+        (None, None) => Err("run_shell requires either command or program".to_string()),
+    }
 }
 
 /// Reject unsafe argv patterns.
@@ -1539,10 +1668,11 @@ impl Tool for RunShellTool {
     }
 
     fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
-        let program = args
-            .get("program")
+        let command = args
+            .get("command")
             .and_then(|v| v.as_str())
-            .unwrap_or("<unknown>");
+            .map(str::trim)
+            .filter(|command| !command.is_empty());
         let args_vec: Vec<String> = args
             .get("args")
             .and_then(|v| v.as_array())
@@ -1562,13 +1692,21 @@ impl Tool for RunShellTool {
             .map(|t| clamp_timeout(Some(t)))
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
         let stdin_bytes = args.get("stdin").and_then(|v| v.as_str()).map(str::len);
-        Some(format_confirmation(
-            program,
-            &args_vec,
-            cwd,
-            timeout,
-            stdin_bytes,
-        ))
+        if let Some(command) = command {
+            Some(format_confirmation(command, &[], cwd, timeout, stdin_bytes))
+        } else {
+            let program = args
+                .get("program")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
+            Some(format_confirmation(
+                program,
+                &args_vec,
+                cwd,
+                timeout,
+                stdin_bytes,
+            ))
+        }
     }
 
     async fn execute(
@@ -1597,7 +1735,7 @@ impl Tool for RunShellTool {
             .unwrap_or_default();
 
         let (canonical_program, normalized_args) =
-            match normalize_invocation(&parsed.program, &parsed.args, shell_access_mode) {
+            match normalize_run_shell_invocation(&parsed, shell_access_mode) {
                 Ok(invocation) => invocation,
                 Err(msg) => return Ok(error_result(call_id, msg)),
             };
@@ -1785,12 +1923,74 @@ mod tests {
         )
         .expect("pip args should parse");
 
-        let (program, args) =
-            normalize_invocation(&parsed.program, &parsed.args, ShellAccessMode::Restricted)
-                .expect("pip should normalize");
+        let (program, args) = normalize_run_shell_invocation(&parsed, ShellAccessMode::Restricted)
+            .expect("pip should normalize");
 
         assert_eq!(program, "python");
         assert_eq!(args, vec!["-m", "pip", "install", "python-docx"]);
+    }
+
+    #[test]
+    fn test_command_string_normalizes_to_argv() {
+        let parsed = parse_run_shell_args(r#"{"command":"git status --short","cwd":"C:\\work"}"#)
+            .expect("command args should parse");
+
+        let (program, args) = normalize_run_shell_invocation(&parsed, ShellAccessMode::Restricted)
+            .expect("simple command should normalize");
+
+        assert_eq!(program, "git");
+        assert_eq!(args, vec!["status", "--short"]);
+    }
+
+    #[test]
+    fn test_command_string_preserves_quoted_args() {
+        let parsed = parse_run_shell_args(
+            r#"{"command":"python -c \"print('hello world')\"","cwd":"C:\\work"}"#,
+        )
+        .expect("quoted command args should parse");
+
+        let (program, args) = normalize_run_shell_invocation(&parsed, ShellAccessMode::Restricted)
+            .expect("quoted command should normalize");
+
+        assert_eq!(program, "python");
+        assert_eq!(args, vec!["-c", "print('hello world')"]);
+    }
+
+    #[test]
+    fn test_command_string_rejects_shell_operators() {
+        let parsed = parse_run_shell_args(
+            r#"{"command":"git status --short && git diff","cwd":"C:\\work"}"#,
+        )
+        .expect("operator command args should parse");
+
+        let err = normalize_run_shell_invocation(&parsed, ShellAccessMode::Restricted)
+            .expect_err("shell operator should be rejected");
+
+        assert!(err.contains("shell operators"));
+    }
+
+    #[test]
+    fn test_command_string_rejects_ambiguous_args() {
+        let parsed = parse_run_shell_args(
+            r#"{"command":"git status","program":"git","args":["status"],"cwd":"C:\\work"}"#,
+        )
+        .expect("ambiguous args should parse");
+
+        let err = normalize_run_shell_invocation(&parsed, ShellAccessMode::Restricted)
+            .expect_err("ambiguous invocation should be rejected");
+
+        assert!(err.contains("either"));
+    }
+
+    #[test]
+    fn test_command_string_enforces_restricted_whitelist() {
+        let parsed = parse_run_shell_args(r#"{"command":"rm -rf .","cwd":"C:\\work"}"#)
+            .expect("non-whitelisted command should parse");
+
+        let err = normalize_run_shell_invocation(&parsed, ShellAccessMode::Restricted)
+            .expect_err("restricted whitelist should still apply");
+
+        assert!(err.contains("whitelist"));
     }
 
     #[test]
@@ -1800,7 +2000,7 @@ mod tests {
         )
         .expect("unescaped Windows paths should be repaired");
 
-        assert_eq!(parsed.program, "python");
+        assert_eq!(parsed.program.as_deref(), Some("python"));
         assert_eq!(parsed.args, vec![r#"E:\Starting\convert_to_docx.py"#]);
         assert_eq!(parsed.cwd, r#"E:\Starting"#);
     }
@@ -1827,11 +2027,14 @@ mod tests {
         let artifacts = result.artifacts.expect("contract error artifact");
         assert_eq!(artifacts["kind"], "toolContractError");
         assert_eq!(artifacts["code"], "invalid_run_shell_arguments");
-        assert!(artifacts["expectedFormat"]["args"].is_array());
-        assert!(artifacts["expectedFormat"]["stdin"]
-            .as_str()
-            .unwrap()
-            .contains("HTML-first PPTX"));
+        assert!(artifacts["expectedFormat"]["examples"]["simpleCommand"]["command"].is_string());
+        assert!(artifacts["expectedFormat"]["examples"]["exactArgv"]["args"].is_array());
+        assert!(
+            artifacts["expectedFormat"]["examples"]["exactArgv"]["stdin"]
+                .as_str()
+                .unwrap()
+                .contains("HTML-first PPTX")
+        );
     }
 
     #[test]

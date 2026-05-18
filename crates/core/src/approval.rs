@@ -150,6 +150,20 @@ impl ToolPermissionKey {
     pub fn from_invocation(invocation: &crate::tools::ToolInvocation) -> Self {
         let args = &invocation.arguments;
         if invocation.tool_name == "run_shell" {
+            if let Some(command) = args
+                .get("command")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|command| !command.is_empty())
+            {
+                let mut parts = command.split_whitespace();
+                let target = match (parts.next(), parts.next()) {
+                    (Some(program), Some(first_arg)) => format!("{program} {first_arg}"),
+                    (Some(program), None) => program.to_string(),
+                    _ => "<unknown>".to_string(),
+                };
+                return Self::new(&invocation.tool_name, "command", target);
+            }
             let program = args
                 .get("program")
                 .and_then(|value| value.as_str())
@@ -807,10 +821,36 @@ mod tests {
     }
 
     #[test]
+    fn approval_request_uses_command_string_permission_key() {
+        let args = serde_json::json!({
+            "command": "git status --short",
+            "cwd": "."
+        });
+
+        let req = ApprovalRequest::new("req-1", "run_shell", &args, ApprovalRisk::High, "test");
+
+        assert_eq!(req.permission_key, "run_shell|command|git%20status");
+        assert_eq!(req.target_kind, "command");
+        assert_eq!(req.target_value, "git status");
+    }
+
+    #[test]
     fn describe_run_shell_uses_argv_shape() {
         let args = serde_json::json!({
             "program": "git",
             "args": ["status", "--short"],
+            "cwd": "."
+        });
+
+        let description = describe_request("run_shell", &args);
+
+        assert!(description.contains("git status --short"));
+    }
+
+    #[test]
+    fn describe_run_shell_uses_command_string() {
+        let args = serde_json::json!({
+            "command": "git status --short",
             "cwd": "."
         });
 
