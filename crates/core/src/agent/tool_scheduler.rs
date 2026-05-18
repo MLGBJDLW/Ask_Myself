@@ -244,14 +244,12 @@ fn compress_json_value(value: &serde_json::Value, max_chars: usize) -> Option<St
 
 fn truncate_json_strings(value: &mut serde_json::Value, max_string_len: usize) {
     match value {
-        serde_json::Value::String(s) => {
-            if s.len() > max_string_len {
-                let mut cut = max_string_len;
-                while cut > 0 && !s.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                *s = format!("{}... [truncated]", &s[..cut]);
+        serde_json::Value::String(s) if s.len() > max_string_len => {
+            let mut cut = max_string_len;
+            while cut > 0 && !s.is_char_boundary(cut) {
+                cut -= 1;
             }
+            *s = format!("{}... [truncated]", &s[..cut]);
         }
         serde_json::Value::Array(arr) => {
             for item in arr {
