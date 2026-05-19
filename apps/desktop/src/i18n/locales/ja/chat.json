@@ -292,6 +292,8 @@
   "trustCanInstructYes": "はい",
   "trustCanInstructNo": "いいえ",
   "generatedImageAlt": "生成画像",
+  "generatedImageLoading": "画像を生成中",
+  "generatedImageSaved": "画像を保存しました",
   "diffFiles": "ファイル",
   "diffReplacements": "置換",
   "diffPending": "差分",

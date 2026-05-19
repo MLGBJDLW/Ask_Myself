@@ -670,6 +670,16 @@ export function ExtensionsSettingsTab({
                                   ? t('settings.skillProposalPatch')
                                   : t('settings.skillProposalCreate')}
                               </Badge>
+                              {proposal.source === 'auto_trace_review' && (
+                                <Badge variant="default" className="text-[10px] border-accent/40 text-accent">
+                                  {t('settings.skillProposalAuto')}
+                                </Badge>
+                              )}
+                              <Badge variant="default" className="text-[10px]">
+                                {t('settings.skillProposalConfidence', {
+                                  value: `${Math.round((proposal.confidence ?? 0) * 100)}%`,
+                                })}
+                              </Badge>
                               {proposal.warnings.length > 0 && (
                                 <Badge
                                   variant="default"
@@ -689,6 +699,11 @@ export function ExtensionsSettingsTab({
                             {proposal.rationale && (
                               <p className="mt-1 text-xs text-text-tertiary">
                                 {t('settings.skillProposalRationale')}: {compact(proposal.rationale, 220)}
+                              </p>
+                            )}
+                            {proposal.source === 'auto_trace_review' && (
+                              <p className="mt-1 text-xs text-accent">
+                                {t('settings.skillProposalEvidence')}: {proposal.source}
                               </p>
                             )}
                             <p className="mt-1 font-mono text-[11px] text-text-tertiary">
@@ -1067,6 +1082,16 @@ export function ExtensionsSettingsTab({
                     {previewProposal.action === 'patch'
                       ? t('settings.skillProposalPatch')
                       : t('settings.skillProposalCreate')}
+                  </Badge>
+                  {previewProposal.source === 'auto_trace_review' && (
+                    <Badge variant="default" className="text-[10px] border-accent/40 text-accent">
+                      {t('settings.skillProposalAuto')}
+                    </Badge>
+                  )}
+                  <Badge variant="default" className="text-[10px]">
+                    {t('settings.skillProposalConfidence', {
+                      value: `${Math.round((previewProposal.confidence ?? 0) * 100)}%`,
+                    })}
                   </Badge>
                 </div>
                 {previewProposal.rationale && (

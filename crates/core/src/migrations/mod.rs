@@ -886,6 +886,14 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_tool_permission_policies_tool
             ON tool_permission_policies(tool_name, target_kind, target_value);",
     ),
+    (
+        "v061_skill_proposal_evidence",
+        "ALTER TABLE skill_change_proposals ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+        ALTER TABLE skill_change_proposals ADD COLUMN confidence REAL NOT NULL DEFAULT 0.7;
+        ALTER TABLE skill_change_proposals ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '[]';
+        CREATE INDEX IF NOT EXISTS idx_skill_change_proposals_source
+            ON skill_change_proposals(source, created_at);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

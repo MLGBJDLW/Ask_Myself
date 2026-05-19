@@ -144,6 +144,11 @@ pub struct AppConfig {
     #[serde(default = "default_auto_memory_extraction")]
     pub auto_memory_extraction: bool,
 
+    /// Whether successful complex turns should create pending skill proposals.
+    /// Default: true. Proposals remain reviewed drafts until applied.
+    #[serde(default = "default_auto_skill_learning")]
+    pub auto_skill_learning: bool,
+
     /// HuggingFace mirror base URL used as fallback when `huggingface.co` is blocked.
     /// Empty string disables the fallback. Default: `https://hf-mirror.com`.
     #[serde(default = "default_hf_mirror_base_url")]
@@ -198,6 +203,9 @@ fn default_trace_enabled() -> bool {
 fn default_auto_memory_extraction() -> bool {
     true
 }
+fn default_auto_skill_learning() -> bool {
+    true
+}
 fn default_hf_mirror_base_url() -> String {
     "https://hf-mirror.com".to_string()
 }
@@ -242,6 +250,7 @@ impl Default for AppConfig {
             shell_access_mode: ShellAccessMode::Restricted,
             tool_approval_mode: crate::approval::ToolApprovalMode::default(),
             auto_memory_extraction: true,
+            auto_skill_learning: true,
             hf_mirror_base_url: default_hf_mirror_base_url(),
             ghproxy_base_url: default_ghproxy_base_url(),
             image_generation: ImageGenerationConfig::default(),

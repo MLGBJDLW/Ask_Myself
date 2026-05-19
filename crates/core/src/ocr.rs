@@ -908,7 +908,7 @@ pub fn ocr_pdf(
 /// Scanned PDFs typically store each page as a large embedded image
 /// (JPEG, JPEG2000, or raw pixel data).  This function finds image
 /// XObjects on the given page and returns them as decoded `DynamicImage`s.
-fn extract_images_from_pdf_page(
+pub(crate) fn extract_images_from_pdf_page(
     doc: &lopdf::Document,
     page_id: lopdf::ObjectId,
 ) -> Vec<image::DynamicImage> {

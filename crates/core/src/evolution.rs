@@ -18,7 +18,7 @@ use crate::skills::{
     scan_skill_content, SaveSkillInput, Skill, SkillResourceFile, SkillWarning,
     SkillWarningSeverity,
 };
-use crate::trace::TraceOutcome;
+use crate::trace::{AgentTrace, TraceOutcome};
 
 const MEMORY_TITLE_MAX_CHARS: usize = 120;
 const MEMORY_CONTENT_MAX_CHARS: usize = 1_200;
@@ -26,6 +26,8 @@ const MEMORY_TAG_MAX_CHARS: usize = 40;
 const MEMORY_MAX_TAGS: usize = 8;
 const PROPOSAL_TEXT_MAX_CHARS: usize = 24_000;
 const SUMMARY_MEMORY_MAX_ITEMS: usize = 5;
+const AUTO_SKILL_MIN_TOOL_CALLS: u32 = 8;
+const AUTO_SKILL_MIN_ITERATIONS: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -110,6 +112,12 @@ pub struct CreateSkillChangeProposalInput {
     #[serde(default)]
     pub rationale: String,
     pub conversation_id: Option<String>,
+    #[serde(default = "default_skill_proposal_source")]
+    pub source: String,
+    #[serde(default = "default_skill_proposal_confidence")]
+    pub confidence: f32,
+    #[serde(default)]
+    pub evidence: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +134,9 @@ pub struct SkillChangeProposal {
     pub warnings: Vec<SkillWarning>,
     pub status: SkillProposalStatus,
     pub conversation_id: Option<String>,
+    pub source: String,
+    pub confidence: f32,
+    pub evidence: serde_json::Value,
     pub created_at: String,
     pub updated_at: String,
     pub applied_at: Option<String>,
@@ -198,8 +209,24 @@ pub struct EvolutionReview {
     pub recommendations: Vec<String>,
 }
 
+struct AutoSkillPattern {
+    name: String,
+    description: String,
+    content: String,
+    confidence: f32,
+    evidence: serde_json::Value,
+}
+
 fn new_id() -> String {
     Uuid::new_v4().to_string()
+}
+
+fn default_skill_proposal_source() -> String {
+    "manual".to_string()
+}
+
+fn default_skill_proposal_confidence() -> f32 {
+    0.7
 }
 
 fn compact_chars(value: &str, max_chars: usize) -> String {
@@ -278,10 +305,13 @@ fn skill_proposal_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillCha
     let status_raw: String = row.get(9)?;
     let resource_bundle_json: Option<String> = row.get(6)?;
     let warnings_json: String = row.get(8)?;
+    let evidence_json: String = row.get(17)?;
     let resource_bundle = resource_bundle_json
         .and_then(|json| serde_json::from_str::<Vec<SkillResourceFile>>(&json).ok())
         .unwrap_or_default();
     let warnings = serde_json::from_str::<Vec<SkillWarning>>(&warnings_json).unwrap_or_default();
+    let evidence = serde_json::from_str::<serde_json::Value>(&evidence_json)
+        .unwrap_or_else(|_| serde_json::json!([]));
 
     Ok(SkillChangeProposal {
         id: row.get(0)?,
@@ -297,6 +327,9 @@ fn skill_proposal_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillCha
         status: SkillProposalStatus::try_from(status_raw.as_str())
             .unwrap_or(SkillProposalStatus::Pending),
         conversation_id: row.get(10)?,
+        source: row.get(15)?,
+        confidence: row.get(16)?,
+        evidence,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
         applied_at: row.get(13)?,
@@ -391,6 +424,19 @@ impl Database {
 
         name = normalize_required(&name, "Skill proposal name", 160)?;
         description = normalize_optional_text(&description, 2_000)?;
+        let source = normalize_optional_text(&input.source, 80)
+            .map(|value| {
+                if value.is_empty() {
+                    default_skill_proposal_source()
+                } else {
+                    value
+                }
+            })?
+            .chars()
+            .map(|ch| if ch.is_ascii_whitespace() { '_' } else { ch })
+            .collect::<String>();
+        let confidence = input.confidence.clamp(0.0, 1.0);
+        let evidence_json = serde_json::to_string(&input.evidence)?;
 
         let scan_body = skill_md_for_scan(&name, &description, &content);
         let warnings = scan_skill_content(&scan_body);
@@ -411,8 +457,8 @@ impl Database {
         conn.execute(
             "INSERT INTO skill_change_proposals
              (id, action, skill_id, name, description, content, resource_bundle_json,
-              rationale, warnings_json, status, conversation_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10)",
+              rationale, warnings_json, status, conversation_id, source, confidence, evidence_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?11, ?12, ?13)",
             rusqlite::params![
                 &id,
                 input.action.as_str(),
@@ -424,6 +470,9 @@ impl Database {
                 &rationale,
                 &warnings_json,
                 &input.conversation_id,
+                &source,
+                confidence,
+                &evidence_json,
             ],
         )?;
         drop(conn);
@@ -435,7 +484,8 @@ impl Database {
         conn.query_row(
             "SELECT id, action, skill_id, name, description, content, resource_bundle_json,
                     rationale, warnings_json, status, conversation_id,
-                    created_at, updated_at, applied_at, rejected_at
+                    created_at, updated_at, applied_at, rejected_at,
+                    source, confidence, evidence_json
              FROM skill_change_proposals WHERE id = ?1",
             rusqlite::params![id],
             skill_proposal_from_row,
@@ -461,7 +511,8 @@ impl Database {
                 let mut stmt = conn.prepare(
                     "SELECT id, action, skill_id, name, description, content, resource_bundle_json,
                             rationale, warnings_json, status, conversation_id,
-                            created_at, updated_at, applied_at, rejected_at
+                            created_at, updated_at, applied_at, rejected_at,
+                            source, confidence, evidence_json
                      FROM skill_change_proposals
                      WHERE status = ?1
                      ORDER BY created_at DESC LIMIT ?2",
@@ -478,7 +529,8 @@ impl Database {
                 let mut stmt = conn.prepare(
                     "SELECT id, action, skill_id, name, description, content, resource_bundle_json,
                             rationale, warnings_json, status, conversation_id,
-                            created_at, updated_at, applied_at, rejected_at
+                            created_at, updated_at, applied_at, rejected_at,
+                            source, confidence, evidence_json
                      FROM skill_change_proposals
                      ORDER BY created_at DESC LIMIT ?1",
                 )?;
@@ -839,6 +891,267 @@ pub fn build_agent_procedural_memory_summary_for_query(
     ))
 }
 
+fn has_evolution_event_for_trace(
+    db: &Database,
+    kind: &str,
+    trace_id: &str,
+) -> Result<bool, CoreError> {
+    let conn = db.conn();
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM agent_evolution_events
+            WHERE kind = ?1 AND trace_id = ?2
+        )",
+        rusqlite::params![kind, trace_id],
+        |row| row.get::<_, bool>(0),
+    )?)
+}
+
+fn skill_learning_name_exists(db: &Database, name: &str) -> Result<bool, CoreError> {
+    let conn = db.conn();
+    let skill_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM skills WHERE lower(name) = lower(?1))",
+        rusqlite::params![name],
+        |row| row.get(0),
+    )?;
+    if skill_exists {
+        return Ok(true);
+    }
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM skill_change_proposals
+            WHERE lower(name) = lower(?1)
+              AND status IN ('pending', 'applied')
+        )",
+        rusqlite::params![name],
+        |row| row.get(0),
+    )?)
+}
+
+fn existing_conversation_id(
+    db: &Database,
+    conversation_id: &str,
+) -> Result<Option<String>, CoreError> {
+    let conn = db.conn();
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1)",
+        rusqlite::params![conversation_id],
+        |row| row.get(0),
+    )?;
+    Ok(exists.then(|| conversation_id.to_string()))
+}
+
+fn derive_auto_skill_pattern(trace: &AgentTrace) -> Option<AutoSkillPattern> {
+    if trace.cache_hit || !matches!(trace.outcome, TraceOutcome::Success) {
+        return None;
+    }
+    let complex_enough = trace.total_tool_calls >= AUTO_SKILL_MIN_TOOL_CALLS
+        || trace.total_iterations >= AUTO_SKILL_MIN_ITERATIONS
+        || trace.compaction_count > 0;
+    if !complex_enough {
+        return None;
+    }
+
+    let tools = trace
+        .steps
+        .iter()
+        .filter_map(|step| step.tool_name.as_deref())
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let tool_set = tools.iter().map(String::as_str).collect::<HashSet<&str>>();
+
+    let has_code_change = tool_set.contains("edit_file")
+        || tool_set.contains("multi_edit")
+        || tool_set.contains("create_file")
+        || tool_set.contains("run_shell");
+    let has_document_work = tools.iter().any(|tool| {
+        matches!(
+            tool.as_str(),
+            "summarize_document"
+                | "compare_documents"
+                | "get_document_info"
+                | "get_chunk_context"
+                | "search_knowledge_base"
+                | "retrieve_evidence"
+        )
+    });
+    let has_research_work = tools.iter().any(|tool| {
+        matches!(
+            tool.as_str(),
+            "search_files"
+                | "read_file"
+                | "read_files"
+                | "grep_files"
+                | "fetch_url"
+                | "search_sessions"
+                | "code_intelligence"
+        )
+    });
+    let has_image_generation = tool_set.contains("generate_image");
+
+    let (name, description, trigger, workflow, failures, checks, confidence) =
+        if has_image_generation {
+            (
+                "Image Generation Provider Workflow",
+                "Convert user image intent into provider-ready prompts, handle provider response variants, and verify saved outputs.",
+                "When a task generates images through configured providers or debugs image generation failures.",
+                vec![
+                    "Restate the user's visual intent as concrete subject, composition, style, constraints, and output format.",
+                    "Use the configured image provider/model first; only override provider details when the user asks or settings are incomplete.",
+                    "After generation, verify that an artifact path, media type, byte size, and provider response shape are present.",
+                    "When parsing fails, inspect the raw response shape and add a narrow parser case instead of assuming one provider schema.",
+                ],
+                vec![
+                    "If a provider returns a URL, download and validate image bytes before reporting success.",
+                    "If a provider returns base64 or a data URL, decode with media-type detection and surface a precise provider error on failure.",
+                ],
+                vec![
+                    "Generated image is saved locally.",
+                    "Tool result includes provider, model, path, size, and render artifact metadata.",
+                ],
+                0.78,
+            )
+        } else if has_code_change {
+            (
+                "Verified Codebase Change Workflow",
+                "Make scoped code changes, preserve unrelated worktree edits, and verify with the repository's own checks.",
+                "When implementing or fixing code in an existing repository.",
+                vec![
+                    "Inspect the existing code path and local conventions before editing.",
+                    "Keep changes scoped to the requested behavior and avoid rewriting unrelated files.",
+                    "Preserve user or pre-existing worktree changes; work with them instead of reverting.",
+                    "Run focused tests or builds that cover the changed path, then run formatting checks when the language toolchain supports them.",
+                ],
+                vec![
+                    "If tests fail, separate failures caused by the change from unrelated existing failures before editing again.",
+                    "If a tool or API contract is unclear, inspect the local implementation and add the smallest compatible case.",
+                ],
+                vec![
+                    "Changed files are listed.",
+                    "Verification commands and any remaining failures are reported.",
+                    "No unrelated worktree changes are reverted.",
+                ],
+                0.76,
+            )
+        } else if has_document_work {
+            (
+                "Evidence-Grounded Document Analysis Workflow",
+                "Use indexed document chunks, visual artifacts, and source-scoped retrieval before answering document questions.",
+                "When answering questions about PDFs, Office files, charts, diagrams, or knowledge-base documents.",
+                vec![
+                    "Start with search or document metadata to identify the relevant document and source scope.",
+                    "Retrieve direct chunks and nearby context before summarizing or making claims.",
+                    "Treat chunks with kind visual_artifact as chart, figure, image, or diagram evidence and cite their page/location metadata when available.",
+                    "Call out missing visual coverage when the document only exposes text/OCR and no chart semantics.",
+                ],
+                vec![
+                    "If retrieval is low-confidence, broaden query variants and inspect adjacent chunks.",
+                    "If visual artifacts are absent for a chart-heavy file, say the current index may need visual re-ingestion or page rendering.",
+                ],
+                vec![
+                    "Answer cites document title/path and relevant chunk or visual artifact context.",
+                    "Uncertainty is explicit when evidence is OCR-only or visual semantics are unavailable.",
+                ],
+                0.8,
+            )
+        } else if has_research_work {
+            (
+                "Evidence-Grounded Repository Research Workflow",
+                "Answer repository questions by searching, reading exact code, and tying conclusions to file references.",
+                "When investigating code behavior, architecture, or regressions without necessarily editing files.",
+                vec![
+                    "Search for exact symbols, routes, commands, and schema names before forming conclusions.",
+                    "Read the smallest file sections that answer the question.",
+                    "Cross-check behavior through callers, tests, or persisted schema when the answer affects user-facing behavior.",
+                    "Report conclusions with concrete file references and note any unverified assumptions.",
+                ],
+                vec![
+                    "If names are ambiguous, search for call sites and persisted command registrations.",
+                    "If generated or compiled artifacts appear in search results, prefer source files.",
+                ],
+                vec![
+                    "Findings include file paths or commands that support them.",
+                    "Unrelated refactors are not proposed as part of the answer.",
+                ],
+                0.74,
+            )
+        } else {
+            (
+                "Complex Agent Task Operating Loop",
+                "Handle multi-step agent tasks with explicit state, verification, and durable lessons.",
+                "When a task needs many iterations, tool calls, or context compaction.",
+                vec![
+                    "State the immediate objective and keep a short checklist when the task has multiple phases.",
+                    "After each major phase, preserve the next action and any constraints in the working state.",
+                    "Prefer concrete verification over narrative confidence before closing the task.",
+                    "Capture reusable lessons as procedural memory or a skill proposal only when they apply to a class of future tasks.",
+                ],
+                vec![
+                    "If context pressure rises, summarize decisions and remaining work before continuing.",
+                    "If the task hits repeated errors, reduce scope to a reproducible failing step.",
+                ],
+                vec![
+                    "Final answer reports implemented work, verification, and any residual risk.",
+                    "Reusable learning is proposed as a pending skill rather than silently mutating active behavior.",
+                ],
+                0.68,
+            )
+        };
+
+    let tool_chain = compact_tool_chain(&tools, 18);
+    let content = format!(
+        "## Trigger\n{trigger}\n\n## Workflow\n{}\n\n## Failure Handling\n{}\n\n## Acceptance Checks\n{}\n\n## Auto-Review Evidence\n- Trace ID: {}\n- Tool calls: {}\n- Iterations: {}\n- Peak context usage: {:.1}%\n- Tool chain: {}\n\nUse this as a reusable class-level workflow. Do not preserve session-specific paths, secrets, or one-off environment failures.",
+        numbered_lines(&workflow),
+        numbered_lines(&failures),
+        numbered_lines(&checks),
+        trace.id,
+        trace.total_tool_calls,
+        trace.total_iterations,
+        trace.peak_context_usage_pct,
+        tool_chain,
+    );
+
+    Some(AutoSkillPattern {
+        name: name.to_string(),
+        description: description.to_string(),
+        content,
+        confidence,
+        evidence: serde_json::json!({
+            "kind": "auto_skill_review",
+            "traceId": trace.id,
+            "conversationId": trace.conversation_id,
+            "modelId": trace.model_id,
+            "toolCalls": trace.total_tool_calls,
+            "iterations": trace.total_iterations,
+            "peakContextUsagePct": trace.peak_context_usage_pct,
+            "compactionCount": trace.compaction_count,
+            "tools": tools,
+            "userMessagePreview": compact_chars(&trace.user_message_preview, 200),
+        }),
+    })
+}
+
+fn numbered_lines(lines: &[&str]) -> String {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(idx, line)| format!("{}. {line}", idx + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn compact_tool_chain(tools: &[String], max_items: usize) -> String {
+    if tools.is_empty() {
+        return "(no tools recorded)".to_string();
+    }
+    let mut shown = tools.iter().take(max_items).cloned().collect::<Vec<_>>();
+    if tools.len() > max_items {
+        shown.push(format!("... +{} more", tools.len() - max_items));
+    }
+    shown.join(" -> ")
+}
+
 /// Deterministically review recent traces and create audit events for obvious
 /// harness problems. This is intentionally conservative; skill edits remain
 /// proposal-driven and reviewed.
@@ -851,6 +1164,7 @@ pub fn review_recent_traces_for_evolution(
     let mut recommendations = Vec::new();
 
     for trace in traces {
+        let conversation_id = existing_conversation_id(db, &trace.conversation_id)?;
         let mut findings: Vec<(&str, &str, String, serde_json::Value)> = Vec::new();
 
         match trace.outcome {
@@ -896,31 +1210,89 @@ pub fn review_recent_traces_for_evolution(
         }
 
         for (kind, severity, summary, metadata) in findings {
-            let exists = {
-                let conn = db.conn();
-                conn.query_row(
-                    "SELECT EXISTS(
-                        SELECT 1 FROM agent_evolution_events
-                        WHERE kind = ?1 AND trace_id = ?2
-                    )",
-                    rusqlite::params![kind, &trace.id],
-                    |row| row.get::<_, bool>(0),
-                )?
-            };
-            if exists {
+            if has_evolution_event_for_trace(db, kind, &trace.id)? {
                 continue;
             }
             db.record_agent_evolution_event(&CreateAgentEvolutionEventInput {
                 kind: kind.to_string(),
                 severity: severity.to_string(),
                 summary: summary.clone(),
-                conversation_id: Some(trace.conversation_id.clone()),
+                conversation_id: conversation_id.clone(),
                 trace_id: Some(trace.id.clone()),
                 metadata,
             })?;
             events_created += 1;
             recommendations.push(summary);
         }
+
+        if has_evolution_event_for_trace(db, "auto_skill_proposal", &trace.id)? {
+            continue;
+        }
+
+        let Some(pattern) = derive_auto_skill_pattern(&trace) else {
+            continue;
+        };
+
+        if skill_learning_name_exists(db, &pattern.name)? {
+            db.record_agent_evolution_event(&CreateAgentEvolutionEventInput {
+                kind: "auto_skill_proposal".to_string(),
+                severity: "info".to_string(),
+                summary: format!(
+                    "Skipped automatic skill proposal because '{}' already exists.",
+                    pattern.name
+                ),
+                conversation_id: conversation_id.clone(),
+                trace_id: Some(trace.id.clone()),
+                metadata: serde_json::json!({
+                    "status": "skipped_duplicate",
+                    "name": pattern.name,
+                }),
+            })?;
+            events_created += 1;
+            continue;
+        }
+
+        let proposal = db.create_skill_change_proposal(&CreateSkillChangeProposalInput {
+            action: SkillChangeAction::Create,
+            skill_id: None,
+            name: Some(pattern.name.clone()),
+            description: pattern.description.clone(),
+            content: pattern.content.clone(),
+            resource_bundle: Vec::new(),
+            rationale: format!(
+                "Auto-created as a draft after a successful complex turn. Trace {} used {} tool call(s), {} iteration(s), peak context {:.1}%. Review before applying.",
+                trace.id,
+                trace.total_tool_calls,
+                trace.total_iterations,
+                trace.peak_context_usage_pct
+            ),
+            conversation_id: conversation_id.clone(),
+            source: "auto_trace_review".to_string(),
+            confidence: pattern.confidence,
+            evidence: pattern.evidence.clone(),
+        })?;
+        db.record_agent_evolution_event(&CreateAgentEvolutionEventInput {
+            kind: "auto_skill_proposal".to_string(),
+            severity: "info".to_string(),
+            summary: format!(
+                "Created automatic skill proposal '{}' from a successful complex turn.",
+                proposal.name
+            ),
+            conversation_id,
+            trace_id: Some(trace.id.clone()),
+            metadata: serde_json::json!({
+                "status": "proposal_created",
+                "proposalId": proposal.id,
+                "name": proposal.name,
+                "source": proposal.source,
+                "confidence": proposal.confidence,
+            }),
+        })?;
+        events_created += 1;
+        recommendations.push(format!(
+            "Review pending skill proposal '{}' before applying it.",
+            proposal.name
+        ));
     }
 
     Ok(EvolutionReview {
@@ -948,6 +1320,9 @@ mod tests {
                 resource_bundle: Vec::new(),
                 rationale: "Observed repeated malformed tool calls.".to_string(),
                 conversation_id: None,
+                source: "manual".to_string(),
+                confidence: 0.7,
+                evidence: serde_json::json!([]),
             })
             .unwrap();
 
@@ -976,6 +1351,9 @@ mod tests {
                 resource_bundle: Vec::new(),
                 rationale: String::new(),
                 conversation_id: None,
+                source: "manual".to_string(),
+                confidence: 0.7,
+                evidence: serde_json::json!([]),
             })
             .unwrap_err();
         assert!(matches!(err, CoreError::InvalidInput(_)));
@@ -1083,6 +1461,56 @@ mod tests {
 
         let review = review_recent_traces_for_evolution(&db, 5).unwrap();
         assert_eq!(review.events_created, 3);
+        let second = review_recent_traces_for_evolution(&db, 5).unwrap();
+        assert_eq!(second.events_created, 0);
+    }
+
+    #[test]
+    fn trace_review_creates_pending_skill_proposal_for_complex_success() {
+        let db = Database::open_memory().unwrap();
+        let mut trace = AgentTrace::begin(
+            "conv-2",
+            "fix the code and verify it",
+            "test-model",
+            128_000,
+        );
+        for (iteration, tool_name) in [
+            "search_files",
+            "read_file",
+            "edit_file",
+            "run_shell",
+            "read_file",
+            "edit_file",
+            "run_shell",
+            "run_shell",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            trace.add_step(TraceStep {
+                iteration: iteration as u32,
+                tool_name: Some(tool_name.to_string()),
+                tool_duration_ms: Some(10),
+                input_tokens: 100,
+                output_tokens: 50,
+                context_usage_pct: 25.0,
+                was_compacted: false,
+            });
+        }
+        trace.finish(TraceOutcome::Success, None);
+        db.save_agent_trace(&trace).unwrap();
+
+        let review = review_recent_traces_for_evolution(&db, 5).unwrap();
+        assert_eq!(review.events_created, 1);
+
+        let proposals = db
+            .list_skill_change_proposals(Some(SkillProposalStatus::Pending), 10)
+            .unwrap();
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0].source, "auto_trace_review");
+        assert_eq!(proposals[0].name, "Verified Codebase Change Workflow");
+        assert!(proposals[0].evidence["traceId"].as_str().is_some());
+
         let second = review_recent_traces_for_evolution(&db, 5).unwrap();
         assert_eq!(second.events_created, 0);
     }

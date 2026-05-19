@@ -292,6 +292,8 @@
   "trustCanInstructYes": "예",
   "trustCanInstructNo": "아니요",
   "generatedImageAlt": "생성된 이미지",
+  "generatedImageLoading": "이미지 생성 중",
+  "generatedImageSaved": "이미지 저장됨",
   "diffFiles": "파일",
   "diffReplacements": "교체",
   "diffPending": "차이",

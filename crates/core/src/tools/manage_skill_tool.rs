@@ -114,6 +114,9 @@ impl Tool for ManageSkillTool {
                         resource_bundle: Vec::new(),
                         rationale: args.rationale.unwrap_or_default(),
                         conversation_id: None,
+                        source: "manual".to_string(),
+                        confidence: 0.7,
+                        evidence: serde_json::json!([]),
                     })?;
                 Ok(ToolResult {
                     call_id: call_id.to_string(),

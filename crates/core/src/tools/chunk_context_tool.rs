@@ -64,7 +64,7 @@ impl Tool for ChunkContextTool {
 
             // 1. Look up the target chunk to get its document_id and chunk_index.
             let target = conn.query_row(
-                "SELECT c.id, c.document_id, c.chunk_index, c.content, d.path, d.title, d.source_id
+                "SELECT c.id, c.document_id, c.chunk_index, c.kind, c.content, d.path, d.title, d.source_id
                  FROM chunks c
                  JOIN documents d ON d.id = c.document_id
                  WHERE c.id = ?1",
@@ -78,6 +78,7 @@ impl Tool for ChunkContextTool {
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 },
             );
@@ -86,6 +87,7 @@ impl Tool for ChunkContextTool {
                 chunk_id,
                 document_id,
                 target_index,
+                _target_kind,
                 _target_content,
                 doc_path,
                 doc_title,
@@ -114,18 +116,19 @@ impl Tool for ChunkContextTool {
 
             // 2. Get all chunks for the same document, ordered by chunk_index.
             let mut stmt = conn.prepare(
-                "SELECT c.id, c.chunk_index, c.content
+                "SELECT c.id, c.chunk_index, c.kind, c.content
                  FROM chunks c
                  WHERE c.document_id = ?1
                  ORDER BY c.chunk_index",
             )?;
 
-            let all_chunks: Vec<(String, i64, String)> = stmt
+            let all_chunks: Vec<(String, i64, String, String)> = stmt
                 .query_map(params![&document_id], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, i64>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -133,7 +136,7 @@ impl Tool for ChunkContextTool {
             // 3. Find the target chunk's position in the ordered list.
             let target_pos = all_chunks
                 .iter()
-                .position(|(id, _, _)| id == &chunk_id)
+                .position(|(id, _, _, _)| id == &chunk_id)
                 .unwrap_or(0);
 
             let start = target_pos.saturating_sub(context_count);
@@ -150,11 +153,11 @@ impl Tool for ChunkContextTool {
 
             let mut artifacts = Vec::new();
 
-            for (id, idx, content) in window {
+            for (id, idx, kind, content) in window {
                 let marker = if *id == chunk_id {
-                    format!("--- [TARGET CHUNK (index {idx})] ---")
+                    format!("--- [TARGET CHUNK (index {idx}, kind: {kind})] ---")
                 } else {
-                    format!("--- [chunk index {idx}] ---")
+                    format!("--- [chunk index {idx}, kind: {kind}] ---")
                 };
                 text.push_str(&marker);
                 text.push('\n');
@@ -164,6 +167,7 @@ impl Tool for ChunkContextTool {
                 artifacts.push(json!({
                     "chunkId": id,
                     "chunkIndex": idx,
+                    "chunkKind": kind,
                     "isTarget": *id == chunk_id,
                     "content": content,
                 }));

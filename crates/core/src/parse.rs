@@ -13,6 +13,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 
 use crate::error::CoreError;
+use crate::visual_document::{OoxmlPackageKind, ParsedVisualArtifact};
 
 // ---------------------------------------------------------------------------
 // Encoding-aware file reading
@@ -105,6 +106,10 @@ pub struct ParsedDocument {
     pub file_size: i64,
     pub content_hash: String,
     pub chunks: Vec<ParsedChunk>,
+    /// Non-text visual artifacts discovered during parsing. Ingestion stores
+    /// these as searchable visual chunks so the agent can retrieve chart,
+    /// figure, and embedded-image context.
+    pub visual_artifacts: Vec<ParsedVisualArtifact>,
     /// Extracted metadata (frontmatter fields, filesystem dates, etc.).
     pub metadata: HashMap<String, String>,
 }
@@ -242,6 +247,7 @@ pub fn parse_file(
             file_size: raw_bytes.len() as i64,
             content_hash,
             chunks: vec![],
+            visual_artifacts: Vec::new(),
             metadata: HashMap::new(),
         });
     }
@@ -272,6 +278,7 @@ pub fn parse_file(
             file_size: raw_bytes.len() as i64,
             content_hash,
             chunks: vec![],
+            visual_artifacts: Vec::new(),
             metadata: HashMap::new(),
         });
     }
@@ -316,6 +323,7 @@ pub fn parse_file(
         file_size,
         content_hash,
         chunks,
+        visual_artifacts: Vec::new(),
         metadata: doc_metadata,
     })
 }
@@ -352,11 +360,15 @@ pub fn parse_pdf(
     let text = text.replace("\r\n", "\n");
 
     let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
+    let visual_artifacts =
+        crate::visual_document::extract_pdf_visual_artifacts(&bytes, ocr_config, llm_provider);
 
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
+    let mut metadata = extract_fs_metadata(path);
+    crate::visual_document::annotate_document_metadata(&mut metadata, &visual_artifacts);
     Ok(ParsedDocument {
         file_path: path.to_string_lossy().to_string(),
         title: file_name.clone(),
@@ -365,7 +377,8 @@ pub fn parse_pdf(
         file_size,
         content_hash,
         chunks,
-        metadata: extract_fs_metadata(path),
+        visual_artifacts,
+        metadata,
     })
 }
 
@@ -540,11 +553,15 @@ pub fn parse_docx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument,
 
     let text = text.replace("\r\n", "\n");
     let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
+    let visual_artifacts =
+        crate::visual_document::extract_ooxml_visual_artifacts(&bytes, OoxmlPackageKind::Docx);
 
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
+    let mut metadata = extract_fs_metadata(path);
+    crate::visual_document::annotate_document_metadata(&mut metadata, &visual_artifacts);
     Ok(ParsedDocument {
         file_path: path.to_string_lossy().to_string(),
         title: file_name.clone(),
@@ -554,7 +571,8 @@ pub fn parse_docx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument,
         file_size,
         content_hash,
         chunks,
-        metadata: extract_fs_metadata(path),
+        visual_artifacts,
+        metadata,
     })
 }
 
@@ -599,11 +617,15 @@ pub fn parse_xlsx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument,
     }
 
     let chunks = chunk_plaintext_preserving_short_document(&all_text, max_chunk_chars);
+    let visual_artifacts =
+        crate::visual_document::extract_ooxml_visual_artifacts(&bytes, OoxmlPackageKind::Xlsx);
 
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
+    let mut metadata = extract_fs_metadata(path);
+    crate::visual_document::annotate_document_metadata(&mut metadata, &visual_artifacts);
     Ok(ParsedDocument {
         file_path: path.to_string_lossy().to_string(),
         title: file_name.clone(),
@@ -612,7 +634,8 @@ pub fn parse_xlsx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument,
         file_size,
         content_hash,
         chunks,
-        metadata: extract_fs_metadata(path),
+        visual_artifacts,
+        metadata,
     })
 }
 
@@ -647,11 +670,15 @@ pub fn parse_pptx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument,
 
     let text = text.replace("\r\n", "\n");
     let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
+    let visual_artifacts =
+        crate::visual_document::extract_ooxml_visual_artifacts(&bytes, OoxmlPackageKind::Pptx);
 
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
+    let mut metadata = extract_fs_metadata(path);
+    crate::visual_document::annotate_document_metadata(&mut metadata, &visual_artifacts);
     Ok(ParsedDocument {
         file_path: path.to_string_lossy().to_string(),
         title: file_name.clone(),
@@ -661,7 +688,8 @@ pub fn parse_pptx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument,
         file_size,
         content_hash,
         chunks,
-        metadata: extract_fs_metadata(path),
+        visual_artifacts,
+        metadata,
     })
 }
 
@@ -690,9 +718,11 @@ pub fn parse_image(
         .unwrap_or_default();
 
     // ── Try OCR ──
-    let (text_content, ocr_source) =
+    let (text_content, ocr_source, ocr_confidence) =
         match crate::ocr::extract_text_from_image(&bytes, mime_type, ocr_config, llm_provider) {
-            Ok(result) if !result.full_text.is_empty() => (result.full_text, result.source),
+            Ok(result) if !result.full_text.is_empty() => {
+                (result.full_text, result.source, result.avg_confidence)
+            }
             Ok(_) | Err(_) => {
                 let ext = path
                     .extension()
@@ -701,7 +731,7 @@ pub fn parse_image(
                 let stub = format!(
                     "[Image: {file_name}] type={ext} size={file_size} bytes path={file_path}"
                 );
-                (stub, crate::ocr::OcrSource::None)
+                (stub, crate::ocr::OcrSource::None, 0.5)
             }
         };
 
@@ -709,7 +739,7 @@ pub fn parse_image(
         chunk_plaintext_preserving_short_document(&text_content, max_chunk_chars)
     } else {
         vec![ParsedChunk {
-            content: text_content,
+            content: text_content.clone(),
             chunk_index: 0,
             start_offset: 0,
             end_offset: file_size,
@@ -720,6 +750,14 @@ pub fn parse_image(
 
     let mut doc_metadata = extract_fs_metadata(path);
     doc_metadata.insert("ocr_source".into(), format!("{:?}", ocr_source));
+    let visual_artifacts = vec![crate::visual_document::image_file_visual_artifact(
+        &file_name,
+        mime_type,
+        &bytes,
+        (ocr_source != crate::ocr::OcrSource::None).then_some(text_content.clone()),
+        ocr_confidence,
+    )];
+    crate::visual_document::annotate_document_metadata(&mut doc_metadata, &visual_artifacts);
 
     Ok(ParsedDocument {
         file_path,
@@ -729,6 +767,7 @@ pub fn parse_image(
         file_size,
         content_hash,
         chunks,
+        visual_artifacts,
         metadata: doc_metadata,
     })
 }
@@ -801,6 +840,7 @@ fn parse_audio(
         file_size,
         content_hash,
         chunks,
+        visual_artifacts: Vec::new(),
         metadata: doc_metadata,
     })
 }
@@ -980,6 +1020,7 @@ fn parse_video(
         file_size,
         content_hash,
         chunks,
+        visual_artifacts: Vec::new(),
         metadata: doc_metadata,
     })
 }
@@ -1141,6 +1182,7 @@ fn parse_doc(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, Core
         file_size,
         content_hash,
         chunks,
+        visual_artifacts: Vec::new(),
         metadata: extract_fs_metadata(path),
     })
 }
@@ -1188,6 +1230,7 @@ fn parse_ppt(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, Core
         file_size,
         content_hash,
         chunks,
+        visual_artifacts: Vec::new(),
         metadata: extract_fs_metadata(path),
     })
 }
@@ -1226,6 +1269,7 @@ fn parse_html(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, Cor
         file_size,
         content_hash,
         chunks,
+        visual_artifacts: Vec::new(),
         metadata: extract_fs_metadata(path),
     })
 }
@@ -1372,6 +1416,7 @@ fn parse_epub(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, Cor
         file_size,
         content_hash,
         chunks,
+        visual_artifacts: Vec::new(),
         metadata: extract_fs_metadata(path),
     })
 }
@@ -1467,6 +1512,7 @@ fn parse_odf(
         file_size,
         content_hash,
         chunks,
+        visual_artifacts: Vec::new(),
         metadata: extract_fs_metadata(path),
     })
 }

@@ -108,6 +108,9 @@ export interface SkillChangeProposal {
   warnings: SkillWarning[];
   status: SkillProposalStatus;
   conversationId: string | null;
+  source: string;
+  confidence: number;
+  evidence: unknown;
   createdAt: string;
   updatedAt: string;
   appliedAt: string | null;

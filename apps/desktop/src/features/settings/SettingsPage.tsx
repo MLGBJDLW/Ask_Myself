@@ -446,6 +446,7 @@ export function SettingsPage() {
         shellAccessMode: 'restricted',
         toolApprovalMode: 'ask',
         autoMemoryExtraction: true,
+        autoSkillLearning: true,
         hfMirrorBaseUrl: 'https://hf-mirror.com',
         ghproxyBaseUrl: 'https://mirror.ghproxy.com',
         imageGeneration: {

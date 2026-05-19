@@ -64,6 +64,12 @@ pub(crate) fn flatten_parsed_document_text(parsed: &crate::parse::ParsedDocument
         }
         out.push_str(visible);
     }
+    for artifact in &parsed.visual_artifacts {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&artifact.to_chunk_content());
+    }
 
     if out.trim().is_empty() {
         format!(

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import type { CSSProperties } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
@@ -19,6 +20,7 @@ import {
   ClipboardList,
   ShieldCheck,
   Terminal,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { FileBadge } from '../ui/FileBadge';
@@ -76,7 +78,16 @@ interface GeneratedImageArtifact {
   provider?: string;
   model?: string;
   prompt?: string;
+  revisedPrompt?: string;
   bytes?: number;
+}
+
+interface ImagePromptArgs {
+  prompt?: string;
+  size?: string;
+  quality?: string;
+  outputFormat?: string;
+  model?: string;
 }
 
 type ToolCallCardStatus = ToolCallEvent['status'];
@@ -271,6 +282,7 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   update_plan: ClipboardList,
   record_verification: ShieldCheck,
   run_shell: Terminal,
+  generate_image: ImageIcon,
 };
 
 function getToolIcon(name?: string) {
@@ -370,6 +382,150 @@ function extractGeneratedImageArtifact(
   if (!isRecord(artifacts)) return null;
   if (artifacts.kind !== 'generatedImage') return null;
   return artifacts as unknown as GeneratedImageArtifact;
+}
+
+function parseImagePromptArgs(raw?: string): ImagePromptArgs {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      prompt: typeof parsed.prompt === 'string' ? parsed.prompt : undefined,
+      size: typeof parsed.size === 'string' ? parsed.size : undefined,
+      quality: typeof parsed.quality === 'string' ? parsed.quality : undefined,
+      outputFormat: typeof parsed.output_format === 'string'
+        ? parsed.output_format
+        : typeof parsed.outputFormat === 'string'
+          ? parsed.outputFormat
+          : undefined,
+      model: typeof parsed.model === 'string' ? parsed.model : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function imageAspectStyle(size?: string): CSSProperties {
+  const raw = (size ?? '').trim();
+  const pixelMatch = raw.match(/(\d{2,5})\s*[x*]\s*(\d{2,5})/i);
+  if (pixelMatch) {
+    const width = Number(pixelMatch[1]);
+    const height = Number(pixelMatch[2]);
+    if (width > 0 && height > 0) return { aspectRatio: `${width} / ${height}` };
+  }
+  const ratioMatch = raw.match(/(\d{1,3})\s*:\s*(\d{1,3})/);
+  if (ratioMatch) {
+    const width = Number(ratioMatch[1]);
+    const height = Number(ratioMatch[2]);
+    if (width > 0 && height > 0) return { aspectRatio: `${width} / ${height}` };
+  }
+  return { aspectRatio: '1 / 1' };
+}
+
+function imageSource(image: GeneratedImageArtifact): string {
+  return image.dataUrl || (image.path ? convertFileSrc(image.path) : '');
+}
+
+function GeneratedImagePreview({
+  image,
+  compact = false,
+}: {
+  image: GeneratedImageArtifact;
+  compact?: boolean;
+}) {
+  const { t } = useTranslation();
+  const src = imageSource(image);
+  const prompt = image.revisedPrompt || image.prompt;
+  const maxHeight = compact ? 'max-h-32' : 'max-h-[28rem]';
+  if (!src) return null;
+
+  return (
+    <div className={compact ? 'space-y-1.5' : 'space-y-2.5'}>
+      <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
+        <img
+          src={src}
+          alt={image.prompt || t('chat.generatedImageAlt')}
+          className={`${maxHeight} w-full object-contain`}
+        />
+      </div>
+      <div className="grid gap-1.5 text-[11px] text-text-tertiary">
+        <div className="flex flex-wrap gap-1.5">
+          {image.provider && (
+            <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+              {image.provider}
+            </span>
+          )}
+          {image.model && (
+            <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+              {image.model}
+            </span>
+          )}
+          {image.mediaType && (
+            <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+              {image.mediaType.replace('image/', '').toUpperCase()}
+            </span>
+          )}
+          {typeof image.bytes === 'number' && (
+            <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+              {formatByteCount(image.bytes)}
+            </span>
+          )}
+        </div>
+        {!compact && prompt && (
+          <div className="line-clamp-2 text-text-secondary">{prompt}</div>
+        )}
+        {image.path && (
+          <div className="break-all text-text-secondary">{image.path}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ImageGenerationPendingPreview({
+  prompt,
+  size,
+  compact = false,
+}: {
+  prompt?: string;
+  size?: string;
+  compact?: boolean;
+}) {
+  const shouldReduceMotion = useReducedMotion();
+  const aspectStyle = imageAspectStyle(size);
+
+  return (
+    <div
+      className={`chat-image-loading relative overflow-hidden rounded-md border border-accent/25 bg-surface-0/80 ${
+        compact ? 'min-h-28' : 'min-h-64'
+      }`}
+      data-reduce-motion={shouldReduceMotion ? 'true' : 'false'}
+      style={aspectStyle}
+    >
+      <div className="absolute inset-0 opacity-80">
+        <div className="absolute left-[9%] top-[11%] h-[16%] w-[28%] rounded-md border border-border/55 bg-surface-1/60" />
+        <div className="absolute right-[9%] top-[12%] h-[9%] w-[18%] rounded-full border border-border/50 bg-surface-1/55" />
+        <div className="absolute bottom-[18%] left-[8%] h-[35%] w-[84%] rounded-md border border-border/50 bg-surface-1/45" />
+        <div className="absolute bottom-[24%] left-[13%] h-[20%] w-[24%] rounded-md border border-border/45 bg-surface-2/45" />
+        <div className="absolute bottom-[25%] right-[14%] h-[24%] w-[36%] rounded-md border border-border/45 bg-surface-2/35" />
+      </div>
+      <div className="chat-image-loading-grid absolute inset-0" />
+      <div className="chat-image-loading-scan absolute inset-y-0 w-1/3" />
+      <div className="absolute inset-0 flex items-center justify-center">
+        <motion.div
+          animate={shouldReduceMotion ? undefined : { opacity: [0.64, 1, 0.64], scale: [0.96, 1.04, 0.96] }}
+          transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
+          className="flex h-14 w-14 items-center justify-center rounded-md border border-accent/30 bg-surface-0/80 shadow-glow"
+        >
+          <img src="/logo-small.svg" alt="" className="h-8 w-8 opacity-90" />
+        </motion.div>
+      </div>
+      {!compact && prompt && (
+        <div className="absolute inset-x-0 bottom-0 border-t border-border/40 bg-surface-0/75 px-3 py-2">
+          <div className="line-clamp-2 text-xs leading-5 text-text-secondary">{prompt}</div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function verificationStatusLabel(
@@ -593,6 +749,9 @@ export function ToolCallCard({
   const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
   const generatedImage = useMemo(() => extractGeneratedImageArtifact(artifacts), [artifacts]);
+  const imageArgs = useMemo(() => parseImagePromptArgs(args), [args]);
+  const isImageRender = renderKind === 'image' || safeToolName.toLowerCase() === 'generate_image';
+  const showImagePendingPreview = isImageRender && isPending && !generatedImage;
   const showPendingDiffStats = isPending && !diffStats && isFileChangeToolRender(safeToolName, renderKind);
   const isSearchDone =
     safeToolName.toLowerCase().includes('search') && status === 'done' && !!content;
@@ -643,6 +802,10 @@ export function ToolCallCard({
         })
       : searchItems
         ? t('search.results', { count: String(searchItems.length) })
+        : generatedImage
+          ? t('chat.generatedImageSaved')
+        : showImagePendingPreview
+          ? t('chat.generatedImageLoading')
         : diffStats
           ? `${diffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
         : showPendingDiffStats
@@ -672,6 +835,7 @@ export function ToolCallCard({
     fileDiff ||
     diffStats ||
     generatedImage ||
+    showImagePendingPreview ||
     streamingArgsPreview,
   );
   const failedStatus = isUnsuccessfulToolCallStatus(status);
@@ -739,18 +903,13 @@ export function ToolCallCard({
                   </div>
                 ) : null}
                 {generatedImage ? (
-                  <div className="space-y-2">
-                    <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
-                      <img
-                        src={generatedImage.dataUrl || (generatedImage.path ? convertFileSrc(generatedImage.path) : '')}
-                        alt={generatedImage.prompt || t('chat.generatedImageAlt')}
-                        className="max-h-64 w-full object-contain"
-                      />
-                    </div>
-                    {generatedImage.path && (
-                      <div className="break-all text-[11px] text-text-secondary">{generatedImage.path}</div>
-                    )}
-                  </div>
+                  <GeneratedImagePreview image={generatedImage} compact />
+                ) : showImagePendingPreview ? (
+                  <ImageGenerationPendingPreview
+                    prompt={imageArgs.prompt}
+                    size={imageArgs.size}
+                    compact
+                  />
                 ) : subagentRun ? (
                   <SubagentCard run={subagentRun} compact defaultOpen />
                 ) : subagentBatch ? (
@@ -856,13 +1015,13 @@ export function ToolCallCard({
                   </div>
                 ) : null}
                 {generatedImage ? (
-                  <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
-                    <img
-                      src={generatedImage.dataUrl || (generatedImage.path ? convertFileSrc(generatedImage.path) : '')}
-                      alt={generatedImage.prompt || t('chat.generatedImageAlt')}
-                      className="max-h-32 w-full object-contain"
-                    />
-                  </div>
+                  <GeneratedImagePreview image={generatedImage} compact />
+                ) : showImagePendingPreview ? (
+                  <ImageGenerationPendingPreview
+                    prompt={imageArgs.prompt}
+                    size={imageArgs.size}
+                    compact
+                  />
                 ) : subagentRun ? (
                   <SubagentCard run={subagentRun} compact defaultOpen />
                 ) : subagentBatch ? (
@@ -913,6 +1072,57 @@ export function ToolCallCard({
           )}
         </AnimatePresence>
       </div>
+    );
+  }
+
+  if (isImageRender && (generatedImage || showImagePendingPreview)) {
+    const imageMeta = [
+      generatedImage?.provider,
+      generatedImage?.model ?? imageArgs.model,
+      imageArgs.size,
+      imageArgs.quality,
+      imageArgs.outputFormat,
+    ].filter(Boolean);
+
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+        className="chat-image-panel my-2 overflow-hidden rounded-md border border-border/55 bg-surface-0/55"
+        data-state={generatedImage ? 'ready' : 'loading'}
+      >
+        <div className="flex min-h-11 items-center gap-2 border-b border-border/40 px-3 py-2">
+          <Icon className="h-4 w-4 shrink-0 text-accent" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-xs font-medium text-text-primary">{briefLabel}</div>
+            <div className="mt-0.5 flex min-w-0 flex-wrap gap-1.5 text-[11px] text-text-tertiary">
+              {imageMeta.slice(0, 4).map((item) => (
+                <span
+                  key={String(item)}
+                  className="rounded-md border border-border/45 bg-surface-0/45 px-1.5 py-0.5"
+                >
+                  {String(item)}
+                </span>
+              ))}
+            </div>
+          </div>
+          <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] ${statusConfig.color}`}>
+            <StatusIcon className={`h-3.5 w-3.5 ${statusConfig.spin ? 'animate-spin' : ''}`} />
+            <span>{headerSummary}</span>
+          </span>
+        </div>
+        <div className="px-3 py-3">
+          {generatedImage ? (
+            <GeneratedImagePreview image={generatedImage} />
+          ) : (
+            <ImageGenerationPendingPreview
+              prompt={imageArgs.prompt}
+              size={imageArgs.size}
+            />
+          )}
+        </div>
+      </motion.div>
     );
   }
 
@@ -1090,37 +1300,12 @@ export function ToolCallCard({
                 </div>
               )}
               {generatedImage ? (
-                <div className="space-y-2">
-                  <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
-                    <img
-                      src={generatedImage.dataUrl || (generatedImage.path ? convertFileSrc(generatedImage.path) : '')}
-                      alt={generatedImage.prompt || t('chat.generatedImageAlt')}
-                      className="max-h-80 w-full object-contain"
-                    />
-                  </div>
-                  <div className="grid gap-1 text-[11px] text-text-tertiary">
-                    <div className="flex flex-wrap gap-1.5">
-                      {generatedImage.provider && (
-                        <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
-                          {generatedImage.provider}
-                        </span>
-                      )}
-                      {generatedImage.model && (
-                        <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
-                          {generatedImage.model}
-                        </span>
-                      )}
-                      {typeof generatedImage.bytes === 'number' && (
-                        <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
-                          {formatByteCount(generatedImage.bytes)}
-                        </span>
-                      )}
-                    </div>
-                    {generatedImage.path && (
-                      <div className="break-all text-text-secondary">{generatedImage.path}</div>
-                    )}
-                  </div>
-                </div>
+                <GeneratedImagePreview image={generatedImage} />
+              ) : showImagePendingPreview ? (
+                <ImageGenerationPendingPreview
+                  prompt={imageArgs.prompt}
+                  size={imageArgs.size}
+                />
               ) : planArtifact ? (
                 <PlanPanel plan={planArtifact} />
               ) : verificationArtifact ? (
