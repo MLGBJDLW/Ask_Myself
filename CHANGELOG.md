@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.8...nexa-monorepo-v0.6.9) (2026-05-19)
+
+
+### Features
+
+* **agent:** improve visual workflows and skill learning ([a253a20](https://github.com/MLGBJDLW/Nexa/commit/a253a203047c591707a845cd76323cd78d547b73))
+* **core:** add native web search ([2ed0d27](https://github.com/MLGBJDLW/Nexa/commit/2ed0d27a006860e265689d07bf908a56a42d15e0))
+* **core:** upgrade web fetch extraction ([9cd2ffc](https://github.com/MLGBJDLW/Nexa/commit/9cd2ffc75010aa0a5686c76dbbe34eef9a4e1d5d))
+* improve trusted tool flow and resizable panels ([e8bb39b](https://github.com/MLGBJDLW/Nexa/commit/e8bb39b0a99a5ba8c473c28ad946ab1dcfe02eff))
+* upgrade skills metadata activation ([c0b9b8c](https://github.com/MLGBJDLW/Nexa/commit/c0b9b8c88639421c66caea677842f72e58f4e048))
+
 ## [0.6.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.7...nexa-monorepo-v0.6.8) (2026-05-18)
 
 
