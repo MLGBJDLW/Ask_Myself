@@ -542,14 +542,33 @@ At least one of `path` or `source_id` should be provided.
 
 ### `fetch_url`
 
-Fetch and extract text content from a web page with SSRF and redirect-hop validation. Use after `web_search` or when the user shares a URL and web content needs referencing.
+Fetch and extract readable text from a public web page with SSRF and redirect-hop validation. Use after `web_search` or when the user shares a URL and web content needs referencing. HTML pages use a Readability-style article extractor first, then `article`/`main`/`body` fallback, then metadata fallback for JavaScript-heavy pages.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `url` | string | yes | URL to fetch (http:// or https://) |
 | `max_length` | integer | no | Max characters to return (default 5000) |
+| `mode` | string | no | `auto`, `readability`, `text`, `metadata`, or `assets` |
+| `include_assets` | boolean | no | Include image candidates from metadata, `picture/source`, `srcset`, and `img` tags (default true) |
+
+`fetch_url` is text-first. It reports image candidates in artifacts but does not write binary files. If the user wants a candidate image saved, use `download_asset`.
 
 > **Example:** Fetch a Stack Overflow answer the user linked to and incorporate it into the conversation.
+
+---
+
+### `download_asset`
+
+Download a supported public image asset into the workspace. This tool requires confirmation because it writes a file. It validates the URL and each redirect hop, rejects private/local network targets, enforces image MIME allowlists, caps download size, decodes the image before saving, and keeps output paths inside a registered source root or the current workspace.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | yes | Public image URL to download (http:// or https://) |
+| `output_dir` | string | no | Optional output directory; relative paths are placed under `downloaded-assets` |
+| `filename` | string | no | Optional sanitized filename; an image extension is added when missing |
+| `max_bytes` | integer | no | Max bytes to download (default 10 MiB, hard cap 25 MiB) |
+
+> **Example:** Save an `og:image` candidate returned by `fetch_url` so the user can inspect or reuse it locally.
 
 ---
 

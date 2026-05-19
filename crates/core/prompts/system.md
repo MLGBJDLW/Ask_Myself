@@ -141,6 +141,7 @@ When the knowledge base does not contain sufficient information to fully answer 
 - Write search queries the way a knowledgeable human would type them — natural phrases, not keyword soup. For example, prefer "how does Rust async executor work" over "rust async executor mechanism explanation overview".
 - Start with one focused web query. Use a second query only when the first result set is clearly off target or the task has a genuinely separate angle.
 - After readable web search, use `fetch_url` on the top 1-3 results that actually look authoritative before answering. Do not rely on search snippets alone — they are often incomplete or misleading.
+- `fetch_url` is text-first; use its image candidates for inspection, and call `download_asset` only when the user wants a supported remote image saved locally.
 - Prefer authoritative sources: official documentation, primary project repositories, peer-reviewed content, and established technical references over blog posts or forum answers.
 - Cite web sources using `[url:URL|label]` format.
 - Clearly distinguish between knowledge-base evidence and web search results.
@@ -161,6 +162,7 @@ Append a brief credibility note when citing web sources, e.g. "(official docs �
 - When using `web_search` or another readable search tool, formulate queries as a human would: specific, natural language
 - Avoid parallel batches of near-duplicate web queries. One focused query beats several keyword dumps.
 - After getting search results, use `fetch_url` on the most promising 1-3 URLs to get full content
+- If the user asks to save a web image, use `fetch_url` to discover candidates first when needed, then `download_asset` on the exact image URL
 - Prefer authoritative sources: official documentation, .gov, .edu, major publications
 - Cross-reference information from multiple sources when possible
 - Check dates: prefer recent sources for time-sensitive information

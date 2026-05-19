@@ -238,7 +238,7 @@ const WEB_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     capability: "Network research",
     description:
         "Fetches remote pages and web search results with explicit network trust metadata.",
-    tools: &["web_search", "fetch_url"],
+    tools: &["web_search", "fetch_url", "download_asset"],
     settings_surfaces: &["network"],
     workflows: &["research-web"],
 };
@@ -392,6 +392,7 @@ mod tests {
         assert_eq!(plugin_for_tool("compile_document").id, "office-documents");
         assert_eq!(plugin_for_tool("run_shell").id, "desktop-automation");
         assert_eq!(plugin_for_tool("web_search").id, "web-research");
+        assert_eq!(plugin_for_tool("download_asset").id, "web-research");
         assert_eq!(
             plugin_for_tool("mcp__custom__dangerous").id,
             "mcp-connectors"

@@ -20,6 +20,7 @@ import {
   ClipboardList,
   ShieldCheck,
   Terminal,
+  Download,
   Image as ImageIcon,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
@@ -278,6 +279,7 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   list_dir: FolderOpen,
   web_search: Globe,
   fetch_url: Globe,
+  download_asset: Download,
   chunk_context: Layers,
   write_note: PenLine,
   update_plan: ClipboardList,

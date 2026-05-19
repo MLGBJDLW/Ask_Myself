@@ -1,6 +1,6 @@
 {
   "name": "fetch_url",
-  "description": "Fetch and read the text content of a web page with SSRF and redirect-hop validation. Use this after web_search or when the user shares a URL. Returns extracted text plus URL/title provenance and a suggested citation.",
+  "description": "Fetch and read the text content of a public web page with SSRF and redirect-hop validation. Use this after web_search or when the user shares a URL. Returns Readability-style extracted text, metadata, image candidates, URL/title provenance, and a suggested citation. It does not download binary assets; use download_asset for supported image URLs.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -11,6 +11,15 @@
       "max_length": {
         "type": "integer",
         "description": "Maximum number of characters to return. Default: 5000."
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["auto", "readability", "text", "metadata", "assets"],
+        "description": "Extraction mode. auto tries Readability, then main/body text, then metadata. readability prefers article extraction. text skips Readability. metadata returns page metadata. assets focuses on image candidates."
+      },
+      "include_assets": {
+        "type": "boolean",
+        "description": "Whether to include image candidates from metadata, picture/source, srcset, and img tags. Default: true for HTML pages."
       }
     },
     "required": ["url"]

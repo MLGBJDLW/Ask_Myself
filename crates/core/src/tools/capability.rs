@@ -91,7 +91,9 @@ fn first_non_core_category(categories: &[ToolCategory]) -> ToolCategory {
 pub fn capability_render_kind(name: &str) -> ToolRenderKind {
     match name {
         "run_shell" => ToolRenderKind::CommandExecution,
-        "edit_file" | "multi_edit" | "create_file" | "write_note" => ToolRenderKind::FileChange,
+        "edit_file" | "multi_edit" | "create_file" | "write_note" | "download_asset" => {
+            ToolRenderKind::FileChange
+        }
         "fetch_url"
         | "web_search"
         | "read_file"
@@ -129,6 +131,7 @@ pub fn capability_render_kind(name: &str) -> ToolRenderKind {
 pub fn capability_input_streaming(name: &str) -> ToolInputStreamingMode {
     match name {
         "generate_image"
+        | "download_asset"
         | "fetch_url"
         | "web_search"
         | "read_file"
@@ -212,6 +215,9 @@ pub fn capability_resource_keys(name: &str, args: &serde_json::Value) -> Vec<Str
         "sourcePath",
         "destination_path",
         "destinationPath",
+        "output_dir",
+        "outputDir",
+        "filename",
         "dest_path",
         "destPath",
         "new_path",
@@ -413,6 +419,16 @@ pub fn infer_tool_access_profile(
             false,
             ApprovalRisk::Low,
             "Reads remote web content or search results and crosses the local trust boundary.",
+        ),
+        "download_asset" => (
+            "web",
+            true,
+            true,
+            false,
+            true,
+            true,
+            ApprovalRisk::Medium,
+            "Downloads a remote image asset into the workspace after URL, content-type, size, and output-path validation.",
         ),
         "desktop_automation" => (
             "automation",

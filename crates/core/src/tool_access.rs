@@ -147,6 +147,13 @@ mod tests {
         assert!(fetch.can_access_network);
         assert!(!fetch.can_write);
 
+        let download_asset = by_name("download_asset");
+        assert_eq!(download_asset.plugin.id, "web-research");
+        assert!(download_asset.can_access_network);
+        assert!(download_asset.can_write);
+        assert!(download_asset.needs_approval);
+        assert_eq!(download_asset.risk_level, ApprovalRisk::Medium);
+
         let search = by_name("search_knowledge_base");
         assert_eq!(search.plugin.id, "knowledge-base");
         assert_eq!(search.category, "knowledge");
