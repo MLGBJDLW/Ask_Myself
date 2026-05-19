@@ -13,7 +13,7 @@ use tracing::{debug, error, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
 use crate::app_settings::ShellAccessMode;
-use crate::approval::{describe_request, ApprovalCallback, ApprovalRequest};
+use crate::approval::{describe_request, ApprovalCallback, ApprovalRequest, ToolApprovalMode};
 use crate::conversation::memory::{
     context_safety_buffer, estimate_message_tokens_for_model, estimate_tokens_for_model,
     model_context_window, trim_to_context_window,
@@ -235,6 +235,9 @@ pub struct AgentConfig {
     /// Shell execution policy for run_shell.
     #[serde(default)]
     pub shell_access_mode: ShellAccessMode,
+    /// Global GUI approval mode for high-risk tool calls.
+    #[serde(default)]
+    pub tool_approval_mode: ToolApprovalMode,
 }
 
 fn default_trace_enabled() -> bool {
@@ -278,6 +281,7 @@ impl Default for AgentConfig {
             trace_enabled: true,
             require_tool_confirmation: false,
             shell_access_mode: ShellAccessMode::Restricted,
+            tool_approval_mode: ToolApprovalMode::default(),
         }
     }
 }

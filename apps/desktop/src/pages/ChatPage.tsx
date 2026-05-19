@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useRef } from 'react';
+import { useCallback, useState, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Settings, PanelLeftClose, PanelLeftOpen, UserRound } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -11,6 +11,7 @@ import { useApprovalQueue } from '../lib/useApprovalQueue';
 import { useTranslation } from '../i18n';
 import { EmptyState } from '../components/ui/EmptyState';
 import { useChatSession } from '../lib/useChatSession';
+import { useResizablePanel } from '../lib/useResizablePanel';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
 import type { AgentConfig, Conversation, ImageAttachment } from '../types/conversation';
@@ -51,6 +52,10 @@ function suggestPersonaId(message: string, personas: api.PersonaProfile[]): stri
 
   return null;
 }
+
+const CHAT_SIDEBAR_WIDTH_KEY = 'chat-sidebar-width';
+const CHAT_SIDEBAR_MIN_WIDTH = 200;
+const CHAT_SIDEBAR_MAX_WIDTH = 420;
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -197,6 +202,17 @@ export function ChatPage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'true'; } catch { return false; }
   });
+  const {
+    size: chatSidebarWidth,
+    setSize: setChatSidebarWidth,
+    startResize: startChatSidebarResize,
+    isResizing: isChatSidebarResizing,
+  } = useResizablePanel({
+    storageKey: CHAT_SIDEBAR_WIDTH_KEY,
+    defaultSize: 240,
+    minSize: CHAT_SIDEBAR_MIN_WIDTH,
+    maxSize: CHAT_SIDEBAR_MAX_WIDTH,
+  });
 
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((prev) => {
@@ -205,6 +221,22 @@ export function ChatPage() {
       return next;
     });
   }, []);
+
+  const handleChatSidebarResizeKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setChatSidebarWidth(chatSidebarWidth - 12);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setChatSidebarWidth(chatSidebarWidth + 12);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setChatSidebarWidth(CHAT_SIDEBAR_MIN_WIDTH);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setChatSidebarWidth(CHAT_SIDEBAR_MAX_WIDTH);
+    }
+  }, [chatSidebarWidth, setChatSidebarWidth]);
 
   // Auto-collapse on narrow viewports
   useEffect(() => {
@@ -421,11 +453,11 @@ export function ChatPage() {
       {/* Sidebar */}
       <motion.div
         initial={false}
-        animate={{ width: sidebarCollapsed ? 0 : 'clamp(200px, 20vw, 260px)' }}
-        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="shrink-0 overflow-hidden h-full min-h-0"
+        animate={{ width: sidebarCollapsed ? 0 : chatSidebarWidth }}
+        transition={isChatSidebarResizing ? { duration: 0 } : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+        className="relative shrink-0 overflow-hidden h-full min-h-0"
       >
-        <div className="w-[clamp(200px,20vw,260px)] h-full min-h-0">
+        <div className="h-full min-h-0" style={{ width: chatSidebarWidth }}>
           <ChatSidebar
             conversations={chat.conversations}
             activeId={chat.activeId}
@@ -438,6 +470,21 @@ export function ChatPage() {
             onConversationMoved={chat.loadConversations}
           />
         </div>
+        {!sidebarCollapsed && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-valuemin={CHAT_SIDEBAR_MIN_WIDTH}
+            aria-valuemax={CHAT_SIDEBAR_MAX_WIDTH}
+            aria-valuenow={chatSidebarWidth}
+            tabIndex={0}
+            onPointerDown={startChatSidebarResize}
+            onKeyDown={handleChatSidebarResizeKey}
+            className="absolute right-0 top-0 h-full w-2 translate-x-1 cursor-col-resize touch-none
+              bg-transparent outline-none transition-colors hover:bg-accent/25 focus-visible:bg-accent/35"
+            title={t('nav.resizeSidebar')}
+          />
+        )}
       </motion.div>
 
       {/* Main chat area */}

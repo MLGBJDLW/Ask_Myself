@@ -71,12 +71,15 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
       api.listToolAccessMap(),
     ]);
     if (policyResult.status === 'fulfilled') {
-      setPolicies(policyResult.value);
+      setPolicies({
+        persisted: Array.isArray(policyResult.value?.persisted) ? policyResult.value.persisted : [],
+        session: Array.isArray(policyResult.value?.session) ? policyResult.value.session : [],
+      });
     } else {
       console.error('[approval] list policies failed', policyResult.reason);
     }
     if (accessResult.status === 'fulfilled') {
-      setAccessMap(accessResult.value);
+      setAccessMap(Array.isArray(accessResult.value) ? accessResult.value : []);
     } else {
       console.error('[approval] list tool access map failed', accessResult.reason);
     }

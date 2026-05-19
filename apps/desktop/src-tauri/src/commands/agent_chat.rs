@@ -283,6 +283,7 @@ pub async fn agent_chat_cmd(
         trace_enabled: app_cfg.trace_enabled,
         require_tool_confirmation: app_cfg.confirm_destructive,
         shell_access_mode: app_cfg.shell_access_mode,
+        tool_approval_mode: app_cfg.tool_approval_mode,
     };
 
     // 6b. Build confirmation callback if enabled.

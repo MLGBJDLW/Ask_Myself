@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -42,12 +43,16 @@ import {
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
+import { useResizablePanel } from '../../lib/useResizablePanel';
 import { markdownComponents, rehypePlugins } from '../../components/chat/markdownComponents';
 import { FilePreviewContext } from './filePreviewContext';
 
 type PreviewMode = 'preview' | 'text' | 'edit' | 'split';
 
 const INSTANT_TRANSITION = { duration: 0 };
+const FILE_PREVIEW_WIDTH_KEY = 'file-preview-panel-width';
+const FILE_PREVIEW_MIN_WIDTH = 560;
+const FILE_PREVIEW_MAX_WIDTH = 1180;
 const REMARK_PLUGINS = [remarkGfm];
 const MAX_AGENT_SELECTION_CHARS = 24_000;
 
@@ -373,6 +378,7 @@ function copyForLocale(locale: string) {
     copyPath: zh ? '复制路径' : 'Copy path',
     copied: zh ? '已复制' : 'Copied',
     close: zh ? '关闭' : 'Close',
+    resizePanel: zh ? '调整预览面板宽度' : 'Resize preview panel',
     loading: zh ? '正在读取文件...' : 'Reading file...',
     empty: zh ? '没有可预览的文本内容。' : 'No text content is available for preview.',
     unsupported: zh ? '这个文件暂时不能在应用内预览或编辑。' : 'This file cannot be previewed or edited inline yet.',
@@ -1022,6 +1028,18 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedPath, setCopiedPath] = useState(false);
+  const {
+    size: previewPanelWidth,
+    setSize: setPreviewPanelWidth,
+    startResize: startPreviewPanelResize,
+    isResizing: isPreviewPanelResizing,
+  } = useResizablePanel({
+    storageKey: FILE_PREVIEW_WIDTH_KEY,
+    defaultSize: 860,
+    minSize: FILE_PREVIEW_MIN_WIDTH,
+    maxSize: FILE_PREVIEW_MAX_WIDTH,
+    direction: -1,
+  });
   const dirty = Boolean(preview?.editable && draft !== (preview.content ?? ''));
   const dirtyRef = useRef(false);
 
@@ -1075,6 +1093,22 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
     }
     setOpen(false);
   }, [dirty, labels.discardPrompt]);
+
+  const handlePreviewPanelResizeKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setPreviewPanelWidth(previewPanelWidth + 16);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setPreviewPanelWidth(previewPanelWidth - 16);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setPreviewPanelWidth(FILE_PREVIEW_MIN_WIDTH);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setPreviewPanelWidth(FILE_PREVIEW_MAX_WIDTH);
+    }
+  }, [previewPanelWidth, setPreviewPanelWidth]);
 
   const save = useCallback(async () => {
     if (!preview?.editable || !dirty) return;
@@ -1269,12 +1303,26 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
               initial={shouldReduceMotion ? false : { x: '100%', opacity: 0.8 }}
               animate={{ x: 0, opacity: 1 }}
               exit={shouldReduceMotion ? { opacity: 0 } : { x: '100%', opacity: 0.8 }}
-              transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-              className="fixed inset-y-0 right-0 z-[51] flex w-full max-w-full flex-col border-l border-border bg-surface-1 shadow-2xl md:w-[72vw] md:min-w-[640px] md:max-w-[1120px]"
+              transition={shouldReduceMotion || isPreviewPanelResizing ? INSTANT_TRANSITION : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+              className="fixed inset-y-0 right-0 z-[51] flex max-w-full flex-col border-l border-border bg-surface-1 shadow-2xl"
+              style={{ width: previewPanelWidth }}
               role="dialog"
               aria-modal="true"
               aria-label={labels.title}
             >
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-valuemin={FILE_PREVIEW_MIN_WIDTH}
+              aria-valuemax={FILE_PREVIEW_MAX_WIDTH}
+              aria-valuenow={previewPanelWidth}
+              tabIndex={0}
+              onPointerDown={startPreviewPanelResize}
+              onKeyDown={handlePreviewPanelResizeKey}
+              className="absolute left-0 top-0 h-full w-2 -translate-x-1 cursor-col-resize touch-none
+                bg-transparent outline-none transition-colors hover:bg-accent/25 focus-visible:bg-accent/35"
+              title={labels.resizePanel}
+            />
             <header className="shrink-0 border-b border-border bg-surface-1/95 px-4 py-3 backdrop-blur">
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-surface-2 text-accent">

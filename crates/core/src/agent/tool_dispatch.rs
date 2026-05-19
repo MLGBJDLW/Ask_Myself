@@ -234,80 +234,107 @@ impl AgentExecutor {
                                 };
                             }
                             if policy_decision.needs_approval {
-                                let _ = run_tx
-                                    .send(AgentEvent::ToolRunUpdated {
-                                        run: build_tool_run_item(
-                                            &self.tools,
-                                            &tc.id,
-                                            &tc.name,
-                                            ToolRunStatus::ApprovalPending,
-                                            Some(&tc.arguments),
-                                            None,
-                                            None,
-                                            None,
-                                            Some("waiting for approval".to_string()),
-                                            None,
-                                        ),
-                                    })
-                                    .await;
-                                let risk = policy_decision.risk_level;
-                                let reason = self
-                                    .tools
-                                    .confirmation_message(&tc.name, &parsed_args)
-                                    .unwrap_or_else(|| describe_request(&tc.name, &parsed_args));
-                                let req = ApprovalRequest::new(
-                                    Uuid::new_v4().to_string(),
-                                    &tc.name,
-                                    &parsed_args,
-                                    risk,
-                                    reason,
-                                );
-                                let _ = approval_tx
-                                    .send(AgentEvent::ApprovalRequested {
-                                        request: req.clone(),
-                                    })
-                                    .await;
-                                let decision = approval_cb(req.clone()).await;
-                                let _ = approval_tx
-                                    .send(AgentEvent::ApprovalResolved {
-                                        request_id: req.id.clone(),
-                                        decision,
-                                    })
-                                    .await;
-                                if !decision.is_allowed() {
-                                    let denied = crate::tools::ToolResult {
-                                        call_id: tc.id.clone(),
-                                        content: format!("User denied permission for {}.", tc.name),
-                                        is_error: true,
-                                        artifacts: None,
-                                    };
-                                    return FinishedToolExecution {
-                                        index,
-                                        call: tc,
-                                        timeout: tool_timeout,
-                                        outcome: ToolExecutionOutcome::Result(
-                                            denied,
-                                            ToolRunStatus::Declined,
-                                        ),
-                                        elapsed: Duration::ZERO,
-                                    };
+                                if let Some(decision) = self.config.tool_approval_mode.short_circuit() {
+                                    if !decision.is_allowed() {
+                                        let denied = crate::tools::ToolResult {
+                                            call_id: tc.id.clone(),
+                                            content: format!(
+                                                "Tool approval mode denied permission for {}.",
+                                                tc.name
+                                            ),
+                                            is_error: true,
+                                            artifacts: None,
+                                        };
+                                        return FinishedToolExecution {
+                                            index,
+                                            call: tc,
+                                            timeout: tool_timeout,
+                                            outcome: ToolExecutionOutcome::Result(
+                                                denied,
+                                                ToolRunStatus::Declined,
+                                            ),
+                                            elapsed: Duration::ZERO,
+                                        };
+                                    }
+                                } else {
+                                    let _ = run_tx
+                                        .send(AgentEvent::ToolRunUpdated {
+                                            run: build_tool_run_item(
+                                                &self.tools,
+                                                &tc.id,
+                                                &tc.name,
+                                                ToolRunStatus::ApprovalPending,
+                                                Some(&tc.arguments),
+                                                None,
+                                                None,
+                                                None,
+                                                Some("waiting for approval".to_string()),
+                                                None,
+                                            ),
+                                        })
+                                        .await;
+                                    let risk = policy_decision.risk_level;
+                                    let reason = self
+                                        .tools
+                                        .confirmation_message(&tc.name, &parsed_args)
+                                        .unwrap_or_else(|| describe_request(&tc.name, &parsed_args));
+                                    let req = ApprovalRequest::new(
+                                        Uuid::new_v4().to_string(),
+                                        &tc.name,
+                                        &parsed_args,
+                                        risk,
+                                        reason,
+                                    );
+                                    let _ = approval_tx
+                                        .send(AgentEvent::ApprovalRequested {
+                                            request: req.clone(),
+                                        })
+                                        .await;
+                                    let decision = approval_cb(req.clone()).await;
+                                    let _ = approval_tx
+                                        .send(AgentEvent::ApprovalResolved {
+                                            request_id: req.id.clone(),
+                                            decision,
+                                        })
+                                        .await;
+                                    if !decision.is_allowed() {
+                                        let denied = crate::tools::ToolResult {
+                                            call_id: tc.id.clone(),
+                                            content: format!(
+                                                "User denied permission for {}.",
+                                                tc.name
+                                            ),
+                                            is_error: true,
+                                            artifacts: None,
+                                        };
+                                        return FinishedToolExecution {
+                                            index,
+                                            call: tc,
+                                            timeout: tool_timeout,
+                                            outcome: ToolExecutionOutcome::Result(
+                                                denied,
+                                                ToolRunStatus::Declined,
+                                            ),
+                                            elapsed: Duration::ZERO,
+                                        };
+                                    }
+                                    let _ = run_tx
+                                        .send(AgentEvent::ToolRunUpdated {
+                                            run: build_tool_run_item(
+                                                &self.tools,
+                                                &tc.id,
+                                                &tc.name,
+                                                ToolRunStatus::Running,
+                                                Some(&tc.arguments),
+                                                None,
+                                                None,
+                                                None,
+                                                None,
+                                                None,
+                                            ),
+                                        })
+                                        .await;
                                 }
-                                let _ = run_tx
-                                    .send(AgentEvent::ToolRunUpdated {
-                                        run: build_tool_run_item(
-                                            &self.tools,
-                                            &tc.id,
-                                            &tc.name,
-                                            ToolRunStatus::Running,
-                                            Some(&tc.arguments),
-                                            None,
-                                            None,
-                                            None,
-                                            None,
-                                            None,
-                                        ),
-                                    })
-                                    .await;
                             }
                         } else {
                             let baseline_requires_confirmation = if tc.name == "run_shell" {
@@ -353,7 +380,29 @@ impl AgentExecutor {
                                 };
                             }
                             if policy_decision.needs_approval {
-                                if let Some(ref cb) = self.confirmation_callback {
+                                if let Some(decision) = self.config.tool_approval_mode.short_circuit() {
+                                    if !decision.is_allowed() {
+                                        let declined = crate::tools::ToolResult {
+                                            call_id: tc.id.clone(),
+                                            content: format!(
+                                                "Tool approval mode denied permission for {}.",
+                                                tc.name
+                                            ),
+                                            is_error: true,
+                                            artifacts: None,
+                                        };
+                                        return FinishedToolExecution {
+                                            index,
+                                            call: tc,
+                                            timeout: tool_timeout,
+                                            outcome: ToolExecutionOutcome::Result(
+                                                declined,
+                                                ToolRunStatus::Declined,
+                                            ),
+                                            elapsed: Duration::ZERO,
+                                        };
+                                    }
+                                } else if let Some(ref cb) = self.confirmation_callback {
                                     let message = self
                                         .tools
                                         .confirmation_message(&tc.name, &parsed_args)

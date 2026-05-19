@@ -661,6 +661,7 @@ pub async fn compact_conversation_cmd(
         trace_enabled: app_cfg.trace_enabled,
         require_tool_confirmation: false,
         shell_access_mode: ShellAccessMode::Restricted,
+        tool_approval_mode: app_cfg.tool_approval_mode,
     };
 
     let summarization_provider: Option<Box<dyn nexa_core::llm::LlmProvider>> =
