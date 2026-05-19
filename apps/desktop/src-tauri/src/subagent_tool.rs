@@ -1531,7 +1531,7 @@ async fn run_subagent_once(
         args.task,
         args.context.clone().unwrap_or_default()
     );
-    let enabled_skills = nexa_core::skills::select_skills_from_pool(
+    let enabled_skills = nexa_core::skills::select_available_skills_from_pool(
         filter_enabled_skills(
             {
                 let mut combined = nexa_core::skills::load_builtin_skills();
@@ -1541,7 +1541,6 @@ async fn run_subagent_once(
             runtime.allowed_skill_ids.as_deref(),
         ),
         &selected_skill_query,
-        5,
     );
     let applied_skill_refs = applied_skills(&enabled_skills);
     let tools =

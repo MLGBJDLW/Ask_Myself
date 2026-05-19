@@ -190,12 +190,11 @@ pub async fn agent_chat_cmd(
         .map(|persona| persona.default_skill_ids.clone())
         .unwrap_or_default();
     let selected_skills = if persona_default_skill_ids.is_empty() {
-        nexa_core::skills::get_active_skills_for_query(&state.db, &message, 5)
+        nexa_core::skills::get_available_skills_for_query(&state.db, &message)
     } else {
-        nexa_core::skills::get_active_skills_for_query_with_pinned(
+        nexa_core::skills::get_available_skills_for_query_with_pinned(
             &state.db,
             &message,
-            8,
             &persona_default_skill_ids,
         )
     }

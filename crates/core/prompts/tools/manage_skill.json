@@ -1,6 +1,6 @@
 {
   "name": "manage_skill",
-  "description": "List or inspect active skills, and create, inspect, apply, or reject controlled skill change proposals. Use list_skills/view_skill when the active skill excerpt is not enough. Use proposals for self-evolution when a repeated workflow lesson should become a reusable skill. Proposals are safety-scanned; applying a proposal mutates active user skills and requires confirmation.",
+  "description": "List, activate, or inspect available skills and their bundled resources, and create, inspect, apply, or reject controlled skill change proposals. Use activate_skill before following a skill from the Available Skills metadata list. Use view_resource when an activated skill references a bundled file. Use proposals for self-evolution when a repeated workflow lesson should become a reusable skill. Proposals are safety-scanned; applying a proposal mutates active user skills and requires confirmation.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -9,6 +9,8 @@
         "enum": [
           "list_skills",
           "view_skill",
+          "activate_skill",
+          "view_resource",
           "propose_create",
           "propose_patch",
           "list_proposals",
@@ -16,7 +18,7 @@
           "apply_proposal",
           "reject_proposal"
         ],
-        "description": "Skill inspection or evolution action to perform."
+        "description": "Skill inspection, activation, resource loading, or evolution action to perform."
       },
       "proposal_id": {
         "type": "string",
@@ -24,7 +26,11 @@
       },
       "skill_id": {
         "type": "string",
-        "description": "Skill id for view_skill, or existing user skill id for propose_patch. Built-in skill ids are read-only for patching."
+        "description": "Skill id for view_skill, activate_skill, view_resource, or existing user skill id for propose_patch. Built-in skill ids are read-only for patching."
+      },
+      "resource_path": {
+        "type": "string",
+        "description": "Bundled resource path for view_resource, for example references/playbook.md or scripts/helper.py."
       },
       "name": {
         "type": "string",

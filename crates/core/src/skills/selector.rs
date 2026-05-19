@@ -126,8 +126,69 @@ fn fallback_skills(mut skills: Vec<Skill>, max_skills: usize) -> Vec<Skill> {
     skills
 }
 
+fn skill_slug(skill: &Skill) -> String {
+    skill
+        .id
+        .strip_prefix("builtin-")
+        .unwrap_or(skill.id.as_str())
+        .to_string()
+}
+
+fn normalize_selector(value: &str) -> String {
+    value
+        .trim()
+        .to_lowercase()
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '$'))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn selector_matches_skill(skill: &Skill, selector: &str) -> bool {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return false;
+    }
+    let selector = selector.strip_prefix('$').unwrap_or(selector);
+    let selector = selector.strip_prefix('@').unwrap_or(selector);
+    let selector_normalized = normalize_selector(selector);
+    let slug = skill_slug(skill);
+    selector_normalized == normalize_selector(&skill.id)
+        || selector_normalized == normalize_selector(&slug)
+        || selector_normalized == normalize_selector(&skill.name)
+        || selector_normalized == normalize_selector(&skill.interface.display_name)
+}
+
+fn is_skill_pinned(skill: &Skill, pinned_skill_ids: &[String]) -> bool {
+    pinned_skill_ids
+        .iter()
+        .any(|id| selector_matches_skill(skill, id))
+}
+
+fn is_skill_explicitly_requested(skill: &Skill, query: &str) -> bool {
+    let query_lower = query.to_lowercase();
+    let slug = skill_slug(skill).to_lowercase();
+    let name = skill.name.to_lowercase();
+    let display = skill.interface.display_name.to_lowercase();
+
+    query_lower.contains(&format!("${slug}"))
+        || query_lower.contains(&format!("@{slug}"))
+        || (!name.trim().is_empty() && query_lower.contains(&name))
+        || (!display.trim().is_empty() && query_lower.contains(&display))
+}
+
 pub fn select_skills_from_pool(skills: Vec<Skill>, query: &str, max_skills: usize) -> Vec<Skill> {
     if skills.is_empty() || max_skills == 0 {
+        return Vec::new();
+    }
+
+    let skills = skills
+        .into_iter()
+        .filter(|skill| {
+            skill.policy.allow_implicit_invocation || is_skill_explicitly_requested(skill, query)
+        })
+        .collect::<Vec<_>>();
+    if skills.is_empty() {
         return Vec::new();
     }
 
@@ -224,6 +285,49 @@ pub fn select_skills_from_pool_with_pinned(
     out
 }
 
+pub fn select_available_skills_from_pool_with_pinned(
+    skills: Vec<Skill>,
+    query: &str,
+    pinned_skill_ids: &[String],
+) -> Vec<Skill> {
+    if skills.is_empty() {
+        return Vec::new();
+    }
+
+    let query_normalized = normalize_text(query);
+    let query_tokens = enrich_tokens(&tokenize(&query_normalized));
+
+    let mut ranked = skills
+        .into_iter()
+        .filter_map(|skill| {
+            let pinned = is_skill_pinned(&skill, pinned_skill_ids);
+            let explicit = is_skill_explicitly_requested(&skill, query);
+            if !skill.policy.allow_implicit_invocation && !pinned && !explicit {
+                return None;
+            }
+            let score = if query_tokens.len() >= 2 {
+                score_skill(&skill, &query_tokens, &query_normalized)
+            } else {
+                0.0
+            };
+            Some((pinned, explicit, score, skill))
+        })
+        .collect::<Vec<_>>();
+
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| fallback_skill_order(&a.3, &b.3))
+    });
+
+    ranked.into_iter().map(|(_, _, _, skill)| skill).collect()
+}
+
+pub fn select_available_skills_from_pool(skills: Vec<Skill>, query: &str) -> Vec<Skill> {
+    select_available_skills_from_pool_with_pinned(skills, query, &[])
+}
+
 /// Return the skills active for a given user query.
 ///
 /// Combines built-in (bundled) skills with enabled user skills from the DB,
@@ -253,6 +357,33 @@ pub fn get_active_skills_for_query_with_pinned(
         all,
         query,
         max_skills,
+        pinned_skill_ids,
+    ))
+}
+
+/// Return all skills that may be shown in the prompt as metadata.
+///
+/// Unlike `get_active_skills_for_query`, this does not inject skill bodies and
+/// does not cap to a small number. Prompt rendering owns the final budget. The
+/// selector still sorts relevant and pinned skills first, and hides skills whose
+/// policy opts out of implicit invocation unless the user explicitly names them
+/// or a persona pins them.
+pub fn get_available_skills_for_query(db: &Database, query: &str) -> Result<Vec<Skill>, CoreError> {
+    let mut all: Vec<Skill> = load_builtin_skills();
+    all.extend(db.get_enabled_skills()?);
+    Ok(select_available_skills_from_pool(all, query))
+}
+
+pub fn get_available_skills_for_query_with_pinned(
+    db: &Database,
+    query: &str,
+    pinned_skill_ids: &[String],
+) -> Result<Vec<Skill>, CoreError> {
+    let mut all: Vec<Skill> = load_builtin_skills();
+    all.extend(db.get_enabled_skills()?);
+    Ok(select_available_skills_from_pool_with_pinned(
+        all,
+        query,
         pinned_skill_ids,
     ))
 }

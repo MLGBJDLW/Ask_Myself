@@ -1,0 +1,11 @@
+interface:
+  display_name: "Document Script Editor"
+  short_description: "Edit DOCX, PPTX, XLSX, PDF, and text files using bundled Python helpers"
+  default_prompt: "Use this skill when file edits should be performed through a deterministic document-editing script."
+dependencies:
+  tools:
+    - type: "nexa"
+      value: "prepare_document_tools"
+      description: "Checks and prepares the app-managed document editing Python environment"
+policy:
+  allow_implicit_invocation: true

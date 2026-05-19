@@ -1,0 +1,6 @@
+interface:
+  display_name: "Persona Design"
+  short_description: "Design durable assistant personas, operating modes, and skill bindings"
+  default_prompt: "Use this skill when creating or refining an assistant persona or operating mode."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,6 @@
+interface:
+  display_name: "XLSX Workbook Design"
+  short_description: "Create and audit spreadsheets, financial models, formulas, and workbook structure"
+  default_prompt: "Use this skill for Excel or XLSX deliverables that need formulas, sheet design, or validation."
+policy:
+  allow_implicit_invocation: true

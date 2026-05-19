@@ -372,6 +372,10 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             builtin: false,
+            interface: crate::skills::SkillInterfaceMetadata::default(),
+            dependencies: crate::skills::SkillDependencies::default(),
+            policy: crate::skills::SkillPolicy::default(),
+            source_path: None,
             resources: Vec::new(),
             resource_bundle: Vec::new(),
         }];
@@ -389,7 +393,7 @@ mod tests {
         );
         let sys_text = result[0].text_content();
         assert!(
-            sys_text.contains("Active Skills"),
+            sys_text.contains("Available Skills"),
             "Skills should be in system prompt"
         );
         assert!(sys_text.contains("Be Concise"));

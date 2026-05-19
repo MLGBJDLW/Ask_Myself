@@ -1,0 +1,6 @@
+interface:
+  display_name: "Skill Creator"
+  short_description: "Create, evaluate, and package reusable agent skills"
+  default_prompt: "Use this skill when creating or revising a skill bundle and validating its trigger behavior."
+policy:
+  allow_implicit_invocation: true
