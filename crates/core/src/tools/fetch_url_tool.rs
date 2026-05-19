@@ -5,6 +5,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use encoding_rs::Encoding;
+use futures::StreamExt;
+use reqwest::header::{CONTENT_TYPE, LOCATION};
 use serde::Deserialize;
 
 use crate::db::Database;
@@ -14,6 +17,8 @@ use super::{Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/fetch_url.json");
+const MAX_REDIRECTS: usize = 5;
+const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// Tool that fetches a web page and returns its text content with HTML
 /// tags stripped.
@@ -81,8 +86,119 @@ fn is_private_ip(ip: &IpAddr) -> bool {
         IpAddr::V6(v6) => {
             v6.is_loopback() // ::1
                 || v6.is_unspecified() // ::
+                || v6.is_multicast()
+                || ((v6.segments()[0] & 0xfe00) == 0xfc00) // unique local
+                || ((v6.segments()[0] & 0xffc0) == 0xfe80) // link local
         }
     }
+}
+
+async fn validate_resolved_host(url: &reqwest::Url) -> Result<(), String> {
+    let host = url.host_str().ok_or("URL has no host")?;
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+    let port = url
+        .port_or_known_default()
+        .ok_or("URL scheme has no known default port")?;
+    let addrs = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| format!("DNS lookup failed for {host}: {e}"))?;
+    let mut resolved_any = false;
+    for addr in addrs {
+        resolved_any = true;
+        let ip = addr.ip();
+        if is_private_ip(&ip) {
+            return Err(format!(
+                "Access to host {host} is not allowed because it resolves to private IP {ip}"
+            ));
+        }
+    }
+    if !resolved_any {
+        return Err(format!("DNS lookup for {host} returned no addresses"));
+    }
+    Ok(())
+}
+
+async fn validate_url_for_fetch(url: &str) -> Result<reqwest::Url, String> {
+    let parsed = validate_url(url)?;
+    validate_resolved_host(&parsed).await?;
+    Ok(parsed)
+}
+
+async fn send_with_safe_redirects(
+    client: &reqwest::Client,
+    initial_url: reqwest::Url,
+) -> Result<(reqwest::Response, reqwest::Url, usize), String> {
+    let mut current = initial_url;
+    for redirect_count in 0..=MAX_REDIRECTS {
+        validate_resolved_host(&current).await?;
+        let response = client
+            .get(current.clone())
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+        if !response.status().is_redirection() {
+            return Ok((response, current, redirect_count));
+        }
+        if redirect_count == MAX_REDIRECTS {
+            return Err(format!("Too many redirects (>{MAX_REDIRECTS})"));
+        }
+
+        let location = response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| {
+                "Redirect response did not include a valid Location header".to_string()
+            })?;
+        let next = current
+            .join(location)
+            .map_err(|e| format!("Invalid redirect Location: {e}"))?;
+        validate_url(next.as_str())?;
+        current = next;
+    }
+
+    Err(format!("Too many redirects (>{MAX_REDIRECTS})"))
+}
+
+async fn read_limited_body(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, bool), String> {
+    let mut body = Vec::new();
+    let mut truncated = false;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Failed to read response body: {e}"))?;
+        if body.len() + chunk.len() > max_bytes {
+            let remaining = max_bytes.saturating_sub(body.len());
+            body.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((body, truncated))
+}
+
+fn charset_from_content_type(content_type: Option<&str>) -> Option<&'static Encoding> {
+    let content_type = content_type?;
+    for part in content_type.split(';') {
+        let part = part.trim();
+        let Some(value) = part.strip_prefix("charset=") else {
+            continue;
+        };
+        return Encoding::for_label(value.trim_matches('"').as_bytes());
+    }
+    None
+}
+
+fn decode_body(bytes: &[u8], content_type: Option<&str>) -> String {
+    let encoding = charset_from_content_type(content_type).unwrap_or(encoding_rs::UTF_8);
+    let (text, _, _) = encoding.decode(bytes);
+    text.into_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +335,12 @@ fn extract_title(html: &str) -> Option<String> {
     }
 }
 
+fn content_is_html(content_type: Option<&str>, body: &str) -> bool {
+    content_type
+        .map(|value| value.to_ascii_lowercase().contains("html"))
+        .unwrap_or_else(|| body.trim_start().starts_with("<!doctype") || body.contains("<html"))
+}
+
 // ---------------------------------------------------------------------------
 // Tool implementation
 // ---------------------------------------------------------------------------
@@ -252,7 +374,7 @@ impl Tool for FetchUrlTool {
             .map_err(|e| CoreError::InvalidInput(format!("Invalid fetch_url arguments: {e}")))?;
 
         // Validate the URL.
-        let parsed_url = match validate_url(&args.url) {
+        let parsed_url = match validate_url_for_fetch(&args.url).await {
             Ok(u) => u,
             Err(msg) => {
                 return Ok(ToolResult {
@@ -274,47 +396,62 @@ impl Tool for FetchUrlTool {
         let client = reqwest::Client::builder()
             .user_agent(crate::USER_AGENT)
             .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| CoreError::InvalidInput(format!("Failed to build HTTP client: {e}")))?;
 
-        let response = match client.get(parsed_url.as_str()).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(ToolResult {
-                    call_id: call_id.to_string(),
-                    content: format!("HTTP request failed: {e}"),
-                    is_error: true,
-                    artifacts: None,
-                });
-            }
-        };
+        let (response, final_url, redirect_count) =
+            match send_with_safe_redirects(&client, parsed_url).await {
+                Ok(result) => result,
+                Err(e) => {
+                    return Ok(ToolResult {
+                        call_id: call_id.to_string(),
+                        content: e,
+                        is_error: true,
+                        artifacts: None,
+                    });
+                }
+            };
 
         let status = response.status();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         if !status.is_success() {
             return Ok(ToolResult {
                 call_id: call_id.to_string(),
-                content: format!("HTTP {status} fetching {}", args.url),
+                content: format!("HTTP {status} fetching {}", final_url),
                 is_error: true,
                 artifacts: None,
             });
         }
 
-        let body = match response.text().await {
-            Ok(t) => t,
+        let (body_bytes, body_truncated) = match read_limited_body(response, MAX_BODY_BYTES).await {
+            Ok(body) => body,
             Err(e) => {
                 return Ok(ToolResult {
                     call_id: call_id.to_string(),
-                    content: format!("Failed to read response body: {e}"),
+                    content: e,
                     is_error: true,
                     artifacts: None,
                 });
             }
         };
 
-        // Convert HTML to text and truncate.
-        let title = extract_title(&body);
-        let mut text = html_to_text(&body);
-        let truncated = text.len() > max_length;
+        let body = decode_body(&body_bytes, content_type.as_deref());
+        let is_html = content_is_html(content_type.as_deref(), &body);
+        let title = if is_html { extract_title(&body) } else { None };
+        let extraction_method = if is_html { "html_basic" } else { "plain_text" };
+
+        // Convert content to text and truncate.
+        let mut text = if is_html {
+            html_to_text(&body)
+        } else {
+            collapse_whitespace(&body)
+        };
+        let truncated = text.len() > max_length || body_truncated;
         if text.len() > max_length {
             text.truncate(max_length);
             // Don't break mid-word — find last space.
@@ -322,23 +459,31 @@ impl Tool for FetchUrlTool {
                 text.truncate(last_space);
             }
             text.push_str("\n\n[… truncated]");
+        } else if body_truncated {
+            text.push_str("\n\n[… truncated at download limit]");
         }
 
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: format!(
-                "URL: {}\nTitle: {}\nSuggested citation: [url:{}|{}]\n---\n{}",
+                "URL: {}\nFinal URL: {}\nTitle: {}\nSuggested citation: [url:{}|{}]\n---\n{}",
                 args.url,
+                final_url,
                 title.as_deref().unwrap_or("(untitled page)"),
-                args.url,
+                final_url,
                 title.as_deref().unwrap_or("web page"),
                 text
             ),
             is_error: false,
             artifacts: Some(serde_json::json!({
                 "url": args.url,
+                "finalUrl": final_url.as_str(),
                 "title": title,
                 "truncated": truncated,
+                "bodyTruncated": body_truncated,
+                "contentType": content_type,
+                "redirectCount": redirect_count,
+                "extractionMethod": extraction_method,
             })),
         })
     }
@@ -352,5 +497,11 @@ mod tests {
     fn extract_title_reads_basic_title_tag() {
         let html = "<html><head><title>Example &amp; Test</title></head><body>ok</body></html>";
         assert_eq!(extract_title(html).as_deref(), Some("Example & Test"));
+    }
+
+    #[test]
+    fn validate_url_rejects_private_ip_literal() {
+        let err = validate_url("http://127.0.0.1/admin").unwrap_err();
+        assert!(err.contains("localhost") || err.contains("private IP"));
     }
 }

@@ -1,0 +1,56 @@
+{
+  "name": "web_search",
+  "description": "Search the public web through Nexa's built-in no-key providers. Returns structured candidate results with provider failures; use fetch_url on authoritative result URLs before citing facts. For Chinese queries, the native router uses Baidu first by default.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "One focused, natural-language search query. Avoid keyword/operator stacks; use a second call only for a genuinely separate angle."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "default": 8,
+        "description": "Maximum normalized results to return."
+      },
+      "region": {
+        "type": "string",
+        "enum": ["auto", "mainland_cn", "global"],
+        "default": "auto",
+        "description": "Search routing region. auto chooses mainland_cn for Chinese queries and global otherwise."
+      },
+      "language": {
+        "type": "string",
+        "enum": ["auto", "zh", "en"],
+        "default": "auto",
+        "description": "Query language hint. auto detects Chinese text and routes Chinese searches through Baidu first."
+      },
+      "engines": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["baidu", "sogou", "bing", "duckduckgo"]
+        },
+        "description": "Optional provider subset. Usually omit this and let the language-aware router choose one or two primary engines."
+      },
+      "time_range": {
+        "type": "string",
+        "enum": ["any", "day", "week", "month", "year"],
+        "default": "any",
+        "description": "Accepted for forward compatibility; some providers may ignore it."
+      },
+      "site": {
+        "type": "string",
+        "description": "Optional single domain constraint such as github.com. The tool turns this into one focused site: query."
+      },
+      "include_snippets": {
+        "type": "boolean",
+        "default": true,
+        "description": "Whether snippets should be included in the returned candidate results."
+      }
+    },
+    "required": ["query"]
+  }
+}

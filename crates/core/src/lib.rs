@@ -74,6 +74,7 @@ pub mod trace;
 pub mod video;
 pub mod visual_document;
 pub mod watcher;
+pub mod web_search;
 pub mod wiki;
 pub mod work_plan;
 pub mod workflow_catalog;

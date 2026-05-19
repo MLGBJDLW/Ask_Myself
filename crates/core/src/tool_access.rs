@@ -168,7 +168,7 @@ mod tests {
         let map = tool_access_map_with_extra_names([
             "spawn_subagent",
             "judge_subagent_results",
-            "mcp__web_search__search",
+            "web_search",
             "mcp__unknown__dangerous",
         ]);
         let by_name = |name: &str| {
@@ -183,10 +183,10 @@ mod tests {
             ApprovalRisk::Low
         );
 
-        let web_search = by_name("mcp__web_search__search");
+        let web_search = by_name("web_search");
         assert_eq!(web_search.plugin.id, "web-research");
         assert_eq!(web_search.category, "web");
-        assert_eq!(web_search.render_kind, ToolRenderKind::Mcp);
+        assert_eq!(web_search.render_kind, ToolRenderKind::Search);
         assert!(web_search.read_only);
         assert!(web_search.can_access_network);
         assert!(!web_search.can_write);

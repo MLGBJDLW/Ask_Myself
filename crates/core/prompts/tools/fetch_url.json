@@ -1,6 +1,6 @@
 {
   "name": "fetch_url",
-  "description": "Fetch and read the text content of a web page. Use this only when the user shares a URL or explicitly asks for web content. Returns the stripped page text plus URL/title provenance and a suggested citation.",
+  "description": "Fetch and read the text content of a web page with SSRF and redirect-hop validation. Use this after web_search or when the user shares a URL. Returns extracted text plus URL/title provenance and a suggested citation.",
   "parameters": {
     "type": "object",
     "properties": {

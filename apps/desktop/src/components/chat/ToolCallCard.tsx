@@ -276,6 +276,7 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   file: FileText,
   summarize: List,
   list_dir: FolderOpen,
+  web_search: Globe,
   fetch_url: Globe,
   chunk_context: Layers,
   write_note: PenLine,

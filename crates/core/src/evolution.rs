@@ -983,6 +983,7 @@ fn derive_auto_skill_pattern(trace: &AgentTrace) -> Option<AutoSkillPattern> {
                 | "read_file"
                 | "read_files"
                 | "grep_files"
+                | "web_search"
                 | "fetch_url"
                 | "search_sessions"
                 | "code_intelligence"

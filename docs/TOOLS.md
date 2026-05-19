@@ -542,7 +542,7 @@ At least one of `path` or `source_id` should be provided.
 
 ### `fetch_url`
 
-Fetch and extract text content from a web page (HTML stripped). Use when the user shares a URL or web content needs referencing.
+Fetch and extract text content from a web page with SSRF and redirect-hop validation. Use after `web_search` or when the user shares a URL and web content needs referencing.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -553,9 +553,25 @@ Fetch and extract text content from a web page (HTML stripped). Use when the use
 
 ---
 
-### Readable web search via MCP
+### `web_search`
 
-When the built-in web-search MCP server is enabled, its readable search tool is exposed as `mcp__web_search__search`. Use it to discover candidate URLs, then use `fetch_url` on the most authoritative results before citing or summarizing them.
+Search the public web through Nexa's native no-key providers. Use it to discover candidate URLs, then use `fetch_url` on the most authoritative results before citing or summarizing them.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | yes | One focused, natural-language search query |
+| `limit` | integer | no | Max normalized results, 1-20 (default 8) |
+| `region` | string | no | `auto`, `mainland_cn`, or `global` |
+| `language` | string | no | `auto`, `zh`, or `en` |
+| `engines` | string[] | no | Optional subset of `baidu`, `sogou`, `bing`, `duckduckgo` |
+| `time_range` | string | no | `any`, `day`, `week`, `month`, or `year`; accepted for provider compatibility |
+| `site` | string | no | Optional single-domain filter such as `github.com` |
+| `include_snippets` | boolean | no | Include snippets in candidate results (default true) |
+
+Language routing:
+- Chinese queries use Baidu first by default, then Sogou/Bing only when needed.
+- English queries use Bing first, then DuckDuckGo only when needed.
+- Avoid stacking unusual operators or several near-duplicate queries. Start with one focused query; use a second query only for a genuinely separate angle.
 
 Do not treat `desktop_automation` with `action: "web_search"` as evidence retrieval. That action only opens a browser search for the user and does not return readable search results to the agent.
 
@@ -580,7 +596,7 @@ Perform controlled local browser or desktop handoff actions. This tool is intent
 Safety posture:
 - URL/search/path launch actions require user confirmation.
 - Local path actions must resolve inside a registered source and the active source scope.
-- Use `mcp__web_search__search` for readable search results when the built-in web-search MCP server is enabled.
+- Use `web_search` for readable search results.
 - Use `fetch_url` when the agent needs page text; use Playwright MCP when an enabled connector should interact with page elements.
 
 > **Example:** Open a confirmed dashboard URL in the user's default browser, or reveal a report file that was just generated under a registered source.

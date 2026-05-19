@@ -234,6 +234,7 @@ fn is_evidence_oriented_tool(tool_name: &str) -> bool {
             | "compare_documents"
             | "summarize_document"
             | "query_knowledge_graph"
+            | "web_search"
             | "fetch_url"
             | "read_file"
             | "read_files"

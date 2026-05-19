@@ -123,7 +123,7 @@ pub(crate) fn tool_timeout_for_call(
 
 pub(crate) fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
     match tool_name {
-        "run_shell" | "read_file" | "fetch_url" => summarize_lines(
+        "run_shell" | "read_file" | "web_search" | "fetch_url" => summarize_lines(
             &truncate_tool_result(content, MAX_TOOL_RESULT_CONTEXT_CHARS),
             40,
             25,

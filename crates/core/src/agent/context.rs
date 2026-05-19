@@ -209,11 +209,17 @@ fn cap_system_prompt(text: String) -> String {
     if text.len() <= MAX_SYSTEM_PROMPT_CHARS {
         return text;
     }
-    let truncated = &text[..MAX_SYSTEM_PROMPT_CHARS];
+    let safe_limit = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= MAX_SYSTEM_PROMPT_CHARS)
+        .last()
+        .unwrap_or(0);
+    let truncated = &text[..safe_limit];
     let cut = truncated
         .rfind('\n')
         .or_else(|| truncated.rfind(' '))
-        .unwrap_or(MAX_SYSTEM_PROMPT_CHARS);
+        .unwrap_or(safe_limit);
     format!("{}\n...[truncated]", &text[..cut])
 }
 
@@ -224,8 +230,14 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     if clean.len() <= max_chars {
         return clean.to_string();
     }
-    let truncated = &clean[..max_chars];
-    let cut = truncated.rfind(' ').unwrap_or(max_chars);
+    let safe_limit = clean
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= max_chars)
+        .last()
+        .unwrap_or(0);
+    let truncated = &clean[..safe_limit];
+    let cut = truncated.rfind(' ').unwrap_or(safe_limit);
     format!("{}...", &clean[..cut])
 }
 
@@ -408,5 +420,21 @@ mod tests {
         }];
         let tokens = estimate_tool_tokens(&tools);
         assert!(tokens > 10, "Tool tokens should be non-trivial");
+    }
+
+    #[test]
+    fn cap_system_prompt_is_utf8_safe() {
+        let text = format!("{}中文", "a".repeat(MAX_SYSTEM_PROMPT_CHARS - 1));
+        let capped = cap_system_prompt(text);
+
+        assert!(capped.ends_with("...[truncated]"));
+    }
+
+    #[test]
+    fn truncate_text_is_utf8_safe() {
+        let text = format!("{}中文", "a".repeat(9));
+        let truncated = truncate_text(&text, 10);
+
+        assert!(truncated.ends_with("..."));
     }
 }

@@ -93,6 +93,7 @@ pub fn capability_render_kind(name: &str) -> ToolRenderKind {
         "run_shell" => ToolRenderKind::CommandExecution,
         "edit_file" | "multi_edit" | "create_file" | "write_note" => ToolRenderKind::FileChange,
         "fetch_url"
+        | "web_search"
         | "read_file"
         | "read_files"
         | "get_document_info"
@@ -129,6 +130,7 @@ pub fn capability_input_streaming(name: &str) -> ToolInputStreamingMode {
     match name {
         "generate_image"
         | "fetch_url"
+        | "web_search"
         | "read_file"
         | "read_files"
         | "list_dir"
@@ -226,10 +228,6 @@ pub fn capability_resource_keys(name: &str, args: &serde_json::Value) -> Vec<Str
         push_string_resource_key(&mut keys, "mcp", name);
     }
     keys
-}
-
-fn is_builtin_web_search_mcp_tool(name: &str) -> bool {
-    name == "mcp__web_search__search" || name.starts_with("mcp__web_search__")
 }
 
 fn generic_access_profile(
@@ -406,7 +404,7 @@ pub fn infer_tool_access_profile(
             ApprovalRisk::Low,
             "Reads document compilation status and diagnostics.",
         ),
-        "fetch_url" => (
+        "fetch_url" | "web_search" => (
             "web",
             true,
             false,
@@ -414,7 +412,7 @@ pub fn infer_tool_access_profile(
             true,
             false,
             ApprovalRisk::Low,
-            "Reads remote URLs and crosses the local trust boundary.",
+            "Reads remote web content or search results and crosses the local trust boundary.",
         ),
         "desktop_automation" => (
             "automation",
@@ -559,16 +557,6 @@ pub fn infer_tool_access_profile(
             ApprovalRisk::Low,
             "Reads and adjudicates subagent outputs without directly changing user data.",
         ),
-        tool if is_builtin_web_search_mcp_tool(tool) => (
-            "web",
-            true,
-            false,
-            false,
-            true,
-            false,
-            ApprovalRisk::Low,
-            "Reads web search results through the built-in web search MCP server.",
-        ),
         tool if tool == "mcp_tool" || tool.starts_with("mcp__") => (
             "mcp",
             true,
@@ -623,8 +611,7 @@ pub fn fallback_registry_run_capabilities(
     ToolRunCapabilities {
         input_streaming: capability_input_streaming(name),
         render_kind: capability_render_kind(name),
-        read_only: is_builtin_web_search_mcp_tool(name)
-            || (!matches!(name, "mcp_tool") && !name.starts_with("mcp__")),
+        read_only: !matches!(name, "mcp_tool") && !name.starts_with("mcp__"),
         destructive: false,
         concurrency_safe: true,
         interrupt_behavior: ToolInterruptBehavior::Block,
