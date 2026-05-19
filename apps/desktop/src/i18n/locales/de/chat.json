@@ -292,6 +292,8 @@
   "trustCanInstructYes": "Ja",
   "trustCanInstructNo": "Nein",
   "generatedImageAlt": "Generiertes Bild",
+  "generatedImageLoading": "Bild wird erstellt",
+  "generatedImageSaved": "Bild gespeichert",
   "diffFiles": "Dateien",
   "diffReplacements": "Ersetz.",
   "diffPending": "Diff",

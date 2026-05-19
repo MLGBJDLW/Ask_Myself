@@ -1,0 +1,6 @@
+interface:
+  display_name: "Visual Explanations"
+  short_description: "Create Mermaid diagrams for workflows, timelines, hierarchies, and data flows"
+  default_prompt: "Use this skill when a diagram would make the explanation clearer than prose alone."
+policy:
+  allow_implicit_invocation: true

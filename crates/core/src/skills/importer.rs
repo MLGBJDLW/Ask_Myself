@@ -69,7 +69,7 @@ pub fn import_skills_from_directory(db: &Database, root: &Path) -> Result<Vec<Sk
 
 fn load_resource_bundle_from_dir(skill_dir: &Path) -> Result<Vec<SkillResourceFile>, CoreError> {
     let mut resources = Vec::new();
-    for folder in ["scripts", "references", "assets"] {
+    for folder in ["scripts", "references", "assets", "agents"] {
         let dir = skill_dir.join(folder);
         if !dir.exists() {
             continue;

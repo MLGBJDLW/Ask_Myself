@@ -1,0 +1,6 @@
+interface:
+  display_name: "PPTX Presentation Design"
+  short_description: "Create, rewrite, audit, and package polished PowerPoint decks"
+  default_prompt: "Use this skill for slide decks, presentation redesign, PPTX generation, and visual QA."
+policy:
+  allow_implicit_invocation: true

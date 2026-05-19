@@ -46,6 +46,10 @@ export interface Skill {
   updatedAt: string;
   /** True for bundled SKILL.md skills — read-only in the UI. */
   builtin?: boolean;
+  interface?: SkillInterfaceMetadata;
+  dependencies?: SkillDependencies;
+  policy?: SkillPolicy;
+  sourcePath?: string | null;
   resources?: SkillResourceInfo[];
 }
 
@@ -58,7 +62,31 @@ export interface SaveSkillInput {
   resourceBundle?: SkillResourceFile[];
 }
 
-export type SkillResourceKind = 'script' | 'reference' | 'asset';
+export interface SkillInterfaceMetadata {
+  displayName: string;
+  shortDescription: string;
+  iconSmall?: string | null;
+  iconLarge?: string | null;
+  defaultPrompt?: string | null;
+}
+
+export interface SkillDependencies {
+  tools: SkillToolDependency[];
+}
+
+export interface SkillToolDependency {
+  type: string;
+  value: string;
+  description?: string | null;
+  transport?: string | null;
+  url?: string | null;
+}
+
+export interface SkillPolicy {
+  allowImplicitInvocation: boolean;
+}
+
+export type SkillResourceKind = 'script' | 'reference' | 'metadata' | 'asset';
 export type SkillResourceEncoding = 'utf8' | 'base64';
 
 export interface SkillResourceInfo {
@@ -108,6 +136,9 @@ export interface SkillChangeProposal {
   warnings: SkillWarning[];
   status: SkillProposalStatus;
   conversationId: string | null;
+  source: string;
+  confidence: number;
+  evidence: unknown;
   createdAt: string;
   updatedAt: string;
   appliedAt: string | null;

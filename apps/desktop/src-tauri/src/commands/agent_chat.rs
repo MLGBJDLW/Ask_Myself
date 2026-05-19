@@ -190,12 +190,11 @@ pub async fn agent_chat_cmd(
         .map(|persona| persona.default_skill_ids.clone())
         .unwrap_or_default();
     let selected_skills = if persona_default_skill_ids.is_empty() {
-        nexa_core::skills::get_active_skills_for_query(&state.db, &message, 5)
+        nexa_core::skills::get_available_skills_for_query(&state.db, &message)
     } else {
-        nexa_core::skills::get_active_skills_for_query_with_pinned(
+        nexa_core::skills::get_available_skills_for_query_with_pinned(
             &state.db,
             &message,
-            8,
             &persona_default_skill_ids,
         )
     }
@@ -283,6 +282,7 @@ pub async fn agent_chat_cmd(
         trace_enabled: app_cfg.trace_enabled,
         require_tool_confirmation: app_cfg.confirm_destructive,
         shell_access_mode: app_cfg.shell_access_mode,
+        tool_approval_mode: app_cfg.tool_approval_mode,
     };
 
     // 6b. Build confirmation callback if enabled.
@@ -616,7 +616,19 @@ pub async fn agent_chat_cmd(
                             .map(|c| c.content.as_str())
                             .collect::<Vec<_>>()
                             .join("\n\n");
-                        if text.trim().is_empty() {
+                        let visual_text = parsed
+                            .visual_artifacts
+                            .iter()
+                            .map(|artifact| artifact.to_chunk_content())
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        let combined_text = [text.as_str(), visual_text.as_str()]
+                            .into_iter()
+                            .map(str::trim)
+                            .filter(|part| !part.is_empty())
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        if combined_text.trim().is_empty() {
                             user_parts.push(ContentPart::Text {
                                 text: format!(
                                     "[Attached file \"{}\" — no text content could be extracted]",
@@ -627,10 +639,13 @@ pub async fn agent_chat_cmd(
                             info!(
                                 "Parsed document attachment '{}': {} chars",
                                 att.original_name,
-                                text.len()
+                                combined_text.len()
                             );
                             user_parts.push(ContentPart::Text {
-                                text: format!("[Attached file: {}]\n\n{}", att.original_name, text),
+                                text: format!(
+                                    "[Attached file: {}]\n\n{}",
+                                    att.original_name, combined_text
+                                ),
                             });
                         }
                     }
@@ -954,15 +969,17 @@ pub async fn agent_chat_cmd(
                 }
             }
 
-            match nexa_core::evolution::review_recent_traces_for_evolution(&db, 5) {
-                Ok(review) if review.events_created > 0 => {
-                    info!(
-                        "Agent evolution review created {} event(s) for conversation {}",
-                        review.events_created, conv_id
-                    );
+            if app_cfg.auto_skill_learning {
+                match nexa_core::evolution::review_recent_traces_for_evolution(&db, 5) {
+                    Ok(review) if review.events_created > 0 => {
+                        info!(
+                            "Agent evolution review created {} event(s) for conversation {}",
+                            review.events_created, conv_id
+                        );
+                    }
+                    Err(e) => warn!("Agent evolution review failed for {conv_id}: {e}"),
+                    _ => {}
                 }
-                Err(e) => warn!("Agent evolution review failed for {conv_id}: {e}"),
-                _ => {}
             }
         }
     });

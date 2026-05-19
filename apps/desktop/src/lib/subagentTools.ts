@@ -72,6 +72,7 @@ const TOOL_GROUP_BY_NAME: Record<string, SubagentToolGroupId> = {
   compare_documents: 'research',
   summarize_document: 'research',
   search_by_date: 'research',
+  web_search: 'research',
   fetch_url: 'research',
   query_knowledge_graph: 'research',
   get_related_concepts: 'research',
@@ -91,6 +92,7 @@ const TOOL_GROUP_BY_NAME: Record<string, SubagentToolGroupId> = {
   reindex_document: 'write',
   manage_source: 'write',
   archive_output: 'write',
+  download_asset: 'write',
   desktop_automation: 'write',
 
   spawn_subagent: 'delegation',
@@ -196,10 +198,24 @@ export const SUBAGENT_TOOL_CATALOG: SubagentToolDescriptor[] = [
     source: 'built_in',
   },
   {
+    name: 'web_search',
+    label: 'Web Search',
+    description: 'Search the public web with native language-aware providers.',
+    enabledByDefault: true,
+    source: 'built_in',
+  },
+  {
     name: 'fetch_url',
     label: 'Fetch URL',
-    description: 'Load a web page when the delegated task needs external context.',
+    description: 'Load readable web text, metadata, and image candidates for external context.',
     enabledByDefault: true,
+    source: 'built_in',
+  },
+  {
+    name: 'download_asset',
+    label: 'Download Asset',
+    description: 'Save a supported public image candidate into the workspace.',
+    enabledByDefault: false,
     source: 'built_in',
   },
   {

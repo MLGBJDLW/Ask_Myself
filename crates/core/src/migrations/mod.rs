@@ -124,20 +124,7 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
     ),
     (
         "v025_builtin_mcp",
-        "ALTER TABLE mcp_servers ADD COLUMN builtin_id TEXT;
-        INSERT OR IGNORE INTO mcp_servers (id, name, transport, command, args, url, env_json, headers_json, enabled, builtin_id)
-        VALUES (
-            'builtin-open-websearch',
-            'Web Search',
-            'streamable_http',
-            'npx',
-            '[\"open-websearch@latest\"]',
-            NULL,
-            '{\"DEFAULT_SEARCH_ENGINE\":\"bing\"}',
-            NULL,
-            0,
-            'open-websearch'
-        );",
+        "ALTER TABLE mcp_servers ADD COLUMN builtin_id TEXT;",
     ),
     (
         "v026_timeout_settings",
@@ -886,6 +873,20 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_tool_permission_policies_tool
             ON tool_permission_policies(tool_name, target_kind, target_value);",
     ),
+    (
+        "v061_skill_proposal_evidence",
+        "ALTER TABLE skill_change_proposals ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+        ALTER TABLE skill_change_proposals ADD COLUMN confidence REAL NOT NULL DEFAULT 0.7;
+        ALTER TABLE skill_change_proposals ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '[]';
+        CREATE INDEX IF NOT EXISTS idx_skill_change_proposals_source
+            ON skill_change_proposals(source, created_at);",
+    ),
+    (
+        "v062_remove_builtin_open_websearch",
+        "DELETE FROM mcp_servers
+         WHERE id = 'builtin-open-websearch'
+           AND builtin_id = 'open-websearch';",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1093,6 +1094,27 @@ mod tests {
         assert_eq!(builtin_id, "playwright-browser");
         assert!(args.contains("@playwright/mcp@latest"));
         assert!(args.contains("${PORT}"));
+    }
+
+    #[test]
+    fn test_builtin_open_websearch_removed() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mcp_servers
+                 WHERE id = 'builtin-open-websearch'
+                    OR builtin_id = 'open-websearch'
+                    OR args LIKE '%open-websearch%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "open-websearch should not be seeded as built-in MCP"
+        );
     }
 
     #[test]

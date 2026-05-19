@@ -1,12 +1,12 @@
 {
   "name": "generate_image",
-  "description": "Generate an image from a text prompt using the image generation provider configured in Settings, save it locally, and return a preview artifact. Supports OpenAI Image API compatible providers, Google Gemini/Nano Banana, Alibaba DashScope/Qwen-Image, and Zhipu CogView/GLM Image presets.",
+  "description": "Generate an image using the image generation provider configured in Settings, save it locally, and return a preview artifact. Before calling, understand the user's visual intent and pass an image-model-ready prompt; preserve the user's wording only when they explicitly provide a final prompt. Supports OpenAI Image API compatible providers, Google Gemini/Nano Banana, Alibaba DashScope/Qwen-Image, and Zhipu CogView/GLM Image presets.",
   "parameters": {
     "type": "object",
     "properties": {
       "prompt": {
         "type": "string",
-        "description": "Detailed visual prompt describing subject, composition, style, mood, lighting, text, aspect ratio, and constraints."
+        "description": "Detailed image-model prompt. If the user only described an intent, rewrite it into a concise visual prompt covering subject, composition, style, mood, lighting, visible text, aspect ratio, and constraints. If the user explicitly supplied a final prompt, use it verbatim except for necessary safety or provider constraints."
       },
       "provider": {
         "type": "string",

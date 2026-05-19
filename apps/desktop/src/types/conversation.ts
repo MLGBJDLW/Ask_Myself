@@ -356,6 +356,7 @@ export interface AppConfig {
   shellAccessMode?: 'restricted' | 'confirm_all' | 'open';
   toolApprovalMode?: 'ask' | 'allow_all' | 'deny_all';
   autoMemoryExtraction?: boolean;
+  autoSkillLearning?: boolean;
   hfMirrorBaseUrl?: string;
   ghproxyBaseUrl?: string;
   imageGeneration?: ImageGenerationConfig;

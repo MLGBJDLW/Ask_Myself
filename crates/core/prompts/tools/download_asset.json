@@ -1,0 +1,26 @@
+{
+  "name": "download_asset",
+  "description": "Download a supported public image asset (JPEG, PNG, WebP, or GIF) into the workspace with SSRF, redirect-hop, content-type, size, and output-path validation. Use this only after the user wants a remote image saved or after fetch_url returns image candidates.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "The public image URL to download (must be http:// or https://)."
+      },
+      "output_dir": {
+        "type": "string",
+        "description": "Optional output directory. Relative paths are placed under the default downloaded-assets directory; absolute paths must stay inside a registered source root or current workspace."
+      },
+      "filename": {
+        "type": "string",
+        "description": "Optional filename. Unsafe path characters are sanitized; an image extension is added when missing."
+      },
+      "max_bytes": {
+        "type": "integer",
+        "description": "Maximum number of bytes to download. Default: 10485760. Hard cap: 26214400."
+      }
+    },
+    "required": ["url"]
+  }
+}

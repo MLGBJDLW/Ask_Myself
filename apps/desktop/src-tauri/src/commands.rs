@@ -360,8 +360,11 @@ fn build_selected_skills_artifact(skills: &[Skill]) -> serde_json::Value {
                     "id": &skill.id,
                     "name": &skill.name,
                     "description": &skill.description,
+                    "shortDescription": &skill.interface.short_description,
                     "enabled": skill.enabled,
                     "builtin": skill.builtin,
+                    "sourcePath": &skill.source_path,
+                    "implicit": skill.policy.allow_implicit_invocation,
                 })
             })
             .collect::<Vec<_>>(),

@@ -17,15 +17,18 @@ mod storage;
 
 pub use importer::{discover_skills_in_directory, import_skills_from_directory};
 pub use model::{
-    DiscoveredSkillBundle, SaveSkillInput, Skill, SkillFrontmatter, SkillResourceEncoding,
-    SkillResourceFile, SkillResourceInfo, SkillResourceKind, SkillWarning, SkillWarningSeverity,
+    DiscoveredSkillBundle, SaveSkillInput, Skill, SkillDependencies, SkillFrontmatter,
+    SkillInterfaceMetadata, SkillPolicy, SkillResourceEncoding, SkillResourceFile,
+    SkillResourceInfo, SkillResourceKind, SkillToolDependency, SkillWarning, SkillWarningSeverity,
 };
 pub use prompt::{build_skills_section, build_skills_section_for_query, export_skill_to_md};
 pub use registry::{load_builtin_skills, parse_skill_file};
 pub use scanner::scan_skill_content;
 pub use selector::{
-    get_active_skills_for_query, get_active_skills_for_query_with_pinned, select_skills_from_pool,
-    select_skills_from_pool_with_pinned,
+    get_active_skills_for_query, get_active_skills_for_query_with_pinned,
+    get_available_skills_for_query, get_available_skills_for_query_with_pinned,
+    select_available_skills_from_pool, select_available_skills_from_pool_with_pinned,
+    select_skills_from_pool, select_skills_from_pool_with_pinned,
 };
 pub use storage::{
     builtin_skill_dir, materialize_skills_to_disk, materialize_user_skill_to_disk,
@@ -149,13 +152,17 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             builtin: false,
+            interface: SkillInterfaceMetadata::default(),
+            dependencies: SkillDependencies::default(),
+            policy: SkillPolicy::default(),
+            source_path: None,
             resources: Vec::new(),
             resource_bundle: Vec::new(),
         }];
         let section = build_skills_section(&skills);
-        assert!(section.contains("## Active Skills"));
+        assert!(section.contains("## Available Skills"));
         assert!(section.contains("### Concise"));
-        assert!(section.contains("Be brief."));
+        assert!(section.contains("skill_id: 1"));
     }
 
     #[test]
@@ -226,8 +233,20 @@ mod tests {
             assert!(s.builtin);
             assert!(!s.name.is_empty());
             assert!(!s.description.is_empty(), "description must be set");
+            assert!(
+                !s.interface.short_description.is_empty(),
+                "short_description must be set"
+            );
             assert!(!s.content.is_empty());
             assert!(s.id.starts_with("builtin-"));
+            assert!(
+                s.resources
+                    .iter()
+                    .any(|resource| resource.path == "agents/openai.yaml"
+                        && resource.kind == SkillResourceKind::Metadata),
+                "{} should bundle agents/openai.yaml",
+                s.id
+            );
         }
         assert!(skills.iter().any(|s| s.id == "builtin-fiction-writing"));
         assert!(skills.iter().any(|s| s.id == "builtin-speechwriting"));
@@ -512,6 +531,33 @@ mod tests {
     }
 
     #[test]
+    fn test_available_skills_respects_implicit_policy() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let hidden = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Private Workflow".into(),
+                description: "Use only when explicitly requested".into(),
+                content: "Private instructions.".into(),
+                enabled: true,
+                resource_bundle: vec![SkillResourceFile {
+                    path: "agents/openai.yaml".into(),
+                    kind: SkillResourceKind::Metadata,
+                    encoding: SkillResourceEncoding::Utf8,
+                    content: "policy:\n  allow_implicit_invocation: false\n".into(),
+                }],
+            })
+            .unwrap();
+
+        let available = get_available_skills_for_query(&db, "general unrelated work").unwrap();
+        assert!(!available.iter().any(|skill| skill.id == hidden.id));
+
+        let explicit = get_available_skills_for_query(&db, "please use Private Workflow").unwrap();
+        assert!(explicit.iter().any(|skill| skill.id == hidden.id));
+    }
+
+    #[test]
     fn test_export_skill_to_md_roundtrip() {
         let skill = Skill {
             id: "user-1".into(),
@@ -522,6 +568,10 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             builtin: false,
+            interface: SkillInterfaceMetadata::default(),
+            dependencies: SkillDependencies::default(),
+            policy: SkillPolicy::default(),
+            source_path: None,
             resources: Vec::new(),
             resource_bundle: Vec::new(),
         };
@@ -714,6 +764,36 @@ mod tests {
     }
 
     #[test]
+    fn test_imported_skill_agents_metadata_populates_interface() {
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join("custom-skill");
+        fs::create_dir_all(skill_dir.join("agents")).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Custom Skill\ndescription: Use for custom work\n---\n\n## Rules\n\nWork carefully.\n",
+        )
+        .unwrap();
+        fs::write(
+            skill_dir.join("agents/openai.yaml"),
+            "interface:\n  display_name: Custom Display\n  short_description: Custom short description\npolicy:\n  allow_implicit_invocation: false\n",
+        )
+        .unwrap();
+
+        let db = Database::open_memory().unwrap();
+        let imported = import_skills_from_directory(&db, dir.path()).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].interface.display_name, "Custom Display");
+        assert_eq!(
+            imported[0].interface.short_description,
+            "Custom short description"
+        );
+        assert!(!imported[0].policy.allow_implicit_invocation);
+        assert!(imported[0].resources.iter().any(|resource| {
+            resource.path == "agents/openai.yaml" && resource.kind == SkillResourceKind::Metadata
+        }));
+    }
+
+    #[test]
     fn test_build_skills_section_includes_relevant_bundled_references() {
         let pptx_skill = load_builtin_skills()
             .into_iter()
@@ -722,7 +802,7 @@ mod tests {
 
         let section =
             build_skills_section_for_query(&[pptx_skill], "make a slide deck for q3 metrics");
-        assert!(section.contains("Bundled Resources"));
+        assert!(section.contains("resources:"));
         assert!(section.contains("pptx-playbook.md"));
     }
 
@@ -734,6 +814,7 @@ mod tests {
 
         for path in [
             "SKILL.md",
+            "agents/openai.yaml",
             "references/pptx-playbook.md",
             "scripts/pptx_audit.py",
             "scripts/pptx_renderer.py",

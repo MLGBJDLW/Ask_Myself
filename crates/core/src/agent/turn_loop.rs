@@ -102,7 +102,7 @@ impl AgentExecutor {
             .join(" ");
 
         let skills = self.skills_override.clone().unwrap_or_else(|| {
-            crate::skills::get_active_skills_for_query(db, &user_query_text_for_tools, 5)
+            crate::skills::get_available_skills_for_query(db, &user_query_text_for_tools)
                 .unwrap_or_default()
         });
 

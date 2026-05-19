@@ -542,20 +542,55 @@ At least one of `path` or `source_id` should be provided.
 
 ### `fetch_url`
 
-Fetch and extract text content from a web page (HTML stripped). Use when the user shares a URL or web content needs referencing.
+Fetch and extract readable text from a public web page with SSRF and redirect-hop validation. Use after `web_search` or when the user shares a URL and web content needs referencing. HTML pages use a Readability-style article extractor first, then `article`/`main`/`body` fallback, then metadata fallback for JavaScript-heavy pages.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `url` | string | yes | URL to fetch (http:// or https://) |
 | `max_length` | integer | no | Max characters to return (default 5000) |
+| `mode` | string | no | `auto`, `readability`, `text`, `metadata`, or `assets` |
+| `include_assets` | boolean | no | Include image candidates from metadata, `picture/source`, `srcset`, and `img` tags (default true) |
+
+`fetch_url` is text-first. It reports image candidates in artifacts but does not write binary files. If the user wants a candidate image saved, use `download_asset`.
 
 > **Example:** Fetch a Stack Overflow answer the user linked to and incorporate it into the conversation.
 
 ---
 
-### Readable web search via MCP
+### `download_asset`
 
-When the built-in web-search MCP server is enabled, its readable search tool is exposed as `mcp__web_search__search`. Use it to discover candidate URLs, then use `fetch_url` on the most authoritative results before citing or summarizing them.
+Download a supported public image asset into the workspace. This tool requires confirmation because it writes a file. It validates the URL and each redirect hop, rejects private/local network targets, enforces image MIME allowlists, caps download size, decodes the image before saving, and keeps output paths inside a registered source root or the current workspace.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | yes | Public image URL to download (http:// or https://) |
+| `output_dir` | string | no | Optional output directory; relative paths are placed under `downloaded-assets` |
+| `filename` | string | no | Optional sanitized filename; an image extension is added when missing |
+| `max_bytes` | integer | no | Max bytes to download (default 10 MiB, hard cap 25 MiB) |
+
+> **Example:** Save an `og:image` candidate returned by `fetch_url` so the user can inspect or reuse it locally.
+
+---
+
+### `web_search`
+
+Search the public web through Nexa's native no-key providers. Use it to discover candidate URLs, then use `fetch_url` on the most authoritative results before citing or summarizing them.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | yes | One focused, natural-language search query |
+| `limit` | integer | no | Max normalized results, 1-20 (default 8) |
+| `region` | string | no | `auto`, `mainland_cn`, or `global` |
+| `language` | string | no | `auto`, `zh`, or `en` |
+| `engines` | string[] | no | Optional subset of `baidu`, `sogou`, `bing`, `duckduckgo` |
+| `time_range` | string | no | `any`, `day`, `week`, `month`, or `year`; accepted for provider compatibility |
+| `site` | string | no | Optional single-domain filter such as `github.com` |
+| `include_snippets` | boolean | no | Include snippets in candidate results (default true) |
+
+Language routing:
+- Chinese queries use Baidu first by default, then Sogou/Bing only when needed.
+- English queries use Bing first, then DuckDuckGo only when needed.
+- Avoid stacking unusual operators or several near-duplicate queries. Start with one focused query; use a second query only for a genuinely separate angle.
 
 Do not treat `desktop_automation` with `action: "web_search"` as evidence retrieval. That action only opens a browser search for the user and does not return readable search results to the agent.
 
@@ -580,7 +615,7 @@ Perform controlled local browser or desktop handoff actions. This tool is intent
 Safety posture:
 - URL/search/path launch actions require user confirmation.
 - Local path actions must resolve inside a registered source and the active source scope.
-- Use `mcp__web_search__search` for readable search results when the built-in web-search MCP server is enabled.
+- Use `web_search` for readable search results.
 - Use `fetch_url` when the agent needs page text; use Playwright MCP when an enabled connector should interact with page elements.
 
 > **Example:** Open a confirmed dashboard URL in the user's default browser, or reveal a report file that was just generated under a registered source.

@@ -605,7 +605,21 @@ const FILE_WORKSPACE_TERMS: &[&str] = &[
 const SOURCE_TERMS: &[&str] = &["source", "index", "reindex", "数据源", "索引"];
 
 const WEB_ROUTE_TERMS: &[&str] = &[
-    "url", "http", "website", "web ", "fetch", "link", "网页", "链接",
+    "url",
+    "http",
+    "website",
+    "web ",
+    "web search",
+    "search online",
+    "internet",
+    "fetch",
+    "link",
+    "网页",
+    "网页搜索",
+    "搜索网页",
+    "联网",
+    "网上",
+    "链接",
 ];
 
 const CONVERSATION_RECALL_TERMS: &[&str] = &[

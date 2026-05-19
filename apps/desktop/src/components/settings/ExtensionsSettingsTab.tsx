@@ -125,6 +125,10 @@ function compact(text: string, max = 180): string {
   return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
+function skillShortDescription(skill: Skill): string {
+  return skill.interface?.shortDescription?.trim() || skill.description || '';
+}
+
 type DiffLineKind = 'same' | 'add' | 'remove';
 
 interface DiffLine {
@@ -670,6 +674,16 @@ export function ExtensionsSettingsTab({
                                   ? t('settings.skillProposalPatch')
                                   : t('settings.skillProposalCreate')}
                               </Badge>
+                              {proposal.source === 'auto_trace_review' && (
+                                <Badge variant="default" className="text-[10px] border-accent/40 text-accent">
+                                  {t('settings.skillProposalAuto')}
+                                </Badge>
+                              )}
+                              <Badge variant="default" className="text-[10px]">
+                                {t('settings.skillProposalConfidence', {
+                                  value: `${Math.round((proposal.confidence ?? 0) * 100)}%`,
+                                })}
+                              </Badge>
                               {proposal.warnings.length > 0 && (
                                 <Badge
                                   variant="default"
@@ -689,6 +703,11 @@ export function ExtensionsSettingsTab({
                             {proposal.rationale && (
                               <p className="mt-1 text-xs text-text-tertiary">
                                 {t('settings.skillProposalRationale')}: {compact(proposal.rationale, 220)}
+                              </p>
+                            )}
+                            {proposal.source === 'auto_trace_review' && (
+                              <p className="mt-1 text-xs text-accent">
+                                {t('settings.skillProposalEvidence')}: {proposal.source}
                               </p>
                             )}
                             <p className="mt-1 font-mono text-[11px] text-text-tertiary">
@@ -797,6 +816,8 @@ export function ExtensionsSettingsTab({
               <div className="space-y-3">
                 {filteredSkills.map((skill) => {
                   const triggers = extractTriggers(skill.description);
+                  const shortDescription = skillShortDescription(skill);
+                  const resourceCount = skill.resources?.length ?? 0;
                   return (
                     <motion.div
                       key={skill.id}
@@ -815,15 +836,25 @@ export function ExtensionsSettingsTab({
                           <Badge variant="default" className="text-[10px] shrink-0">
                             ~{estimateTokens(skill.content)} tok
                           </Badge>
+                          {resourceCount > 0 && (
+                            <Badge variant="default" className="text-[10px] shrink-0">
+                              {resourceCount} resources
+                            </Badge>
+                          )}
+                          {skill.policy?.allowImplicitInvocation === false && (
+                            <Badge variant="default" className="text-[10px] shrink-0 border-warning/40 text-warning">
+                              explicit
+                            </Badge>
+                          )}
                           {!skill.enabled && !skill.builtin && (
                             <Badge variant="default" className="text-[10px] shrink-0 border-border text-text-tertiary">
                               {t('settings.skillFilterDisabled')}
                             </Badge>
                           )}
                         </div>
-                        {skill.description ? (
+                        {shortDescription ? (
                           <p className="mt-0.5 text-xs text-text-secondary line-clamp-2">
-                            {skill.description}
+                            {shortDescription}
                           </p>
                         ) : (
                           <p className="mt-0.5 text-xs text-text-tertiary truncate">
@@ -1068,6 +1099,16 @@ export function ExtensionsSettingsTab({
                       ? t('settings.skillProposalPatch')
                       : t('settings.skillProposalCreate')}
                   </Badge>
+                  {previewProposal.source === 'auto_trace_review' && (
+                    <Badge variant="default" className="text-[10px] border-accent/40 text-accent">
+                      {t('settings.skillProposalAuto')}
+                    </Badge>
+                  )}
+                  <Badge variant="default" className="text-[10px]">
+                    {t('settings.skillProposalConfidence', {
+                      value: `${Math.round((previewProposal.confidence ?? 0) * 100)}%`,
+                    })}
+                  </Badge>
                 </div>
                 {previewProposal.rationale && (
                   <p className="mt-1 line-clamp-2 text-xs text-text-tertiary">
@@ -1241,6 +1282,30 @@ export function ExtensionsSettingsTab({
               </button>
             </div>
             <div className="overflow-auto px-5 py-4">
+              <div className="mb-3 grid gap-2 rounded-md border border-border bg-surface-1 px-3 py-2 text-xs text-text-secondary md:grid-cols-2">
+                <div>
+                  <span className="text-text-tertiary">Short description</span>
+                  <p className="mt-0.5 text-text-primary">{skillShortDescription(viewSkill) || '—'}</p>
+                </div>
+                <div>
+                  <span className="text-text-tertiary">Policy</span>
+                  <p className="mt-0.5 text-text-primary">
+                    implicit={String(viewSkill.policy?.allowImplicitInvocation ?? true)}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-text-tertiary">Source</span>
+                  <p className="mt-0.5 truncate text-text-primary" title={viewSkill.sourcePath ?? undefined}>
+                    {viewSkill.sourcePath ?? (viewSkill.builtin ? 'bundled' : 'user-defined')}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-text-tertiary">Resources</span>
+                  <p className="mt-0.5 text-text-primary">
+                    {viewSkill.resources?.length ? viewSkill.resources.map((resource) => resource.path).slice(0, 3).join(', ') : 'none'}
+                  </p>
+                </div>
+              </div>
               <SkillMarkdownPreview
                 content={viewSkill.content}
                 fallbackName={viewSkill.name}

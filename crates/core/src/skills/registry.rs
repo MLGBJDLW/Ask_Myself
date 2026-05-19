@@ -1,11 +1,12 @@
 use crate::error::CoreError;
 
-use super::model::{Skill, SkillFrontmatter, SkillResourceEncoding, SkillResourceFile};
-use super::storage::{
-    resource_bundle_metadata, resource_kind_from_relative_path, substitute_skill_dir,
+use super::model::{
+    derive_skill_metadata, Skill, SkillFrontmatter, SkillResourceEncoding, SkillResourceFile,
 };
-
-const EMPTY_BUILTIN_RESOURCES: &[BuiltinSkillResource] = &[];
+use super::storage::{
+    builtin_skill_source_path, resource_bundle_metadata, resource_kind_from_relative_path,
+    substitute_skill_dir,
+};
 
 pub(crate) struct BuiltinSkillBundle {
     pub(crate) slug: &'static str,
@@ -24,12 +25,21 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
     BuiltinSkillBundle {
         slug: "visual-explanations",
         skill_md: include_str!("../../assets/skills/visual-explanations/SKILL.md"),
-        resources: EMPTY_BUILTIN_RESOURCES,
+        resources: &[BuiltinSkillResource {
+            path: "agents/openai.yaml",
+            content: include_str!("../../assets/skills/visual-explanations/agents/openai.yaml"),
+        }],
     },
     BuiltinSkillBundle {
         slug: "office-document-design",
         skill_md: include_str!("../../assets/skills/office-document-design/SKILL.md"),
         resources: &[
+            BuiltinSkillResource {
+                path: "agents/openai.yaml",
+                content: include_str!(
+                    "../../assets/skills/office-document-design/agents/openai.yaml"
+                ),
+            },
             BuiltinSkillResource {
                 path: "scripts/outline-blueprint.md",
                 content: include_str!(
@@ -49,6 +59,12 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
         skill_md: include_str!("../../assets/skills/docx-document-design/SKILL.md"),
         resources: &[
             BuiltinSkillResource {
+                path: "agents/openai.yaml",
+                content: include_str!(
+                    "../../assets/skills/docx-document-design/agents/openai.yaml"
+                ),
+            },
+            BuiltinSkillResource {
                 path: "references/docx-playbook.md",
                 content: include_str!(
                     "../../assets/skills/docx-document-design/references/docx-playbook.md"
@@ -66,6 +82,12 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
         slug: "pptx-presentation-design",
         skill_md: include_str!("../../assets/skills/pptx-presentation-design/SKILL.md"),
         resources: &[
+            BuiltinSkillResource {
+                path: "agents/openai.yaml",
+                content: include_str!(
+                    "../../assets/skills/pptx-presentation-design/agents/openai.yaml"
+                ),
+            },
             BuiltinSkillResource {
                 path: "references/pptx-playbook.md",
                 content: include_str!(
@@ -157,6 +179,12 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
         skill_md: include_str!("../../assets/skills/xlsx-workbook-design/SKILL.md"),
         resources: &[
             BuiltinSkillResource {
+                path: "agents/openai.yaml",
+                content: include_str!(
+                    "../../assets/skills/xlsx-workbook-design/agents/openai.yaml"
+                ),
+            },
+            BuiltinSkillResource {
                 path: "references/xlsx-playbook.md",
                 content: include_str!(
                     "../../assets/skills/xlsx-workbook-design/references/xlsx-playbook.md"
@@ -173,12 +201,19 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
     BuiltinSkillBundle {
         slug: "evidence-first",
         skill_md: include_str!("../../assets/skills/evidence-first/SKILL.md"),
-        resources: EMPTY_BUILTIN_RESOURCES,
+        resources: &[BuiltinSkillResource {
+            path: "agents/openai.yaml",
+            content: include_str!("../../assets/skills/evidence-first/agents/openai.yaml"),
+        }],
     },
     BuiltinSkillBundle {
         slug: "doc-script-editor",
         skill_md: include_str!("../../assets/skills/doc-script-editor/SKILL.md"),
         resources: &[
+            BuiltinSkillResource {
+                path: "agents/openai.yaml",
+                content: include_str!("../../assets/skills/doc-script-editor/agents/openai.yaml"),
+            },
             BuiltinSkillResource {
                 path: "scripts/edit_doc.py",
                 content: include_str!("../../assets/skills/doc-script-editor/scripts/edit_doc.py"),
@@ -195,6 +230,10 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
         slug: "skill-creator",
         skill_md: include_str!("../../assets/skills/skill-creator/SKILL.md"),
         resources: &[
+            BuiltinSkillResource {
+                path: "agents/openai.yaml",
+                content: include_str!("../../assets/skills/skill-creator/agents/openai.yaml"),
+            },
             BuiltinSkillResource {
                 path: "LICENSE.txt",
                 content: include_str!("../../assets/skills/skill-creator/LICENSE.txt"),
@@ -280,6 +319,10 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
         skill_md: include_str!("../../assets/skills/fiction-writing/SKILL.md"),
         resources: &[
             BuiltinSkillResource {
+                path: "agents/openai.yaml",
+                content: include_str!("../../assets/skills/fiction-writing/agents/openai.yaml"),
+            },
+            BuiltinSkillResource {
                 path: "references/story-craft-playbook.md",
                 content: include_str!(
                     "../../assets/skills/fiction-writing/references/story-craft-playbook.md"
@@ -296,42 +339,66 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
     BuiltinSkillBundle {
         slug: "speechwriting",
         skill_md: include_str!("../../assets/skills/speechwriting/SKILL.md"),
-        resources: &[BuiltinSkillResource {
-            path: "references/speech-structures.md",
-            content: include_str!(
-                "../../assets/skills/speechwriting/references/speech-structures.md"
-            ),
-        }],
+        resources: &[
+            BuiltinSkillResource {
+                path: "agents/openai.yaml",
+                content: include_str!("../../assets/skills/speechwriting/agents/openai.yaml"),
+            },
+            BuiltinSkillResource {
+                path: "references/speech-structures.md",
+                content: include_str!(
+                    "../../assets/skills/speechwriting/references/speech-structures.md"
+                ),
+            },
+        ],
     },
     BuiltinSkillBundle {
         slug: "research-synthesis",
         skill_md: include_str!("../../assets/skills/research-synthesis/SKILL.md"),
-        resources: &[BuiltinSkillResource {
-            path: "references/research-patterns.md",
-            content: include_str!(
-                "../../assets/skills/research-synthesis/references/research-patterns.md"
-            ),
-        }],
+        resources: &[
+            BuiltinSkillResource {
+                path: "agents/openai.yaml",
+                content: include_str!("../../assets/skills/research-synthesis/agents/openai.yaml"),
+            },
+            BuiltinSkillResource {
+                path: "references/research-patterns.md",
+                content: include_str!(
+                    "../../assets/skills/research-synthesis/references/research-patterns.md"
+                ),
+            },
+        ],
     },
     BuiltinSkillBundle {
         slug: "editorial-revision",
         skill_md: include_str!("../../assets/skills/editorial-revision/SKILL.md"),
-        resources: &[BuiltinSkillResource {
-            path: "references/revision-passes.md",
-            content: include_str!(
-                "../../assets/skills/editorial-revision/references/revision-passes.md"
-            ),
-        }],
+        resources: &[
+            BuiltinSkillResource {
+                path: "agents/openai.yaml",
+                content: include_str!("../../assets/skills/editorial-revision/agents/openai.yaml"),
+            },
+            BuiltinSkillResource {
+                path: "references/revision-passes.md",
+                content: include_str!(
+                    "../../assets/skills/editorial-revision/references/revision-passes.md"
+                ),
+            },
+        ],
     },
     BuiltinSkillBundle {
         slug: "persona-design",
         skill_md: include_str!("../../assets/skills/persona-design/SKILL.md"),
-        resources: &[BuiltinSkillResource {
-            path: "references/persona-patterns.md",
-            content: include_str!(
-                "../../assets/skills/persona-design/references/persona-patterns.md"
-            ),
-        }],
+        resources: &[
+            BuiltinSkillResource {
+                path: "agents/openai.yaml",
+                content: include_str!("../../assets/skills/persona-design/agents/openai.yaml"),
+            },
+            BuiltinSkillResource {
+                path: "references/persona-patterns.md",
+                content: include_str!(
+                    "../../assets/skills/persona-design/references/persona-patterns.md"
+                ),
+            },
+        ],
     },
 ];
 
@@ -400,6 +467,8 @@ pub fn load_builtin_skills() -> Vec<Skill> {
                         content: resource.content.to_string(),
                     })
                     .collect::<Vec<_>>();
+                let (interface, dependencies, policy) =
+                    derive_skill_metadata(&fm.name, &fm.description, &resource_bundle);
                 out.push(Skill {
                     id: format!("builtin-{}", bundle.slug),
                     name: fm.name,
@@ -409,6 +478,10 @@ pub fn load_builtin_skills() -> Vec<Skill> {
                     created_at: String::new(),
                     updated_at: String::new(),
                     builtin: true,
+                    interface,
+                    dependencies,
+                    policy,
+                    source_path: builtin_skill_source_path(bundle.slug),
                     resources: resource_bundle_metadata(&resource_bundle),
                     resource_bundle,
                 });

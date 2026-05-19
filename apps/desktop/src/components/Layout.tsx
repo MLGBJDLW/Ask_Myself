@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, type ReactNode, type CSSProperties } from 'react';
+import { useState, useEffect, useMemo, useRef, type ReactNode, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Search, FolderOpen, BookOpen, MessageCircle, Settings, ChevronLeft, ChevronRight, Brain, BotMessageSquare, ClipboardList } from 'lucide-react';
@@ -25,6 +25,7 @@ import { Toaster } from 'sonner';
 import { getVersion } from '@tauri-apps/api/app';
 import { useTranslation } from '../i18n';
 import { useUpdater } from '../lib/useUpdater';
+import { useResizablePanel } from '../lib/useResizablePanel';
 import { useTheme } from '../lib/ThemeProvider';
 import { isLightTheme } from '../lib/theme';
 import type { TranslationKey } from '../i18n';
@@ -36,10 +37,13 @@ function useAppVersion() {
 }
 
 const STORAGE_KEY = 'sidebar-collapsed';
+const SIDEBAR_WIDTH_KEY = 'sidebar-width';
 const NAV_ORDER_KEY = 'sidebar-nav-order';
 const LAST_ROUTE_KEY = 'last-route';
 const SIDEBAR_AUTO_COLLAPSE_QUERY = '(max-width: 760px)';
 const INSTANT_TRANSITION = { duration: 0 };
+const SIDEBAR_MIN_WIDTH = 168;
+const SIDEBAR_MAX_WIDTH = 320;
 
 type NavItem = { to: string; labelKey: TranslationKey; icon: typeof Search };
 
@@ -206,6 +210,17 @@ export function Layout() {
     }
   });
   const [navItems, setNavItems] = useState<NavItem[]>(() => loadOrderedNavItems());
+  const {
+    size: sidebarWidth,
+    setSize: setSidebarWidth,
+    startResize: startSidebarResize,
+    isResizing: isSidebarResizing,
+  } = useResizablePanel({
+    storageKey: SIDEBAR_WIDTH_KEY,
+    defaultSize: 208,
+    minSize: SIDEBAR_MIN_WIDTH,
+    maxSize: SIDEBAR_MAX_WIDTH,
+  });
 
   useEffect(() => {
     const mq = window.matchMedia(SIDEBAR_AUTO_COLLAPSE_QUERY);
@@ -269,13 +284,29 @@ export function Layout() {
     });
   };
 
+  const handleSidebarResizeKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setSidebarWidth(sidebarWidth - 12);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setSidebarWidth(sidebarWidth + 12);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setSidebarWidth(SIDEBAR_MIN_WIDTH);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setSidebarWidth(SIDEBAR_MAX_WIDTH);
+    }
+  };
+
   return (
     <div className="flex h-screen bg-surface-0 text-text-primary">
       {/* Sidebar */}
       <motion.aside
-        className="flex shrink-0 flex-col border-r border-border bg-surface-1 overflow-hidden"
-        animate={{ width: collapsed ? 56 : 208 }}
-        transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+        className="relative flex shrink-0 flex-col border-r border-border bg-surface-1 overflow-hidden"
+        animate={{ width: collapsed ? 56 : sidebarWidth }}
+        transition={isSidebarResizing || shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
         aria-label={t('nav.mainNav')}
       >
         {/* Branding */}
@@ -353,6 +384,21 @@ export function Layout() {
             </div>
           )}
         </div>
+        {!collapsed && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-valuemin={SIDEBAR_MIN_WIDTH}
+            aria-valuemax={SIDEBAR_MAX_WIDTH}
+            aria-valuenow={sidebarWidth}
+            tabIndex={0}
+            onPointerDown={startSidebarResize}
+            onKeyDown={handleSidebarResizeKey}
+            className="absolute right-0 top-0 h-full w-2 translate-x-1 cursor-col-resize touch-none
+              bg-transparent outline-none transition-colors hover:bg-accent/25 focus-visible:bg-accent/35"
+            title={t('nav.resizeSidebar')}
+          />
+        )}
       </motion.aside>
 
       {/* Main content */}

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Office Document Design"
+  short_description: "Plan polished Office deliverables with reusable structure, style, and quality checks"
+  default_prompt: "Use this skill to shape document, slide, or workbook deliverables before generating files."
+policy:
+  allow_implicit_invocation: true

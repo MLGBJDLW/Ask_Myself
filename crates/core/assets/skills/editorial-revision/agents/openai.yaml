@@ -1,0 +1,6 @@
+interface:
+  display_name: "Editorial Revision"
+  short_description: "Revise drafts for clarity, structure, argument, voice, and publication readiness"
+  default_prompt: "Use this skill when improving or restructuring existing prose."
+policy:
+  allow_implicit_invocation: true

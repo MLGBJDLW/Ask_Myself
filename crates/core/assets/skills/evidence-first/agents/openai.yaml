@@ -1,0 +1,6 @@
+interface:
+  display_name: "Evidence First"
+  short_description: "Ground claims in retrieved evidence, cite sources, and separate facts from inference"
+  default_prompt: "Use this skill when the answer depends on sources, current facts, or verifiable evidence."
+policy:
+  allow_implicit_invocation: true

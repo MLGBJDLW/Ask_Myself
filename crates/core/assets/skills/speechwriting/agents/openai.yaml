@@ -1,0 +1,6 @@
+interface:
+  display_name: "Speechwriting"
+  short_description: "Draft and revise speeches, talks, remarks, and spoken narratives"
+  default_prompt: "Use this skill for speeches or spoken scripts that need structure, cadence, and audience fit."
+policy:
+  allow_implicit_invocation: true

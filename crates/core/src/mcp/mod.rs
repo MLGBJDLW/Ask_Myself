@@ -40,7 +40,7 @@ pub struct McpServer {
     pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,
-    /// Non-`None` for built-in servers managed by the app (e.g. "open-websearch").
+    /// Non-`None` for built-in servers managed by the app (e.g. "playwright-browser").
     /// Built-in servers cannot be deleted and have their process lifecycle managed.
     pub builtin_id: Option<String>,
 }

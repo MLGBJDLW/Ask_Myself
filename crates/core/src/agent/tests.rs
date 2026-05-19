@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
 
 use super::*;
+use crate::approval::{ApprovalDecision, ToolApprovalMode};
 use crate::conversation::CreateConversationInput;
 use crate::llm::{CompletionResponse, FinishReason, StreamChunk};
 use crate::tools::{Tool, ToolResult};
@@ -919,6 +920,63 @@ impl Tool for ResourceLockedTool {
     }
 }
 
+struct ApprovalRequiredProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl LlmProvider for ApprovalRequiredProvider {
+    fn name(&self) -> &str {
+        "approval-required-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunks = if call_no == 0 {
+            vec![Ok(StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "approval_call_1".to_string(),
+                    name: Some("locked_write".to_string()),
+                    arguments_delta: r#"{"path":"notes/a.md"}"#.to_string(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(crate::llm::FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            })]
+        } else {
+            vec![Ok(StreamChunk {
+                delta: "final answer".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(crate::llm::FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            })]
+        };
+        Ok(Box::pin(stream::iter(chunks)))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
 fn test_tool_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCallRequest {
     ToolCallRequest {
         id: id.to_string(),
@@ -926,6 +984,78 @@ fn test_tool_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCal
         arguments: arguments.to_string(),
         thought_signature: None,
     }
+}
+
+#[tokio::test]
+async fn test_allow_all_tool_approval_does_not_emit_approval_request() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ResourceLockedTool));
+
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let provider = ApprovalRequiredProvider {
+        stream_calls: Arc::clone(&stream_calls),
+    };
+    let approval_calls = Arc::new(AtomicUsize::new(0));
+    let approval_calls_for_cb = Arc::clone(&approval_calls);
+    let approval_cb: ApprovalCallback = Arc::new(move |_req| {
+        approval_calls_for_cb.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { ApprovalDecision::AllowOnce })
+    });
+
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            require_tool_confirmation: true,
+            tool_approval_mode: ToolApprovalMode::AllowAll,
+            ..AgentConfig::default()
+        },
+    )
+    .with_approval_callback(approval_cb);
+
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(32);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "hello".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("run should succeed");
+
+    let mut approval_requested = 0;
+    let mut approval_resolved = 0;
+    let mut approval_pending_updates = 0;
+    while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
+        match event {
+            Some(AgentEvent::ApprovalRequested { .. }) => approval_requested += 1,
+            Some(AgentEvent::ApprovalResolved { .. }) => approval_resolved += 1,
+            Some(AgentEvent::ToolRunUpdated { run })
+                if run.status == ToolRunStatus::ApprovalPending =>
+            {
+                approval_pending_updates += 1;
+            }
+            Some(AgentEvent::Done { .. }) => break,
+            Some(_) => {}
+            None => break,
+        }
+    }
+
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(approval_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(approval_requested, 0);
+    assert_eq!(approval_resolved, 0);
+    assert_eq!(approval_pending_updates, 0);
+    assert_eq!(final_msg.text_content(), "final answer");
 }
 
 #[tokio::test]

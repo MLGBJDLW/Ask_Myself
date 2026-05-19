@@ -209,6 +209,11 @@ impl Tool for GetDocumentInfoTool {
                 params![&id],
                 |row| row.get(0),
             )?;
+            let visual_chunk_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM chunks WHERE document_id = ?1 AND kind = 'visual_artifact'",
+                params![&id],
+                |row| row.get(0),
+            )?;
 
             // Look up root_path from source for context.
             let source_root: Option<String> = conn
@@ -233,6 +238,7 @@ impl Tool for GetDocumentInfoTool {
                  Indexed: {indexed_at}\n\
                  Content hash: {content_hash}\n\
                  Chunks: {chunk_count}\n\
+                 Visual artifacts: {visual_chunk_count}\n\
                  Metadata: {metadata}",
                 source_root.as_deref().unwrap_or("(unknown)"),
             );
@@ -249,6 +255,7 @@ impl Tool for GetDocumentInfoTool {
                 "indexed_at": indexed_at,
                 "content_hash": content_hash,
                 "chunk_count": chunk_count,
+                "visual_chunk_count": visual_chunk_count,
                 "metadata": metadata,
                 "suggestedCitation": format!("[doc:{id}|{title_display}]"),
             });

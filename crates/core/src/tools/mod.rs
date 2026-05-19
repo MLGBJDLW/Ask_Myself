@@ -91,6 +91,7 @@ pub mod desktop_automation_tool;
 pub(crate) mod diff_stats;
 pub mod document_info_tool;
 pub mod document_utils;
+pub mod download_asset_tool;
 pub mod edit_file_tool;
 pub mod fetch_url_tool;
 pub mod file_tool;
@@ -127,6 +128,7 @@ pub mod summarize_tool;
 pub(crate) mod text_match;
 pub mod tool_search_tool;
 pub mod update_plan_tool;
+pub mod web_search_tool;
 pub mod write_note_tool;
 
 // ---------------------------------------------------------------------------
@@ -902,6 +904,8 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(list_dir_tool::ListDirTool));
     registry.register(Box::new(chunk_context_tool::ChunkContextTool));
     registry.register(Box::new(fetch_url_tool::FetchUrlTool));
+    registry.register(Box::new(web_search_tool::WebSearchTool));
+    registry.register(Box::new(download_asset_tool::DownloadAssetTool));
     registry.register(Box::new(write_note_tool::WriteNoteTool));
     registry.register(Box::new(search_playbooks_tool::SearchPlaybooksTool));
     registry.register(Box::new(edit_file_tool::EditFileTool));
@@ -1142,6 +1146,7 @@ mod tests {
         let registry = default_tool_registry();
         let preview_tools = [
             "fetch_url",
+            "web_search",
             "read_file",
             "read_files",
             "list_dir",
@@ -1214,28 +1219,40 @@ mod tests {
     }
 
     #[test]
-    fn fallback_descriptor_classifies_runtime_mcp_tools() {
+    fn descriptor_classifies_native_web_search() {
         let registry = default_tool_registry();
-        let descriptor = registry.capability_descriptor(
-            "mcp__web_search__search",
-            &serde_json::json!({ "query": "nexa" }),
-        );
+        let descriptor =
+            registry.capability_descriptor("web_search", &serde_json::json!({ "query": "nexa" }));
 
         assert_eq!(descriptor.package.id, "web-research");
-        assert_eq!(descriptor.ui.render_kind, ToolRenderKind::Mcp);
+        assert_eq!(descriptor.ui.render_kind, ToolRenderKind::Search);
         assert!(descriptor.capabilities.read_only);
         assert_eq!(
             descriptor.capabilities.input_streaming,
-            ToolInputStreamingMode::None
+            ToolInputStreamingMode::UiPreview
         );
         assert_eq!(descriptor.access_profile.category, "web");
         assert!(descriptor.access_profile.can_access_network);
         assert!(!descriptor.access_profile.can_write);
         assert_eq!(descriptor.access_profile.risk_level, ApprovalRisk::Low);
-        assert_eq!(
-            descriptor.resources.keys,
-            vec!["mcp:mcp__web_search__search"]
+        assert!(descriptor.resources.keys.is_empty());
+    }
+
+    #[test]
+    fn descriptor_classifies_download_asset_as_web_write() {
+        let registry = default_tool_registry();
+        let descriptor = registry.capability_descriptor(
+            "download_asset",
+            &serde_json::json!({ "url": "https://example.com/image.png", "filename": "image.png" }),
         );
+
+        assert_eq!(descriptor.package.id, "web-research");
+        assert_eq!(descriptor.ui.render_kind, ToolRenderKind::FileChange);
+        assert!(!descriptor.capabilities.read_only);
+        assert!(descriptor.access_profile.can_access_network);
+        assert!(descriptor.access_profile.can_write);
+        assert!(descriptor.access_profile.needs_approval);
+        assert_eq!(descriptor.access_profile.risk_level, ApprovalRisk::Medium);
     }
 
     #[test]

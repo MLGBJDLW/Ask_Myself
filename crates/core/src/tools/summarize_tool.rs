@@ -264,19 +264,20 @@ impl Tool for SummarizeDocumentTool {
 
             // 3. Fetch chunks ordered by chunk_index, up to max_chunks.
             let mut stmt = conn.prepare(
-                "SELECT c.id, c.chunk_index, c.content
+                "SELECT c.id, c.chunk_index, c.kind, c.content
                  FROM chunks c
                  WHERE c.document_id = ?1
                  ORDER BY c.chunk_index
                  LIMIT ?2",
             )?;
 
-            let chunks: Vec<(String, i64, String)> = stmt
+            let chunks: Vec<(String, i64, String, String)> = stmt
                 .query_map(params![&doc_id, max_chunks as i64], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, i64>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -294,9 +295,9 @@ impl Tool for SummarizeDocumentTool {
                  Total chunks: {total_chunks} (showing {shown})\n\n"
             );
 
-            for (i, (chunk_id, chunk_index, content)) in chunks.iter().enumerate() {
+            for (i, (chunk_id, chunk_index, chunk_kind, content)) in chunks.iter().enumerate() {
                 text.push_str(&format!(
-                    "--- Chunk {}/{total_chunks} (index {chunk_index}, id: {chunk_id}) ---\n\
+                    "--- Chunk {}/{total_chunks} (index {chunk_index}, kind: {chunk_kind}, id: {chunk_id}) ---\n\
                      {content}\n\n",
                     i + 1,
                 ));
@@ -311,10 +312,11 @@ impl Tool for SummarizeDocumentTool {
 
             let artifacts: Vec<serde_json::Value> = chunks
                 .iter()
-                .map(|(id, idx, content)| {
+                .map(|(id, idx, kind, content)| {
                     json!({
                         "chunkId": id,
                         "chunkIndex": idx,
+                        "chunkKind": kind,
                         "content": content,
                     })
                 })

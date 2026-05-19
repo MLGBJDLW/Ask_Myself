@@ -238,8 +238,8 @@ const WEB_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     capability: "Network research",
     description:
         "Fetches remote pages and web search results with explicit network trust metadata.",
-    tools: &["fetch_url", "mcp__web_search__search"],
-    settings_surfaces: &["mcp", "network"],
+    tools: &["web_search", "fetch_url", "download_asset"],
+    settings_surfaces: &["network"],
     workflows: &["research-web"],
 };
 
@@ -372,9 +372,6 @@ pub fn plugin_for_tool(name: &str) -> ToolPluginInfo {
 }
 
 fn plugin_for_tool_name(name: &str) -> BuiltinPlugin {
-    if name == "mcp__web_search__search" || name.starts_with("mcp__web_search__") {
-        return WEB_PLUGIN;
-    }
     if name == "mcp_tool" || name.starts_with("mcp__") {
         return MCP_PLUGIN;
     }
@@ -394,10 +391,8 @@ mod tests {
         assert_eq!(plugin_for_tool("generate_image").id, "image-generation");
         assert_eq!(plugin_for_tool("compile_document").id, "office-documents");
         assert_eq!(plugin_for_tool("run_shell").id, "desktop-automation");
-        assert_eq!(
-            plugin_for_tool("mcp__web_search__search").id,
-            "web-research"
-        );
+        assert_eq!(plugin_for_tool("web_search").id, "web-research");
+        assert_eq!(plugin_for_tool("download_asset").id, "web-research");
         assert_eq!(
             plugin_for_tool("mcp__custom__dangerous").id,
             "mcp-connectors"

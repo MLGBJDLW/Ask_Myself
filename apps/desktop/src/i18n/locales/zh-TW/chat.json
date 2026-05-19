@@ -292,6 +292,8 @@
   "trustCanInstructYes": "是",
   "trustCanInstructNo": "否",
   "generatedImageAlt": "生成的圖片",
+  "generatedImageLoading": "正在生成圖片",
+  "generatedImageSaved": "圖片已儲存",
   "diffFiles": "檔案",
   "diffReplacements": "替換",
   "diffPending": "差異",

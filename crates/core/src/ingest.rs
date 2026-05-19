@@ -754,6 +754,7 @@ pub fn batch_insert_documents(
             ],
         )?;
         insert_chunks(&tx, &doc_id, &parsed.chunks)?;
+        insert_visual_artifact_chunks(&tx, &doc_id, parsed.chunks.len(), &parsed.visual_artifacts)?;
         count += 1;
     }
     tx.commit()?;
@@ -795,6 +796,7 @@ pub fn batch_update_documents(
         )?;
 
         insert_chunks(&tx, doc_id, &parsed.chunks)?;
+        insert_visual_artifact_chunks(&tx, doc_id, parsed.chunks.len(), &parsed.visual_artifacts)?;
         count += 1;
     }
     tx.commit()?;
@@ -883,6 +885,7 @@ impl Database {
         )?;
 
         insert_chunks(&tx, &doc_id, &parsed.chunks)?;
+        insert_visual_artifact_chunks(&tx, &doc_id, parsed.chunks.len(), &parsed.visual_artifacts)?;
 
         tx.commit()?;
         Ok(doc_id)
@@ -919,6 +922,7 @@ impl Database {
         )?;
 
         insert_chunks(&tx, doc_id, &parsed.chunks)?;
+        insert_visual_artifact_chunks(&tx, doc_id, parsed.chunks.len(), &parsed.visual_artifacts)?;
 
         tx.commit()?;
         Ok(())
@@ -984,6 +988,9 @@ fn classify_file(
         for chunk in &mut parsed.chunks {
             chunk.content = privacy::redact_content(&chunk.content, &privacy.redact_patterns);
         }
+        crate::visual_document::redact_visual_artifacts(&mut parsed.visual_artifacts, |value| {
+            privacy::redact_content(value, &privacy.redact_patterns)
+        });
     }
 
     match existing_docs.get(&parsed.file_path) {
@@ -1042,6 +1049,42 @@ fn insert_chunks(
                 &chunk.content,
                 chunk.start_offset,
                 chunk.end_offset,
+                line_end,
+                &chunk_hash,
+                &metadata,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_visual_artifact_chunks(
+    tx: &rusqlite::Transaction<'_>,
+    doc_id: &str,
+    base_chunk_count: usize,
+    artifacts: &[crate::visual_document::ParsedVisualArtifact],
+) -> Result<(), CoreError> {
+    for artifact in artifacts {
+        let chunk_id = uuid::Uuid::new_v4().to_string();
+        let content = artifact.to_chunk_content();
+        let chunk_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let line_end = content.lines().count().max(1) as i64;
+        let metadata = serde_json::Value::Object(
+            crate::visual_document::build_visual_artifact_metadata(artifact),
+        )
+        .to_string();
+        let chunk_index = base_chunk_count as i32 + artifact.artifact_index;
+
+        tx.execute(
+            "INSERT INTO chunks (id, document_id, chunk_index, kind, content,
+                                 start_offset, end_offset, line_start, line_end,
+                                 content_hash, metadata_json)
+             VALUES (?1, ?2, ?3, 'visual_artifact', ?4, 0, 0, 1, ?5, ?6, ?7)",
+            params![
+                &chunk_id,
+                doc_id,
+                chunk_index,
+                &content,
                 line_end,
                 &chunk_hash,
                 &metadata,
@@ -1147,6 +1190,9 @@ pub fn ingest_single_file(
         for chunk in &mut parsed.chunks {
             chunk.content = privacy::redact_content(&chunk.content, &privacy_cfg.redact_patterns);
         }
+        crate::visual_document::redact_visual_artifacts(&mut parsed.visual_artifacts, |value| {
+            privacy::redact_content(value, &privacy_cfg.redact_patterns)
+        });
     }
 
     // Clear any previous scan error on success.

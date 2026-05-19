@@ -8,8 +8,8 @@ use crate::error::CoreError;
 use uuid::Uuid;
 
 use super::model::{
-    SaveSkillInput, Skill, SkillResourceEncoding, SkillResourceFile, SkillResourceInfo,
-    SkillResourceKind,
+    derive_skill_metadata, SaveSkillInput, Skill, SkillResourceEncoding, SkillResourceFile,
+    SkillResourceInfo, SkillResourceKind, OPENAI_AGENT_METADATA_PATH,
 };
 use super::prompt::export_skill_to_md;
 use super::registry::builtin_skill_bundles;
@@ -33,6 +33,15 @@ pub(crate) fn substitute_skill_dir(body: String, slug: &str) -> String {
         }
         None => body,
     }
+}
+
+pub(crate) fn builtin_skill_source_path(slug: &str) -> Option<String> {
+    SKILLS_BASE_DIR.get().map(|base| {
+        base.join(slug)
+            .join("SKILL.md")
+            .to_string_lossy()
+            .to_string()
+    })
 }
 
 /// Materialize all bundled built-in skills (SKILL.md + scripts/references/assets)
@@ -132,6 +141,16 @@ fn substitute_user_skill_dir(body: String, skill_id: &str) -> String {
     } else {
         body
     }
+}
+
+pub(crate) fn user_skill_source_path(skill_id: &str) -> Option<String> {
+    SKILLS_BASE_DIR.get().map(|base| {
+        base.join("user")
+            .join(safe_skill_dir_name(skill_id))
+            .join("SKILL.md")
+            .to_string_lossy()
+            .to_string()
+    })
 }
 
 pub fn materialize_user_skill_to_disk(
@@ -257,6 +276,8 @@ pub(crate) fn resource_kind_from_relative_path(path: &str) -> SkillResourceKind 
         SkillResourceKind::Script
     } else if path.starts_with("references/") {
         SkillResourceKind::Reference
+    } else if path == OPENAI_AGENT_METADATA_PATH {
+        SkillResourceKind::Metadata
     } else {
         SkillResourceKind::Asset
     }
@@ -300,8 +321,8 @@ pub(crate) fn normalize_resource_bundle(
             )));
         }
         normalized.push(SkillResourceFile {
+            kind: resource_kind_from_relative_path(&path),
             path,
-            kind: resource.kind.clone(),
             encoding: resource.encoding.clone(),
             content: resource.content.clone(),
         });
@@ -331,20 +352,28 @@ fn deserialize_resource_bundle(raw: Option<String>) -> Result<Vec<SkillResourceF
 
 fn skill_from_row(row: &rusqlite::Row<'_>) -> Result<Skill, rusqlite::Error> {
     let id: String = row.get(0)?;
+    let name: String = row.get(1)?;
+    let description: String = row.get(2)?;
     let content: String = row.get(3)?;
     let resource_bundle_raw: Option<String> = row.get(7)?;
     let resource_bundle = deserialize_resource_bundle(resource_bundle_raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(err))
     })?;
+    let (interface, dependencies, policy) =
+        derive_skill_metadata(&name, &description, &resource_bundle);
     Ok(Skill {
         id: id.clone(),
-        name: row.get(1)?,
-        description: row.get(2)?,
+        name,
+        description,
         content: substitute_user_skill_dir(content, &id),
         enabled: row.get::<_, i32>(4)? != 0,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
         builtin: false,
+        interface,
+        dependencies,
+        policy,
+        source_path: user_skill_source_path(&id),
         resources: resource_bundle_metadata(&resource_bundle),
         resource_bundle,
     })

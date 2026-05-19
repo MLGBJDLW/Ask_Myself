@@ -24,6 +24,8 @@ struct ManageSkillArgs {
     #[serde(default)]
     skill_id: Option<String>,
     #[serde(default)]
+    resource_path: Option<String>,
+    #[serde(default)]
     name: Option<String>,
     #[serde(default)]
     description: Option<String>,
@@ -114,6 +116,9 @@ impl Tool for ManageSkillTool {
                         resource_bundle: Vec::new(),
                         rationale: args.rationale.unwrap_or_default(),
                         conversation_id: None,
+                        source: "manual".to_string(),
+                        confidence: 0.7,
+                        evidence: serde_json::json!([]),
                     })?;
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
@@ -155,8 +160,11 @@ impl Tool for ManageSkillTool {
                             "id": skill.id,
                             "name": skill.name,
                             "description": skill.description,
+                            "shortDescription": skill.interface.short_description,
                             "enabled": skill.enabled,
                             "builtin": skill.builtin,
+                            "sourcePath": skill.source_path,
+                            "policy": skill.policy,
                             "resources": skill.resources,
                         })
                     })
@@ -194,7 +202,7 @@ impl Tool for ManageSkillTool {
                     })),
                 })
             }
-            "view_skill" => {
+            "view_skill" | "activate_skill" => {
                 let skill_id = args.skill_id.ok_or_else(|| missing("skill_id", action))?;
                 let mut skills = crate::skills::load_builtin_skills();
                 skills.extend(db.list_skills()?);
@@ -224,23 +232,88 @@ impl Tool for ManageSkillTool {
                             .join("\n")
                     )
                 };
+                let source_path = skill.source_path.as_deref().unwrap_or("unmaterialized");
+                let short_description = if skill.interface.short_description.trim().is_empty() {
+                    skill.description.as_str()
+                } else {
+                    skill.interface.short_description.as_str()
+                };
                 let content = format!(
-                    "Skill: {} ({})\nEnabled: {}\nBuiltin: {}\nDescription: {}\n{}\n\nContent:\n{}",
+                    "Skill: {} ({})\nEnabled: {}\nBuiltin: {}\nSource: {}\nShort description: {}\nDescription: {}\nPolicy: implicit={}\n{}\n\nContent:\n{}",
                     skill.name,
                     skill.id,
                     skill.enabled,
                     skill.builtin,
+                    source_path,
+                    short_description,
                     skill.description,
+                    skill.policy.allow_implicit_invocation,
                     resources,
                     skill.content
                 );
+                let artifact_kind = if action == "activate_skill" {
+                    "skillActivation"
+                } else {
+                    "skill"
+                };
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
                     content,
                     is_error: false,
                     artifacts: Some(serde_json::json!({
-                        "kind": "skill",
+                        "kind": artifact_kind,
                         "skill": skill
+                    })),
+                })
+            }
+            "view_resource" => {
+                let skill_id = args.skill_id.ok_or_else(|| missing("skill_id", action))?;
+                let resource_path = args
+                    .resource_path
+                    .ok_or_else(|| missing("resource_path", action))?;
+                let mut skills = crate::skills::load_builtin_skills();
+                skills.extend(db.list_skills()?);
+                let skill = skills
+                    .into_iter()
+                    .find(|skill| {
+                        skill.id == skill_id
+                            || skill.name == skill_id
+                            || skill.id.strip_prefix("builtin-") == Some(skill_id.as_str())
+                    })
+                    .ok_or_else(|| CoreError::NotFound(format!("Skill {skill_id}")))?;
+                let normalized_path = resource_path.trim().replace('\\', "/");
+                let resource = skill
+                    .resource_bundle
+                    .iter()
+                    .find(|resource| resource.path == normalized_path)
+                    .ok_or_else(|| {
+                        CoreError::NotFound(format!(
+                            "Skill resource {} in {}",
+                            normalized_path, skill.id
+                        ))
+                    })?;
+                let content = match resource.encoding {
+                    crate::skills::SkillResourceEncoding::Utf8 => format!(
+                        "Skill resource: {} ({})\nKind: {:?}\nEncoding: utf8\n\n{}",
+                        resource.path, skill.id, resource.kind, resource.content
+                    ),
+                    crate::skills::SkillResourceEncoding::Base64 => format!(
+                        "Skill resource: {} ({})\nKind: {:?}\nEncoding: base64\n\n{}",
+                        resource.path, skill.id, resource.kind, resource.content
+                    ),
+                };
+                Ok(ToolResult {
+                    call_id: call_id.to_string(),
+                    content,
+                    is_error: false,
+                    artifacts: Some(serde_json::json!({
+                        "kind": "skillResource",
+                        "skillId": &skill.id,
+                        "resource": {
+                            "path": &resource.path,
+                            "kind": &resource.kind,
+                            "encoding": &resource.encoding
+                        }
                     })),
                 })
             }
@@ -353,6 +426,36 @@ mod tests {
             "view output should include skill body, not just metadata: {}",
             viewed.content
         );
+
+        let activate_args = serde_json::json!({
+            "action": "activate_skill",
+            "skill_id": "builtin-pptx-presentation-design"
+        });
+        let activated = tool
+            .execute("call-activate", &activate_args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(!activated.is_error);
+        assert_eq!(
+            activated.artifacts.as_ref().unwrap()["kind"],
+            "skillActivation"
+        );
+
+        let resource_args = serde_json::json!({
+            "action": "view_resource",
+            "skill_id": "builtin-pptx-presentation-design",
+            "resource_path": "references/pptx-playbook.md"
+        });
+        let resource = tool
+            .execute("call-resource", &resource_args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(!resource.is_error);
+        assert_eq!(
+            resource.artifacts.as_ref().unwrap()["kind"],
+            "skillResource"
+        );
+        assert!(resource.content.contains("pptx-playbook.md"));
 
         let slug_view_args = serde_json::json!({
             "action": "view_skill",
