@@ -23,7 +23,7 @@ export function Section({
   description,
   summary,
   collapsible = false,
-  defaultOpen = true,
+  defaultOpen = false,
 }: SectionProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -53,7 +53,7 @@ export function Section({
           type="button"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          aria-label={open ? t('common.collapse') : t('common.expand')}
+          title={open ? t('common.collapse') : t('common.expand')}
           className="flex w-full items-start justify-between gap-3 px-6 py-5 text-left transition-colors hover:bg-surface-2/60"
         >
           {header}
@@ -139,7 +139,7 @@ export function CollapsiblePanel({
         type="button"
         onClick={toggleOpen}
         aria-expanded={open}
-        aria-label={open ? t('common.collapse') : t('common.expand')}
+        title={open ? t('common.collapse') : t('common.expand')}
         className="flex w-full items-start justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-2/70"
       >
         <div className="min-w-0">

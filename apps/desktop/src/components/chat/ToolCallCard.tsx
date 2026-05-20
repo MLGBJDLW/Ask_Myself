@@ -1,7 +1,9 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import type { CSSProperties } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { save as showSaveDialog } from '@tauri-apps/plugin-dialog';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { toast } from 'sonner';
 import {
   Search,
   BookOpen,
@@ -21,10 +23,15 @@ import {
   ShieldCheck,
   Terminal,
   Download,
+  ExternalLink,
   Image as ImageIcon,
+  Save,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
+import * as api from '../../lib/api';
 import { FileBadge } from '../ui/FileBadge';
+import { Button } from '../ui/Button';
+import { Tooltip } from '../ui/Tooltip';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
 import type { ToolCallEvent } from '../../lib/streaming/protocol';
 import {
@@ -74,6 +81,7 @@ interface TrustBoundaryArtifact {
 interface GeneratedImageArtifact {
   kind: 'generatedImage';
   path?: string;
+  previewPath?: string;
   dataUrl?: string;
   mediaType?: string;
   provider?: string;
@@ -81,6 +89,10 @@ interface GeneratedImageArtifact {
   prompt?: string;
   revisedPrompt?: string;
   bytes?: number;
+  saved?: boolean;
+  transient?: boolean;
+  suggestedFilename?: string;
+  providerImageUrl?: string;
 }
 
 interface ImagePromptArgs {
@@ -278,6 +290,7 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   summarize: List,
   list_dir: FolderOpen,
   web_search: Globe,
+  web_research_context: Globe,
   fetch_url: Globe,
   download_asset: Download,
   chunk_context: Layers,
@@ -424,8 +437,22 @@ function imageAspectStyle(size?: string): CSSProperties {
   return { aspectRatio: '1 / 1' };
 }
 
-function imageSource(image: GeneratedImageArtifact): string {
-  return image.dataUrl || (image.path ? convertFileSrc(image.path) : '');
+function generatedImagePreviewPath(image: GeneratedImageArtifact): string {
+  return image.previewPath || image.path || '';
+}
+
+function extensionForMediaType(mediaType?: string): string {
+  const lower = (mediaType ?? '').toLowerCase();
+  if (lower.includes('jpeg') || lower.includes('jpg')) return 'jpg';
+  if (lower.includes('webp')) return 'webp';
+  if (lower.includes('gif')) return 'gif';
+  return 'png';
+}
+
+function generatedImageSuggestedFilename(image: GeneratedImageArtifact): string {
+  const raw = (image.suggestedFilename ?? '').trim();
+  if (raw) return raw;
+  return `generated-image.${extensionForMediaType(image.mediaType)}`;
 }
 
 function GeneratedImagePreview({
@@ -436,22 +463,130 @@ function GeneratedImagePreview({
   compact?: boolean;
 }) {
   const { t } = useTranslation();
-  const src = imageSource(image);
+  const previewPath = generatedImagePreviewPath(image);
+  const [previewSrc, setPreviewSrc] = useState(image.dataUrl ?? '');
+  const [imageError, setImageError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [savedPath, setSavedPath] = useState('');
   const prompt = image.revisedPrompt || image.prompt;
   const maxHeight = compact ? 'max-h-32' : 'max-h-[28rem]';
-  if (!src) return null;
+  const suggestedFilename = generatedImageSuggestedFilename(image);
+  const outputExtension = extensionForMediaType(image.mediaType);
+
+  useEffect(() => {
+    let cancelled = false;
+    setImageError('');
+    if (image.dataUrl) {
+      setPreviewSrc(image.dataUrl);
+      return () => {
+        cancelled = true;
+      };
+    }
+    if (!previewPath) {
+      setPreviewSrc('');
+      setImageError(t('chat.generatedImageLoadFailed'));
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setPreviewSrc('');
+    api.readGeneratedImageDataUrl(previewPath, image.mediaType)
+      .then((dataUrl) => {
+        if (!cancelled) setPreviewSrc(dataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewSrc(convertFileSrc(previewPath));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [image.dataUrl, image.mediaType, previewPath, t]);
+
+  const handleSave = useCallback(async () => {
+    if (isSaving) return;
+    const dataUrlForSave = image.dataUrl || (previewSrc.startsWith('data:image/') ? previewSrc : '');
+    if (!previewPath && !dataUrlForSave) {
+      toast.error(t('chat.generatedImageLoadFailed'));
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const outputPath = await showSaveDialog({
+        defaultPath: suggestedFilename,
+        filters: [
+          {
+            name: t('chat.generatedImageAlt'),
+            extensions: [outputExtension],
+          },
+        ],
+      });
+      if (!outputPath) return;
+
+      const result = await api.saveGeneratedImage({
+        outputPath,
+        sourcePath: previewPath || null,
+        dataUrl: previewPath ? null : dataUrlForSave,
+        mediaType: image.mediaType ?? null,
+      });
+      setSavedPath(result.path);
+      toast.success(t('chat.generatedImageSaveSuccess'));
+    } catch (error) {
+      toast.error(`${t('chat.generatedImageSaveFailed')}: ${String(error)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [
+    image.dataUrl,
+    image.mediaType,
+    isSaving,
+    outputExtension,
+    previewPath,
+    previewSrc,
+    suggestedFilename,
+    t,
+  ]);
+
+  const handleOpenSaved = useCallback(() => {
+    if (!savedPath) return;
+    api.openFileInDefaultApp(savedPath).catch((error) => {
+      toast.error(String(error));
+    });
+  }, [savedPath]);
+
+  const handleRevealSaved = useCallback(() => {
+    if (!savedPath) return;
+    api.showInFileExplorer(savedPath).catch((error) => {
+      toast.error(String(error));
+    });
+  }, [savedPath]);
 
   return (
-    <div className={compact ? 'space-y-1.5' : 'space-y-2.5'}>
+    <div className={compact ? 'space-y-1.5' : 'space-y-2.5'} data-testid="generated-image-preview">
       <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
-        <img
-          src={src}
-          alt={image.prompt || t('chat.generatedImageAlt')}
-          className={`${maxHeight} w-full object-contain`}
-        />
+        {previewSrc && !imageError ? (
+          <img
+            src={previewSrc}
+            alt={image.prompt || t('chat.generatedImageAlt')}
+            className={`${maxHeight} w-full object-contain`}
+            data-testid="generated-image-img"
+            onError={() => setImageError(t('chat.generatedImageLoadFailed'))}
+          />
+        ) : (
+          <div className={`${compact ? 'min-h-28' : 'min-h-64'} flex items-center justify-center px-4 text-center text-xs text-text-tertiary`}>
+            {imageError || t('chat.generatedImageLoading')}
+          </div>
+        )}
       </div>
       <div className="grid gap-1.5 text-[11px] text-text-tertiary">
         <div className="flex flex-wrap gap-1.5">
+          {!compact && (
+            <span className="rounded-md border border-accent/25 bg-accent/10 px-1.5 py-0.5 text-accent">
+              {savedPath ? t('chat.generatedImageSaved') : t('chat.generatedImageUnsaved')}
+            </span>
+          )}
           {image.provider && (
             <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
               {image.provider}
@@ -476,8 +611,48 @@ function GeneratedImagePreview({
         {!compact && prompt && (
           <div className="line-clamp-2 text-text-secondary">{prompt}</div>
         )}
-        {image.path && (
-          <div className="break-all text-text-secondary">{image.path}</div>
+        {!compact && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              icon={<Save className="h-3.5 w-3.5" />}
+              loading={isSaving}
+              onClick={handleSave}
+              disabled={!previewPath && !previewSrc}
+              aria-label={t('chat.generatedImageSaveAs')}
+            >
+              {isSaving ? t('chat.generatedImageSaving') : t('chat.generatedImageSaveAs')}
+            </Button>
+            {savedPath && (
+              <>
+                <Tooltip content={savedPath} side="bottom">
+                  <span className="min-w-0 max-w-[22rem] truncate text-text-secondary">
+                    {savedPath}
+                  </span>
+                </Tooltip>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  icon={<ExternalLink className="h-3.5 w-3.5" />}
+                  onClick={handleOpenSaved}
+                >
+                  {t('chat.generatedImageOpen')}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  icon={<FolderOpen className="h-3.5 w-3.5" />}
+                  onClick={handleRevealSaved}
+                >
+                  {t('chat.generatedImageReveal')}
+                </Button>
+              </>
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -806,7 +981,7 @@ export function ToolCallCard({
       : searchItems
         ? t('search.results', { count: String(searchItems.length) })
         : generatedImage
-          ? t('chat.generatedImageSaved')
+          ? t('chat.generatedImageReady')
         : showImagePendingPreview
           ? t('chat.generatedImageLoading')
         : diffStats

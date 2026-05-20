@@ -24,6 +24,7 @@ import type update from './locales/en/update.json';
 import type voice from './locales/en/voice.json';
 import type welcome from './locales/en/welcome.json';
 import type wizard from './locales/en/wizard.json';
+import type workflows from './locales/en/workflows.json';
 
 export const locales = [
   'zh-CN',
@@ -66,6 +67,7 @@ export const translationNamespaces = [
   'voice',
   'welcome',
   'wizard',
+  'workflows',
 ] as const;
 
 export type TranslationNamespace = (typeof translationNamespaces)[number];
@@ -96,6 +98,7 @@ type NamespaceKeyMap = {
   voice: typeof voice;
   welcome: typeof welcome;
   wizard: typeof wizard;
+  workflows: typeof workflows;
 };
 
 type NamespacedKey<Namespace extends string, Key extends string> = `${Namespace}.${Key}`;

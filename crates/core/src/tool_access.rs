@@ -176,6 +176,7 @@ mod tests {
             "spawn_subagent",
             "judge_subagent_results",
             "web_search",
+            "web_research_context",
             "mcp__unknown__dangerous",
         ]);
         let by_name = |name: &str| {
@@ -197,6 +198,12 @@ mod tests {
         assert!(web_search.read_only);
         assert!(web_search.can_access_network);
         assert!(!web_search.can_write);
+
+        let web_context = by_name("web_research_context");
+        assert_eq!(web_context.plugin.id, "web-research");
+        assert_eq!(web_context.category, "web");
+        assert!(web_context.read_only);
+        assert!(web_context.can_access_network);
 
         let unknown_mcp = by_name("mcp__unknown__dangerous");
         assert_eq!(unknown_mcp.plugin.id, "mcp-connectors");

@@ -79,6 +79,7 @@ import { MessageBubble } from "../../components/chat/MessageBubble";
 import { CitationChip } from "../../components/chat/EvidenceCard";
 import { Skeleton } from "../../components/ui/Skeleton";
 import type {
+  ArtifactPayload,
   ConversationMessage,
   ConversationTurn,
 } from "../../types/conversation";
@@ -232,6 +233,16 @@ type MessageTraceGroup =
     }
   | { type: "member" };
 
+interface GeneratedImagePreviewItem {
+  id: string;
+  toolName: string;
+  arguments: string;
+  plugin?: ToolCallEvent["plugin"];
+  content?: string;
+  isError?: boolean;
+  artifacts: ArtifactPayload;
+}
+
 function collectArtifactValues(value: unknown, out: unknown[]) {
   if (!value) return;
   if (Array.isArray(value)) {
@@ -249,6 +260,15 @@ function collectArtifactValues(value: unknown, out: unknown[]) {
       collectArtifactValues(obj[key], out);
     }
   }
+}
+
+function isGeneratedImageArtifact(value: unknown): value is ArtifactPayload {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).kind === "generatedImage",
+  );
 }
 
 function TraceStatusRow({
@@ -1111,6 +1131,61 @@ export function ChatMessages({
     return { byTurnId, byAssistantIdx };
   }, [messageIndexById, messages, turns]);
 
+  const generatedImagePreviewsByAssistantIdx = useMemo(() => {
+    const ownerByToolCallId = new Map<
+      string,
+      {
+        assistantIdx: number;
+        toolCall: ConversationMessage["toolCalls"][number];
+      }
+    >();
+
+    messages.forEach((msg, idx) => {
+      if (msg.role !== "assistant") return;
+      for (const toolCall of msg.toolCalls) {
+        if (toolCall.id) {
+          ownerByToolCallId.set(toolCall.id, {
+            assistantIdx: idx,
+            toolCall,
+          });
+        }
+      }
+    });
+
+    const byAssistantIdx = new Map<number, GeneratedImagePreviewItem[]>();
+    messages.forEach((msg) => {
+      if (
+        msg.role !== "tool" ||
+        !msg.toolCallId ||
+        !isGeneratedImageArtifact(msg.artifacts)
+      ) {
+        return;
+      }
+
+      const owner = ownerByToolCallId.get(msg.toolCallId);
+      if (!owner) return;
+
+      const items = byAssistantIdx.get(owner.assistantIdx) ?? [];
+      items.push({
+        id: `generated-image-${msg.id}`,
+        toolName: owner.toolCall.name || "generate_image",
+        arguments: owner.toolCall.arguments || "",
+        plugin: owner.toolCall.plugin,
+        content: msg.content,
+        artifacts: msg.artifacts,
+      });
+      byAssistantIdx.set(owner.assistantIdx, items);
+    });
+
+    return byAssistantIdx;
+  }, [messages]);
+
+  const generatedImagePreviewsForIndexes = useCallback(
+    (indexes: number[]): GeneratedImagePreviewItem[] =>
+      indexes.flatMap((idx) => generatedImagePreviewsByAssistantIdx.get(idx) ?? []),
+    [generatedImagePreviewsByAssistantIdx],
+  );
+
   const renderFileDiffPreviews = useCallback(
     (diffs: FileDiffArtifact[] | undefined, _keyPrefix: string) => {
       if (!diffs || diffs.length === 0) return null;
@@ -1119,6 +1194,34 @@ export function ChatMessages({
         <div className="my-2 flex justify-start" data-testid="turn-file-diff-previews">
           <div className="w-full max-w-[min(100%,72rem)]">
             <FileDiffSummaryPanel diffs={mergedDiffs} />
+          </div>
+        </div>
+      );
+    },
+    [],
+  );
+
+  const renderGeneratedImagePreviews = useCallback(
+    (items: GeneratedImagePreviewItem[] | undefined) => {
+      if (!items || items.length === 0) return null;
+      return (
+        <div className="my-2 flex justify-start" data-testid="message-generated-image-previews">
+          <div className="w-full max-w-[min(100%,40rem)] space-y-2">
+            {items.map((item) => (
+              <ToolCallCard
+                key={item.id}
+                toolName={item.toolName}
+                arguments={item.arguments}
+                status="done"
+                plugin={item.plugin}
+                renderKind="image"
+                content={item.content}
+                isError={item.isError}
+                artifacts={item.artifacts}
+                argsStatus="done"
+                argsBytes={item.arguments.length}
+              />
+            ))}
           </div>
         </div>
       );
@@ -1242,6 +1345,14 @@ export function ChatMessages({
               isStreaming && idx === latestUserIdx
                 ? undefined
                 : fileDiffGroups.byTurnId.get(turnRender.turn.id);
+            const assistantImagePreviews =
+              assistantIdx >= 0
+                ? generatedImagePreviewsForIndexes(
+                    traceGroup?.type === "anchor" && traceGroup.memberIndexes
+                      ? traceGroup.memberIndexes
+                      : [assistantIdx],
+                  )
+                : undefined;
 
             return (
               <div key={`turn-${turnRender.turn.id}`}>
@@ -1263,6 +1374,8 @@ export function ChatMessages({
                 {traceGroup?.type === "anchor" && (
                   <>{traceGroup.nodes}</>
                 )}
+
+                {renderGeneratedImagePreviews(assistantImagePreviews)}
 
                 {assistantMsg &&
                   assistantMsg.role === "assistant" &&
@@ -1332,12 +1445,22 @@ export function ChatMessages({
             }
             return fileDiffGroups.byAssistantIdx.get(idx);
           })();
+          const assistantImagePreviews =
+            msg.role === "assistant"
+              ? generatedImagePreviewsForIndexes(
+                  traceGroup?.type === "anchor" && traceGroup.memberIndexes
+                    ? traceGroup.memberIndexes
+                    : [idx],
+                )
+              : undefined;
 
           return (
             <div key={msg.id}>
               {traceGroup?.type === "anchor" && (
                 <>{traceGroup.nodes}</>
               )}
+
+              {renderGeneratedImagePreviews(assistantImagePreviews)}
 
               {hasRenderableAssistantContent && (
                 <MessageBubble

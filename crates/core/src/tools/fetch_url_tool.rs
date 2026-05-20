@@ -1,8 +1,9 @@
 //! FetchUrlTool — fetches public web content and extracts readable text.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::IpAddr;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -10,7 +11,8 @@ use encoding_rs::Encoding;
 use futures::StreamExt;
 use readabilityrs::{Readability, ReadabilityOptions};
 use reqwest::header::{
-    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, LOCATION,
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE,
+    IF_NONE_MATCH, LAST_MODIFIED, LOCATION,
 };
 use reqwest::redirect::Policy;
 use scraper::{Html, Selector};
@@ -27,6 +29,7 @@ const MAX_REDIRECTS: usize = 5;
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 const MAX_IMAGE_ASSETS: usize = 25;
+static FETCH_BODY_CACHE: OnceLock<Mutex<HashMap<String, CachedFetchBody>>> = OnceLock::new();
 
 /// Tool that fetches a public URL and returns readable text plus provenance.
 pub struct FetchUrlTool;
@@ -50,20 +53,15 @@ fn default_include_assets() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 enum FetchMode {
+    #[default]
     Auto,
     Readability,
     Text,
     Metadata,
     Assets,
-}
-
-impl Default for FetchMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,12 +94,70 @@ struct ImageAsset {
     height: Option<u32>,
 }
 
+struct ImageAssetCandidate<'a> {
+    kind: &'a str,
+    raw_url: &'a str,
+    alt: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+impl<'a> ImageAssetCandidate<'a> {
+    fn new(kind: &'a str, raw_url: &'a str) -> Self {
+        Self {
+            kind,
+            raw_url,
+            alt: None,
+            width: None,
+            height: None,
+        }
+    }
+
+    fn with_details(
+        mut self,
+        alt: Option<String>,
+        width: Option<u32>,
+        height: Option<u32>,
+    ) -> Self {
+        self.alt = alt;
+        self.width = width;
+        self.height = height;
+        self
+    }
+}
+
 #[derive(Debug, Clone)]
 struct HtmlExtraction {
     text: String,
     title: Option<String>,
     method: &'static str,
     metadata: PageMetadata,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ConditionalRequestHeaders {
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedFetchBody {
+    final_url: String,
+    content_type: Option<String>,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    body_bytes: Vec<u8>,
+    body_truncated: bool,
+}
+
+#[derive(Debug)]
+struct FetchBodyPayload {
+    final_url: reqwest::Url,
+    content_type: Option<String>,
+    body_bytes: Vec<u8>,
+    body_truncated: bool,
+    redirect_count: usize,
+    cache_status: &'static str,
 }
 
 // ---------------------------------------------------------------------------
@@ -207,8 +263,6 @@ pub(crate) fn build_http_client() -> Result<reqwest::Client, reqwest::Error> {
         ACCEPT_LANGUAGE,
         HeaderValue::from_static("zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"),
     );
-    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-
     reqwest::Client::builder()
         .default_headers(headers)
         .user_agent("Nexa/0.6 public-page-fetcher")
@@ -222,11 +276,27 @@ pub(crate) async fn send_with_safe_redirects(
     client: &reqwest::Client,
     initial_url: reqwest::Url,
 ) -> Result<(reqwest::Response, reqwest::Url, usize), String> {
+    send_with_safe_redirects_conditional(client, initial_url, None).await
+}
+
+pub(crate) async fn send_with_safe_redirects_conditional(
+    client: &reqwest::Client,
+    initial_url: reqwest::Url,
+    conditional: Option<&ConditionalRequestHeaders>,
+) -> Result<(reqwest::Response, reqwest::Url, usize), String> {
     let mut current = initial_url;
     for redirect_count in 0..=MAX_REDIRECTS {
         validate_resolved_host(&current).await?;
-        let response = client
-            .get(current.clone())
+        let mut request = client.get(current.clone());
+        if let Some(conditional) = conditional {
+            if let Some(etag) = &conditional.etag {
+                request = request.header(IF_NONE_MATCH, etag);
+            }
+            if let Some(last_modified) = &conditional.last_modified {
+                request = request.header(IF_MODIFIED_SINCE, last_modified);
+            }
+        }
+        let response = request
             .send()
             .await
             .map_err(|e| format!("HTTP request failed: {e}"))?;
@@ -273,6 +343,73 @@ pub(crate) async fn read_limited_body(
         body.extend_from_slice(&chunk);
     }
     Ok((body, truncated))
+}
+
+fn cached_fetch_body(key: &str) -> Option<CachedFetchBody> {
+    let cache = FETCH_BODY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    cache.lock().ok()?.get(key).cloned()
+}
+
+fn conditional_headers_from_cache(
+    cached: Option<&CachedFetchBody>,
+) -> Option<ConditionalRequestHeaders> {
+    let cached = cached?;
+    if cached.etag.is_none() && cached.last_modified.is_none() {
+        return None;
+    }
+    Some(ConditionalRequestHeaders {
+        etag: cached.etag.clone(),
+        last_modified: cached.last_modified.clone(),
+    })
+}
+
+fn header_to_string(headers: &HeaderMap, name: reqwest::header::HeaderName) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+fn store_fetch_body(
+    input_url: &str,
+    final_url: &reqwest::Url,
+    headers: &HeaderMap,
+    content_type: Option<String>,
+    body_bytes: &[u8],
+    body_truncated: bool,
+) {
+    if body_truncated {
+        return;
+    }
+    let etag = header_to_string(headers, ETAG);
+    let last_modified = header_to_string(headers, LAST_MODIFIED);
+    if etag.is_none() && last_modified.is_none() {
+        return;
+    }
+    let entry = CachedFetchBody {
+        final_url: final_url.to_string(),
+        content_type,
+        etag,
+        last_modified,
+        body_bytes: body_bytes.to_vec(),
+        body_truncated,
+    };
+    let cache = FETCH_BODY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(input_url.to_string(), entry.clone());
+        cache.insert(final_url.to_string(), entry);
+    }
+}
+
+fn cached_payload(cached: CachedFetchBody, redirect_count: usize) -> Option<FetchBodyPayload> {
+    Some(FetchBodyPayload {
+        final_url: reqwest::Url::parse(&cached.final_url).ok()?,
+        content_type: cached.content_type,
+        body_bytes: cached.body_bytes,
+        body_truncated: cached.body_truncated,
+        redirect_count,
+        cache_status: "validated",
+    })
 }
 
 fn charset_from_content_type(content_type: Option<&str>) -> Option<&'static Encoding> {
@@ -604,27 +741,23 @@ fn push_image_asset(
     assets: &mut Vec<ImageAsset>,
     seen: &mut HashSet<String>,
     base_url: &reqwest::Url,
-    kind: &str,
-    raw_url: &str,
-    alt: Option<String>,
-    width: Option<u32>,
-    height: Option<u32>,
+    candidate: ImageAssetCandidate<'_>,
 ) {
     if assets.len() >= MAX_IMAGE_ASSETS {
         return;
     }
-    let Some(url) = public_absolute_url(base_url, raw_url) else {
+    let Some(url) = public_absolute_url(base_url, candidate.raw_url) else {
         return;
     };
     if !seen.insert(url.clone()) {
         return;
     }
     assets.push(ImageAsset {
-        kind: kind.to_string(),
+        kind: candidate.kind.to_string(),
         url,
-        alt,
-        width,
-        height,
+        alt: candidate.alt,
+        width: candidate.width,
+        height: candidate.height,
     });
 }
 
@@ -672,11 +805,7 @@ fn extract_image_assets(
             &mut assets,
             &mut seen,
             base_url,
-            "primary_image",
-            image,
-            None,
-            None,
-            None,
+            ImageAssetCandidate::new("primary_image", image),
         );
     }
 
@@ -693,11 +822,7 @@ fn extract_image_assets(
                 &mut assets,
                 &mut seen,
                 base_url,
-                "metadata_image",
-                &url,
-                None,
-                None,
-                None,
+                ImageAssetCandidate::new("metadata_image", &url),
             );
         }
     }
@@ -709,11 +834,7 @@ fn extract_image_assets(
                     &mut assets,
                     &mut seen,
                     base_url,
-                    "linked_image",
-                    href,
-                    None,
-                    None,
-                    None,
+                    ImageAssetCandidate::new("linked_image", href),
                 );
             }
         }
@@ -730,11 +851,11 @@ fn extract_image_assets(
                         &mut assets,
                         &mut seen,
                         base_url,
-                        "image_srcset",
-                        &url,
-                        alt.clone(),
-                        width,
-                        height,
+                        ImageAssetCandidate::new("image_srcset", &url).with_details(
+                            alt.clone(),
+                            width,
+                            height,
+                        ),
                     );
                 }
             }
@@ -744,11 +865,11 @@ fn extract_image_assets(
                         &mut assets,
                         &mut seen,
                         base_url,
-                        "image",
-                        src,
-                        alt.clone(),
-                        width,
-                        height,
+                        ImageAssetCandidate::new("image", src).with_details(
+                            alt.clone(),
+                            width,
+                            height,
+                        ),
                     );
                 }
             }
@@ -763,11 +884,7 @@ fn extract_image_assets(
                         &mut assets,
                         &mut seen,
                         base_url,
-                        "picture_source",
-                        &url,
-                        None,
-                        None,
-                        None,
+                        ImageAssetCandidate::new("picture_source", &url),
                     );
                 }
             }
@@ -955,6 +1072,138 @@ fn truncate_text_for_output(text: &mut String, max_chars: usize) -> bool {
     true
 }
 
+fn render_fetch_payload(
+    call_id: &str,
+    args: &FetchUrlArgs,
+    max_length: usize,
+    payload: FetchBodyPayload,
+) -> Result<ToolResult, CoreError> {
+    let FetchBodyPayload {
+        final_url,
+        content_type,
+        body_bytes,
+        body_truncated,
+        redirect_count,
+        cache_status,
+    } = payload;
+    let body_kind = classify_body_kind(content_type.as_deref(), &body_bytes);
+    let body = decode_body(&body_bytes, content_type.as_deref());
+    let mut metadata = PageMetadata::default();
+    let mut assets: Vec<ImageAsset> = Vec::new();
+    let (mut text, title, extraction_method) = match body_kind {
+        BodyKind::Html => {
+            metadata = extract_page_metadata(&body, &final_url);
+            let extraction = extract_html_text(&body, &final_url, args.mode, &metadata);
+            metadata = extraction.metadata.clone();
+            if args.include_assets || args.mode == FetchMode::Assets {
+                assets = extract_image_assets(&body, &final_url, metadata.image.as_deref());
+            }
+            (
+                extraction.text,
+                extraction.title.or_else(|| metadata.title.clone()),
+                extraction.method,
+            )
+        }
+        BodyKind::Json => {
+            let pretty = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| serde_json::to_string_pretty(&value).ok())
+                .unwrap_or_else(|| collapse_whitespace(&body));
+            (pretty, None, "json")
+        }
+        BodyKind::Text => {
+            let method = if content_type
+                .as_deref()
+                .is_some_and(|value| value.to_ascii_lowercase().contains("markdown"))
+                || final_url.path().to_ascii_lowercase().ends_with(".md")
+            {
+                "markdown"
+            } else {
+                "plain_text"
+            };
+            (collapse_whitespace(&body), None, method)
+        }
+        BodyKind::UnsupportedBinary => {
+            return Ok(ToolResult {
+                call_id: call_id.to_string(),
+                content: format!(
+                    "URL: {}\nFinal URL: {}\nContent type: {}\n---\nfetch_url only returns readable text. Use download_asset for supported remote images.",
+                    args.url,
+                    final_url,
+                    content_type.as_deref().unwrap_or("unknown")
+                ),
+                is_error: true,
+                artifacts: Some(serde_json::json!({
+                    "kind": "fetchUrl",
+                    "url": args.url.as_str(),
+                    "finalUrl": final_url.as_str(),
+                    "truncated": false,
+                    "bodyTruncated": body_truncated,
+                    "contentType": content_type,
+                    "redirectCount": redirect_count,
+                    "extractionMethod": "unsupported_binary",
+                    "assets": [{
+                        "kind": "direct_asset",
+                        "url": final_url.to_string(),
+                        "alt": null,
+                        "width": null,
+                        "height": null,
+                    }],
+                    "cacheStatus": cache_status,
+                })),
+            });
+        }
+    };
+
+    let output_truncated = truncate_text_for_output(&mut text, max_length);
+    if body_truncated && !output_truncated {
+        text.push_str("\n\n[… truncated at download limit]");
+    }
+    let truncated = output_truncated || body_truncated;
+
+    let mut content = format!(
+        "URL: {}\nFinal URL: {}\nTitle: {}\nExtraction: {}\nSuggested citation: [url:{}|{}]\n---\n{}",
+        args.url,
+        final_url,
+        title.as_deref().unwrap_or("(untitled page)"),
+        extraction_method,
+        final_url,
+        title.as_deref().unwrap_or("web page"),
+        text
+    );
+    if !assets.is_empty() {
+        content.push_str("\n\nImage candidates:\n");
+        for asset in assets.iter().take(8) {
+            content.push_str(&format!("- {} ({})\n", asset.url, asset.kind));
+        }
+        if assets.len() > 8 {
+            content.push_str(&format!("- … {} more\n", assets.len() - 8));
+        }
+        content.push_str("Use download_asset to save a supported image candidate.");
+    }
+
+    Ok(ToolResult {
+        call_id: call_id.to_string(),
+        content,
+        is_error: false,
+        artifacts: Some(serde_json::json!({
+            "kind": "fetchUrl",
+            "url": args.url.as_str(),
+            "finalUrl": final_url.as_str(),
+            "title": title,
+            "metadata": metadata,
+            "assets": assets,
+            "truncated": truncated,
+            "bodyTruncated": body_truncated,
+            "contentType": content_type,
+            "redirectCount": redirect_count,
+            "extractionMethod": extraction_method,
+            "blockedReason": null,
+            "cacheStatus": cache_status,
+        })),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tool implementation
 // ---------------------------------------------------------------------------
@@ -1009,8 +1258,13 @@ impl Tool for FetchUrlTool {
         let client = build_http_client()
             .map_err(|e| CoreError::InvalidInput(format!("Failed to build HTTP client: {e}")))?;
 
+        let fetch_cache_key = parsed_url.to_string();
+        let cached_body = cached_fetch_body(&fetch_cache_key);
+        let conditional = conditional_headers_from_cache(cached_body.as_ref());
         let (response, final_url, redirect_count) =
-            match send_with_safe_redirects(&client, parsed_url).await {
+            match send_with_safe_redirects_conditional(&client, parsed_url, conditional.as_ref())
+                .await
+            {
                 Ok(result) => result,
                 Err(e) => {
                     return Ok(ToolResult {
@@ -1028,6 +1282,31 @@ impl Tool for FetchUrlTool {
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
+        if status == reqwest::StatusCode::NOT_MODIFIED {
+            let Some(payload) =
+                cached_body.and_then(|cached| cached_payload(cached, redirect_count))
+            else {
+                return Ok(ToolResult {
+                    call_id: call_id.to_string(),
+                    content: format!(
+                        "HTTP {status} fetching {final_url}, but no cached body was available"
+                    ),
+                    is_error: true,
+                    artifacts: Some(serde_json::json!({
+                        "kind": "fetchUrl",
+                        "url": args.url,
+                        "finalUrl": final_url.as_str(),
+                        "status": status.as_u16(),
+                        "blockedReason": null,
+                        "contentType": content_type,
+                        "redirectCount": redirect_count,
+                        "bodyTruncated": false,
+                        "cacheStatus": "validator_miss",
+                    })),
+                });
+            };
+            return render_fetch_payload(call_id, &args, max_length, payload);
+        }
         if !status.is_success() {
             let (error_bytes, error_truncated) = read_limited_body(response, MAX_ERROR_BODY_BYTES)
                 .await
@@ -1053,10 +1332,12 @@ impl Tool for FetchUrlTool {
                     "contentType": content_type,
                     "redirectCount": redirect_count,
                     "bodyTruncated": error_truncated,
+                    "cacheStatus": "bypass",
                 })),
             });
         }
 
+        let response_headers = response.headers().clone();
         let (body_bytes, body_truncated) = match read_limited_body(response, MAX_BODY_BYTES).await {
             Ok(body) => body,
             Err(e) => {
@@ -1097,95 +1378,33 @@ impl Tool for FetchUrlTool {
                     "redirectCount": redirect_count,
                     "extractionMethod": "unsupported_binary",
                     "assets": [direct_asset],
+                    "cacheStatus": "bypass",
                 })),
             });
         }
 
-        let body = decode_body(&body_bytes, content_type.as_deref());
-        let mut metadata = PageMetadata::default();
-        let mut assets: Vec<ImageAsset> = Vec::new();
-        let (mut text, title, extraction_method) = match body_kind {
-            BodyKind::Html => {
-                metadata = extract_page_metadata(&body, &final_url);
-                let extraction = extract_html_text(&body, &final_url, args.mode, &metadata);
-                metadata = extraction.metadata.clone();
-                if args.include_assets || args.mode == FetchMode::Assets {
-                    assets = extract_image_assets(&body, &final_url, metadata.image.as_deref());
-                }
-                (
-                    extraction.text,
-                    extraction.title.or_else(|| metadata.title.clone()),
-                    extraction.method,
-                )
-            }
-            BodyKind::Json => {
-                let pretty = serde_json::from_str::<serde_json::Value>(&body)
-                    .ok()
-                    .and_then(|value| serde_json::to_string_pretty(&value).ok())
-                    .unwrap_or_else(|| collapse_whitespace(&body));
-                (pretty, None, "json")
-            }
-            BodyKind::Text => {
-                let method = if content_type
-                    .as_deref()
-                    .is_some_and(|value| value.to_ascii_lowercase().contains("markdown"))
-                    || final_url.path().to_ascii_lowercase().ends_with(".md")
-                {
-                    "markdown"
-                } else {
-                    "plain_text"
-                };
-                (collapse_whitespace(&body), None, method)
-            }
-            BodyKind::UnsupportedBinary => unreachable!("binary responses returned earlier"),
-        };
-
-        let output_truncated = truncate_text_for_output(&mut text, max_length);
-        if body_truncated && !output_truncated {
-            text.push_str("\n\n[… truncated at download limit]");
-        }
-        let truncated = output_truncated || body_truncated;
-
-        let mut content = format!(
-            "URL: {}\nFinal URL: {}\nTitle: {}\nExtraction: {}\nSuggested citation: [url:{}|{}]\n---\n{}",
-            args.url,
-            final_url,
-            title.as_deref().unwrap_or("(untitled page)"),
-            extraction_method,
-            final_url,
-            title.as_deref().unwrap_or("web page"),
-            text
+        store_fetch_body(
+            &fetch_cache_key,
+            &final_url,
+            &response_headers,
+            content_type.clone(),
+            &body_bytes,
+            body_truncated,
         );
-        if !assets.is_empty() {
-            content.push_str("\n\nImage candidates:\n");
-            for asset in assets.iter().take(8) {
-                content.push_str(&format!("- {} ({})\n", asset.url, asset.kind));
-            }
-            if assets.len() > 8 {
-                content.push_str(&format!("- … {} more\n", assets.len() - 8));
-            }
-            content.push_str("Use download_asset to save a supported image candidate.");
-        }
 
-        Ok(ToolResult {
-            call_id: call_id.to_string(),
-            content,
-            is_error: false,
-            artifacts: Some(serde_json::json!({
-                "kind": "fetchUrl",
-                "url": args.url,
-                "finalUrl": final_url.as_str(),
-                "title": title,
-                "metadata": metadata,
-                "assets": assets,
-                "truncated": truncated,
-                "bodyTruncated": body_truncated,
-                "contentType": content_type,
-                "redirectCount": redirect_count,
-                "extractionMethod": extraction_method,
-                "blockedReason": null,
-            })),
-        })
+        render_fetch_payload(
+            call_id,
+            &args,
+            max_length,
+            FetchBodyPayload {
+                final_url,
+                content_type,
+                body_bytes,
+                body_truncated,
+                redirect_count,
+                cache_status: "miss",
+            },
+        )
     }
 }
 
@@ -1203,6 +1422,24 @@ mod tests {
     fn validate_url_rejects_private_ip_literal() {
         let err = validate_url("http://127.0.0.1/admin").unwrap_err();
         assert!(err.contains("localhost") || err.contains("private IP"));
+    }
+
+    #[test]
+    fn conditional_headers_require_cached_validators() {
+        assert!(conditional_headers_from_cache(None).is_none());
+
+        let cached = CachedFetchBody {
+            final_url: "https://example.com/page".to_string(),
+            content_type: Some("text/html".to_string()),
+            etag: Some("\"abc\"".to_string()),
+            last_modified: None,
+            body_bytes: b"<html>cached</html>".to_vec(),
+            body_truncated: false,
+        };
+
+        let conditional = conditional_headers_from_cache(Some(&cached)).unwrap();
+        assert_eq!(conditional.etag.as_deref(), Some("\"abc\""));
+        assert_eq!(conditional.last_modified, None);
     }
 
     #[test]

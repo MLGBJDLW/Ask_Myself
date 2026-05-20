@@ -86,6 +86,7 @@ export function SettingsPage() {
   const [skillEditorDirty, setSkillEditorDirty] = useState(false);
   const [mcpFormDirty, setMcpFormDirty] = useState(false);
   const [personaEditorDirty, setPersonaEditorDirty] = useState(false);
+  const [extensionsAppConfigDirty, setExtensionsAppConfigDirty] = useState(false);
   const exclusiveActionsRef = useRef<Set<string>>(new Set());
   const hasDirtyTabs = dirtyTabs.size > 0;
 
@@ -772,6 +773,11 @@ export function SettingsPage() {
         if (!reloaded) return false;
         break;
       }
+      case 'extensions': {
+        await loadAppConfig();
+        setExtensionsAppConfigDirty(false);
+        break;
+      }
       case 'media': {
         const [ocrReloaded, videoReloaded] = await Promise.all([loadOcrConfig(), loadVideoConfig()]);
         if (!ocrReloaded || !videoReloaded) return false;
@@ -785,7 +791,7 @@ export function SettingsPage() {
 
     markClean(activeTab);
     return true;
-  }, [activeTab, loadEmbedConfig, loadOcrConfig, loadVideoConfig, loadPrivacyConfig, markClean]);
+  }, [activeTab, loadAppConfig, loadEmbedConfig, loadOcrConfig, loadVideoConfig, loadPrivacyConfig, markClean]);
 
   const handleTabChange = useCallback((nextTab: SettingsTab) => {
     if (nextTab === activeTab) return;
@@ -884,13 +890,20 @@ export function SettingsPage() {
   }, [markClean, markDirty, providerFormDirty]);
 
   useEffect(() => {
-    if (personaEditorDirty || skillEditorDirty || mcpFormDirty) {
+    if (personaEditorDirty || skillEditorDirty || mcpFormDirty || extensionsAppConfigDirty) {
       markDirty('extensions');
       return;
     }
 
     markClean('extensions');
-  }, [markClean, markDirty, mcpFormDirty, personaEditorDirty, skillEditorDirty]);
+  }, [
+    extensionsAppConfigDirty,
+    markClean,
+    markDirty,
+    mcpFormDirty,
+    personaEditorDirty,
+    skillEditorDirty,
+  ]);
 
   const loadUserMemories = useCallback(async () => {
     try {
@@ -1738,6 +1751,8 @@ export function SettingsPage() {
           mcpTestLoading={mcpTestLoading}
           mcpToolCounts={mcpToolCounts}
           mcpToolsExpanded={mcpToolsExpanded}
+          appConfig={appConfig}
+          appConfigLoading={appConfigLoading}
           onAddPersona={() => { setEditingPersona(null); setShowPersonaForm(true); }}
           onSavePersona={handleSavePersona}
           onCancelPersonaForm={() => {
@@ -1782,6 +1797,14 @@ export function SettingsPage() {
           onDeleteMcpTargetChange={setDeleteMcpTarget}
           onToggleMcpToolsExpanded={(serverId) => setMcpToolsExpanded((prev) => ({ ...prev, [serverId]: !prev[serverId] }))}
           onConfirmDeleteMcpServer={handleDeleteMcpServer}
+          onAppConfigChange={setAppConfig}
+          onAppConfigSave={async () => {
+            if (await handleAppConfigSave()) {
+              setExtensionsAppConfigDirty(false);
+              markClean('extensions');
+            }
+          }}
+          onMarkAppConfigDirty={() => setExtensionsAppConfigDirty(true)}
         />
       )}
 

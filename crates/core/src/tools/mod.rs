@@ -81,6 +81,7 @@ fn with_scheduler_control_parameters(mut parameters: serde_json::Value) -> serde
 
 pub mod agent_memory_tool;
 pub mod archive_output_tool;
+pub mod browser_evidence_tool;
 pub mod chunk_context_tool;
 pub mod code_intelligence_tool;
 pub mod compare_tool;
@@ -128,6 +129,7 @@ pub mod summarize_tool;
 pub(crate) mod text_match;
 pub mod tool_search_tool;
 pub mod update_plan_tool;
+pub mod web_research_context_tool;
 pub mod web_search_tool;
 pub mod write_note_tool;
 
@@ -905,6 +907,8 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(chunk_context_tool::ChunkContextTool));
     registry.register(Box::new(fetch_url_tool::FetchUrlTool));
     registry.register(Box::new(web_search_tool::WebSearchTool));
+    registry.register(Box::new(web_research_context_tool::WebResearchContextTool));
+    registry.register(Box::new(browser_evidence_tool::BrowserEvidenceCaptureTool));
     registry.register(Box::new(download_asset_tool::DownloadAssetTool));
     registry.register(Box::new(write_note_tool::WriteNoteTool));
     registry.register(Box::new(search_playbooks_tool::SearchPlaybooksTool));
@@ -1147,6 +1151,7 @@ mod tests {
         let preview_tools = [
             "fetch_url",
             "web_search",
+            "web_research_context",
             "read_file",
             "read_files",
             "list_dir",

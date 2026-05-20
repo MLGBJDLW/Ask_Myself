@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, type ReactNode, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { Search, FolderOpen, BookOpen, MessageCircle, Settings, ChevronLeft, ChevronRight, Brain, BotMessageSquare, ClipboardList } from 'lucide-react';
+import { Search, FolderOpen, BookOpen, MessageCircle, Settings, ChevronLeft, ChevronRight, Brain, BotMessageSquare, ClipboardList, Workflow } from 'lucide-react';
 import {
   DndContext,
   PointerSensor,
@@ -54,6 +54,7 @@ const CANONICAL_NAV_ITEMS: NavItem[] = [
   { to: '/knowledge', labelKey: 'nav.knowledge', icon: Brain },
   { to: '/chat', labelKey: 'nav.chat', icon: MessageCircle },
   { to: '/tasks', labelKey: 'nav.tasks', icon: ClipboardList },
+  { to: '/workflows', labelKey: 'nav.workflows', icon: Workflow },
   { to: '/settings', labelKey: 'nav.settings', icon: Settings },
 ];
 

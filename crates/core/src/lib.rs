@@ -77,4 +77,5 @@ pub mod watcher;
 pub mod web_search;
 pub mod wiki;
 pub mod work_plan;
+pub mod workflow_automation;
 pub mod workflow_catalog;

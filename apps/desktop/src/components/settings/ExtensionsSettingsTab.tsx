@@ -5,6 +5,7 @@ import { AlertTriangle, Blocks, Check, ChevronDown, ChevronUp, Download, Eye, Lo
 import { useTranslation } from '../../i18n';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
 import type { PersonaProfile, SavePersonaInput } from '../../lib/api';
+import type { AppConfig } from '../../types/conversation';
 import type { McpServer, McpToolInfo, SaveMcpServerInput, SaveSkillInput, Skill, SkillChangeProposal } from '../../types/extensions';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -14,6 +15,7 @@ import { ProjectToolsPanel } from './ProjectToolsPanel';
 import { Section } from './SettingsSection';
 import { SkillEditor } from './SkillEditor';
 import { SkillMarkdownPreview } from './SkillMarkdownPreview';
+import { WebSearchSettingsPanel } from './WebSearchSettingsPanel';
 
 export type SkillFilter = 'all' | 'builtin' | 'user' | 'enabled' | 'disabled';
 export type McpToolState = Record<string, { tools: McpToolInfo[]; loading: boolean; error?: string }>;
@@ -40,6 +42,8 @@ interface ExtensionsSettingsTabProps {
   mcpTestLoading: string | null;
   mcpToolCounts: McpToolState;
   mcpToolsExpanded: Record<string, boolean>;
+  appConfig: AppConfig | null;
+  appConfigLoading: boolean;
   onAddPersona: () => void;
   onSavePersona: (input: SavePersonaInput) => Promise<void>;
   onCancelPersonaForm: () => void;
@@ -72,6 +76,9 @@ interface ExtensionsSettingsTabProps {
   onDeleteMcpTargetChange: (server: McpServer | null) => void;
   onToggleMcpToolsExpanded: (serverId: string) => void;
   onConfirmDeleteMcpServer: () => void;
+  onAppConfigChange: (config: AppConfig) => void;
+  onAppConfigSave: () => void;
+  onMarkAppConfigDirty: () => void;
 }
 
 interface PersonaCopy {
@@ -393,6 +400,8 @@ export function ExtensionsSettingsTab({
   mcpTestLoading,
   mcpToolCounts,
   mcpToolsExpanded,
+  appConfig,
+  appConfigLoading,
   onAddPersona,
   onSavePersona,
   onCancelPersonaForm,
@@ -425,6 +434,9 @@ export function ExtensionsSettingsTab({
   onDeleteMcpTargetChange,
   onToggleMcpToolsExpanded,
   onConfirmDeleteMcpServer,
+  onAppConfigChange,
+  onAppConfigSave,
+  onMarkAppConfigDirty,
 }: ExtensionsSettingsTabProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -476,13 +488,23 @@ export function ExtensionsSettingsTab({
 
   return (
     <>
+      {appConfig && (
+        <WebSearchSettingsPanel
+          appConfig={appConfig}
+          loading={appConfigLoading}
+          onChange={onAppConfigChange}
+          onMarkDirty={onMarkAppConfigDirty}
+          onSave={onAppConfigSave}
+        />
+      )}
+
       <Section
         icon={<UserRound size={20} />}
         title={personaCopy.personas}
         delay={0.01}
         description={personaCopy.personasDescription}
         collapsible
-        defaultOpen={showPersonaForm || personas.length <= 6}
+        defaultOpen={false}
         summary={
           <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
             {personas.length}
@@ -622,7 +644,7 @@ export function ExtensionsSettingsTab({
         delay={0.03}
         description={t('settings.skillsDescription')}
         collapsible
-        defaultOpen={showSkillForm || skills.length <= 6}
+        defaultOpen={false}
         summary={
           <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
             {skills.length}
@@ -931,7 +953,7 @@ export function ExtensionsSettingsTab({
         delay={0.06}
         description={t('settings.mcpServersDescription')}
         collapsible
-        defaultOpen={showMcpForm || mcpServers.length <= 3}
+        defaultOpen={false}
         summary={
           <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
             {mcpServers.length}

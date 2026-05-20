@@ -95,6 +95,148 @@ pub fn show_in_file_explorer(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveGeneratedImageInput {
+    output_path: String,
+    source_path: Option<String>,
+    data_url: Option<String>,
+    media_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveGeneratedImageResult {
+    path: String,
+    bytes_written: u64,
+}
+
+const GENERATED_IMAGE_MAX_BYTES: u64 = 50 * 1024 * 1024;
+
+#[tauri::command]
+pub async fn read_generated_image_data_url_cmd(
+    path: String,
+    media_type: Option<String>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let (bytes, detected_media_type) =
+            read_supported_image_bytes(&path, media_type.as_deref())?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        Ok(format!("data:{detected_media_type};base64,{encoded}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn save_generated_image_cmd(
+    input: SaveGeneratedImageInput,
+) -> Result<SaveGeneratedImageResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let (bytes, media_type) = if let Some(source_path) = input
+            .source_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            read_supported_image_bytes(source_path, input.media_type.as_deref())?
+        } else if let Some(data_url) = input
+            .data_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            decode_image_data_url(data_url)?
+        } else {
+            return Err("No generated image payload was available to save.".to_string());
+        };
+
+        if !nexa_core::media::is_supported_image(&media_type) {
+            return Err(format!("Unsupported generated image type: {media_type}"));
+        }
+
+        let output_path = PathBuf::from(input.output_path.trim());
+        if output_path.as_os_str().is_empty() {
+            return Err("Choose a file path before saving the image.".to_string());
+        }
+        let extension = output_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") {
+            return Err(
+                "Generated images can only be saved as PNG, JPEG, WEBP, or GIF.".to_string(),
+            );
+        }
+
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&output_path, &bytes).map_err(|e| e.to_string())?;
+
+        Ok(SaveGeneratedImageResult {
+            path: output_path.to_string_lossy().to_string(),
+            bytes_written: bytes.len() as u64,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn read_supported_image_bytes(
+    path: &str,
+    media_type_hint: Option<&str>,
+) -> Result<(Vec<u8>, String), String> {
+    let file_path = Path::new(path);
+    if !file_path.exists() {
+        return Err(format!("Generated image preview not found: {path}"));
+    }
+    let metadata = std::fs::metadata(file_path).map_err(|e| e.to_string())?;
+    if metadata.len() > GENERATED_IMAGE_MAX_BYTES {
+        return Err("Generated image is too large to preview or save.".to_string());
+    }
+
+    let bytes = std::fs::read(file_path).map_err(|e| e.to_string())?;
+    let media_type = media_type_hint
+        .map(str::trim)
+        .filter(|value| nexa_core::media::is_supported_image(value))
+        .map(str::to_string)
+        .unwrap_or_else(|| nexa_core::parse::detect_mime_type(file_path));
+    if !nexa_core::media::is_supported_image(&media_type) {
+        return Err(format!("Unsupported generated image type: {media_type}"));
+    }
+    Ok((bytes, media_type))
+}
+
+fn decode_image_data_url(data_url: &str) -> Result<(Vec<u8>, String), String> {
+    let (header, payload) = data_url
+        .split_once(',')
+        .ok_or_else(|| "Generated image data URL is malformed.".to_string())?;
+    if !header.to_ascii_lowercase().starts_with("data:image/") {
+        return Err("Generated image data URL must contain an image media type.".to_string());
+    }
+    if !header.to_ascii_lowercase().contains(";base64") {
+        return Err("Generated image data URL must be base64 encoded.".to_string());
+    }
+    let media_type = header
+        .trim_start_matches("data:")
+        .split(';')
+        .next()
+        .unwrap_or("image/png")
+        .to_string();
+    if !nexa_core::media::is_supported_image(&media_type) {
+        return Err(format!("Unsupported generated image type: {media_type}"));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|e| format!("Generated image data URL is not valid base64: {e}"))?;
+    if bytes.len() as u64 > GENERATED_IMAGE_MAX_BYTES {
+        return Err("Generated image is too large to preview or save.".to_string());
+    }
+    Ok((bytes, media_type))
+}
+
 const PREVIEW_TEXT_BYTES_LIMIT: u64 = 2 * 1024 * 1024;
 const PREVIEW_PARSE_BYTES_LIMIT: u64 = 25 * 1024 * 1024;
 const PREVIEW_RELATIVE_SEARCH_LIMIT: usize = 5_000;

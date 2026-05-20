@@ -133,6 +133,23 @@ pub async fn agent_chat_cmd(
             Some(&message),
         )
         .unwrap_or_default();
+    if !agent_memory_section.is_empty() {
+        let memory_hits = state
+            .db
+            .search_agent_procedural_memories(&message, 3)
+            .or_else(|_| state.db.list_agent_procedural_memories(2))
+            .unwrap_or_default();
+        for memory in memory_hits {
+            let _ = state.db.record_memory_injection_event(
+                &memory.id,
+                Some(&conversation_id),
+                Some(&turn.id),
+                &message,
+                "agent_procedural_memory_prompt",
+                Some(memory.confidence),
+            );
+        }
+    }
     let preference_section =
         nexa_core::personalization::build_preference_summary_for_query(&state.db, Some(&message))
             .unwrap_or_default();
@@ -671,6 +688,7 @@ pub async fn agent_chat_cmd(
     let handle = app_handle.clone();
     let assistant_sort_order = next_sort_order + 1;
     let db_config_for_extraction = db_config.clone();
+    let selected_skills_for_usage = selected_skills.clone();
     let forwarder_event_seq = Arc::clone(&stream_event_seq);
     let forwarder_terminal_emitted = Arc::clone(&terminal_emitted);
     let command_stream_event_seq = Arc::clone(&stream_event_seq);
@@ -870,31 +888,38 @@ pub async fn agent_chat_cmd(
             .get("verification")
             .and_then(|verification| verification.get("overallStatus"))
             .and_then(|status| status.as_str());
-        let (task_status, task_summary, task_error): (&str, &str, Option<String>) = if timed_out {
-            (
-                "timed_out",
-                "Agent execution timed out",
-                Some("Agent execution timed out.".to_string()),
-            )
-        } else if let Some(Err(CoreError::Cancelled(message))) = &result {
-            (
-                "cancelled",
-                "Agent execution cancelled",
-                Some(message.clone()),
-            )
-        } else if let Some(Err(err)) = &result {
-            ("failed", "Agent execution failed", Some(err.to_string()))
-        } else {
-            match turn_snapshot.as_ref().map(|turn| turn.status.as_str()) {
-                Some("cancelled") => ("cancelled", "Stopped by user", None),
-                Some("error") => ("failed", "Agent execution failed", None),
-                Some("cached") => ("completed", "Answered from cache", None),
-                _ if verification_status.is_some_and(|status| status != "passed") => {
-                    ("completed", "Task completed with verification gap", None)
+        let current_task_status = db
+            .get_agent_task_run(&task_run_id)
+            .ok()
+            .map(|run| run.status);
+        let (task_status, task_summary, task_error): (&str, &str, Option<String>) =
+            if current_task_status.as_deref() == Some("paused") {
+                ("paused", "Paused with a resumable checkpoint", None)
+            } else if timed_out {
+                (
+                    "timed_out",
+                    "Agent execution timed out",
+                    Some("Agent execution timed out.".to_string()),
+                )
+            } else if let Some(Err(CoreError::Cancelled(message))) = &result {
+                (
+                    "cancelled",
+                    "Agent execution cancelled",
+                    Some(message.clone()),
+                )
+            } else if let Some(Err(err)) = &result {
+                ("failed", "Agent execution failed", Some(err.to_string()))
+            } else {
+                match turn_snapshot.as_ref().map(|turn| turn.status.as_str()) {
+                    Some("cancelled") => ("cancelled", "Stopped by user", None),
+                    Some("error") => ("failed", "Agent execution failed", None),
+                    Some("cached") => ("completed", "Answered from cache", None),
+                    _ if verification_status.is_some_and(|status| status != "passed") => {
+                        ("completed", "Task completed with verification gap", None)
+                    }
+                    _ => ("completed", "Task completed", None),
                 }
-                _ => ("completed", "Task completed", None),
-            }
-        };
+            };
         let _ = db.finish_agent_task_run(
             &task_run_id,
             task_status,
@@ -902,6 +927,27 @@ pub async fn agent_chat_cmd(
             task_error.as_deref(),
             Some(&task_artifacts),
         );
+        let skill_outcome = match task_status {
+            "completed" => "success",
+            "failed" | "timed_out" => "failed",
+            other => other,
+        };
+        for skill in &selected_skills_for_usage {
+            let _ = db.record_skill_usage_event(
+                &nexa_core::workflow_automation::RecordSkillUsageInput {
+                    skill_id: skill.id.clone(),
+                    conversation_id: Some(conv_id.clone()),
+                    task_run_id: Some(task_run_id.clone()),
+                    outcome: skill_outcome.to_string(),
+                    evidence: serde_json::json!({
+                        "name": &skill.name,
+                        "taskStatus": task_status,
+                        "taskSummary": task_summary,
+                        "error": task_error.as_deref(),
+                    }),
+                },
+            );
+        }
         record_agent_run_status_task_event(
             &db,
             &handle,

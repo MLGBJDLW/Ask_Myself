@@ -114,6 +114,22 @@ function isBoardOnlyTimelineToolCall(
   return normalizeToolName(toolName) === 'update_plan' || renderKind === 'plan';
 }
 
+function isGeneratedImageArtifact(artifacts: unknown): boolean {
+  return Boolean(
+    artifacts &&
+    typeof artifacts === 'object' &&
+    !Array.isArray(artifacts) &&
+    (artifacts as Record<string, unknown>).kind === 'generatedImage',
+  );
+}
+
+function isGeneratedImageToolCall(toolCall: ToolCallEvent): boolean {
+  return (
+    normalizeToolName(toolCall.toolName) === 'generate_image' ||
+    toolCall.renderKind === 'image'
+  );
+}
+
 export function shouldRenderTraceToolCall(
   toolName: string | null | undefined,
   renderKind?: ToolRenderKind,
@@ -201,6 +217,15 @@ export function toolCallToTimelineSection(input: {
   trace: boolean;
 }): TimelineSection[] {
   const { id, toolCall, trace } = input;
+  if (
+    isGeneratedImageToolCall(toolCall) &&
+    !isPendingToolCallStatus(toolCall.status) &&
+    !toolCall.isError &&
+    isGeneratedImageArtifact(toolCall.artifacts)
+  ) {
+    return [];
+  }
+
   if (
     !shouldRenderTraceToolCall(
       toolCall.toolName,

@@ -1,0 +1,23 @@
+{
+  "name": "browser_evidence_capture",
+  "description": "Capture auditable, read-only evidence from a public web page with URL/redirect validation. Use this when a task needs browser/page observation with provenance: it returns readable page text, final URL, title, citation metadata, and a saved browser-evidence capture record. It does not click, type, log in, or mutate the page.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "The http:// or https:// URL to capture."
+      },
+      "max_length": {
+        "type": "integer",
+        "description": "Maximum readable text characters to return. Default: 6000."
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["auto", "readability", "text", "metadata"],
+        "description": "Capture mode. auto tries Readability then page text. metadata captures title/metadata only."
+      }
+    },
+    "required": ["url"]
+  }
+}
