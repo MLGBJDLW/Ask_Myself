@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use reqwest::Url;
 
 use super::model::{
-    SearchEngine, SearchLanguage, SearchRegion, SearchRequest, WebSearchArgs, MAX_SEARCH_LIMIT,
+    SearchEngine, SearchLanguage, SearchRegion, SearchRequest, TimeRange, WebSearchArgs,
+    WebSearchProviderProfile, WebSearchReranker, MAX_SEARCH_LIMIT,
 };
 
 pub fn build_search_request(args: WebSearchArgs) -> Result<SearchRequest, String> {
@@ -14,13 +15,15 @@ pub fn build_search_request(args: WebSearchArgs) -> Result<SearchRequest, String
 
     let language = resolve_language(query, args.language);
     let region = resolve_region(language, args.region);
+    let provider_profile = args.provider_profile.unwrap_or_default();
     let explicit_engines = !args.engines.is_empty();
-    let engines = resolve_engines(language, region, &args.engines)?;
+    let engines = resolve_engines(language, region, provider_profile, &args.engines)?;
     let site = normalize_site(args.site.as_deref())?;
     let effective_query = match site.as_deref() {
         Some(site) => format!("site:{site} {query}"),
         None => query.to_string(),
     };
+    let reranker = resolve_reranker(query, args.time_range, args.reranker.unwrap_or_default());
 
     Ok(SearchRequest {
         query: query.to_string(),
@@ -33,6 +36,8 @@ pub fn build_search_request(args: WebSearchArgs) -> Result<SearchRequest, String
         time_range: args.time_range,
         site,
         include_snippets: args.include_snippets,
+        provider_profile,
+        reranker,
     })
 }
 
@@ -55,10 +60,15 @@ fn resolve_region(language: SearchLanguage, requested: SearchRegion) -> SearchRe
 fn resolve_engines(
     language: SearchLanguage,
     region: SearchRegion,
+    provider_profile: WebSearchProviderProfile,
     requested: &[String],
 ) -> Result<Vec<SearchEngine>, String> {
     if requested.is_empty() {
-        return Ok(default_engines(language, region));
+        return Ok(default_engines_for_profile(
+            language,
+            region,
+            provider_profile,
+        ));
     }
 
     let mut engines = Vec::new();
@@ -94,12 +104,99 @@ fn resolve_engines(
     Ok(engines)
 }
 
-fn default_engines(language: SearchLanguage, region: SearchRegion) -> Vec<SearchEngine> {
-    if language == SearchLanguage::Zh || region == SearchRegion::MainlandCn {
-        vec![SearchEngine::Baidu, SearchEngine::Sogou, SearchEngine::Bing]
-    } else {
-        vec![SearchEngine::Bing, SearchEngine::DuckDuckGo]
+pub(crate) fn default_engines_for_profile(
+    language: SearchLanguage,
+    region: SearchRegion,
+    provider_profile: WebSearchProviderProfile,
+) -> Vec<SearchEngine> {
+    let mainland = language == SearchLanguage::Zh || region == SearchRegion::MainlandCn;
+    match provider_profile {
+        WebSearchProviderProfile::Default | WebSearchProviderProfile::Free if mainland => {
+            vec![SearchEngine::Baidu, SearchEngine::Sogou, SearchEngine::Bing]
+        }
+        WebSearchProviderProfile::Default | WebSearchProviderProfile::Free => {
+            vec![SearchEngine::Bing, SearchEngine::DuckDuckGo]
+        }
+        WebSearchProviderProfile::FreeVerified if mainland => vec![
+            SearchEngine::Baidu,
+            SearchEngine::Sogou,
+            SearchEngine::Bing,
+            SearchEngine::DuckDuckGo,
+        ],
+        WebSearchProviderProfile::FreeVerified => vec![
+            SearchEngine::Bing,
+            SearchEngine::DuckDuckGo,
+            SearchEngine::Sogou,
+        ],
+        WebSearchProviderProfile::MaxEvidence if mainland => vec![
+            SearchEngine::Baidu,
+            SearchEngine::Sogou,
+            SearchEngine::Bing,
+            SearchEngine::DuckDuckGo,
+        ],
+        WebSearchProviderProfile::MaxEvidence => vec![
+            SearchEngine::Bing,
+            SearchEngine::DuckDuckGo,
+            SearchEngine::Sogou,
+            SearchEngine::Baidu,
+        ],
     }
+}
+
+fn resolve_reranker(
+    query: &str,
+    time_range: TimeRange,
+    requested: WebSearchReranker,
+) -> WebSearchReranker {
+    if requested != WebSearchReranker::Auto {
+        return requested;
+    }
+
+    let lower = query.to_ascii_lowercase();
+    if contains_any(
+        &lower,
+        &[
+            "docs",
+            "documentation",
+            "api",
+            "sdk",
+            "reference",
+            "guide",
+            "manual",
+            "release notes",
+        ],
+    ) {
+        return WebSearchReranker::DocsFirst;
+    }
+    if contains_any(
+        &lower,
+        &[
+            "paper",
+            "study",
+            "research",
+            "journal",
+            "arxiv",
+            "pubmed",
+            "doi",
+            "clinical trial",
+        ],
+    ) {
+        return WebSearchReranker::Research;
+    }
+    if matches!(time_range, TimeRange::Day | TimeRange::Week)
+        || contains_any(
+            &lower,
+            &["news", "latest", "today", "yesterday", "breaking", "report"],
+        )
+    {
+        return WebSearchReranker::NewsBalanced;
+    }
+
+    WebSearchReranker::None
+}
+
+fn contains_any(value: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| value.contains(needle))
 }
 
 fn normalize_site(site: Option<&str>) -> Result<Option<String>, String> {
@@ -168,6 +265,8 @@ mod tests {
             time_range: TimeRange::Any,
             site: None,
             include_snippets: true,
+            provider_profile: None,
+            reranker: None,
         }
     }
 
@@ -217,5 +316,30 @@ mod tests {
 
         assert_eq!(request.site.as_deref(), Some("github.com"));
         assert_eq!(request.effective_query, "site:github.com searxng");
+    }
+
+    #[test]
+    fn max_evidence_profile_uses_all_native_engines() {
+        let mut raw = args("current search coverage");
+        raw.provider_profile = Some(WebSearchProviderProfile::MaxEvidence);
+
+        let request = build_search_request(raw).unwrap();
+
+        assert_eq!(
+            request.engines,
+            vec![
+                SearchEngine::Bing,
+                SearchEngine::DuckDuckGo,
+                SearchEngine::Sogou,
+                SearchEngine::Baidu
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_reranker_detects_docs_queries() {
+        let request = build_search_request(args("tauri api reference")).unwrap();
+
+        assert_eq!(request.reranker, WebSearchReranker::DocsFirst);
     }
 }

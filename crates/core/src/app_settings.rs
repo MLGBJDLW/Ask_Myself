@@ -1,5 +1,6 @@
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::web_search::{WebSearchProviderProfile, WebSearchReranker};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +46,24 @@ impl Default for ImageGenerationConfig {
 impl ImageGenerationConfig {
     pub fn is_configured(&self) -> bool {
         !self.api_key.trim().is_empty() && !self.model.trim().is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchConfig {
+    #[serde(default)]
+    pub provider_profile: WebSearchProviderProfile,
+    #[serde(default)]
+    pub reranker: WebSearchReranker,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            provider_profile: WebSearchProviderProfile::Default,
+            reranker: WebSearchReranker::Auto,
+        }
     }
 }
 
@@ -162,6 +181,10 @@ pub struct AppConfig {
     /// Dedicated image generation provider settings used by the generate_image tool.
     #[serde(default)]
     pub image_generation: ImageGenerationConfig,
+
+    /// Defaults for native no-key public web search tools.
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
 }
 
 fn default_tool_timeout() -> i64 {
@@ -254,6 +277,7 @@ impl Default for AppConfig {
             hf_mirror_base_url: default_hf_mirror_base_url(),
             ghproxy_base_url: default_ghproxy_base_url(),
             image_generation: ImageGenerationConfig::default(),
+            web_search: WebSearchConfig::default(),
         }
     }
 }

@@ -49,6 +49,18 @@
         "type": "boolean",
         "default": true,
         "description": "Whether snippets should be included in the returned candidate results."
+      },
+      "provider_profile": {
+        "type": "string",
+        "enum": ["default", "free", "free_verified", "max_evidence"],
+        "default": "default",
+        "description": "Provider profile. default/free use fast no-key native routing; free_verified and max_evidence query more native engines for source diversity."
+      },
+      "reranker": {
+        "type": "string",
+        "enum": ["auto", "none", "docs_first", "research", "news_balanced"],
+        "default": "auto",
+        "description": "Optional result reranker. auto infers docs-first, research, or news-balanced from the query and time range."
       }
     },
     "required": ["query"]

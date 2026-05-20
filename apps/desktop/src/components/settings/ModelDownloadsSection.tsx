@@ -11,6 +11,7 @@ import { CollapsiblePanel, Section } from './SettingsSection';
 import { ModelCard } from './ModelCard';
 import { NetworkMirrorsPanel } from './NetworkMirrorsPanel';
 import { OfficeRuntimePanel } from './OfficeRuntimePanel';
+import { WebSearchSettingsPanel } from './WebSearchSettingsPanel';
 
 interface ModelDownloadsSectionProps {
   embedConfig: EmbedderConfig | null;
@@ -272,13 +273,22 @@ export function ModelDownloadsSection({
 
         {/* Network mirrors (advanced) */}
         {appConfig && (
-          <NetworkMirrorsPanel
-            appConfig={appConfig}
-            loading={appConfigLoading}
-            onChange={onAppConfigChange}
-            onMarkDirty={onMarkModelsDirty}
-            onSave={onAppConfigSave}
-          />
+          <>
+            <WebSearchSettingsPanel
+              appConfig={appConfig}
+              loading={appConfigLoading}
+              onChange={onAppConfigChange}
+              onMarkDirty={onMarkModelsDirty}
+              onSave={onAppConfigSave}
+            />
+            <NetworkMirrorsPanel
+              appConfig={appConfig}
+              loading={appConfigLoading}
+              onChange={onAppConfigChange}
+              onMarkDirty={onMarkModelsDirty}
+              onSave={onAppConfigSave}
+            />
+          </>
         )}
       </div>
 

@@ -290,6 +290,7 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   summarize: List,
   list_dir: FolderOpen,
   web_search: Globe,
+  web_research_context: Globe,
   fetch_url: Globe,
   download_asset: Download,
   chunk_context: Layers,

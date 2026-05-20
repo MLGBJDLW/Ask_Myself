@@ -96,6 +96,7 @@ pub fn capability_render_kind(name: &str) -> ToolRenderKind {
         }
         "fetch_url"
         | "web_search"
+        | "web_research_context"
         | "read_file"
         | "read_files"
         | "get_document_info"
@@ -134,6 +135,7 @@ pub fn capability_input_streaming(name: &str) -> ToolInputStreamingMode {
         | "download_asset"
         | "fetch_url"
         | "web_search"
+        | "web_research_context"
         | "read_file"
         | "read_files"
         | "list_dir"
@@ -410,7 +412,7 @@ pub fn infer_tool_access_profile(
             ApprovalRisk::Low,
             "Reads document compilation status and diagnostics.",
         ),
-        "fetch_url" | "web_search" => (
+        "fetch_url" | "web_search" | "web_research_context" => (
             "web",
             true,
             false,

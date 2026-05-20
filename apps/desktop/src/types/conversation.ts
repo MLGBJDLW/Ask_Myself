@@ -360,6 +360,26 @@ export interface AppConfig {
   hfMirrorBaseUrl?: string;
   ghproxyBaseUrl?: string;
   imageGeneration?: ImageGenerationConfig;
+  webSearch?: WebSearchConfig;
+}
+
+export type WebSearchProviderProfile = 'default' | 'free' | 'free_verified' | 'max_evidence';
+export type WebSearchReranker = 'auto' | 'none' | 'docs_first' | 'research' | 'news_balanced';
+export type WebSearchProviderHealth = 'healthy' | 'degraded' | 'blocked' | 'disabled';
+
+export interface WebSearchConfig {
+  providerProfile: WebSearchProviderProfile;
+  reranker: WebSearchReranker;
+}
+
+export interface WebSearchProviderStatus {
+  engine: 'baidu' | 'sogou' | 'bing' | 'duckduckgo';
+  label: string;
+  health: WebSearchProviderHealth;
+  builtIn: boolean;
+  enabledByProfile: boolean;
+  lastErrorCode?: string;
+  nextRetrySeconds?: number;
 }
 
 export interface ImageGenerationConfig {

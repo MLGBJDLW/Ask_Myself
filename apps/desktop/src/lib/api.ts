@@ -46,6 +46,8 @@ import type {
   FileCheckpointRestore,
   UserMemory,
   AgentProceduralMemory,
+  WebSearchProviderProfile,
+  WebSearchProviderStatus,
 } from "../types/conversation";
 import type {
   McpServer,
@@ -920,6 +922,9 @@ export const getAppConfig = () =>
 
 export const saveAppConfig = (config: AppConfig) =>
   invoke<void>('save_app_config_cmd', { config });
+
+export const getWebSearchStatus = (providerProfile?: WebSearchProviderProfile) =>
+  invoke<WebSearchProviderStatus[]>('get_web_search_status_cmd', { providerProfile });
 
 export type OfficeRuntimeStatus = 'ready' | 'degraded' | 'missing' | 'blocked';
 

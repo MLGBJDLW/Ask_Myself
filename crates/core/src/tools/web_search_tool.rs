@@ -11,9 +11,11 @@ use tokio::sync::OnceCell;
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::web_search::{
-    build_search_request, provider_for_engine, SearchCacheInfo, SearchEngine,
-    SearchProviderContext, SearchProviderFailure, SearchProviderHealthState, SearchProviderRunInfo,
-    SearchRequest, SearchResponse, SearchResultItem, SearchTimeRangeInfo, WebSearchArgs,
+    build_search_request, default_engines_for_profile, provider_for_engine, SearchCacheInfo,
+    SearchEngine, SearchLanguage, SearchProviderContext, SearchProviderFailure,
+    SearchProviderHealthState, SearchProviderRunInfo, SearchRegion, SearchRequest, SearchResponse,
+    SearchResultItem, SearchTimeRangeInfo, WebSearchArgs, WebSearchProviderProfile,
+    WebSearchProviderStatus, WebSearchReranker,
 };
 
 use super::{tool_contract_error_result, Tool, ToolCategory, ToolDef, ToolResult, TrustBoundary};
@@ -47,9 +49,9 @@ struct CacheEntry {
 }
 
 #[derive(Clone)]
-struct SearchExecution {
-    response: SearchResponse,
-    all_failed: bool,
+pub(crate) struct SearchExecution {
+    pub(crate) response: SearchResponse,
+    pub(crate) all_failed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -86,37 +88,226 @@ fn web_search_expected_format() -> serde_json::Value {
         "engines": ["optional subset: baidu, sogou, bing, duckduckgo"],
         "time_range": "any | day | week | month | year",
         "site": "optional domain such as example.com",
-        "include_snippets": true
+        "include_snippets": true,
+        "provider_profile": "default | free | free_verified | max_evidence",
+        "reranker": "auto | none | docs_first | research | news_balanced"
     })
 }
 
-fn merge_and_rank_results(results: Vec<SearchResultItem>, limit: usize) -> Vec<SearchResultItem> {
+fn merge_and_rank_results(
+    results: Vec<SearchResultItem>,
+    limit: usize,
+    reranker: WebSearchReranker,
+) -> Vec<SearchResultItem> {
     let mut seen = HashSet::new();
-    let mut merged = Vec::new();
-    for mut result in results {
+    let mut merged: Vec<(usize, SearchResultItem)> = Vec::new();
+    for (index, result) in results.into_iter().enumerate() {
         let key = result.url.trim_end_matches('/').to_ascii_lowercase();
         if !seen.insert(key) {
             continue;
         }
-        result.rank = merged.len() + 1;
-        merged.push(result);
-        if merged.len() >= limit {
-            break;
-        }
+        merged.push((index, result));
     }
+
+    if reranker != WebSearchReranker::None {
+        merged.sort_by(|(left_index, left), (right_index, right)| {
+            rerank_score(right, reranker)
+                .cmp(&rerank_score(left, reranker))
+                .then_with(|| left_index.cmp(right_index))
+        });
+    }
+
     merged
+        .into_iter()
+        .take(limit)
+        .enumerate()
+        .map(|(rank, (_, mut result))| {
+            result.rank = rank + 1;
+            result
+        })
+        .collect()
 }
 
 fn should_stop_after_success(
-    request_explicit_engines: bool,
+    request: &SearchRequest,
     result_count: usize,
     responded_count: usize,
-    limit: usize,
 ) -> bool {
-    if request_explicit_engines {
-        return result_count >= limit;
+    if request.explicit_engines || should_force_full_profile(request.provider_profile) {
+        return result_count >= request.limit;
     }
-    result_count >= limit || (result_count > 0 && responded_count >= 2)
+    result_count >= request.limit || (result_count > 0 && responded_count >= 2)
+}
+
+fn rerank_score(result: &SearchResultItem, reranker: WebSearchReranker) -> i32 {
+    let host = result.source.to_ascii_lowercase();
+    let url = result.url.to_ascii_lowercase();
+    let text = format!(
+        "{} {} {}",
+        result.title.to_ascii_lowercase(),
+        result.snippet.to_ascii_lowercase(),
+        url
+    );
+    let mut score = 0i32;
+
+    match reranker {
+        WebSearchReranker::DocsFirst => {
+            if host.starts_with("docs.") || url.contains("/docs") {
+                score += 60;
+            }
+            if contains_any(
+                &text,
+                &[
+                    "documentation",
+                    "developer",
+                    "developers",
+                    "reference",
+                    "api",
+                    "sdk",
+                    "guide",
+                    "manual",
+                    "release notes",
+                ],
+            ) {
+                score += 28;
+            }
+            if officialish_host(&host) {
+                score += 20;
+            }
+            if low_context_host(&host) {
+                score -= 30;
+            }
+        }
+        WebSearchReranker::Research => {
+            if host.ends_with(".edu") || host.ends_with(".gov") {
+                score += 50;
+            }
+            if contains_any(
+                &host,
+                &[
+                    "arxiv.org",
+                    "pubmed.ncbi.nlm.nih.gov",
+                    "ncbi.nlm.nih.gov",
+                    "nature.com",
+                    "science.org",
+                    "ieee.org",
+                    "acm.org",
+                    "springer.com",
+                    "sciencedirect.com",
+                    "semanticscholar.org",
+                ],
+            ) {
+                score += 45;
+            }
+            if contains_any(
+                &text,
+                &[
+                    "paper",
+                    "study",
+                    "research",
+                    "journal",
+                    "doi",
+                    "clinical trial",
+                    "preprint",
+                    "proceedings",
+                ],
+            ) {
+                score += 25;
+            }
+            if low_context_host(&host) {
+                score -= 25;
+            }
+        }
+        WebSearchReranker::NewsBalanced => {
+            if contains_any(
+                &text,
+                &[
+                    "news",
+                    "report",
+                    "reported",
+                    "analysis",
+                    "press release",
+                    "updated",
+                ],
+            ) {
+                score += 22;
+            }
+            if contains_any(
+                &host,
+                &[
+                    "reuters.com",
+                    "apnews.com",
+                    "bbc.com",
+                    "bloomberg.com",
+                    "wsj.com",
+                    "ft.com",
+                    "theverge.com",
+                    "techcrunch.com",
+                    "36kr.com",
+                    "caixin.com",
+                ],
+            ) {
+                score += 20;
+            }
+            if low_context_host(&host) {
+                score -= 20;
+            }
+        }
+        WebSearchReranker::Auto | WebSearchReranker::None => {}
+    }
+
+    score + (20usize.saturating_sub(result.provider_rank.min(20))) as i32
+}
+
+fn contains_any(value: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| value.contains(needle))
+}
+
+fn officialish_host(host: &str) -> bool {
+    host.ends_with(".gov")
+        || host.ends_with(".edu")
+        || host.contains("github.com")
+        || host.contains("developer.")
+        || host.contains("developers.")
+}
+
+fn low_context_host(host: &str) -> bool {
+    contains_any(
+        host,
+        &[
+            "pinterest.",
+            "facebook.",
+            "instagram.",
+            "tiktok.",
+            "quora.",
+            "reddit.",
+            "medium.com",
+            "youtube.",
+        ],
+    )
+}
+
+fn should_force_full_profile(provider_profile: WebSearchProviderProfile) -> bool {
+    matches!(
+        provider_profile,
+        WebSearchProviderProfile::FreeVerified | WebSearchProviderProfile::MaxEvidence
+    )
+}
+
+fn apply_app_config_defaults(mut args: WebSearchArgs, db: &Database) -> WebSearchArgs {
+    if args.provider_profile.is_some() && args.reranker.is_some() {
+        return args;
+    }
+
+    if let Ok(config) = db.load_app_config() {
+        if args.provider_profile.is_none() {
+            args.provider_profile = Some(config.web_search.provider_profile);
+        }
+        if args.reranker.is_none() {
+            args.reranker = Some(config.web_search.reranker);
+        }
+    }
+    args
 }
 
 fn format_engine_list(engines: &[SearchEngine]) -> String {
@@ -142,6 +333,8 @@ fn cache_key(request: &SearchRequest) -> String {
         "timeRange": request.time_range,
         "site": request.site,
         "includeSnippets": request.include_snippets,
+        "providerProfile": request.provider_profile,
+        "reranker": request.reranker,
     })
     .to_string()
 }
@@ -379,10 +572,12 @@ fn run_info_for_failure(
 
 fn format_response(call_id: &str, response: SearchResponse, all_failed: bool) -> ToolResult {
     let mut text = format!(
-        "Web search for: {}\nRegion: {:?}; language: {:?}; engines requested: {}.\n",
+        "Web search for: {}\nRegion: {:?}; language: {:?}; profile: {}; reranker: {}; engines requested: {}.\n",
         response.query,
         response.region,
         response.language,
+        response.provider_profile.as_str(),
+        response.reranker.as_str(),
         format_engine_list(&response.engines_requested)
     );
 
@@ -573,25 +768,22 @@ async fn execute_search_request(
             }
         }
 
-        if should_stop_after_success(
-            request.explicit_engines,
-            raw_results.len(),
-            engines_responded.len(),
-            request.limit,
-        ) {
+        if should_stop_after_success(&request, raw_results.len(), engines_responded.len()) {
             break;
         }
     }
 
-    let mut results = merge_and_rank_results(raw_results, request.limit);
+    let mut results = merge_and_rank_results(raw_results, request.limit, request.reranker);
     let redirect_failures = resolve_search_redirects(&redirect_client, &mut results).await;
-    results = merge_and_rank_results(results, request.limit);
+    results = merge_and_rank_results(results, request.limit, request.reranker);
     engines_failed.extend(redirect_failures);
 
     let mut response = SearchResponse {
         query: request.query.clone(),
         region: request.region,
         language: request.language,
+        provider_profile: request.provider_profile,
+        reranker: request.reranker,
         time_range: request.time_range,
         time_range_info: SearchTimeRangeInfo {
             requested: request.time_range,
@@ -668,6 +860,57 @@ async fn execute_with_singleflight(
     Ok(execution)
 }
 
+pub(crate) async fn run_web_search(
+    args: WebSearchArgs,
+    db: &Database,
+) -> Result<SearchExecution, CoreError> {
+    let args = apply_app_config_defaults(args, db);
+    let request = build_search_request(args).map_err(CoreError::InvalidInput)?;
+    let cache_key = cache_key(&request);
+    if let Some(response) = cached_response(&cache_key) {
+        return Ok(SearchExecution {
+            response,
+            all_failed: false,
+        });
+    }
+
+    let execution = execute_with_singleflight(request, cache_key.clone()).await?;
+    store_response(cache_key, &execution.response);
+    Ok(execution)
+}
+
+pub fn provider_status_snapshot(profile: WebSearchProviderProfile) -> Vec<WebSearchProviderStatus> {
+    let enabled = default_engines_for_profile(SearchLanguage::Auto, SearchRegion::Auto, profile)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let health = PROVIDER_HEALTH.get_or_init(|| Mutex::new(HashMap::new()));
+    let locked = health.lock().ok();
+    [
+        SearchEngine::Baidu,
+        SearchEngine::Sogou,
+        SearchEngine::Bing,
+        SearchEngine::DuckDuckGo,
+    ]
+    .into_iter()
+    .map(|engine| {
+        let runtime = locked.as_ref().and_then(|state| state.get(&engine));
+        WebSearchProviderStatus {
+            engine,
+            label: engine.as_str().to_string(),
+            health: runtime
+                .map(|state| state.health)
+                .unwrap_or(SearchProviderHealthState::Healthy),
+            built_in: true,
+            enabled_by_profile: enabled.contains(&engine),
+            last_error_code: runtime.and_then(|state| state.last_error_code.clone()),
+            next_retry_seconds: runtime
+                .and_then(|state| state.next_retry_at)
+                .and_then(seconds_until),
+        }
+    })
+    .collect()
+}
+
 #[async_trait]
 impl Tool for WebSearchTool {
     fn name(&self) -> &str {
@@ -690,7 +933,7 @@ impl Tool for WebSearchTool {
         &self,
         call_id: &str,
         arguments: &str,
-        _db: &Database,
+        db: &Database,
         _source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let args: WebSearchArgs = match serde_json::from_str(arguments) {
@@ -704,9 +947,9 @@ impl Tool for WebSearchTool {
                 ));
             }
         };
-        let request = match build_search_request(args) {
-            Ok(request) => request,
-            Err(message) => {
+        let execution = match run_web_search(args, db).await {
+            Ok(execution) => execution,
+            Err(CoreError::InvalidInput(message)) => {
                 return Ok(tool_contract_error_result(
                     call_id,
                     "invalid_search_request",
@@ -714,14 +957,8 @@ impl Tool for WebSearchTool {
                     web_search_expected_format(),
                 ));
             }
+            Err(error) => return Err(error),
         };
-        let cache_key = cache_key(&request);
-        if let Some(response) = cached_response(&cache_key) {
-            return Ok(format_response(call_id, response, false));
-        }
-
-        let execution = execute_with_singleflight(request, cache_key.clone()).await?;
-        store_response(cache_key, &execution.response);
         Ok(format_response(
             call_id,
             execution.response,
@@ -744,10 +981,29 @@ mod tests {
 
     #[test]
     fn stop_policy_uses_one_or_two_default_providers() {
-        assert!(should_stop_after_success(false, 8, 1, 8));
-        assert!(should_stop_after_success(false, 2, 2, 8));
-        assert!(!should_stop_after_success(false, 0, 2, 8));
-        assert!(!should_stop_after_success(true, 2, 2, 8));
+        let mut request = SearchRequest {
+            query: "nexa".to_string(),
+            effective_query: "nexa".to_string(),
+            limit: 8,
+            region: SearchRegion::Global,
+            language: SearchLanguage::En,
+            engines: vec![SearchEngine::Bing, SearchEngine::DuckDuckGo],
+            explicit_engines: false,
+            time_range: TimeRange::Any,
+            site: None,
+            include_snippets: true,
+            provider_profile: WebSearchProviderProfile::Default,
+            reranker: WebSearchReranker::None,
+        };
+
+        assert!(should_stop_after_success(&request, 8, 1));
+        assert!(should_stop_after_success(&request, 2, 2));
+        assert!(!should_stop_after_success(&request, 0, 2));
+        request.explicit_engines = true;
+        assert!(!should_stop_after_success(&request, 2, 2));
+        request.explicit_engines = false;
+        request.provider_profile = WebSearchProviderProfile::MaxEvidence;
+        assert!(!should_stop_after_success(&request, 2, 2));
     }
 
     #[test]
@@ -756,6 +1012,8 @@ mod tests {
             query: "no matches".to_string(),
             region: SearchRegion::Global,
             language: SearchLanguage::En,
+            provider_profile: WebSearchProviderProfile::Default,
+            reranker: WebSearchReranker::None,
             time_range: TimeRange::Any,
             time_range_info: SearchTimeRangeInfo {
                 requested: TimeRange::Any,
@@ -778,6 +1036,41 @@ mod tests {
             cache_ttl_for_response(&response),
             Some(SEARCH_EMPTY_CACHE_TTL)
         );
+    }
+
+    #[test]
+    fn docs_first_reranker_promotes_documentation_hosts() {
+        let results = vec![
+            SearchResultItem {
+                rank: 0,
+                title: "Blog post".to_string(),
+                url: "https://example.com/blog/api-wrapper".to_string(),
+                display_url: "example.com/blog/api-wrapper".to_string(),
+                snippet: "A tutorial".to_string(),
+                source: "example.com".to_string(),
+                engine: SearchEngine::Bing,
+                provider_rank: 1,
+                resolved: true,
+                confidence: "medium".to_string(),
+            },
+            SearchResultItem {
+                rank: 0,
+                title: "API reference".to_string(),
+                url: "https://docs.example.dev/reference".to_string(),
+                display_url: "docs.example.dev/reference".to_string(),
+                snippet: "Official documentation".to_string(),
+                source: "docs.example.dev".to_string(),
+                engine: SearchEngine::Bing,
+                provider_rank: 2,
+                resolved: true,
+                confidence: "medium".to_string(),
+            },
+        ];
+
+        let ranked = merge_and_rank_results(results, 2, WebSearchReranker::DocsFirst);
+
+        assert_eq!(ranked[0].source, "docs.example.dev");
+        assert_eq!(ranked[0].rank, 1);
     }
 
     #[tokio::test]

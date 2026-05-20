@@ -77,6 +77,66 @@ impl Default for TimeRange {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchProviderProfile {
+    #[serde(alias = "native", alias = "native_balanced")]
+    Default,
+    #[serde(alias = "free")]
+    Free,
+    #[serde(alias = "free-verified")]
+    FreeVerified,
+    #[serde(alias = "max-evidence")]
+    MaxEvidence,
+}
+
+impl Default for WebSearchProviderProfile {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+impl WebSearchProviderProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Free => "free",
+            Self::FreeVerified => "free_verified",
+            Self::MaxEvidence => "max_evidence",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchReranker {
+    Auto,
+    None,
+    #[serde(alias = "docs-first")]
+    DocsFirst,
+    Research,
+    #[serde(alias = "news-balanced")]
+    NewsBalanced,
+}
+
+impl Default for WebSearchReranker {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl WebSearchReranker {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::None => "none",
+            Self::DocsFirst => "docs_first",
+            Self::Research => "research",
+            Self::NewsBalanced => "news_balanced",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct WebSearchArgs {
     pub query: String,
@@ -94,6 +154,10 @@ pub struct WebSearchArgs {
     pub site: Option<String>,
     #[serde(default = "default_include_snippets")]
     pub include_snippets: bool,
+    #[serde(default)]
+    pub provider_profile: Option<WebSearchProviderProfile>,
+    #[serde(default)]
+    pub reranker: Option<WebSearchReranker>,
 }
 
 fn default_limit() -> usize {
@@ -117,6 +181,8 @@ pub struct SearchRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub site: Option<String>,
     pub include_snippets: bool,
+    pub provider_profile: WebSearchProviderProfile,
+    pub reranker: WebSearchReranker,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -195,10 +261,26 @@ pub struct SearchProviderRunInfo {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchProviderStatus {
+    pub engine: SearchEngine,
+    pub label: String,
+    pub health: SearchProviderHealthState,
+    pub built_in: bool,
+    pub enabled_by_profile: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_retry_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SearchResponse {
     pub query: String,
     pub region: SearchRegion,
     pub language: SearchLanguage,
+    pub provider_profile: WebSearchProviderProfile,
+    pub reranker: WebSearchReranker,
     pub time_range: TimeRange,
     pub time_range_info: SearchTimeRangeInfo,
     pub engines_requested: Vec<SearchEngine>,
