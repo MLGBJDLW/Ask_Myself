@@ -76,6 +76,7 @@ fn resolve_engines(
     let mut seen = HashSet::new();
     for engine in requested {
         match SearchEngine::parse(engine) {
+            Some(parsed) if !parsed.is_native() => unknown.push(engine.clone()),
             Some(parsed) if seen.insert(parsed) => engines.push(parsed),
             Some(_) => {}
             None => unknown.push(engine.clone()),
@@ -84,7 +85,7 @@ fn resolve_engines(
 
     if !unknown.is_empty() {
         return Err(format!(
-            "Unsupported search engine(s): {}. Allowed: baidu, sogou, bing, duckduckgo.",
+            "Unsupported search engine(s): {}. Allowed in tool arguments: baidu, sogou, bing, duckduckgo. Configure Brave, Tavily, SerpAPI, or SearXNG in settings instead.",
             unknown.join(", ")
         ));
     }
@@ -98,6 +99,10 @@ fn resolve_engines(
             SearchEngine::Sogou => 1,
             SearchEngine::Bing => 2,
             SearchEngine::DuckDuckGo => 3,
+            SearchEngine::Brave
+            | SearchEngine::Tavily
+            | SearchEngine::SerpApiGoogle
+            | SearchEngine::Searxng => 4,
         });
     }
 

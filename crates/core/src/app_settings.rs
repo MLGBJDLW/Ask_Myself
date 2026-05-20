@@ -56,6 +56,10 @@ pub struct WebSearchConfig {
     pub provider_profile: WebSearchProviderProfile,
     #[serde(default)]
     pub reranker: WebSearchReranker,
+    #[serde(default)]
+    pub provider_mode: WebSearchProviderMode,
+    #[serde(default = "default_web_search_custom_providers")]
+    pub custom_providers: Vec<WebSearchCustomProviderConfig>,
 }
 
 impl Default for WebSearchConfig {
@@ -63,8 +67,125 @@ impl Default for WebSearchConfig {
         Self {
             provider_profile: WebSearchProviderProfile::Default,
             reranker: WebSearchReranker::Auto,
+            provider_mode: WebSearchProviderMode::BuiltInFirst,
+            custom_providers: default_web_search_custom_providers(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchProviderMode {
+    #[default]
+    BuiltInFirst,
+    CustomFirst,
+    CustomOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchCustomProviderPreset {
+    Brave,
+    Tavily,
+    SerpApiGoogle,
+    Searxng,
+}
+
+impl WebSearchCustomProviderPreset {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Brave => "brave",
+            Self::Tavily => "tavily",
+            Self::SerpApiGoogle => "serpapi_google",
+            Self::Searxng => "searxng",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Brave => "Brave Search API",
+            Self::Tavily => "Tavily Search",
+            Self::SerpApiGoogle => "SerpAPI Google",
+            Self::Searxng => "SearXNG",
+        }
+    }
+
+    pub fn default_base_url(self) -> Option<String> {
+        match self {
+            Self::Brave => Some("https://api.search.brave.com/res/v1/web/search".to_string()),
+            Self::Tavily => Some("https://api.tavily.com/search".to_string()),
+            Self::SerpApiGoogle => Some("https://serpapi.com/search.json".to_string()),
+            Self::Searxng => None,
+        }
+    }
+
+    pub fn requires_api_key(self) -> bool {
+        !matches!(self, Self::Searxng)
+    }
+
+    pub fn requires_base_url(self) -> bool {
+        matches!(self, Self::Searxng)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchCustomProviderConfig {
+    pub id: String,
+    pub preset: WebSearchCustomProviderPreset,
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub priority: u32,
+}
+
+impl WebSearchCustomProviderConfig {
+    pub fn is_configured(&self) -> bool {
+        (!self.preset.requires_api_key() || !self.api_key.trim().is_empty())
+            && (!self.preset.requires_base_url()
+                || self
+                    .base_url
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()))
+    }
+
+    pub fn effective_base_url(&self) -> Option<String> {
+        self.base_url
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| self.preset.default_base_url())
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_web_search_custom_providers() -> Vec<WebSearchCustomProviderConfig> {
+    [
+        (WebSearchCustomProviderPreset::Brave, 10u32),
+        (WebSearchCustomProviderPreset::Tavily, 20u32),
+        (WebSearchCustomProviderPreset::SerpApiGoogle, 30u32),
+        (WebSearchCustomProviderPreset::Searxng, 40u32),
+    ]
+    .into_iter()
+    .map(|(preset, priority)| WebSearchCustomProviderConfig {
+        id: preset.as_str().to_string(),
+        preset,
+        name: preset.display_name().to_string(),
+        enabled: false,
+        api_key: String::new(),
+        base_url: preset.default_base_url(),
+        priority,
+    })
+    .collect()
 }
 
 /// First-run setup wizard state. Persisted in the `app_config` table.
@@ -285,12 +406,18 @@ impl Default for AppConfig {
 fn encrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreError> {
     config.image_generation.api_key =
         crate::crypto::encrypt_api_key(&config.image_generation.api_key)?;
+    for provider in &mut config.web_search.custom_providers {
+        provider.api_key = crate::crypto::encrypt_api_key(&provider.api_key)?;
+    }
     Ok(config)
 }
 
 fn decrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreError> {
     config.image_generation.api_key =
         crate::crypto::decrypt_api_key(&config.image_generation.api_key)?;
+    for provider in &mut config.web_search.custom_providers {
+        provider.api_key = crate::crypto::decrypt_api_key(&provider.api_key)?;
+    }
     Ok(config)
 }
 
@@ -418,5 +545,37 @@ mod tests {
 
         assert!(!config.dynamic_tool_visibility);
         assert!(config.trace_enabled);
+        assert_eq!(config.web_search.custom_providers.len(), 4);
+        assert!(config
+            .web_search
+            .custom_providers
+            .iter()
+            .any(|provider| provider.preset == WebSearchCustomProviderPreset::Brave));
+    }
+
+    #[test]
+    fn app_config_encrypts_web_search_provider_keys() {
+        let db = Database::open_memory().expect("open_memory");
+        let mut config = AppConfig::default();
+        config.web_search.custom_providers[0].enabled = true;
+        config.web_search.custom_providers[0].api_key = "brave-secret".to_string();
+
+        db.save_app_config(&config).expect("save app config");
+        let loaded = db.load_app_config().expect("load app config");
+
+        assert_eq!(
+            loaded.web_search.custom_providers[0].api_key,
+            "brave-secret"
+        );
+
+        let raw: String = db
+            .conn()
+            .query_row(
+                "SELECT value FROM app_config WHERE key = ?1",
+                params![APP_CONFIG_KEY],
+                |row| row.get(0),
+            )
+            .expect("raw app_config");
+        assert!(!raw.contains("brave-secret"));
     }
 }

@@ -10,6 +10,10 @@ pub enum SearchEngine {
     Sogou,
     Bing,
     DuckDuckGo,
+    Brave,
+    Tavily,
+    SerpApiGoogle,
+    Searxng,
 }
 
 impl SearchEngine {
@@ -19,7 +23,18 @@ impl SearchEngine {
             Self::Sogou => "sogou",
             Self::Bing => "bing",
             Self::DuckDuckGo => "duckduckgo",
+            Self::Brave => "brave",
+            Self::Tavily => "tavily",
+            Self::SerpApiGoogle => "serpapi_google",
+            Self::Searxng => "searxng",
         }
+    }
+
+    pub fn is_native(self) -> bool {
+        matches!(
+            self,
+            Self::Baidu | Self::Sogou | Self::Bing | Self::DuckDuckGo
+        )
     }
 
     pub fn parse(value: &str) -> Option<Self> {
@@ -28,6 +43,10 @@ impl SearchEngine {
             "sogou" | "搜狗" => Some(Self::Sogou),
             "bing" | "必应" => Some(Self::Bing),
             "duckduckgo" | "duck_duck_go" | "ddg" => Some(Self::DuckDuckGo),
+            "brave" | "brave_search" => Some(Self::Brave),
+            "tavily" => Some(Self::Tavily),
+            "serpapi_google" | "serpapi" => Some(Self::SerpApiGoogle),
+            "searxng" | "searx" => Some(Self::Searxng),
             _ => None,
         }
     }
@@ -74,6 +93,18 @@ pub enum TimeRange {
 impl Default for TimeRange {
     fn default() -> Self {
         Self::Any
+    }
+}
+
+impl TimeRange {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Year => "year",
+        }
     }
 }
 
@@ -264,10 +295,15 @@ pub struct SearchProviderRunInfo {
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchProviderStatus {
     pub engine: SearchEngine,
+    pub id: String,
     pub label: String,
     pub health: SearchProviderHealthState,
     pub built_in: bool,
     pub enabled_by_profile: bool,
+    pub enabled: bool,
+    pub configured: bool,
+    pub requires_api_key: bool,
+    pub requires_base_url: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

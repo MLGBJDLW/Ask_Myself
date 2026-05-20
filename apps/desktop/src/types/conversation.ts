@@ -366,18 +366,46 @@ export interface AppConfig {
 export type WebSearchProviderProfile = 'default' | 'free' | 'free_verified' | 'max_evidence';
 export type WebSearchReranker = 'auto' | 'none' | 'docs_first' | 'research' | 'news_balanced';
 export type WebSearchProviderHealth = 'healthy' | 'degraded' | 'blocked' | 'disabled';
+export type WebSearchProviderMode = 'built_in_first' | 'custom_first' | 'custom_only';
+export type WebSearchCustomProviderPreset = 'brave' | 'tavily' | 'serpapi_google' | 'searxng';
+export type WebSearchEngine =
+  | 'baidu'
+  | 'sogou'
+  | 'bing'
+  | 'duckduckgo'
+  | 'brave'
+  | 'tavily'
+  | 'serpapi_google'
+  | 'searxng';
 
 export interface WebSearchConfig {
   providerProfile: WebSearchProviderProfile;
   reranker: WebSearchReranker;
+  providerMode: WebSearchProviderMode;
+  customProviders: WebSearchCustomProviderConfig[];
+}
+
+export interface WebSearchCustomProviderConfig {
+  id: string;
+  preset: WebSearchCustomProviderPreset;
+  name: string;
+  enabled: boolean;
+  apiKey: string;
+  baseUrl: string | null;
+  priority: number;
 }
 
 export interface WebSearchProviderStatus {
-  engine: 'baidu' | 'sogou' | 'bing' | 'duckduckgo';
+  engine: WebSearchEngine;
+  id: string;
   label: string;
   health: WebSearchProviderHealth;
   builtIn: boolean;
   enabledByProfile: boolean;
+  enabled: boolean;
+  configured: boolean;
+  requiresApiKey: boolean;
+  requiresBaseUrl: boolean;
   lastErrorCode?: string;
   nextRetrySeconds?: number;
 }

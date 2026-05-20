@@ -41,6 +41,12 @@ pub fn provider_for_engine(engine: SearchEngine) -> Box<dyn SearchProvider> {
         SearchEngine::Sogou => Box::new(sogou::SogouProvider),
         SearchEngine::Bing => Box::new(bing::BingProvider),
         SearchEngine::DuckDuckGo => Box::new(duckduckgo::DuckDuckGoProvider),
+        SearchEngine::Brave
+        | SearchEngine::Tavily
+        | SearchEngine::SerpApiGoogle
+        | SearchEngine::Searxng => {
+            unreachable!("custom search API providers are dispatched by web_search_tool")
+        }
     }
 }
 

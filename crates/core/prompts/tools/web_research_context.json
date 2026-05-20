@@ -48,7 +48,7 @@
         "type": "string",
         "enum": ["default", "free", "free_verified", "max_evidence"],
         "default": "default",
-        "description": "Provider profile. default/free are fast no-key routing; free_verified and max_evidence query more native providers for source diversity."
+        "description": "Provider profile for built-in no-key providers. App settings may also add user-configured Brave, Tavily, SerpAPI, or SearXNG providers as default/fallback."
       },
       "reranker": {
         "type": "string",

@@ -6,8 +6,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use reqwest::header::{ACCEPT, RETRY_AFTER};
 use tokio::sync::OnceCell;
 
+use crate::app_settings::{
+    WebSearchConfig, WebSearchCustomProviderConfig, WebSearchCustomProviderPreset,
+    WebSearchProviderMode,
+};
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::web_search::{
@@ -63,6 +68,18 @@ struct ProviderRuntimeState {
     last_failure_at: Option<Instant>,
     next_request_at: Instant,
     next_retry_at: Option<Instant>,
+}
+
+#[derive(Clone)]
+struct SearchRuntimeConfig {
+    provider_mode: WebSearchProviderMode,
+    custom_providers: Vec<WebSearchCustomProviderConfig>,
+}
+
+#[derive(Clone)]
+enum SearchPlanItem {
+    Native(SearchEngine),
+    Custom(WebSearchCustomProviderConfig),
 }
 
 impl Default for ProviderRuntimeState {
@@ -294,35 +311,60 @@ fn should_force_full_profile(provider_profile: WebSearchProviderProfile) -> bool
     )
 }
 
-fn apply_app_config_defaults(mut args: WebSearchArgs, db: &Database) -> WebSearchArgs {
+fn apply_app_config_defaults(mut args: WebSearchArgs, config: &WebSearchConfig) -> WebSearchArgs {
     if args.provider_profile.is_some() && args.reranker.is_some() {
         return args;
     }
 
-    if let Ok(config) = db.load_app_config() {
-        if args.provider_profile.is_none() {
-            args.provider_profile = Some(config.web_search.provider_profile);
-        }
-        if args.reranker.is_none() {
-            args.reranker = Some(config.web_search.reranker);
-        }
+    if args.provider_profile.is_none() {
+        args.provider_profile = Some(config.provider_profile);
+    }
+    if args.reranker.is_none() {
+        args.reranker = Some(config.reranker);
     }
     args
 }
 
-fn format_engine_list(engines: &[SearchEngine]) -> String {
-    engines
+fn runtime_config_from_app_config(config: &WebSearchConfig) -> SearchRuntimeConfig {
+    let mut custom_providers = config
+        .custom_providers
         .iter()
-        .map(|engine| engine.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
+        .filter(|provider| provider.enabled && provider.is_configured())
+        .cloned()
+        .collect::<Vec<_>>();
+    custom_providers.sort_by_key(|provider| provider.priority);
+    SearchRuntimeConfig {
+        provider_mode: config.provider_mode,
+        custom_providers,
+    }
 }
 
-fn cache_key(request: &SearchRequest) -> String {
+fn engine_for_custom_provider(provider: &WebSearchCustomProviderConfig) -> SearchEngine {
+    match provider.preset {
+        WebSearchCustomProviderPreset::Brave => SearchEngine::Brave,
+        WebSearchCustomProviderPreset::Tavily => SearchEngine::Tavily,
+        WebSearchCustomProviderPreset::SerpApiGoogle => SearchEngine::SerpApiGoogle,
+        WebSearchCustomProviderPreset::Searxng => SearchEngine::Searxng,
+    }
+}
+
+fn cache_key_for_runtime(request: &SearchRequest, runtime: &SearchRuntimeConfig) -> String {
     let engines = request
         .engines
         .iter()
         .map(|engine| engine.as_str())
+        .collect::<Vec<_>>();
+    let custom = runtime
+        .custom_providers
+        .iter()
+        .map(|provider| {
+            serde_json::json!({
+                "id": provider.id,
+                "preset": provider.preset,
+                "baseUrl": provider.effective_base_url(),
+                "priority": provider.priority,
+            })
+        })
         .collect::<Vec<_>>();
     serde_json::json!({
         "query": request.effective_query,
@@ -335,8 +377,68 @@ fn cache_key(request: &SearchRequest) -> String {
         "includeSnippets": request.include_snippets,
         "providerProfile": request.provider_profile,
         "reranker": request.reranker,
+        "providerMode": runtime.provider_mode,
+        "customProviders": custom,
     })
     .to_string()
+}
+
+fn build_provider_plan(
+    request: &SearchRequest,
+    runtime: &SearchRuntimeConfig,
+) -> Vec<SearchPlanItem> {
+    let native = request
+        .engines
+        .iter()
+        .copied()
+        .map(SearchPlanItem::Native)
+        .collect::<Vec<_>>();
+    let custom = runtime
+        .custom_providers
+        .iter()
+        .cloned()
+        .map(SearchPlanItem::Custom)
+        .collect::<Vec<_>>();
+
+    if request.explicit_engines {
+        return native;
+    }
+
+    match runtime.provider_mode {
+        WebSearchProviderMode::BuiltInFirst => native.into_iter().chain(custom).collect(),
+        WebSearchProviderMode::CustomFirst => custom.into_iter().chain(native).collect(),
+        WebSearchProviderMode::CustomOnly => custom,
+    }
+}
+
+fn should_continue_to_fallback_provider(
+    request: &SearchRequest,
+    plan_item: &SearchPlanItem,
+    runtime: &SearchRuntimeConfig,
+    result_count: usize,
+) -> bool {
+    if result_count >= request.limit {
+        return false;
+    }
+    matches!(
+        (runtime.provider_mode, plan_item),
+        (
+            WebSearchProviderMode::BuiltInFirst,
+            SearchPlanItem::Native(_)
+        ) | (
+            WebSearchProviderMode::CustomFirst,
+            SearchPlanItem::Custom(_)
+        )
+    ) && !request.explicit_engines
+        && !should_force_full_profile(request.provider_profile)
+}
+
+fn format_engine_list(engines: &[SearchEngine]) -> String {
+    engines
+        .iter()
+        .map(|engine| engine.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn cached_response(key: &str) -> Option<SearchResponse> {
@@ -413,7 +515,7 @@ fn provider_failure_cooldown(
     consecutive_failures: u32,
 ) -> Option<Duration> {
     match failure.code.as_str() {
-        "captcha" | "blocked" => Some(PROVIDER_BLOCKED_COOLDOWN),
+        "captcha" | "blocked" | "auth_failed" => Some(PROVIDER_BLOCKED_COOLDOWN),
         "rate_limited" => Some(
             failure
                 .retry_after_secs
@@ -666,6 +768,350 @@ fn build_search_client(
         .map_err(|e| CoreError::Internal(format!("Failed to build web search client: {e}")))
 }
 
+fn custom_provider_failure(
+    provider: &WebSearchCustomProviderConfig,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> SearchProviderFailure {
+    SearchProviderFailure::new(engine_for_custom_provider(provider), code, message)
+}
+
+fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+async fn fetch_custom_json(
+    provider: &WebSearchCustomProviderConfig,
+    request_builder: reqwest::RequestBuilder,
+) -> Result<serde_json::Value, SearchProviderFailure> {
+    let response = request_builder.send().await.map_err(|e| {
+        custom_provider_failure(
+            provider,
+            "request_failed",
+            format!("{} request failed: {e}", provider.name),
+        )
+    })?;
+    let status = response.status();
+    let retry_after = retry_after_secs(response.headers());
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err(custom_provider_failure(
+            provider,
+            "auth_failed",
+            format!(
+                "{} returned HTTP {status}; check the configured API key or endpoint",
+                provider.name
+            ),
+        ));
+    }
+    if status.as_u16() == 429 {
+        return Err(custom_provider_failure(
+            provider,
+            "rate_limited",
+            format!("{} returned HTTP {status}", provider.name),
+        )
+        .with_retry_after(retry_after));
+    }
+    if !status.is_success() {
+        return Err(custom_provider_failure(
+            provider,
+            "http_status",
+            format!("{} returned HTTP {status}", provider.name),
+        ));
+    }
+    response.json::<serde_json::Value>().await.map_err(|e| {
+        custom_provider_failure(
+            provider,
+            "body_read_failed",
+            format!("{} response JSON could not be read: {e}", provider.name),
+        )
+    })
+}
+
+fn value_string(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn custom_result_item(
+    provider: &WebSearchCustomProviderConfig,
+    rank: usize,
+    title: String,
+    url: String,
+    snippet: String,
+) -> Option<SearchResultItem> {
+    let url_info = crate::web_search::providers::public_url_info(&url)?;
+    Some(SearchResultItem {
+        rank: 0,
+        title: if title.trim().is_empty() {
+            url_info.source.clone()
+        } else {
+            crate::web_search::providers::normalize_space(&title)
+        },
+        url: url_info.url,
+        display_url: url_info.display_url,
+        snippet: crate::web_search::providers::normalize_space(&snippet),
+        source: url_info.source,
+        engine: engine_for_custom_provider(provider),
+        provider_rank: rank,
+        resolved: true,
+        confidence: "high".to_string(),
+    })
+}
+
+fn language_code(language: SearchLanguage) -> &'static str {
+    match language {
+        SearchLanguage::Zh => "zh",
+        SearchLanguage::En | SearchLanguage::Auto => "en",
+    }
+}
+
+fn country_code(region: SearchRegion) -> &'static str {
+    match region {
+        SearchRegion::MainlandCn => "cn",
+        SearchRegion::Global | SearchRegion::Auto => "us",
+    }
+}
+
+fn time_range_for_serpapi(time_range: crate::web_search::TimeRange) -> Option<&'static str> {
+    match time_range {
+        crate::web_search::TimeRange::Day => Some("qdr:d"),
+        crate::web_search::TimeRange::Week => Some("qdr:w"),
+        crate::web_search::TimeRange::Month => Some("qdr:m"),
+        crate::web_search::TimeRange::Year => Some("qdr:y"),
+        crate::web_search::TimeRange::Any => None,
+    }
+}
+
+async fn search_brave_provider(
+    provider: &WebSearchCustomProviderConfig,
+    request: &SearchRequest,
+    client: &reqwest::Client,
+) -> Result<Vec<SearchResultItem>, SearchProviderFailure> {
+    let Some(base_url) = provider.effective_base_url() else {
+        return Err(custom_provider_failure(
+            provider,
+            "not_configured",
+            "Brave Search API endpoint is not configured",
+        ));
+    };
+    let mut url = crate::tools::fetch_url_tool::validate_url_for_fetch(&base_url)
+        .await
+        .map_err(|e| custom_provider_failure(provider, "invalid_base_url", e))?;
+    url.query_pairs_mut()
+        .append_pair("q", &request.effective_query)
+        .append_pair("count", &request.limit.min(20).to_string())
+        .append_pair("country", country_code(request.region))
+        .append_pair("search_lang", language_code(request.language));
+
+    let json = fetch_custom_json(
+        provider,
+        client
+            .get(url)
+            .header(ACCEPT, "application/json")
+            .header("X-Subscription-Token", provider.api_key.trim()),
+    )
+    .await?;
+    let results = json
+        .get("web")
+        .and_then(|value| value.get("results"))
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            custom_result_item(
+                provider,
+                index + 1,
+                value_string(item, "title"),
+                value_string(item, "url"),
+                value_string(item, "description"),
+            )
+        })
+        .collect();
+    Ok(results)
+}
+
+async fn search_tavily_provider(
+    provider: &WebSearchCustomProviderConfig,
+    request: &SearchRequest,
+    client: &reqwest::Client,
+) -> Result<Vec<SearchResultItem>, SearchProviderFailure> {
+    let Some(base_url) = provider.effective_base_url() else {
+        return Err(custom_provider_failure(
+            provider,
+            "not_configured",
+            "Tavily Search endpoint is not configured",
+        ));
+    };
+    let url = crate::tools::fetch_url_tool::validate_url_for_fetch(&base_url)
+        .await
+        .map_err(|e| custom_provider_failure(provider, "invalid_base_url", e))?;
+    let body = serde_json::json!({
+        "query": request.effective_query,
+        "search_depth": "basic",
+        "max_results": request.limit.min(20),
+        "include_answer": false,
+        "include_images": false,
+    });
+    let json = fetch_custom_json(
+        provider,
+        client
+            .post(url)
+            .header(ACCEPT, "application/json")
+            .bearer_auth(provider.api_key.trim())
+            .json(&body),
+    )
+    .await?;
+    let results = json
+        .get("results")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            custom_result_item(
+                provider,
+                index + 1,
+                value_string(item, "title"),
+                value_string(item, "url"),
+                value_string(item, "content"),
+            )
+        })
+        .collect();
+    Ok(results)
+}
+
+async fn search_serpapi_google_provider(
+    provider: &WebSearchCustomProviderConfig,
+    request: &SearchRequest,
+    client: &reqwest::Client,
+) -> Result<Vec<SearchResultItem>, SearchProviderFailure> {
+    let Some(base_url) = provider.effective_base_url() else {
+        return Err(custom_provider_failure(
+            provider,
+            "not_configured",
+            "SerpAPI endpoint is not configured",
+        ));
+    };
+    let mut url = crate::tools::fetch_url_tool::validate_url_for_fetch(&base_url)
+        .await
+        .map_err(|e| custom_provider_failure(provider, "invalid_base_url", e))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query
+            .append_pair("engine", "google")
+            .append_pair("q", &request.effective_query)
+            .append_pair("api_key", provider.api_key.trim())
+            .append_pair("num", &request.limit.min(20).to_string())
+            .append_pair("hl", language_code(request.language))
+            .append_pair("gl", country_code(request.region));
+        if let Some(tbs) = time_range_for_serpapi(request.time_range) {
+            query.append_pair("tbs", tbs);
+        }
+    }
+
+    let json =
+        fetch_custom_json(provider, client.get(url).header(ACCEPT, "application/json")).await?;
+    let results = json
+        .get("organic_results")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            custom_result_item(
+                provider,
+                index + 1,
+                value_string(item, "title"),
+                value_string(item, "link"),
+                value_string(item, "snippet"),
+            )
+        })
+        .collect();
+    Ok(results)
+}
+
+async fn search_searxng_provider(
+    provider: &WebSearchCustomProviderConfig,
+    request: &SearchRequest,
+    client: &reqwest::Client,
+) -> Result<Vec<SearchResultItem>, SearchProviderFailure> {
+    let Some(base_url) = provider.effective_base_url() else {
+        return Err(custom_provider_failure(
+            provider,
+            "not_configured",
+            "SearXNG instance URL is not configured",
+        ));
+    };
+    let mut url = crate::tools::fetch_url_tool::validate_url_for_fetch(&base_url)
+        .await
+        .map_err(|e| custom_provider_failure(provider, "invalid_base_url", e))?;
+    if !url.path().trim_end_matches('/').ends_with("/search") {
+        let base_path = url.path().trim_end_matches('/');
+        url.set_path(&format!("{base_path}/search"));
+    }
+    {
+        let mut query = url.query_pairs_mut();
+        query
+            .append_pair("q", &request.effective_query)
+            .append_pair("format", "json")
+            .append_pair("pageno", "1")
+            .append_pair("language", language_code(request.language));
+        if request.time_range != crate::web_search::TimeRange::Any {
+            query.append_pair("time_range", request.time_range.as_str());
+        }
+    }
+
+    let json =
+        fetch_custom_json(provider, client.get(url).header(ACCEPT, "application/json")).await?;
+    let results = json
+        .get("results")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .take(request.limit.min(20))
+        .enumerate()
+        .filter_map(|(index, item)| {
+            custom_result_item(
+                provider,
+                index + 1,
+                value_string(item, "title"),
+                value_string(item, "url"),
+                value_string(item, "content"),
+            )
+        })
+        .collect();
+    Ok(results)
+}
+
+async fn search_custom_provider(
+    provider: &WebSearchCustomProviderConfig,
+    request: &SearchRequest,
+    client: &reqwest::Client,
+) -> Result<Vec<SearchResultItem>, SearchProviderFailure> {
+    match provider.preset {
+        WebSearchCustomProviderPreset::Brave => {
+            search_brave_provider(provider, request, client).await
+        }
+        WebSearchCustomProviderPreset::Tavily => {
+            search_tavily_provider(provider, request, client).await
+        }
+        WebSearchCustomProviderPreset::SerpApiGoogle => {
+            search_serpapi_google_provider(provider, request, client).await
+        }
+        WebSearchCustomProviderPreset::Searxng => {
+            search_searxng_provider(provider, request, client).await
+        }
+    }
+}
+
 async fn resolve_search_redirects(
     redirect_client: &reqwest::Client,
     results: &mut [SearchResultItem],
@@ -714,10 +1160,12 @@ async fn resolve_search_redirects(
 
 async fn execute_search_request(
     request: SearchRequest,
+    runtime: SearchRuntimeConfig,
     client: reqwest::Client,
     redirect_client: reqwest::Client,
 ) -> SearchExecution {
     let ctx = SearchProviderContext { client: &client };
+    let provider_plan = build_provider_plan(&request, &runtime);
 
     let mut raw_results = Vec::new();
     let mut engines_responded = Vec::new();
@@ -726,19 +1174,41 @@ async fn execute_search_request(
     let mut time_range_applied_by = Vec::new();
     let mut time_range_ignored_by = Vec::new();
     let mut attempted = 0usize;
+    let mut engines_requested = Vec::new();
 
-    for engine in &request.engines {
+    for plan_item in provider_plan {
         attempted += 1;
-        let provider = provider_for_engine(*engine);
-        if request.time_range != crate::web_search::TimeRange::Any {
-            if provider.supports_time_range(request.time_range) {
-                time_range_applied_by.push(*engine);
-            } else {
-                time_range_ignored_by.push(*engine);
+        let engine = match &plan_item {
+            SearchPlanItem::Native(engine) => *engine,
+            SearchPlanItem::Custom(provider) => engine_for_custom_provider(provider),
+        };
+        engines_requested.push(engine);
+
+        match &plan_item {
+            SearchPlanItem::Native(engine)
+                if request.time_range != crate::web_search::TimeRange::Any =>
+            {
+                let provider = provider_for_engine(*engine);
+                if provider.supports_time_range(request.time_range) {
+                    time_range_applied_by.push(*engine);
+                } else {
+                    time_range_ignored_by.push(*engine);
+                }
             }
+            SearchPlanItem::Custom(provider)
+                if request.time_range != crate::web_search::TimeRange::Any =>
+            {
+                match provider.preset {
+                    WebSearchCustomProviderPreset::SerpApiGoogle
+                    | WebSearchCustomProviderPreset::Searxng => time_range_applied_by.push(engine),
+                    WebSearchCustomProviderPreset::Brave
+                    | WebSearchCustomProviderPreset::Tavily => time_range_ignored_by.push(engine),
+                }
+            }
+            _ => {}
         }
 
-        match prepare_provider_call(*engine).await {
+        match prepare_provider_call(engine).await {
             Ok(_) => {}
             Err((failure, run_info)) => {
                 engines_failed.push(failure);
@@ -748,7 +1218,15 @@ async fn execute_search_request(
         }
 
         let started_at = Instant::now();
-        match provider.search(&request, &ctx).await {
+        let search_result = match &plan_item {
+            SearchPlanItem::Native(engine) => {
+                provider_for_engine(*engine).search(&request, &ctx).await
+            }
+            SearchPlanItem::Custom(provider) => {
+                search_custom_provider(provider, &request, &client).await
+            }
+        };
+        match search_result {
             Ok(mut results) => {
                 let latency_ms = started_at.elapsed().as_millis();
                 if !request.include_snippets {
@@ -757,18 +1235,26 @@ async fn execute_search_request(
                     }
                 }
                 let result_count = results.len();
-                engines_responded.push(*engine);
+                engines_responded.push(engine);
                 raw_results.append(&mut results);
-                provider_health.push(run_info_for_success(*engine, latency_ms, result_count));
+                provider_health.push(run_info_for_success(engine, latency_ms, result_count));
             }
             Err(failure) => {
                 let latency_ms = started_at.elapsed().as_millis();
-                provider_health.push(run_info_for_failure(*engine, latency_ms, &failure));
+                provider_health.push(run_info_for_failure(engine, latency_ms, &failure));
                 engines_failed.push(failure);
             }
         }
 
         if should_stop_after_success(&request, raw_results.len(), engines_responded.len()) {
+            if should_continue_to_fallback_provider(
+                &request,
+                &plan_item,
+                &runtime,
+                raw_results.len(),
+            ) {
+                continue;
+            }
             break;
         }
     }
@@ -790,7 +1276,7 @@ async fn execute_search_request(
             applied_by: time_range_applied_by,
             ignored_by: time_range_ignored_by,
         },
-        engines_requested: request.engines.iter().copied().take(attempted).collect(),
+        engines_requested: engines_requested.into_iter().take(attempted).collect(),
         engines_responded,
         engines_failed,
         provider_health,
@@ -824,6 +1310,7 @@ async fn execute_search_request(
 
 async fn execute_with_singleflight(
     request: SearchRequest,
+    runtime: SearchRuntimeConfig,
     cache_key: String,
 ) -> Result<SearchExecution, CoreError> {
     let client = build_search_client(reqwest::redirect::Policy::limited(3))?;
@@ -840,9 +1327,11 @@ async fn execute_with_singleflight(
     };
 
     let request_for_cell = request.clone();
+    let runtime_for_cell = runtime.clone();
     let execution = cell
         .get_or_init(|| async move {
-            execute_search_request(request_for_cell, client, redirect_client).await
+            execute_search_request(request_for_cell, runtime_for_cell, client, redirect_client)
+                .await
         })
         .await
         .clone();
@@ -864,9 +1353,14 @@ pub(crate) async fn run_web_search(
     args: WebSearchArgs,
     db: &Database,
 ) -> Result<SearchExecution, CoreError> {
-    let args = apply_app_config_defaults(args, db);
+    let web_config = db
+        .load_app_config()
+        .map(|config| config.web_search)
+        .unwrap_or_default();
+    let args = apply_app_config_defaults(args, &web_config);
     let request = build_search_request(args).map_err(CoreError::InvalidInput)?;
-    let cache_key = cache_key(&request);
+    let runtime = runtime_config_from_app_config(&web_config);
+    let cache_key = cache_key_for_runtime(&request, &runtime);
     if let Some(response) = cached_response(&cache_key) {
         return Ok(SearchExecution {
             response,
@@ -874,18 +1368,22 @@ pub(crate) async fn run_web_search(
         });
     }
 
-    let execution = execute_with_singleflight(request, cache_key.clone()).await?;
+    let execution = execute_with_singleflight(request, runtime, cache_key.clone()).await?;
     store_response(cache_key, &execution.response);
     Ok(execution)
 }
 
-pub fn provider_status_snapshot(profile: WebSearchProviderProfile) -> Vec<WebSearchProviderStatus> {
-    let enabled = default_engines_for_profile(SearchLanguage::Auto, SearchRegion::Auto, profile)
-        .into_iter()
-        .collect::<HashSet<_>>();
+pub fn provider_status_snapshot(config: &WebSearchConfig) -> Vec<WebSearchProviderStatus> {
+    let enabled = default_engines_for_profile(
+        SearchLanguage::Auto,
+        SearchRegion::Auto,
+        config.provider_profile,
+    )
+    .into_iter()
+    .collect::<HashSet<_>>();
     let health = PROVIDER_HEALTH.get_or_init(|| Mutex::new(HashMap::new()));
     let locked = health.lock().ok();
-    [
+    let mut statuses = [
         SearchEngine::Baidu,
         SearchEngine::Sogou,
         SearchEngine::Bing,
@@ -896,19 +1394,56 @@ pub fn provider_status_snapshot(profile: WebSearchProviderProfile) -> Vec<WebSea
         let runtime = locked.as_ref().and_then(|state| state.get(&engine));
         WebSearchProviderStatus {
             engine,
+            id: engine.as_str().to_string(),
             label: engine.as_str().to_string(),
             health: runtime
                 .map(|state| state.health)
                 .unwrap_or(SearchProviderHealthState::Healthy),
             built_in: true,
-            enabled_by_profile: enabled.contains(&engine),
+            enabled_by_profile: enabled.contains(&engine)
+                && config.provider_mode == WebSearchProviderMode::BuiltInFirst,
+            enabled: config.provider_mode != WebSearchProviderMode::CustomOnly,
+            configured: true,
+            requires_api_key: false,
+            requires_base_url: false,
             last_error_code: runtime.and_then(|state| state.last_error_code.clone()),
             next_retry_seconds: runtime
                 .and_then(|state| state.next_retry_at)
                 .and_then(seconds_until),
         }
     })
-    .collect()
+    .collect::<Vec<_>>();
+
+    for provider in &config.custom_providers {
+        let engine = engine_for_custom_provider(provider);
+        let runtime = locked.as_ref().and_then(|state| state.get(&engine));
+        statuses.push(WebSearchProviderStatus {
+            engine,
+            id: provider.id.clone(),
+            label: provider.name.clone(),
+            health: if provider.enabled {
+                runtime
+                    .map(|state| state.health)
+                    .unwrap_or(SearchProviderHealthState::Healthy)
+            } else {
+                SearchProviderHealthState::Disabled
+            },
+            built_in: false,
+            enabled_by_profile: provider.enabled
+                && provider.is_configured()
+                && config.provider_mode != WebSearchProviderMode::BuiltInFirst,
+            enabled: provider.enabled,
+            configured: provider.is_configured(),
+            requires_api_key: provider.preset.requires_api_key(),
+            requires_base_url: provider.preset.requires_base_url(),
+            last_error_code: runtime.and_then(|state| state.last_error_code.clone()),
+            next_retry_seconds: runtime
+                .and_then(|state| state.next_retry_at)
+                .and_then(seconds_until),
+        });
+    }
+
+    statuses
 }
 
 #[async_trait]
@@ -1071,6 +1606,76 @@ mod tests {
 
         assert_eq!(ranked[0].source, "docs.example.dev");
         assert_eq!(ranked[0].rank, 1);
+    }
+
+    #[test]
+    fn runtime_config_keeps_only_configured_custom_providers_by_priority() {
+        let mut config = WebSearchConfig::default();
+        config.provider_mode = WebSearchProviderMode::CustomFirst;
+        config.custom_providers = vec![
+            WebSearchCustomProviderConfig {
+                id: "missing".to_string(),
+                preset: WebSearchCustomProviderPreset::Brave,
+                name: "Missing".to_string(),
+                enabled: true,
+                api_key: String::new(),
+                base_url: WebSearchCustomProviderPreset::Brave.default_base_url(),
+                priority: 1,
+            },
+            WebSearchCustomProviderConfig {
+                id: "tavily".to_string(),
+                preset: WebSearchCustomProviderPreset::Tavily,
+                name: "Tavily".to_string(),
+                enabled: true,
+                api_key: "secret".to_string(),
+                base_url: WebSearchCustomProviderPreset::Tavily.default_base_url(),
+                priority: 20,
+            },
+            WebSearchCustomProviderConfig {
+                id: "brave".to_string(),
+                preset: WebSearchCustomProviderPreset::Brave,
+                name: "Brave".to_string(),
+                enabled: true,
+                api_key: "secret".to_string(),
+                base_url: WebSearchCustomProviderPreset::Brave.default_base_url(),
+                priority: 10,
+            },
+        ];
+
+        let runtime = runtime_config_from_app_config(&config);
+
+        assert_eq!(
+            runtime
+                .custom_providers
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["brave", "tavily"]
+        );
+    }
+
+    #[test]
+    fn provider_status_reports_custom_provider_setup_state() {
+        let mut config = WebSearchConfig::default();
+        config.custom_providers = vec![WebSearchCustomProviderConfig {
+            id: "brave".to_string(),
+            preset: WebSearchCustomProviderPreset::Brave,
+            name: "Brave".to_string(),
+            enabled: true,
+            api_key: String::new(),
+            base_url: WebSearchCustomProviderPreset::Brave.default_base_url(),
+            priority: 10,
+        }];
+
+        let status = provider_status_snapshot(&config);
+        let brave = status
+            .iter()
+            .find(|provider| provider.id == "brave")
+            .expect("brave status");
+
+        assert!(!brave.configured);
+        assert!(brave.requires_api_key);
+        assert!(!brave.built_in);
     }
 
     #[tokio::test]
