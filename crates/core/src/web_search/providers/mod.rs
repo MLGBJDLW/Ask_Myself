@@ -2,11 +2,14 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use async_trait::async_trait;
-use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, REFERER};
+use reqwest::header::HeaderMap;
+use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, LOCATION, RANGE, REFERER, RETRY_AFTER};
 use reqwest::Url;
 use scraper::{ElementRef, Html, Selector};
 
-use super::model::{SearchEngine, SearchProviderFailure, SearchRequest, SearchResultItem};
+use super::model::{
+    SearchEngine, SearchProviderFailure, SearchRequest, SearchResultItem, TimeRange,
+};
 
 pub mod baidu;
 pub mod bing;
@@ -20,6 +23,10 @@ pub struct SearchProviderContext<'a> {
 #[async_trait]
 pub trait SearchProvider: Send + Sync {
     fn engine(&self) -> SearchEngine;
+
+    fn supports_time_range(&self, _time_range: TimeRange) -> bool {
+        false
+    }
 
     async fn search(
         &self,
@@ -72,12 +79,14 @@ pub(crate) async fn fetch_search_html(
         )
     })?;
     let status = response.status();
+    let retry_after = retry_after_secs(response.headers());
     if status.as_u16() == 429 {
         return Err(SearchProviderFailure::new(
             engine,
             "rate_limited",
             format!("{engine:?} returned HTTP {status}"),
-        ));
+        )
+        .with_retry_after(retry_after));
     }
     if status.as_u16() == 403 {
         return Err(SearchProviderFailure::new(
@@ -101,6 +110,13 @@ pub(crate) async fn fetch_search_html(
             format!("{engine:?} response body could not be read: {e}"),
         )
     })
+}
+
+fn retry_after_secs(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
 pub(crate) fn parse_results(html: &str, config: ParserConfig<'_>) -> Vec<SearchResultItem> {
@@ -234,6 +250,72 @@ fn normalize_href(base_url: &str, href: &str) -> Option<(String, bool)> {
     Some((url.to_string(), !is_known_search_redirect(&url)))
 }
 
+pub(crate) async fn resolve_search_redirect_target(
+    client: &reqwest::Client,
+    engine: SearchEngine,
+    raw_url: &str,
+    max_hops: usize,
+) -> Result<Option<UrlInfo>, SearchProviderFailure> {
+    let mut current = Url::parse(raw_url)
+        .map_err(|e| SearchProviderFailure::new(engine, "invalid_redirect_url", e.to_string()))?;
+    if !is_known_search_redirect(&current) {
+        return Ok(None);
+    }
+
+    for _ in 0..max_hops {
+        crate::tools::fetch_url_tool::validate_url_for_fetch(current.as_str())
+            .await
+            .map_err(|e| SearchProviderFailure::new(engine, "redirect_blocked", e))?;
+        let response = client
+            .get(current.clone())
+            .header(
+                ACCEPT,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.5",
+            )
+            .header(RANGE, "bytes=0-0")
+            .send()
+            .await
+            .map_err(|e| {
+                SearchProviderFailure::new(
+                    engine,
+                    "redirect_resolve_failed",
+                    format!("{engine:?} redirect resolver failed: {e}"),
+                )
+            })?;
+        if !response.status().is_redirection() {
+            return Ok(None);
+        }
+
+        let location = response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| {
+                SearchProviderFailure::new(
+                    engine,
+                    "redirect_location_missing",
+                    "Search redirect did not include a valid Location header",
+                )
+            })?;
+        let next = current.join(location).map_err(|e| {
+            SearchProviderFailure::new(engine, "invalid_redirect_location", e.to_string())
+        })?;
+        crate::tools::fetch_url_tool::validate_url_for_fetch(next.as_str())
+            .await
+            .map_err(|e| SearchProviderFailure::new(engine, "redirect_blocked", e))?;
+        if !is_known_search_redirect(&next) {
+            return Ok(public_url_info(next.as_str()));
+        }
+        current = next;
+    }
+
+    Err(SearchProviderFailure::new(
+        engine,
+        "redirect_hop_limit",
+        format!("Search redirect exceeded {max_hops} hop(s)"),
+    ))
+}
+
 fn extract_known_redirect_target(url: &Url) -> Option<String> {
     let host = url.host_str()?.to_ascii_lowercase();
     let known_host = host.ends_with("duckduckgo.com")
@@ -267,13 +349,13 @@ fn is_known_search_redirect(url: &Url) -> bool {
 }
 
 #[derive(Debug)]
-struct UrlInfo {
-    url: String,
-    display_url: String,
-    source: String,
+pub(crate) struct UrlInfo {
+    pub(crate) url: String,
+    pub(crate) display_url: String,
+    pub(crate) source: String,
 }
 
-fn public_url_info(value: &str) -> Option<UrlInfo> {
+pub(crate) fn public_url_info(value: &str) -> Option<UrlInfo> {
     let mut url = Url::parse(value).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
         return None;

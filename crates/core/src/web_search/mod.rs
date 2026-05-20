@@ -8,8 +8,9 @@ pub mod providers;
 pub mod router;
 
 pub use model::{
-    SearchCacheInfo, SearchEngine, SearchLanguage, SearchProviderFailure, SearchRegion,
-    SearchRequest, SearchResponse, SearchResultItem, TimeRange, WebSearchArgs,
+    SearchCacheInfo, SearchEngine, SearchLanguage, SearchProviderFailure,
+    SearchProviderHealthState, SearchProviderRunInfo, SearchRegion, SearchRequest, SearchResponse,
+    SearchResultItem, SearchTimeRangeInfo, TimeRange, WebSearchArgs,
 };
 pub use providers::{provider_for_engine, SearchProvider, SearchProviderContext};
 pub use router::build_search_request;

@@ -124,6 +124,8 @@ pub struct SearchProviderFailure {
     pub engine: SearchEngine,
     pub code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
 }
 
 impl SearchProviderFailure {
@@ -132,7 +134,13 @@ impl SearchProviderFailure {
             engine,
             code: code.into(),
             message: message.into(),
+            retry_after_secs: None,
         }
+    }
+
+    pub fn with_retry_after(mut self, retry_after_secs: Option<u64>) -> Self {
+        self.retry_after_secs = retry_after_secs;
+        self
     }
 }
 
@@ -156,14 +164,47 @@ pub struct SearchCacheInfo {
     pub ttl_seconds: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchProviderHealthState {
+    Healthy,
+    Degraded,
+    Blocked,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchTimeRangeInfo {
+    pub requested: TimeRange,
+    pub applied_by: Vec<SearchEngine>,
+    pub ignored_by: Vec<SearchEngine>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchProviderRunInfo {
+    pub engine: SearchEngine,
+    pub health: SearchProviderHealthState,
+    pub skipped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u128>,
+    pub result_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_retry_seconds: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResponse {
     pub query: String,
     pub region: SearchRegion,
     pub language: SearchLanguage,
+    pub time_range: TimeRange,
+    pub time_range_info: SearchTimeRangeInfo,
     pub engines_requested: Vec<SearchEngine>,
     pub engines_responded: Vec<SearchEngine>,
     pub engines_failed: Vec<SearchProviderFailure>,
+    pub provider_health: Vec<SearchProviderRunInfo>,
     pub total_results: usize,
     pub results: Vec<SearchResultItem>,
     pub cache: SearchCacheInfo,
