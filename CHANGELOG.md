@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.9...nexa-monorepo-v0.6.10) (2026-05-20)
+
+
+### Features
+
+* **agent:** add workflow automation workbench ([3ee41c9](https://github.com/MLGBJDLW/Nexa/commit/3ee41c9c744e7d6e2fac2363e237826e5d18501a))
+* **core:** add web research profiles and context pack ([896943c](https://github.com/MLGBJDLW/Nexa/commit/896943ca0ed057528ea896e637603589e6b2ec87))
+* **core:** harden native web search resilience ([dedf77e](https://github.com/MLGBJDLW/Nexa/commit/dedf77efb646fcb54dbfb95c20099ed18cd60b33))
+* **core:** support configurable web search providers ([ee59bbb](https://github.com/MLGBJDLW/Nexa/commit/ee59bbbaec15a1454f6d5b9247cb7edb851f013e))
+
+
+### Bug Fixes
+
+* **chat:** show generated images before saving ([067aa97](https://github.com/MLGBJDLW/Nexa/commit/067aa97e830f0ae1593bd49df4c14afe42d1a4d8))
+* **desktop:** localize workflow workbench ([8a3c663](https://github.com/MLGBJDLW/Nexa/commit/8a3c6634b2e41f81b36716b26aee94f0456bfb62))
+
 ## [0.6.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.8...nexa-monorepo-v0.6.9) (2026-05-19)
 
 
