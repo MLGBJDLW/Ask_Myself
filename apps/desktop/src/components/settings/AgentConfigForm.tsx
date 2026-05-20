@@ -1180,7 +1180,7 @@ export function AgentConfigForm({
                   key={group.id}
                   title={group.label}
                   description={group.description}
-                  defaultOpen={group.id === "system"}
+                  defaultOpen={false}
                   summary={
                     <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
                       {selectedCount}/{group.tools.length}

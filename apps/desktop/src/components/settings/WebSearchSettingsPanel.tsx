@@ -15,7 +15,7 @@ import type {
 } from '../../types/conversation';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
-import { CollapsiblePanel } from './SettingsSection';
+import { Section } from './SettingsSection';
 
 interface WebSearchSettingsPanelProps {
   appConfig: AppConfig;
@@ -241,12 +241,26 @@ export function WebSearchSettingsPanel({
   };
 
   const statusById = new Map(status.map((provider) => [provider.id, provider]));
+  const configuredCustomProviders = config.customProviders.filter(
+    (provider) => provider.enabled && provider.apiKey.trim(),
+  ).length;
+  const configuredSearxng = config.customProviders.some(
+    (provider) => provider.preset === 'searxng' && provider.enabled && provider.baseUrl?.trim(),
+  );
+  const configuredProviderCount = configuredCustomProviders + (configuredSearxng ? 1 : 0);
 
   return (
-    <CollapsiblePanel
+    <Section
+      icon={<SearchCheck size={20} />}
       title={t('settings.webSearchTitle')}
       description={t('settings.webSearchDesc')}
-      summary={<SearchCheck size={14} className="text-text-tertiary" />}
+      collapsible
+      defaultOpen={false}
+      summary={
+        <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
+          {configuredProviderCount}/{config.customProviders.length}
+        </span>
+      }
     >
       <div className="space-y-4">
         <div className="grid gap-3 md:grid-cols-2">
@@ -511,6 +525,6 @@ export function WebSearchSettingsPanel({
           </Button>
         </div>
       </div>
-    </CollapsiblePanel>
+    </Section>
   );
 }

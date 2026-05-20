@@ -202,7 +202,7 @@ export function DataPrivacySettingsTab({
         title={t('settings.indexSection')}
         delay={0.05}
         collapsible
-        defaultOpen
+        defaultOpen={false}
         summary={stats ? (
           <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
             {stats.totalDocuments} {t('settings.totalDocs')}
