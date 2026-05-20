@@ -26,6 +26,7 @@ import update from './update.json';
 import voice from './voice.json';
 import welcome from './welcome.json';
 import wizard from './wizard.json';
+import workflows from './workflows.json';
 
 export const ja: TranslationKeys = flattenTranslationNamespaces({
   analytics,
@@ -53,4 +54,5 @@ export const ja: TranslationKeys = flattenTranslationNamespaces({
   voice,
   welcome,
   wizard,
+  workflows,
 });

@@ -20,6 +20,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../lib/api';
+import { useTranslation, type TranslationKey } from '../i18n';
 import type { Source } from '../types';
 import type { WorkflowCatalogTemplate } from '../lib/api';
 import type {
@@ -30,102 +31,6 @@ import type {
   WorkflowAutomationTrigger,
   WorkflowAutomationDueRun,
 } from '../types/workflows';
-
-const EN_COPY = {
-  title: 'Workflow Workbench',
-  subtitle: 'Run guided templates, schedule local automations, inspect learning health, and capture browser evidence.',
-  refresh: 'Refresh',
-  templates: 'Templates',
-  automations: 'Automations',
-  governance: 'Learning',
-  browserEvidence: 'Browser Evidence',
-  run: 'Run',
-  saveAutomation: 'Save automation',
-  updateAutomation: 'Update automation',
-  createAutomation: 'Create automation',
-  dueNow: 'Due now',
-  noDue: 'No scheduled workflows are due.',
-  enabled: 'Enabled',
-  disabled: 'Disabled',
-  nextRun: 'Next run',
-  lastRun: 'Last run',
-  delete: 'Delete',
-  name: 'Name',
-  description: 'Description',
-  prompt: 'Prompt',
-  trigger: 'Trigger',
-  schedule: 'Schedule',
-  folder: 'Folder',
-  manual: 'Manual',
-  cron: 'Cron',
-  folderPath: 'Folder path',
-  filePattern: 'File pattern',
-  sourceScope: 'Source scope',
-  approvalRequired: 'Approval before run',
-  riskLevel: 'Risk level',
-  allowedTools: 'Allowed tools',
-  capture: 'Capture',
-  url: 'URL',
-  mode: 'Mode',
-  captured: 'Captured',
-  noCapture: 'No browser evidence captured yet.',
-  pendingProposals: 'Pending proposals',
-  proceduralMemory: 'Procedural memory',
-  memoryInjections: 'Memory injections',
-  noStats: 'No skill usage has been recorded yet.',
-  failures: 'failures',
-  successes: 'successes',
-  recommendations: 'Recommendations',
-  loading: 'Loading workflows...',
-};
-
-const ZH_COPY: typeof EN_COPY = {
-  title: '工作流工作台',
-  subtitle: '运行模板，管理本地自动化，检查学习治理，并捕获可审计网页证据。',
-  refresh: '刷新',
-  templates: '模板',
-  automations: '自动化',
-  governance: '学习治理',
-  browserEvidence: '浏览器证据',
-  run: '运行',
-  saveAutomation: '保存自动化',
-  updateAutomation: '更新自动化',
-  createAutomation: '创建自动化',
-  dueNow: '待执行',
-  noDue: '当前没有到期的定时工作流。',
-  enabled: '已启用',
-  disabled: '已停用',
-  nextRun: '下次运行',
-  lastRun: '上次运行',
-  delete: '删除',
-  name: '名称',
-  description: '描述',
-  prompt: '提示词',
-  trigger: '触发器',
-  schedule: '定时',
-  folder: '文件夹',
-  manual: '手动',
-  cron: 'Cron',
-  folderPath: '文件夹路径',
-  filePattern: '文件匹配',
-  sourceScope: '数据源范围',
-  approvalRequired: '运行前审批',
-  riskLevel: '风险等级',
-  allowedTools: '允许工具',
-  capture: '捕获',
-  url: 'URL',
-  mode: '模式',
-  captured: '已捕获',
-  noCapture: '还没有捕获浏览器证据。',
-  pendingProposals: '待审提案',
-  proceduralMemory: '流程记忆',
-  memoryInjections: '记忆注入',
-  noStats: '还没有记录 Skill 使用情况。',
-  failures: '失败',
-  successes: '成功',
-  recommendations: '建议',
-  loading: '正在加载工作流...',
-};
 
 type Tab = 'templates' | 'automations' | 'governance' | 'browser';
 
@@ -145,16 +50,12 @@ const emptyForm: SaveWorkflowAutomationInput = {
   enabled: true,
 };
 
-const TAB_ITEMS: Array<{ id: Tab; label: keyof typeof EN_COPY; icon: LucideIcon }> = [
+const TAB_ITEMS: Array<{ id: Tab; label: string; icon: LucideIcon }> = [
   { id: 'templates', label: 'templates', icon: Workflow },
   { id: 'automations', label: 'automations', icon: CalendarClock },
   { id: 'governance', label: 'governance', icon: Activity },
   { id: 'browser', label: 'browserEvidence', icon: Globe2 },
 ];
-
-function useCopy() {
-  return navigator.language.toLowerCase().startsWith('zh') ? ZH_COPY : EN_COPY;
-}
 
 function formatTime(value?: string | null) {
   if (!value) return '-';
@@ -168,10 +69,40 @@ function formatTime(value?: string | null) {
   });
 }
 
-function triggerLabel(trigger: WorkflowAutomationTrigger, copy: typeof EN_COPY) {
-  if (trigger.kind === 'schedule') return `${copy.schedule}: ${trigger.cron}`;
-  if (trigger.kind === 'folder') return `${copy.folder}: ${trigger.path || '-'} ${trigger.pattern || ''}`;
-  return copy.manual;
+function workflowKey(key: string): TranslationKey {
+  return `workflows.${key}` as TranslationKey;
+}
+
+type WorkflowT = (key: string, params?: Record<string, string | number>) => string;
+
+function triggerLabel(trigger: WorkflowAutomationTrigger, tr: WorkflowT) {
+  if (trigger.kind === 'schedule') return `${tr('schedule')}: ${trigger.cron}`;
+  if (trigger.kind === 'folder') return `${tr('folder')}: ${trigger.path || '-'} ${trigger.pattern || ''}`;
+  return tr('manual');
+}
+
+function templateText(template: WorkflowCatalogTemplate, field: 'label' | 'description' | 'prompt', tr: WorkflowT) {
+  return tr(`template.${template.id}.${field}`);
+}
+
+function taskRoleLabel(roleId: string, fallback: string, tr: WorkflowT) {
+  const value = tr(`role.${roleId}`);
+  return value.startsWith('workflows.role.') ? fallback : value;
+}
+
+function dueReasonLabel(item: WorkflowAutomationDueRun, tr: WorkflowT) {
+  if (item.automation.trigger.kind === 'folder') return tr('folderDueReason');
+  return triggerLabel(item.automation.trigger, tr);
+}
+
+function recommendationLabel(value: string, tr: WorkflowT) {
+  const failed = value.match(/^Review (\d+) skill\(s\) with recent failure evidence before broad reuse\.$/);
+  if (failed) return tr('recommendationReviewFailedSkills', { count: failed[1] });
+  const stale = value.match(/^Consider disabling or rewriting (\d+) enabled skill\(s\) with no recorded usage\.$/);
+  if (stale) return tr('recommendationDisableStaleSkills', { count: stale[1] });
+  const proposals = value.match(/^Review (\d+) pending skill proposal\(s\) before they affect future tasks\.$/);
+  if (proposals) return tr('recommendationReviewPendingProposals', { count: proposals[1] });
+  return value;
 }
 
 function Button({
@@ -229,7 +160,8 @@ function textareaClass() {
 }
 
 export function WorkflowsPage() {
-  const copy = useCopy();
+  const { t } = useTranslation();
+  const tr = useCallback((key: string, params?: Record<string, string | number>) => t(workflowKey(key), params), [t]);
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('templates');
   const [loading, setLoading] = useState(true);
@@ -289,21 +221,21 @@ export function WorkflowsPage() {
   }, [navigate]);
 
   const runTemplate = useCallback((template: WorkflowCatalogTemplate) => {
-    runPrompt(template.promptTemplate);
-  }, [runPrompt]);
+    runPrompt(templateText(template, 'prompt', tr));
+  }, [runPrompt, tr]);
 
   const runAutomation = useCallback(async (automation: WorkflowAutomation) => {
     setBusy(automation.id);
     try {
       const prompt = await api.previewWorkflowAutomationPrompt(automation.id);
-      await api.recordWorkflowAutomationRun(automation.id, 'queued', null, 'Queued from Workflow Workbench').catch(() => undefined);
+      await api.recordWorkflowAutomationRun(automation.id, 'queued', null, tr('queuedFromWorkbench')).catch(() => undefined);
       runPrompt(prompt, automation.sourceScope);
     } catch (error) {
       toast.error(String(error));
     } finally {
       setBusy(null);
     }
-  }, [runPrompt]);
+  }, [runPrompt, tr]);
 
   const editAutomation = useCallback((automation: WorkflowAutomation) => {
     setForm({
@@ -332,9 +264,9 @@ export function WorkflowsPage() {
   };
 
   const saveAutomation = async () => {
-    const effectivePrompt = (form.prompt || selectedTemplate?.promptTemplate || '').trim();
+    const effectivePrompt = (form.prompt || (selectedTemplate ? templateText(selectedTemplate, 'prompt', tr) : '')).trim();
     if (!form.name.trim() || !effectivePrompt) {
-      toast.error('Name and prompt are required.');
+      toast.error(tr('namePromptRequired'));
       return;
     }
     setBusy('save');
@@ -342,7 +274,7 @@ export function WorkflowsPage() {
       await api.saveWorkflowAutomation({ ...form, prompt: effectivePrompt });
       setForm(emptyForm);
       await load();
-      toast.success(copy.saveAutomation);
+      toast.success(tr('saveAutomation'));
     } catch (error) {
       toast.error(String(error));
     } finally {
@@ -381,7 +313,7 @@ export function WorkflowsPage() {
     try {
       const result = await api.captureBrowserEvidence(trimmed, 6000, browserMode);
       setCapture(result);
-      toast.success(copy.captured);
+      toast.success(tr('captured'));
     } catch (error) {
       toast.error(String(error));
     } finally {
@@ -394,11 +326,11 @@ export function WorkflowsPage() {
       <header className="border-b border-border bg-surface-1 px-6 py-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold tracking-normal text-text-primary">{copy.title}</h1>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-text-secondary">{copy.subtitle}</p>
+            <h1 className="text-xl font-semibold tracking-normal text-text-primary">{tr('title')}</h1>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-text-secondary">{tr('subtitle')}</p>
           </div>
           <Button onClick={() => void load()} icon={loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}>
-            {copy.refresh}
+            {tr('refresh')}
           </Button>
         </div>
         <div className="mt-4 flex flex-wrap gap-1 rounded-md border border-border/70 bg-surface-0 p-1">
@@ -412,14 +344,14 @@ export function WorkflowsPage() {
               }`}
             >
               <Icon className="h-4 w-4" />
-              {copy[label]}
+              {tr(label)}
             </button>
           ))}
         </div>
       </header>
 
       {loading ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-text-tertiary">{copy.loading}</div>
+        <div className="flex flex-1 items-center justify-center text-sm text-text-tertiary">{tr('loading')}</div>
       ) : (
         <main className="flex-1 space-y-6 p-6">
           {tab === 'templates' && (
@@ -429,17 +361,17 @@ export function WorkflowsPage() {
                   <article key={template.id} className="rounded-lg border border-border/70 bg-surface-1 p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <h2 className="text-sm font-semibold text-text-primary">{template.label}</h2>
-                        <p className="mt-1 line-clamp-3 text-xs leading-5 text-text-secondary">{template.description}</p>
+                        <h2 className="text-sm font-semibold text-text-primary">{templateText(template, 'label', tr)}</h2>
+                        <p className="mt-1 line-clamp-3 text-xs leading-5 text-text-secondary">{templateText(template, 'description', tr)}</p>
                       </div>
                       <Button variant="primary" onClick={() => runTemplate(template)} icon={<Play className="h-4 w-4" />}>
-                        {copy.run}
+                        {tr('run')}
                       </Button>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-1.5">
                       {template.tasks.map((task) => (
                         <span key={task.id} className="rounded-md border border-border/60 bg-surface-0 px-2 py-1 text-[11px] text-text-tertiary">
-                          {task.roleLabel}
+                          {taskRoleLabel(task.roleId, task.roleLabel, tr)}
                         </span>
                       ))}
                     </div>
@@ -449,11 +381,11 @@ export function WorkflowsPage() {
               <aside className="rounded-lg border border-border/70 bg-surface-1 p-4">
                 <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
                   <CalendarClock className="h-4 w-4 text-accent" />
-                  {copy.dueNow}
+                  {tr('dueNow')}
                 </div>
                 <div className="mt-3 space-y-2">
                   {dueRuns.length === 0 ? (
-                    <p className="text-sm text-text-tertiary">{copy.noDue}</p>
+                    <p className="text-sm text-text-tertiary">{tr('noDue')}</p>
                   ) : dueRuns.map((item) => (
                     <button
                       key={item.automation.id}
@@ -462,7 +394,7 @@ export function WorkflowsPage() {
                       className="block w-full rounded-md border border-border/70 bg-surface-0 p-3 text-left transition-colors hover:border-accent/60 hover:bg-accent-subtle/30"
                     >
                       <div className="text-sm font-medium text-text-primary">{item.automation.name}</div>
-                      <div className="mt-1 text-xs text-text-tertiary">{item.dueReason}</div>
+                      <div className="mt-1 text-xs text-text-tertiary">{dueReasonLabel(item, tr)}</div>
                     </button>
                   ))}
                 </div>
@@ -475,16 +407,16 @@ export function WorkflowsPage() {
               <section className="rounded-lg border border-border/70 bg-surface-1 p-4">
                 <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-text-primary">
                   <Save className="h-4 w-4 text-accent" />
-                  {form.id ? copy.updateAutomation : copy.createAutomation}
+                  {form.id ? tr('updateAutomation') : tr('createAutomation')}
                 </div>
                 <div className="space-y-3">
-                  <Field label={copy.name}>
+                  <Field label={tr('name')}>
                     <input className={textInputClass()} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
                   </Field>
-                  <Field label={copy.description}>
+                  <Field label={tr('description')}>
                     <input className={textInputClass()} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
                   </Field>
-                  <Field label={copy.templates}>
+                  <Field label={tr('templates')}>
                     <select
                       className={textInputClass()}
                       value={form.workflowTemplateId}
@@ -493,24 +425,24 @@ export function WorkflowsPage() {
                         setForm({
                           ...form,
                           workflowTemplateId: event.target.value,
-                          prompt: nextTemplate?.promptTemplate ?? form.prompt,
+                          prompt: nextTemplate ? templateText(nextTemplate, 'prompt', tr) : form.prompt,
                         });
                       }}
                     >
                       {templates.map((template) => (
-                        <option key={template.id} value={template.id}>{template.label}</option>
+                        <option key={template.id} value={template.id}>{templateText(template, 'label', tr)}</option>
                       ))}
                     </select>
                   </Field>
-                  <Field label={copy.prompt}>
-                    <textarea className={textareaClass()} value={form.prompt || selectedTemplate?.promptTemplate || ''} onChange={(event) => setForm({ ...form, prompt: event.target.value })} />
+                  <Field label={tr('prompt')}>
+                    <textarea className={textareaClass()} value={form.prompt || (selectedTemplate ? templateText(selectedTemplate, 'prompt', tr) : '')} onChange={(event) => setForm({ ...form, prompt: event.target.value })} />
                   </Field>
-                  <Field label={copy.trigger}>
+                  <Field label={tr('trigger')}>
                     <div className="grid grid-cols-3 gap-1 rounded-md border border-border/70 bg-surface-0 p-1">
                       {[
-                        ['schedule', copy.schedule],
-                        ['folder', copy.folder],
-                        ['manual', copy.manual],
+                        ['schedule', tr('schedule')],
+                        ['folder', tr('folder')],
+                        ['manual', tr('manual')],
                       ].map(([id, label]) => (
                         <button
                           key={id}
@@ -524,21 +456,21 @@ export function WorkflowsPage() {
                     </div>
                   </Field>
                   {form.trigger.kind === 'schedule' && (
-                    <Field label={copy.cron}>
+                    <Field label={tr('cron')}>
                       <input className={textInputClass()} value={form.trigger.cron} onChange={(event) => setForm({ ...form, trigger: { kind: 'schedule', cron: event.target.value } })} />
                     </Field>
                   )}
                   {form.trigger.kind === 'folder' && (
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <Field label={copy.folderPath}>
+                      <Field label={tr('folderPath')}>
                         <input className={textInputClass()} value={form.trigger.path} onChange={(event) => setForm({ ...form, trigger: { ...(form.trigger as Extract<WorkflowAutomationTrigger, { kind: 'folder' }>), path: event.target.value } })} />
                       </Field>
-                      <Field label={copy.filePattern}>
+                      <Field label={tr('filePattern')}>
                         <input className={textInputClass()} value={form.trigger.pattern} onChange={(event) => setForm({ ...form, trigger: { ...(form.trigger as Extract<WorkflowAutomationTrigger, { kind: 'folder' }>), pattern: event.target.value } })} />
                       </Field>
                     </div>
                   )}
-                  <Field label={copy.sourceScope}>
+                  <Field label={tr('sourceScope')}>
                     <select
                       multiple
                       className="min-h-28 w-full rounded-md border border-border/70 bg-surface-0 px-3 py-2 text-sm text-text-primary outline-none focus:border-accent/70"
@@ -554,11 +486,11 @@ export function WorkflowsPage() {
                     </select>
                   </Field>
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label={copy.riskLevel}>
+                    <Field label={tr('riskLevel')}>
                       <select className={textInputClass()} value={form.approvalPolicy.riskLevel} onChange={(event) => setForm({ ...form, approvalPolicy: { ...form.approvalPolicy, riskLevel: event.target.value } })}>
-                        <option value="low">low</option>
-                        <option value="medium">medium</option>
-                        <option value="high">high</option>
+                        <option value="low">{tr('riskLow')}</option>
+                        <option value="medium">{tr('riskMedium')}</option>
+                        <option value="high">{tr('riskHigh')}</option>
                       </select>
                     </Field>
                     <label className="mt-6 inline-flex h-9 items-center gap-2 rounded-md border border-border/70 bg-surface-0 px-3 text-sm text-text-secondary">
@@ -567,10 +499,10 @@ export function WorkflowsPage() {
                         checked={form.approvalPolicy.requireBeforeRun}
                         onChange={(event) => setForm({ ...form, approvalPolicy: { ...form.approvalPolicy, requireBeforeRun: event.target.checked } })}
                       />
-                      {copy.approvalRequired}
+                      {tr('approvalRequired')}
                     </label>
                   </div>
-                  <Field label={copy.allowedTools}>
+                  <Field label={tr('allowedTools')}>
                     <input
                       className={textInputClass()}
                       value={form.approvalPolicy.allowedTools.join(', ')}
@@ -585,9 +517,9 @@ export function WorkflowsPage() {
                   </Field>
                   <div className="flex flex-wrap gap-2">
                     <Button variant="primary" disabled={busy === 'save'} onClick={() => void saveAutomation()} icon={busy === 'save' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}>
-                      {copy.saveAutomation}
+                      {tr('saveAutomation')}
                     </Button>
-                    <Button onClick={() => setForm(emptyForm)}>{copy.createAutomation}</Button>
+                    <Button onClick={() => setForm(emptyForm)}>{tr('createAutomation')}</Button>
                   </div>
                 </div>
               </section>
@@ -600,26 +532,26 @@ export function WorkflowsPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <h2 className="text-sm font-semibold text-text-primary">{automation.name}</h2>
                           <span className={`rounded-md border px-2 py-0.5 text-[11px] ${automation.enabled ? 'border-success/30 bg-success/10 text-success' : 'border-border/70 bg-surface-0 text-text-tertiary'}`}>
-                            {automation.enabled ? copy.enabled : copy.disabled}
+                            {automation.enabled ? tr('enabled') : tr('disabled')}
                           </span>
                           <span className="rounded-md border border-border/70 bg-surface-0 px-2 py-0.5 text-[11px] text-text-tertiary">
-                            {triggerLabel(automation.trigger, copy)}
+                            {triggerLabel(automation.trigger, tr)}
                           </span>
                         </div>
                         <p className="mt-1 line-clamp-2 text-xs leading-5 text-text-secondary">{automation.description || automation.prompt}</p>
                         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-tertiary">
-                          <span>{copy.nextRun}: {formatTime(automation.nextRunAt)}</span>
-                          <span>{copy.lastRun}: {formatTime(automation.lastRunAt)}</span>
+                          <span>{tr('nextRun')}: {formatTime(automation.nextRunAt)}</span>
+                          <span>{tr('lastRun')}: {formatTime(automation.lastRunAt)}</span>
                           <span>{automation.workflowTemplateId}</span>
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <Button disabled={busy === automation.id} onClick={() => void runAutomation(automation)} icon={<Play className="h-4 w-4" />}>{copy.run}</Button>
-                        <Button onClick={() => editAutomation(automation)} icon={<ClipboardList className="h-4 w-4" />}>{copy.updateAutomation}</Button>
+                        <Button disabled={busy === automation.id} onClick={() => void runAutomation(automation)} icon={<Play className="h-4 w-4" />}>{tr('run')}</Button>
+                        <Button onClick={() => editAutomation(automation)} icon={<ClipboardList className="h-4 w-4" />}>{tr('updateAutomation')}</Button>
                         <Button disabled={busy === automation.id} onClick={() => void toggleAutomation(automation)} icon={automation.enabled ? <PauseCircle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}>
-                          {automation.enabled ? copy.disabled : copy.enabled}
+                          {automation.enabled ? tr('disabled') : tr('enabled')}
                         </Button>
-                        <Button variant="danger" disabled={busy === automation.id} onClick={() => void deleteAutomation(automation)} icon={<Trash2 className="h-4 w-4" />}>{copy.delete}</Button>
+                        <Button variant="danger" disabled={busy === automation.id} onClick={() => void deleteAutomation(automation)} icon={<Trash2 className="h-4 w-4" />}>{tr('delete')}</Button>
                       </div>
                     </div>
                   </article>
@@ -632,9 +564,9 @@ export function WorkflowsPage() {
             <div className="grid gap-5 xl:grid-cols-[320px_1fr]">
               <section className="space-y-3">
                 {([
-                  { label: copy.pendingProposals, value: governance.pendingProposals, icon: ShieldCheck },
-                  { label: copy.proceduralMemory, value: governance.proceduralMemoryCount, icon: FileSearch },
-                  { label: copy.memoryInjections, value: governance.memoryInjectionCount, icon: Activity },
+                  { label: tr('pendingProposals'), value: governance.pendingProposals, icon: ShieldCheck },
+                  { label: tr('proceduralMemory'), value: governance.proceduralMemoryCount, icon: FileSearch },
+                  { label: tr('memoryInjections'), value: governance.memoryInjectionCount, icon: Activity },
                 ] satisfies Array<{ label: string; value: number; icon: LucideIcon }>).map(({ label, value, icon: Icon }) => (
                   <div key={label} className="rounded-lg border border-border/70 bg-surface-1 p-4">
                     <div className="flex items-center gap-2 text-xs font-medium text-text-tertiary">
@@ -646,16 +578,16 @@ export function WorkflowsPage() {
                 ))}
                 {governance.recommendations.length > 0 && (
                   <div className="rounded-lg border border-warning/30 bg-warning/10 p-4">
-                    <div className="text-sm font-semibold text-warning">{copy.recommendations}</div>
+                    <div className="text-sm font-semibold text-warning">{tr('recommendations')}</div>
                     <ul className="mt-2 space-y-2 text-sm leading-5 text-text-secondary">
-                      {governance.recommendations.map((item) => <li key={item}>{item}</li>)}
+                      {governance.recommendations.map((item) => <li key={item}>{recommendationLabel(item, tr)}</li>)}
                     </ul>
                   </div>
                 )}
               </section>
               <section className="rounded-lg border border-border/70 bg-surface-1">
                 {governance.skillStats.length === 0 ? (
-                  <div className="p-6 text-sm text-text-tertiary">{copy.noStats}</div>
+                  <div className="p-6 text-sm text-text-tertiary">{tr('noStats')}</div>
                 ) : (
                   <div className="divide-y divide-border/60">
                     {governance.skillStats.map((skill) => (
@@ -663,7 +595,7 @@ export function WorkflowsPage() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <h2 className="text-sm font-semibold text-text-primary">{skill.name}</h2>
-                            {!skill.enabled && <span className="text-xs text-text-tertiary">{copy.disabled}</span>}
+                            {!skill.enabled && <span className="text-xs text-text-tertiary">{tr('disabled')}</span>}
                             {skill.disableRecommended && <XCircle className="h-4 w-4 text-warning" />}
                           </div>
                           {skill.recentFailureEvidence != null && (
@@ -675,15 +607,15 @@ export function WorkflowsPage() {
                         <div className="grid grid-cols-3 gap-2 text-center">
                           <div className="rounded-md border border-border/60 bg-surface-0 p-2">
                             <div className="text-lg font-semibold text-text-primary">{skill.usageCount}</div>
-                            <div className="text-[11px] text-text-tertiary">uses</div>
+                            <div className="text-[11px] text-text-tertiary">{tr('uses')}</div>
                           </div>
                           <div className="rounded-md border border-success/30 bg-success/10 p-2">
                             <div className="text-lg font-semibold text-success">{skill.successCount}</div>
-                            <div className="text-[11px] text-text-tertiary">{copy.successes}</div>
+                            <div className="text-[11px] text-text-tertiary">{tr('successes')}</div>
                           </div>
                           <div className="rounded-md border border-danger/30 bg-danger/10 p-2">
                             <div className="text-lg font-semibold text-danger">{skill.failureCount}</div>
-                            <div className="text-[11px] text-text-tertiary">{copy.failures}</div>
+                            <div className="text-[11px] text-text-tertiary">{tr('failures')}</div>
                           </div>
                         </div>
                       </div>
@@ -699,28 +631,28 @@ export function WorkflowsPage() {
               <section className="rounded-lg border border-border/70 bg-surface-1 p-4">
                 <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-text-primary">
                   <Globe2 className="h-4 w-4 text-accent" />
-                  {copy.browserEvidence}
+                  {tr('browserEvidence')}
                 </div>
                 <div className="space-y-3">
-                  <Field label={copy.url}>
+                  <Field label={tr('url')}>
                     <input className={textInputClass()} value={browserUrl} onChange={(event) => setBrowserUrl(event.target.value)} placeholder="https://example.com/report" />
                   </Field>
-                  <Field label={copy.mode}>
+                  <Field label={tr('mode')}>
                     <select className={textInputClass()} value={browserMode} onChange={(event) => setBrowserMode(event.target.value)}>
-                      <option value="auto">auto</option>
-                      <option value="readability">readability</option>
-                      <option value="text">text</option>
-                      <option value="metadata">metadata</option>
+                      <option value="auto">{tr('modeAuto')}</option>
+                      <option value="readability">{tr('modeReadability')}</option>
+                      <option value="text">{tr('modeText')}</option>
+                      <option value="metadata">{tr('modeMetadata')}</option>
                     </select>
                   </Field>
                   <Button variant="primary" disabled={busy === 'browser'} onClick={() => void captureBrowser()} icon={busy === 'browser' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe2 className="h-4 w-4" />}>
-                    {copy.capture}
+                    {tr('capture')}
                   </Button>
                 </div>
               </section>
               <section className="rounded-lg border border-border/70 bg-surface-1 p-4">
                 {!capture ? (
-                  <p className="text-sm text-text-tertiary">{copy.noCapture}</p>
+                  <p className="text-sm text-text-tertiary">{tr('noCapture')}</p>
                 ) : (
                   <div>
                     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -728,7 +660,7 @@ export function WorkflowsPage() {
                         <h2 className="text-sm font-semibold text-text-primary">{capture.title}</h2>
                         <p className="mt-1 break-all text-xs text-text-tertiary">{capture.finalUrl}</p>
                       </div>
-                      <span className="rounded-md border border-success/30 bg-success/10 px-2 py-1 text-xs text-success">{copy.captured}</span>
+                      <span className="rounded-md border border-success/30 bg-success/10 px-2 py-1 text-xs text-success">{tr('captured')}</span>
                     </div>
                     <pre className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-surface-0 p-3 text-xs leading-5 text-text-secondary">
                       {capture.excerpt}
