@@ -53,10 +53,6 @@ struct GenerateImageArgs {
     prompt_extend: Option<bool>,
     #[serde(default)]
     watermark: Option<bool>,
-    #[serde(default, alias = "outputDir")]
-    output_dir: Option<String>,
-    #[serde(default, alias = "outputPath")]
-    output_path: Option<String>,
     #[serde(default)]
     filename: Option<String>,
 }
@@ -159,20 +155,19 @@ impl Tool for GenerateImageTool {
         };
         let extension = extension_for_media_type(&media_type)
             .unwrap_or_else(|| extension_for_format(runtime.output_format).to_string());
-        let output_path = resolve_output_path(db, &args, extension)?;
-        if let Some(parent) = output_path.parent() {
+        let (preview_path, suggested_filename) = resolve_preview_path(&args, &extension)?;
+        if let Some(parent) = preview_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&output_path, &generated.bytes)?;
+        std::fs::write(&preview_path, &generated.bytes)?;
 
         let size_bytes = generated.bytes.len();
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: format!(
-                "Generated image saved.\nProvider: {}\nModel: {}\nPath: {}\nSize: {} bytes",
+                "Generated image ready for preview. It has not been saved to the workspace.\nProvider: {}\nModel: {}\nSize: {} bytes",
                 runtime.provider_name,
                 runtime.model,
-                output_path.display(),
                 size_bytes
             ),
             is_error: false,
@@ -180,9 +175,13 @@ impl Tool for GenerateImageTool {
                 "kind": "generatedImage",
                 "provider": runtime.provider_name,
                 "model": runtime.model,
-                "path": output_path.to_string_lossy(),
+                "path": preview_path.to_string_lossy(),
+                "previewPath": preview_path.to_string_lossy(),
+                "suggestedFilename": suggested_filename,
                 "mediaType": media_type,
                 "bytes": size_bytes,
+                "saved": false,
+                "transient": true,
                 "prompt": prompt,
                 "revisedPrompt": generated.revised_prompt,
                 "providerImageUrl": generated.provider_image_url,
@@ -883,55 +882,20 @@ fn extension_for_media_type(media_type: &str) -> Option<String> {
     }
 }
 
-fn resolve_output_path(
-    db: &Database,
+fn resolve_preview_path(
     args: &GenerateImageArgs,
-    extension: String,
-) -> Result<PathBuf, CoreError> {
-    let path = if let Some(output_path) = args
-        .output_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        let requested = PathBuf::from(output_path);
-        if requested.is_absolute() {
-            requested
-        } else {
-            default_output_dir(db)?.join(requested)
-        }
-    } else {
-        let dir = if let Some(output_dir) = args
-            .output_dir
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            let requested = PathBuf::from(output_dir);
-            if requested.is_absolute() {
-                requested
-            } else {
-                default_output_dir(db)?.join(requested)
-            }
-        } else {
-            default_output_dir(db)?
-        };
-        dir.join(resolve_filename(args.filename.as_deref(), &extension))
-    };
-
-    validate_output_path(db, &path)?;
-    Ok(path)
-}
-
-fn default_output_dir(db: &Database) -> Result<PathBuf, CoreError> {
-    let sources = db.list_sources()?;
-    if let Some(source) = sources.first() {
-        return Ok(PathBuf::from(&source.root_path).join("generated-images"));
-    }
-    Ok(std::env::current_dir()?.join("generated-images"))
+    extension: &str,
+) -> Result<(PathBuf, String), CoreError> {
+    let suggested_filename = resolve_filename(args.filename.as_deref(), extension);
+    let preview_filename = preview_cache_filename(&suggested_filename, extension);
+    let preview_dir = std::env::temp_dir()
+        .join("nexa")
+        .join("generated-image-previews");
+    Ok((preview_dir.join(preview_filename), suggested_filename))
 }
 
 fn resolve_filename(filename: Option<&str>, extension: &str) -> String {
+    let extension = extension.trim_start_matches('.');
     let raw = filename
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -944,57 +908,28 @@ fn resolve_filename(filename: Option<&str>, extension: &str) -> String {
             _ => ch,
         })
         .collect();
-    if Path::new(&safe).extension().is_none() {
-        safe.push('.');
-        safe.push_str(extension);
+    match Path::new(&safe)
+        .extension()
+        .and_then(|value| value.to_str())
+    {
+        Some(current_extension) if current_extension.eq_ignore_ascii_case(extension) => {}
+        _ => {
+            let mut path = PathBuf::from(&safe);
+            path.set_extension(extension);
+            safe = path.to_string_lossy().to_string();
+        }
     }
     safe
 }
 
-fn validate_output_path(db: &Database, path: &Path) -> Result<(), CoreError> {
-    if path
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(CoreError::InvalidInput(
-            "Image output path must not contain '..'.".into(),
-        ));
-    }
-
-    let parent = path.parent().ok_or_else(|| {
-        CoreError::InvalidInput("Image output path has no parent directory.".into())
-    })?;
-    std::fs::create_dir_all(parent)?;
-    let canonical_parent = std::fs::canonicalize(parent)?;
-    let target = canonical_parent.join(
-        path.file_name()
-            .ok_or_else(|| CoreError::InvalidInput("Image output path has no filename.".into()))?,
-    );
-
-    let sources = db.list_sources()?;
-    if sources.is_empty() {
-        let current = std::fs::canonicalize(std::env::current_dir()?)?;
-        if target.starts_with(&current) {
-            return Ok(());
-        }
-        return Err(CoreError::InvalidInput(format!(
-            "Image output path must stay under the current directory when no sources are registered: {}",
-            current.display()
-        )));
-    }
-
-    for source in sources {
-        let root = PathBuf::from(source.root_path);
-        if let Ok(canonical_root) = std::fs::canonicalize(root) {
-            if target.starts_with(canonical_root) {
-                return Ok(());
-            }
-        }
-    }
-
-    Err(CoreError::InvalidInput(
-        "Image output path must stay inside a registered source root.".into(),
-    ))
+fn preview_cache_filename(suggested_filename: &str, extension: &str) -> String {
+    let stem = Path::new(suggested_filename)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("generated-image");
+    format!("{stem}-{}.{}", Uuid::new_v4(), extension)
 }
 
 #[cfg(test)]
@@ -1015,8 +950,6 @@ mod tests {
             negative_prompt: None,
             prompt_extend: None,
             watermark: None,
-            output_dir: None,
-            output_path: None,
             filename: None,
         }
     }
@@ -1139,5 +1072,33 @@ mod tests {
         let zhipu_body = build_openai_images_body(&zhipu, &args, "glm-image", "png");
         assert!(zhipu_body.get("output_format").is_none());
         assert!(zhipu_body.get("response_format").is_none());
+    }
+
+    #[test]
+    fn generated_images_materialize_as_transient_previews() {
+        let mut args = test_args();
+        args.filename = Some("launch poster".to_string());
+
+        let (preview_path, suggested_filename) =
+            resolve_preview_path(&args, "png").expect("preview path");
+
+        assert_eq!(suggested_filename, "launch poster.png");
+        assert!(preview_path.starts_with(
+            std::env::temp_dir()
+                .join("nexa")
+                .join("generated-image-previews")
+        ));
+        assert!(!preview_path.to_string_lossy().contains("generated-images"));
+    }
+
+    #[test]
+    fn generated_image_suggested_filename_matches_actual_format() {
+        let mut args = test_args();
+        args.filename = Some("launch poster.jpg".to_string());
+
+        let (_preview_path, suggested_filename) =
+            resolve_preview_path(&args, "png").expect("preview path");
+
+        assert_eq!(suggested_filename, "launch poster.png");
     }
 }

@@ -511,6 +511,27 @@ export const saveTextFile = (
     },
   });
 
+export interface SaveGeneratedImageInput {
+  outputPath: string;
+  sourcePath?: string | null;
+  dataUrl?: string | null;
+  mediaType?: string | null;
+}
+
+export interface SaveGeneratedImageResult {
+  path: string;
+  bytesWritten: number;
+}
+
+export const readGeneratedImageDataUrl = (path: string, mediaType?: string | null) =>
+  invoke<string>('read_generated_image_data_url_cmd', {
+    path,
+    mediaType: mediaType ?? null,
+  });
+
+export const saveGeneratedImage = (input: SaveGeneratedImageInput) =>
+  invoke<SaveGeneratedImageResult>('save_generated_image_cmd', { input });
+
 // ── Index (extra) ───────────────────────────────────────────────────────
 
 export const optimizeFtsIndex = () =>

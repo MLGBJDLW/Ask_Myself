@@ -1,6 +1,6 @@
 {
   "name": "generate_image",
-  "description": "Generate an image using the image generation provider configured in Settings, save it locally, and return a preview artifact. Before calling, understand the user's visual intent and pass an image-model-ready prompt; preserve the user's wording only when they explicitly provide a final prompt. Supports OpenAI Image API compatible providers, Google Gemini/Nano Banana, Alibaba DashScope/Qwen-Image, and Zhipu CogView/GLM Image presets.",
+  "description": "Generate an image using the image generation provider configured in Settings and return an in-chat preview artifact. The tool does not save the image into the workspace; the user can review the preview and choose Save As from the UI. Before calling, understand the user's visual intent and pass an image-model-ready prompt; preserve the user's wording only when they explicitly provide a final prompt. Supports OpenAI Image API compatible providers, Google Gemini/Nano Banana, Alibaba DashScope/Qwen-Image, and Zhipu CogView/GLM Image presets.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -52,17 +52,9 @@
         "type": "boolean",
         "description": "Optional Qwen watermark flag. Defaults to false."
       },
-      "output_dir": {
-        "type": "string",
-        "description": "Optional directory for the saved image. Defaults to generated-images under the first registered source or current directory."
-      },
-      "output_path": {
-        "type": "string",
-        "description": "Optional exact output file path. If provided, parent directories are created. Paths must stay inside a registered source root when sources exist."
-      },
       "filename": {
         "type": "string",
-        "description": "Optional output filename. Extension is inferred from output_format when missing."
+        "description": "Optional suggested filename shown if the user chooses Save As. Extension is inferred from output_format when missing."
       }
     },
     "required": ["prompt"]

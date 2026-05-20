@@ -230,6 +230,8 @@ fn main() {
             commands::show_in_file_explorer,
             commands::preview_file_cmd,
             commands::save_text_file_cmd,
+            commands::read_generated_image_data_url_cmd,
+            commands::save_generated_image_cmd,
             // Watcher
             commands::start_watching,
             commands::stop_watching,
