@@ -90,7 +90,7 @@ pub struct SkillResourceFile {
     pub content: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillInterfaceMetadata {
     #[serde(default, alias = "display_name")]
@@ -103,18 +103,6 @@ pub struct SkillInterfaceMetadata {
     pub icon_large: Option<String>,
     #[serde(default, alias = "default_prompt")]
     pub default_prompt: Option<String>,
-}
-
-impl Default for SkillInterfaceMetadata {
-    fn default() -> Self {
-        Self {
-            display_name: String::new(),
-            short_description: String::new(),
-            icon_small: None,
-            icon_large: None,
-            default_prompt: None,
-        }
-    }
 }
 
 impl SkillInterfaceMetadata {

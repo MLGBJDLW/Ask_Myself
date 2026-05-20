@@ -53,20 +53,15 @@ fn default_include_assets() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 enum FetchMode {
+    #[default]
     Auto,
     Readability,
     Text,
     Metadata,
     Assets,
-}
-
-impl Default for FetchMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +92,38 @@ struct ImageAsset {
     alt: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
+}
+
+struct ImageAssetCandidate<'a> {
+    kind: &'a str,
+    raw_url: &'a str,
+    alt: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+impl<'a> ImageAssetCandidate<'a> {
+    fn new(kind: &'a str, raw_url: &'a str) -> Self {
+        Self {
+            kind,
+            raw_url,
+            alt: None,
+            width: None,
+            height: None,
+        }
+    }
+
+    fn with_details(
+        mut self,
+        alt: Option<String>,
+        width: Option<u32>,
+        height: Option<u32>,
+    ) -> Self {
+        self.alt = alt;
+        self.width = width;
+        self.height = height;
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -714,27 +741,23 @@ fn push_image_asset(
     assets: &mut Vec<ImageAsset>,
     seen: &mut HashSet<String>,
     base_url: &reqwest::Url,
-    kind: &str,
-    raw_url: &str,
-    alt: Option<String>,
-    width: Option<u32>,
-    height: Option<u32>,
+    candidate: ImageAssetCandidate<'_>,
 ) {
     if assets.len() >= MAX_IMAGE_ASSETS {
         return;
     }
-    let Some(url) = public_absolute_url(base_url, raw_url) else {
+    let Some(url) = public_absolute_url(base_url, candidate.raw_url) else {
         return;
     };
     if !seen.insert(url.clone()) {
         return;
     }
     assets.push(ImageAsset {
-        kind: kind.to_string(),
+        kind: candidate.kind.to_string(),
         url,
-        alt,
-        width,
-        height,
+        alt: candidate.alt,
+        width: candidate.width,
+        height: candidate.height,
     });
 }
 
@@ -782,11 +805,7 @@ fn extract_image_assets(
             &mut assets,
             &mut seen,
             base_url,
-            "primary_image",
-            image,
-            None,
-            None,
-            None,
+            ImageAssetCandidate::new("primary_image", image),
         );
     }
 
@@ -803,11 +822,7 @@ fn extract_image_assets(
                 &mut assets,
                 &mut seen,
                 base_url,
-                "metadata_image",
-                &url,
-                None,
-                None,
-                None,
+                ImageAssetCandidate::new("metadata_image", &url),
             );
         }
     }
@@ -819,11 +834,7 @@ fn extract_image_assets(
                     &mut assets,
                     &mut seen,
                     base_url,
-                    "linked_image",
-                    href,
-                    None,
-                    None,
-                    None,
+                    ImageAssetCandidate::new("linked_image", href),
                 );
             }
         }
@@ -840,11 +851,11 @@ fn extract_image_assets(
                         &mut assets,
                         &mut seen,
                         base_url,
-                        "image_srcset",
-                        &url,
-                        alt.clone(),
-                        width,
-                        height,
+                        ImageAssetCandidate::new("image_srcset", &url).with_details(
+                            alt.clone(),
+                            width,
+                            height,
+                        ),
                     );
                 }
             }
@@ -854,11 +865,11 @@ fn extract_image_assets(
                         &mut assets,
                         &mut seen,
                         base_url,
-                        "image",
-                        src,
-                        alt.clone(),
-                        width,
-                        height,
+                        ImageAssetCandidate::new("image", src).with_details(
+                            alt.clone(),
+                            width,
+                            height,
+                        ),
                     );
                 }
             }
@@ -873,11 +884,7 @@ fn extract_image_assets(
                         &mut assets,
                         &mut seen,
                         base_url,
-                        "picture_source",
-                        &url,
-                        None,
-                        None,
-                        None,
+                        ImageAssetCandidate::new("picture_source", &url),
                     );
                 }
             }

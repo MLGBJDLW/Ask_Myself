@@ -333,12 +333,13 @@ fn extract_known_redirect_target(url: &Url) -> Option<String> {
 
     for (key, value) in url.query_pairs() {
         let key = key.to_ascii_lowercase();
-        if matches!(key.as_str(), "uddg" | "url" | "u" | "target" | "to" | "r") {
-            if value.starts_with("http://") || value.starts_with("https://") {
-                if let Some(info) = public_url_info(&value) {
-                    return Some(info.url);
-                }
-            }
+        if matches!(key.as_str(), "uddg" | "url" | "u" | "target" | "to" | "r")
+            && (value.starts_with("http://") || value.starts_with("https://"))
+        {
+            let Some(info) = public_url_info(&value) else {
+                continue;
+            };
+            return Some(info.url);
         }
     }
     None
@@ -439,15 +440,13 @@ pub(crate) fn is_private_or_local_ip(ip: &IpAddr) -> bool {
 fn dedupe_key(url: &str) -> String {
     Url::parse(url)
         .ok()
-        .and_then(|mut parsed| {
+        .map(|mut parsed| {
             parsed.set_fragment(None);
             parsed.set_query(None);
-            Some(
-                parsed
-                    .to_string()
-                    .trim_end_matches('/')
-                    .to_ascii_lowercase(),
-            )
+            parsed
+                .to_string()
+                .trim_end_matches('/')
+                .to_ascii_lowercase()
         })
         .unwrap_or_else(|| url.trim_end_matches('/').to_ascii_lowercase())
 }

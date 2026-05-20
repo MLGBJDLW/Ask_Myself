@@ -1117,12 +1117,11 @@ async fn resolve_search_redirects(
     results: &mut [SearchResultItem],
 ) -> Vec<SearchProviderFailure> {
     let mut failures = Vec::new();
-    let mut attempted = 0usize;
-    for result in results.iter_mut().filter(|result| !result.resolved) {
-        if attempted >= REDIRECT_RESOLVE_MAX_RESULTS {
-            break;
-        }
-        attempted += 1;
+    for result in results
+        .iter_mut()
+        .filter(|result| !result.resolved)
+        .take(REDIRECT_RESOLVE_MAX_RESULTS)
+    {
         let engine = result.engine;
         let url = result.url.clone();
         match tokio::time::timeout(

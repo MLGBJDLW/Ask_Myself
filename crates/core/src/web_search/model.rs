@@ -52,48 +52,33 @@ impl SearchEngine {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchRegion {
+    #[default]
     Auto,
     MainlandCn,
     Global,
 }
 
-impl Default for SearchRegion {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchLanguage {
+    #[default]
     Auto,
     Zh,
     En,
 }
 
-impl Default for SearchLanguage {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeRange {
+    #[default]
     Any,
     Day,
     Week,
     Month,
     Year,
-}
-
-impl Default for TimeRange {
-    fn default() -> Self {
-        Self::Any
-    }
 }
 
 impl TimeRange {
@@ -108,10 +93,11 @@ impl TimeRange {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WebSearchProviderProfile {
     #[serde(alias = "native", alias = "native_balanced")]
+    #[default]
     Default,
     #[serde(alias = "free")]
     Free,
@@ -119,12 +105,6 @@ pub enum WebSearchProviderProfile {
     FreeVerified,
     #[serde(alias = "max-evidence")]
     MaxEvidence,
-}
-
-impl Default for WebSearchProviderProfile {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 impl WebSearchProviderProfile {
@@ -138,9 +118,10 @@ impl WebSearchProviderProfile {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WebSearchReranker {
+    #[default]
     Auto,
     None,
     #[serde(alias = "docs-first")]
@@ -148,12 +129,6 @@ pub enum WebSearchReranker {
     Research,
     #[serde(alias = "news-balanced")]
     NewsBalanced,
-}
-
-impl Default for WebSearchReranker {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl WebSearchReranker {
