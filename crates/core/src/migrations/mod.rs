@@ -887,6 +887,99 @@ Every answer that uses knowledge base search results.
          WHERE id = 'builtin-open-websearch'
            AND builtin_id = 'open-websearch';",
     ),
+    (
+        "v063_workflow_automation_resumability_governance",
+        "CREATE TABLE IF NOT EXISTS workflow_automations (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            workflow_template_id TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            trigger_json TEXT NOT NULL,
+            trigger_kind TEXT NOT NULL,
+            source_scope_json TEXT NOT NULL DEFAULT '[]',
+            approval_policy_json TEXT NOT NULL DEFAULT '{}',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'ready',
+            last_run_at TEXT DEFAULT NULL,
+            next_run_at TEXT DEFAULT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_automations_due
+            ON workflow_automations(enabled, trigger_kind, next_run_at);
+        CREATE INDEX IF NOT EXISTS idx_workflow_automations_template
+            ON workflow_automations(workflow_template_id, updated_at);
+
+        CREATE TABLE IF NOT EXISTS workflow_automation_runs (
+            id TEXT PRIMARY KEY NOT NULL,
+            automation_id TEXT NOT NULL REFERENCES workflow_automations(id) ON DELETE CASCADE,
+            task_run_id TEXT REFERENCES agent_task_runs(id) ON DELETE SET NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            summary TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            finished_at TEXT DEFAULT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_automation_runs_automation
+            ON workflow_automation_runs(automation_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_workflow_automation_runs_task
+            ON workflow_automation_runs(task_run_id);
+
+        CREATE TABLE IF NOT EXISTS task_resume_checkpoints (
+            id TEXT PRIMARY KEY NOT NULL,
+            run_id TEXT NOT NULL REFERENCES agent_task_runs(id) ON DELETE CASCADE,
+            reason TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            resume_prompt TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_resume_checkpoints_run
+            ON task_resume_checkpoints(run_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS skill_usage_events (
+            id TEXT PRIMARY KEY NOT NULL,
+            skill_id TEXT NOT NULL,
+            conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+            task_run_id TEXT REFERENCES agent_task_runs(id) ON DELETE SET NULL,
+            outcome TEXT NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_skill_usage_events_skill
+            ON skill_usage_events(skill_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_skill_usage_events_task
+            ON skill_usage_events(task_run_id);
+
+        CREATE TABLE IF NOT EXISTS memory_injection_events (
+            id TEXT PRIMARY KEY NOT NULL,
+            memory_id TEXT NOT NULL,
+            conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+            turn_id TEXT REFERENCES conversation_turns(id) ON DELETE SET NULL,
+            query TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            score REAL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_injection_events_memory
+            ON memory_injection_events(memory_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_memory_injection_events_turn
+            ON memory_injection_events(turn_id);
+
+        CREATE TABLE IF NOT EXISTS browser_evidence_captures (
+            id TEXT PRIMARY KEY NOT NULL,
+            url TEXT NOT NULL,
+            final_url TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            excerpt TEXT NOT NULL DEFAULT '',
+            method TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_browser_evidence_captures_url
+            ON browser_evidence_captures(final_url, created_at);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1016,6 +1109,12 @@ mod tests {
         assert!(tables.contains(&"agent_task_artifact_versions".to_string()));
         assert!(tables.contains(&"file_checkpoints".to_string()));
         assert!(tables.contains(&"personas".to_string()));
+        assert!(tables.contains(&"workflow_automations".to_string()));
+        assert!(tables.contains(&"workflow_automation_runs".to_string()));
+        assert!(tables.contains(&"task_resume_checkpoints".to_string()));
+        assert!(tables.contains(&"skill_usage_events".to_string()));
+        assert!(tables.contains(&"memory_injection_events".to_string()));
+        assert!(tables.contains(&"browser_evidence_captures".to_string()));
     }
 
     #[test]

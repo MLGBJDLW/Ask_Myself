@@ -95,6 +95,7 @@ pub fn capability_render_kind(name: &str) -> ToolRenderKind {
             ToolRenderKind::FileChange
         }
         "fetch_url"
+        | "browser_evidence_capture"
         | "web_search"
         | "web_research_context"
         | "read_file"
@@ -133,6 +134,7 @@ pub fn capability_input_streaming(name: &str) -> ToolInputStreamingMode {
     match name {
         "generate_image"
         | "download_asset"
+        | "browser_evidence_capture"
         | "fetch_url"
         | "web_search"
         | "web_research_context"
@@ -231,6 +233,9 @@ pub fn capability_resource_keys(name: &str, args: &serde_json::Value) -> Vec<Str
     }
     for field in ["source_id", "sourceId", "source_ids", "sourceIds"] {
         collect_string_or_array_resource(args, field, "source", &mut keys);
+    }
+    for field in ["url", "finalUrl", "final_url"] {
+        collect_string_or_array_resource(args, field, "web", &mut keys);
     }
     if name.starts_with("mcp__") {
         push_string_resource_key(&mut keys, "mcp", name);
@@ -421,6 +426,16 @@ pub fn infer_tool_access_profile(
             false,
             ApprovalRisk::Low,
             "Reads remote web content or search results and crosses the local trust boundary.",
+        ),
+        "browser_evidence_capture" => (
+            "web",
+            true,
+            false,
+            false,
+            true,
+            true,
+            ApprovalRisk::Medium,
+            "Captures read-only browser/page evidence with provenance and crosses the local trust boundary.",
         ),
         "download_asset" => (
             "web",

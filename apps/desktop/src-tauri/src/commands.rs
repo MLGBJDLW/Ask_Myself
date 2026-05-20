@@ -93,6 +93,7 @@ mod preview;
 mod skills_mcp;
 mod sources;
 mod watcher;
+mod workflows;
 
 pub use agent_chat::*;
 pub use app_config::*;
@@ -105,6 +106,7 @@ pub use preview::*;
 pub use skills_mcp::*;
 pub use sources::*;
 pub use watcher::*;
+pub use workflows::*;
 
 /// Application state holding the database connection.
 pub struct AppState {

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  AlertTriangle,
   Boxes,
   Brain,
   CheckCircle2,
@@ -40,6 +39,10 @@ import type {
   ApprovalPolicyList,
   ToolAccessInfo,
 } from '../types/conversation';
+import type {
+  InvestigationGraph,
+  TaskResumeCheckpoint,
+} from '../types/workflows';
 
 const EN_COPY = {
   title: 'Task Center',
@@ -52,6 +55,7 @@ const EN_COPY = {
   queued: 'Queued',
   waitingApproval: 'Waiting approval',
   cancelling: 'Cancelling',
+  paused: 'Paused',
   cancelled: 'Cancelled',
   completed: 'Completed',
   failed: 'Failed',
@@ -63,7 +67,16 @@ const EN_COPY = {
   cancelTask: 'Cancel task',
   pause: 'Pause',
   resume: 'Resume',
-  pauseUnavailable: 'Pause/resume requires checkpointable executors; this run can still be cancelled or retried.',
+  pauseSaved: 'Paused with a resumable checkpoint',
+  pauseError: 'Failed to pause task',
+  resumeError: 'Failed to build resume prompt',
+  resumeCheckpoint: 'Resume Checkpoint',
+  noCheckpoint: 'No resumable checkpoint for this run yet.',
+  checkpointReason: 'Reason',
+  investigationGraph: 'Investigation Graph',
+  citations: 'Citations',
+  openQuestions: 'Open Questions',
+  noInvestigationGraph: 'No evidence graph has been recorded for this run yet.',
   runDetails: 'Run Details',
   executionGraph: 'Execution Graph',
   history: 'History',
@@ -125,6 +138,7 @@ const ZH_COPY: Copy = {
   queued: '排队中',
   waitingApproval: '等待审批',
   cancelling: '取消中',
+  paused: '已暂停',
   cancelled: '已取消',
   completed: '已完成',
   failed: '失败',
@@ -136,7 +150,16 @@ const ZH_COPY: Copy = {
   cancelTask: '取消任务',
   pause: '暂停',
   resume: '恢复',
-  pauseUnavailable: '暂停/恢复需要可检查点化执行器；当前任务仍可取消或重试。',
+  pauseSaved: '已暂停，并写入可恢复检查点',
+  pauseError: '暂停任务失败',
+  resumeError: '生成恢复提示失败',
+  resumeCheckpoint: '恢复检查点',
+  noCheckpoint: '这个任务还没有可恢复检查点。',
+  checkpointReason: '原因',
+  investigationGraph: '调查图谱',
+  citations: '引用',
+  openQuestions: '未证实点',
+  noInvestigationGraph: '这个任务还没有记录证据图谱。',
   runDetails: '任务详情',
   executionGraph: '执行图',
   history: '历史事件',
@@ -195,6 +218,8 @@ function statusLabel(status: string, copy: Copy) {
       return copy.waitingApproval;
     case 'cancelling':
       return copy.cancelling;
+    case 'paused':
+      return copy.paused;
     case 'cancelled':
       return copy.cancelled;
     case 'completed':
@@ -221,6 +246,7 @@ function statusTone(status: string) {
       return 'border-danger/25 bg-danger/10 text-danger';
     case 'cancelled':
     case 'cancelling':
+    case 'paused':
       return 'border-warning/25 bg-warning/10 text-warning';
     default:
       return 'border-border/70 bg-surface-1 text-text-secondary';
@@ -233,6 +259,7 @@ function statusIcon(status: string) {
   }
   if (status === 'completed') return <CheckCircle2 className="h-3.5 w-3.5" />;
   if (status === 'failed' || status === 'timed_out') return <XCircle className="h-3.5 w-3.5" />;
+  if (status === 'paused') return <Pause className="h-3.5 w-3.5" />;
   if (status === 'cancelled' || status === 'cancelling') return <Square className="h-3.5 w-3.5" />;
   return <Circle className="h-3.5 w-3.5" />;
 }
@@ -313,6 +340,8 @@ export function TaskCenterPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [events, setEvents] = useState<AgentTaskRunEvent[]>([]);
   const [graph, setGraph] = useState<AgentExecutionGraph | null>(null);
+  const [investigationGraph, setInvestigationGraph] = useState<InvestigationGraph | null>(null);
+  const [resumeCheckpoints, setResumeCheckpoints] = useState<TaskResumeCheckpoint[]>([]);
   const [artifacts, setArtifacts] = useState<AgentTaskArtifactSummary[]>([]);
   const [savedArtifacts, setSavedArtifacts] = useState<AgentTaskArtifact[]>([]);
   const [artifactVersions, setArtifactVersions] = useState<Record<string, AgentTaskArtifactVersion[]>>({});
@@ -325,6 +354,8 @@ export function TaskCenterPage() {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [stoppingId, setStoppingId] = useState<string | null>(null);
+  const [pausingId, setPausingId] = useState<string | null>(null);
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const [savingMemory, setSavingMemory] = useState(false);
 
   const selected = useMemo(
@@ -363,6 +394,8 @@ export function TaskCenterPage() {
     if (!selected) {
       setEvents([]);
       setGraph(null);
+      setInvestigationGraph(null);
+      setResumeCheckpoints([]);
       setArtifacts([]);
       setSavedArtifacts([]);
       setArtifactVersions({});
@@ -375,12 +408,22 @@ export function TaskCenterPage() {
     setDetailLoading(true);
     void (async () => {
       try {
-        const [nextEvents, nextGraph, nextArtifacts, nextSavedArtifacts, nextMemories] = await Promise.all([
+        const [
+          nextEvents,
+          nextGraph,
+          nextArtifacts,
+          nextSavedArtifacts,
+          nextMemories,
+          nextCheckpoints,
+          nextInvestigationGraph,
+        ] = await Promise.all([
           api.getAgentTaskRunEvents(selected.run.id),
           api.getAgentExecutionGraph(selected.run.id),
           api.getAgentTaskArtifacts(selected.run.id),
           api.listPersistedAgentTaskArtifacts(selected.run.id),
           selected.projectId ? api.listProjectMemories(selected.projectId) : Promise.resolve([]),
+          api.listTaskResumeCheckpoints(selected.run.id).catch(() => []),
+          api.getInvestigationGraph(selected.run.id).catch(() => null),
         ]);
         const versionPairs = await Promise.all(
           nextSavedArtifacts.slice(0, 12).map(async (artifact) => {
@@ -395,6 +438,8 @@ export function TaskCenterPage() {
         if (cancelled) return;
         setEvents(nextEvents.filter((event) => !isDurableStreamEvent(event)));
         setGraph(nextGraph);
+        setInvestigationGraph(nextInvestigationGraph);
+        setResumeCheckpoints(nextCheckpoints);
         setArtifacts(nextArtifacts);
         setSavedArtifacts(nextSavedArtifacts);
         setArtifactVersions(Object.fromEntries(versionPairs));
@@ -426,6 +471,36 @@ export function TaskCenterPage() {
       setStoppingId(null);
     }
   }, [copy.stopError, copy.stopped, load, selected]);
+
+  const handlePause = useCallback(async () => {
+    if (!selected || !isActiveTask(selected.run.status)) return;
+    setPausingId(selected.run.id);
+    try {
+      const checkpoint = await api.pauseAgentTaskRun(selected.run.id);
+      setResumeCheckpoints((current) => [checkpoint, ...current.filter((item) => item.id !== checkpoint.id)]);
+      toast.success(copy.pauseSaved);
+      await load();
+    } catch (error) {
+      toast.error(`${copy.pauseError}: ${String(error)}`);
+    } finally {
+      setPausingId(null);
+    }
+  }, [copy.pauseError, copy.pauseSaved, load, selected]);
+
+  const handleResume = useCallback(async () => {
+    if (!selected) return;
+    setResumingId(selected.run.id);
+    try {
+      const resume = await api.getTaskResumePrompt(selected.run.id);
+      navigate(`/chat/${selected.run.conversationId}`, {
+        state: { initialMessage: resume.prompt },
+      });
+    } catch (error) {
+      toast.error(`${copy.resumeError}: ${String(error)}`);
+    } finally {
+      setResumingId(null);
+    }
+  }, [copy.resumeError, navigate, selected]);
 
   const handleRetry = useCallback(() => {
     if (!selected) return;
@@ -579,6 +654,10 @@ export function TaskCenterPage() {
     ? [...new Set(artifacts.map((artifact) => artifact.kind))]
     : selected?.artifactKinds ?? [];
   const artifactPaths = [...new Set(artifacts.flatMap((artifact) => artifact.paths))].slice(0, 8);
+  const latestCheckpoint = resumeCheckpoints[0] ?? null;
+  const canResume = Boolean(selected && (selected.run.status === 'paused' || latestCheckpoint));
+  const investigationNodes = investigationGraph?.nodes ?? [];
+  const investigationEdges = investigationGraph?.edges ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface-0">
@@ -724,15 +803,28 @@ export function TaskCenterPage() {
                       <RotateCcw className="h-4 w-4" />
                       {copy.retry}
                     </button>
-                    <button
-                      type="button"
-                      disabled
-                      title={copy.pauseUnavailable}
-                      className="inline-flex h-9 cursor-not-allowed items-center gap-1.5 rounded-md border border-border bg-surface-0 px-3 text-sm text-text-tertiary opacity-55"
-                    >
-                      {isActiveTask(selected.run.status) ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                      {isActiveTask(selected.run.status) ? copy.pause : copy.resume}
-                    </button>
+                    {isActiveTask(selected.run.status) && (
+                      <button
+                        type="button"
+                        onClick={() => void handlePause()}
+                        disabled={pausingId === selected.run.id}
+                        className="inline-flex h-9 items-center gap-1.5 rounded-md border border-warning/35 bg-warning/10 px-3 text-sm text-warning transition-colors hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {pausingId === selected.run.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pause className="h-4 w-4" />}
+                        {copy.pause}
+                      </button>
+                    )}
+                    {canResume && (
+                      <button
+                        type="button"
+                        onClick={() => void handleResume()}
+                        disabled={resumingId === selected.run.id}
+                        className="inline-flex h-9 items-center gap-1.5 rounded-md border border-accent/35 bg-accent/10 px-3 text-sm text-accent transition-colors hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {resumingId === selected.run.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                        {copy.resume}
+                      </button>
+                    )}
                     {isActiveTask(selected.run.status) && (
                       <button
                         type="button"
@@ -790,6 +882,76 @@ export function TaskCenterPage() {
                         </div>
                       ))}
                     </div>
+                  </section>
+
+                  <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
+                    <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary">
+                      <Network className="h-4 w-4 text-accent" />
+                      {copy.investigationGraph}
+                    </div>
+                    {investigationNodes.length === 0 ? (
+                      <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-text-tertiary">
+                        {copy.noInvestigationGraph}
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="grid gap-2 md:grid-cols-2">
+                          {investigationNodes.slice(0, 8).map((node) => (
+                            <div key={node.id} className="rounded-md border border-border/60 bg-surface-0/75 p-3">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-medium text-text-primary">{node.label}</div>
+                                  <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-text-tertiary">
+                                    <RiskPill>{node.nodeType}</RiskPill>
+                                    {node.status && <RiskPill>{node.status}</RiskPill>}
+                                  </div>
+                                </div>
+                                {node.sourceUrl && <ExternalLink className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />}
+                              </div>
+                              {node.summary && (
+                                <p className="mt-2 line-clamp-2 text-xs leading-5 text-text-secondary">{node.summary}</p>
+                              )}
+                              {node.sourceUrl && (
+                                <p className="mt-2 break-all text-[11px] leading-5 text-text-tertiary">{node.sourceUrl}</p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        {investigationEdges.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {investigationEdges.slice(0, 10).map((edge) => (
+                              <RiskPill key={`${edge.from}-${edge.to}-${edge.label}`}>
+                                {edge.from}{' -> '}{edge.label}{' -> '}{edge.to}
+                              </RiskPill>
+                            ))}
+                          </div>
+                        )}
+                        {investigationGraph?.citations.length ? (
+                          <div>
+                            <div className="mb-1 text-xs font-medium text-text-tertiary">{copy.citations}</div>
+                            <div className="space-y-1">
+                              {investigationGraph.citations.slice(0, 6).map((citation) => (
+                                <div key={citation} className="break-all rounded-md border border-border/60 bg-surface-0/75 px-2 py-1.5 text-xs text-text-secondary">
+                                  {citation}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                        {investigationGraph?.openQuestions.length ? (
+                          <div>
+                            <div className="mb-1 text-xs font-medium text-text-tertiary">{copy.openQuestions}</div>
+                            <div className="space-y-1">
+                              {investigationGraph.openQuestions.slice(0, 6).map((question) => (
+                                <div key={question} className="rounded-md border border-warning/30 bg-warning/10 px-2 py-1.5 text-xs text-warning">
+                                  {question}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
                   </section>
 
                   <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
@@ -1103,12 +1265,45 @@ export function TaskCenterPage() {
                     </div>
                   </section>
 
-                  <div className="rounded-lg border border-border/70 bg-surface-1/70 p-4 text-xs leading-5 text-text-tertiary">
-                    <div className="mb-1 flex items-center gap-1.5 text-text-secondary">
-                      <AlertTriangle className="h-3.5 w-3.5 text-warning" />
-                      {copy.pauseUnavailable}
+                  <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                        <History className="h-4 w-4 text-accent" />
+                        {copy.resumeCheckpoint}
+                      </div>
+                      {canResume && (
+                        <button
+                          type="button"
+                          onClick={() => void handleResume()}
+                          disabled={resumingId === selected.run.id}
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/35 bg-accent/10 px-2.5 text-xs text-accent transition-colors hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {resumingId === selected.run.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                          {copy.resume}
+                        </button>
+                      )}
                     </div>
-                  </div>
+                    {!latestCheckpoint ? (
+                      <div className="rounded-md border border-dashed border-border px-3 py-6 text-sm text-text-tertiary">
+                        {copy.noCheckpoint}
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap gap-1 text-[10px] text-text-tertiary">
+                          <RiskPill>{latestCheckpoint.phase}</RiskPill>
+                          <RiskPill>{latestCheckpoint.status}</RiskPill>
+                          <RiskPill>{formatTime(latestCheckpoint.createdAt)}</RiskPill>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-surface-0/75 p-3">
+                          <div className="mb-1 text-[11px] font-medium text-text-tertiary">{copy.checkpointReason}</div>
+                          <p className="text-xs leading-5 text-text-secondary">{latestCheckpoint.reason}</p>
+                        </div>
+                        <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-surface-0/75 p-3 text-xs leading-5 text-text-secondary">
+                          {latestCheckpoint.resumePrompt}
+                        </pre>
+                      </div>
+                    )}
+                  </section>
                 </div>
               </div>
             </div>

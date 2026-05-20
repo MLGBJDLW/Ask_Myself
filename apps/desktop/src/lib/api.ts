@@ -62,6 +62,17 @@ import type {
 } from "../types/extensions";
 import type { TraceSummary, AgentTrace } from "../types/trace";
 import type { QualityEvalReport } from "../types/qualityEval";
+import type {
+  BrowserEvidenceCapture,
+  InvestigationGraph,
+  LearningGovernanceSnapshot,
+  SaveWorkflowAutomationInput,
+  TaskResumeCheckpoint,
+  TaskResumePrompt,
+  WorkflowAutomation,
+  WorkflowAutomationDueRun,
+  WorkflowAutomationRun,
+} from "../types/workflows";
 import type { ProviderPreset } from "./providerPresets";
 
 // ── Sources ─────────────────────────────────────────────────────────────
@@ -620,6 +631,36 @@ export const listProviderPresets = () =>
 export const listWorkflowTemplates = () =>
   invoke<WorkflowCatalogTemplate[]>('list_workflow_templates_cmd');
 
+export const saveWorkflowAutomation = (input: SaveWorkflowAutomationInput) =>
+  invoke<WorkflowAutomation>('save_workflow_automation_cmd', { input });
+
+export const listWorkflowAutomations = () =>
+  invoke<WorkflowAutomation[]>('list_workflow_automations_cmd');
+
+export const deleteWorkflowAutomation = (id: string) =>
+  invoke<void>('delete_workflow_automation_cmd', { id });
+
+export const setWorkflowAutomationEnabled = (id: string, enabled: boolean) =>
+  invoke<WorkflowAutomation>('set_workflow_automation_enabled_cmd', { id, enabled });
+
+export const listDueWorkflowAutomations = (now?: string | null) =>
+  invoke<WorkflowAutomationDueRun[]>('list_due_workflow_automations_cmd', { now: now ?? null });
+
+export const previewWorkflowAutomationPrompt = (id: string) =>
+  invoke<string>('preview_workflow_automation_prompt_cmd', { id });
+
+export const recordWorkflowAutomationRun = (
+  automationId: string,
+  status: string,
+  taskRunId?: string | null,
+  summary?: string | null,
+) => invoke<WorkflowAutomationRun>('record_workflow_automation_run_cmd', {
+  automationId,
+  taskRunId: taskRunId ?? null,
+  status,
+  summary: summary ?? null,
+});
+
 // ── Conversations ───────────────────────────────────────────────────────
 
 export const createConversation = (
@@ -691,8 +732,33 @@ export const updateAgentTaskArtifact = (artifactId: string, input: UpdateAgentTa
 export const listAgentTaskArtifactVersions = (artifactId: string) =>
   invoke<AgentTaskArtifactVersion[]>('list_agent_task_artifact_versions_cmd', { artifactId });
 
+export const pauseAgentTaskRun = (runId: string) =>
+  invoke<TaskResumeCheckpoint>('pause_agent_task_run_cmd', { runId });
+
+export const listTaskResumeCheckpoints = (runId: string) =>
+  invoke<TaskResumeCheckpoint[]>('list_task_resume_checkpoints_cmd', { runId });
+
+export const getTaskResumePrompt = (runId: string) =>
+  invoke<TaskResumePrompt>('get_task_resume_prompt_cmd', { runId });
+
+export const getInvestigationGraph = (runId: string) =>
+  invoke<InvestigationGraph>('get_investigation_graph_cmd', { runId });
+
 export const listToolAccessMap = () =>
   invoke<ToolAccessInfo[]>('list_tool_access_map_cmd');
+
+export const getLearningGovernanceSnapshot = () =>
+  invoke<LearningGovernanceSnapshot>('get_learning_governance_snapshot_cmd');
+
+export const captureBrowserEvidence = (
+  url: string,
+  maxLength?: number | null,
+  mode?: string | null,
+) => invoke<BrowserEvidenceCapture>('capture_browser_evidence_cmd', {
+  url,
+  maxLength: maxLength ?? null,
+  mode: mode ?? null,
+});
 
 export const listBuiltinPlugins = (options?: { includeRuntimeChecks?: boolean }) =>
   invoke<PluginManifest[]>('list_builtin_plugins_cmd', {

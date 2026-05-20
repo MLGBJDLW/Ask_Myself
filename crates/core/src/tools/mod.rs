@@ -81,6 +81,7 @@ fn with_scheduler_control_parameters(mut parameters: serde_json::Value) -> serde
 
 pub mod agent_memory_tool;
 pub mod archive_output_tool;
+pub mod browser_evidence_tool;
 pub mod chunk_context_tool;
 pub mod code_intelligence_tool;
 pub mod compare_tool;
@@ -907,6 +908,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(fetch_url_tool::FetchUrlTool));
     registry.register(Box::new(web_search_tool::WebSearchTool));
     registry.register(Box::new(web_research_context_tool::WebResearchContextTool));
+    registry.register(Box::new(browser_evidence_tool::BrowserEvidenceCaptureTool));
     registry.register(Box::new(download_asset_tool::DownloadAssetTool));
     registry.register(Box::new(write_note_tool::WriteNoteTool));
     registry.register(Box::new(search_playbooks_tool::SearchPlaybooksTool));

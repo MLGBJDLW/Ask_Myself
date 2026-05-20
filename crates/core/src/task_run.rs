@@ -22,6 +22,7 @@ pub enum TaskRunStatus {
     Failed,
     TimedOut,
     Cancelled,
+    Paused,
 }
 
 impl TaskRunStatus {
@@ -34,6 +35,7 @@ impl TaskRunStatus {
             Self::Failed => "failed",
             Self::TimedOut => "timed_out",
             Self::Cancelled => "cancelled",
+            Self::Paused => "paused",
         }
     }
 }
