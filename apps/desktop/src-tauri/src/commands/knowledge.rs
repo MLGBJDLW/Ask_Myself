@@ -104,6 +104,30 @@ pub fn get_knowledge_map_cmd(
 }
 
 #[tauri::command]
+pub fn get_knowledge_graph_cmd(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+    source_id: Option<String>,
+    path_prefix: Option<String>,
+    entity_types: Option<Vec<String>>,
+    relation_types: Option<Vec<String>>,
+    min_strength: Option<f64>,
+) -> Result<serde_json::Value, String> {
+    let graph = state
+        .db
+        .get_knowledge_graph(nexa_core::knowledge_graph::KnowledgeGraphQuery {
+            limit: limit.unwrap_or(80),
+            source_id: source_id.filter(|value| !value.trim().is_empty()),
+            path_prefix: path_prefix.filter(|value| !value.trim().is_empty()),
+            entity_types: entity_types.unwrap_or_default(),
+            relation_types: relation_types.unwrap_or_default(),
+            min_strength,
+        })
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(&graph).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn run_knowledge_health_check_cmd(
     state: tauri::State<'_, AppState>,
     stale_days: Option<u32>,

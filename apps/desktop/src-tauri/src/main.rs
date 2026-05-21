@@ -404,6 +404,7 @@ fn main() {
             commands::compile_pending_documents_cmd,
             commands::get_compile_stats_cmd,
             commands::get_knowledge_map_cmd,
+            commands::get_knowledge_graph_cmd,
             commands::run_knowledge_health_check_cmd,
             commands::compile_after_scan_cmd,
             // Scan errors
