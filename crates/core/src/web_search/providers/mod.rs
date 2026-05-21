@@ -14,6 +14,7 @@ use super::model::{
 pub mod baidu;
 pub mod bing;
 pub mod duckduckgo;
+pub mod google;
 pub mod sogou;
 
 pub struct SearchProviderContext<'a> {
@@ -39,6 +40,7 @@ pub fn provider_for_engine(engine: SearchEngine) -> Box<dyn SearchProvider> {
     match engine {
         SearchEngine::Baidu => Box::new(baidu::BaiduProvider),
         SearchEngine::Sogou => Box::new(sogou::SogouProvider),
+        SearchEngine::Google => Box::new(google::GoogleProvider),
         SearchEngine::Bing => Box::new(bing::BingProvider),
         SearchEngine::DuckDuckGo => Box::new(duckduckgo::DuckDuckGoProvider),
         SearchEngine::Brave

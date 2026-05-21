@@ -376,6 +376,7 @@ export type WebSearchCustomProviderPreset =
 export type WebSearchEngine =
   | 'baidu'
   | 'sogou'
+  | 'google'
   | 'bing'
   | 'duckduckgo'
   | 'brave'

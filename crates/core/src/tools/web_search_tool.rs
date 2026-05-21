@@ -148,7 +148,7 @@ fn web_search_expected_format() -> serde_json::Value {
         "limit": "integer from 1 to 20",
         "region": "auto | mainland_cn | global",
         "language": "auto | zh | en",
-        "engines": ["optional subset: baidu, sogou, bing, duckduckgo"],
+        "engines": ["optional built-in fallback subset: baidu, sogou, google, bing, duckduckgo"],
         "time_range": "any | day | week | month | year",
         "site": "optional domain such as example.com",
         "include_snippets": true,
@@ -447,10 +447,6 @@ fn build_provider_plan(
         .cloned()
         .map(SearchPlanItem::Custom)
         .collect::<Vec<_>>();
-
-    if request.explicit_engines {
-        return native;
-    }
 
     match runtime.provider_mode {
         WebSearchProviderMode::BuiltInFirst => native.into_iter().chain(custom).collect(),
@@ -1590,6 +1586,7 @@ pub fn provider_status_snapshot(config: &WebSearchConfig) -> Vec<WebSearchProvid
     let mut statuses = [
         SearchEngine::Baidu,
         SearchEngine::Sogou,
+        SearchEngine::Google,
         SearchEngine::Bing,
         SearchEngine::DuckDuckGo,
     ]
@@ -1858,6 +1855,85 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["brave", "tavily"]
         );
+    }
+
+    #[test]
+    fn custom_first_is_not_bypassed_by_explicit_native_engines() {
+        let request = SearchRequest {
+            query: "nexa".to_string(),
+            effective_query: "nexa".to_string(),
+            limit: 8,
+            region: SearchRegion::Global,
+            language: SearchLanguage::En,
+            engines: vec![SearchEngine::DuckDuckGo],
+            explicit_engines: true,
+            time_range: TimeRange::Any,
+            site: None,
+            include_snippets: true,
+            provider_profile: WebSearchProviderProfile::Default,
+            reranker: WebSearchReranker::None,
+        };
+        let runtime = SearchRuntimeConfig {
+            provider_mode: WebSearchProviderMode::CustomFirst,
+            custom_providers: vec![WebSearchCustomProviderConfig {
+                id: "tavily".to_string(),
+                preset: WebSearchCustomProviderPreset::Tavily,
+                name: "Tavily".to_string(),
+                enabled: true,
+                api_key: "secret".to_string(),
+                base_url: WebSearchCustomProviderPreset::Tavily.default_base_url(),
+                priority: 20,
+            }],
+        };
+
+        let plan = build_provider_plan(&request, &runtime);
+
+        assert!(matches!(
+            plan.first(),
+            Some(SearchPlanItem::Custom(provider)) if provider.id == "tavily"
+        ));
+        assert!(matches!(
+            plan.get(1),
+            Some(SearchPlanItem::Native(SearchEngine::DuckDuckGo))
+        ));
+    }
+
+    #[test]
+    fn custom_only_ignores_explicit_native_engines() {
+        let request = SearchRequest {
+            query: "nexa".to_string(),
+            effective_query: "nexa".to_string(),
+            limit: 8,
+            region: SearchRegion::Global,
+            language: SearchLanguage::En,
+            engines: vec![SearchEngine::DuckDuckGo],
+            explicit_engines: true,
+            time_range: TimeRange::Any,
+            site: None,
+            include_snippets: true,
+            provider_profile: WebSearchProviderProfile::Default,
+            reranker: WebSearchReranker::None,
+        };
+        let runtime = SearchRuntimeConfig {
+            provider_mode: WebSearchProviderMode::CustomOnly,
+            custom_providers: vec![WebSearchCustomProviderConfig {
+                id: "tavily".to_string(),
+                preset: WebSearchCustomProviderPreset::Tavily,
+                name: "Tavily".to_string(),
+                enabled: true,
+                api_key: "secret".to_string(),
+                base_url: WebSearchCustomProviderPreset::Tavily.default_base_url(),
+                priority: 20,
+            }],
+        };
+
+        let plan = build_provider_plan(&request, &runtime);
+
+        assert_eq!(plan.len(), 1);
+        assert!(matches!(
+            plan.first(),
+            Some(SearchPlanItem::Custom(provider)) if provider.id == "tavily"
+        ));
     }
 
     #[test]

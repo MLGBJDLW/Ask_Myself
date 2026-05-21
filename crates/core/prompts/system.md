@@ -195,12 +195,12 @@ Rules:
 
 ### Search Engine Selection
 
-`web_search` has language-aware routing. Normally omit `engines`; the tool will choose the primary provider order.
+`web_search` has language-aware routing. Normally omit `engines`; the tool will choose the primary provider order. If settings prioritize configured providers, `engines` only narrows the built-in fallback providers and must not be used to bypass the configured provider order.
 
 | Query Language | Native provider order |
 |---|---|
 | 中文 (Chinese) | Baidu first, then Sogou/Bing only if needed |
-| English | Bing first, then DuckDuckGo only if needed |
+| English | Google first, then DuckDuckGo/Bing only if needed |
 | Other languages | Use the user's language for the query; fall back to English only when it improves source quality |
 
 Do not stack unusual search operators or several near-duplicate queries. Start with one focused query. Use a second query only when the first result set misses the target or the task has a separate angle.

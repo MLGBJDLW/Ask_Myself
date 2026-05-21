@@ -1,6 +1,6 @@
 {
   "name": "web_search",
-  "description": "Search the public web through Nexa's built-in no-key providers. Returns structured candidate results with provider failures; use fetch_url on authoritative result URLs before citing facts. For Chinese queries, the native router uses Baidu first by default.",
+  "description": "Search the public web through Nexa's built-in no-key providers. Returns structured candidate results with provider failures; use fetch_url on authoritative result URLs before citing facts. The native router uses Baidu first for Chinese queries and Google first for English queries.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -31,9 +31,9 @@
         "type": "array",
         "items": {
           "type": "string",
-          "enum": ["baidu", "sogou", "bing", "duckduckgo"]
+          "enum": ["baidu", "sogou", "google", "bing", "duckduckgo"]
         },
-        "description": "Optional provider subset. Usually omit this and let the language-aware router choose one or two primary engines."
+        "description": "Optional built-in fallback subset. Usually omit this; configured provider priority from Settings still applies before this list when custom providers are prioritized."
       },
       "time_range": {
         "type": "string",
