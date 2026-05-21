@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.11...nexa-monorepo-v0.7.0) (2026-05-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* deepen knowledge graph agent workflow
+* The knowledge map tab now uses the new relationship graph experience and graph data contract.
+
+### Features
+
+* add knowledge graph relationship bundles ([27c7181](https://github.com/MLGBJDLW/Nexa/commit/27c71815b979d6e7fd8b1145137c962372fa0235))
+* add knowledge relationship graph ([2bee23d](https://github.com/MLGBJDLW/Nexa/commit/2bee23db4e504ec8fa5e2caa3ff28af42633ea81))
+* deepen knowledge graph agent workflow ([b5146a8](https://github.com/MLGBJDLW/Nexa/commit/b5146a8b8e09edc3439061d3704bdf8b21e05ab5))
+
+
+### Bug Fixes
+
+* restore graph data for legacy knowledge entities ([1cfb286](https://github.com/MLGBJDLW/Nexa/commit/1cfb286d5adc3119b0fa23399e475b88120920ac))
+
 ## [0.6.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.10...nexa-monorepo-v0.6.11) (2026-05-21)
 
 
