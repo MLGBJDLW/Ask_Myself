@@ -5,6 +5,7 @@ import {
   Building2,
   CalendarClock,
   CircleDot,
+  ArrowLeftRight,
   ExternalLink,
   Filter,
   GitFork,
@@ -42,6 +43,12 @@ import {
   saveGraphAgentContext,
   type GraphAgentContext,
 } from '../../lib/knowledgeGraphAgent';
+import {
+  buildRelationBundles,
+  type KnowledgeGraphRelationBundle,
+  type RelationCategory,
+  type RelationDirection,
+} from '../../lib/knowledgeGraphRelations';
 
 type EntityFilter = 'all' | 'person' | 'place' | 'organization' | 'event' | 'concept';
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -71,6 +78,19 @@ const ENTITY_TYPE_LABEL_KEYS: Record<string, TranslationKey> = {
   technology: 'knowledge.entityTypeLabel.technology',
   other: 'knowledge.entityTypeLabel.other',
 };
+const RELATION_CATEGORY_LABEL_KEYS: Record<RelationCategory, TranslationKey> = {
+  conflict: 'knowledge.relationCategory.conflict',
+  causal: 'knowledge.relationCategory.causal',
+  hierarchy: 'knowledge.relationCategory.hierarchy',
+  event: 'knowledge.relationCategory.event',
+  social: 'knowledge.relationCategory.social',
+  general: 'knowledge.relationCategory.general',
+};
+const RELATION_DIRECTION_LABEL_KEYS: Record<RelationDirection, TranslationKey> = {
+  directed: 'knowledge.relationDirection.directed',
+  bidirectional: 'knowledge.relationDirection.bidirectional',
+  undirected: 'knowledge.relationDirection.undirected',
+};
 const VIEWBOX_WIDTH = 1000;
 const VIEWBOX_HEIGHT = 620;
 const CENTER_X = VIEWBOX_WIDTH / 2;
@@ -84,6 +104,21 @@ const ENTITY_TONE: Record<string, { fill: string; stroke: string; text: string }
   concept: { fill: 'fill-success/15', stroke: 'stroke-success', text: 'text-success' },
   technology: { fill: 'fill-info/15', stroke: 'stroke-info', text: 'text-info' },
   other: { fill: 'fill-surface-3', stroke: 'stroke-text-tertiary', text: 'text-text-secondary' },
+};
+const RELATION_CATEGORY_STYLE: Record<RelationCategory, {
+  id: RelationCategory;
+  stroke: string;
+  fill: string;
+  text: string;
+  badge: 'default' | 'success' | 'warning' | 'danger' | 'info';
+  dash?: string;
+}> = {
+  conflict: { id: 'conflict', stroke: 'stroke-danger', fill: 'fill-danger', text: 'text-danger', badge: 'danger', dash: '8 5' },
+  causal: { id: 'causal', stroke: 'stroke-warning', fill: 'fill-warning', text: 'text-warning', badge: 'warning' },
+  hierarchy: { id: 'hierarchy', stroke: 'stroke-info', fill: 'fill-info', text: 'text-info', badge: 'info', dash: '4 3' },
+  event: { id: 'event', stroke: 'stroke-success', fill: 'fill-success', text: 'text-success', badge: 'success', dash: '2 4' },
+  social: { id: 'social', stroke: 'stroke-accent', fill: 'fill-accent', text: 'text-accent-hover', badge: 'info' },
+  general: { id: 'general', stroke: 'stroke-text-tertiary', fill: 'fill-text-tertiary', text: 'text-text-secondary', badge: 'default' },
 };
 
 function entityIcon(entityType: string) {
@@ -112,6 +147,14 @@ function entityTypeLabel(entityType: string, t: Translate) {
 
 function relationLabel(value: string) {
   return value.replace(/_/g, ' ');
+}
+
+function relationCategoryLabel(category: RelationCategory, t: Translate) {
+  return t(RELATION_CATEGORY_LABEL_KEYS[category]);
+}
+
+function relationDirectionLabel(direction: RelationDirection, t: Translate) {
+  return t(RELATION_DIRECTION_LABEL_KEYS[direction]);
 }
 
 function shortPath(path: string) {
@@ -173,13 +216,32 @@ function computeLayout(nodes: KnowledgeGraphNode[], edges: KnowledgeGraphEdge[])
   });
 }
 
-function edgePath(source: PositionedNode, target: PositionedNode) {
+function relationOffset(index: number, total: number) {
+  if (total <= 1) return 0;
+  return (index - (total - 1) / 2) * 18;
+}
+
+function edgePath(source: PositionedNode, target: PositionedNode, offset = 0) {
   const dx = target.x - source.x;
   const dy = target.y - source.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const nx = -dy / length;
+  const ny = dx / length;
   const curve = Math.min(80, Math.max(-80, dx * 0.08));
-  const cx = (source.x + target.x) / 2 - dy * 0.08;
-  const cy = (source.y + target.y) / 2 + curve;
-  return `M ${source.x} ${source.y} Q ${cx} ${cy} ${target.x} ${target.y}`;
+  const sx = source.x + nx * offset * 0.35;
+  const sy = source.y + ny * offset * 0.35;
+  const tx = target.x + nx * offset * 0.35;
+  const ty = target.y + ny * offset * 0.35;
+  const cx = (source.x + target.x) / 2 - dy * 0.08 + nx * offset;
+  const cy = (source.y + target.y) / 2 + curve + ny * offset;
+  return `M ${sx} ${sy} Q ${cx} ${cy} ${tx} ${ty}`;
+}
+
+function bundleMidpoint(source: PositionedNode, target: PositionedNode) {
+  return {
+    x: (source.x + target.x) / 2,
+    y: (source.y + target.y) / 2,
+  };
 }
 
 export function KnowledgeGraphView() {
@@ -194,6 +256,8 @@ export function KnowledgeGraphView() {
   const [relationFilter, setRelationFilter] = useState('');
   const [searchText, setSearchText] = useState('');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedBundleId, setSelectedBundleId] = useState<string | null>(null);
+  const [showExpandedRelations, setShowExpandedRelations] = useState(false);
   const [agentUsage, setAgentUsage] = useState(() => readGraphAgentUsage());
 
   const loadSources = useCallback(async () => {
@@ -219,6 +283,12 @@ export function KnowledgeGraphView() {
       setSelectedNodeId((current) => {
         if (current && nextGraph.nodes.some((node) => node.id === current)) return current;
         return nextGraph.nodes[0]?.id ?? null;
+      });
+      setSelectedBundleId((current) => {
+        if (current && nextGraph.edges.some((edge) => `${edge.source}::${edge.target}` === current || `${edge.target}::${edge.source}` === current)) {
+          return current;
+        }
+        return null;
       });
     } catch (e) {
       toast.error(formatUserError(t('knowledge.relationshipGraph'), e));
@@ -246,13 +316,15 @@ export function KnowledgeGraphView() {
   }, []);
 
   const selectedSource = sources.find((source) => source.id === selectedSourceId) ?? null;
+  const trimmedPathPrefix = pathPrefix.trim();
+  const trimmedSearchText = searchText.trim();
   const relationTypes = useMemo(() => {
     const values = new Set(graph?.edges.map((edge) => edge.relationType) ?? []);
     return [...values].sort((a, b) => a.localeCompare(b));
   }, [graph]);
 
   const visibleNodeIds = useMemo(() => {
-    const query = searchText.trim().toLowerCase();
+    const query = trimmedSearchText.toLowerCase();
     const ids = new Set<string>();
     for (const node of graph?.nodes ?? []) {
       if (!query || node.label.toLowerCase().includes(query) || node.description.toLowerCase().includes(query)) {
@@ -260,7 +332,7 @@ export function KnowledgeGraphView() {
       }
     }
     return ids;
-  }, [graph, searchText]);
+  }, [graph, trimmedSearchText]);
 
   const visibleNodes = useMemo(
     () => (graph?.nodes ?? []).filter((node) => visibleNodeIds.has(node.id)),
@@ -271,33 +343,65 @@ export function KnowledgeGraphView() {
     () => (graph?.edges ?? []).filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)),
     [graph, visibleNodeIds],
   );
+  const visibleRelationBundles = useMemo(() => buildRelationBundles(visibleEdges), [visibleEdges]);
 
   const positionedNodes = useMemo(() => computeLayout(visibleNodes, visibleEdges), [visibleNodes, visibleEdges]);
   const nodeById = useMemo(() => new Map(positionedNodes.map((node) => [node.id, node])), [positionedNodes]);
+  const bundleById = useMemo(
+    () => new Map(visibleRelationBundles.map((bundle) => [bundle.id, bundle])),
+    [visibleRelationBundles],
+  );
   const nodeLabelById = useMemo(
     () => new Map(positionedNodes.map((node) => [node.id, node.label])),
     [positionedNodes],
   );
   const selectedNode = useMemo(() => {
+    if (selectedBundleId) return null;
     if (!selectedNodeId) return positionedNodes[0] ?? null;
     return nodeById.get(selectedNodeId) ?? positionedNodes[0] ?? null;
-  }, [nodeById, positionedNodes, selectedNodeId]);
+  }, [nodeById, positionedNodes, selectedBundleId, selectedNodeId]);
+  const selectedBundle = selectedBundleId ? bundleById.get(selectedBundleId) ?? null : null;
   const selectedNodeEdges = useMemo(() => {
     if (!selectedNode) return [];
     return visibleEdges.filter((edge) => edge.source === selectedNode.id || edge.target === selectedNode.id);
   }, [selectedNode, visibleEdges]);
+  const selectedNodeBundles = useMemo(() => {
+    if (!selectedNode) return [];
+    return visibleRelationBundles.filter((bundle) => bundle.source === selectedNode.id || bundle.target === selectedNode.id);
+  }, [selectedNode, visibleRelationBundles]);
+  const selectedBundleNodeIds = useMemo(() => {
+    if (!selectedBundle) return new Set<string>();
+    return new Set([selectedBundle.source, selectedBundle.target]);
+  }, [selectedBundle]);
   const selectedGraphContext = useMemo(() => {
+    if (selectedBundle) {
+      const anchor = nodeById.get(selectedBundle.source) ?? nodeById.get(selectedBundle.target) ?? null;
+      if (!anchor) return null;
+      const sourceLabel = nodeLabelById.get(selectedBundle.source) ?? selectedBundle.source;
+      const targetLabel = nodeLabelById.get(selectedBundle.target) ?? selectedBundle.target;
+      return buildGraphAgentContext({
+        sourceId: selectedSourceId || null,
+        sourceLabel: selectedSource ? shortPath(selectedSource.rootPath) : null,
+        pathPrefix: trimmedPathPrefix || null,
+        scopeLabel: graph?.scopeLabel ?? null,
+        node: anchor,
+        edges: selectedBundle.edges,
+        nodeLabelById,
+        focusKind: 'bundle',
+        focusLabel: `${sourceLabel} <-> ${targetLabel}`,
+      });
+    }
     if (!selectedNode) return null;
     return buildGraphAgentContext({
       sourceId: selectedSourceId || null,
       sourceLabel: selectedSource ? shortPath(selectedSource.rootPath) : null,
-      pathPrefix: pathPrefix.trim() || null,
+      pathPrefix: trimmedPathPrefix || null,
       scopeLabel: graph?.scopeLabel ?? null,
       node: selectedNode,
       edges: selectedNodeEdges,
       nodeLabelById,
     });
-  }, [graph?.scopeLabel, nodeLabelById, pathPrefix, selectedNode, selectedNodeEdges, selectedSource, selectedSourceId]);
+  }, [graph?.scopeLabel, nodeById, nodeLabelById, selectedBundle, selectedNode, selectedNodeEdges, selectedSource, selectedSourceId, trimmedPathPrefix]);
   const agentUsedNodeIds = useMemo(
     () => new Set(agentUsage?.usedGraphNodes.map((node) => node.id) ?? []),
     [agentUsage],
@@ -306,6 +410,27 @@ export function KnowledgeGraphView() {
     () => new Set(agentUsage?.usedGraphEdges.map((edge) => edge.id) ?? []),
     [agentUsage],
   );
+  const agentUsedBundleIds = useMemo(() => {
+    const ids = new Set(agentUsage?.usedGraphBundles?.map((bundle) => bundle.id) ?? []);
+    for (const bundle of visibleRelationBundles) {
+      if (bundle.edges.some((edge) => agentUsedEdgeIds.has(edge.id))) {
+        ids.add(bundle.id);
+      }
+    }
+    return ids;
+  }, [agentUsage, agentUsedEdgeIds, visibleRelationBundles]);
+  const hasActiveGraphFilters = Boolean(
+    selectedSourceId || trimmedPathPrefix || entityFilter !== 'all' || relationFilter || trimmedSearchText,
+  );
+  const graphScopeLabel = selectedSource
+    ? `${shortPath(selectedSource.rootPath)}${trimmedPathPrefix ? ` / ${trimmedPathPrefix}` : ''}`
+    : trimmedPathPrefix
+      ? `${t('knowledge.allSources')} / ${trimmedPathPrefix}`
+      : t('knowledge.allSources');
+  const emptyGraphTitle = hasActiveGraphFilters ? t('knowledge.noGraphMatches') : t('knowledge.noGraph');
+  const emptyGraphDescription = hasActiveGraphFilters
+    ? t('knowledge.noGraphFilteredDescription')
+    : t('knowledge.noGraphDescription');
 
   const persistSelectedGraphContext = useCallback(() => {
     if (!selectedGraphContext) return null;
@@ -335,6 +460,7 @@ export function KnowledgeGraphView() {
     setEntityFilter('all');
     setRelationFilter('');
     setSearchText('');
+    setSelectedBundleId(null);
   };
 
   if (loading && !graph) {
@@ -371,7 +497,6 @@ export function KnowledgeGraphView() {
               value={pathPrefix}
               onChange={(event) => setPathPrefix(event.target.value)}
               placeholder={t('knowledge.folderPrefixPlaceholder')}
-              disabled={!selectedSourceId}
             />
           </label>
 
@@ -448,18 +573,25 @@ export function KnowledgeGraphView() {
                 {t('knowledge.relationshipGraph')}
               </div>
               <p className="mt-0.5 truncate text-xs text-text-tertiary">
-                {selectedSource
-                  ? `${shortPath(selectedSource.rootPath)}${pathPrefix.trim() ? ` / ${pathPrefix.trim()}` : ''}`
-                  : t('knowledge.allSources')}
+                {graphScopeLabel}
               </p>
             </div>
             <div className="flex shrink-0 gap-1.5">
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<GitFork size={14} />}
+                onClick={() => setShowExpandedRelations((value) => !value)}
+              >
+                {showExpandedRelations ? t('knowledge.bundleRelations') : t('knowledge.expandRelations')}
+              </Button>
               {agentUsage && agentUsedNodeIds.size > 0 && (
                 <Badge variant="warning">
                   {t('knowledge.agentUsedPath')}: {agentUsedNodeIds.size}
                 </Badge>
               )}
               <Badge variant="info">{visibleNodes.length} {t('knowledge.nodes')}</Badge>
+              <Badge variant="success">{visibleRelationBundles.length} {t('knowledge.relationBundles')}</Badge>
               <Badge variant="default">{visibleEdges.length} {t('knowledge.edges')}</Badge>
             </div>
           </div>
@@ -474,8 +606,13 @@ export function KnowledgeGraphView() {
           {positionedNodes.length === 0 ? (
             <EmptyState
               icon={<Network size={32} />}
-              title={t('knowledge.noGraph')}
-              description={t('knowledge.noGraphDescription')}
+              title={emptyGraphTitle}
+              description={emptyGraphDescription}
+              action={
+                hasActiveGraphFilters
+                  ? { label: t('knowledge.clearGraphFilters'), onClick: resetFilters }
+                  : undefined
+              }
             />
           ) : (
             <div className="h-[calc(100%-58px)] min-h-[562px]">
@@ -486,9 +623,20 @@ export function KnowledgeGraphView() {
                 className="h-full w-full"
               >
                 <defs>
-                  <marker id="knowledge-edge-arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
-                    <path d="M0,0 L0,6 L7,3 z" className="fill-text-tertiary" />
-                  </marker>
+                  {Object.values(RELATION_CATEGORY_STYLE).map((style) => (
+                    <marker
+                      key={style.id}
+                      id={`knowledge-edge-arrow-${style.id}`}
+                      markerWidth="9"
+                      markerHeight="9"
+                      refX="7"
+                      refY="3"
+                      orient="auto-start-reverse"
+                      markerUnits="strokeWidth"
+                    >
+                      <path d="M0,0 L0,6 L7,3 z" className={style.fill} />
+                    </marker>
+                  ))}
                 </defs>
                 <rect width={VIEWBOX_WIDTH} height={VIEWBOX_HEIGHT} className="fill-surface-1" />
                 <g className="opacity-40">
@@ -517,29 +665,70 @@ export function KnowledgeGraphView() {
                 </g>
 
                 <g>
-                  {visibleEdges.map((edge) => {
-                    const source = nodeById.get(edge.source);
-                    const target = nodeById.get(edge.target);
+                  {visibleRelationBundles.map((bundle) => {
+                    const source = nodeById.get(bundle.source);
+                    const target = nodeById.get(bundle.target);
                     if (!source || !target) return null;
-                    const path = edgePath(source, target);
-                    const selected = selectedNode && (edge.source === selectedNode.id || edge.target === selectedNode.id);
-                    const agentUsed = agentUsedEdgeIds.has(edge.id);
-                    const midX = (source.x + target.x) / 2;
-                    const midY = (source.y + target.y) / 2;
+                    const style = RELATION_CATEGORY_STYLE[bundle.category];
+                    const selected =
+                      selectedBundle?.id === bundle.id ||
+                      Boolean(selectedNode && (bundle.source === selectedNode.id || bundle.target === selectedNode.id));
+                    const agentUsed = agentUsedBundleIds.has(bundle.id);
+                    const midpoint = bundleMidpoint(source, target);
+                    const bundleLabel = `${source.label} ${target.label}, ${bundle.relationCount} relations`;
+                    const selectBundle = () => {
+                      setSelectedBundleId(bundle.id);
+                      setSelectedNodeId(null);
+                    };
                     return (
-                      <g key={edge.id} className={selected || agentUsed ? 'opacity-100' : 'opacity-45'}>
-                        <path
-                          d={path}
-                          fill="none"
-                          className={selected ? 'stroke-accent' : agentUsed ? 'stroke-warning' : 'stroke-text-tertiary'}
-                          strokeWidth={selected ? 2.6 : agentUsed ? 2.4 : 1.5}
-                          markerEnd="url(#knowledge-edge-arrow)"
-                        />
-                        {selected && (
-                          <g transform={`translate(${midX - 42} ${midY - 12})`}>
-                            <rect width="84" height="24" rx="6" className="fill-surface-0 stroke-border" />
-                            <text x="42" y="16" textAnchor="middle" className="fill-text-secondary text-[10px]">
-                              {relationLabel(edge.relationType).slice(0, 16)}
+                      <g
+                        key={bundle.id}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={bundleLabel}
+                        onClick={selectBundle}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') selectBundle();
+                        }}
+                        className={`cursor-pointer outline-none transition-opacity ${selected || agentUsed ? 'opacity-100' : 'opacity-45'}`}
+                      >
+                        {showExpandedRelations ? (
+                          bundle.edges.map((edge, index) => {
+                            const edgeSource = nodeById.get(edge.source);
+                            const edgeTarget = nodeById.get(edge.target);
+                            if (!edgeSource || !edgeTarget) return null;
+                            const edgeStyle = RELATION_CATEGORY_STYLE[buildRelationBundles([edge])[0]?.category ?? 'general'];
+                            return (
+                              <path
+                                key={edge.id}
+                                d={edgePath(edgeSource, edgeTarget, relationOffset(index, bundle.edges.length))}
+                                fill="none"
+                                className={selected ? edgeStyle.stroke : agentUsedEdgeIds.has(edge.id) ? 'stroke-warning' : edgeStyle.stroke}
+                                strokeWidth={selected ? 2.2 : agentUsedEdgeIds.has(edge.id) ? 2 : 1.35}
+                                strokeDasharray={edgeStyle.dash}
+                                markerEnd={`url(#knowledge-edge-arrow-${edgeStyle.id})`}
+                              />
+                            );
+                          })
+                        ) : (
+                          <path
+                            d={edgePath(source, target)}
+                            fill="none"
+                            className={selected ? style.stroke : agentUsed ? 'stroke-warning' : style.stroke}
+                            strokeWidth={selected ? 3 : agentUsed ? 2.6 : bundle.relationCount > 1 ? 2.2 : 1.5}
+                            strokeDasharray={style.dash}
+                            markerStart={bundle.direction === 'bidirectional' ? `url(#knowledge-edge-arrow-${style.id})` : undefined}
+                            markerEnd={bundle.direction !== 'undirected' ? `url(#knowledge-edge-arrow-${style.id})` : undefined}
+                          />
+                        )}
+                        {(bundle.relationCount > 1 || selected || agentUsed) && (
+                          <g transform={`translate(${midpoint.x - 48} ${midpoint.y - 13})`}>
+                            <rect width="96" height="26" rx="7" className="fill-surface-0 stroke-border" />
+                            <text x="24" y="17" textAnchor="middle" className={`${style.fill} text-[11px] font-semibold`}>
+                              {bundle.relationCount}
+                            </text>
+                            <text x="62" y="17" textAnchor="middle" className="fill-text-secondary text-[10px]">
+                              {selected ? relationLabel(bundle.relationTypes[0]).slice(0, 11) : relationCategoryLabel(bundle.category, t).slice(0, 10)}
                             </text>
                           </g>
                         )}
@@ -553,15 +742,23 @@ export function KnowledgeGraphView() {
                     const tone = entityTone(node.entityType);
                     const selected = selectedNode?.id === node.id;
                     const agentUsed = agentUsedNodeIds.has(node.id);
-                    const muted = selectedNode && !selected && !agentUsed && !selectedNodeEdges.some((edge) => edge.source === node.id || edge.target === node.id);
+                    const muted = selectedBundle
+                      ? !selectedBundleNodeIds.has(node.id) && !agentUsed
+                      : selectedNode && !selected && !agentUsed && !selectedNodeEdges.some((edge) => edge.source === node.id || edge.target === node.id);
                     return (
                       <g
                         key={node.id}
                         role="button"
                         tabIndex={0}
-                        onClick={() => setSelectedNodeId(node.id)}
+                        onClick={() => {
+                          setSelectedNodeId(node.id);
+                          setSelectedBundleId(null);
+                        }}
                         onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ' ') setSelectedNodeId(node.id);
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            setSelectedNodeId(node.id);
+                            setSelectedBundleId(null);
+                          }
                         }}
                         aria-label={`${node.label}, ${entityTypeLabel(node.entityType, t)}`}
                         className={`cursor-pointer outline-none transition-opacity ${muted ? 'opacity-45' : 'opacity-100'}`}
@@ -606,11 +803,24 @@ export function KnowledgeGraphView() {
         </section>
 
         <aside className="min-h-[620px] rounded-lg border border-border bg-surface-1">
-          {selectedNode ? (
+          {selectedBundle ? (
+            <RelationBundleDetail
+              bundle={selectedBundle}
+              nodeById={nodeById}
+              graphContext={selectedGraphContext}
+              onUseAsContext={handleUseAsContext}
+              onAskAgent={handleAskAgent}
+            />
+          ) : selectedNode ? (
             <NodeDetail
               node={selectedNode}
               edges={selectedNodeEdges}
+              bundles={selectedNodeBundles}
               nodeById={nodeById}
+              onSelectBundle={(bundleId) => {
+                setSelectedBundleId(bundleId);
+                setSelectedNodeId(null);
+              }}
               graphContext={selectedGraphContext}
               onUseAsContext={handleUseAsContext}
               onAskAgent={handleAskAgent}
@@ -631,14 +841,18 @@ export function KnowledgeGraphView() {
 function NodeDetail({
   node,
   edges,
+  bundles,
   nodeById,
+  onSelectBundle,
   graphContext,
   onUseAsContext,
   onAskAgent,
 }: {
   node: PositionedNode;
   edges: KnowledgeGraphEdge[];
+  bundles: KnowledgeGraphRelationBundle[];
   nodeById: Map<string, PositionedNode>;
+  onSelectBundle: (bundleId: string) => void;
   graphContext: GraphAgentContext | null;
   onUseAsContext: () => void;
   onAskAgent: () => void;
@@ -660,6 +874,7 @@ function NodeDetail({
             <div className="mt-2 flex flex-wrap gap-1.5">
               <Badge variant="info">{entityTypeLabel(node.entityType, t)}</Badge>
               <Badge variant="default">{node.documentCount} {t('knowledge.documents')}</Badge>
+              <Badge variant="success">{bundles.length} {t('knowledge.relationBundles')}</Badge>
               <Badge variant="default">{edges.length} {t('knowledge.edges')}</Badge>
             </div>
           </div>
@@ -745,34 +960,182 @@ function NodeDetail({
             {t('knowledge.connectedRelations')}
           </div>
           <div className="space-y-2">
-            {edges.length === 0 ? (
+            {bundles.length === 0 ? (
               <p className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-tertiary">
                 {t('knowledge.noRelations')}
               </p>
             ) : (
-              edges.map((edge) => {
-                const otherId = edge.source === node.id ? edge.target : edge.source;
+              bundles.map((bundle) => {
+                const otherId = bundle.source === node.id ? bundle.target : bundle.source;
                 const other = nodeById.get(otherId);
+                const style = RELATION_CATEGORY_STYLE[bundle.category];
                 return (
-                  <div key={edge.id} className="rounded-md border border-border bg-surface-0 px-3 py-2">
+                  <button
+                    key={bundle.id}
+                    type="button"
+                    onClick={() => onSelectBundle(bundle.id)}
+                    className="w-full rounded-md border border-border bg-surface-0 px-3 py-2 text-left transition-colors hover:border-border-hover hover:bg-surface-2"
+                  >
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <div className="truncate text-sm font-medium text-text-primary">
                           {other?.label ?? otherId}
                         </div>
-                        <div className="mt-1 text-xs text-text-tertiary">{relationLabel(edge.relationType)}</div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {bundle.relationTypes.slice(0, 3).map((type) => (
+                            <span key={type} className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] text-text-tertiary">
+                              {relationLabel(type)}
+                            </span>
+                          ))}
+                        </div>
                       </div>
-                      <Badge variant="default">{edge.strength.toFixed(1)}</Badge>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        <Badge variant={style.badge}>{bundle.relationCount} {t('knowledge.edges')}</Badge>
+                        <span className="text-[10px] text-text-tertiary">{bundle.strongestStrength.toFixed(1)}</span>
+                      </div>
                     </div>
-                    {edge.evidenceTitle || edge.evidencePath ? (
+                    {bundle.evidenceTitles.length > 0 ? (
                       <div className="mt-2 truncate text-[11px] text-text-tertiary">
-                        {edge.evidenceTitle || shortPath(edge.evidencePath ?? '')}
+                        {bundle.evidenceTitles[0]}
                       </div>
                     ) : null}
-                  </div>
+                  </button>
                 );
               })
             )}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function RelationBundleDetail({
+  bundle,
+  nodeById,
+  graphContext,
+  onUseAsContext,
+  onAskAgent,
+}: {
+  bundle: KnowledgeGraphRelationBundle;
+  nodeById: Map<string, PositionedNode>;
+  graphContext: GraphAgentContext | null;
+  onUseAsContext: () => void;
+  onAskAgent: () => void;
+}) {
+  const { t } = useTranslation();
+  const source = nodeById.get(bundle.source);
+  const target = nodeById.get(bundle.target);
+  const style = RELATION_CATEGORY_STYLE[bundle.category];
+  const tokenEstimate = graphContext?.tokenEstimate ?? null;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="border-b border-border p-4">
+        <div className="flex items-start gap-3">
+          <div className={`rounded-lg border border-border bg-surface-0 p-2 ${style.text}`}>
+            <ArrowLeftRight size={20} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-semibold uppercase tracking-[0.12em] text-text-tertiary">
+              {t('knowledge.relationshipBundle')}
+            </div>
+            <h3 className="mt-1 line-clamp-2 text-base font-semibold text-text-primary">
+              {source?.label ?? bundle.source} <span className="text-text-tertiary">&lt;-&gt;</span> {target?.label ?? bundle.target}
+            </h3>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <Badge variant={style.badge}>{relationCategoryLabel(bundle.category, t)}</Badge>
+              <Badge variant="default">{relationDirectionLabel(bundle.direction, t)}</Badge>
+              <Badge variant="info">{bundle.relationCount} {t('knowledge.edges')}</Badge>
+            </div>
+          </div>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<MessageSquare size={14} />}
+            onClick={onAskAgent}
+          >
+            {t('knowledge.askAgent')}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<PlusCircle size={14} />}
+            onClick={onUseAsContext}
+          >
+            {t('knowledge.useAsContext')}
+          </Button>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="rounded-md border border-border bg-surface-0 px-3 py-2">
+            <div className="text-[10px] uppercase tracking-[0.12em] text-text-tertiary">{t('knowledge.strongestStrength')}</div>
+            <div className="mt-1 text-sm font-semibold text-text-primary">{bundle.strongestStrength.toFixed(2)}</div>
+          </div>
+          <div className="rounded-md border border-border bg-surface-0 px-3 py-2">
+            <div className="text-[10px] uppercase tracking-[0.12em] text-text-tertiary">{t('knowledge.averageStrength')}</div>
+            <div className="mt-1 text-sm font-semibold text-text-primary">{bundle.averageStrength.toFixed(2)}</div>
+          </div>
+        </div>
+        {tokenEstimate && (
+          <div className="mt-3 rounded-md border border-border bg-surface-0 p-2">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">
+              {t('knowledge.tokenEstimate')}
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="min-w-0 rounded-md bg-surface-1 px-2 py-1.5">
+                <div className="text-xs font-semibold text-text-primary">
+                  {formatCompactChars(tokenEstimate.graphIndexChars)}
+                </div>
+                <div className="truncate text-[10px] text-text-tertiary">{t('knowledge.graphIndex')}</div>
+              </div>
+              <div className="min-w-0 rounded-md bg-surface-1 px-2 py-1.5">
+                <div className="text-xs font-semibold text-text-primary">
+                  {formatCompactChars(tokenEstimate.rawRetrievalCharsEstimate)}
+                </div>
+                <div className="truncate text-[10px] text-text-tertiary">{t('knowledge.rawEvidenceEstimate')}</div>
+              </div>
+              <div className="min-w-0 rounded-md bg-success/10 px-2 py-1.5">
+                <div className="text-xs font-semibold text-success">
+                  {tokenEstimate.savedPctEstimate}%
+                </div>
+                <div className="truncate text-[10px] text-success">{t('knowledge.tokenSavings')}</div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <section>
+          <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-text-tertiary">
+            <GitFork size={13} />
+            {t('knowledge.relationsInBundle')}
+          </div>
+          <div className="space-y-2">
+            {bundle.edges.map((edge) => {
+              const edgeSource = nodeById.get(edge.source);
+              const edgeTarget = nodeById.get(edge.target);
+              return (
+                <div key={edge.id} className="rounded-md border border-border bg-surface-0 px-3 py-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-text-primary">
+                        {edgeSource?.label ?? edge.source} {'->'} {edgeTarget?.label ?? edge.target}
+                      </div>
+                      <div className="mt-1 text-xs text-text-tertiary">{relationLabel(edge.relationType)}</div>
+                    </div>
+                    <Badge variant="default">{edge.strength.toFixed(1)}</Badge>
+                  </div>
+                  {edge.evidenceTitle || edge.evidencePath ? (
+                    <div className="mt-2 truncate text-[11px] text-text-tertiary">
+                      {edge.evidenceTitle || shortPath(edge.evidencePath ?? '')}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         </section>
       </div>

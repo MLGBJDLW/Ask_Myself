@@ -117,8 +117,10 @@ function KnowledgeGraphUsagePanel({
 }) {
   const { t } = useTranslation();
   const nodeLimit = compact ? 4 : 8;
+  const bundleLimit = compact ? 3 : 5;
   const docLimit = compact ? 3 : 6;
   const tokenEstimate = usage.tokenEstimate ?? null;
+  const usedGraphBundles = usage.usedGraphBundles ?? [];
 
   return (
     <div className={`rounded-md border border-border/55 bg-surface-0/55 ${compact ? 'p-2' : 'p-3'}`}>
@@ -130,6 +132,11 @@ function KnowledgeGraphUsagePanel({
         <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
           {t('chat.usedGraphEdges', { count: String(usage.usedGraphEdges.length) })}
         </span>
+        {usedGraphBundles.length > 0 && (
+          <span className="rounded-full border border-info/25 bg-info/10 px-2 py-0.5 text-info">
+            {t('chat.usedGraphBundles', { count: String(usedGraphBundles.length) })}
+          </span>
+        )}
         <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
           {t('chat.usedGraphDocuments', { count: String(usage.usedDocuments.length) })}
         </span>
@@ -153,6 +160,24 @@ function KnowledgeGraphUsagePanel({
           {usage.usedGraphNodes.length > nodeLimit && (
             <span className="rounded-md border border-border/45 px-2 py-1 text-[11px] text-text-tertiary">
               +{usage.usedGraphNodes.length - nodeLimit}
+            </span>
+          )}
+        </div>
+      )}
+      {usedGraphBundles.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {usedGraphBundles.slice(0, bundleLimit).map((bundle) => (
+            <span
+              key={bundle.id}
+              className="max-w-full truncate rounded-md border border-info/25 bg-info/10 px-2 py-1 text-[11px] text-info"
+              title={bundle.relationTypes.join(', ')}
+            >
+              {bundle.relationCount}x {bundle.sourceLabel ?? bundle.source} / {bundle.targetLabel ?? bundle.target}
+            </span>
+          ))}
+          {usedGraphBundles.length > bundleLimit && (
+            <span className="rounded-md border border-border/45 px-2 py-1 text-[11px] text-text-tertiary">
+              +{usedGraphBundles.length - bundleLimit}
             </span>
           )}
         </div>

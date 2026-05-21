@@ -356,6 +356,7 @@
   "removeGraphContext": "グラフコンテキストを削除",
   "usedGraphNodes": "{count} グラフノード",
   "usedGraphEdges": "{count} 関係",
+  "usedGraphBundles": "{count} 関係束",
   "usedGraphDocuments": "{count} 文書",
   "graphTokenSavings": "約 {saved}% 節約",
   "graphContextSummary": "{nodes} ノード · {edges} 関係 · {documents} 文書",

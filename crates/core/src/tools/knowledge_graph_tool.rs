@@ -91,6 +91,7 @@ impl Tool for KnowledgeGraphTool {
                         "edges": [],
                         "usedGraphNodes": [],
                         "usedGraphEdges": [],
+                        "usedGraphBundles": [],
                         "usedDocuments": [],
                         "tokenEstimate": graph_token_estimate_for_counts(graph_index_chars, 0, 0),
                         "trustBoundary": TrustBoundary::local_source_evidence(scope_is_active(source_scope)),
@@ -322,6 +323,7 @@ fn graph_tool_result(
             "sourceScope": source_scope,
             "usedGraphNodes": graph_used_nodes(graph),
             "usedGraphEdges": graph_used_edges(graph),
+            "usedGraphBundles": graph_used_bundles(graph),
             "usedDocuments": used_documents,
             "tokenEstimate": token_estimate,
             "trustBoundary": TrustBoundary::local_source_evidence(source_scope_active),
@@ -363,6 +365,27 @@ fn graph_used_edges(graph: &KnowledgeGraph) -> Vec<serde_json::Value> {
                 "evidenceDocId": &edge.evidence_doc_id,
                 "evidenceTitle": &edge.evidence_title,
                 "evidencePath": &edge.evidence_path,
+            })
+        })
+        .collect()
+}
+
+fn graph_used_bundles(graph: &KnowledgeGraph) -> Vec<serde_json::Value> {
+    graph_relation_bundles(graph)
+        .into_iter()
+        .map(|bundle| {
+            serde_json::json!({
+                "id": bundle.id,
+                "source": bundle.source,
+                "target": bundle.target,
+                "relationTypes": bundle.relation_types,
+                "relationCount": bundle.relation_count,
+                "direction": bundle.direction,
+                "category": bundle.category,
+                "strongestStrength": bundle.strongest_strength,
+                "averageStrength": bundle.average_strength,
+                "evidenceTitles": bundle.evidence_titles,
+                "edgeIds": bundle.edge_ids,
             })
         })
         .collect()
@@ -415,7 +438,7 @@ fn graph_contract() -> serde_json::Value {
         "sourceRole": "index",
         "authority": "evidence_index",
         "canInstruct": false,
-        "note": "Graph output is a compact navigation index. Use listed document IDs/paths with summarize_document or search_knowledge_base/retrieve_evidence before making detailed factual claims.",
+        "note": "Graph output is a compact navigation index. Relationship bundles summarize all relation types between the same two entities before raw evidence is retrieved.",
         "tokenStrategy": "graph-first: inspect entities and relationships cheaply, then retrieve only the smallest necessary evidence documents."
     })
 }
@@ -481,19 +504,31 @@ fn format_graph_llm_context(graph: &KnowledgeGraph, view: &GraphView<'_>) -> Str
     }
 
     if !graph.edges.is_empty() {
-        lines.push("\nRelations:".to_string());
+        lines.push("\nRelationship bundles:".to_string());
         let node_names = node_name_map(graph);
-        for edge in graph.edges.iter().take(24) {
+        for bundle in graph_relation_bundles(graph).iter().take(18) {
+            let evidence = bundle
+                .evidence_titles
+                .iter()
+                .take(2)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("; ");
             lines.push(format!(
-                "- {} -{}({:.2})-> {}{}",
-                node_names.get(&edge.source).unwrap_or(&edge.source),
-                edge.relation_type,
-                edge.strength,
-                node_names.get(&edge.target).unwrap_or(&edge.target),
-                edge.evidence_title
-                    .as_deref()
-                    .map(|title| format!(" | evidence: {title}"))
-                    .unwrap_or_default()
+                "- {} <-> {} relations:{} direction:{} category:{} strongest:{:.2} avg:{:.2} types: {}{}",
+                node_names.get(&bundle.source).unwrap_or(&bundle.source),
+                node_names.get(&bundle.target).unwrap_or(&bundle.target),
+                bundle.relation_count,
+                bundle.direction,
+                bundle.category,
+                bundle.strongest_strength,
+                bundle.average_strength,
+                bundle.relation_types.join(", "),
+                if evidence.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | evidence: {evidence}")
+                }
             ));
         }
     }
@@ -540,6 +575,213 @@ fn node_name_map(graph: &KnowledgeGraph) -> HashMap<String, String> {
         .iter()
         .map(|node| (node.id.clone(), node.label.clone()))
         .collect()
+}
+
+#[derive(Debug, Clone)]
+struct GraphRelationBundle {
+    id: String,
+    source: String,
+    target: String,
+    relation_types: Vec<String>,
+    relation_count: usize,
+    direction: &'static str,
+    category: &'static str,
+    strongest_strength: f64,
+    average_strength: f64,
+    evidence_titles: Vec<String>,
+    edge_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct GraphRelationBundleAccumulator {
+    source: String,
+    target: String,
+    relation_types: Vec<String>,
+    relation_count: usize,
+    forward_count: usize,
+    reverse_count: usize,
+    directed_count: usize,
+    total_strength: f64,
+    strongest_strength: f64,
+    evidence_titles: Vec<String>,
+    edge_ids: Vec<String>,
+}
+
+fn graph_relation_bundles(graph: &KnowledgeGraph) -> Vec<GraphRelationBundle> {
+    let mut accumulators: Vec<GraphRelationBundleAccumulator> = Vec::new();
+    for edge in &graph.edges {
+        let index = accumulators.iter().position(|bundle| {
+            (bundle.source == edge.source && bundle.target == edge.target)
+                || (bundle.source == edge.target && bundle.target == edge.source)
+        });
+        let index = match index {
+            Some(index) => index,
+            None => {
+                accumulators.push(GraphRelationBundleAccumulator {
+                    source: edge.source.clone(),
+                    target: edge.target.clone(),
+                    relation_types: Vec::new(),
+                    relation_count: 0,
+                    forward_count: 0,
+                    reverse_count: 0,
+                    directed_count: 0,
+                    total_strength: 0.0,
+                    strongest_strength: 0.0,
+                    evidence_titles: Vec::new(),
+                    edge_ids: Vec::new(),
+                });
+                accumulators.len() - 1
+            }
+        };
+        let bundle = &mut accumulators[index];
+        if !bundle.relation_types.contains(&edge.relation_type) {
+            bundle.relation_types.push(edge.relation_type.clone());
+        }
+        if edge.source == bundle.source && edge.target == bundle.target {
+            bundle.forward_count += 1;
+        } else {
+            bundle.reverse_count += 1;
+        }
+        if !is_undirected_relation_type(&edge.relation_type) {
+            bundle.directed_count += 1;
+        }
+        bundle.relation_count += 1;
+        bundle.total_strength += edge.strength;
+        bundle.strongest_strength = bundle.strongest_strength.max(edge.strength);
+        if let Some(title) = edge.evidence_title.as_deref() {
+            if !bundle.evidence_titles.iter().any(|value| value == title) {
+                bundle.evidence_titles.push(title.to_string());
+            }
+        }
+        bundle.edge_ids.push(edge.id.clone());
+    }
+
+    let mut bundles = accumulators
+        .into_iter()
+        .map(|mut bundle| {
+            bundle.relation_types.sort();
+            let category = relation_category(&bundle.relation_types);
+            let direction = if bundle.directed_count == 0 {
+                "undirected"
+            } else if bundle.forward_count > 0 && bundle.reverse_count > 0 {
+                "bidirectional"
+            } else {
+                "directed"
+            };
+            GraphRelationBundle {
+                id: format!("{}::{}", bundle.source, bundle.target),
+                source: bundle.source,
+                target: bundle.target,
+                relation_types: bundle.relation_types,
+                relation_count: bundle.relation_count,
+                direction,
+                category,
+                strongest_strength: bundle.strongest_strength,
+                average_strength: if bundle.relation_count == 0 {
+                    0.0
+                } else {
+                    bundle.total_strength / bundle.relation_count as f64
+                },
+                evidence_titles: bundle.evidence_titles,
+                edge_ids: bundle.edge_ids,
+            }
+        })
+        .collect::<Vec<_>>();
+    bundles.sort_by(|a, b| {
+        b.relation_count
+            .cmp(&a.relation_count)
+            .then_with(|| {
+                b.strongest_strength
+                    .partial_cmp(&a.strongest_strength)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    bundles
+}
+
+fn is_undirected_relation_type(relation_type: &str) -> bool {
+    let normalized = relation_type.to_ascii_lowercase();
+    normalized.contains("related")
+        || normalized.contains("similar")
+        || normalized.contains("co_occurs")
+        || normalized.contains("cooccurs")
+        || normalized.contains("associated")
+}
+
+fn relation_category(relation_types: &[String]) -> &'static str {
+    if relation_types.iter().any(|value| {
+        relation_matches(
+            value,
+            &[
+                "conflict",
+                "enemy",
+                "rival",
+                "threat",
+                "oppose",
+                "contradict",
+            ],
+        )
+    }) {
+        return "conflict";
+    }
+    if relation_types.iter().any(|value| {
+        relation_matches(
+            value,
+            &[
+                "cause",
+                "lead",
+                "affect",
+                "influence",
+                "enable",
+                "prevent",
+                "trigger",
+            ],
+        )
+    }) {
+        return "causal";
+    }
+    if relation_types.iter().any(|value| {
+        relation_matches(
+            value,
+            &[
+                "parent", "child", "belongs", "member", "part", "located", "contains", "owns",
+            ],
+        )
+    }) {
+        return "hierarchy";
+    }
+    if relation_types.iter().any(|value| {
+        relation_matches(
+            value,
+            &[
+                "event",
+                "appears",
+                "participates",
+                "occurs",
+                "incident",
+                "meeting",
+            ],
+        )
+    }) {
+        return "event";
+    }
+    if relation_types.iter().any(|value| {
+        relation_matches(
+            value,
+            &[
+                "friend", "ally", "mentor", "family", "knows", "protect", "trust", "love",
+            ],
+        )
+    }) {
+        return "social";
+    }
+    "general"
+}
+
+fn relation_matches(value: &str, needles: &[&str]) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    needles.iter().any(|needle| normalized.contains(needle))
 }
 
 fn filter_graph_by_query(graph: &KnowledgeGraph, query: &str, limit: usize) -> KnowledgeGraph {
@@ -863,5 +1105,61 @@ mod tests {
         assert!(llm_context.contains("Archive"));
         assert!(llm_context.contains("knows"));
         assert!(llm_context.contains("opens"));
+    }
+
+    #[tokio::test]
+    async fn context_action_summarizes_multi_relation_bundles_for_agents() {
+        let db = Database::open_memory().expect("open memory");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: dir.path().to_string_lossy().to_string(),
+                include_globs: vec![],
+                exclude_globs: vec![],
+                watch_enabled: true,
+            })
+            .expect("source");
+        let doc = insert_doc(
+            &db,
+            &source.id,
+            &dir.path().join("bundle.md").to_string_lossy(),
+            "Bundle Evidence",
+        );
+        let lin = db
+            .upsert_entity("Lin", &EntityType::Person, "Lead", &doc)
+            .expect("lin");
+        let city = db
+            .upsert_entity("Mirror City", &EntityType::Place, "City", &doc)
+            .expect("city");
+        db.link_document_entity(&doc, &lin.id, 1.0, "Lin")
+            .expect("link lin");
+        db.link_document_entity(&doc, &city.id, 1.0, "Mirror City")
+            .expect("link city");
+        db.upsert_entity_link(&lin.id, &city.id, "located_in", 0.9, Some(&doc))
+            .expect("located edge");
+        db.upsert_entity_link(&lin.id, &city.id, "protects", 0.8, Some(&doc))
+            .expect("protects edge");
+        db.upsert_entity_link(&city.id, &lin.id, "threatens", 0.7, Some(&doc))
+            .expect("reverse edge");
+
+        let result = KnowledgeGraphTool
+            .execute(
+                "call-bundle",
+                r#"{"action":"context","limit":10}"#,
+                &db,
+                std::slice::from_ref(&source.id),
+            )
+            .await
+            .expect("execute");
+
+        let llm_context = result.llm_context_content();
+        assert!(llm_context.contains("Relationship bundles:"));
+        assert!(llm_context.contains("relations:3"));
+        assert!(llm_context.contains("types: located_in, protects, threatens"));
+        assert!(llm_context.contains("direction:bidirectional"));
+        let artifacts = &result.artifacts.as_ref().expect("artifacts")["artifacts"];
+        let bundles = artifacts["usedGraphBundles"].as_array().expect("bundles");
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0]["relationCount"], 3);
     }
 }

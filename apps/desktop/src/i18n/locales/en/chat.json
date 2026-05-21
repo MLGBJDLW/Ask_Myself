@@ -356,6 +356,7 @@
   "removeGraphContext": "Remove graph context",
   "usedGraphNodes": "{count} graph nodes",
   "usedGraphEdges": "{count} relations",
+  "usedGraphBundles": "{count} bundles",
   "usedGraphDocuments": "{count} docs",
   "graphTokenSavings": "~{saved}% saved",
   "graphContextSummary": "{nodes} nodes · {edges} relations · {documents} docs",

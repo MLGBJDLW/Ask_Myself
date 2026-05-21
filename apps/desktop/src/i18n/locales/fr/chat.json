@@ -356,6 +356,7 @@
   "removeGraphContext": "Retirer le contexte du graphe",
   "usedGraphNodes": "{count} nœuds du graphe",
   "usedGraphEdges": "{count} relations",
+  "usedGraphBundles": "{count} faisceaux",
   "usedGraphDocuments": "{count} docs",
   "graphTokenSavings": "~{saved}% économisé",
   "graphContextSummary": "{nodes} nœuds · {edges} relations · {documents} docs",

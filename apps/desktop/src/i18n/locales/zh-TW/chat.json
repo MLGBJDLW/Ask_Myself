@@ -356,6 +356,7 @@
   "removeGraphContext": "移除圖譜上下文",
   "usedGraphNodes": "{count} 個圖譜節點",
   "usedGraphEdges": "{count} 條關係",
+  "usedGraphBundles": "{count} 個關係束",
   "usedGraphDocuments": "{count} 篇文件",
   "graphTokenSavings": "約節省 {saved}%",
   "graphContextSummary": "{nodes} 個節點 · {edges} 條關係 · {documents} 篇文件",

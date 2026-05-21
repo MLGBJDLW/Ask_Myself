@@ -323,8 +323,8 @@ impl Database {
         } else {
             None
         };
-        let path_pattern =
-            scoped_path_pattern(source_root.as_deref(), query.path_prefix.as_deref());
+        let path_patterns =
+            scoped_path_patterns(source_root.as_deref(), query.path_prefix.as_deref());
 
         let mut where_parts = Vec::new();
         let mut params: Vec<Value> = Vec::new();
@@ -335,10 +335,7 @@ impl Database {
             ));
             params.extend(source_ids.iter().map(|value| Value::Text(value.clone())));
         }
-        if let Some(pattern) = path_pattern.as_deref() {
-            where_parts.push("d.path LIKE ?".to_string());
-            params.push(Value::Text(pattern.to_string()));
-        }
+        push_path_filter(&mut where_parts, &mut params, "d.path", &path_patterns);
         if !query.entity_types.is_empty() {
             let placeholders = repeat_placeholders(query.entity_types.len());
             where_parts.push(format!("e.entity_type IN ({placeholders})"));
@@ -391,7 +388,7 @@ impl Database {
         let mut nodes = Vec::with_capacity(nodes_seed.len());
         for mut node in nodes_seed {
             node.documents =
-                query_entity_documents(&conn, &node.id, &source_ids, path_pattern.as_deref(), 5)?;
+                query_entity_documents(&conn, &node.id, &source_ids, &path_patterns, 5)?;
             nodes.push(node);
         }
 
@@ -402,7 +399,7 @@ impl Database {
                 &conn,
                 &node_ids,
                 &source_ids,
-                path_pattern.as_deref(),
+                &path_patterns,
                 &query.relation_types,
                 query.min_strength.unwrap_or(0.0),
             )?
@@ -486,29 +483,83 @@ fn graph_scope_label(source_ids: &[String], path_prefix: Option<&str>) -> Option
     }
 }
 
-fn scoped_path_pattern(source_root: Option<&str>, path_prefix: Option<&str>) -> Option<String> {
-    let prefix = path_prefix?.trim();
+fn scoped_path_patterns(source_root: Option<&str>, path_prefix: Option<&str>) -> Vec<String> {
+    let Some(prefix) = path_prefix.map(str::trim) else {
+        return Vec::new();
+    };
     if prefix.is_empty() {
-        return None;
+        return Vec::new();
     }
 
-    let absolute = if let Some(root) = source_root {
-        std::path::Path::new(root)
-            .join(prefix)
-            .to_string_lossy()
-            .to_string()
-    } else {
-        prefix.to_string()
-    };
-    let trimmed = absolute.trim_end_matches(|c| c == '/' || c == '\\');
-    Some(format!("{trimmed}%"))
+    let variants = path_prefix_variants(prefix);
+    let mut patterns = Vec::new();
+    if let Some(root) = source_root {
+        for variant in &variants {
+            let absolute = std::path::Path::new(root)
+                .join(variant)
+                .to_string_lossy()
+                .to_string();
+            push_like_pattern(&mut patterns, &absolute);
+        }
+    }
+    for variant in variants {
+        push_like_pattern(&mut patterns, &variant);
+        push_like_pattern(&mut patterns, &format!("%/{variant}"));
+        push_like_pattern(&mut patterns, &format!("%\\{variant}"));
+    }
+    patterns
+}
+
+fn path_prefix_variants(prefix: &str) -> Vec<String> {
+    let normalized = prefix.trim_matches(|c| c == '/' || c == '\\');
+    let slash = normalized.replace('\\', "/");
+    let backslash = slash.replace('/', "\\");
+    let mut variants = vec![slash, backslash];
+    variants.retain(|value| !value.is_empty());
+    variants.sort();
+    variants.dedup();
+    variants
+}
+
+fn push_like_pattern(patterns: &mut Vec<String>, value: &str) {
+    let trimmed = value.trim_end_matches(|c| c == '/' || c == '\\');
+    if trimmed.is_empty() {
+        return;
+    }
+    let pattern = format!("{trimmed}%");
+    if !patterns.contains(&pattern) {
+        patterns.push(pattern);
+    }
+}
+
+fn push_path_filter(
+    where_parts: &mut Vec<String>,
+    params: &mut Vec<rusqlite::types::Value>,
+    column: &str,
+    path_patterns: &[String],
+) {
+    if path_patterns.is_empty() {
+        return;
+    }
+
+    let clauses = path_patterns
+        .iter()
+        .map(|_| format!("{column} LIKE ?"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    where_parts.push(format!("({clauses})"));
+    params.extend(
+        path_patterns
+            .iter()
+            .map(|pattern| rusqlite::types::Value::Text(pattern.clone())),
+    );
 }
 
 fn query_entity_documents(
     conn: &rusqlite::Connection,
     entity_id: &str,
     source_ids: &[String],
-    path_pattern: Option<&str>,
+    path_patterns: &[String],
     limit: usize,
 ) -> Result<Vec<KnowledgeGraphDocumentRef>, CoreError> {
     use rusqlite::types::Value;
@@ -522,10 +573,7 @@ fn query_entity_documents(
         ));
         params.extend(source_ids.iter().map(|value| Value::Text(value.clone())));
     }
-    if let Some(pattern) = path_pattern {
-        where_parts.push("d.path LIKE ?".to_string());
-        params.push(Value::Text(pattern.to_string()));
-    }
+    push_path_filter(&mut where_parts, &mut params, "d.path", path_patterns);
     params.push(Value::Integer(limit as i64));
 
     let sql = format!(
@@ -598,12 +646,12 @@ mod tests {
             &scoped_doc_path.to_string_lossy(),
             "Chapter 1",
         );
-        let other_doc_path = other_dir.path().join("notes.md");
+        let other_doc_path = other_dir.path().join("novel").join("outside.md");
         let other_doc = insert_doc(
             &db,
             &other_source.id,
             &other_doc_path.to_string_lossy(),
-            "Other Notes",
+            "Outside Novel",
         );
 
         let hero = db
@@ -665,6 +713,30 @@ mod tests {
             .nodes
             .iter()
             .any(|node| node.label == "External Topic"));
+
+        let global_prefix_graph = db
+            .get_knowledge_graph(KnowledgeGraphQuery {
+                limit: 20,
+                path_prefix: Some("novel".to_string()),
+                ..KnowledgeGraphQuery::default()
+            })
+            .expect("global folder graph");
+        assert_eq!(global_prefix_graph.total_nodes, 3);
+        assert_eq!(global_prefix_graph.total_edges, 2);
+        assert!(global_prefix_graph
+            .nodes
+            .iter()
+            .any(|node| node.label == "External Topic"));
+
+        let missing_prefix_graph = db
+            .get_knowledge_graph(KnowledgeGraphQuery {
+                limit: 20,
+                path_prefix: Some("missing-folder".to_string()),
+                ..KnowledgeGraphQuery::default()
+            })
+            .expect("missing folder graph");
+        assert_eq!(missing_prefix_graph.total_nodes, 0);
+        assert_eq!(missing_prefix_graph.total_edges, 0);
     }
 
     #[test]
@@ -721,7 +793,7 @@ fn query_graph_edges(
     conn: &rusqlite::Connection,
     node_ids: &[String],
     source_ids: &[String],
-    path_pattern: Option<&str>,
+    path_patterns: &[String],
     relation_types: &[String],
     min_strength: f64,
 ) -> Result<Vec<KnowledgeGraphEdge>, CoreError> {
@@ -745,10 +817,7 @@ fn query_graph_edges(
         ));
         params.extend(source_ids.iter().map(|value| Value::Text(value.clone())));
     }
-    if let Some(pattern) = path_pattern {
-        where_parts.push("ed.path LIKE ?".to_string());
-        params.push(Value::Text(pattern.to_string()));
-    }
+    push_path_filter(&mut where_parts, &mut params, "ed.path", path_patterns);
     if !relation_types.is_empty() {
         where_parts.push(format!(
             "el.relation_type IN ({})",

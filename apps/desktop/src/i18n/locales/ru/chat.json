@@ -356,6 +356,7 @@
   "removeGraphContext": "Убрать контекст графа",
   "usedGraphNodes": "{count} узлов графа",
   "usedGraphEdges": "{count} связей",
+  "usedGraphBundles": "{count} пучков",
   "usedGraphDocuments": "{count} док.",
   "graphTokenSavings": "~{saved}% экономии",
   "graphContextSummary": "{nodes} узлов · {edges} связей · {documents} док.",

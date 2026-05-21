@@ -1,6 +1,6 @@
 {
   "name": "query_knowledge_graph",
-  "description": "Query the compiled entity relationship graph as a compact navigation index before retrieving full evidence. Use this to understand how concepts relate, identify the smallest set of documents to read, find connection paths, or inspect a scoped map without spending tokens on raw document text.",
+  "description": "Query the compiled entity relationship graph as a compact navigation index before retrieving full evidence. Use this to understand relationship bundles, multi-hop paths, the smallest set of documents to read, or a scoped map without spending tokens on raw document text.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -32,7 +32,7 @@
       },
       "path_prefix": {
         "type": "string",
-        "description": "Optional folder prefix within a single selected source, for example 'novel/volume-1'."
+        "description": "Optional folder prefix or path segment, for example 'novel/volume-1'. Works inside a selected source or across all active sources."
       },
       "entity_types": {
         "type": "array",
