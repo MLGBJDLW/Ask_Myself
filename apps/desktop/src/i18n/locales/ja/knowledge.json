@@ -63,5 +63,13 @@
   "evidenceDocuments": "根拠ドキュメント",
   "noEvidenceDocuments": "このトピックに紐づく根拠ドキュメントはまだありません。",
   "connectedRelations": "接続された関係",
-  "noRelations": "このビューには接続された関係がありません。"
+  "noRelations": "このビューには接続された関係がありません。",
+  "askAgent": "Agent に聞く",
+  "useAsContext": "コンテキストに使う",
+  "graphContextReady": "グラフコンテキストをチャットで使えます。",
+  "agentUsedPath": "Agent 使用済み",
+  "tokenEstimate": "Token 見積もり",
+  "graphIndex": "グラフ索引",
+  "rawEvidenceEstimate": "元証拠",
+  "tokenSavings": "節約"
 }

@@ -63,5 +63,13 @@
   "evidenceDocuments": "Документы-доказательства",
   "noEvidenceDocuments": "С этой темой пока не связаны документы-доказательства.",
   "connectedRelations": "Связанные отношения",
-  "noRelations": "В этом представлении нет связанных отношений."
+  "noRelations": "В этом представлении нет связанных отношений.",
+  "askAgent": "Спросить агента",
+  "useAsContext": "Использовать как контекст",
+  "graphContextReady": "Контекст графа готов для чата.",
+  "agentUsedPath": "Использовано агентом",
+  "tokenEstimate": "Оценка Token",
+  "graphIndex": "Индекс графа",
+  "rawEvidenceEstimate": "Сырые доказательства",
+  "tokenSavings": "Экономия"
 }

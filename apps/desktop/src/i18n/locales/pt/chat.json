@@ -351,5 +351,13 @@
   "verificationFailedCount": "{count} failed",
   "verificationPendingCount": "{count} pending",
   "verificationSkippedCount": "{count} skipped",
+  "graphContextFromKnowledge": "Contexto do grafo: {name}",
+  "graphContextStats": "{nodes} nós · {documents} docs · ~{saved}% economizado",
+  "removeGraphContext": "Remover contexto do grafo",
+  "usedGraphNodes": "{count} nós do grafo",
+  "usedGraphEdges": "{count} relações",
+  "usedGraphDocuments": "{count} docs",
+  "graphTokenSavings": "~{saved}% economizado",
+  "graphContextSummary": "{nodes} nós · {edges} relações · {documents} docs",
   "showLess": "Ver menos"
 }

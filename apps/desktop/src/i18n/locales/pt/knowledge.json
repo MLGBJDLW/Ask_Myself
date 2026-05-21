@@ -63,5 +63,13 @@
   "evidenceDocuments": "Documentos de evidência",
   "noEvidenceDocuments": "Ainda não há documentos de evidência vinculados a este tópico.",
   "connectedRelations": "Relações conectadas",
-  "noRelations": "Não há relações conectadas nesta visualização."
+  "noRelations": "Não há relações conectadas nesta visualização.",
+  "askAgent": "Perguntar ao agente",
+  "useAsContext": "Usar como contexto",
+  "graphContextReady": "O contexto do grafo está pronto para o chat.",
+  "agentUsedPath": "Usado pelo agente",
+  "tokenEstimate": "Estimativa Token",
+  "graphIndex": "Índice do grafo",
+  "rawEvidenceEstimate": "Evidência bruta",
+  "tokenSavings": "Economizado"
 }

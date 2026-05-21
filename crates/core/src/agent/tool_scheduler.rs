@@ -138,6 +138,7 @@ pub(crate) fn compact_tool_result_for_context(tool_name: &str, content: &str) ->
             summarize_lines(content, 60, 10, MAX_TOOL_RESULT_CONTEXT_CHARS)
         }
         "search_knowledge_base" => truncate_tool_result(content, 3_500),
+        "query_knowledge_graph" => truncate_tool_result(content, 2_500),
         "retrieve_evidence" | "search_playbooks" => truncate_tool_result(content, 6_000),
         _ => truncate_tool_result(content, MAX_TOOL_RESULT_CONTEXT_CHARS),
     }

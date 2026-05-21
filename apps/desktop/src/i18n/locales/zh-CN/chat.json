@@ -351,5 +351,13 @@
   "verificationFailedCount": "{count} 项失败",
   "verificationPendingCount": "{count} 项待验证",
   "verificationSkippedCount": "{count} 项跳过",
+  "graphContextFromKnowledge": "图谱上下文：{name}",
+  "graphContextStats": "{nodes} 个节点 · {documents} 篇文档 · 约节省 {saved}%",
+  "removeGraphContext": "移除图谱上下文",
+  "usedGraphNodes": "{count} 个图谱节点",
+  "usedGraphEdges": "{count} 条关系",
+  "usedGraphDocuments": "{count} 篇文档",
+  "graphTokenSavings": "约节省 {saved}%",
+  "graphContextSummary": "{nodes} 个节点 · {edges} 条关系 · {documents} 篇文档",
   "showLess": "收起"
 }

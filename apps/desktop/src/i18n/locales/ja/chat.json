@@ -351,5 +351,13 @@
   "verificationFailedCount": "{count} failed",
   "verificationPendingCount": "{count} pending",
   "verificationSkippedCount": "{count} skipped",
+  "graphContextFromKnowledge": "グラフコンテキスト: {name}",
+  "graphContextStats": "{nodes} ノード · {documents} 文書 · 約 {saved}% 節約",
+  "removeGraphContext": "グラフコンテキストを削除",
+  "usedGraphNodes": "{count} グラフノード",
+  "usedGraphEdges": "{count} 関係",
+  "usedGraphDocuments": "{count} 文書",
+  "graphTokenSavings": "約 {saved}% 節約",
+  "graphContextSummary": "{nodes} ノード · {edges} 関係 · {documents} 文書",
   "showLess": "折りたたむ"
 }

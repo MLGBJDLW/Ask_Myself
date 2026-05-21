@@ -1,25 +1,59 @@
 {
   "name": "query_knowledge_graph",
-  "description": "Query the knowledge graph to explore entity relationships, find connection paths between concepts, search entities, or get an overview map of top entities. Use this to understand how concepts relate to each other across the knowledge base.",
+  "description": "Query the compiled entity relationship graph as a compact navigation index before retrieving full evidence. Use this to understand how concepts relate, identify the smallest set of documents to read, find connection paths, or inspect a scoped map without spending tokens on raw document text.",
   "parameters": {
     "type": "object",
     "properties": {
       "action": {
         "type": "string",
-        "enum": ["related", "path", "map", "search"],
-        "description": "'related' — get entities related to entity_name; 'path' — find shortest path between entity_name and target_name; 'map' — get top entities and their links; 'search' — search entities by name/description."
+        "enum": ["context", "map", "related", "path", "search"],
+        "description": "'context' — compact graph index for the active scope or filters; 'map' — alias for context; 'related' — neighbors of entity_name; 'path' — scoped connection path between entity_name and target_name; 'search' — scoped graph entity search by query or entity_name."
       },
       "entity_name": {
         "type": "string",
-        "description": "Entity name to query. Required for 'related', 'path', and 'search' actions."
+        "description": "Entity name to query. Required for 'related' and 'path'. Can be used as the search term for 'search'."
       },
       "target_name": {
         "type": "string",
         "description": "Target entity name for 'path' action."
       },
+      "query": {
+        "type": "string",
+        "description": "Optional natural-language focus or entity search text for 'context' and 'search'."
+      },
+      "source_id": {
+        "type": "string",
+        "description": "Optional source UUID to scope the graph. If the conversation already has a source scope, this must be inside that scope."
+      },
+      "source_ids": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional source UUIDs to scope the graph. If omitted, the active conversation source scope is used automatically."
+      },
+      "path_prefix": {
+        "type": "string",
+        "description": "Optional folder prefix within a single selected source, for example 'novel/volume-1'."
+      },
+      "entity_types": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["person", "place", "organization", "event", "concept", "technology", "other"]
+        },
+        "description": "Optional entity type filter."
+      },
+      "relation_types": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional relationship type filter, such as 'located_in' or 'causes'."
+      },
+      "min_strength": {
+        "type": "number",
+        "description": "Optional minimum relationship strength from 0.0 to 1.0."
+      },
       "limit": {
         "type": "integer",
-        "description": "Maximum number of results to return. Default 20."
+        "description": "Maximum number of graph nodes to return. Default 20; capped by the tool for token efficiency."
       }
     },
     "required": ["action"]

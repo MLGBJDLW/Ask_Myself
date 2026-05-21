@@ -84,6 +84,7 @@ pub struct KnowledgeGraph {
 pub struct KnowledgeGraphQuery {
     pub limit: usize,
     pub source_id: Option<String>,
+    pub source_ids: Vec<String>,
     pub path_prefix: Option<String>,
     pub entity_types: Vec<String>,
     pub relation_types: Vec<String>,
@@ -315,34 +316,24 @@ impl Database {
 
         let conn = self.conn();
         let limit = query.limit.clamp(1, 250);
-        let source_root = match query.source_id.as_deref() {
-            Some(source_id) if !source_id.trim().is_empty() => Some(
-                conn.query_row(
-                    "SELECT root_path FROM sources WHERE id = ?1",
-                    [source_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .map_err(|e| match e {
-                    rusqlite::Error::QueryReturnedNoRows => {
-                        CoreError::NotFound(format!("Source not found: {source_id}"))
-                    }
-                    other => CoreError::Database(other),
-                })?,
-            ),
-            _ => None,
+        let source_ids = normalize_graph_source_ids(&query);
+        let source_roots = query_source_roots(&conn, &source_ids)?;
+        let source_root = if source_roots.len() == 1 {
+            source_roots.first().cloned()
+        } else {
+            None
         };
         let path_pattern =
             scoped_path_pattern(source_root.as_deref(), query.path_prefix.as_deref());
 
         let mut where_parts = Vec::new();
         let mut params: Vec<Value> = Vec::new();
-        if let Some(source_id) = query
-            .source_id
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            where_parts.push("d.source_id = ?".to_string());
-            params.push(Value::Text(source_id.to_string()));
+        if !source_ids.is_empty() {
+            where_parts.push(format!(
+                "d.source_id IN ({})",
+                repeat_placeholders(source_ids.len())
+            ));
+            params.extend(source_ids.iter().map(|value| Value::Text(value.clone())));
         }
         if let Some(pattern) = path_pattern.as_deref() {
             where_parts.push("d.path LIKE ?".to_string());
@@ -399,13 +390,8 @@ impl Database {
         let node_ids: Vec<String> = nodes_seed.iter().map(|node| node.id.clone()).collect();
         let mut nodes = Vec::with_capacity(nodes_seed.len());
         for mut node in nodes_seed {
-            node.documents = query_entity_documents(
-                &conn,
-                &node.id,
-                query.source_id.as_deref(),
-                path_pattern.as_deref(),
-                5,
-            )?;
+            node.documents =
+                query_entity_documents(&conn, &node.id, &source_ids, path_pattern.as_deref(), 5)?;
             nodes.push(node);
         }
 
@@ -415,23 +401,14 @@ impl Database {
             query_graph_edges(
                 &conn,
                 &node_ids,
-                query.source_id.as_deref(),
+                &source_ids,
                 path_pattern.as_deref(),
                 &query.relation_types,
                 query.min_strength.unwrap_or(0.0),
             )?
         };
 
-        let scope_label = query.source_id.as_ref().map(|source_id| {
-            match query
-                .path_prefix
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-            {
-                Some(path) => format!("{source_id}:{path}"),
-                None => source_id.clone(),
-            }
-        });
+        let scope_label = graph_scope_label(&source_ids, query.path_prefix.as_deref());
         let total_nodes = nodes.len();
         let total_edges = edges.len();
 
@@ -450,6 +427,63 @@ fn repeat_placeholders(count: usize) -> String {
         .take(count)
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn normalize_graph_source_ids(query: &KnowledgeGraphQuery) -> Vec<String> {
+    let mut ids: Vec<String> = if query.source_ids.is_empty() {
+        query
+            .source_id
+            .iter()
+            .map(|value| value.trim().to_string())
+            .collect()
+    } else {
+        query
+            .source_ids
+            .iter()
+            .map(|value| value.trim().to_string())
+            .collect()
+    };
+    ids.retain(|value| !value.is_empty());
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn query_source_roots(
+    conn: &rusqlite::Connection,
+    source_ids: &[String],
+) -> Result<Vec<String>, CoreError> {
+    let mut roots = Vec::with_capacity(source_ids.len());
+    for source_id in source_ids {
+        let root = conn
+            .query_row(
+                "SELECT root_path FROM sources WHERE id = ?1",
+                [source_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    CoreError::NotFound(format!("Source not found: {source_id}"))
+                }
+                other => CoreError::Database(other),
+            })?;
+        roots.push(root);
+    }
+    Ok(roots)
+}
+
+fn graph_scope_label(source_ids: &[String], path_prefix: Option<&str>) -> Option<String> {
+    let prefix = path_prefix.map(str::trim).filter(|value| !value.is_empty());
+    match (source_ids.len(), prefix) {
+        (0, None) => None,
+        (0, Some(path)) => Some(path.to_string()),
+        (1, None) => source_ids.first().cloned(),
+        (1, Some(path)) => source_ids
+            .first()
+            .map(|source_id| format!("{source_id}:{path}")),
+        (count, None) => Some(format!("{count} sources")),
+        (count, Some(path)) => Some(format!("{count} sources:{path}")),
+    }
 }
 
 fn scoped_path_pattern(source_root: Option<&str>, path_prefix: Option<&str>) -> Option<String> {
@@ -473,7 +507,7 @@ fn scoped_path_pattern(source_root: Option<&str>, path_prefix: Option<&str>) -> 
 fn query_entity_documents(
     conn: &rusqlite::Connection,
     entity_id: &str,
-    source_id: Option<&str>,
+    source_ids: &[String],
     path_pattern: Option<&str>,
     limit: usize,
 ) -> Result<Vec<KnowledgeGraphDocumentRef>, CoreError> {
@@ -481,9 +515,12 @@ fn query_entity_documents(
 
     let mut where_parts = vec!["de.entity_id = ?".to_string()];
     let mut params = vec![Value::Text(entity_id.to_string())];
-    if let Some(source_id) = source_id.filter(|value| !value.trim().is_empty()) {
-        where_parts.push("d.source_id = ?".to_string());
-        params.push(Value::Text(source_id.to_string()));
+    if !source_ids.is_empty() {
+        where_parts.push(format!(
+            "d.source_id IN ({})",
+            repeat_placeholders(source_ids.len())
+        ));
+        params.extend(source_ids.iter().map(|value| Value::Text(value.clone())));
     }
     if let Some(pattern) = path_pattern {
         where_parts.push("d.path LIKE ?".to_string());
@@ -614,6 +651,20 @@ mod tests {
             .any(|node| node.label == "External Topic"));
         assert_eq!(graph.edges[0].relation_type, "located_in");
         assert_eq!(graph.nodes[0].documents.len(), 1);
+
+        let multi_source_graph = db
+            .get_knowledge_graph(KnowledgeGraphQuery {
+                limit: 20,
+                source_ids: vec![source.id.clone(), other_source.id.clone()],
+                ..KnowledgeGraphQuery::default()
+            })
+            .expect("multi-source graph");
+        assert_eq!(multi_source_graph.total_nodes, 3);
+        assert_eq!(multi_source_graph.total_edges, 2);
+        assert!(multi_source_graph
+            .nodes
+            .iter()
+            .any(|node| node.label == "External Topic"));
     }
 
     #[test]
@@ -669,7 +720,7 @@ mod tests {
 fn query_graph_edges(
     conn: &rusqlite::Connection,
     node_ids: &[String],
-    source_id: Option<&str>,
+    source_ids: &[String],
     path_pattern: Option<&str>,
     relation_types: &[String],
     min_strength: f64,
@@ -687,9 +738,12 @@ fn query_graph_edges(
     params.extend(node_ids.iter().map(|id| Value::Text(id.clone())));
     params.push(Value::Real(min_strength));
 
-    if let Some(source_id) = source_id.filter(|value| !value.trim().is_empty()) {
-        where_parts.push("ed.source_id = ?".to_string());
-        params.push(Value::Text(source_id.to_string()));
+    if !source_ids.is_empty() {
+        where_parts.push(format!(
+            "ed.source_id IN ({})",
+            repeat_placeholders(source_ids.len())
+        ));
+        params.extend(source_ids.iter().map(|value| Value::Text(value.clone())));
     }
     if let Some(pattern) = path_pattern {
         where_parts.push("ed.path LIKE ?".to_string());

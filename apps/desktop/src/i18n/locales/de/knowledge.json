@@ -63,5 +63,13 @@
   "evidenceDocuments": "Belegdokumente",
   "noEvidenceDocuments": "Mit diesem Thema sind noch keine Belegdokumente verknüpft.",
   "connectedRelations": "Verbundene Beziehungen",
-  "noRelations": "In dieser Ansicht gibt es keine verbundenen Beziehungen."
+  "noRelations": "In dieser Ansicht gibt es keine verbundenen Beziehungen.",
+  "askAgent": "Agent fragen",
+  "useAsContext": "Als Kontext nutzen",
+  "graphContextReady": "Graph-Kontext ist für den Chat bereit.",
+  "agentUsedPath": "Vom Agent genutzt",
+  "tokenEstimate": "Token-Schätzung",
+  "graphIndex": "Graph-Index",
+  "rawEvidenceEstimate": "Rohbelege",
+  "tokenSavings": "Gespart"
 }

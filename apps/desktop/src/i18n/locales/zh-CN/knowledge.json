@@ -63,5 +63,13 @@
   "evidenceDocuments": "证据文档",
   "noEvidenceDocuments": "暂无证据文档关联到这个主题。",
   "connectedRelations": "关联关系",
-  "noRelations": "当前视图中没有关联关系。"
+  "noRelations": "当前视图中没有关联关系。",
+  "askAgent": "询问 Agent",
+  "useAsContext": "设为上下文",
+  "graphContextReady": "图谱上下文已可用于聊天。",
+  "agentUsedPath": "Agent 已用",
+  "tokenEstimate": "Token 估算",
+  "graphIndex": "图谱索引",
+  "rawEvidenceEstimate": "原始证据",
+  "tokenSavings": "节省"
 }

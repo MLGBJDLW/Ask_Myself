@@ -63,5 +63,13 @@
   "evidenceDocuments": "Evidence Documents",
   "noEvidenceDocuments": "No evidence documents are linked to this topic yet.",
   "connectedRelations": "Connected Relations",
-  "noRelations": "No connected relations in this view."
+  "noRelations": "No connected relations in this view.",
+  "askAgent": "Ask Agent",
+  "useAsContext": "Use as Context",
+  "graphContextReady": "Graph context is ready for chat.",
+  "agentUsedPath": "Agent used",
+  "tokenEstimate": "Token Estimate",
+  "graphIndex": "Graph Index",
+  "rawEvidenceEstimate": "Raw Evidence",
+  "tokenSavings": "Saved"
 }

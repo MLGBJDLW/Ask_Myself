@@ -351,5 +351,13 @@
   "verificationFailedCount": "{count} failed",
   "verificationPendingCount": "{count} pending",
   "verificationSkippedCount": "{count} skipped",
+  "graphContextFromKnowledge": "Graph-Kontext: {name}",
+  "graphContextStats": "{nodes} Knoten · {documents} Doks · ~{saved}% gespart",
+  "removeGraphContext": "Graph-Kontext entfernen",
+  "usedGraphNodes": "{count} Graph-Knoten",
+  "usedGraphEdges": "{count} Beziehungen",
+  "usedGraphDocuments": "{count} Doks",
+  "graphTokenSavings": "~{saved}% gespart",
+  "graphContextSummary": "{nodes} Knoten · {edges} Beziehungen · {documents} Doks",
   "showLess": "Weniger anzeigen"
 }

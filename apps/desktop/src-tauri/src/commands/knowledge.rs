@@ -118,6 +118,7 @@ pub fn get_knowledge_graph_cmd(
         .get_knowledge_graph(nexa_core::knowledge_graph::KnowledgeGraphQuery {
             limit: limit.unwrap_or(80),
             source_id: source_id.filter(|value| !value.trim().is_empty()),
+            source_ids: Vec::new(),
             path_prefix: path_prefix.filter(|value| !value.trim().is_empty()),
             entity_types: entity_types.unwrap_or_default(),
             relation_types: relation_types.unwrap_or_default(),

@@ -351,5 +351,13 @@
   "verificationFailedCount": "{count} failed",
   "verificationPendingCount": "{count} pending",
   "verificationSkippedCount": "{count} skipped",
+  "graphContextFromKnowledge": "Contexte du graphe : {name}",
+  "graphContextStats": "{nodes} nœuds · {documents} docs · ~{saved}% économisé",
+  "removeGraphContext": "Retirer le contexte du graphe",
+  "usedGraphNodes": "{count} nœuds du graphe",
+  "usedGraphEdges": "{count} relations",
+  "usedGraphDocuments": "{count} docs",
+  "graphTokenSavings": "~{saved}% économisé",
+  "graphContextSummary": "{nodes} nœuds · {edges} relations · {documents} docs",
   "showLess": "Voir moins"
 }

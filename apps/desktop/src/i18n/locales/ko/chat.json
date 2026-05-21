@@ -351,5 +351,13 @@
   "verificationFailedCount": "{count} failed",
   "verificationPendingCount": "{count} pending",
   "verificationSkippedCount": "{count} skipped",
+  "graphContextFromKnowledge": "그래프 컨텍스트: {name}",
+  "graphContextStats": "{nodes}개 노드 · {documents}개 문서 · 약 {saved}% 절약",
+  "removeGraphContext": "그래프 컨텍스트 제거",
+  "usedGraphNodes": "그래프 노드 {count}개",
+  "usedGraphEdges": "관계 {count}개",
+  "usedGraphDocuments": "문서 {count}개",
+  "graphTokenSavings": "약 {saved}% 절약",
+  "graphContextSummary": "{nodes}개 노드 · {edges}개 관계 · {documents}개 문서",
   "showLess": "접기"
 }

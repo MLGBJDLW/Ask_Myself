@@ -351,5 +351,13 @@
   "verificationFailedCount": "{count} failed",
   "verificationPendingCount": "{count} pending",
   "verificationSkippedCount": "{count} skipped",
+  "graphContextFromKnowledge": "Контекст графа: {name}",
+  "graphContextStats": "{nodes} узлов · {documents} док. · ~{saved}% экономии",
+  "removeGraphContext": "Убрать контекст графа",
+  "usedGraphNodes": "{count} узлов графа",
+  "usedGraphEdges": "{count} связей",
+  "usedGraphDocuments": "{count} док.",
+  "graphTokenSavings": "~{saved}% экономии",
+  "graphContextSummary": "{nodes} узлов · {edges} связей · {documents} док.",
   "showLess": "Свернуть"
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   BookOpen,
   Building2,
@@ -10,7 +11,9 @@ import {
   Landmark,
   Loader2,
   MapPin,
+  MessageSquare,
   Network,
+  PlusCircle,
   RefreshCw,
   RotateCcw,
   Search,
@@ -31,6 +34,14 @@ import { EmptyState } from '../ui/EmptyState';
 import { Input } from '../ui/Input';
 import { CardSkeleton } from '../ui/Skeleton';
 import { formatUserError } from '../../lib/userError';
+import {
+  GRAPH_AGENT_USAGE_EVENT,
+  buildGraphAgentContext,
+  buildGraphCollectionContext,
+  readGraphAgentUsage,
+  saveGraphAgentContext,
+  type GraphAgentContext,
+} from '../../lib/knowledgeGraphAgent';
 
 type EntityFilter = 'all' | 'person' | 'place' | 'organization' | 'event' | 'concept';
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -109,6 +120,13 @@ function shortPath(path: string) {
   return parts.slice(-2).join('/') || path;
 }
 
+function formatCompactChars(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '0';
+  if (value < 1000) return String(Math.round(value));
+  const kilo = value / 1000;
+  return `${kilo.toFixed(kilo < 10 ? 1 : 0)}k`;
+}
+
 function computeLayout(nodes: KnowledgeGraphNode[], edges: KnowledgeGraphEdge[]): PositionedNode[] {
   const degree = new Map<string, number>();
   for (const edge of edges) {
@@ -166,6 +184,7 @@ function edgePath(source: PositionedNode, target: PositionedNode) {
 
 export function KnowledgeGraphView() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [graph, setGraph] = useState<KnowledgeGraph | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [loading, setLoading] = useState(true);
@@ -175,6 +194,7 @@ export function KnowledgeGraphView() {
   const [relationFilter, setRelationFilter] = useState('');
   const [searchText, setSearchText] = useState('');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [agentUsage, setAgentUsage] = useState(() => readGraphAgentUsage());
 
   const loadSources = useCallback(async () => {
     try {
@@ -215,6 +235,16 @@ export function KnowledgeGraphView() {
     void loadGraph();
   }, [loadGraph]);
 
+  useEffect(() => {
+    const syncUsage = () => setAgentUsage(readGraphAgentUsage());
+    window.addEventListener(GRAPH_AGENT_USAGE_EVENT, syncUsage as EventListener);
+    window.addEventListener('storage', syncUsage);
+    return () => {
+      window.removeEventListener(GRAPH_AGENT_USAGE_EVENT, syncUsage as EventListener);
+      window.removeEventListener('storage', syncUsage);
+    };
+  }, []);
+
   const selectedSource = sources.find((source) => source.id === selectedSourceId) ?? null;
   const relationTypes = useMemo(() => {
     const values = new Set(graph?.edges.map((edge) => edge.relationType) ?? []);
@@ -244,6 +274,10 @@ export function KnowledgeGraphView() {
 
   const positionedNodes = useMemo(() => computeLayout(visibleNodes, visibleEdges), [visibleNodes, visibleEdges]);
   const nodeById = useMemo(() => new Map(positionedNodes.map((node) => [node.id, node])), [positionedNodes]);
+  const nodeLabelById = useMemo(
+    () => new Map(positionedNodes.map((node) => [node.id, node.label])),
+    [positionedNodes],
+  );
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) return positionedNodes[0] ?? null;
     return nodeById.get(selectedNodeId) ?? positionedNodes[0] ?? null;
@@ -252,6 +286,48 @@ export function KnowledgeGraphView() {
     if (!selectedNode) return [];
     return visibleEdges.filter((edge) => edge.source === selectedNode.id || edge.target === selectedNode.id);
   }, [selectedNode, visibleEdges]);
+  const selectedGraphContext = useMemo(() => {
+    if (!selectedNode) return null;
+    return buildGraphAgentContext({
+      sourceId: selectedSourceId || null,
+      sourceLabel: selectedSource ? shortPath(selectedSource.rootPath) : null,
+      pathPrefix: pathPrefix.trim() || null,
+      scopeLabel: graph?.scopeLabel ?? null,
+      node: selectedNode,
+      edges: selectedNodeEdges,
+      nodeLabelById,
+    });
+  }, [graph?.scopeLabel, nodeLabelById, pathPrefix, selectedNode, selectedNodeEdges, selectedSource, selectedSourceId]);
+  const agentUsedNodeIds = useMemo(
+    () => new Set(agentUsage?.usedGraphNodes.map((node) => node.id) ?? []),
+    [agentUsage],
+  );
+  const agentUsedEdgeIds = useMemo(
+    () => new Set(agentUsage?.usedGraphEdges.map((edge) => edge.id) ?? []),
+    [agentUsage],
+  );
+
+  const persistSelectedGraphContext = useCallback(() => {
+    if (!selectedGraphContext) return null;
+    saveGraphAgentContext(selectedGraphContext);
+    toast.success(t('knowledge.graphContextReady'));
+    return selectedGraphContext;
+  }, [selectedGraphContext, t]);
+
+  const handleUseAsContext = useCallback(() => {
+    persistSelectedGraphContext();
+  }, [persistSelectedGraphContext]);
+
+  const handleAskAgent = useCallback(() => {
+    const context = persistSelectedGraphContext();
+    if (!context) return;
+    navigate('/chat', {
+      state: {
+        sourceIds: context.sourceId ? [context.sourceId] : [],
+        collectionContext: buildGraphCollectionContext(context),
+      },
+    });
+  }, [navigate, persistSelectedGraphContext]);
 
   const resetFilters = () => {
     setSelectedSourceId('');
@@ -378,6 +454,11 @@ export function KnowledgeGraphView() {
               </p>
             </div>
             <div className="flex shrink-0 gap-1.5">
+              {agentUsage && agentUsedNodeIds.size > 0 && (
+                <Badge variant="warning">
+                  {t('knowledge.agentUsedPath')}: {agentUsedNodeIds.size}
+                </Badge>
+              )}
               <Badge variant="info">{visibleNodes.length} {t('knowledge.nodes')}</Badge>
               <Badge variant="default">{visibleEdges.length} {t('knowledge.edges')}</Badge>
             </div>
@@ -442,15 +523,16 @@ export function KnowledgeGraphView() {
                     if (!source || !target) return null;
                     const path = edgePath(source, target);
                     const selected = selectedNode && (edge.source === selectedNode.id || edge.target === selectedNode.id);
+                    const agentUsed = agentUsedEdgeIds.has(edge.id);
                     const midX = (source.x + target.x) / 2;
                     const midY = (source.y + target.y) / 2;
                     return (
-                      <g key={edge.id} className={selected ? 'opacity-100' : 'opacity-45'}>
+                      <g key={edge.id} className={selected || agentUsed ? 'opacity-100' : 'opacity-45'}>
                         <path
                           d={path}
                           fill="none"
-                          className={selected ? 'stroke-accent' : 'stroke-text-tertiary'}
-                          strokeWidth={selected ? 2.6 : 1.5}
+                          className={selected ? 'stroke-accent' : agentUsed ? 'stroke-warning' : 'stroke-text-tertiary'}
+                          strokeWidth={selected ? 2.6 : agentUsed ? 2.4 : 1.5}
                           markerEnd="url(#knowledge-edge-arrow)"
                         />
                         {selected && (
@@ -470,7 +552,8 @@ export function KnowledgeGraphView() {
                   {positionedNodes.map((node) => {
                     const tone = entityTone(node.entityType);
                     const selected = selectedNode?.id === node.id;
-                    const muted = selectedNode && !selected && !selectedNodeEdges.some((edge) => edge.source === node.id || edge.target === node.id);
+                    const agentUsed = agentUsedNodeIds.has(node.id);
+                    const muted = selectedNode && !selected && !agentUsed && !selectedNodeEdges.some((edge) => edge.source === node.id || edge.target === node.id);
                     return (
                       <g
                         key={node.id}
@@ -486,8 +569,8 @@ export function KnowledgeGraphView() {
                         <circle
                           cx={node.x}
                           cy={node.y}
-                          r={node.radius + (selected ? 8 : 0)}
-                          className={selected ? 'fill-accent-subtle stroke-accent' : 'fill-transparent stroke-transparent'}
+                          r={node.radius + (selected ? 8 : agentUsed ? 6 : 0)}
+                          className={selected ? 'fill-accent-subtle stroke-accent' : agentUsed ? 'fill-warning/10 stroke-warning' : 'fill-transparent stroke-transparent'}
                           strokeWidth="2"
                         />
                         <circle
@@ -524,7 +607,14 @@ export function KnowledgeGraphView() {
 
         <aside className="min-h-[620px] rounded-lg border border-border bg-surface-1">
           {selectedNode ? (
-            <NodeDetail node={selectedNode} edges={selectedNodeEdges} nodeById={nodeById} />
+            <NodeDetail
+              node={selectedNode}
+              edges={selectedNodeEdges}
+              nodeById={nodeById}
+              graphContext={selectedGraphContext}
+              onUseAsContext={handleUseAsContext}
+              onAskAgent={handleAskAgent}
+            />
           ) : (
             <EmptyState
               icon={<CircleDot size={32} />}
@@ -542,14 +632,21 @@ function NodeDetail({
   node,
   edges,
   nodeById,
+  graphContext,
+  onUseAsContext,
+  onAskAgent,
 }: {
   node: PositionedNode;
   edges: KnowledgeGraphEdge[];
   nodeById: Map<string, PositionedNode>;
+  graphContext: GraphAgentContext | null;
+  onUseAsContext: () => void;
+  onAskAgent: () => void;
 }) {
   const { t } = useTranslation();
   const Icon = entityIcon(node.entityType);
   const tone = entityTone(node.entityType);
+  const tokenEstimate = graphContext?.tokenEstimate ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -567,8 +664,53 @@ function NodeDetail({
             </div>
           </div>
         </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<MessageSquare size={14} />}
+            onClick={onAskAgent}
+          >
+            {t('knowledge.askAgent')}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<PlusCircle size={14} />}
+            onClick={onUseAsContext}
+          >
+            {t('knowledge.useAsContext')}
+          </Button>
+        </div>
         {node.description && (
           <p className="mt-3 text-sm leading-6 text-text-secondary">{node.description}</p>
+        )}
+        {tokenEstimate && (
+          <div className="mt-3 rounded-md border border-border bg-surface-0 p-2">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">
+              {t('knowledge.tokenEstimate')}
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="min-w-0 rounded-md bg-surface-1 px-2 py-1.5">
+                <div className="text-xs font-semibold text-text-primary">
+                  {formatCompactChars(tokenEstimate.graphIndexChars)}
+                </div>
+                <div className="truncate text-[10px] text-text-tertiary">{t('knowledge.graphIndex')}</div>
+              </div>
+              <div className="min-w-0 rounded-md bg-surface-1 px-2 py-1.5">
+                <div className="text-xs font-semibold text-text-primary">
+                  {formatCompactChars(tokenEstimate.rawRetrievalCharsEstimate)}
+                </div>
+                <div className="truncate text-[10px] text-text-tertiary">{t('knowledge.rawEvidenceEstimate')}</div>
+              </div>
+              <div className="min-w-0 rounded-md bg-success/10 px-2 py-1.5">
+                <div className="text-xs font-semibold text-success">
+                  {tokenEstimate.savedPctEstimate}%
+                </div>
+                <div className="truncate text-[10px] text-success">{t('knowledge.tokenSavings')}</div>
+              </div>
+            </div>
+          </div>
         )}
       </div>
 

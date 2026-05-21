@@ -63,5 +63,13 @@
   "evidenceDocuments": "Documents probants",
   "noEvidenceDocuments": "Aucun document probant n'est encore lié à ce sujet.",
   "connectedRelations": "Relations connectées",
-  "noRelations": "Aucune relation connectée dans cette vue."
+  "noRelations": "Aucune relation connectée dans cette vue.",
+  "askAgent": "Demander à l'agent",
+  "useAsContext": "Utiliser comme contexte",
+  "graphContextReady": "Le contexte du graphe est prêt pour le chat.",
+  "agentUsedPath": "Utilisé par l'agent",
+  "tokenEstimate": "Estimation Token",
+  "graphIndex": "Index du graphe",
+  "rawEvidenceEstimate": "Preuves brutes",
+  "tokenSavings": "Économisé"
 }
