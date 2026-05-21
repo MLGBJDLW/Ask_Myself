@@ -10,6 +10,7 @@ import type {
   Conversation,
   ConversationMessage,
   ConversationTurn,
+  ArtifactPayload,
   ImageAttachment,
 } from '../types/conversation';
 import { appTimeMs } from './dateTime';
@@ -305,6 +306,12 @@ export interface RuntimeProfile {
   memoryPolicy: string;
 }
 
+export interface ChatSendOptions {
+  collectionContext?: Conversation['collectionContext'];
+  sourceIds?: string[];
+  userArtifacts?: ArtifactPayload | null;
+}
+
 export interface UseChatSessionReturn {
   messages: ConversationMessage[];
   turns: ConversationTurn[];
@@ -338,7 +345,12 @@ export interface UseChatSessionReturn {
   finishReason: string | null;
   contextOverflow: boolean;
   rateLimited: boolean;
-  send: (content: string, images?: ImageAttachment[], personaOverrideId?: string | null) => Promise<void>;
+  send: (
+    content: string,
+    images?: ImageAttachment[],
+    personaOverrideId?: string | null,
+    options?: ChatSendOptions,
+  ) => Promise<void>;
   stop: () => void;
   deleteConversation: (id: string) => Promise<void>;
   deleteConversationsBatch: (ids: string[]) => Promise<void>;
@@ -997,13 +1009,23 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   }, [activeId]);
 
   const send = useCallback(
-    async (content: string, attachments?: ImageAttachment[], personaOverrideId?: string | null) => {
+    async (
+      content: string,
+      attachments?: ImageAttachment[],
+      personaOverrideId?: string | null,
+      options?: ChatSendOptions,
+    ) => {
       const configForSend = activeAgentConfigRef.current;
       if (!configForSend) {
         toast.error(t('chat.noConfigError'));
         return;
       }
       const personaForSend = personaOverrideId ?? activePersonaId;
+      const sourceIdsForSend = options?.sourceIds?.filter((id) => id.trim().length > 0) ?? [];
+      const collectionContextForSend =
+        options && 'collectionContext' in options
+          ? options.collectionContext ?? null
+          : initialCollectionContext;
 
       // Clear previous error
       setChatError(null);
@@ -1063,12 +1085,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       // Auto-create conversation if none active
       if (!convId) {
         try {
-          const conv = initialCollectionContext
+          const conv = collectionContextForSend
             ? await api.createConversationWithContext(
               configForSend.provider,
               configForSend.model,
               customSystemPrompt || undefined,
-              initialCollectionContext,
+              collectionContextForSend,
               undefined,
               personaForSend,
             )
@@ -1081,15 +1103,19 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           );
           convId = conv.id;
           // Resolve the source scope to seed the new conversation with.
-          // Priority: live selection (getCurrentSourceScope) > initialSourceIds.
+          // Priority: explicit send options > live selection > initialSourceIds.
           const liveScope = getCurrentSourceScopeRef.current?.();
           const scopeToApply =
-            liveScope && liveScope.length > 0 ? liveScope : initialSourceIds;
+            sourceIdsForSend.length > 0
+              ? sourceIdsForSend
+              : liveScope && liveScope.length > 0
+                ? liveScope
+                : initialSourceIds;
           if (scopeToApply.length > 0) {
             await api.setConversationSources(convId, scopeToApply);
           }
-          const nextConversation = initialCollectionContext
-            ? { ...conv, collectionContext: initialCollectionContext }
+          const nextConversation = collectionContextForSend
+            ? { ...conv, collectionContext: collectionContextForSend }
             : conv;
           setConversations((prev) => [nextConversation, ...prev]);
           setInternalConversationId(convId);
@@ -1097,6 +1123,21 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         } catch (e) {
           toast.error(formatUserError(t('chat.createError'), e));
           return;
+        }
+      } else {
+        if (sourceIdsForSend.length > 0) {
+          await api.setConversationSources(convId, sourceIdsForSend).catch(() => undefined);
+        }
+        if (options && 'collectionContext' in options) {
+          await api.updateConversationCollectionContext(convId, collectionContextForSend)
+            .then(() => {
+              setConversations((prev) =>
+                prev.map((conv) =>
+                  conv.id === convId ? { ...conv, collectionContext: collectionContextForSend } : conv,
+                ),
+              );
+            })
+            .catch(() => undefined);
         }
       }
 
@@ -1110,7 +1151,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         content,
         toolCallId: null,
         toolCalls: [],
-        artifacts: null,
+        artifacts: options?.userArtifacts ?? null,
         tokenCount: 0,
         createdAt: new Date().toISOString(),
         sortOrder: currentMessages.length,

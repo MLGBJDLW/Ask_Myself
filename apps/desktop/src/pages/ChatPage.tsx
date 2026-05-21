@@ -1,6 +1,6 @@
 import { useCallback, useState, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Settings, PanelLeftClose, PanelLeftOpen, UserRound } from 'lucide-react';
+import { Network, Settings, PanelLeftClose, PanelLeftOpen, UserRound, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
@@ -10,12 +10,20 @@ import { ChatMessages } from '../features/chat';
 import { useApprovalQueue } from '../lib/useApprovalQueue';
 import { useTranslation } from '../i18n';
 import { EmptyState } from '../components/ui/EmptyState';
+import { Button } from '../components/ui/Button';
 import { useChatSession } from '../lib/useChatSession';
 import { useResizablePanel } from '../lib/useResizablePanel';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
 import type { AgentConfig, Conversation, ImageAttachment } from '../types/conversation';
 import { formatUserError } from '../lib/userError';
+import {
+  GRAPH_AGENT_CONTEXT_EVENT,
+  buildGraphCollectionContext,
+  clearGraphAgentContext,
+  readGraphAgentContext,
+  type GraphAgentContext,
+} from '../lib/knowledgeGraphAgent';
 
 function personaExists(personas: api.PersonaProfile[], id: string): boolean {
   return personas.some((persona) => persona.id === id && persona.enabled !== false);
@@ -109,6 +117,19 @@ export function ChatPage() {
     initialCollectionContext,
     activePersonaId,
   });
+  const [pendingGraphContext, setPendingGraphContext] = useState<GraphAgentContext | null>(
+    () => readGraphAgentContext(),
+  );
+
+  useEffect(() => {
+    const syncGraphContext = () => setPendingGraphContext(readGraphAgentContext());
+    window.addEventListener(GRAPH_AGENT_CONTEXT_EVENT, syncGraphContext as EventListener);
+    window.addEventListener('storage', syncGraphContext);
+    return () => {
+      window.removeEventListener(GRAPH_AGENT_CONTEXT_EVENT, syncGraphContext as EventListener);
+      window.removeEventListener('storage', syncGraphContext);
+    };
+  }, []);
 
   useEffect(() => {
     if (!chat.activeId) return;
@@ -137,10 +158,37 @@ export function ChatPage() {
       if (suggestedPersonaId && suggestedPersonaId !== activePersonaId) {
         setPersona(suggestedPersonaId);
       }
-      await chat.send(content, attachments, personaForSend);
+      const graphContext = pendingGraphContext;
+      if (graphContext?.sourceId) {
+        currentSourceIdsRef.current = [graphContext.sourceId];
+      }
+      await chat.send(
+        content,
+        attachments,
+        personaForSend,
+        graphContext
+          ? {
+              collectionContext: buildGraphCollectionContext(graphContext),
+              sourceIds: graphContext.sourceId ? [graphContext.sourceId] : [],
+              userArtifacts: {
+                kind: 'graphAgentContext',
+                graphContext,
+              },
+            }
+          : undefined,
+      );
+      if (graphContext) {
+        clearGraphAgentContext();
+        setPendingGraphContext(null);
+      }
     },
-    [activePersonaId, chat.send, personas, setPersona],
+    [activePersonaId, chat.send, pendingGraphContext, personas, setPersona],
   );
+
+  const handleClearGraphContext = useCallback(() => {
+    clearGraphAgentContext();
+    setPendingGraphContext(null);
+  }, []);
 
   const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>([]);
   useEffect(() => {
@@ -504,7 +552,7 @@ export function ChatPage() {
             </button>
           </div>
         )}
-        {!chat.activeId && !chat.isStreaming ? (
+        {!chat.activeId && !chat.isStreaming && !pendingGraphContext ? (
           <div className="flex-1 flex items-center justify-center">
             <EmptyState
               icon={<Logo size={64} />}
@@ -624,6 +672,41 @@ export function ChatPage() {
               toolCalls={chat.toolCalls}
               taskRun={chat.taskRun}
             />
+            {pendingGraphContext && (
+              <div className="mx-4 mb-2 rounded-md border border-accent/25 bg-accent/10 px-3 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Network className="h-4 w-4 shrink-0 text-accent" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-medium text-text-primary">
+                      {t('chat.graphContextFromKnowledge', { name: pendingGraphContext.node.label })}
+                    </div>
+                    <div className="mt-0.5 truncate text-[11px] text-text-tertiary">
+                      {[
+                        pendingGraphContext.sourceLabel,
+                        pendingGraphContext.pathPrefix,
+                        t('chat.graphContextStats', {
+                          nodes: String(new Set([
+                            pendingGraphContext.node.id,
+                            ...pendingGraphContext.edges.flatMap((edge) => [edge.source, edge.target]),
+                          ]).size),
+                          documents: String(pendingGraphContext.documents.length),
+                          saved: String(pendingGraphContext.tokenEstimate.savedPctEstimate),
+                        }),
+                      ].filter(Boolean).join(' · ')}
+                    </div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    iconOnly
+                    icon={<X size={14} />}
+                    aria-label={t('chat.removeGraphContext')}
+                    title={t('chat.removeGraphContext')}
+                    onClick={handleClearGraphContext}
+                  />
+                </div>
+              </div>
+            )}
             <ChatInput
               onSend={handleChatSend}
               onStop={chat.stop}

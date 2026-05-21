@@ -404,9 +404,10 @@ fn knowledge_plan(input: TaskPlanningInput<'_>, objective: String) -> AgentTaskP
             ),
             plan_step(
                 "gather",
-                "Retrieve and compare the most relevant local evidence.",
+                "Use the knowledge graph as a compact index, then retrieve and compare the most relevant local evidence.",
                 PlanStepStatus::Pending,
                 &[
+                    "query_knowledge_graph",
                     "search_knowledge_base",
                     "retrieve_evidence",
                     "compare_documents",

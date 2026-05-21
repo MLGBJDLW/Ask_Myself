@@ -56,6 +56,11 @@ import {
   type DiffStatsArtifact,
 } from './FileDiffPreview';
 import { isFileChangeToolRender } from './toolRenderers';
+import {
+  extractGraphAgentUsage,
+  saveGraphAgentUsage,
+  type GraphAgentUsage,
+} from '../../lib/knowledgeGraphAgent';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -101,6 +106,94 @@ interface ImagePromptArgs {
   quality?: string;
   outputFormat?: string;
   model?: string;
+}
+
+function KnowledgeGraphUsagePanel({
+  usage,
+  compact = false,
+}: {
+  usage: GraphAgentUsage;
+  compact?: boolean;
+}) {
+  const { t } = useTranslation();
+  const nodeLimit = compact ? 4 : 8;
+  const bundleLimit = compact ? 3 : 5;
+  const docLimit = compact ? 3 : 6;
+  const tokenEstimate = usage.tokenEstimate ?? null;
+  const usedGraphBundles = usage.usedGraphBundles ?? [];
+
+  return (
+    <div className={`rounded-md border border-border/55 bg-surface-0/55 ${compact ? 'p-2' : 'p-3'}`}>
+      <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-text-secondary">
+        <span className="inline-flex items-center gap-1 font-medium text-text-primary">
+          <Layers className="h-3.5 w-3.5 text-accent" />
+          {t('chat.usedGraphNodes', { count: String(usage.usedGraphNodes.length) })}
+        </span>
+        <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
+          {t('chat.usedGraphEdges', { count: String(usage.usedGraphEdges.length) })}
+        </span>
+        {usedGraphBundles.length > 0 && (
+          <span className="rounded-full border border-info/25 bg-info/10 px-2 py-0.5 text-info">
+            {t('chat.usedGraphBundles', { count: String(usedGraphBundles.length) })}
+          </span>
+        )}
+        <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
+          {t('chat.usedGraphDocuments', { count: String(usage.usedDocuments.length) })}
+        </span>
+        {tokenEstimate && (
+          <span className="rounded-full border border-success/25 bg-success/10 px-2 py-0.5 text-success">
+            {t('chat.graphTokenSavings', { saved: String(tokenEstimate.savedPctEstimate) })}
+          </span>
+        )}
+      </div>
+      {usage.usedGraphNodes.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {usage.usedGraphNodes.slice(0, nodeLimit).map((node) => (
+            <span
+              key={node.id}
+              className="max-w-full truncate rounded-md border border-border/55 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary"
+              title={node.description || node.label}
+            >
+              {node.label}
+            </span>
+          ))}
+          {usage.usedGraphNodes.length > nodeLimit && (
+            <span className="rounded-md border border-border/45 px-2 py-1 text-[11px] text-text-tertiary">
+              +{usage.usedGraphNodes.length - nodeLimit}
+            </span>
+          )}
+        </div>
+      )}
+      {usedGraphBundles.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {usedGraphBundles.slice(0, bundleLimit).map((bundle) => (
+            <span
+              key={bundle.id}
+              className="max-w-full truncate rounded-md border border-info/25 bg-info/10 px-2 py-1 text-[11px] text-info"
+              title={bundle.relationTypes.join(', ')}
+            >
+              {bundle.relationCount}x {bundle.sourceLabel ?? bundle.source} / {bundle.targetLabel ?? bundle.target}
+            </span>
+          ))}
+          {usedGraphBundles.length > bundleLimit && (
+            <span className="rounded-md border border-border/45 px-2 py-1 text-[11px] text-text-tertiary">
+              +{usedGraphBundles.length - bundleLimit}
+            </span>
+          )}
+        </div>
+      )}
+      {usage.usedDocuments.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {usage.usedDocuments.slice(0, docLimit).map((doc) => (
+            <div key={doc.documentId} className="flex min-w-0 items-center gap-1.5 text-[11px] text-text-tertiary">
+              <FileText className="h-3 w-3 shrink-0" />
+              <span className="truncate">{doc.title}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 type ToolCallCardStatus = ToolCallEvent['status'];
@@ -927,6 +1020,7 @@ export function ToolCallCard({
   const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
   const generatedImage = useMemo(() => extractGeneratedImageArtifact(artifacts), [artifacts]);
+  const graphUsage = useMemo(() => extractGraphAgentUsage(artifacts), [artifacts]);
   const imageArgs = useMemo(() => parseImagePromptArgs(args), [args]);
   const isImageRender = renderKind === 'image' || safeToolName.toLowerCase() === 'generate_image';
   const showImagePendingPreview = isImageRender && isPending && !generatedImage;
@@ -939,6 +1033,15 @@ export function ToolCallCard({
   );
 
   const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!isPending && graphUsage) {
+      saveGraphAgentUsage({
+        ...graphUsage,
+        createdAt: new Date().toISOString(),
+      });
+    }
+  }, [graphUsage, isPending]);
 
   // Auto-collapse file mutation details when execution finishes; users can manually re-open.
   useEffect(() => {
@@ -984,6 +1087,12 @@ export function ToolCallCard({
           ? t('chat.generatedImageReady')
         : showImagePendingPreview
           ? t('chat.generatedImageLoading')
+        : graphUsage
+          ? t('chat.graphContextSummary', {
+              nodes: String(graphUsage.usedGraphNodes.length),
+              edges: String(graphUsage.usedGraphEdges.length),
+              documents: String(graphUsage.usedDocuments.length),
+            })
         : diffStats
           ? `${diffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
         : showPendingDiffStats
@@ -1013,6 +1122,7 @@ export function ToolCallCard({
     fileDiff ||
     diffStats ||
     generatedImage ||
+    graphUsage ||
     showImagePendingPreview ||
     streamingArgsPreview,
   );
@@ -1121,6 +1231,8 @@ export function ToolCallCard({
                     {trustBoundary && <TrustBoundaryPills boundary={trustBoundary} />}
                     <SearchResultCards items={searchItems} />
                   </>
+                ) : graphUsage ? (
+                  <KnowledgeGraphUsagePanel usage={graphUsage} compact />
                 ) : planArtifact ? (
                   <PlanPanel plan={planArtifact} />
                 ) : verificationArtifact ? (
@@ -1225,6 +1337,8 @@ export function ToolCallCard({
                     {trustBoundary && <TrustBoundaryPills boundary={trustBoundary} />}
                     <SearchResultCards items={searchItems} />
                   </>
+                ) : graphUsage ? (
+                  <KnowledgeGraphUsagePanel usage={graphUsage} compact />
                 ) : planArtifact ? (
                   <PlanPanel plan={planArtifact} />
                 ) : verificationArtifact ? (
@@ -1502,6 +1616,8 @@ export function ToolCallCard({
                     </pre>
                   )}
                 </div>
+              ) : graphUsage ? (
+                <KnowledgeGraphUsagePanel usage={graphUsage} />
               ) : searchItems ? (
                 <>
                   {trustBoundary && <TrustBoundaryPills boundary={trustBoundary} />}

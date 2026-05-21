@@ -362,7 +362,7 @@ export const SUBAGENT_TOOL_CATALOG: SubagentToolDescriptor[] = [
   {
     name: 'query_knowledge_graph',
     label: 'Knowledge Graph',
-    description: 'Query the entity-relationship graph for connected concepts and paths.',
+    description: 'Use the graph as a compact index for connected concepts, paths, and evidence documents.',
     enabledByDefault: true,
     source: 'built_in',
   },

@@ -4,7 +4,6 @@ import {
   Brain,
   FileText,
   Activity,
-  Search,
   RefreshCw,
   AlertTriangle,
   Info,
@@ -19,8 +18,6 @@ import { useProgress, progressStore } from '../lib/progressStore';
 import type {
   CompileStats,
   CompileResult,
-  KnowledgeMap,
-  Entity,
   HealthReport,
   HealthIssue,
   Severity,
@@ -28,11 +25,11 @@ import type {
 } from '../types/knowledge';
 import { useTranslation } from '../i18n';
 import { Button } from '../components/ui/Button';
-import { Input } from '../components/ui/Input';
 import { Badge } from '../components/ui/Badge';
 import { CardSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { formatUserError } from '../lib/userError';
+import { KnowledgeGraphView } from '../components/knowledge/KnowledgeGraphView';
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
@@ -78,11 +75,6 @@ export function KnowledgePage() {
   const compileProgress = progress.compileProgress;
   const [compileResults, setCompileResults] = useState<CompileResult[]>([]);
 
-  // Map state
-  const [knowledgeMap, setKnowledgeMap] = useState<KnowledgeMap | null>(null);
-  const [mapLoading, setMapLoading] = useState(false);
-  const [entitySearch, setEntitySearch] = useState('');
-
   // Health state
   const [healthReport, setHealthReport] = useState<HealthReport | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
@@ -98,18 +90,6 @@ export function KnowledgePage() {
       toast.error(formatUserError(t('knowledge.compileStats'), e));
     } finally {
       setStatsLoading(false);
-    }
-  }, [t]);
-
-  const loadMap = useCallback(async () => {
-    setMapLoading(true);
-    try {
-      const m = await api.getKnowledgeMap(100);
-      setKnowledgeMap(m);
-    } catch (e) {
-      toast.error(formatUserError(t('knowledge.knowledgeMap'), e));
-    } finally {
-      setMapLoading(false);
     }
   }, [t]);
 
@@ -145,17 +125,7 @@ export function KnowledgePage() {
 
   useEffect(() => {
     if (activeTab === 'compile') loadStats();
-    if (activeTab === 'map') loadMap();
-  }, [activeTab, loadStats, loadMap]);
-
-  /* ── Filtered entities ─────────────────────────────────────────── */
-
-  const filteredEntities: Entity[] =
-    knowledgeMap?.entities.filter((e: Entity) =>
-      entitySearch === '' ||
-      e.name.toLowerCase().includes(entitySearch.toLowerCase()) ||
-      e.entityType.toLowerCase().includes(entitySearch.toLowerCase())
-    ) ?? [];
+  }, [activeTab, loadStats]);
 
   /* ── Grouped health issues ─────────────────────────────────────── */
 
@@ -348,74 +318,9 @@ export function KnowledgePage() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
               transition={{ duration: 0.15 }}
-              className="space-y-4"
+              className="min-h-0"
             >
-              {/* Search */}
-              <Input
-                icon={<Search size={15} />}
-                placeholder={t('knowledge.searchEntities')}
-                value={entitySearch}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEntitySearch(e.target.value)}
-              />
-
-              {mapLoading ? (
-                <div className="space-y-3">
-                  <CardSkeleton />
-                  <CardSkeleton />
-                  <CardSkeleton />
-                </div>
-              ) : filteredEntities.length === 0 ? (
-                <EmptyState
-                  icon={<Network size={32} />}
-                  title={t('knowledge.noEntities')}
-                  description={t('knowledge.searchEntities')}
-                />
-              ) : (
-                <div className="border border-border rounded-lg overflow-hidden">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="bg-surface-2 text-text-secondary text-left">
-                        <th className="px-4 py-2.5 font-medium">{t('knowledge.totalEntities')}</th>
-                        <th className="px-4 py-2.5 font-medium">{t('knowledge.entityType')}</th>
-                        <th className="px-4 py-2.5 font-medium text-right">{t('knowledge.mentions')}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredEntities.map((entity) => (
-                        <tr
-                          key={entity.id}
-                          className="border-t border-border hover:bg-surface-1 transition-colors"
-                        >
-                          <td className="px-4 py-2.5">
-                            <div>
-                              <span className="text-text-primary font-medium">{entity.name}</span>
-                              {entity.description && (
-                                <p className="text-xs text-text-tertiary mt-0.5 line-clamp-1">
-                                  {entity.description}
-                                </p>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-4 py-2.5">
-                            <Badge variant="default">{entity.entityType}</Badge>
-                          </td>
-                          <td className="px-4 py-2.5 text-right text-text-secondary">
-                            {entity.mentionCount}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* Summary */}
-              {knowledgeMap && !mapLoading && (
-                <div className="flex gap-4 text-xs text-text-tertiary">
-                  <span>{t('knowledge.totalEntities')}: {knowledgeMap.totalEntities}</span>
-                  <span>{t('knowledge.totalLinks')}: {knowledgeMap.totalLinks}</span>
-                </div>
-              )}
+              <KnowledgeGraphView />
             </motion.div>
           )}
 

@@ -60,6 +60,53 @@ export interface KnowledgeMap {
   totalLinks: number;
 }
 
+export interface KnowledgeGraphDocumentRef {
+  documentId: string;
+  title: string;
+  path: string;
+  sourceId: string;
+}
+
+export interface KnowledgeGraphNode {
+  id: string;
+  label: string;
+  entityType: string;
+  description: string;
+  mentionCount: number;
+  documentCount: number;
+  linkCount: number;
+  firstSeenDoc: string | null;
+  documents: KnowledgeGraphDocumentRef[];
+}
+
+export interface KnowledgeGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  relationType: string;
+  strength: number;
+  evidenceDocId: string | null;
+  evidenceTitle: string | null;
+  evidencePath: string | null;
+}
+
+export interface KnowledgeGraph {
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+  totalNodes: number;
+  totalEdges: number;
+  scopeLabel: string | null;
+}
+
+export interface KnowledgeGraphFilters {
+  limit?: number;
+  sourceId?: string | null;
+  pathPrefix?: string | null;
+  entityTypes?: string[];
+  relationTypes?: string[];
+  minStrength?: number | null;
+}
+
 // ── Lint / Health Check Types ───────────────────────────────────────────
 
 export type CheckType = "stale" | "orphan" | "gap" | "duplicate" | "contradiction";

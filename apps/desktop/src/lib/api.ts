@@ -1217,6 +1217,8 @@ export const runAgentQualityEval = () =>
 import type {
   CompileResult,
   CompileStats,
+  KnowledgeGraph,
+  KnowledgeGraphFilters,
   KnowledgeMap,
   HealthReport,
 } from '../types/knowledge';
@@ -1232,6 +1234,16 @@ export const getCompileStats = () =>
 
 export const getKnowledgeMap = (limit?: number) =>
   invoke<KnowledgeMap>('get_knowledge_map_cmd', { limit: limit ?? 50 });
+
+export const getKnowledgeGraph = (filters?: KnowledgeGraphFilters) =>
+  invoke<KnowledgeGraph>('get_knowledge_graph_cmd', {
+    limit: filters?.limit ?? 80,
+    sourceId: filters?.sourceId ?? null,
+    pathPrefix: filters?.pathPrefix ?? null,
+    entityTypes: filters?.entityTypes ?? [],
+    relationTypes: filters?.relationTypes ?? [],
+    minStrength: filters?.minStrength ?? null,
+  });
 
 export const runKnowledgeHealthCheck = (staleDays?: number) =>
   invoke<HealthReport>('run_knowledge_health_check_cmd', { staleDays: staleDays ?? 90 });
