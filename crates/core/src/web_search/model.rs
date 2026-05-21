@@ -12,6 +12,9 @@ pub enum SearchEngine {
     DuckDuckGo,
     Brave,
     Tavily,
+    #[serde(rename = "anysearch", alias = "any_search")]
+    AnySearch,
+    #[serde(rename = "serpapi_google", alias = "serp_api_google")]
     SerpApiGoogle,
     Searxng,
 }
@@ -25,6 +28,7 @@ impl SearchEngine {
             Self::DuckDuckGo => "duckduckgo",
             Self::Brave => "brave",
             Self::Tavily => "tavily",
+            Self::AnySearch => "anysearch",
             Self::SerpApiGoogle => "serpapi_google",
             Self::Searxng => "searxng",
         }
@@ -45,6 +49,7 @@ impl SearchEngine {
             "duckduckgo" | "duck_duck_go" | "ddg" => Some(Self::DuckDuckGo),
             "brave" | "brave_search" => Some(Self::Brave),
             "tavily" => Some(Self::Tavily),
+            "anysearch" | "any_search" => Some(Self::AnySearch),
             "serpapi_google" | "serpapi" => Some(Self::SerpApiGoogle),
             "searxng" | "searx" => Some(Self::Searxng),
             _ => None,

@@ -85,7 +85,7 @@ fn resolve_engines(
 
     if !unknown.is_empty() {
         return Err(format!(
-            "Unsupported search engine(s): {}. Allowed in tool arguments: baidu, sogou, bing, duckduckgo. Configure Brave, Tavily, SerpAPI, or SearXNG in settings instead.",
+            "Unsupported search engine(s): {}. Allowed in tool arguments: baidu, sogou, bing, duckduckgo. Configure Brave, Tavily, AnySearch, SerpAPI, or SearXNG in settings instead.",
             unknown.join(", ")
         ));
     }
@@ -101,6 +101,7 @@ fn resolve_engines(
             SearchEngine::DuckDuckGo => 3,
             SearchEngine::Brave
             | SearchEngine::Tavily
+            | SearchEngine::AnySearch
             | SearchEngine::SerpApiGoogle
             | SearchEngine::Searxng => 4,
         });

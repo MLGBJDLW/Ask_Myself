@@ -82,11 +82,14 @@ pub enum WebSearchProviderMode {
     CustomOnly,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WebSearchCustomProviderPreset {
     Brave,
     Tavily,
+    #[serde(rename = "anysearch", alias = "any_search")]
+    AnySearch,
+    #[serde(rename = "serpapi_google", alias = "serp_api_google")]
     SerpApiGoogle,
     Searxng,
 }
@@ -96,6 +99,7 @@ impl WebSearchCustomProviderPreset {
         match self {
             Self::Brave => "brave",
             Self::Tavily => "tavily",
+            Self::AnySearch => "anysearch",
             Self::SerpApiGoogle => "serpapi_google",
             Self::Searxng => "searxng",
         }
@@ -105,6 +109,7 @@ impl WebSearchCustomProviderPreset {
         match self {
             Self::Brave => "Brave Search API",
             Self::Tavily => "Tavily Search",
+            Self::AnySearch => "AnySearch",
             Self::SerpApiGoogle => "SerpAPI Google",
             Self::Searxng => "SearXNG",
         }
@@ -114,13 +119,14 @@ impl WebSearchCustomProviderPreset {
         match self {
             Self::Brave => Some("https://api.search.brave.com/res/v1/web/search".to_string()),
             Self::Tavily => Some("https://api.tavily.com/search".to_string()),
+            Self::AnySearch => Some("https://api.anysearch.com/v1/search".to_string()),
             Self::SerpApiGoogle => Some("https://serpapi.com/search.json".to_string()),
             Self::Searxng => None,
         }
     }
 
     pub fn requires_api_key(self) -> bool {
-        !matches!(self, Self::Searxng)
+        !matches!(self, Self::AnySearch | Self::Searxng)
     }
 
     pub fn requires_base_url(self) -> bool {
@@ -172,6 +178,7 @@ fn default_web_search_custom_providers() -> Vec<WebSearchCustomProviderConfig> {
     [
         (WebSearchCustomProviderPreset::Brave, 10u32),
         (WebSearchCustomProviderPreset::Tavily, 20u32),
+        (WebSearchCustomProviderPreset::AnySearch, 25u32),
         (WebSearchCustomProviderPreset::SerpApiGoogle, 30u32),
         (WebSearchCustomProviderPreset::Searxng, 40u32),
     ]
@@ -545,28 +552,94 @@ mod tests {
 
         assert!(!config.dynamic_tool_visibility);
         assert!(config.trace_enabled);
-        assert_eq!(config.web_search.custom_providers.len(), 4);
+        assert_eq!(config.web_search.custom_providers.len(), 5);
         assert!(config
             .web_search
             .custom_providers
             .iter()
             .any(|provider| provider.preset == WebSearchCustomProviderPreset::Brave));
+        assert!(config
+            .web_search
+            .custom_providers
+            .iter()
+            .any(|provider| provider.preset == WebSearchCustomProviderPreset::AnySearch));
+    }
+
+    #[test]
+    fn web_search_provider_wire_names_match_frontend() {
+        let config: WebSearchConfig = serde_json::from_value(serde_json::json!({
+            "providerProfile": "default",
+            "reranker": "auto",
+            "providerMode": "built_in_first",
+            "customProviders": [
+                {
+                    "id": "tavily",
+                    "preset": "tavily",
+                    "name": "Tavily Search",
+                    "enabled": true,
+                    "apiKey": "tvly-dev-example",
+                    "baseUrl": "https://api.tavily.com/search",
+                    "priority": 20
+                },
+                {
+                    "id": "anysearch",
+                    "preset": "anysearch",
+                    "name": "AnySearch",
+                    "enabled": true,
+                    "apiKey": "",
+                    "baseUrl": "https://api.anysearch.com/v1/search",
+                    "priority": 25
+                },
+                {
+                    "id": "serpapi_google",
+                    "preset": "serpapi_google",
+                    "name": "SerpAPI Google",
+                    "enabled": false,
+                    "apiKey": "",
+                    "baseUrl": "https://serpapi.com/search.json",
+                    "priority": 30
+                }
+            ]
+        }))
+        .expect("frontend web search config should deserialize");
+
+        assert_eq!(
+            config.custom_providers[1].preset,
+            WebSearchCustomProviderPreset::AnySearch
+        );
+        assert_eq!(
+            config.custom_providers[2].preset,
+            WebSearchCustomProviderPreset::SerpApiGoogle
+        );
+
+        let json = serde_json::to_string(&config).expect("serialize web search config");
+        assert!(json.contains("\"preset\":\"anysearch\""));
+        assert!(json.contains("\"preset\":\"serpapi_google\""));
     }
 
     #[test]
     fn app_config_encrypts_web_search_provider_keys() {
         let db = Database::open_memory().expect("open_memory");
         let mut config = AppConfig::default();
-        config.web_search.custom_providers[0].enabled = true;
-        config.web_search.custom_providers[0].api_key = "brave-secret".to_string();
+        let tavily = config
+            .web_search
+            .custom_providers
+            .iter_mut()
+            .find(|provider| provider.preset == WebSearchCustomProviderPreset::Tavily)
+            .expect("tavily provider");
+        tavily.enabled = true;
+        tavily.api_key = "tvly-dev-example".to_string();
 
         db.save_app_config(&config).expect("save app config");
         let loaded = db.load_app_config().expect("load app config");
 
-        assert_eq!(
-            loaded.web_search.custom_providers[0].api_key,
-            "brave-secret"
-        );
+        let loaded_tavily = loaded
+            .web_search
+            .custom_providers
+            .iter()
+            .find(|provider| provider.preset == WebSearchCustomProviderPreset::Tavily)
+            .expect("loaded tavily provider");
+        assert_eq!(loaded_tavily.api_key, "tvly-dev-example");
 
         let raw: String = db
             .conn()
@@ -576,6 +649,6 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("raw app_config");
-        assert!(!raw.contains("brave-secret"));
+        assert!(!raw.contains("tvly-dev-example"));
     }
 }

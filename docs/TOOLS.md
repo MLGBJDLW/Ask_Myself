@@ -574,7 +574,7 @@ Download a supported public image asset into the workspace. This tool requires c
 
 ### `web_search`
 
-Search the public web through Nexa's native no-key providers. Use it to discover candidate URLs, then use `fetch_url` on the most authoritative results before citing or summarizing them.
+Search the public web through Nexa's native no-key providers plus any enabled configured providers such as Brave, Tavily, AnySearch, SerpAPI, or SearXNG. Use it to discover candidate URLs, then use `fetch_url` on the most authoritative results before citing or summarizing them.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

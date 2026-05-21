@@ -49,6 +49,15 @@ const DEFAULT_WEB_SEARCH_CONFIG: WebSearchConfig = {
       priority: 20,
     },
     {
+      id: 'anysearch',
+      preset: 'anysearch',
+      name: 'AnySearch',
+      enabled: false,
+      apiKey: '',
+      baseUrl: 'https://api.anysearch.com/v1/search',
+      priority: 25,
+    },
+    {
       id: 'serpapi_google',
       preset: 'serpapi_google',
       name: 'SerpAPI Google',
@@ -93,6 +102,7 @@ const PROVIDER_MODE_OPTIONS: WebSearchProviderMode[] = [
 const CUSTOM_PROVIDER_PRESETS: WebSearchCustomProviderPreset[] = [
   'brave',
   'tavily',
+  'anysearch',
   'serpapi_google',
   'searxng',
 ];
@@ -149,6 +159,7 @@ const PROVIDER_MODE_DESC_KEYS: Record<WebSearchProviderMode, TranslationKey> = {
 const CUSTOM_PROVIDER_LABEL_KEYS: Record<WebSearchCustomProviderPreset, TranslationKey> = {
   brave: 'settings.webSearchCustomProvider.brave',
   tavily: 'settings.webSearchCustomProvider.tavily',
+  anysearch: 'settings.webSearchCustomProvider.anysearch',
   serpapi_google: 'settings.webSearchCustomProvider.serpapi_google',
   searxng: 'settings.webSearchCustomProvider.searxng',
 };
@@ -156,6 +167,7 @@ const CUSTOM_PROVIDER_LABEL_KEYS: Record<WebSearchCustomProviderPreset, Translat
 const CUSTOM_PROVIDER_DESC_KEYS: Record<WebSearchCustomProviderPreset, TranslationKey> = {
   brave: 'settings.webSearchCustomProvider.brave.desc',
   tavily: 'settings.webSearchCustomProvider.tavily.desc',
+  anysearch: 'settings.webSearchCustomProvider.anysearch.desc',
   serpapi_google: 'settings.webSearchCustomProvider.serpapi_google.desc',
   searxng: 'settings.webSearchCustomProvider.searxng.desc',
 };
@@ -194,6 +206,13 @@ function healthClass(health: WebSearchProviderHealth): string {
     default:
       return 'bg-surface-3 text-text-tertiary';
   }
+}
+
+function isCustomProviderConfigured(provider: WebSearchCustomProviderConfig): boolean {
+  if (!provider.enabled) return false;
+  if (provider.preset === 'searxng') return Boolean(provider.baseUrl?.trim());
+  if (provider.preset === 'anysearch') return true;
+  return Boolean(provider.apiKey.trim());
 }
 
 export function WebSearchSettingsPanel({
@@ -241,13 +260,7 @@ export function WebSearchSettingsPanel({
   };
 
   const statusById = new Map(status.map((provider) => [provider.id, provider]));
-  const configuredCustomProviders = config.customProviders.filter(
-    (provider) => provider.enabled && provider.apiKey.trim(),
-  ).length;
-  const configuredSearxng = config.customProviders.some(
-    (provider) => provider.preset === 'searxng' && provider.enabled && provider.baseUrl?.trim(),
-  );
-  const configuredProviderCount = configuredCustomProviders + (configuredSearxng ? 1 : 0);
+  const configuredProviderCount = config.customProviders.filter(isCustomProviderConfigured).length;
 
   return (
     <Section
