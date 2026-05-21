@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.10...nexa-monorepo-v0.6.11) (2026-05-21)
+
+
+### Features
+
+* **core:** add AnySearch web search provider ([2eb494f](https://github.com/MLGBJDLW/Nexa/commit/2eb494f2585852e58ba07a2d86224bffd41c3ddf))
+
+
+### Bug Fixes
+
+* **core:** enforce web search provider priority ([c9f3f52](https://github.com/MLGBJDLW/Nexa/commit/c9f3f52f45787472952dca78466887166df823a7))
+
 ## [0.6.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.9...nexa-monorepo-v0.6.10) (2026-05-20)
 
 
