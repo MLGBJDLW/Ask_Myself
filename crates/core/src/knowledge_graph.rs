@@ -6,6 +6,19 @@ use crate::compile::{parse_entity_type, Entity};
 use crate::db::Database;
 use crate::error::CoreError;
 
+const ENTITY_DOCUMENT_LINKS_CTE: &str = "WITH entity_document_links AS (
+    SELECT entity_id, document_id, MAX(relevance) AS relevance, MAX(context_snippet) AS context_snippet
+    FROM (
+        SELECT de.entity_id, de.document_id, de.relevance, de.context_snippet
+        FROM document_entities de
+        UNION ALL
+        SELECT e.id AS entity_id, e.first_seen_doc AS document_id, 1.0 AS relevance, e.description AS context_snippet
+        FROM entities e
+        WHERE e.first_seen_doc IS NOT NULL AND TRIM(e.first_seen_doc) <> ''
+    )
+    GROUP BY entity_id, document_id
+)";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntityLink {
@@ -354,12 +367,13 @@ impl Database {
         };
 
         let sql = format!(
-            "SELECT e.id, e.name, e.entity_type, e.description, e.first_seen_doc, e.mention_count,
-                    COUNT(DISTINCT de.document_id) AS document_count,
+            "{ENTITY_DOCUMENT_LINKS_CTE}
+             SELECT e.id, e.name, e.entity_type, e.description, e.first_seen_doc, e.mention_count,
+                    COUNT(DISTINCT edl.document_id) AS document_count,
                     (SELECT COUNT(*) FROM entity_links el WHERE el.source_entity_id = e.id OR el.target_entity_id = e.id) AS link_count
              FROM entities e
-             JOIN document_entities de ON e.id = de.entity_id
-             JOIN documents d ON d.id = de.document_id
+             JOIN entity_document_links edl ON e.id = edl.entity_id
+             JOIN documents d ON d.id = edl.document_id
              {where_sql}
              GROUP BY e.id
              ORDER BY document_count DESC, e.mention_count DESC, e.name COLLATE NOCASE
@@ -395,14 +409,25 @@ impl Database {
         let edges = if node_ids.is_empty() {
             Vec::new()
         } else {
-            query_graph_edges(
+            let mut graph_edges = query_graph_edges(
                 &conn,
                 &node_ids,
                 &source_ids,
                 &path_patterns,
                 &query.relation_types,
                 query.min_strength.unwrap_or(0.0),
-            )?
+            )?;
+            if graph_edges.is_empty() && relation_filter_allows_cooccurrence(&query.relation_types)
+            {
+                graph_edges = query_cooccurrence_edges(
+                    &conn,
+                    &node_ids,
+                    &source_ids,
+                    &path_patterns,
+                    query.min_strength.unwrap_or(0.0),
+                )?;
+            }
+            graph_edges
         };
 
         let scope_label = graph_scope_label(&source_ids, query.path_prefix.as_deref());
@@ -555,6 +580,13 @@ fn push_path_filter(
     );
 }
 
+fn relation_filter_allows_cooccurrence(relation_types: &[String]) -> bool {
+    relation_types.is_empty()
+        || relation_types
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case("co_occurs"))
+}
+
 fn query_entity_documents(
     conn: &rusqlite::Connection,
     entity_id: &str,
@@ -564,7 +596,7 @@ fn query_entity_documents(
 ) -> Result<Vec<KnowledgeGraphDocumentRef>, CoreError> {
     use rusqlite::types::Value;
 
-    let mut where_parts = vec!["de.entity_id = ?".to_string()];
+    let mut where_parts = vec!["edl.entity_id = ?".to_string()];
     let mut params = vec![Value::Text(entity_id.to_string())];
     if !source_ids.is_empty() {
         where_parts.push(format!(
@@ -577,11 +609,13 @@ fn query_entity_documents(
     params.push(Value::Integer(limit as i64));
 
     let sql = format!(
-        "SELECT d.id, COALESCE(d.title, d.path), d.path, d.source_id
-         FROM document_entities de
-         JOIN documents d ON d.id = de.document_id
+        "{ENTITY_DOCUMENT_LINKS_CTE}
+         SELECT d.id, COALESCE(d.title, d.path), d.path, d.source_id
+         FROM entity_document_links edl
+         JOIN documents d ON d.id = edl.document_id
          WHERE {}
-         ORDER BY de.relevance DESC, d.modified_at DESC
+         GROUP BY d.id, d.title, d.path, d.source_id, d.modified_at
+         ORDER BY MAX(edl.relevance) DESC, d.modified_at DESC
          LIMIT ?",
         where_parts.join(" AND "),
     );
@@ -593,6 +627,103 @@ fn query_entity_documents(
                 title: row.get(1)?,
                 path: row.get(2)?,
                 source_id: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn query_cooccurrence_edges(
+    conn: &rusqlite::Connection,
+    node_ids: &[String],
+    source_ids: &[String],
+    path_patterns: &[String],
+    min_strength: f64,
+) -> Result<Vec<KnowledgeGraphEdge>, CoreError> {
+    use rusqlite::types::Value;
+
+    if node_ids.len() < 2 {
+        return Ok(Vec::new());
+    }
+
+    let mut scope_where_parts = Vec::new();
+    let mut params: Vec<Value> = Vec::new();
+    if !source_ids.is_empty() {
+        scope_where_parts.push(format!(
+            "d.source_id IN ({})",
+            repeat_placeholders(source_ids.len())
+        ));
+        params.extend(source_ids.iter().map(|value| Value::Text(value.clone())));
+    }
+    push_path_filter(&mut scope_where_parts, &mut params, "d.path", path_patterns);
+
+    let scope_where_sql = if scope_where_parts.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", scope_where_parts.join(" AND "))
+    };
+
+    let node_placeholders = repeat_placeholders(node_ids.len());
+    params.extend(node_ids.iter().map(|id| Value::Text(id.clone())));
+    params.extend(node_ids.iter().map(|id| Value::Text(id.clone())));
+    params.push(Value::Real(min_strength));
+    let edge_limit = (node_ids.len().saturating_mul(3)).clamp(1, 300);
+    params.push(Value::Integer(edge_limit as i64));
+
+    let sql = format!(
+        "{ENTITY_DOCUMENT_LINKS_CTE},
+         scoped_links AS (
+            SELECT edl.entity_id, edl.document_id
+            FROM entity_document_links edl
+            JOIN documents d ON d.id = edl.document_id
+            {scope_where_sql}
+         ),
+         pairs AS (
+            SELECT
+                a.entity_id AS source,
+                b.entity_id AS target,
+                COUNT(DISTINCT a.document_id) AS shared_documents,
+                MIN(a.document_id) AS evidence_doc_id
+            FROM scoped_links a
+            JOIN scoped_links b ON a.document_id = b.document_id AND a.entity_id < b.entity_id
+            WHERE a.entity_id IN ({node_placeholders})
+              AND b.entity_id IN ({node_placeholders})
+            GROUP BY a.entity_id, b.entity_id
+         ),
+         scored_pairs AS (
+            SELECT
+                'co:' || source || ':' || target AS id,
+                source,
+                target,
+                'co_occurs' AS relation_type,
+                CASE
+                    WHEN shared_documents >= 5 THEN 1.0
+                    ELSE 0.35 + (shared_documents * 0.15)
+                END AS strength,
+                evidence_doc_id,
+                shared_documents
+            FROM pairs
+         )
+         SELECT sp.id, sp.source, sp.target, sp.relation_type, sp.strength,
+                sp.evidence_doc_id, d.title, d.path
+         FROM scored_pairs sp
+         LEFT JOIN documents d ON d.id = sp.evidence_doc_id
+         WHERE sp.strength >= ?
+         ORDER BY sp.shared_documents DESC, sp.strength DESC, sp.source, sp.target
+         LIMIT ?",
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok(KnowledgeGraphEdge {
+                id: row.get(0)?,
+                source: row.get(1)?,
+                target: row.get(2)?,
+                relation_type: row.get(3)?,
+                strength: row.get(4)?,
+                evidence_doc_id: row.get(5)?,
+                evidence_title: row.get(6)?,
+                evidence_path: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -786,6 +917,45 @@ mod tests {
             .expect("relation graph");
         assert_eq!(no_matching_relation.total_nodes, 2);
         assert_eq!(no_matching_relation.total_edges, 0);
+    }
+
+    #[test]
+    fn graph_uses_first_seen_doc_when_document_entity_rows_are_missing() {
+        let db = Database::open_memory().expect("open memory");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: dir.path().to_string_lossy().to_string(),
+                include_globs: vec![],
+                exclude_globs: vec![],
+                watch_enabled: true,
+            })
+            .expect("add source");
+        let doc_path = dir.path().join("chapter.md");
+        let doc = insert_doc(&db, &source.id, &doc_path.to_string_lossy(), "Chapter");
+
+        db.upsert_entity("Princess", &EntityType::Person, "A protagonist", &doc)
+            .expect("princess");
+        db.upsert_entity("Dragon", &EntityType::Person, "A rival", &doc)
+            .expect("dragon");
+
+        let graph = db
+            .get_knowledge_graph(KnowledgeGraphQuery {
+                limit: 20,
+                source_id: Some(source.id.clone()),
+                ..KnowledgeGraphQuery::default()
+            })
+            .expect("graph");
+
+        assert_eq!(graph.total_nodes, 2);
+        assert_eq!(graph.total_edges, 1);
+        assert!(graph.nodes.iter().all(|node| node.document_count == 1));
+        assert!(graph.nodes.iter().all(|node| node.documents.len() == 1));
+        assert_eq!(graph.edges[0].relation_type, "co_occurs");
+        assert_eq!(
+            graph.edges[0].evidence_doc_id.as_deref(),
+            Some(doc.as_str())
+        );
     }
 }
 

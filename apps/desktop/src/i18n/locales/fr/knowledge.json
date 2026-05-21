@@ -72,6 +72,7 @@
   "relationDirection.directed": "Dirigée",
   "relationDirection.bidirectional": "Bidirectionnelle",
   "relationDirection.undirected": "Non dirigée",
+  "relationType.coOccurs": "Cooccurrence",
   "noGraph": "Aucun graphe relationnel pour le moment",
   "noGraphDescription": "Traitez d'abord des documents, puis filtrez par source ou dossier pour inspecter les connexions.",
   "noGraphMatches": "Aucun nœud de graphe correspondant",

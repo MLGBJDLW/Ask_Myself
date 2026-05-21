@@ -72,6 +72,7 @@
   "relationDirection.directed": "有向",
   "relationDirection.bidirectional": "双方向",
   "relationDirection.undirected": "無向",
+  "relationType.coOccurs": "共起",
   "noGraph": "関係グラフはまだありません",
   "noGraphDescription": "先にドキュメントを処理してから、ソースまたはフォルダーで絞り込んでつながりを確認してください。",
   "noGraphMatches": "一致するグラフノードはありません",

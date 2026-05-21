@@ -72,6 +72,7 @@
   "relationDirection.directed": "방향 있음",
   "relationDirection.bidirectional": "양방향",
   "relationDirection.undirected": "방향 없음",
+  "relationType.coOccurs": "동시 등장",
   "noGraph": "아직 관계 그래프가 없습니다",
   "noGraphDescription": "먼저 문서를 처리한 다음 소스나 폴더로 좁혀 연결을 확인하세요.",
   "noGraphMatches": "일치하는 그래프 노드가 없습니다",

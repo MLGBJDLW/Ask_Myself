@@ -1,6 +1,8 @@
 //! Knowledge compilation layer — Karpathy-inspired "raw → compile → wiki" pipeline.
 //! Automatically distills documents into structured summaries, entities, and relationships.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
@@ -150,6 +152,7 @@ pub async fn compile_document(
     let mut entities_found = 0;
     let mut links_created = 0;
 
+    let mut entity_ids_by_name: HashMap<String, String> = HashMap::new();
     for llm_entity in &output.entities {
         let entity_type = parse_entity_type(&llm_entity.entity_type);
         let entity = db.upsert_entity(
@@ -159,14 +162,31 @@ pub async fn compile_document(
             doc_id,
         )?;
         db.link_document_entity(doc_id, &entity.id, 1.0, &llm_entity.context)?;
+        entity_ids_by_name.insert(normalize_entity_lookup_name(&llm_entity.name), entity.id);
         entities_found += 1;
+    }
 
-        // Create relationships
+    for llm_entity in &output.entities {
+        let Some(source_id) = entity_ids_by_name
+            .get(&normalize_entity_lookup_name(&llm_entity.name))
+            .cloned()
+        else {
+            continue;
+        };
         for rel in &llm_entity.relations {
-            if let Ok(target) = db.find_entity_by_name(&rel.target) {
+            let target_id = entity_ids_by_name
+                .get(&normalize_entity_lookup_name(&rel.target))
+                .cloned()
+                .or_else(|| {
+                    db.find_entity_by_name(&rel.target)
+                        .ok()
+                        .map(|entity| entity.id)
+                });
+
+            if let Some(target_id) = target_id {
                 db.upsert_entity_link(
-                    &entity.id,
-                    &target.id,
+                    &source_id,
+                    &target_id,
                     &rel.relation_type,
                     1.0,
                     Some(doc_id),
@@ -182,6 +202,10 @@ pub async fn compile_document(
         entities_found,
         links_created,
     })
+}
+
+fn normalize_entity_lookup_name(name: &str) -> String {
+    name.trim().to_lowercase()
 }
 
 fn build_compile_input_excerpt(content: &str, max_chars: usize) -> String {
@@ -587,6 +611,82 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::{CompletionResponse, FinishReason, StreamChunk, Usage};
+    use crate::sources::CreateSourceInput;
+    use futures::stream::BoxStream;
+
+    struct StaticLlmProvider {
+        content: String,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for StaticLlmProvider {
+        fn name(&self) -> &str {
+            "static"
+        }
+
+        async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+            Ok(vec!["test-model".to_string()])
+        }
+
+        async fn complete(
+            &self,
+            _request: &CompletionRequest,
+        ) -> Result<CompletionResponse, CoreError> {
+            Ok(CompletionResponse {
+                content: self.content.clone(),
+                tool_calls: None,
+                finish_reason: FinishReason::Stop,
+                usage: Usage::default(),
+                thinking: None,
+            })
+        }
+
+        async fn stream(
+            &self,
+            _request: &CompletionRequest,
+        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+            Ok(Box::pin(futures::stream::empty()))
+        }
+
+        async fn health_check(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    fn insert_compile_doc(db: &Database, content: &str) -> String {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: dir.path().to_string_lossy().to_string(),
+                include_globs: vec![],
+                exclude_globs: vec![],
+                watch_enabled: true,
+            })
+            .expect("add source");
+        let doc_id = uuid::Uuid::new_v4().to_string();
+        let doc_path = dir.path().join("chapter.md").to_string_lossy().to_string();
+        db.conn()
+            .execute(
+                "INSERT INTO documents (id, source_id, path, title, mime_type, file_size, modified_at, content_hash)
+                 VALUES (?1, ?2, ?3, 'Chapter', 'text/markdown', 100, datetime('now'), 'doc-hash')",
+                rusqlite::params![doc_id, source.id, doc_path],
+            )
+            .expect("insert document");
+        db.conn()
+            .execute(
+                "INSERT INTO chunks (id, document_id, chunk_index, kind, content, start_offset, end_offset, line_start, line_end, content_hash)
+                 VALUES (?1, ?2, 0, 'text', ?3, 0, ?4, 1, 1, 'chunk-hash')",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    doc_id,
+                    content,
+                    content.len() as i64
+                ],
+            )
+            .expect("insert chunk");
+        doc_id
+    }
 
     #[test]
     fn compile_excerpt_keeps_beginning_middle_and_end() {
@@ -627,5 +727,56 @@ mod tests {
     fn compile_excerpt_returns_short_content_unchanged() {
         let content = "short document";
         assert_eq!(build_compile_input_excerpt(content, 1200), content);
+    }
+
+    #[tokio::test]
+    async fn compile_document_links_relations_to_entities_later_in_same_output() {
+        let db = Database::open_memory().expect("open memory");
+        let doc_id = insert_compile_doc(&db, "Princess meets Dragon.");
+        let provider = StaticLlmProvider {
+            content: serde_json::json!({
+                "summary": "A princess meets a dragon.",
+                "key_points": ["Princess and Dragon are in the same scene."],
+                "tags": ["novel"],
+                "entities": [
+                    {
+                        "name": "Princess",
+                        "entity_type": "person",
+                        "description": "A protagonist.",
+                        "context": "Princess meets Dragon.",
+                        "relations": [
+                            { "target": "Dragon", "relation_type": "enemy_of" }
+                        ]
+                    },
+                    {
+                        "name": "Dragon",
+                        "entity_type": "person",
+                        "description": "A rival.",
+                        "context": "Princess meets Dragon.",
+                        "relations": []
+                    }
+                ]
+            })
+            .to_string(),
+        };
+
+        let result = compile_document(&db, &doc_id, &provider, "test-model")
+            .await
+            .expect("compile document");
+
+        assert_eq!(result.entities_found, 2);
+        assert_eq!(result.links_created, 1);
+        let document_entities: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM document_entities", [], |row| {
+                row.get(0)
+            })
+            .expect("document entity count");
+        assert_eq!(document_entities, 2);
+        let entity_links: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM entity_links", [], |row| row.get(0))
+            .expect("entity link count");
+        assert_eq!(entity_links, 1);
     }
 }

@@ -980,6 +980,15 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_browser_evidence_captures_url
             ON browser_evidence_captures(final_url, created_at);",
     ),
+    (
+        "v064_backfill_document_entities_from_first_seen_doc",
+        "INSERT OR IGNORE INTO document_entities (document_id, entity_id, relevance, context_snippet)
+         SELECT e.first_seen_doc, e.id, 1.0, COALESCE(NULLIF(e.description, ''), e.name)
+         FROM entities e
+         JOIN documents d ON d.id = e.first_seen_doc
+         WHERE e.first_seen_doc IS NOT NULL
+           AND TRIM(e.first_seen_doc) <> '';",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1132,6 +1141,47 @@ mod tests {
             "should have exactly {} migration records",
             total_migration_count()
         );
+    }
+
+    #[test]
+    fn backfills_document_entities_from_first_seen_doc() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+
+        conn.execute(
+            "INSERT INTO sources (id, root_path) VALUES ('source-1', 'C:/knowledge')",
+            [],
+        )
+        .expect("insert source");
+        conn.execute(
+            "INSERT INTO documents (id, source_id, path, title, mime_type, file_size, modified_at, content_hash)
+             VALUES ('doc-1', 'source-1', 'C:/knowledge/chapter.md', 'Chapter', 'text/markdown', 100, datetime('now'), 'hash-doc-1')",
+            [],
+        )
+        .expect("insert document");
+        conn.execute(
+            "INSERT INTO entities (id, name, entity_type, description, first_seen_doc)
+             VALUES ('entity-1', 'Princess', 'person', 'A protagonist', 'doc-1')",
+            [],
+        )
+        .expect("insert entity");
+
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM document_entities", [], |row| {
+                row.get(0)
+            })
+            .expect("before count");
+        assert_eq!(before, 0);
+
+        run_migrations(&conn).expect("migrations should backfill");
+        run_migrations(&conn).expect("migrations remain idempotent");
+
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM document_entities", [], |row| {
+                row.get(0)
+            })
+            .expect("after count");
+        assert_eq!(after, 1);
     }
 
     #[test]

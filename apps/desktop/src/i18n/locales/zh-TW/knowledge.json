@@ -72,6 +72,7 @@
   "relationDirection.directed": "有向",
   "relationDirection.bidirectional": "雙向",
   "relationDirection.undirected": "無向",
+  "relationType.coOccurs": "共同出現",
   "noGraph": "暫無關係圖",
   "noGraphDescription": "先整理文件，再依資料來源或資料夾檢視關聯。",
   "noGraphMatches": "沒有符合的圖譜節點",

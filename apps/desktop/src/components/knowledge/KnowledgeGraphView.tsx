@@ -91,6 +91,9 @@ const RELATION_DIRECTION_LABEL_KEYS: Record<RelationDirection, TranslationKey> =
   bidirectional: 'knowledge.relationDirection.bidirectional',
   undirected: 'knowledge.relationDirection.undirected',
 };
+const RELATION_TYPE_LABEL_KEYS: Record<string, TranslationKey> = {
+  co_occurs: 'knowledge.relationType.coOccurs',
+};
 const VIEWBOX_WIDTH = 1000;
 const VIEWBOX_HEIGHT = 620;
 const CENTER_X = VIEWBOX_WIDTH / 2;
@@ -145,8 +148,9 @@ function entityTypeLabel(entityType: string, t: Translate) {
   return t(ENTITY_TYPE_LABEL_KEYS[entityType] ?? 'knowledge.entityTypeLabel.other');
 }
 
-function relationLabel(value: string) {
-  return value.replace(/_/g, ' ');
+function relationLabel(value: string, t: Translate) {
+  const key = RELATION_TYPE_LABEL_KEYS[value];
+  return key ? t(key) : value.replace(/_/g, ' ');
 }
 
 function relationCategoryLabel(category: RelationCategory, t: Translate) {
@@ -557,7 +561,7 @@ export function KnowledgeGraphView() {
             >
               <option value="">{t('knowledge.allRelations')}</option>
               {relationTypes.map((relation) => (
-                <option key={relation} value={relation}>{relationLabel(relation)}</option>
+                <option key={relation} value={relation}>{relationLabel(relation, t)}</option>
               ))}
             </select>
           </label>
@@ -728,7 +732,7 @@ export function KnowledgeGraphView() {
                               {bundle.relationCount}
                             </text>
                             <text x="62" y="17" textAnchor="middle" className="fill-text-secondary text-[10px]">
-                              {selected ? relationLabel(bundle.relationTypes[0]).slice(0, 11) : relationCategoryLabel(bundle.category, t).slice(0, 10)}
+                              {selected ? relationLabel(bundle.relationTypes[0], t).slice(0, 11) : relationCategoryLabel(bundle.category, t).slice(0, 10)}
                             </text>
                           </g>
                         )}
@@ -984,7 +988,7 @@ function NodeDetail({
                         <div className="mt-1 flex flex-wrap gap-1">
                           {bundle.relationTypes.slice(0, 3).map((type) => (
                             <span key={type} className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] text-text-tertiary">
-                              {relationLabel(type)}
+                              {relationLabel(type, t)}
                             </span>
                           ))}
                         </div>
@@ -1124,7 +1128,7 @@ function RelationBundleDetail({
                       <div className="truncate text-sm font-medium text-text-primary">
                         {edgeSource?.label ?? edge.source} {'->'} {edgeTarget?.label ?? edge.target}
                       </div>
-                      <div className="mt-1 text-xs text-text-tertiary">{relationLabel(edge.relationType)}</div>
+                      <div className="mt-1 text-xs text-text-tertiary">{relationLabel(edge.relationType, t)}</div>
                     </div>
                     <Badge variant="default">{edge.strength.toFixed(1)}</Badge>
                   </div>

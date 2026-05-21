@@ -72,6 +72,7 @@
   "relationDirection.directed": "Направленная",
   "relationDirection.bidirectional": "Двунаправленная",
   "relationDirection.undirected": "Ненаправленная",
+  "relationType.coOccurs": "Совместное появление",
   "noGraph": "Графа связей пока нет",
   "noGraphDescription": "Сначала обработайте документы, затем сузьте по источнику или папке, чтобы изучить связи.",
   "noGraphMatches": "Нет подходящих узлов графа",
