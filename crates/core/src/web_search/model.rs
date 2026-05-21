@@ -8,10 +8,14 @@ pub const MAX_SEARCH_LIMIT: usize = 20;
 pub enum SearchEngine {
     Baidu,
     Sogou,
+    Google,
     Bing,
     DuckDuckGo,
     Brave,
     Tavily,
+    #[serde(rename = "anysearch", alias = "any_search")]
+    AnySearch,
+    #[serde(rename = "serpapi_google", alias = "serp_api_google")]
     SerpApiGoogle,
     Searxng,
 }
@@ -21,10 +25,12 @@ impl SearchEngine {
         match self {
             Self::Baidu => "baidu",
             Self::Sogou => "sogou",
+            Self::Google => "google",
             Self::Bing => "bing",
             Self::DuckDuckGo => "duckduckgo",
             Self::Brave => "brave",
             Self::Tavily => "tavily",
+            Self::AnySearch => "anysearch",
             Self::SerpApiGoogle => "serpapi_google",
             Self::Searxng => "searxng",
         }
@@ -33,7 +39,7 @@ impl SearchEngine {
     pub fn is_native(self) -> bool {
         matches!(
             self,
-            Self::Baidu | Self::Sogou | Self::Bing | Self::DuckDuckGo
+            Self::Baidu | Self::Sogou | Self::Google | Self::Bing | Self::DuckDuckGo
         )
     }
 
@@ -41,10 +47,12 @@ impl SearchEngine {
         match value.trim().to_ascii_lowercase().as_str() {
             "baidu" | "百度" => Some(Self::Baidu),
             "sogou" | "搜狗" => Some(Self::Sogou),
+            "google" | "谷歌" => Some(Self::Google),
             "bing" | "必应" => Some(Self::Bing),
             "duckduckgo" | "duck_duck_go" | "ddg" => Some(Self::DuckDuckGo),
             "brave" | "brave_search" => Some(Self::Brave),
             "tavily" => Some(Self::Tavily),
+            "anysearch" | "any_search" => Some(Self::AnySearch),
             "serpapi_google" | "serpapi" => Some(Self::SerpApiGoogle),
             "searxng" | "searx" => Some(Self::Searxng),
             _ => None,

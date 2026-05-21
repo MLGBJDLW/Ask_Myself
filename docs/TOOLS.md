@@ -574,7 +574,7 @@ Download a supported public image asset into the workspace. This tool requires c
 
 ### `web_search`
 
-Search the public web through Nexa's native no-key providers. Use it to discover candidate URLs, then use `fetch_url` on the most authoritative results before citing or summarizing them.
+Search the public web through Nexa's native no-key providers plus any enabled configured providers such as Brave, Tavily, AnySearch, SerpAPI, or SearXNG. Use it to discover candidate URLs, then use `fetch_url` on the most authoritative results before citing or summarizing them.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -582,14 +582,14 @@ Search the public web through Nexa's native no-key providers. Use it to discover
 | `limit` | integer | no | Max normalized results, 1-20 (default 8) |
 | `region` | string | no | `auto`, `mainland_cn`, or `global` |
 | `language` | string | no | `auto`, `zh`, or `en` |
-| `engines` | string[] | no | Optional subset of `baidu`, `sogou`, `bing`, `duckduckgo` |
+| `engines` | string[] | no | Optional built-in fallback subset of `baidu`, `sogou`, `google`, `bing`, `duckduckgo`; does not override configured provider priority |
 | `time_range` | string | no | `any`, `day`, `week`, `month`, or `year`; accepted for provider compatibility |
 | `site` | string | no | Optional single-domain filter such as `github.com` |
 | `include_snippets` | boolean | no | Include snippets in candidate results (default true) |
 
 Language routing:
 - Chinese queries use Baidu first by default, then Sogou/Bing only when needed.
-- English queries use Bing first, then DuckDuckGo only when needed.
+- English queries use Google first by default, then DuckDuckGo/Bing only when needed.
 - Avoid stacking unusual operators or several near-duplicate queries. Start with one focused query; use a second query only for a genuinely separate angle.
 
 Do not treat `desktop_automation` with `action: "web_search"` as evidence retrieval. That action only opens a browser search for the user and does not return readable search results to the agent.

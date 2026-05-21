@@ -85,7 +85,7 @@ fn resolve_engines(
 
     if !unknown.is_empty() {
         return Err(format!(
-            "Unsupported search engine(s): {}. Allowed in tool arguments: baidu, sogou, bing, duckduckgo. Configure Brave, Tavily, SerpAPI, or SearXNG in settings instead.",
+            "Unsupported search engine(s): {}. Allowed in tool arguments: baidu, sogou, google, bing, duckduckgo. Configure Brave, Tavily, AnySearch, SerpAPI, or SearXNG in settings instead.",
             unknown.join(", ")
         ));
     }
@@ -97,12 +97,14 @@ fn resolve_engines(
         engines.sort_by_key(|engine| match engine {
             SearchEngine::Baidu => 0,
             SearchEngine::Sogou => 1,
-            SearchEngine::Bing => 2,
-            SearchEngine::DuckDuckGo => 3,
+            SearchEngine::Google => 2,
+            SearchEngine::Bing => 3,
+            SearchEngine::DuckDuckGo => 4,
             SearchEngine::Brave
             | SearchEngine::Tavily
+            | SearchEngine::AnySearch
             | SearchEngine::SerpApiGoogle
-            | SearchEngine::Searxng => 4,
+            | SearchEngine::Searxng => 5,
         });
     }
 
@@ -120,7 +122,11 @@ pub(crate) fn default_engines_for_profile(
             vec![SearchEngine::Baidu, SearchEngine::Sogou, SearchEngine::Bing]
         }
         WebSearchProviderProfile::Default | WebSearchProviderProfile::Free => {
-            vec![SearchEngine::Bing, SearchEngine::DuckDuckGo]
+            vec![
+                SearchEngine::Google,
+                SearchEngine::DuckDuckGo,
+                SearchEngine::Bing,
+            ]
         }
         WebSearchProviderProfile::FreeVerified if mainland => vec![
             SearchEngine::Baidu,
@@ -129,6 +135,7 @@ pub(crate) fn default_engines_for_profile(
             SearchEngine::DuckDuckGo,
         ],
         WebSearchProviderProfile::FreeVerified => vec![
+            SearchEngine::Google,
             SearchEngine::Bing,
             SearchEngine::DuckDuckGo,
             SearchEngine::Sogou,
@@ -140,6 +147,7 @@ pub(crate) fn default_engines_for_profile(
             SearchEngine::DuckDuckGo,
         ],
         WebSearchProviderProfile::MaxEvidence => vec![
+            SearchEngine::Google,
             SearchEngine::Bing,
             SearchEngine::DuckDuckGo,
             SearchEngine::Sogou,
@@ -288,14 +296,18 @@ mod tests {
     }
 
     #[test]
-    fn english_queries_use_global_pair() {
+    fn english_queries_use_google_first_with_global_fallbacks() {
         let request = build_search_request(args("Tauri sidecar external binary")).unwrap();
 
         assert_eq!(request.language, SearchLanguage::En);
         assert_eq!(request.region, SearchRegion::Global);
         assert_eq!(
             request.engines,
-            vec![SearchEngine::Bing, SearchEngine::DuckDuckGo]
+            vec![
+                SearchEngine::Google,
+                SearchEngine::DuckDuckGo,
+                SearchEngine::Bing
+            ]
         );
     }
 
@@ -333,6 +345,7 @@ mod tests {
         assert_eq!(
             request.engines,
             vec![
+                SearchEngine::Google,
                 SearchEngine::Bing,
                 SearchEngine::DuckDuckGo,
                 SearchEngine::Sogou,

@@ -367,14 +367,21 @@ export type WebSearchProviderProfile = 'default' | 'free' | 'free_verified' | 'm
 export type WebSearchReranker = 'auto' | 'none' | 'docs_first' | 'research' | 'news_balanced';
 export type WebSearchProviderHealth = 'healthy' | 'degraded' | 'blocked' | 'disabled';
 export type WebSearchProviderMode = 'built_in_first' | 'custom_first' | 'custom_only';
-export type WebSearchCustomProviderPreset = 'brave' | 'tavily' | 'serpapi_google' | 'searxng';
+export type WebSearchCustomProviderPreset =
+  | 'brave'
+  | 'tavily'
+  | 'anysearch'
+  | 'serpapi_google'
+  | 'searxng';
 export type WebSearchEngine =
   | 'baidu'
   | 'sogou'
+  | 'google'
   | 'bing'
   | 'duckduckgo'
   | 'brave'
   | 'tavily'
+  | 'anysearch'
   | 'serpapi_google'
   | 'searxng';
 

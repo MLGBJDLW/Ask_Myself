@@ -41,7 +41,7 @@ const REDIRECT_RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 static SEARCH_CACHE: OnceLock<Mutex<HashMap<String, CacheEntry>>> = OnceLock::new();
 static SEARCH_IN_FLIGHT: OnceLock<Mutex<HashMap<String, Arc<OnceCell<SearchExecution>>>>> =
     OnceLock::new();
-static PROVIDER_HEALTH: OnceLock<Mutex<HashMap<SearchEngine, ProviderRuntimeState>>> =
+static PROVIDER_HEALTH: OnceLock<Mutex<HashMap<ProviderRuntimeKey, ProviderRuntimeState>>> =
     OnceLock::new();
 
 pub struct WebSearchTool;
@@ -82,6 +82,44 @@ enum SearchPlanItem {
     Custom(WebSearchCustomProviderConfig),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProviderRuntimeKey {
+    engine: SearchEngine,
+    scope: ProviderRuntimeScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ProviderRuntimeScope {
+    Native,
+    Custom {
+        id: String,
+        preset: WebSearchCustomProviderPreset,
+        key_fingerprint: String,
+        base_url: Option<String>,
+    },
+}
+
+impl ProviderRuntimeKey {
+    fn native(engine: SearchEngine) -> Self {
+        Self {
+            engine,
+            scope: ProviderRuntimeScope::Native,
+        }
+    }
+
+    fn custom(provider: &WebSearchCustomProviderConfig) -> Self {
+        Self {
+            engine: engine_for_custom_provider(provider),
+            scope: ProviderRuntimeScope::Custom {
+                id: provider.id.clone(),
+                preset: provider.preset,
+                key_fingerprint: provider_key_fingerprint(provider.api_key.trim()),
+                base_url: provider.effective_base_url(),
+            },
+        }
+    }
+}
+
 impl Default for ProviderRuntimeState {
     fn default() -> Self {
         Self {
@@ -96,13 +134,21 @@ impl Default for ProviderRuntimeState {
     }
 }
 
+fn provider_key_fingerprint(api_key: &str) -> String {
+    if api_key.trim().is_empty() {
+        return "anonymous".to_string();
+    }
+    let hash = blake3::hash(api_key.trim().as_bytes());
+    hash.to_hex().as_str()[..16].to_string()
+}
+
 fn web_search_expected_format() -> serde_json::Value {
     serde_json::json!({
         "query": "focused natural-language search query",
         "limit": "integer from 1 to 20",
         "region": "auto | mainland_cn | global",
         "language": "auto | zh | en",
-        "engines": ["optional subset: baidu, sogou, bing, duckduckgo"],
+        "engines": ["optional built-in fallback subset: baidu, sogou, google, bing, duckduckgo"],
         "time_range": "any | day | week | month | year",
         "site": "optional domain such as example.com",
         "include_snippets": true,
@@ -343,6 +389,7 @@ fn engine_for_custom_provider(provider: &WebSearchCustomProviderConfig) -> Searc
     match provider.preset {
         WebSearchCustomProviderPreset::Brave => SearchEngine::Brave,
         WebSearchCustomProviderPreset::Tavily => SearchEngine::Tavily,
+        WebSearchCustomProviderPreset::AnySearch => SearchEngine::AnySearch,
         WebSearchCustomProviderPreset::SerpApiGoogle => SearchEngine::SerpApiGoogle,
         WebSearchCustomProviderPreset::Searxng => SearchEngine::Searxng,
     }
@@ -362,6 +409,7 @@ fn cache_key_for_runtime(request: &SearchRequest, runtime: &SearchRuntimeConfig)
                 "id": provider.id,
                 "preset": provider.preset,
                 "baseUrl": provider.effective_base_url(),
+                "keyFingerprint": provider_key_fingerprint(provider.api_key.trim()),
                 "priority": provider.priority,
             })
         })
@@ -399,10 +447,6 @@ fn build_provider_plan(
         .cloned()
         .map(SearchPlanItem::Custom)
         .collect::<Vec<_>>();
-
-    if request.explicit_engines {
-        return native;
-    }
 
     match runtime.provider_mode {
         WebSearchProviderMode::BuiltInFirst => native.into_iter().chain(custom).collect(),
@@ -532,8 +576,9 @@ fn provider_failure_cooldown(
 }
 
 async fn prepare_provider_call(
-    engine: SearchEngine,
+    key: ProviderRuntimeKey,
 ) -> Result<SearchProviderHealthState, (SearchProviderFailure, SearchProviderRunInfo)> {
+    let engine = key.engine;
     loop {
         let wait = {
             let health = PROVIDER_HEALTH.get_or_init(|| Mutex::new(HashMap::new()));
@@ -554,7 +599,7 @@ async fn prepare_provider_call(
                 };
                 (failure, run)
             })?;
-            let state = health.entry(engine).or_default();
+            let state = health.entry(key.clone()).or_default();
             let now = Instant::now();
             if let Some(next_retry_at) = state.next_retry_at {
                 if next_retry_at > now {
@@ -596,12 +641,12 @@ async fn prepare_provider_call(
     }
 }
 
-fn record_provider_success(engine: SearchEngine) -> SearchProviderHealthState {
+fn record_provider_success(key: &ProviderRuntimeKey) -> SearchProviderHealthState {
     let health = PROVIDER_HEALTH.get_or_init(|| Mutex::new(HashMap::new()));
     let Ok(mut health) = health.lock() else {
         return SearchProviderHealthState::Healthy;
     };
-    let state = health.entry(engine).or_default();
+    let state = health.entry(key.clone()).or_default();
     state.health = SearchProviderHealthState::Healthy;
     state.consecutive_failures = 0;
     state.last_error_code = None;
@@ -611,14 +656,14 @@ fn record_provider_success(engine: SearchEngine) -> SearchProviderHealthState {
 }
 
 fn record_provider_failure(
-    engine: SearchEngine,
+    key: &ProviderRuntimeKey,
     failure: &SearchProviderFailure,
 ) -> (SearchProviderHealthState, Option<u64>) {
     let health = PROVIDER_HEALTH.get_or_init(|| Mutex::new(HashMap::new()));
     let Ok(mut health) = health.lock() else {
         return (SearchProviderHealthState::Degraded, None);
     };
-    let state = health.entry(engine).or_default();
+    let state = health.entry(key.clone()).or_default();
     state.consecutive_failures = state.consecutive_failures.saturating_add(1);
     state.last_error_code = Some(failure.code.clone());
     state.last_failure_at = Some(Instant::now());
@@ -641,12 +686,13 @@ fn record_provider_failure(
 
 fn run_info_for_success(
     engine: SearchEngine,
+    key: &ProviderRuntimeKey,
     latency_ms: u128,
     result_count: usize,
 ) -> SearchProviderRunInfo {
     SearchProviderRunInfo {
         engine,
-        health: record_provider_success(engine),
+        health: record_provider_success(key),
         skipped: false,
         latency_ms: Some(latency_ms),
         result_count,
@@ -657,10 +703,11 @@ fn run_info_for_success(
 
 fn run_info_for_failure(
     engine: SearchEngine,
+    key: &ProviderRuntimeKey,
     latency_ms: u128,
     failure: &SearchProviderFailure,
 ) -> SearchProviderRunInfo {
-    let (health, next_retry_seconds) = record_provider_failure(engine, failure);
+    let (health, next_retry_seconds) = record_provider_failure(key, failure);
     SearchProviderRunInfo {
         engine,
         health,
@@ -839,6 +886,13 @@ fn value_string(value: &serde_json::Value, key: &str) -> String {
         .to_string()
 }
 
+fn first_value_string(value: &serde_json::Value, keys: &[&str]) -> String {
+    keys.iter()
+        .map(|key| value_string(value, key))
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+}
+
 fn custom_result_item(
     provider: &WebSearchCustomProviderConfig,
     rank: usize,
@@ -889,6 +943,45 @@ fn time_range_for_serpapi(time_range: crate::web_search::TimeRange) -> Option<&'
     }
 }
 
+fn time_range_for_brave(time_range: crate::web_search::TimeRange) -> Option<&'static str> {
+    match time_range {
+        crate::web_search::TimeRange::Day => Some("pd"),
+        crate::web_search::TimeRange::Week => Some("pw"),
+        crate::web_search::TimeRange::Month => Some("pm"),
+        crate::web_search::TimeRange::Year => Some("py"),
+        crate::web_search::TimeRange::Any => None,
+    }
+}
+
+fn time_range_for_tavily(time_range: crate::web_search::TimeRange) -> Option<&'static str> {
+    match time_range {
+        crate::web_search::TimeRange::Day => Some("day"),
+        crate::web_search::TimeRange::Week => Some("week"),
+        crate::web_search::TimeRange::Month => Some("month"),
+        crate::web_search::TimeRange::Year => Some("year"),
+        crate::web_search::TimeRange::Any => None,
+    }
+}
+
+fn time_range_for_anysearch(time_range: crate::web_search::TimeRange) -> Option<&'static str> {
+    match time_range {
+        crate::web_search::TimeRange::Day => Some("day"),
+        crate::web_search::TimeRange::Week => Some("week"),
+        crate::web_search::TimeRange::Month => Some("month"),
+        crate::web_search::TimeRange::Year => Some("year"),
+        crate::web_search::TimeRange::Any => None,
+    }
+}
+
+fn time_range_for_searxng(time_range: crate::web_search::TimeRange) -> Option<&'static str> {
+    match time_range {
+        crate::web_search::TimeRange::Day => Some("day"),
+        crate::web_search::TimeRange::Month => Some("month"),
+        crate::web_search::TimeRange::Year => Some("year"),
+        crate::web_search::TimeRange::Any | crate::web_search::TimeRange::Week => None,
+    }
+}
+
 async fn search_brave_provider(
     provider: &WebSearchCustomProviderConfig,
     request: &SearchRequest,
@@ -909,6 +1002,9 @@ async fn search_brave_provider(
         .append_pair("count", &request.limit.min(20).to_string())
         .append_pair("country", country_code(request.region))
         .append_pair("search_lang", language_code(request.language));
+    if let Some(freshness) = time_range_for_brave(request.time_range) {
+        url.query_pairs_mut().append_pair("freshness", freshness);
+    }
 
     let json = fetch_custom_json(
         provider,
@@ -953,13 +1049,18 @@ async fn search_tavily_provider(
     let url = crate::tools::fetch_url_tool::validate_url_for_fetch(&base_url)
         .await
         .map_err(|e| custom_provider_failure(provider, "invalid_base_url", e))?;
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "query": request.effective_query,
         "search_depth": "basic",
         "max_results": request.limit.min(20),
         "include_answer": false,
         "include_images": false,
     });
+    if let Some(time_range) = time_range_for_tavily(request.time_range) {
+        if let Some(body) = body.as_object_mut() {
+            body.insert("time_range".to_string(), serde_json::json!(time_range));
+        }
+    }
     let json = fetch_custom_json(
         provider,
         client
@@ -982,6 +1083,71 @@ async fn search_tavily_provider(
                 value_string(item, "title"),
                 value_string(item, "url"),
                 value_string(item, "content"),
+            )
+        })
+        .collect();
+    Ok(results)
+}
+
+async fn search_anysearch_provider(
+    provider: &WebSearchCustomProviderConfig,
+    request: &SearchRequest,
+    client: &reqwest::Client,
+) -> Result<Vec<SearchResultItem>, SearchProviderFailure> {
+    let Some(base_url) = provider.effective_base_url() else {
+        return Err(custom_provider_failure(
+            provider,
+            "not_configured",
+            "AnySearch endpoint is not configured",
+        ));
+    };
+    let url = crate::tools::fetch_url_tool::validate_url_for_fetch(&base_url)
+        .await
+        .map_err(|e| custom_provider_failure(provider, "invalid_base_url", e))?;
+    let mut body = serde_json::json!({
+        "query": request.effective_query,
+        "max_results": request.limit.min(100),
+        "language": match request.language {
+            SearchLanguage::Zh => "zh-CN",
+            SearchLanguage::En | SearchLanguage::Auto => "en",
+        },
+        "zone": match request.region {
+            SearchRegion::MainlandCn => "cn",
+            SearchRegion::Global | SearchRegion::Auto => "intl",
+        },
+    });
+    if let Some(freshness) = time_range_for_anysearch(request.time_range) {
+        if let Some(body) = body.as_object_mut() {
+            body.insert(
+                "constraint".to_string(),
+                serde_json::json!({ "freshness": freshness }),
+            );
+        }
+    }
+
+    let mut request_builder = client
+        .post(url)
+        .header(ACCEPT, "application/json")
+        .json(&body);
+    let api_key = provider.api_key.trim();
+    if !api_key.is_empty() {
+        request_builder = request_builder.bearer_auth(api_key);
+    }
+
+    let json = fetch_custom_json(provider, request_builder).await?;
+    let results = json
+        .get("results")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            custom_result_item(
+                provider,
+                index + 1,
+                value_string(item, "title"),
+                value_string(item, "url"),
+                first_value_string(item, &["description", "content", "raw_content"]),
             )
         })
         .collect();
@@ -1064,8 +1230,8 @@ async fn search_searxng_provider(
             .append_pair("format", "json")
             .append_pair("pageno", "1")
             .append_pair("language", language_code(request.language));
-        if request.time_range != crate::web_search::TimeRange::Any {
-            query.append_pair("time_range", request.time_range.as_str());
+        if let Some(time_range) = time_range_for_searxng(request.time_range) {
+            query.append_pair("time_range", time_range);
         }
     }
 
@@ -1102,6 +1268,9 @@ async fn search_custom_provider(
         }
         WebSearchCustomProviderPreset::Tavily => {
             search_tavily_provider(provider, request, client).await
+        }
+        WebSearchCustomProviderPreset::AnySearch => {
+            search_anysearch_provider(provider, request, client).await
         }
         WebSearchCustomProviderPreset::SerpApiGoogle => {
             search_serpapi_google_provider(provider, request, client).await
@@ -1157,6 +1326,28 @@ async fn resolve_search_redirects(
     failures
 }
 
+fn runtime_key_for_plan_item(plan_item: &SearchPlanItem) -> ProviderRuntimeKey {
+    match plan_item {
+        SearchPlanItem::Native(engine) => ProviderRuntimeKey::native(*engine),
+        SearchPlanItem::Custom(provider) => ProviderRuntimeKey::custom(provider),
+    }
+}
+
+fn custom_provider_supports_time_range(
+    preset: WebSearchCustomProviderPreset,
+    time_range: crate::web_search::TimeRange,
+) -> bool {
+    match preset {
+        WebSearchCustomProviderPreset::Brave => time_range_for_brave(time_range).is_some(),
+        WebSearchCustomProviderPreset::Tavily => time_range_for_tavily(time_range).is_some(),
+        WebSearchCustomProviderPreset::AnySearch => time_range_for_anysearch(time_range).is_some(),
+        WebSearchCustomProviderPreset::SerpApiGoogle => {
+            time_range_for_serpapi(time_range).is_some()
+        }
+        WebSearchCustomProviderPreset::Searxng => time_range_for_searxng(time_range).is_some(),
+    }
+}
+
 async fn execute_search_request(
     request: SearchRequest,
     runtime: SearchRuntimeConfig,
@@ -1181,6 +1372,7 @@ async fn execute_search_request(
             SearchPlanItem::Native(engine) => *engine,
             SearchPlanItem::Custom(provider) => engine_for_custom_provider(provider),
         };
+        let runtime_key = runtime_key_for_plan_item(&plan_item);
         engines_requested.push(engine);
 
         match &plan_item {
@@ -1197,17 +1389,16 @@ async fn execute_search_request(
             SearchPlanItem::Custom(provider)
                 if request.time_range != crate::web_search::TimeRange::Any =>
             {
-                match provider.preset {
-                    WebSearchCustomProviderPreset::SerpApiGoogle
-                    | WebSearchCustomProviderPreset::Searxng => time_range_applied_by.push(engine),
-                    WebSearchCustomProviderPreset::Brave
-                    | WebSearchCustomProviderPreset::Tavily => time_range_ignored_by.push(engine),
+                if custom_provider_supports_time_range(provider.preset, request.time_range) {
+                    time_range_applied_by.push(engine);
+                } else {
+                    time_range_ignored_by.push(engine);
                 }
             }
             _ => {}
         }
 
-        match prepare_provider_call(engine).await {
+        match prepare_provider_call(runtime_key.clone()).await {
             Ok(_) => {}
             Err((failure, run_info)) => {
                 engines_failed.push(failure);
@@ -1236,11 +1427,21 @@ async fn execute_search_request(
                 let result_count = results.len();
                 engines_responded.push(engine);
                 raw_results.append(&mut results);
-                provider_health.push(run_info_for_success(engine, latency_ms, result_count));
+                provider_health.push(run_info_for_success(
+                    engine,
+                    &runtime_key,
+                    latency_ms,
+                    result_count,
+                ));
             }
             Err(failure) => {
                 let latency_ms = started_at.elapsed().as_millis();
-                provider_health.push(run_info_for_failure(engine, latency_ms, &failure));
+                provider_health.push(run_info_for_failure(
+                    engine,
+                    &runtime_key,
+                    latency_ms,
+                    &failure,
+                ));
                 engines_failed.push(failure);
             }
         }
@@ -1385,12 +1586,14 @@ pub fn provider_status_snapshot(config: &WebSearchConfig) -> Vec<WebSearchProvid
     let mut statuses = [
         SearchEngine::Baidu,
         SearchEngine::Sogou,
+        SearchEngine::Google,
         SearchEngine::Bing,
         SearchEngine::DuckDuckGo,
     ]
     .into_iter()
     .map(|engine| {
-        let runtime = locked.as_ref().and_then(|state| state.get(&engine));
+        let runtime_key = ProviderRuntimeKey::native(engine);
+        let runtime = locked.as_ref().and_then(|state| state.get(&runtime_key));
         WebSearchProviderStatus {
             engine,
             id: engine.as_str().to_string(),
@@ -1415,7 +1618,8 @@ pub fn provider_status_snapshot(config: &WebSearchConfig) -> Vec<WebSearchProvid
 
     for provider in &config.custom_providers {
         let engine = engine_for_custom_provider(provider);
-        let runtime = locked.as_ref().and_then(|state| state.get(&engine));
+        let runtime_key = ProviderRuntimeKey::custom(provider);
+        let runtime = locked.as_ref().and_then(|state| state.get(&runtime_key));
         statuses.push(WebSearchProviderStatus {
             engine,
             id: provider.id.clone(),
@@ -1509,7 +1713,7 @@ mod tests {
     fn reset_provider_state(engine: SearchEngine) {
         let health = PROVIDER_HEALTH.get_or_init(|| Mutex::new(HashMap::new()));
         if let Ok(mut health) = health.lock() {
-            health.remove(&engine);
+            health.remove(&ProviderRuntimeKey::native(engine));
         }
     }
 
@@ -1654,6 +1858,85 @@ mod tests {
     }
 
     #[test]
+    fn custom_first_is_not_bypassed_by_explicit_native_engines() {
+        let request = SearchRequest {
+            query: "nexa".to_string(),
+            effective_query: "nexa".to_string(),
+            limit: 8,
+            region: SearchRegion::Global,
+            language: SearchLanguage::En,
+            engines: vec![SearchEngine::DuckDuckGo],
+            explicit_engines: true,
+            time_range: TimeRange::Any,
+            site: None,
+            include_snippets: true,
+            provider_profile: WebSearchProviderProfile::Default,
+            reranker: WebSearchReranker::None,
+        };
+        let runtime = SearchRuntimeConfig {
+            provider_mode: WebSearchProviderMode::CustomFirst,
+            custom_providers: vec![WebSearchCustomProviderConfig {
+                id: "tavily".to_string(),
+                preset: WebSearchCustomProviderPreset::Tavily,
+                name: "Tavily".to_string(),
+                enabled: true,
+                api_key: "secret".to_string(),
+                base_url: WebSearchCustomProviderPreset::Tavily.default_base_url(),
+                priority: 20,
+            }],
+        };
+
+        let plan = build_provider_plan(&request, &runtime);
+
+        assert!(matches!(
+            plan.first(),
+            Some(SearchPlanItem::Custom(provider)) if provider.id == "tavily"
+        ));
+        assert!(matches!(
+            plan.get(1),
+            Some(SearchPlanItem::Native(SearchEngine::DuckDuckGo))
+        ));
+    }
+
+    #[test]
+    fn custom_only_ignores_explicit_native_engines() {
+        let request = SearchRequest {
+            query: "nexa".to_string(),
+            effective_query: "nexa".to_string(),
+            limit: 8,
+            region: SearchRegion::Global,
+            language: SearchLanguage::En,
+            engines: vec![SearchEngine::DuckDuckGo],
+            explicit_engines: true,
+            time_range: TimeRange::Any,
+            site: None,
+            include_snippets: true,
+            provider_profile: WebSearchProviderProfile::Default,
+            reranker: WebSearchReranker::None,
+        };
+        let runtime = SearchRuntimeConfig {
+            provider_mode: WebSearchProviderMode::CustomOnly,
+            custom_providers: vec![WebSearchCustomProviderConfig {
+                id: "tavily".to_string(),
+                preset: WebSearchCustomProviderPreset::Tavily,
+                name: "Tavily".to_string(),
+                enabled: true,
+                api_key: "secret".to_string(),
+                base_url: WebSearchCustomProviderPreset::Tavily.default_base_url(),
+                priority: 20,
+            }],
+        };
+
+        let plan = build_provider_plan(&request, &runtime);
+
+        assert_eq!(plan.len(), 1);
+        assert!(matches!(
+            plan.first(),
+            Some(SearchPlanItem::Custom(provider)) if provider.id == "tavily"
+        ));
+    }
+
+    #[test]
     fn provider_status_reports_custom_provider_setup_state() {
         let mut config = WebSearchConfig::default();
         config.custom_providers = vec![WebSearchCustomProviderConfig {
@@ -1677,19 +1960,76 @@ mod tests {
         assert!(!brave.built_in);
     }
 
+    #[test]
+    fn anysearch_can_be_enabled_without_api_key() {
+        let mut config = WebSearchConfig::default();
+        config.custom_providers = vec![WebSearchCustomProviderConfig {
+            id: "anysearch".to_string(),
+            preset: WebSearchCustomProviderPreset::AnySearch,
+            name: "AnySearch".to_string(),
+            enabled: true,
+            api_key: String::new(),
+            base_url: WebSearchCustomProviderPreset::AnySearch.default_base_url(),
+            priority: 25,
+        }];
+
+        let runtime = runtime_config_from_app_config(&config);
+        let status = provider_status_snapshot(&config);
+        let anysearch = status
+            .iter()
+            .find(|provider| provider.id == "anysearch")
+            .expect("anysearch status");
+
+        assert_eq!(runtime.custom_providers.len(), 1);
+        assert!(anysearch.configured);
+        assert!(!anysearch.requires_api_key);
+    }
+
+    #[test]
+    fn custom_provider_health_is_scoped_to_key_and_endpoint() {
+        let mut provider = WebSearchCustomProviderConfig {
+            id: "tavily".to_string(),
+            preset: WebSearchCustomProviderPreset::Tavily,
+            name: "Tavily".to_string(),
+            enabled: true,
+            api_key: "tvly-dev-old".to_string(),
+            base_url: WebSearchCustomProviderPreset::Tavily.default_base_url(),
+            priority: 20,
+        };
+        let old_key = ProviderRuntimeKey::custom(&provider);
+        let failure = SearchProviderFailure::new(
+            SearchEngine::Tavily,
+            "auth_failed",
+            "Tavily returned HTTP 401",
+        );
+
+        let (health, _) = record_provider_failure(&old_key, &failure);
+        assert_eq!(health, SearchProviderHealthState::Degraded);
+
+        provider.api_key = "tvly-dev-new".to_string();
+        let new_key = ProviderRuntimeKey::custom(&provider);
+
+        assert_ne!(old_key, new_key);
+        let health = PROVIDER_HEALTH.get_or_init(|| Mutex::new(HashMap::new()));
+        let locked = health.lock().expect("health lock");
+        assert!(locked.get(&old_key).is_some());
+        assert!(locked.get(&new_key).is_none());
+    }
+
     #[tokio::test]
     async fn rate_limit_failure_opens_provider_circuit() {
         let engine = SearchEngine::DuckDuckGo;
         reset_provider_state(engine);
         let failure = SearchProviderFailure::new(engine, "rate_limited", "provider returned 429")
             .with_retry_after(Some(7));
+        let key = ProviderRuntimeKey::native(engine);
 
-        let (health, retry_after) = record_provider_failure(engine, &failure);
+        let (health, retry_after) = record_provider_failure(&key, &failure);
 
         assert_eq!(health, SearchProviderHealthState::Blocked);
         assert!(retry_after.is_some_and(|seconds| seconds <= 7));
 
-        let Err((failure, run_info)) = prepare_provider_call(engine).await else {
+        let Err((failure, run_info)) = prepare_provider_call(key).await else {
             panic!("open circuit should skip provider call");
         };
         assert_eq!(failure.code, "circuit_open");
