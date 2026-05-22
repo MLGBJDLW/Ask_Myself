@@ -807,6 +807,32 @@ mod tests {
     }
 
     #[test]
+    fn test_fiction_writing_bundles_longform_resources() {
+        let fiction_skill = load_builtin_skills()
+            .into_iter()
+            .find(|skill| skill.id == "builtin-fiction-writing")
+            .unwrap();
+
+        for path in [
+            "references/story-craft-playbook.md",
+            "references/longform-production-playbook.md",
+            "references/chapter-drafting-playbook.md",
+            "references/chinese-webnovel-playbook.md",
+            "references/continuity-state-playbook.md",
+            "references/quality-gate.md",
+            "assets/fiction-outline-template.md",
+        ] {
+            assert!(
+                fiction_skill
+                    .resources
+                    .iter()
+                    .any(|resource| resource.path == path),
+                "fiction-writing should bundle {path}"
+            );
+        }
+    }
+
+    #[test]
     fn test_materialize_pptx_skill_writes_runtime_scripts_to_disk() {
         let dir = tempdir().unwrap();
         let base = materialize_skills_to_disk(dir.path()).unwrap();
