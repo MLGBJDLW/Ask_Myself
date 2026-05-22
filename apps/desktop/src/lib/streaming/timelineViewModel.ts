@@ -36,6 +36,88 @@ const INTERNAL_TRACE_TOOLS = new Set([
   'tool_search',
 ]);
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function skillActivationRefFromArtifacts(
+  artifacts: unknown,
+): { label: string; key: string } | null {
+  const record = asRecord(artifacts);
+  if (!record || record.kind !== 'skillActivation') return null;
+  const skill = asRecord(record.skill);
+  if (!skill) return null;
+
+  const id = skill.id;
+  const name = skill.name;
+  const interfaceMetadata = asRecord(skill.interface);
+  const displayName = interfaceMetadata?.displayName;
+  let label: string | null = null;
+  if (typeof displayName === 'string' && displayName.trim()) {
+    label = displayName.trim();
+  }
+
+  if (!label && typeof name === 'string' && name.trim()) {
+    label = name.trim();
+  }
+
+  if (!label && typeof id === 'string' && id.trim()) {
+    label = id.trim();
+  }
+
+  if (!label) return null;
+
+  const key = typeof id === 'string' && id.trim()
+    ? id.trim().toLowerCase()
+    : typeof name === 'string' && name.trim()
+      ? name.trim().toLowerCase()
+      : label.toLowerCase();
+
+  return { label, key };
+}
+
+function skillActivationNameFromArtifacts(artifacts: unknown): string | null {
+  return skillActivationRefFromArtifacts(artifacts)?.label ?? null;
+}
+
+function isSuccessfulSkillActivation(toolCall: ToolCallEvent): boolean {
+  return (
+    normalizeToolName(toolCall.toolName) === 'manage_skill' &&
+    toolCall.status === 'done' &&
+    toolCall.isError !== true &&
+    !isUnsuccessfulToolCallStatus(toolCall.status) &&
+    Boolean(skillActivationNameFromArtifacts(toolCall.artifacts))
+  );
+}
+
+export function activatedSkillNamesFromTraceItems(
+  items: PersistedTraceItem[] | null | undefined,
+): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+
+  for (const item of items ?? []) {
+    if (item.kind !== 'tool') continue;
+    if (!isSuccessfulSkillActivation(item.toolCall)) continue;
+
+    const ref = skillActivationRefFromArtifacts(item.toolCall.artifacts);
+    if (!ref) continue;
+
+    if (seen.has(ref.key)) continue;
+    seen.add(ref.key);
+    names.push(ref.label);
+  }
+
+  return names;
+}
+
+export function formatSkillActivationSummary(names: string[]): string {
+  if (names.length === 0) return 'Skills activated: none';
+  return `Skills activated: ${names.join(', ')}`;
+}
+
 export function normalizeThinking(content: string): string {
   return content.replace(/\r\n/g, '\n').trim();
 }
@@ -181,9 +263,11 @@ export function formatTurnDuration(turn: ConversationTurn): string | null {
 export function turnLifecycleTimelineSections(input: {
   turn: ConversationTurn;
   routeKind?: string | null;
+  traceItems?: PersistedTraceItem[] | null;
+  formatSkillsSummary?: (names: string[]) => string;
 }): TimelineSection[] {
   const sections: TimelineSection[] = [];
-  const { turn, routeKind } = input;
+  const { turn, routeKind, traceItems, formatSkillsSummary } = input;
 
   if (routeKind && !shouldHideRouteKind(routeKind)) {
     sections.push({
@@ -191,6 +275,18 @@ export function turnLifecycleTimelineSections(input: {
       id: `turn-route-${turn.id}`,
       text: `Route: ${formatRouteKind(routeKind)}`,
       tone: 'muted',
+    });
+  }
+
+  if (traceItems && traceItems.length > 0) {
+    const activatedSkills = activatedSkillNamesFromTraceItems(traceItems);
+    sections.push({
+      kind: 'status',
+      id: `turn-skills-${turn.id}`,
+      text: formatSkillsSummary
+        ? formatSkillsSummary(activatedSkills)
+        : formatSkillActivationSummary(activatedSkills),
+      tone: activatedSkills.length > 0 ? 'success' : 'muted',
     });
   }
 

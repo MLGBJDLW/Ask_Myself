@@ -744,6 +744,11 @@ export function ChatMessages({
       const sections = turnLifecycleTimelineSections({
         turn,
         routeKind: trace?.routeKind,
+        traceItems: trace?.items ?? null,
+        formatSkillsSummary: (names) =>
+          names.length > 0
+            ? t('chat.skillsActivated', { names: names.join(', ') })
+            : t('chat.skillsActivatedNone'),
       });
       const fallbackSections: TimelineSection[] = [];
 
@@ -911,6 +916,7 @@ export function ChatMessages({
     messages,
     renderTimelineTraceNode,
     renderTraceReplyNode,
+    t,
     turns,
   ]);
 

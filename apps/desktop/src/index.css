@@ -240,26 +240,6 @@ body {
 }
 
 /* ── cmdk command palette ─────────────────────────────────────────── */
-@keyframes chat-trace-sheen {
-  0% {
-    transform: translate3d(-55%, 0, 0);
-    opacity: 0;
-  }
-  18% {
-    opacity: 0.32;
-  }
-  50% {
-    opacity: 0.45;
-  }
-  82% {
-    opacity: 0.24;
-  }
-  100% {
-    transform: translate3d(55%, 0, 0);
-    opacity: 0;
-  }
-}
-
 @keyframes chat-context-hud-sheen {
   0% {
     transform: translateX(-140%);
@@ -366,10 +346,8 @@ body {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background:
-    radial-gradient(140px circle at 0% 0%, var(--color-accent-subtle), transparent 72%),
-    radial-gradient(120px circle at 100% 100%, var(--color-accent-subtle), transparent 78%);
-  opacity: 0.14;
+  background: linear-gradient(90deg, var(--color-accent-subtle), transparent 38%);
+  opacity: 0.08;
   z-index: 0;
 }
 
@@ -378,23 +356,18 @@ body {
 }
 
 .chat-trace-panel[data-trace-active='true'] {
-  box-shadow: var(--shadow-glow);
+  box-shadow: 0 0 0 1px var(--color-border-active);
 }
 
 .chat-trace-panel[data-trace-active='true']::after {
   content: "";
   position: absolute;
-  inset: -24px -42px;
+  inset: 0 auto 0 0;
+  width: 2px;
   border-radius: inherit;
   pointer-events: none;
-  background: linear-gradient(
-    108deg,
-    transparent 28%,
-    var(--color-accent-subtle) 45%,
-    transparent 62%
-  );
-  mix-blend-mode: screen;
-  animation: chat-trace-sheen 5.8s linear infinite;
+  background: var(--color-accent);
+  opacity: 0.8;
   z-index: 0;
 }
 
