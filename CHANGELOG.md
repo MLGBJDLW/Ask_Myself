@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.1...nexa-monorepo-v0.7.2) (2026-05-22)
+
+
+### Features
+
+* **chat:** improve tool call and skill trace UI ([b446b28](https://github.com/MLGBJDLW/Nexa/commit/b446b28fdafc5bbc0cc697b1ebd55d4debe6bfa5))
+* **chat:** improve tool call and skill trace UI ([e52705f](https://github.com/MLGBJDLW/Nexa/commit/e52705f12bc247b8acb768cb249c54533de6e89a))
+
 ## [0.7.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.0...nexa-monorepo-v0.7.1) (2026-05-22)
 
 
