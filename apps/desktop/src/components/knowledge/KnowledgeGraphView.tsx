@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BookOpen,
@@ -50,7 +50,8 @@ import {
   type RelationDirection,
 } from '../../lib/knowledgeGraphRelations';
 
-type EntityFilter = 'all' | 'person' | 'place' | 'organization' | 'event' | 'concept';
+type EntityFilter = 'all' | 'person' | 'place' | 'organization' | 'event' | 'concept' | 'technology' | 'other';
+type GraphMode = 'focus' | 'overview' | 'atlas';
 type Translate = ReturnType<typeof useTranslation>['t'];
 
 type PositionedNode = KnowledgeGraphNode & {
@@ -58,9 +59,11 @@ type PositionedNode = KnowledgeGraphNode & {
   y: number;
   radius: number;
   degree: number;
+  importance: number;
+  rank: number;
 };
 
-const ENTITY_FILTERS: EntityFilter[] = ['all', 'person', 'place', 'organization', 'event', 'concept'];
+const ENTITY_FILTERS: EntityFilter[] = ['all', 'person', 'place', 'organization', 'event', 'concept', 'technology', 'other'];
 const ENTITY_FILTER_LABEL_KEYS: Record<EntityFilter, TranslationKey> = {
   all: 'knowledge.entityFilter.all',
   person: 'knowledge.entityFilter.person',
@@ -68,6 +71,8 @@ const ENTITY_FILTER_LABEL_KEYS: Record<EntityFilter, TranslationKey> = {
   organization: 'knowledge.entityFilter.organization',
   event: 'knowledge.entityFilter.event',
   concept: 'knowledge.entityFilter.concept',
+  technology: 'knowledge.entityFilter.technology',
+  other: 'knowledge.entityFilter.other',
 };
 const ENTITY_TYPE_LABEL_KEYS: Record<string, TranslationKey> = {
   person: 'knowledge.entityTypeLabel.person',
@@ -91,6 +96,11 @@ const RELATION_DIRECTION_LABEL_KEYS: Record<RelationDirection, TranslationKey> =
   bidirectional: 'knowledge.relationDirection.bidirectional',
   undirected: 'knowledge.relationDirection.undirected',
 };
+const GRAPH_MODE_LABEL_KEYS: Record<GraphMode, TranslationKey> = {
+  focus: 'knowledge.graphMode.focus',
+  overview: 'knowledge.graphMode.overview',
+  atlas: 'knowledge.graphMode.atlas',
+};
 const RELATION_TYPE_LABEL_KEYS: Record<string, TranslationKey> = {
   co_occurs: 'knowledge.relationType.coOccurs',
 };
@@ -98,30 +108,44 @@ const VIEWBOX_WIDTH = 1000;
 const VIEWBOX_HEIGHT = 620;
 const CENTER_X = VIEWBOX_WIDTH / 2;
 const CENTER_Y = VIEWBOX_HEIGHT / 2;
+const GRAPH_FETCH_LIMIT = 220;
+const DEFAULT_VISIBLE_NODE_BUDGET = 40;
+const NODE_BUDGET_OPTIONS = [40, 60, 100, 160];
+const DEFAULT_GRAPH_VIEWBOX = { x: 0, y: 0, width: VIEWBOX_WIDTH, height: VIEWBOX_HEIGHT };
+const DRAG_MOVE_THRESHOLD = 3;
 
-const ENTITY_TONE: Record<string, { fill: string; stroke: string; text: string }> = {
-  person: { fill: 'fill-accent/15', stroke: 'stroke-accent', text: 'text-accent-hover' },
-  place: { fill: 'fill-info/15', stroke: 'stroke-info', text: 'text-info' },
-  organization: { fill: 'fill-warning/15', stroke: 'stroke-warning', text: 'text-warning' },
-  event: { fill: 'fill-danger/15', stroke: 'stroke-danger', text: 'text-danger' },
-  concept: { fill: 'fill-success/15', stroke: 'stroke-success', text: 'text-success' },
-  technology: { fill: 'fill-info/15', stroke: 'stroke-info', text: 'text-info' },
-  other: { fill: 'fill-surface-3', stroke: 'stroke-text-tertiary', text: 'text-text-secondary' },
+const ENTITY_CLUSTER_ANCHORS: Record<string, { x: number; y: number }> = {
+  person: { x: 255, y: 185 },
+  place: { x: 740, y: 190 },
+  organization: { x: 270, y: 450 },
+  event: { x: 735, y: 455 },
+  concept: { x: 505, y: 318 },
+  technology: { x: 510, y: 130 },
+  other: { x: 510, y: 515 },
+};
+
+const ENTITY_TONE: Record<string, { fill: string; stroke: string; text: string; solid: string; strokeColor: string }> = {
+  person: { fill: 'fill-danger/15', stroke: 'stroke-danger', text: 'text-danger', solid: '#e11d48', strokeColor: '#be123c' },
+  place: { fill: 'fill-info/15', stroke: 'stroke-info', text: 'text-info', solid: '#2563eb', strokeColor: '#1d4ed8' },
+  organization: { fill: 'fill-warning/15', stroke: 'stroke-warning', text: 'text-warning', solid: '#f97316', strokeColor: '#c2410c' },
+  event: { fill: 'fill-danger/15', stroke: 'stroke-danger', text: 'text-danger', solid: '#dc2626', strokeColor: '#991b1b' },
+  concept: { fill: 'fill-info/15', stroke: 'stroke-info', text: 'text-info', solid: '#0891b2', strokeColor: '#0e7490' },
+  technology: { fill: 'fill-info/15', stroke: 'stroke-info', text: 'text-info', solid: '#0284c7', strokeColor: '#075985' },
+  other: { fill: 'fill-surface-3', stroke: 'stroke-text-tertiary', text: 'text-text-secondary', solid: '#94a3b8', strokeColor: '#64748b' },
 };
 const RELATION_CATEGORY_STYLE: Record<RelationCategory, {
   id: RelationCategory;
-  stroke: string;
-  fill: string;
   text: string;
+  color: string;
   badge: 'default' | 'success' | 'warning' | 'danger' | 'info';
   dash?: string;
 }> = {
-  conflict: { id: 'conflict', stroke: 'stroke-danger', fill: 'fill-danger', text: 'text-danger', badge: 'danger', dash: '8 5' },
-  causal: { id: 'causal', stroke: 'stroke-warning', fill: 'fill-warning', text: 'text-warning', badge: 'warning' },
-  hierarchy: { id: 'hierarchy', stroke: 'stroke-info', fill: 'fill-info', text: 'text-info', badge: 'info', dash: '4 3' },
-  event: { id: 'event', stroke: 'stroke-success', fill: 'fill-success', text: 'text-success', badge: 'success', dash: '2 4' },
-  social: { id: 'social', stroke: 'stroke-accent', fill: 'fill-accent', text: 'text-accent-hover', badge: 'info' },
-  general: { id: 'general', stroke: 'stroke-text-tertiary', fill: 'fill-text-tertiary', text: 'text-text-secondary', badge: 'default' },
+  conflict: { id: 'conflict', text: 'text-danger', color: '#e11d48', badge: 'danger', dash: '8 5' },
+  causal: { id: 'causal', text: 'text-warning', color: '#f97316', badge: 'warning' },
+  hierarchy: { id: 'hierarchy', text: 'text-info', color: '#2563eb', badge: 'info', dash: '4 3' },
+  event: { id: 'event', text: 'text-danger', color: '#dc2626', badge: 'danger', dash: '2 4' },
+  social: { id: 'social', text: 'text-info', color: '#0284c7', badge: 'info' },
+  general: { id: 'general', text: 'text-text-secondary', color: '#64748b', badge: 'default' },
 };
 
 function entityIcon(entityType: string) {
@@ -142,6 +166,10 @@ function entityTone(entityType: string) {
 
 function entityFilterLabel(filter: EntityFilter, t: Translate) {
   return t(ENTITY_FILTER_LABEL_KEYS[filter]);
+}
+
+function graphModeLabel(mode: GraphMode, t: Translate) {
+  return t(GRAPH_MODE_LABEL_KEYS[mode]);
 }
 
 function entityTypeLabel(entityType: string, t: Translate) {
@@ -174,50 +202,305 @@ function formatCompactChars(value: number) {
   return `${kilo.toFixed(kilo < 10 ? 1 : 0)}k`;
 }
 
-function computeLayout(nodes: KnowledgeGraphNode[], edges: KnowledgeGraphEdge[]): PositionedNode[] {
+function buildDegreeMap(edges: KnowledgeGraphEdge[]) {
   const degree = new Map<string, number>();
   for (const edge of edges) {
     degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
     degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
   }
+  return degree;
+}
 
-  const sorted = [...nodes].sort((a, b) => {
-    const degreeDelta = (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0);
-    if (degreeDelta !== 0) return degreeDelta;
-    return b.documentCount - a.documentCount || b.mentionCount - a.mentionCount;
+function nodeImportance(node: KnowledgeGraphNode, degree: Map<string, number>) {
+  return (degree.get(node.id) ?? 0) * 6 + node.linkCount * 3 + node.documentCount * 3 + node.mentionCount * 0.45;
+}
+
+function sortNodesByImportance(nodes: KnowledgeGraphNode[], degree: Map<string, number>) {
+  return [...nodes].sort((a, b) => {
+    const scoreDelta = nodeImportance(b, degree) - nodeImportance(a, degree);
+    if (scoreDelta !== 0) return scoreDelta;
+    return a.label.localeCompare(b.label);
   });
+}
 
-  return sorted.map((node, index) => {
-    if (index === 0) {
-      return {
-        ...node,
-        x: CENTER_X,
-        y: CENTER_Y,
-        radius: 42,
-        degree: degree.get(node.id) ?? 0,
-      };
+function pickDefaultNodeId(nodes: KnowledgeGraphNode[], edges: KnowledgeGraphEdge[]) {
+  return sortNodesByImportance(nodes, buildDegreeMap(edges))[0]?.id ?? null;
+}
+
+function hashNumber(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function nodeMatchesSearch(node: KnowledgeGraphNode, query: string) {
+  if (!query) return true;
+  return node.label.toLowerCase().includes(query) || node.description.toLowerCase().includes(query);
+}
+
+function collectNeighborIds(edges: KnowledgeGraphEdge[], ids: Set<string>) {
+  const neighbors = new Set<string>();
+  for (const edge of edges) {
+    if (ids.has(edge.source)) neighbors.add(edge.target);
+    if (ids.has(edge.target)) neighbors.add(edge.source);
+  }
+  return neighbors;
+}
+
+function limitOrderedIds(orderedIds: string[], requiredIds: Set<string>, budget: number) {
+  const uniqueRequired = [...requiredIds].filter((id, index, ids) => ids.indexOf(id) === index);
+  const result = [...uniqueRequired];
+  const seen = new Set(result);
+  for (const id of orderedIds) {
+    if (seen.has(id)) continue;
+    if (result.length >= budget) break;
+    result.push(id);
+    seen.add(id);
+  }
+  return result;
+}
+
+function buildVisibleGraph(
+  graph: KnowledgeGraph | null,
+  searchText: string,
+  graphMode: GraphMode,
+  anchorNodeId: string | null,
+  selectedBundleId: string | null,
+  maxVisibleNodes: number,
+) {
+  const nodes = graph?.nodes ?? [];
+  const edges = graph?.edges ?? [];
+  const query = searchText.trim().toLowerCase();
+  const degree = buildDegreeMap(edges);
+  const rankedNodes = sortNodesByImportance(nodes, degree);
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const requiredIds = new Set<string>();
+  const selectedBundleNodeIds = selectedBundleId?.split('::').filter(Boolean) ?? [];
+  for (const id of selectedBundleNodeIds) {
+    if (nodeById.has(id)) requiredIds.add(id);
+  }
+  if (anchorNodeId && nodeById.has(anchorNodeId)) requiredIds.add(anchorNodeId);
+
+  let orderedIds: string[] = [];
+  if (query) {
+    const matchedIds = new Set(nodes.filter((node) => nodeMatchesSearch(node, query)).map((node) => node.id));
+    const neighborIds = collectNeighborIds(edges, matchedIds);
+    orderedIds = [
+      ...rankedNodes.filter((node) => matchedIds.has(node.id)).map((node) => node.id),
+      ...rankedNodes.filter((node) => neighborIds.has(node.id)).map((node) => node.id),
+    ];
+  } else if (graphMode === 'focus' && requiredIds.size > 0) {
+    const firstHop = collectNeighborIds(edges, requiredIds);
+    const secondHop = collectNeighborIds(edges, firstHop);
+    orderedIds = [
+      ...rankedNodes.filter((node) => requiredIds.has(node.id)).map((node) => node.id),
+      ...rankedNodes.filter((node) => firstHop.has(node.id)).map((node) => node.id),
+      ...rankedNodes.filter((node) => secondHop.has(node.id) && !requiredIds.has(node.id)).map((node) => node.id),
+    ];
+    if (orderedIds.length < Math.min(8, maxVisibleNodes)) {
+      orderedIds.push(...rankedNodes.map((node) => node.id));
     }
+  } else if (graphMode === 'overview') {
+    const buckets = new Map<string, KnowledgeGraphNode[]>();
+    for (const node of rankedNodes) {
+      const bucket = node.entityType in ENTITY_CLUSTER_ANCHORS ? node.entityType : 'other';
+      buckets.set(bucket, [...(buckets.get(bucket) ?? []), node]);
+    }
+    const bucketOrder = Object.keys(ENTITY_CLUSTER_ANCHORS);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const bucket of bucketOrder) {
+        const next = buckets.get(bucket)?.shift();
+        if (!next) continue;
+        orderedIds.push(next.id);
+        added = true;
+      }
+    }
+  } else {
+    orderedIds = rankedNodes.map((node) => node.id);
+  }
 
-    const ringIndex = Math.floor((index - 1) / 10);
-    const ringStart = 1 + ringIndex * 10;
-    const ringSize = Math.min(10 + ringIndex * 4, sorted.length - ringStart);
-    const slot = index - ringStart;
-    const angleOffset = ringIndex % 2 === 0 ? -Math.PI / 2 : -Math.PI / 2 + Math.PI / Math.max(6, ringSize);
-    const angle = angleOffset + (slot / Math.max(1, ringSize)) * Math.PI * 2;
-    const radius = Math.min(280, 165 + ringIndex * 92);
-    const x = CENTER_X + Math.cos(angle) * radius;
-    const y = CENTER_Y + Math.sin(angle) * radius * 0.78;
+  const candidateIds = [...new Set(orderedIds.filter((id) => nodeById.has(id)))];
+  const limitedIds = limitOrderedIds(candidateIds, requiredIds, maxVisibleNodes);
+  const visibleNodeIds = new Set(limitedIds);
+  const visibleNodes = limitedIds.map((id) => nodeById.get(id)).filter((node): node is KnowledgeGraphNode => Boolean(node));
+  const visibleEdges = edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target));
+
+  return {
+    nodes: visibleNodes,
+    edges: visibleEdges,
+    hiddenNodeCount: Math.max(0, candidateIds.length - visibleNodes.length),
+  };
+}
+
+function truncateNodeLabel(label: string, maxLength: number) {
+  return label.length > maxLength ? `${label.slice(0, maxLength - 1)}...` : label;
+}
+
+function manualNodePositionKey(graphMode: GraphMode, nodeId: string) {
+  return `${graphMode}:${nodeId}`;
+}
+
+function computeLayout(
+  nodes: KnowledgeGraphNode[],
+  edges: KnowledgeGraphEdge[],
+  graphMode: GraphMode,
+  anchorNodeId: string | null,
+): PositionedNode[] {
+  const degree = buildDegreeMap(edges);
+
+  const sorted = sortNodesByImportance(nodes, degree);
+  const rankById = new Map(sorted.map((node, index) => [node.id, index]));
+  const bucketCounts = new Map<string, number>();
+  const centerBias = graphMode === 'focus' ? 0.18 : 1;
+  const focusAnchorId =
+    graphMode === 'focus' && anchorNodeId && nodes.some((node) => node.id === anchorNodeId)
+      ? anchorNodeId
+      : graphMode === 'focus'
+        ? sorted[0]?.id ?? null
+        : null;
+  const focusNeighborIds = new Set<string>();
+  if (focusAnchorId) {
+    for (const edge of edges) {
+      if (edge.source === focusAnchorId) focusNeighborIds.add(edge.target);
+      if (edge.target === focusAnchorId) focusNeighborIds.add(edge.source);
+    }
+  }
+  const focusPrimaryNodes = sorted.filter((node) => node.id !== focusAnchorId && focusNeighborIds.has(node.id));
+  const focusSecondaryNodes = sorted.filter((node) => node.id !== focusAnchorId && !focusNeighborIds.has(node.id));
+  const focusPrimaryRank = new Map(focusPrimaryNodes.map((node, index) => [node.id, index]));
+  const focusSecondaryRank = new Map(focusSecondaryNodes.map((node, index) => [node.id, index]));
+  const layoutTargets = new Map<string, { x: number; y: number }>();
+
+  const layout = sorted.map((node): PositionedNode => {
     const nodeDegree = degree.get(node.id) ?? 0;
-    const nodeRadius = Math.min(38, 24 + Math.sqrt(Math.max(1, node.mentionCount + nodeDegree * 2)) * 2.4);
-
-    return {
+    const nodeRadius = Math.min(15, 5.5 + Math.sqrt(Math.max(1, node.mentionCount + nodeDegree * 2)) * 1.1);
+    const baseNode = {
       ...node,
-      x,
-      y,
       radius: nodeRadius,
       degree: nodeDegree,
+      importance: nodeImportance(node, degree),
+      rank: rankById.get(node.id) ?? 0,
+    };
+
+    if (graphMode === 'focus' && focusAnchorId) {
+      if (node.id === focusAnchorId) {
+        const x = CENTER_X - 28;
+        const y = CENTER_Y - 12;
+        layoutTargets.set(node.id, { x, y });
+        return { ...baseNode, x, y };
+      }
+
+      const isPrimary = focusNeighborIds.has(node.id);
+      const ringCount = Math.max(1, isPrimary ? focusPrimaryNodes.length : focusSecondaryNodes.length);
+      const ringIndex = isPrimary ? focusPrimaryRank.get(node.id) ?? 0 : focusSecondaryRank.get(node.id) ?? 0;
+      const angleOffset = isPrimary ? -Math.PI / 2 : -Math.PI / 2 + Math.PI / Math.max(3, ringCount);
+      const angle = angleOffset + (ringIndex / ringCount) * Math.PI * 2;
+      const radiusX = isPrimary ? Math.min(235, 188 + ringCount * 5) : 285;
+      const radiusY = isPrimary ? Math.min(172, 132 + ringCount * 4) : 212;
+      const x = CENTER_X + Math.cos(angle) * radiusX;
+      const y = CENTER_Y + Math.sin(angle) * radiusY;
+      layoutTargets.set(node.id, { x, y });
+      return { ...baseNode, x, y };
+    }
+
+    const cluster = node.entityType in ENTITY_CLUSTER_ANCHORS ? node.entityType : 'other';
+    const anchor = ENTITY_CLUSTER_ANCHORS[cluster];
+    const bucketIndex = bucketCounts.get(cluster) ?? 0;
+    bucketCounts.set(cluster, bucketIndex + 1);
+    const seed = hashNumber(node.id);
+    const angle = ((seed % 3600) / 3600) * Math.PI * 2 + bucketIndex * 0.82;
+    const spiral = 24 + Math.sqrt(bucketIndex + 1) * 34;
+    const anchorX = CENTER_X + (anchor.x - CENTER_X) * centerBias;
+    const anchorY = CENTER_Y + (anchor.y - CENTER_Y) * centerBias;
+    const x = anchorX + Math.cos(angle) * spiral;
+    const y = anchorY + Math.sin(angle) * spiral * 0.72;
+    layoutTargets.set(node.id, { x: anchorX, y: anchorY });
+
+    return {
+      ...baseNode,
+      x,
+      y,
     };
   });
+
+  const indexById = new Map(layout.map((node, index) => [node.id, index]));
+  const links = edges
+    .map((edge) => {
+      const sourceIndex = indexById.get(edge.source);
+      const targetIndex = indexById.get(edge.target);
+      if (sourceIndex === undefined || targetIndex === undefined) return null;
+      return { sourceIndex, targetIndex, strength: Math.max(0.35, edge.strength) };
+    })
+    .filter((link): link is { sourceIndex: number; targetIndex: number; strength: number } => Boolean(link));
+  const iterations = graphMode === 'focus' ? 82 : 96;
+
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    for (let i = 0; i < layout.length; i += 1) {
+      for (let j = i + 1; j < layout.length; j += 1) {
+        const a = layout[i];
+        const b = layout[j];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const distance = Math.hypot(dx, dy) || 1;
+        const minDistance = a.radius + b.radius + (graphMode === 'focus' ? 28 : 20);
+        const nx = dx / distance;
+        const ny = dy / distance;
+
+        if (distance < minDistance) {
+          const push = (minDistance - distance) * 0.026;
+          a.x -= nx * push;
+          a.y -= ny * push;
+          b.x += nx * push;
+          b.y += ny * push;
+        } else {
+          const push = Math.min(1.45, 92 / (distance * distance));
+          a.x -= nx * push;
+          a.y -= ny * push;
+          b.x += nx * push;
+          b.y += ny * push;
+        }
+      }
+    }
+
+    for (const link of links) {
+      const source = layout[link.sourceIndex];
+      const target = layout[link.targetIndex];
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const distance = Math.hypot(dx, dy) || 1;
+      const desired = graphMode === 'focus' ? 148 : 172;
+      const pull = (distance - desired) * 0.008 * link.strength;
+      const nx = dx / distance;
+      const ny = dy / distance;
+      source.x += nx * pull;
+      source.y += ny * pull;
+      target.x -= nx * pull;
+      target.y -= ny * pull;
+    }
+
+    for (const node of layout) {
+      const cluster = node.entityType in ENTITY_CLUSTER_ANCHORS ? node.entityType : 'other';
+      const anchor = ENTITY_CLUSTER_ANCHORS[cluster];
+      const target = layoutTargets.get(node.id) ?? {
+        x: CENTER_X + (anchor.x - CENTER_X) * centerBias,
+        y: CENTER_Y + (anchor.y - CENTER_Y) * centerBias,
+      };
+      const pull = graphMode === 'focus' ? 0.024 : graphMode === 'atlas' ? 0.009 : 0.014;
+      node.x += (target.x - node.x) * pull;
+      node.y += (target.y - node.y) * pull;
+
+      const margin = node.radius + 42;
+      node.x = Math.min(VIEWBOX_WIDTH - margin, Math.max(margin, node.x));
+      node.y = Math.min(VIEWBOX_HEIGHT - margin, Math.max(margin, node.y));
+    }
+  }
+
+  return layout.sort((a, b) => a.importance - b.importance);
 }
 
 function relationOffset(index: number, total: number) {
@@ -248,9 +531,52 @@ function bundleMidpoint(source: PositionedNode, target: PositionedNode) {
   };
 }
 
+function computeGraphViewBox(nodes: PositionedNode[], graphMode: GraphMode) {
+  if (nodes.length === 0 || graphMode === 'atlas') return DEFAULT_GRAPH_VIEWBOX;
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const node of nodes) {
+    const labelPadding = graphMode === 'focus' ? 52 : 38;
+    minX = Math.min(minX, node.x - node.radius - labelPadding);
+    maxX = Math.max(maxX, node.x + node.radius + labelPadding);
+    minY = Math.min(minY, node.y - node.radius - labelPadding);
+    maxY = Math.max(maxY, node.y + node.radius + labelPadding);
+  }
+
+  const minWidth = graphMode === 'focus' ? 480 : 720;
+  const minHeight = graphMode === 'focus' ? 360 : 460;
+  const naturalWidth = Math.max(1, maxX - minX);
+  const naturalHeight = Math.max(1, maxY - minY);
+  const width = Math.min(VIEWBOX_WIDTH, Math.max(minWidth, naturalWidth));
+  const height = Math.min(VIEWBOX_HEIGHT, Math.max(minHeight, naturalHeight));
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  const x = Math.max(0, Math.min(VIEWBOX_WIDTH - width, centerX - width / 2));
+  const y = Math.max(0, Math.min(VIEWBOX_HEIGHT - height, centerY - height / 2));
+
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height),
+  };
+}
+
 export function KnowledgeGraphView() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const graphSvgRef = useRef<SVGSVGElement | null>(null);
+  const dragStateRef = useRef<{
+    nodeId: string;
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressClickNodeRef = useRef<string | null>(null);
   const [graph, setGraph] = useState<KnowledgeGraph | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [loading, setLoading] = useState(true);
@@ -262,6 +588,10 @@ export function KnowledgeGraphView() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedBundleId, setSelectedBundleId] = useState<string | null>(null);
   const [showExpandedRelations, setShowExpandedRelations] = useState(false);
+  const [graphMode, setGraphMode] = useState<GraphMode>('overview');
+  const [maxVisibleNodes, setMaxVisibleNodes] = useState(DEFAULT_VISIBLE_NODE_BUDGET);
+  const [manualNodePositions, setManualNodePositions] = useState<Record<string, { x: number; y: number }>>({});
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const [agentUsage, setAgentUsage] = useState(() => readGraphAgentUsage());
 
   const loadSources = useCallback(async () => {
@@ -277,7 +607,7 @@ export function KnowledgeGraphView() {
     setLoading(true);
     try {
       const nextGraph = await api.getKnowledgeGraph({
-        limit: 90,
+        limit: GRAPH_FETCH_LIMIT,
         sourceId: selectedSourceId || null,
         pathPrefix: pathPrefix.trim() || null,
         entityTypes: entityFilter === 'all' ? [] : [entityFilter],
@@ -286,7 +616,7 @@ export function KnowledgeGraphView() {
       setGraph(nextGraph);
       setSelectedNodeId((current) => {
         if (current && nextGraph.nodes.some((node) => node.id === current)) return current;
-        return nextGraph.nodes[0]?.id ?? null;
+        return pickDefaultNodeId(nextGraph.nodes, nextGraph.edges);
       });
       setSelectedBundleId((current) => {
         if (current && nextGraph.edges.some((edge) => `${edge.source}::${edge.target}` === current || `${edge.target}::${edge.source}` === current)) {
@@ -322,34 +652,29 @@ export function KnowledgeGraphView() {
   const selectedSource = sources.find((source) => source.id === selectedSourceId) ?? null;
   const trimmedPathPrefix = pathPrefix.trim();
   const trimmedSearchText = searchText.trim();
+  const bundleAnchorNodeId = selectedBundleId?.split('::')[0] ?? null;
+  const anchorNodeId = selectedNodeId ?? bundleAnchorNodeId ?? pickDefaultNodeId(graph?.nodes ?? [], graph?.edges ?? []);
   const relationTypes = useMemo(() => {
     const values = new Set(graph?.edges.map((edge) => edge.relationType) ?? []);
     return [...values].sort((a, b) => a.localeCompare(b));
   }, [graph]);
 
-  const visibleNodeIds = useMemo(() => {
-    const query = trimmedSearchText.toLowerCase();
-    const ids = new Set<string>();
-    for (const node of graph?.nodes ?? []) {
-      if (!query || node.label.toLowerCase().includes(query) || node.description.toLowerCase().includes(query)) {
-        ids.add(node.id);
-      }
-    }
-    return ids;
-  }, [graph, trimmedSearchText]);
-
-  const visibleNodes = useMemo(
-    () => (graph?.nodes ?? []).filter((node) => visibleNodeIds.has(node.id)),
-    [graph, visibleNodeIds],
+  const visibleGraph = useMemo(
+    () => buildVisibleGraph(graph, trimmedSearchText, graphMode, anchorNodeId, selectedBundleId, maxVisibleNodes),
+    [anchorNodeId, graph, graphMode, maxVisibleNodes, selectedBundleId, trimmedSearchText],
   );
-
-  const visibleEdges = useMemo(
-    () => (graph?.edges ?? []).filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)),
-    [graph, visibleNodeIds],
-  );
+  const visibleNodes = visibleGraph.nodes;
+  const visibleEdges = visibleGraph.edges;
   const visibleRelationBundles = useMemo(() => buildRelationBundles(visibleEdges), [visibleEdges]);
 
-  const positionedNodes = useMemo(() => computeLayout(visibleNodes, visibleEdges), [visibleNodes, visibleEdges]);
+  const positionedNodes = useMemo(
+    () => computeLayout(visibleNodes, visibleEdges, graphMode, anchorNodeId).map((node) => {
+      const manualPosition = manualNodePositions[manualNodePositionKey(graphMode, node.id)];
+      return manualPosition ? { ...node, ...manualPosition } : node;
+    }),
+    [anchorNodeId, graphMode, manualNodePositions, visibleEdges, visibleNodes],
+  );
+  const graphViewBox = useMemo(() => computeGraphViewBox(positionedNodes, graphMode), [graphMode, positionedNodes]);
   const nodeById = useMemo(() => new Map(positionedNodes.map((node) => [node.id, node])), [positionedNodes]);
   const bundleById = useMemo(
     () => new Map(visibleRelationBundles.map((bundle) => [bundle.id, bundle])),
@@ -426,6 +751,9 @@ export function KnowledgeGraphView() {
   const hasActiveGraphFilters = Boolean(
     selectedSourceId || trimmedPathPrefix || entityFilter !== 'all' || relationFilter || trimmedSearchText,
   );
+  const totalGraphNodes = graph?.totalNodes ?? graph?.nodes.length ?? 0;
+  const totalGraphEdges = graph?.totalEdges ?? graph?.edges.length ?? 0;
+  const hiddenNodeCount = Math.max(visibleGraph.hiddenNodeCount, totalGraphNodes - visibleNodes.length);
   const graphScopeLabel = selectedSource
     ? `${shortPath(selectedSource.rootPath)}${trimmedPathPrefix ? ` / ${trimmedPathPrefix}` : ''}`
     : trimmedPathPrefix
@@ -458,6 +786,87 @@ export function KnowledgeGraphView() {
     });
   }, [navigate, persistSelectedGraphContext]);
 
+  const handleSelectNode = useCallback((nodeId: string) => {
+    setSelectedNodeId(nodeId);
+    setSelectedBundleId(null);
+    if (graphMode !== 'focus') {
+      setGraphMode('focus');
+    }
+  }, [graphMode]);
+
+  const handleSelectBundle = useCallback((bundleId: string) => {
+    setSelectedBundleId(bundleId);
+    setSelectedNodeId(null);
+    if (graphMode !== 'focus') {
+      setGraphMode('focus');
+    }
+  }, [graphMode]);
+
+  const getSvgPoint = useCallback((event: ReactPointerEvent) => {
+    const svg = graphSvgRef.current;
+    if (!svg) return null;
+    const matrix = svg.getScreenCTM();
+    if (!matrix) return null;
+    const point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    return point.matrixTransform(matrix.inverse());
+  }, []);
+
+  const handleNodePointerDown = useCallback((event: ReactPointerEvent<SVGGElement>, nodeId: string) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragStateRef.current = {
+      nodeId,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      moved: false,
+    };
+    setDraggingNodeId(nodeId);
+  }, []);
+
+  const handleGraphPointerMove = useCallback((event: ReactPointerEvent<SVGSVGElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+    const movedDistance = Math.hypot(event.clientX - dragState.startClientX, event.clientY - dragState.startClientY);
+    if (movedDistance < DRAG_MOVE_THRESHOLD && !dragState.moved) return;
+
+    dragState.moved = true;
+    event.preventDefault();
+    const point = getSvgPoint(event);
+    const node = nodeById.get(dragState.nodeId);
+    if (!point || !node) return;
+
+    const margin = node.radius + 38;
+    const x = Math.min(VIEWBOX_WIDTH - margin, Math.max(margin, point.x));
+    const y = Math.min(VIEWBOX_HEIGHT - margin, Math.max(margin, point.y));
+    const key = manualNodePositionKey(graphMode, dragState.nodeId);
+    setManualNodePositions((current) => ({
+      ...current,
+      [key]: { x, y },
+    }));
+  }, [getSvgPoint, graphMode, nodeById]);
+
+  const finishGraphDrag = useCallback((event: ReactPointerEvent<SVGSVGElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+    if (dragState.moved) {
+      suppressClickNodeRef.current = dragState.nodeId;
+      window.setTimeout(() => {
+        if (suppressClickNodeRef.current === dragState.nodeId) {
+          suppressClickNodeRef.current = null;
+        }
+      }, 0);
+    }
+
+    dragStateRef.current = null;
+    setDraggingNodeId(null);
+  }, []);
+
   const resetFilters = () => {
     setSelectedSourceId('');
     setPathPrefix('');
@@ -465,6 +874,9 @@ export function KnowledgeGraphView() {
     setRelationFilter('');
     setSearchText('');
     setSelectedBundleId(null);
+    setGraphMode('overview');
+    setMaxVisibleNodes(DEFAULT_VISIBLE_NODE_BUDGET);
+    setManualNodePositions({});
   };
 
   if (loading && !graph) {
@@ -545,7 +957,7 @@ export function KnowledgeGraphView() {
           </div>
         </div>
 
-        <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(240px,1fr)_minmax(180px,0.55fr)]">
+        <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(240px,1fr)_minmax(180px,0.55fr)_minmax(260px,0.75fr)_minmax(130px,0.35fr)]">
           <Input
             icon={<Search size={15} />}
             placeholder={t('knowledge.searchGraph')}
@@ -565,11 +977,44 @@ export function KnowledgeGraphView() {
               ))}
             </select>
           </label>
+
+          <div className="space-y-1.5">
+            <span className="text-xs font-medium text-text-tertiary">{t('knowledge.graphViewMode')}</span>
+            <div className="flex h-10 items-center gap-1 rounded-md border border-border bg-surface-0 px-1.5">
+              {(['focus', 'overview', 'atlas'] as GraphMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setGraphMode(mode)}
+                  className={`h-7 min-w-0 flex-1 rounded-md px-2 text-xs transition-colors ${
+                    graphMode === mode
+                      ? 'bg-accent-subtle text-accent-hover'
+                      : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary'
+                  }`}
+                >
+                  {graphModeLabel(mode, t)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label className="space-y-1.5">
+            <span className="text-xs font-medium text-text-tertiary">{t('knowledge.visibleBudget')}</span>
+            <select
+              value={maxVisibleNodes}
+              onChange={(event) => setMaxVisibleNodes(Number(event.target.value))}
+              className="h-10 w-full rounded-md border border-border bg-surface-0 px-3 text-sm text-text-primary outline-none transition-colors hover:border-border-hover focus:border-accent"
+            >
+              {NODE_BUDGET_OPTIONS.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </label>
         </div>
       </section>
 
       <div className="grid min-h-[620px] gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <section className="relative min-h-[620px] overflow-hidden rounded-lg border border-border bg-surface-1">
+        <section className="relative h-[620px] min-h-[620px] overflow-hidden rounded-lg border border-border bg-surface-1">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
@@ -580,7 +1025,7 @@ export function KnowledgeGraphView() {
                 {graphScopeLabel}
               </p>
             </div>
-            <div className="flex shrink-0 gap-1.5">
+            <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
               <Button
                 variant="secondary"
                 size="sm"
@@ -594,9 +1039,14 @@ export function KnowledgeGraphView() {
                   {t('knowledge.agentUsedPath')}: {agentUsedNodeIds.size}
                 </Badge>
               )}
-              <Badge variant="info">{visibleNodes.length} {t('knowledge.nodes')}</Badge>
+              {hiddenNodeCount > 0 && (
+                <Badge variant="warning">{hiddenNodeCount} {t('knowledge.hiddenNodes')}</Badge>
+              )}
+              <Badge variant="info">
+                {visibleNodes.length}/{totalGraphNodes || visibleNodes.length} {t('knowledge.nodes')}
+              </Badge>
               <Badge variant="success">{visibleRelationBundles.length} {t('knowledge.relationBundles')}</Badge>
-              <Badge variant="default">{visibleEdges.length} {t('knowledge.edges')}</Badge>
+              <Badge variant="default">{visibleEdges.length}/{totalGraphEdges || visibleEdges.length} {t('knowledge.edges')}</Badge>
             </div>
           </div>
 
@@ -619,31 +1069,133 @@ export function KnowledgeGraphView() {
               }
             />
           ) : (
-            <div className="h-[calc(100%-58px)] min-h-[562px]">
+            <div className="h-[562px]">
               <svg
-                viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
+                ref={graphSvgRef}
+                viewBox={`${graphViewBox.x} ${graphViewBox.y} ${graphViewBox.width} ${graphViewBox.height}`}
                 role="img"
                 aria-label={t('knowledge.relationshipGraph')}
                 className="h-full w-full"
+                onPointerMove={handleGraphPointerMove}
+                onPointerUp={finishGraphDrag}
+                onPointerCancel={finishGraphDrag}
               >
                 <defs>
+                  <style>
+                    {`
+                      .kg-edge-line {
+                        stroke-linecap: round;
+                        stroke-linejoin: round;
+                        transition: opacity 160ms ease, stroke-width 160ms ease;
+                      }
+                      .kg-edge-transfer {
+                        pointer-events: none;
+                      }
+                      .kg-edge-transfer-bridge {
+                        fill: none;
+                        stroke: currentColor;
+                        stroke-linecap: round;
+                        stroke-linejoin: round;
+                        stroke-opacity: 0.32;
+                        filter: url(#knowledge-transfer-soften);
+                      }
+                      .kg-edge-transfer-swell {
+                        fill: currentColor;
+                        fill-opacity: 0.18;
+                        filter: url(#knowledge-transfer-soften);
+                      }
+                      .kg-edge-transfer-orb {
+                        fill: currentColor;
+                        stroke: rgba(255, 255, 255, 0.58);
+                        stroke-width: 0.85;
+                        filter: url(#knowledge-transfer-glow);
+                      }
+                      .kg-node-hit {
+                        pointer-events: all;
+                      }
+                      .kg-node-core {
+                        filter: url(#knowledge-node-frost);
+                        transition: filter 160ms ease;
+                      }
+                      .kg-node-shell {
+                        filter: url(#knowledge-node-glow);
+                      }
+                      .kg-label-chip {
+                        filter: url(#knowledge-label-shadow);
+                      }
+                    `}
+                  </style>
+                  <radialGradient id="knowledge-canvas-glow" cx="50%" cy="48%" r="62%">
+                    <stop offset="0%" stopColor="rgba(255,255,255,0.78)" />
+                    <stop offset="54%" stopColor="rgba(239,246,255,0.42)" />
+                    <stop offset="100%" stopColor="rgba(241,245,249,0)" />
+                  </radialGradient>
+                  <filter id="knowledge-node-frost" x="-90%" y="-90%" width="280%" height="280%" colorInterpolationFilters="sRGB">
+                    <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="2" seed="9" result="noise" />
+                    <feColorMatrix
+                      in="noise"
+                      type="matrix"
+                      values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.16 0"
+                      result="grain"
+                    />
+                    <feBlend in="SourceGraphic" in2="grain" mode="screen" result="frosted" />
+                    <feDropShadow in="frosted" dx="0" dy="4" stdDeviation="5" floodColor="#0f172a" floodOpacity="0.14" />
+                  </filter>
+                  <filter id="knowledge-node-glow" x="-120%" y="-120%" width="340%" height="340%">
+                    <feGaussianBlur stdDeviation="4" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                  <filter id="knowledge-transfer-soften" x="-160%" y="-220%" width="420%" height="540%">
+                    <feGaussianBlur stdDeviation="1.6" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                  <filter id="knowledge-transfer-glow" x="-180%" y="-180%" width="460%" height="460%">
+                    <feGaussianBlur stdDeviation="3" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                  <filter id="knowledge-label-shadow" x="-30%" y="-80%" width="160%" height="260%">
+                    <feDropShadow dx="0" dy="4" stdDeviation="4" floodColor="#0f172a" floodOpacity="0.12" />
+                  </filter>
                   {Object.values(RELATION_CATEGORY_STYLE).map((style) => (
                     <marker
                       key={style.id}
                       id={`knowledge-edge-arrow-${style.id}`}
                       markerWidth="9"
                       markerHeight="9"
-                      refX="7"
-                      refY="3"
+                      refX="6"
+                      refY="2.5"
                       orient="auto-start-reverse"
                       markerUnits="strokeWidth"
                     >
-                      <path d="M0,0 L0,6 L7,3 z" className={style.fill} />
+                      <path d="M0,0 L0,5 L6,2.5 z" fill={style.color} />
                     </marker>
                   ))}
                 </defs>
-                <rect width={VIEWBOX_WIDTH} height={VIEWBOX_HEIGHT} className="fill-surface-1" />
-                <g className="opacity-40">
+                <rect
+                  x={graphViewBox.x}
+                  y={graphViewBox.y}
+                  width={graphViewBox.width}
+                  height={graphViewBox.height}
+                  className="fill-surface-1"
+                />
+                <rect
+                  x={graphViewBox.x}
+                  y={graphViewBox.y}
+                  width={graphViewBox.width}
+                  height={graphViewBox.height}
+                  fill="url(#knowledge-canvas-glow)"
+                  className="pointer-events-none"
+                />
+                <g className="opacity-24">
                   {Array.from({ length: 9 }).map((_, index) => (
                     <line
                       key={`v-${index}`}
@@ -669,20 +1221,22 @@ export function KnowledgeGraphView() {
                 </g>
 
                 <g>
-                  {visibleRelationBundles.map((bundle) => {
+                  {visibleRelationBundles.map((bundle, bundleIndex) => {
                     const source = nodeById.get(bundle.source);
                     const target = nodeById.get(bundle.target);
                     if (!source || !target) return null;
                     const style = RELATION_CATEGORY_STYLE[bundle.category];
-                    const selected =
-                      selectedBundle?.id === bundle.id ||
-                      Boolean(selectedNode && (bundle.source === selectedNode.id || bundle.target === selectedNode.id));
+                    const directlySelected = selectedBundle?.id === bundle.id;
+                    const connectedToSelectedNode = Boolean(selectedNode && (bundle.source === selectedNode.id || bundle.target === selectedNode.id));
+                    const selected = directlySelected || Boolean(graphMode === 'focus' && connectedToSelectedNode);
                     const agentUsed = agentUsedBundleIds.has(bundle.id);
                     const midpoint = bundleMidpoint(source, target);
                     const bundleLabel = `${source.label} ${target.label}, ${bundle.relationCount} relations`;
+                    const path = edgePath(source, target);
+                    const showRelationBadge = bundle.relationCount > 1 || directlySelected || agentUsed;
+                    const pulsing = directlySelected || agentUsed || Boolean(graphMode === 'focus' && connectedToSelectedNode);
                     const selectBundle = () => {
-                      setSelectedBundleId(bundle.id);
-                      setSelectedNodeId(null);
+                      handleSelectBundle(bundle.id);
                     };
                     return (
                       <g
@@ -702,33 +1256,134 @@ export function KnowledgeGraphView() {
                             const edgeTarget = nodeById.get(edge.target);
                             if (!edgeSource || !edgeTarget) return null;
                             const edgeStyle = RELATION_CATEGORY_STYLE[buildRelationBundles([edge])[0]?.category ?? 'general'];
+                            const expandedPath = edgePath(edgeSource, edgeTarget, relationOffset(index, bundle.edges.length));
+                            const edgePulsing = selected || agentUsedEdgeIds.has(edge.id) || graphMode === 'focus';
+                            const edgeWaveDuration = selected ? '7.8s' : '9.6s';
+                            const edgeWaveBegin = `${(index % 6) * 0.75}s`;
                             return (
-                              <path
-                                key={edge.id}
-                                d={edgePath(edgeSource, edgeTarget, relationOffset(index, bundle.edges.length))}
-                                fill="none"
-                                className={selected ? edgeStyle.stroke : agentUsedEdgeIds.has(edge.id) ? 'stroke-warning' : edgeStyle.stroke}
-                                strokeWidth={selected ? 2.2 : agentUsedEdgeIds.has(edge.id) ? 2 : 1.35}
-                                strokeDasharray={edgeStyle.dash}
-                                markerEnd={`url(#knowledge-edge-arrow-${edgeStyle.id})`}
-                              />
+                              <g key={edge.id}>
+                                <path
+                                  d={expandedPath}
+                                  fill="none"
+                                  className="kg-edge-line"
+                                  stroke={agentUsedEdgeIds.has(edge.id) ? '#f59e0b' : edgeStyle.color}
+                                  strokeWidth={selected ? 1.25 : agentUsedEdgeIds.has(edge.id) ? 1.15 : 0.9}
+                                  opacity={selected || agentUsedEdgeIds.has(edge.id) ? 0.82 : 0.58}
+                                  strokeDasharray={edgeStyle.dash}
+                                  markerEnd={`url(#knowledge-edge-arrow-${edgeStyle.id})`}
+                                />
+                                {edgePulsing && (
+                                  <g className="kg-edge-transfer" style={{ color: edgeStyle.color }}>
+                                    <animateMotion dur={edgeWaveDuration} begin={edgeWaveBegin} repeatCount="indefinite" path={expandedPath} rotate="auto" />
+                                    <animate
+                                      attributeName="opacity"
+                                      values="0;0.72;0.82;0.44;0"
+                                      keyTimes="0;0.14;0.68;0.92;1"
+                                      dur={edgeWaveDuration}
+                                      begin={edgeWaveBegin}
+                                      repeatCount="indefinite"
+                                    />
+                                    <path d="M -20 0 L 11 0" className="kg-edge-transfer-bridge" strokeWidth={selected ? 4.7 : 3.5} />
+                                    <ellipse cx="-3" cy="0" rx={selected ? 15 : 12} ry={selected ? 5.4 : 4.2} className="kg-edge-transfer-swell">
+                                      <animate
+                                        attributeName="rx"
+                                        values={`${selected ? 8 : 6};${selected ? 17 : 13};${selected ? 11 : 9};2`}
+                                        keyTimes="0;0.28;0.82;1"
+                                        dur={edgeWaveDuration}
+                                        begin={edgeWaveBegin}
+                                        repeatCount="indefinite"
+                                      />
+                                      <animate
+                                        attributeName="ry"
+                                        values={`${selected ? 2.6 : 2};${selected ? 5.8 : 4.6};${selected ? 3.6 : 3};0.8`}
+                                        keyTimes="0;0.28;0.82;1"
+                                        dur={edgeWaveDuration}
+                                        begin={edgeWaveBegin}
+                                        repeatCount="indefinite"
+                                      />
+                                    </ellipse>
+                                    <circle r={selected ? 4.6 : 3.6} className="kg-edge-transfer-orb">
+                                      <animate
+                                        attributeName="r"
+                                        values={`${selected ? 2.8 : 2.2};${selected ? 4.8 : 3.8};${selected ? 4.4 : 3.4};0.9`}
+                                        keyTimes="0;0.2;0.86;1"
+                                        dur={edgeWaveDuration}
+                                        begin={edgeWaveBegin}
+                                        repeatCount="indefinite"
+                                      />
+                                    </circle>
+                                  </g>
+                                )}
+                              </g>
                             );
                           })
                         ) : (
-                          <path
-                            d={edgePath(source, target)}
-                            fill="none"
-                            className={selected ? style.stroke : agentUsed ? 'stroke-warning' : style.stroke}
-                            strokeWidth={selected ? 3 : agentUsed ? 2.6 : bundle.relationCount > 1 ? 2.2 : 1.5}
-                            strokeDasharray={style.dash}
-                            markerStart={bundle.direction === 'bidirectional' ? `url(#knowledge-edge-arrow-${style.id})` : undefined}
-                            markerEnd={bundle.direction !== 'undirected' ? `url(#knowledge-edge-arrow-${style.id})` : undefined}
-                          />
+                          <>
+                            <path
+                              d={path}
+                              fill="none"
+                              className="kg-edge-line"
+                              stroke={agentUsed ? '#f59e0b' : style.color}
+                              strokeWidth={selected ? 1.25 : agentUsed ? 1.15 : bundle.relationCount > 1 ? 1 : 0.85}
+                              opacity={selected || agentUsed ? 0.84 : 0.56}
+                              strokeDasharray={style.dash}
+                              markerStart={bundle.direction === 'bidirectional' ? `url(#knowledge-edge-arrow-${style.id})` : undefined}
+                              markerEnd={bundle.direction !== 'undirected' ? `url(#knowledge-edge-arrow-${style.id})` : undefined}
+                            />
+                            {pulsing && (
+                              <g className="kg-edge-transfer" style={{ color: agentUsed ? '#f59e0b' : style.color }}>
+                                <animateMotion
+                                  dur={selected || agentUsed ? '7.8s' : '9.6s'}
+                                  begin={`${(bundleIndex % 7) * 0.65}s`}
+                                  repeatCount="indefinite"
+                                  path={path}
+                                  rotate="auto"
+                                />
+                                <animate
+                                  attributeName="opacity"
+                                  values="0;0.72;0.82;0.44;0"
+                                  keyTimes="0;0.14;0.68;0.92;1"
+                                  dur={selected || agentUsed ? '7.8s' : '9.6s'}
+                                  begin={`${(bundleIndex % 7) * 0.65}s`}
+                                  repeatCount="indefinite"
+                                />
+                                <path d="M -20 0 L 11 0" className="kg-edge-transfer-bridge" strokeWidth={selected || agentUsed ? 4.9 : 3.7} />
+                                <ellipse cx="-3" cy="0" rx={selected || agentUsed ? 15 : 12} ry={selected || agentUsed ? 5.5 : 4.3} className="kg-edge-transfer-swell">
+                                  <animate
+                                    attributeName="rx"
+                                    values={`${selected || agentUsed ? 8 : 6};${selected || agentUsed ? 17 : 13};${selected || agentUsed ? 11 : 9};2`}
+                                    keyTimes="0;0.28;0.82;1"
+                                    dur={selected || agentUsed ? '7.8s' : '9.6s'}
+                                    begin={`${(bundleIndex % 7) * 0.65}s`}
+                                    repeatCount="indefinite"
+                                  />
+                                  <animate
+                                    attributeName="ry"
+                                    values={`${selected || agentUsed ? 2.6 : 2};${selected || agentUsed ? 5.9 : 4.7};${selected || agentUsed ? 3.6 : 3};0.8`}
+                                    keyTimes="0;0.28;0.82;1"
+                                    dur={selected || agentUsed ? '7.8s' : '9.6s'}
+                                    begin={`${(bundleIndex % 7) * 0.65}s`}
+                                    repeatCount="indefinite"
+                                  />
+                                </ellipse>
+                                <circle r={selected || agentUsed ? 4.7 : 3.7} className="kg-edge-transfer-orb">
+                                  <animate
+                                    attributeName="r"
+                                    values={`${selected || agentUsed ? 2.8 : 2.2};${selected || agentUsed ? 4.9 : 3.9};${selected || agentUsed ? 4.4 : 3.4};0.9`}
+                                    keyTimes="0;0.2;0.86;1"
+                                    dur={selected || agentUsed ? '7.8s' : '9.6s'}
+                                    begin={`${(bundleIndex % 7) * 0.65}s`}
+                                    repeatCount="indefinite"
+                                  />
+                                </circle>
+                              </g>
+                            )}
+                          </>
                         )}
-                        {(bundle.relationCount > 1 || selected || agentUsed) && (
+                        {showRelationBadge && (
                           <g transform={`translate(${midpoint.x - 48} ${midpoint.y - 13})`}>
                             <rect width="96" height="26" rx="7" className="fill-surface-0 stroke-border" />
-                            <text x="24" y="17" textAnchor="middle" className={`${style.fill} text-[11px] font-semibold`}>
+                            <text x="24" y="17" textAnchor="middle" fill={style.color} className="text-[11px] font-semibold">
                               {bundle.relationCount}
                             </text>
                             <text x="62" y="17" textAnchor="middle" className="fill-text-secondary text-[10px]">
@@ -746,57 +1401,101 @@ export function KnowledgeGraphView() {
                     const tone = entityTone(node.entityType);
                     const selected = selectedNode?.id === node.id;
                     const agentUsed = agentUsedNodeIds.has(node.id);
+                    const highlighted = selectedBundle
+                      ? selectedBundleNodeIds.has(node.id)
+                      : Boolean(graphMode === 'focus' && selectedNodeEdges.some((edge) => edge.source === node.id || edge.target === node.id));
                     const muted = selectedBundle
                       ? !selectedBundleNodeIds.has(node.id) && !agentUsed
-                      : selectedNode && !selected && !agentUsed && !selectedNodeEdges.some((edge) => edge.source === node.id || edge.target === node.id);
+                      : graphMode === 'focus' && selectedNode && !selected && !agentUsed && !highlighted;
+                    const showLabel = selected || agentUsed || highlighted || positionedNodes.length <= 36 || node.rank < (graphMode === 'focus' ? 16 : 10);
+                    const label = truncateNodeLabel(node.label, selected ? 28 : 20);
+                    const labelWidth = Math.min(168, Math.max(54, label.length * 7.5 + 20));
                     return (
                       <g
                         key={node.id}
                         role="button"
                         tabIndex={0}
-                        onClick={() => {
-                          setSelectedNodeId(node.id);
-                          setSelectedBundleId(null);
+                        onPointerDown={(event) => handleNodePointerDown(event, node.id)}
+                        onClick={(event) => {
+                          if (suppressClickNodeRef.current === node.id) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            suppressClickNodeRef.current = null;
+                            return;
+                          }
+                          handleSelectNode(node.id);
                         }}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
-                            setSelectedNodeId(node.id);
-                            setSelectedBundleId(null);
+                            handleSelectNode(node.id);
                           }
                         }}
                         aria-label={`${node.label}, ${entityTypeLabel(node.entityType, t)}`}
-                        className={`cursor-pointer outline-none transition-opacity ${muted ? 'opacity-45' : 'opacity-100'}`}
+                        className={`kg-node outline-none transition-opacity ${draggingNodeId === node.id ? 'cursor-grabbing' : 'cursor-grab'} ${muted ? 'opacity-38' : 'opacity-100'}`}
+                        style={{ touchAction: 'none' }}
                       >
+                        <title>{node.label}</title>
                         <circle
                           cx={node.x}
                           cy={node.y}
-                          r={node.radius + (selected ? 8 : agentUsed ? 6 : 0)}
-                          className={selected ? 'fill-accent-subtle stroke-accent' : agentUsed ? 'fill-warning/10 stroke-warning' : 'fill-transparent stroke-transparent'}
-                          strokeWidth="2"
+                          r={Math.max(22, node.radius + 12)}
+                          className="kg-node-hit fill-transparent"
                         />
+                        <circle
+                          cx={node.x}
+                          cy={node.y}
+                          r={node.radius + (selected ? 5 : agentUsed ? 4 : 0)}
+                          fill={selected ? 'rgba(37, 99, 235, 0.10)' : agentUsed ? 'rgba(245, 158, 11, 0.10)' : 'transparent'}
+                          stroke={selected ? '#2563eb' : agentUsed ? '#f59e0b' : 'transparent'}
+                          className={selected || agentUsed ? 'kg-node-shell' : undefined}
+                          strokeWidth="1.4"
+                        >
+                          {(selected || agentUsed) && (
+                            <>
+                              <animate attributeName="r" values={`${node.radius + 3};${node.radius + 9};${node.radius + 3}`} dur="2.8s" repeatCount="indefinite" />
+                              <animate attributeName="opacity" values="0.72;0.16;0.72" dur="2.8s" repeatCount="indefinite" />
+                            </>
+                          )}
+                        </circle>
                         <circle
                           cx={node.x}
                           cy={node.y}
                           r={node.radius}
-                          className={`${tone.fill} ${tone.stroke}`}
-                          strokeWidth={selected ? 3 : 2}
+                          fill={tone.solid}
+                          stroke={tone.strokeColor}
+                          className="kg-node-core"
+                          opacity={muted ? 0.72 : 0.94}
+                          strokeWidth={selected ? 2.1 : 1.15}
                         />
-                        <text
-                          x={node.x}
-                          y={node.y + 4}
-                          textAnchor="middle"
-                          className="pointer-events-none fill-text-primary text-[11px] font-semibold"
-                        >
-                          {node.label.length > 14 ? `${node.label.slice(0, 13)}...` : node.label}
-                        </text>
-                        <text
-                          x={node.x}
-                          y={node.y + node.radius + 17}
-                          textAnchor="middle"
-                          className="pointer-events-none fill-text-tertiary text-[10px]"
-                        >
-                          {node.documentCount} / {node.degree}
-                        </text>
+                        {showLabel && (
+                          <g className="pointer-events-none" transform={`translate(${node.x - labelWidth / 2} ${node.y - node.radius - 26})`}>
+                            <rect
+                              width={labelWidth}
+                              height={graphMode === 'focus' ? 25 : 21}
+                              rx={graphMode === 'focus' ? 8 : 6}
+                              className="kg-label-chip fill-surface-0 stroke-white"
+                              opacity={selected || agentUsed || graphMode === 'focus' ? 0.94 : 0.76}
+                            />
+                            <text
+                              x={labelWidth / 2}
+                              y={graphMode === 'focus' ? 17 : 14}
+                              textAnchor="middle"
+                              className={`${graphMode === 'focus' ? 'text-[12px]' : 'text-[10px]'} fill-text-primary font-semibold`}
+                            >
+                              {label}
+                            </text>
+                          </g>
+                        )}
+                        {(selected || agentUsed) && (
+                          <text
+                            x={node.x}
+                            y={node.y + node.radius + 17}
+                            textAnchor="middle"
+                            className="pointer-events-none fill-text-tertiary text-[10px]"
+                          >
+                            {node.documentCount} / {node.degree}
+                          </text>
+                        )}
                       </g>
                     );
                   })}
@@ -821,10 +1520,7 @@ export function KnowledgeGraphView() {
               edges={selectedNodeEdges}
               bundles={selectedNodeBundles}
               nodeById={nodeById}
-              onSelectBundle={(bundleId) => {
-                setSelectedBundleId(bundleId);
-                setSelectedNodeId(null);
-              }}
+              onSelectBundle={handleSelectBundle}
               graphContext={selectedGraphContext}
               onUseAsContext={handleUseAsContext}
               onAskAgent={handleAskAgent}
