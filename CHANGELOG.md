@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.0...nexa-monorepo-v0.7.1) (2026-05-22)
+
+
+### Features
+
+* **knowledge:** add graph-guided retrieval pipeline ([773b479](https://github.com/MLGBJDLW/Nexa/commit/773b4798a19d89545a4aad0f4fec758de24565b7))
+* **knowledge:** improve graph exploration view ([13b6874](https://github.com/MLGBJDLW/Nexa/commit/13b687439825fc440feb28d69c80226dd5a4a37f))
+* **skills:** deepen fiction writing resources ([104a520](https://github.com/MLGBJDLW/Nexa/commit/104a52026774e56c3dcf8ed641e2f2930700f63b))
+
 ## [0.7.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.6.11...nexa-monorepo-v0.7.0) (2026-05-21)
 
 
