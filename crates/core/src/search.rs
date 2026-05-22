@@ -1,6 +1,6 @@
 //! Search module — query execution and result ranking.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use rusqlite::params;
@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::embed::{cosine_similarity, create_embedder, Embedder, TfIdfEmbedder};
 use crate::error::CoreError;
+use crate::graph_retrieval::{self, GraphDocumentHit, GraphRetrievalReport};
 use crate::models::{EvidenceCard, FileType, Highlight, SearchQuery};
 use crate::personalization;
 use crate::rag;
@@ -95,6 +96,8 @@ pub struct SearchResult {
     pub evidence_cards: Vec<EvidenceCard>,
     pub search_time_ms: u64,
     pub search_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_retrieval: Option<GraphRetrievalReport>,
 }
 
 // ---------------------------------------------------------------------------
@@ -105,8 +108,17 @@ pub struct SearchResult {
 ///
 /// Builds an FTS5 MATCH query from the user text, joins through
 /// `fts_chunks → chunks → documents → sources`, applies any filters,
-/// ranks by BM25, and assembles [`EvidenceCard`]s with highlights.
+/// ranks by BM25, expands or boosts graph-linked evidence when available,
+/// and assembles [`EvidenceCard`]s with highlights.
 pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreError> {
+    search_internal(db, query, true)
+}
+
+fn search_internal(
+    db: &Database,
+    query: &SearchQuery,
+    apply_graph: bool,
+) -> Result<SearchResult, CoreError> {
     let start = Instant::now();
 
     let trimmed = query.text.trim();
@@ -117,6 +129,7 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
             evidence_cards: Vec::new(),
             search_time_ms: start.elapsed().as_millis() as u64,
             search_mode: "fts".to_string(),
+            graph_retrieval: None,
         });
     }
 
@@ -128,6 +141,7 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
             evidence_cards: Vec::new(),
             search_time_ms: start.elapsed().as_millis() as u64,
             search_mode: "fts".to_string(),
+            graph_retrieval: None,
         });
     }
 
@@ -230,7 +244,7 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
 
     // -- execute ----------------------------------------------------------
 
-    let (mut cards, total_matches) = {
+    let (cards, total_matches) = {
         let conn = db.conn();
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
@@ -350,22 +364,17 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
         (cards, total_matches)
     }; // conn dropped here
 
-    // Apply feedback-based re-ranking (must happen after conn is released).
-    apply_feedback_reranking(&mut cards, db, trimmed)?;
-
-    // Enrich with credibility and freshness, blend into ranking.
-    apply_credibility_scoring(&mut cards);
-
-    // Prefer evidence that still contains the user's own query terms after
-    // feedback expansion and source boosts have widened the candidate pool.
-    apply_query_relevance_adjustment(&mut cards, trimmed);
-    rag::rerank_evidence_cards(&mut cards, trimmed);
-
-    // Deduplicate: keep only the highest-scored card per document.
-    let cards = deduplicate_by_document(cards);
-
-    // Truncate to the user-requested limit after reranking.
-    let cards: Vec<EvidenceCard> = cards.into_iter().take(limit as usize).collect();
+    if apply_graph {
+        return finalize_search_result(
+            db,
+            query,
+            cards,
+            total_matches,
+            start,
+            "fts",
+            limit as usize,
+        );
+    }
 
     Ok(SearchResult {
         query: query.text.clone(),
@@ -373,7 +382,222 @@ pub fn search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreEr
         evidence_cards: cards,
         search_time_ms: start.elapsed().as_millis() as u64,
         search_mode: "fts".to_string(),
+        graph_retrieval: None,
     })
+}
+
+fn finalize_search_result(
+    db: &Database,
+    query: &SearchQuery,
+    mut cards: Vec<EvidenceCard>,
+    total_matches: usize,
+    start: Instant,
+    base_mode: &str,
+    limit: usize,
+) -> Result<SearchResult, CoreError> {
+    let graph_retrieval = apply_graph_retrieval(db, query, &mut cards, limit)?;
+
+    // Apply feedback-based re-ranking after graph expansion so graph-added
+    // evidence benefits from the same user-feedback and freshness layers.
+    apply_feedback_reranking(&mut cards, db, query.text.trim())?;
+    apply_credibility_scoring(&mut cards);
+    apply_query_relevance_adjustment(&mut cards, query.text.trim());
+    rag::rerank_evidence_cards(&mut cards, query.text.trim());
+    apply_graph_final_boost(&mut cards, graph_retrieval.as_ref());
+
+    let cards = deduplicate_by_document(cards);
+    let cards: Vec<EvidenceCard> = cards.into_iter().take(limit).collect();
+    let graph_active = graph_retrieval
+        .as_ref()
+        .map(|report| {
+            !report.expanded_chunk_ids.is_empty()
+                || !report.boosted_chunk_ids.is_empty()
+                || !report.candidate_documents.is_empty()
+        })
+        .unwrap_or(false);
+    let search_mode = if graph_active {
+        format!("{base_mode}+graph")
+    } else {
+        base_mode.to_string()
+    };
+
+    Ok(SearchResult {
+        query: query.text.clone(),
+        total_matches: total_matches.max(cards.len()),
+        evidence_cards: cards,
+        search_time_ms: start.elapsed().as_millis() as u64,
+        search_mode,
+        graph_retrieval,
+    })
+}
+
+fn apply_graph_final_boost(cards: &mut [EvidenceCard], report: Option<&GraphRetrievalReport>) {
+    let Some(report) = report else {
+        return;
+    };
+    if report.expanded_chunk_ids.is_empty() && report.boosted_chunk_ids.is_empty() {
+        return;
+    }
+    let expanded: HashSet<String> = report.expanded_chunk_ids.iter().cloned().collect();
+    let boosted: HashSet<String> = report.boosted_chunk_ids.iter().cloned().collect();
+    for card in cards.iter_mut() {
+        let chunk_id = card.chunk_id.to_string();
+        if expanded.contains(&chunk_id) {
+            card.score += 0.06;
+        } else if boosted.contains(&chunk_id) {
+            card.score += 0.04;
+        }
+    }
+    cards.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+}
+
+fn apply_graph_retrieval(
+    db: &Database,
+    query: &SearchQuery,
+    cards: &mut Vec<EvidenceCard>,
+    limit: usize,
+) -> Result<Option<GraphRetrievalReport>, CoreError> {
+    let Some(plan) = graph_retrieval::build_plan(db, &query.text, &query.filters, limit.max(4))?
+    else {
+        return Ok(None);
+    };
+    if plan.documents.is_empty() {
+        return Ok(None);
+    }
+
+    let mut report = GraphRetrievalReport::from_plan(&query.text, &plan);
+    let mut existing_docs: HashMap<String, usize> = HashMap::new();
+    for (idx, card) in cards.iter().enumerate() {
+        existing_docs
+            .entry(card.document_id.to_string())
+            .or_insert(idx);
+    }
+
+    let mut added_docs = 0usize;
+    for doc in &plan.documents {
+        if let Some(idx) = existing_docs.get(&doc.document_id).copied() {
+            let boost = 0.05 + doc.score.min(1.0) * 0.12;
+            cards[idx].score = (cards[idx].score + boost).max(0.0);
+            push_unique_string(
+                &mut report.boosted_chunk_ids,
+                cards[idx].chunk_id.to_string(),
+            );
+            continue;
+        }
+
+        if added_docs >= limit {
+            continue;
+        }
+
+        if let Some((chunk_id, chunk_score)) = best_graph_chunk_for_document(db, doc, &plan)? {
+            let mut card = get_evidence_card(db, &chunk_id)?;
+            card.score = (0.28 + doc.score.min(1.0) * 0.32 + chunk_score * 0.18).min(0.78);
+            let highlight_terms = graph_highlight_terms(&plan.query_terms, &doc.matched_entities);
+            card.highlights = compute_highlights(&card.content, &highlight_terms);
+            cards.push(card);
+            push_unique_string(&mut report.expanded_chunk_ids, chunk_id);
+            added_docs += 1;
+        }
+    }
+
+    if report.expanded_chunk_ids.is_empty() && report.boosted_chunk_ids.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(report))
+}
+
+fn best_graph_chunk_for_document(
+    db: &Database,
+    doc: &GraphDocumentHit,
+    plan: &graph_retrieval::GraphRetrievalPlan,
+) -> Result<Option<(String, f64)>, CoreError> {
+    let conn = db.conn();
+    let mut stmt = conn.prepare(
+        "SELECT id, content, metadata_json, chunk_index
+         FROM chunks
+         WHERE document_id = ?1
+         ORDER BY chunk_index
+         LIMIT 16",
+    )?;
+    let rows = stmt
+        .query_map(params![&doc.document_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut best: Option<(String, f64, i64)> = None;
+    for (chunk_id, content, metadata_json, chunk_index) in rows {
+        let heading = parse_heading_path(&metadata_json).join(" ");
+        let haystack = format!(
+            "{} {} {} {} {}",
+            doc.title,
+            doc.path,
+            heading,
+            doc.matched_entities.join(" "),
+            content
+        )
+        .to_lowercase();
+        let score = score_graph_chunk(&haystack, &plan.query_terms, &doc.matched_entities);
+        match &best {
+            Some((_, best_score, best_index))
+                if *best_score > score
+                    || ((*best_score - score).abs() <= f64::EPSILON
+                        && *best_index <= chunk_index) => {}
+            _ => best = Some((chunk_id, score, chunk_index)),
+        }
+    }
+
+    Ok(best.map(|(chunk_id, score, _)| (chunk_id, score)))
+}
+
+fn score_graph_chunk(haystack: &str, query_terms: &[String], entities: &[String]) -> f64 {
+    let query_hits = query_terms
+        .iter()
+        .filter(|term| haystack.contains(term.as_str()))
+        .count();
+    let entity_hits = entities
+        .iter()
+        .filter(|entity| haystack.contains(&entity.to_lowercase()))
+        .count();
+    let query_score = if query_terms.is_empty() {
+        0.0
+    } else {
+        query_hits as f64 / query_terms.len() as f64
+    };
+    let entity_score = if entities.is_empty() {
+        0.0
+    } else {
+        entity_hits as f64 / entities.len() as f64
+    };
+    (query_score * 0.65 + entity_score * 0.35).clamp(0.0, 1.0)
+}
+
+fn graph_highlight_terms(query_terms: &[String], entities: &[String]) -> Vec<String> {
+    let mut terms = Vec::new();
+    for term in query_terms.iter().take(8) {
+        push_unique_string(&mut terms, term.clone());
+    }
+    for entity in entities.iter().take(6) {
+        push_unique_string(&mut terms, entity.clone());
+    }
+    terms
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: String) {
+    if value.trim().is_empty() || values.iter().any(|item| item.eq_ignore_ascii_case(&value)) {
+        return;
+    }
+    values.push(value);
 }
 
 /// Retrieve a single evidence card by chunk ID (for playbook citation lookups).
@@ -449,7 +673,7 @@ pub fn get_evidence_cards(
 /// Execute a hybrid search combining FTS5 BM25 and TF-IDF vector cosine
 /// similarity via Reciprocal Rank Fusion (RRF).
 ///
-/// Falls back to pure FTS5 when no embeddings or embedder state exist.
+/// Falls back to graph-aware FTS5 when no embeddings or embedder state exist.
 pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult, CoreError> {
     let start = Instant::now();
     let trimmed = query.text.trim();
@@ -461,6 +685,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
             evidence_cards: Vec::new(),
             search_time_ms: start.elapsed().as_millis() as u64,
             search_mode: "hybrid".to_string(),
+            graph_retrieval: None,
         });
     }
 
@@ -480,7 +705,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
         limit: internal_limit as u32,
         offset: 0,
     };
-    let fts_result = search(db, &fts_query)?;
+    let fts_result = search_internal(db, &fts_query, false)?;
 
     // Step 2: Vector search — use the configured embedder model.
     let vec_results =
@@ -561,19 +786,15 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
 
     // Fallback: no embeddings available → return pure FTS.
     if vec_results.is_empty() {
-        let final_cards: Vec<EvidenceCard> = fts_result
-            .evidence_cards
-            .into_iter()
-            .take(user_limit)
-            .collect();
-        let total = final_cards.len();
-        return Ok(SearchResult {
-            query: query.text.clone(),
-            total_matches: total,
-            evidence_cards: final_cards,
-            search_time_ms: start.elapsed().as_millis() as u64,
-            search_mode: "fts".to_string(),
-        });
+        return finalize_search_result(
+            db,
+            query,
+            fts_result.evidence_cards,
+            fts_result.total_matches,
+            start,
+            "fts",
+            user_limit,
+        );
     }
 
     // Step 3: Build ranked ID lists for RRF.
@@ -598,7 +819,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
             limit: internal_limit as u32,
             offset: 0,
         };
-        if let Ok(exp_result) = search(db, &expansion_query) {
+        if let Ok(exp_result) = search_internal(db, &expansion_query, false) {
             if !exp_result.evidence_cards.is_empty() {
                 let k = 60.0_f32;
                 let mut score_map: HashMap<String, f32> = merged.into_iter().collect();
@@ -635,27 +856,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
         cards.push(card);
     }
 
-    // Apply feedback-based re-ranking.
-    apply_feedback_reranking(&mut cards, db, trimmed)?;
-
-    // Enrich with credibility and freshness, blend into ranking.
-    apply_credibility_scoring(&mut cards);
-
-    // Keep vector-only and expanded matches grounded in the visible query.
-    apply_query_relevance_adjustment(&mut cards, trimmed);
-    rag::rerank_evidence_cards(&mut cards, trimmed);
-
-    // Deduplicate: keep only the highest-scored card per document.
-    let cards = deduplicate_by_document(cards);
-    let total = cards.len();
-
-    Ok(SearchResult {
-        query: query.text.clone(),
-        total_matches: total,
-        evidence_cards: cards,
-        search_time_ms: start.elapsed().as_millis() as u64,
-        search_mode: "hybrid".to_string(),
-    })
+    finalize_search_result(db, query, cards, merged.len(), start, "hybrid", user_limit)
 }
 
 /// Try TF-IDF vector search using saved embedder state from the DB.
@@ -1336,6 +1537,7 @@ fn rrf_merge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compile::EntityType;
     use crate::models::SearchFilters;
     use rusqlite::params;
 
@@ -1836,6 +2038,49 @@ mod tests {
         assert_eq!(result.search_mode, "fts");
         assert!(!result.evidence_cards.is_empty());
         assert!(result.evidence_cards[0].content.contains("rust"));
+    }
+
+    #[test]
+    fn test_hybrid_search_expands_with_graph_document_when_text_misses() {
+        let db = test_db();
+        let (graph_doc_id, graph_chunk_id) = {
+            let conn = db.conn();
+            let source_id = insert_source(&conn);
+            let graph_doc_id = insert_document(&conn, &source_id, "text/markdown");
+            let graph_chunk_id =
+                insert_chunk(&conn, &graph_doc_id, "PKCE is required for mobile clients.");
+            let keyword_doc_id = insert_document(&conn, &source_id, "text/markdown");
+            insert_chunk(
+                &conn,
+                &keyword_doc_id,
+                "Authentication decision notes should be reviewed by security.",
+            );
+            (graph_doc_id, graph_chunk_id)
+        };
+        let entity = db
+            .upsert_entity(
+                "Mobile Login",
+                &EntityType::Concept,
+                "authentication decision for mobile clients",
+                &graph_doc_id,
+            )
+            .expect("entity");
+        db.link_document_entity(&graph_doc_id, &entity.id, 1.0, "PKCE rationale")
+            .expect("document entity");
+
+        let result = hybrid_search(&db, &default_query("authentication decision")).unwrap();
+
+        assert!(result.search_mode.contains("+graph"));
+        assert!(result
+            .evidence_cards
+            .iter()
+            .any(|card| card.document_id.to_string() == graph_doc_id));
+        let graph = result.graph_retrieval.expect("graph retrieval report");
+        assert!(graph.expanded_chunk_ids.contains(&graph_chunk_id));
+        assert!(graph
+            .entities
+            .iter()
+            .any(|entity| entity.label == "Mobile Login"));
     }
 
     #[test]

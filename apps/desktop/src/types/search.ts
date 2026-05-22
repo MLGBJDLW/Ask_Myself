@@ -7,12 +7,43 @@ export interface SearchFilters {
   dateTo: string | null;
 }
 
+export type SearchMode = 'fts' | 'hybrid' | 'fts+graph' | 'hybrid+graph';
+
+export interface GraphEntityHit {
+  id: string;
+  label: string;
+  entityType: string;
+  score: number;
+  mentionCount: number;
+}
+
+export interface GraphDocumentHit {
+  documentId: string;
+  sourceId: string;
+  title: string;
+  path: string;
+  score: number;
+  matchedEntities: string[];
+  reasons: string[];
+}
+
+export interface GraphRetrievalReport {
+  strategy: string;
+  query: string;
+  queryExpansionTerms: string[];
+  entities: GraphEntityHit[];
+  candidateDocuments: GraphDocumentHit[];
+  expandedChunkIds: string[];
+  boostedChunkIds: string[];
+}
+
 export interface SearchResult {
   query: string;
   totalMatches: number;
   evidenceCards: import("./evidence").EvidenceCard[];
   searchTimeMs: number;
-  searchMode?: 'fts' | 'hybrid';
+  searchMode?: SearchMode;
+  graphRetrieval?: GraphRetrievalReport | null;
 }
 
 export type ContextItemRole =

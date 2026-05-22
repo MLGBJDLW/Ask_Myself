@@ -2,6 +2,7 @@
   "placeholder": "Rechercher par mot-clé...",
   "fts": "Texte intégral",
   "hybrid": "Hybride",
+  "graph": "Graphe",
   "results": "{count} résultats trouvés",
   "noResults": "Aucun résultat",
   "noResultsDesc": "Aucun contenu correspondant à « {query} » n'a été trouvé. Essayez d'autres mots-clés.",

@@ -9,6 +9,7 @@ use serde::Deserialize;
 use crate::context_pack::ContextPack;
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::graph_retrieval;
 use crate::models::{EvidenceCard, FileType, SearchFilters, SearchQuery};
 use crate::{rag, search};
 
@@ -88,6 +89,7 @@ fn run_multi_query_search(
 ) -> Result<search::SearchResult, CoreError> {
     let mut all_ranked: Vec<Vec<(String, f32)>> = Vec::new();
     let mut card_map: HashMap<String, EvidenceCard> = HashMap::new();
+    let mut graph_reports = Vec::new();
     let mut total_time_ms: u64 = 0;
     let query_count = queries.len();
     let per_query_limit = std::cmp::min(limit * 2, 20);
@@ -95,6 +97,9 @@ fn run_multi_query_search(
     for q in queries {
         let result = run_search_query(db, filters.clone(), q.clone(), per_query_limit)?;
         total_time_ms += result.search_time_ms;
+        if let Some(report) = result.graph_retrieval.clone() {
+            graph_reports.push(report);
+        }
 
         let ranked: Vec<(String, f32)> = result
             .evidence_cards
@@ -126,6 +131,7 @@ fn run_multi_query_search(
         evidence_cards: cards,
         search_time_ms: total_time_ms,
         search_mode: format!("multi-query ({} queries, hybrid)", query_count),
+        graph_retrieval: graph_retrieval::merge_reports(queries.join(" | "), graph_reports),
     })
 }
 
@@ -167,6 +173,7 @@ fn format_search_artifacts(
         },
         "retrievalConfidence": confidence,
         "ragStrategy": strategy,
+        "graphRetrieval": &result.graph_retrieval,
         "contextWindow": {
             "recommended": strategy.requires_context_window,
             "contextChunks": strategy.context_chunks,
@@ -275,6 +282,37 @@ fn format_search_result(
                 "none".to_string()
             } else {
                 context_pack.supporting_chunk_ids.join(", ")
+            },
+        ));
+    }
+
+    if let Some(graph) = &result.graph_retrieval {
+        text.push_str(&format!(
+            "Graph retrieval: strategy {}; entities: {}; candidate documents: {}; expanded chunks: {}; boosted chunks: {}. Use graph-expanded chunks as evidence candidates, but verify exact claims before citing.\n\n",
+            graph.strategy,
+            graph
+                .entities
+                .iter()
+                .take(6)
+                .map(|entity| entity.label.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            graph
+                .candidate_documents
+                .iter()
+                .take(6)
+                .map(|doc| doc.title.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            if graph.expanded_chunk_ids.is_empty() {
+                "none".to_string()
+            } else {
+                graph.expanded_chunk_ids.join(", ")
+            },
+            if graph.boosted_chunk_ids.is_empty() {
+                "none".to_string()
+            } else {
+                graph.boosted_chunk_ids.join(", ")
             },
         ));
     }
@@ -643,6 +681,7 @@ mod tests {
         let artifacts = result.artifacts.unwrap();
         assert_eq!(artifacts["retrievalConfidence"]["level"], "low");
         assert_eq!(artifacts["ragStrategy"]["useHyde"], true);
+        assert!(artifacts.get("graphRetrieval").is_some());
         assert_eq!(artifacts["contextWindow"]["recommended"], true);
         assert_eq!(artifacts["contextWindow"]["tool"], "get_chunk_context");
         assert_eq!(artifacts["contextManifest"]["version"], 1);

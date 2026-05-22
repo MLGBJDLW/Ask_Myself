@@ -29,6 +29,7 @@ import type {
   Feedback,
   Source,
   SearchFilters,
+  SearchMode,
   IndexStats,
 } from '../types';
 import type { ConversationSearchResult } from '../types/conversation';
@@ -40,7 +41,7 @@ import { Badge } from '../components/ui/Badge';
 import { CardSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Tooltip } from '../components/ui/Tooltip';
-import { useTranslation } from '../i18n';
+import { useTranslation, type TranslationKey } from '../i18n';
 import { useDebounce } from '../lib/useDebounce';
 import { getModelStatus } from '../lib/modelStatusCache';
 import { getSoftCollapseMotion, INSTANT_TRANSITION } from '../lib/uiMotion';
@@ -62,6 +63,29 @@ const FILE_TYPE_OPTIONS: { value: FileType; labelKey: 'search.markdown' | 'searc
   { value: 'video', labelKey: 'search.video' },
   { value: 'audio', labelKey: 'search.audio' },
 ];
+
+function searchModeLabel(
+  mode: SearchMode,
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+): string {
+  switch (mode) {
+    case 'hybrid+graph':
+      return `${t('search.hybrid')} + ${t('search.graph')}`;
+    case 'fts+graph':
+      return `${t('search.fts')} + ${t('search.graph')}`;
+    case 'hybrid':
+      return t('search.hybrid');
+    case 'fts':
+      return t('search.fts');
+  }
+}
+
+function searchModeVariant(mode: SearchMode): 'default' | 'info' | 'success' {
+  if (mode.endsWith('+graph')) {
+    return 'success';
+  }
+  return mode === 'hybrid' ? 'info' : 'default';
+}
 
 function buildRecallPrompt(
   input: {
@@ -326,7 +350,7 @@ export function SearchPage() {
         searchMode === 'hybrid'
           ? await api.hybridSearch(q.trim(), PAGE_SIZE, offset, filters)
           : await api.search(q.trim(), PAGE_SIZE, offset, apiFilters);
-      setResult({ ...res, searchMode });
+      setResult({ ...res, searchMode: res.searchMode ?? searchMode });
       loadRecentQueries();
 
       // Load existing feedback
@@ -1138,8 +1162,8 @@ export function SearchPage() {
                 )}
               </span>
               {result.searchMode && (
-                <Badge variant={result.searchMode === 'hybrid' ? 'info' : 'default'}>
-                  {result.searchMode === 'hybrid' ? t('search.hybrid') : t('search.fts')}
+                <Badge variant={searchModeVariant(result.searchMode)}>
+                  {searchModeLabel(result.searchMode, t)}
                 </Badge>
               )}
             </div>

@@ -2,6 +2,7 @@
   "placeholder": "輸入關鍵字搜尋...",
   "fts": "全文搜尋",
   "hybrid": "混合搜尋",
+  "graph": "圖譜",
   "results": "找到 {count} 筆結果",
   "noResults": "找不到結果",
   "noResultsDesc": "找不到與「{query}」相關的內容，請嘗試其他關鍵字",

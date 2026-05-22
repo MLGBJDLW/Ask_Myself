@@ -2,6 +2,7 @@
   "placeholder": "输入关键词搜索...",
   "fts": "全文搜索",
   "hybrid": "混合搜索",
+  "graph": "图谱",
   "results": "找到 {count} 条结果",
   "noResults": "未找到结果",
   "noResultsDesc": "未找到与「{query}」相关的内容，请尝试其他关键词",
