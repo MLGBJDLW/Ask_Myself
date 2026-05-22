@@ -9,10 +9,12 @@ import {
   normalizePersistedToolCallStatus,
 } from '../src/lib/streaming/toolStatus';
 import {
+  activatedSkillNamesFromTraceItems,
   buildCurrentTimelineSections,
   buildLiveTraceTimeline,
   shouldHideTraceStatus,
   shouldRenderTraceToolCall,
+  turnLifecycleTimelineSections,
   visibleTraceEventsForTimeline,
 } from '../src/lib/streaming/timelineViewModel';
 import { armStreamWatchdog, clearStreamWatchdog } from '../src/lib/streaming/watchdog';
@@ -23,6 +25,7 @@ import {
 } from '../src/lib/streaming/taskTimeline';
 import type {
   AgentFrontendEvent,
+  ConversationTurn,
   AgentRunEvent,
   AgentRunEventKind,
   AgentRunPhase,
@@ -598,6 +601,116 @@ test('normalizes persisted trace tool calls through the shared tool status proje
   assert(items[1].kind === 'tool', 'second persisted item should be a tool');
   assertEqual(items[1].toolCall.status, 'approvalPending', 'approval status normalizes');
   assert(isPendingToolCallStatus(items[1].toolCall.status), 'approval trace is pending');
+});
+
+test('timeline view model summarizes activated skills for each traced turn', () => {
+  const items = extractPersistedTraceItems({
+    kind: 'traceTimeline',
+    items: [
+      {
+        kind: 'tool',
+        toolCall: {
+          callId: 'skill-call-1',
+          toolName: 'manage_skill',
+          arguments: '{"action":"activate_skill","skill_id":"frontend-design"}',
+          status: 'done',
+          artifacts: {
+            kind: 'skillActivation',
+            skill: {
+              id: 'builtin-frontend-design',
+              name: 'frontend-design',
+              interface: {
+                displayName: 'Frontend Design',
+              },
+            },
+          },
+        },
+      },
+      {
+        kind: 'tool',
+        toolCall: {
+          callId: 'skill-call-2',
+          toolName: 'manage_skill',
+          arguments: '{"action":"activate_skill","skill_id":"frontend-design"}',
+          status: 'done',
+          artifacts: {
+            kind: 'skillActivation',
+            skill: {
+              id: 'builtin-frontend-design',
+              name: 'frontend-design',
+            },
+          },
+        },
+      },
+    ],
+  });
+
+  assert(items, 'persisted skill activation trace should parse');
+  const names = activatedSkillNamesFromTraceItems(items);
+  assertEqual(names.length, 1, 'skill activation names are deduped');
+  assertEqual(names[0], 'Frontend Design', 'display name is preferred');
+
+  const turn: ConversationTurn = {
+    id: 'turn-1',
+    conversationId: 'conversation-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+    status: 'success',
+    trace: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:01.000Z',
+    finishedAt: '2026-01-01T00:00:01.000Z',
+  };
+
+  const sections = turnLifecycleTimelineSections({
+    turn,
+    routeKind: 'DirectResponse',
+    traceItems: items,
+  });
+
+  const skillSection = sections.find((section) => section.id === 'turn-skills-turn-1');
+  assert(skillSection, 'turn lifecycle should include skill summary');
+  if (skillSection.kind !== 'status') {
+    throw new Error(`skill summary should be a status section, got ${skillSection.kind}`);
+  }
+  assertEqual(skillSection.text, 'Skills activated: Frontend Design', 'skill summary text');
+  assertEqual(skillSection.tone, 'success', 'activated skill summary tone');
+});
+
+test('timeline view model reports when a traced turn activated no skills', () => {
+  const items = extractPersistedTraceItems({
+    kind: 'traceTimeline',
+    items: [
+      { kind: 'status', text: 'Running shell command', tone: 'muted' },
+    ],
+  });
+  assert(items, 'persisted status trace should parse');
+
+  const turn: ConversationTurn = {
+    id: 'turn-2',
+    conversationId: 'conversation-1',
+    userMessageId: 'user-2',
+    assistantMessageId: 'assistant-2',
+    status: 'success',
+    trace: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:01.000Z',
+    finishedAt: '2026-01-01T00:00:01.000Z',
+  };
+
+  const sections = turnLifecycleTimelineSections({
+    turn,
+    routeKind: 'DirectResponse',
+    traceItems: items,
+  });
+
+  const skillSection = sections.find((section) => section.id === 'turn-skills-turn-2');
+  assert(skillSection, 'turn lifecycle should include no-skill summary');
+  if (skillSection.kind !== 'status') {
+    throw new Error(`no-skill summary should be a status section, got ${skillSection.kind}`);
+  }
+  assertEqual(skillSection.text, 'Skills activated: none', 'no-skill summary text');
+  assertEqual(skillSection.tone, 'muted', 'no-skill summary tone');
 });
 
 test('uses one tool status reducer for run, trace, and card-facing statuses', () => {

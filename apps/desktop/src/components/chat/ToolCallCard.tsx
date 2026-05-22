@@ -108,6 +108,32 @@ interface ImagePromptArgs {
   model?: string;
 }
 
+interface ManageSkillArgs {
+  action?: string;
+  skillId?: string;
+  resourcePath?: string;
+}
+
+interface SkillActivationSkill {
+  id?: string;
+  name?: string;
+  description?: string;
+  builtin?: boolean;
+  sourcePath?: string | null;
+  interface?: {
+    displayName?: string;
+    shortDescription?: string;
+  };
+  policy?: {
+    allowImplicitInvocation?: boolean;
+  };
+}
+
+interface SkillActivationArtifact {
+  kind: 'skillActivation';
+  skill: SkillActivationSkill;
+}
+
 function KnowledgeGraphUsagePanel({
   usage,
   compact = false,
@@ -392,7 +418,53 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   record_verification: ShieldCheck,
   run_shell: Terminal,
   generate_image: ImageIcon,
+  manage_skill: BookOpen,
 };
+
+const TOOL_LABELS: Record<string, string> = {
+  search_playbooks: 'Search playbooks',
+  search_sessions: 'Search sessions',
+  search_by_date: 'Search by date',
+  search: 'Search',
+  code_intelligence: 'Inspect code',
+  grep_files: 'Search files',
+  glob_files: 'Find files',
+  read_files: 'Read files',
+  read_file: 'Read file',
+  get_document_info: 'Inspect document',
+  compare_documents: 'Compare documents',
+  summarize_document: 'Summarize document',
+  retrieve_evidence: 'Retrieve evidence',
+  query_knowledge_graph: 'Query graph',
+  get_related_concepts: 'Find related concepts',
+  list_documents: 'List documents',
+  list_sources: 'List sources',
+  compile_document: 'Compile document',
+  desktop_automation: 'Use desktop',
+  project_tool: 'Project tool',
+  playbook: 'Run playbook',
+  multi_edit: 'Edit files',
+  edit_file: 'Edit file',
+  file: 'Open file',
+  summarize: 'Summarize',
+  list_dir: 'List folder',
+  web_search: 'Search web',
+  web_research_context: 'Build web context',
+  fetch_url: 'Fetch URL',
+  download_asset: 'Download asset',
+  chunk_context: 'Chunk context',
+  write_note: 'Write note',
+  update_plan: 'Update plan',
+  record_verification: 'Record verification',
+  run_shell: 'Run command',
+  shell_command: 'Run command',
+  apply_patch: 'Edit files',
+  generate_image: 'Generate image',
+  manage_skill: 'Use skill',
+  activate_skill: 'Activate skill',
+};
+
+const TOOL_LABEL_KEYS = Object.keys(TOOL_LABELS).sort((a, b) => b.length - a.length);
 
 function getToolIcon(name?: string) {
   const lower = (name || '').toLowerCase();
@@ -400,6 +472,115 @@ function getToolIcon(name?: string) {
     if (lower.includes(key)) return Icon;
   }
   return Wrench;
+}
+
+function toolLeafName(name: string): string {
+  const parts = name
+    .split(/[.:/]/)
+    .filter(Boolean)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : name.trim();
+}
+
+function humanizeToolName(name: string): string {
+  const leaf = toolLeafName(name).replace(/[_-]+/g, ' ').trim();
+  if (!leaf) return 'Tool';
+  return leaf.replace(/\b[a-z]/g, (char) => char.toUpperCase());
+}
+
+function getToolDisplayName(name: string): string {
+  const lower = name.toLowerCase();
+  const leaf = toolLeafName(lower);
+  if (TOOL_LABELS[lower]) return TOOL_LABELS[lower];
+  if (TOOL_LABELS[leaf]) return TOOL_LABELS[leaf];
+  const key = TOOL_LABEL_KEYS.find((candidate) => lower.includes(candidate));
+  return key ? TOOL_LABELS[key] : humanizeToolName(name);
+}
+
+function truncateMiddle(value: string, max = 42): string {
+  if (value.length <= max) return value;
+  const head = Math.max(8, Math.floor((max - 1) * 0.42));
+  const tail = Math.max(8, max - head - 1);
+  return `${value.slice(0, head)}\u2026${value.slice(-tail)}`;
+}
+
+function normalizeOneLine(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+function parseArgsRecord(raw?: string): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function firstStringArg(parsed: Record<string, unknown>, keys: string[]): { key: string; value: string } | null {
+  for (const key of keys) {
+    const value = parsed[key];
+    if (typeof value === 'string' && value.trim()) {
+      return { key, value: value.trim() };
+    }
+  }
+  return null;
+}
+
+function firstArrayCountArg(parsed: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = parsed[key];
+    if (Array.isArray(value) && value.length > 0) {
+      const noun = key.toLowerCase().includes('file') || key.toLowerCase().includes('path')
+        ? 'file'
+        : 'item';
+      return `${value.length} ${noun}${value.length === 1 ? '' : 's'}`;
+    }
+  }
+  return null;
+}
+
+function formatToolTarget(key: string, value: string): string {
+  const normalized = normalizeOneLine(value);
+  const pathLikeKeys = new Set(['path', 'file', 'filename', 'filepath', 'resourcepath', 'sourcepath', 'cwd']);
+  const quotedKeys = new Set(['query', 'regex', 'pattern', 'topic', 'prompt', 'description']);
+  const keyLower = key.toLowerCase();
+  if (pathLikeKeys.has(keyLower)) {
+    return truncateMiddle(normalized.replace(/\\/g, '/'), 44);
+  }
+  if (quotedKeys.has(keyLower)) {
+    return `"${truncateMiddle(normalized, 40)}"`;
+  }
+  return truncateMiddle(normalized, 44);
+}
+
+function getToolBriefTarget(args?: string): string | null {
+  const parsed = parseArgsRecord(args);
+  if (!parsed) return args ? truncateMiddle(normalizeOneLine(args), 44) : null;
+  const counted = firstArrayCountArg(parsed, ['paths', 'files', 'filePaths', 'resourcePaths', 'items']);
+  if (counted) return counted;
+  const picked = firstStringArg(parsed, [
+    'path',
+    'file',
+    'filename',
+    'filePath',
+    'resourcePath',
+    'sourcePath',
+    'url',
+    'query',
+    'regex',
+    'pattern',
+    'topic',
+    'prompt',
+    'command',
+    'program',
+    'skillId',
+    'name',
+    'description',
+  ]);
+  return picked ? formatToolTarget(picked.key, picked.value) : null;
 }
 
 function parseSearchResults(content: string): SearchResultItem[] | null {
@@ -438,16 +619,9 @@ function formatArgs(raw?: string): string {
 }
 
 function getToolBriefLabel(name: string, args?: string): string {
-  if (!args) return name;
-  try {
-    const parsed = JSON.parse(args);
-    const key = parsed.path || parsed.file || parsed.filename || parsed.query || parsed.program;
-    if (key && typeof key === 'string') {
-      const short = key.length > 25 ? '\u2026' + key.slice(-22) : key;
-      return `${name}(${short})`;
-    }
-  } catch { /* ignore */ }
-  return name;
+  const label = getToolDisplayName(name);
+  const target = getToolBriefTarget(args);
+  return target ? `${label} \u00b7 ${target}` : label;
 }
 
 function getToolBriefResult(
@@ -491,6 +665,51 @@ function extractGeneratedImageArtifact(
   if (!isRecord(artifacts)) return null;
   if (artifacts.kind !== 'generatedImage') return null;
   return artifacts as unknown as GeneratedImageArtifact;
+}
+
+function extractSkillActivationArtifact(
+  artifacts: ArtifactPayload | undefined,
+): SkillActivationArtifact | null {
+  if (!isRecord(artifacts)) return null;
+  if (artifacts.kind !== 'skillActivation') return null;
+  const skill = artifacts.skill;
+  if (!isRecord(skill)) return null;
+  return {
+    kind: 'skillActivation',
+    skill: skill as SkillActivationSkill,
+  };
+}
+
+function skillDisplayName(skill: SkillActivationSkill): string {
+  const displayName = skill.interface?.displayName?.trim();
+  if (displayName) return displayName;
+  const name = skill.name?.trim();
+  if (name) return name;
+  return skill.id?.trim() || 'skill';
+}
+
+function parseManageSkillArgs(raw?: string): ManageSkillArgs | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      action: typeof parsed.action === 'string' ? parsed.action : undefined,
+      skillId:
+        typeof parsed.skill_id === 'string'
+          ? parsed.skill_id
+          : typeof parsed.skillId === 'string'
+            ? parsed.skillId
+            : undefined,
+      resourcePath:
+        typeof parsed.resource_path === 'string'
+          ? parsed.resource_path
+          : typeof parsed.resourcePath === 'string'
+            ? parsed.resourcePath
+            : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function parseImagePromptArgs(raw?: string): ImagePromptArgs {
@@ -956,6 +1175,55 @@ function TrustBoundaryPills({ boundary }: { boundary: TrustBoundaryArtifact }) {
   );
 }
 
+function SkillActivationPanel({
+  activation,
+  compact = false,
+}: {
+  activation: SkillActivationArtifact;
+  compact?: boolean;
+}) {
+  const { t } = useTranslation();
+  const skill = activation.skill;
+  const name = skillDisplayName(skill);
+  const description =
+    skill.interface?.shortDescription?.trim() ||
+    skill.description?.trim() ||
+    '';
+  const sourceLabel = skill.builtin
+    ? t('chat.skillActivationBuiltin')
+    : t('chat.skillActivationUser');
+  const policyLabel = skill.policy?.allowImplicitInvocation === false
+    ? t('chat.skillActivationExplicit')
+    : t('chat.skillActivationImplicit');
+
+  return (
+    <div className={`rounded-md border border-success/20 bg-success/8 ${compact ? 'p-2' : 'p-3'}`}>
+      <div className="flex min-w-0 items-center gap-2">
+        <BookOpen className="h-3.5 w-3.5 shrink-0 text-success" />
+        <div className="min-w-0 truncate text-xs font-medium text-text-primary">
+          {name}
+        </div>
+      </div>
+      {description && (
+        <div className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-text-secondary">
+          {description}
+        </div>
+      )}
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-text-tertiary">
+        <span className="rounded-md border border-success/20 bg-surface-0/45 px-1.5 py-0.5 text-success">
+          {t('chat.skillActivationReady')}
+        </span>
+        <span className="rounded-md border border-border/50 bg-surface-0/45 px-1.5 py-0.5">
+          {sourceLabel}
+        </span>
+        <span className="rounded-md border border-border/50 bg-surface-0/45 px-1.5 py-0.5">
+          {policyLabel}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -984,8 +1252,21 @@ export function ToolCallCard({
       ? toolName
       : 'unknown_tool';
   const Icon = getToolIcon(safeToolName);
+  const manageSkillArgs = parseManageSkillArgs(args);
+  const skillActivation = extractSkillActivationArtifact(artifacts);
+  const skillActivationName = skillActivation
+    ? skillDisplayName(skillActivation.skill)
+    : manageSkillArgs?.action === 'activate_skill'
+      ? manageSkillArgs.skillId
+      : undefined;
   const formattedArgs = formatArgs(args);
-  const briefLabel = getToolBriefLabel(safeToolName, args);
+  const briefLabel = skillActivationName
+    ? (
+        skillActivation
+          ? t('chat.skillActivatedLabel', { name: skillActivationName })
+          : t('chat.skillActivatingLabel', { name: skillActivationName })
+      )
+    : getToolBriefLabel(safeToolName, args);
   const briefResult = getToolBriefResult(status, t, content, safeToolName);
   const isPending = isPendingToolCallStatus(status);
   const argsByteLabel = formatByteCount(
@@ -1072,11 +1353,13 @@ export function ToolCallCard({
     cancelled: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
     timedOut: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
   }[status];
-  const baseHeaderSummary = planArtifact
-    ? t('chat.planStepsCompleted', {
-      completed: String(planArtifact.steps.filter(step => step.status === 'completed').length),
-      total: String(planArtifact.steps.length),
-    })
+  const baseHeaderSummary = skillActivation
+    ? t('chat.skillActivationReady')
+    : planArtifact
+      ? t('chat.planStepsCompleted', {
+          completed: String(planArtifact.steps.filter(step => step.status === 'completed').length),
+          total: String(planArtifact.steps.length),
+        })
       : verificationArtifact
         ? t('chat.verificationStatus', {
           status: verificationStatusLabel(verificationArtifact.overallStatus ?? 'pending', t),
@@ -1117,6 +1400,7 @@ export function ToolCallCard({
     subagentRun ||
     subagentBatch ||
     subagentJudgement ||
+    skillActivation ||
     planArtifact ||
     verificationArtifact ||
     fileDiff ||
@@ -1128,16 +1412,26 @@ export function ToolCallCard({
   );
   const failedStatus = isUnsuccessfulToolCallStatus(status);
   const traceToneClass = failedStatus
-    ? 'border-danger/25 bg-danger/10 hover:bg-danger/15'
+    ? 'border-danger/25 border-l-danger/75 bg-danger/10 hover:border-danger/35 hover:bg-danger/15'
     : isPending
-      ? 'border-accent/25 bg-accent/10 hover:bg-accent/15'
-      : 'border-border/45 bg-surface-0/35 hover:border-border/70 hover:bg-surface-0/55';
+      ? 'border-accent/25 border-l-accent/75 bg-surface-0/45 hover:border-accent/35 hover:bg-accent/10'
+      : 'border-border/45 border-l-border-hover bg-surface-0/35 hover:border-border/70 hover:bg-surface-0/55';
+  const traceIconToneClass = failedStatus
+    ? 'border-danger/25 bg-danger/10 text-danger'
+    : isPending
+      ? 'border-accent/25 bg-accent/10 text-accent'
+      : 'border-border/45 bg-surface-1/65 text-text-tertiary';
+  const statusBadgeClass = failedStatus
+    ? 'border-danger/25 bg-danger/10 text-danger'
+    : isPending
+      ? 'border-accent/25 bg-accent/10 text-accent'
+      : 'border-success/20 bg-success/10 text-success';
   const traceDetailBorderClass = failedStatus
     ? 'border-danger/25'
     : isPending
       ? 'border-accent/25'
       : 'border-border/35';
-  const tracePreviewText = isPending ? '' : headerSummary;
+  const tracePreviewText = headerSummary;
 
   if (trace) {
     return (
@@ -1146,32 +1440,42 @@ export function ToolCallCard({
           type="button"
           onClick={() => expandableDetails && setExpanded((prev) => !prev)}
           aria-expanded={expandableDetails ? expanded : undefined}
-          className={`group inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-left transition-colors disabled:cursor-default ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          className={`group inline-grid min-h-9 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 rounded-md border border-l-2 px-2 py-1.5 text-left align-top transition-colors disabled:cursor-default sm:max-w-[36rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
           disabled={!expandableDetails}
           title={capabilitySummary ?? undefined}
         >
-          <Icon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
-          <span className="min-w-0 max-w-[13rem] truncate text-[11px] font-medium text-text-secondary group-hover:text-text-primary sm:max-w-[17rem]">
-            {briefLabel}
+          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
+            <Icon className="h-3.5 w-3.5 shrink-0" />
           </span>
-          {tracePreviewText && (
-            <span className="hidden min-w-0 max-w-[18rem] truncate text-[11px] text-text-tertiary sm:inline">
-              {tracePreviewText}
+          <span className="min-w-0 py-0.5">
+            <span className="block truncate text-[11px] font-medium leading-4 text-text-primary">
+              {briefLabel}
             </span>
-          )}
-          <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] ${statusConfig.color}`}>
-            <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`} />
+            {tracePreviewText && (
+              <span className="block truncate text-[10px] leading-3 text-text-tertiary">
+                {tracePreviewText}
+              </span>
+            )}
           </span>
-          {diffStats ? (
-            <DiffStatsTicker stats={diffStats} compact />
-          ) : showPendingDiffStats ? (
-            <PendingDiffTicker compact />
-          ) : null}
-          {expandableDetails && (
-            expanded
-              ? <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
-              : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
-          )}
+          <span className="flex shrink-0 items-center gap-1 pl-1">
+            {diffStats ? (
+              <span className="hidden sm:inline-flex">
+                <DiffStatsTicker stats={diffStats} compact />
+              </span>
+            ) : showPendingDiffStats ? (
+              <span className="hidden sm:inline-flex">
+                <PendingDiffTicker compact />
+              </span>
+            ) : null}
+            <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}>
+              <StatusIcon className={`h-3 w-3 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`} />
+            </span>
+            {expandableDetails && (
+              expanded
+                ? <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+                : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+            )}
+          </span>
         </button>
 
         <AnimatePresence initial={false}>
@@ -1180,17 +1484,19 @@ export function ToolCallCard({
               {...getSoftCollapseMotion(!!shouldReduceMotion)}
               className="overflow-hidden"
             >
-              <div className={`ml-4 mt-1 space-y-2 border-l py-1.5 pl-3 pr-1 ${traceDetailBorderClass}`}>
+              <div className={`ml-3 mt-1.5 max-w-[36rem] space-y-2 border-l py-1.5 pl-3 pr-1 ${traceDetailBorderClass}`}>
                 {streamingArgsPreview ? (
-                  <pre className="whitespace-pre-wrap break-words rounded-md bg-surface-0/35 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary">
+                  <pre className="whitespace-pre-wrap break-words rounded-md border border-border/35 bg-surface-0/45 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary">
                     {streamingArgsPreview}
                   </pre>
                 ) : formattedArgs ? (
-                  <div className="break-words rounded-md bg-surface-0/35 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary">
+                  <div className="break-words rounded-md border border-border/35 bg-surface-0/45 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary">
                     {formattedArgs}
                   </div>
                 ) : null}
-                {generatedImage ? (
+                {skillActivation ? (
+                  <SkillActivationPanel activation={skillActivation} compact />
+                ) : generatedImage ? (
                   <GeneratedImagePreview image={generatedImage} compact />
                 ) : showImagePendingPreview ? (
                   <ImageGenerationPendingPreview
@@ -1269,24 +1575,42 @@ export function ToolCallCard({
           onClick={() => expandableDetails && setExpanded((p) => !p)}
           aria-expanded={expandableDetails ? expanded : undefined}
           disabled={!expandableDetails}
-          className={`inline-flex min-h-6 max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 text-left transition-colors disabled:cursor-default ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          className={`inline-grid min-h-8 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1.5 rounded-md border border-l-2 px-1.5 py-1 text-left align-top transition-colors disabled:cursor-default sm:max-w-[32rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
         >
-          <Icon className="h-3 w-3 shrink-0 text-text-tertiary" />
-          <span className="max-w-[12rem] truncate text-[11px] font-medium text-text-secondary">{briefLabel}</span>
-          <span className="hidden max-w-[16rem] truncate text-[10px] text-text-tertiary sm:inline">{headerSummary}</span>
-          {diffStats ? (
-            <DiffStatsTicker stats={diffStats} compact />
-          ) : showPendingDiffStats ? (
-            <PendingDiffTicker compact />
-          ) : null}
-          <StatusIcon
-            className={`h-3 w-3 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
-          />
-          {expandableDetails && (
-            expanded
-              ? <ChevronUp className="h-3 w-3 shrink-0 text-text-tertiary" />
-              : <ChevronDown className="h-3 w-3 shrink-0 text-text-tertiary" />
-          )}
+          <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
+            <Icon className="h-3 w-3 shrink-0" />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-[11px] font-medium leading-4 text-text-primary">
+              {briefLabel}
+            </span>
+            {headerSummary && (
+              <span className="hidden truncate text-[10px] leading-3 text-text-tertiary sm:block">
+                {headerSummary}
+              </span>
+            )}
+          </span>
+          <span className="flex shrink-0 items-center gap-1 pl-1">
+            {diffStats ? (
+              <span className="hidden sm:inline-flex">
+                <DiffStatsTicker stats={diffStats} compact />
+              </span>
+            ) : showPendingDiffStats ? (
+              <span className="hidden sm:inline-flex">
+                <PendingDiffTicker compact />
+              </span>
+            ) : null}
+            <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}>
+              <StatusIcon
+                className={`h-2.5 w-2.5 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`}
+              />
+            </span>
+            {expandableDetails && (
+              expanded
+                ? <ChevronUp className="h-3 w-3 shrink-0 text-text-tertiary" />
+                : <ChevronDown className="h-3 w-3 shrink-0 text-text-tertiary" />
+            )}
+          </span>
         </button>
         <AnimatePresence initial={false}>
           {expanded && expandableDetails && (
@@ -1294,17 +1618,19 @@ export function ToolCallCard({
               {...getSoftCollapseMotion(!!shouldReduceMotion)}
               className="overflow-hidden"
             >
-              <div className={`ml-4 mt-1 space-y-1.5 border-l py-1 pl-2.5 pr-1 ${traceDetailBorderClass}`}>
+              <div className={`ml-3 mt-1.5 max-w-[32rem] space-y-1.5 border-l py-1 pl-2.5 pr-1 ${traceDetailBorderClass}`}>
                 {streamingArgsPreview ? (
-                  <pre className="whitespace-pre-wrap break-words rounded bg-surface-0/40 px-1.5 py-0.5 text-[10px] text-text-tertiary">
+                  <pre className="whitespace-pre-wrap break-words rounded-md border border-border/35 bg-surface-0/45 px-1.5 py-0.5 text-[10px] text-text-tertiary">
                     {streamingArgsPreview}
                   </pre>
                 ) : formattedArgs ? (
-                  <div className="break-words rounded bg-surface-0/40 px-1.5 py-0.5 text-[10px] text-text-tertiary">
+                  <div className="break-words rounded-md border border-border/35 bg-surface-0/45 px-1.5 py-0.5 text-[10px] text-text-tertiary">
                     {formattedArgs}
                   </div>
                 ) : null}
-                {generatedImage ? (
+                {skillActivation ? (
+                  <SkillActivationPanel activation={skillActivation} compact />
+                ) : generatedImage ? (
                   <GeneratedImagePreview image={generatedImage} compact />
                 ) : showImagePendingPreview ? (
                   <ImageGenerationPendingPreview
@@ -1546,29 +1872,41 @@ export function ToolCallCard({
         aria-expanded={expandableDetails ? expanded : undefined}
         aria-label={expandableDetails ? (expanded ? t('common.collapse') : t('common.expand')) : briefLabel}
         disabled={!expandableDetails}
-        className="flex items-center gap-2 w-full px-3 py-2 text-left hover:bg-surface-2
+        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 text-left hover:bg-surface-2
           transition-colors duration-fast ease-out cursor-pointer disabled:cursor-default disabled:hover:bg-transparent"
       >
-        <Icon className="h-4 w-4 shrink-0 text-text-tertiary" />
-        <span className="text-xs font-medium text-text-primary truncate">{briefLabel}</span>
-        <span className="text-[11px] text-text-tertiary truncate flex-1">
-          {headerSummary}
+        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
+          <Icon className="h-4 w-4 shrink-0" />
         </span>
-        {diffStats ? (
-          <DiffStatsTicker stats={diffStats} />
-        ) : showPendingDiffStats ? (
-          <PendingDiffTicker />
-        ) : null}
-        <StatusIcon
-          className={`h-3.5 w-3.5 shrink-0 ${statusConfig.color} ${statusConfig.spin ? 'animate-spin' : ''}`}
-        />
-        {expandableDetails ? (
-          expanded ? (
-            <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
-          ) : (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
-          )
-        ) : null}
+        <span className="min-w-0">
+          <span className="block truncate text-xs font-medium leading-5 text-text-primary">{briefLabel}</span>
+          <span className="block truncate text-[11px] leading-4 text-text-tertiary">
+            {headerSummary}
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5 pl-1">
+          {diffStats ? (
+            <span className="hidden sm:inline-flex">
+              <DiffStatsTicker stats={diffStats} />
+            </span>
+          ) : showPendingDiffStats ? (
+            <span className="hidden sm:inline-flex">
+              <PendingDiffTicker />
+            </span>
+          ) : null}
+          <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md border ${statusBadgeClass}`}>
+            <StatusIcon
+              className={`h-3.5 w-3.5 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`}
+            />
+          </span>
+          {expandableDetails ? (
+            expanded ? (
+              <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+            )
+          ) : null}
+        </span>
       </button>
 
       {/* Expandable result */}
@@ -1591,7 +1929,9 @@ export function ToolCallCard({
                   {formattedArgs}
                 </div>
               )}
-              {generatedImage ? (
+              {skillActivation ? (
+                <SkillActivationPanel activation={skillActivation} />
+              ) : generatedImage ? (
                 <GeneratedImagePreview image={generatedImage} />
               ) : showImagePendingPreview ? (
                 <ImageGenerationPendingPreview
