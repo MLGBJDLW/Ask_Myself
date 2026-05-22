@@ -3,7 +3,14 @@ export type { Document, FileType } from "./document";
 export type { Chunk } from "./chunk";
 export type { EvidenceCard, Highlight } from "./evidence";
 export type { Playbook, PlaybookCitation } from "./playbook";
-export type { SearchFilters, SearchResult } from "./search";
+export type {
+  GraphDocumentHit,
+  GraphEntityHit,
+  GraphRetrievalReport,
+  SearchFilters,
+  SearchMode,
+  SearchResult,
+} from "./search";
 export type { IngestResult, ScanProgress } from "./ingest";
 export type { IndexStats } from "./index-stats";
 export type { QueryLog } from "./query-log";

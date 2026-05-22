@@ -2,6 +2,7 @@
   "placeholder": "Pesquisar por palavra-chave...",
   "fts": "Texto completo",
   "hybrid": "Híbrida",
+  "graph": "Grafo",
   "results": "{count} resultados encontrados",
   "noResults": "Nenhum resultado",
   "noResultsDesc": "Nenhum conteúdo relacionado a \"{query}\" foi encontrado. Tente outras palavras-chave.",

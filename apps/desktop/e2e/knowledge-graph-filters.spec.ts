@@ -236,3 +236,84 @@ test('shows multi-relation bundles and stores bundled agent context', async ({ p
   expect(context.relationBundles[0].relationCount).toBe(3);
   expect(context.edges).toHaveLength(3);
 });
+
+test('starts with a hub overview, drills into a readable focus, and expands to atlas', async ({ page }) => {
+  await page.goto('/knowledge');
+  await page.evaluate(() => {
+    const nodes = Array.from({ length: 65 }, (_, index) => ({
+      id: `node-${index}`,
+      label: index === 0 ? 'Anchor Topic' : index === 64 ? 'Remote Topic' : `Side Topic ${index}`,
+      entityType: index % 5 === 0 ? 'person' : index % 5 === 1 ? 'place' : index % 5 === 2 ? 'organization' : index % 5 === 3 ? 'event' : 'concept',
+      description: `Node ${index}`,
+      mentionCount: index === 0 ? 40 : index === 64 ? 0 : 1,
+      documentCount: index === 0 ? 9 : index === 64 ? 0 : 1,
+      linkCount: index < 8 ? 1 : 0,
+      firstSeenDoc: 'doc-1',
+      documents: [
+        { documentId: 'doc-1', title: 'Chapter One', path: 'D:/Books/novel/chapter-1.md', sourceId: 'source-novel' },
+      ],
+    }));
+    const edges = Array.from({ length: 7 }, (_, index) => ({
+      id: `edge-${index}`,
+      source: 'node-0',
+      target: `node-${index + 1}`,
+      relationType: 'related_to',
+      strength: 0.7,
+      evidenceDocId: 'doc-1',
+      evidenceTitle: 'Chapter One',
+      evidencePath: 'D:/Books/novel/chapter-1.md',
+    }));
+
+    (window as unknown as { __knowledgeGraphMock?: unknown }).__knowledgeGraphMock = {
+      nodes,
+      edges,
+      totalNodes: nodes.length,
+      totalEdges: edges.length,
+      scopeLabel: 'novel',
+    };
+  });
+
+  await page.getByRole('button', { name: 'Topics & Connections' }).click();
+
+  await expect(page.getByRole('button', { name: /Anchor Topic, Person/i })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Remote Topic/i })).toHaveCount(0);
+  await expect(page.getByText(/Hidden/)).toBeVisible();
+  await expect(page.getByText('40/65 Nodes')).toBeVisible();
+
+  const overviewViewBox = await page.locator('svg[role="img"]').getAttribute('viewBox');
+  await page.getByRole('button', { name: /Anchor Topic, Person/i }).click();
+
+  await expect(page.getByText('8/65 Nodes')).toBeVisible();
+  await expect
+    .poll(() => page.locator('svg[role="img"]').getAttribute('viewBox'))
+    .not.toBe(overviewViewBox);
+
+  const sideTopic = page.getByRole('button', { name: /^Side Topic 1, Place$/i });
+  const sideTopicCore = sideTopic.locator('.kg-node-core');
+  const beforeDragCx = await sideTopicCore.getAttribute('cx');
+  const beforeDragCy = await sideTopicCore.getAttribute('cy');
+  const svgBox = await page.locator('svg[role="img"]').boundingBox();
+  const focusViewBox = (await page.locator('svg[role="img"]').getAttribute('viewBox'))?.split(' ').map(Number);
+  if (!svgBox || !focusViewBox || !beforeDragCx || !beforeDragCy) {
+    throw new Error('Missing graph geometry for drag test');
+  }
+  const [viewX, viewY, viewWidth, viewHeight] = focusViewBox;
+  const startX = svgBox.x + ((Number(beforeDragCx) - viewX) / viewWidth) * svgBox.width;
+  const startY = svgBox.y + ((Number(beforeDragCy) - viewY) / viewHeight) * svgBox.height;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + 80, startY + 36, { steps: 6 });
+  await page.mouse.up();
+  await expect
+    .poll(async () => {
+      const nextCx = await sideTopicCore.getAttribute('cx');
+      if (!nextCx) return 0;
+      return Math.abs(Number(nextCx) - Number(beforeDragCx));
+    })
+    .toBeGreaterThan(1);
+
+  await page.getByRole('button', { name: 'Atlas' }).click();
+  await page.getByLabel('Nodes Shown').selectOption('100');
+
+  await expect(page.getByRole('button', { name: /Remote Topic/i })).toBeVisible();
+});

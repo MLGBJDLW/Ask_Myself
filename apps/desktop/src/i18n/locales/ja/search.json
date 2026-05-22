@@ -2,6 +2,7 @@
   "placeholder": "キーワードで検索...",
   "fts": "全文検索",
   "hybrid": "ハイブリッド",
+  "graph": "グラフ",
   "results": "{count} 件の結果が見つかりました",
   "noResults": "結果が見つかりません",
   "noResultsDesc": "「{query}」に一致するコンテンツが見つかりませんでした。別のキーワードをお試しください。",

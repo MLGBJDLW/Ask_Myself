@@ -2,6 +2,7 @@
   "placeholder": "키워드로 검색...",
   "fts": "전문 검색",
   "hybrid": "하이브리드",
+  "graph": "그래프",
   "results": "{count}건의 결과를 찾았습니다",
   "noResults": "결과를 찾을 수 없습니다",
   "noResultsDesc": "\"{query}\"과 일치하는 콘텐츠를 찾을 수 없습니다. 다른 키워드를 시도해 보세요.",

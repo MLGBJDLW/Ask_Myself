@@ -2,6 +2,7 @@
   "placeholder": "Search by keyword...",
   "fts": "Full-text",
   "hybrid": "Hybrid",
+  "graph": "Graph",
   "results": "Found {count} results",
   "noResults": "No results found",
   "noResultsDesc": "No content matching \"{query}\" was found. Try different keywords.",

@@ -329,6 +329,36 @@ static BUILTIN_SKILLS: &[BuiltinSkillBundle] = &[
                 ),
             },
             BuiltinSkillResource {
+                path: "references/longform-production-playbook.md",
+                content: include_str!(
+                    "../../assets/skills/fiction-writing/references/longform-production-playbook.md"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "references/chapter-drafting-playbook.md",
+                content: include_str!(
+                    "../../assets/skills/fiction-writing/references/chapter-drafting-playbook.md"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "references/chinese-webnovel-playbook.md",
+                content: include_str!(
+                    "../../assets/skills/fiction-writing/references/chinese-webnovel-playbook.md"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "references/continuity-state-playbook.md",
+                content: include_str!(
+                    "../../assets/skills/fiction-writing/references/continuity-state-playbook.md"
+                ),
+            },
+            BuiltinSkillResource {
+                path: "references/quality-gate.md",
+                content: include_str!(
+                    "../../assets/skills/fiction-writing/references/quality-gate.md"
+                ),
+            },
+            BuiltinSkillResource {
                 path: "assets/fiction-outline-template.md",
                 content: include_str!(
                     "../../assets/skills/fiction-writing/assets/fiction-outline-template.md"

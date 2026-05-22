@@ -2,6 +2,7 @@
   "placeholder": "Nach Stichwort suchen...",
   "fts": "Volltextsuche",
   "hybrid": "Hybrid",
+  "graph": "Graph",
   "results": "{count} Ergebnisse gefunden",
   "noResults": "Keine Ergebnisse",
   "noResultsDesc": "Keine Inhalte zu „{query}\" gefunden. Versuchen Sie andere Stichwörter.",
