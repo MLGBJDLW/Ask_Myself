@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 const APP_CONFIG_KEY: &str = "app_config";
 const WIZARD_STATE_KEY: &str = "wizard_state";
+const CURRENT_TIMEOUT_DEFAULTS_VERSION: u32 = 1;
+const LEGACY_DEFAULT_TOOL_TIMEOUT_SECS: i64 = 30;
+const LEGACY_DEFAULT_AGENT_TIMEOUT_SECS: i64 = 180;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -226,12 +229,17 @@ impl ShellAccessMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
-    /// Maximum time for a single tool call in seconds. 0 disables the hard tool timeout.
+    /// Legacy UI setting retained for config compatibility.
+    /// Runtime now ignores this; tool calls use local tool-specific guards.
     #[serde(default = "default_tool_timeout")]
     pub tool_timeout_secs: i64,
-    /// Maximum time for an agent turn in seconds. 0 disables the hard turn timeout.
+    /// Legacy UI setting retained for config compatibility.
+    /// Runtime now ignores this; agent turns are not capped by an outer wall-clock timeout.
     #[serde(default = "default_agent_timeout")]
     pub agent_timeout_secs: i64,
+    /// Internal migration marker for timeout defaults. Missing means legacy defaults.
+    #[serde(default)]
+    pub timeout_defaults_version: u32,
 
     /// Answer cache TTL in hours. 0 = disabled. Default: 24
     #[serde(default = "default_cache_ttl_hours")]
@@ -257,11 +265,13 @@ pub struct AppConfig {
     #[serde(default = "default_max_audio_file_size")]
     pub max_audio_file_size: u64,
 
-    /// LLM HTTP request timeout in seconds. Default: 300
+    /// Legacy UI setting retained for config compatibility.
+    /// Runtime now ignores this; providers use internal request-start and stream-idle guards.
     #[serde(default = "default_llm_timeout_secs")]
     pub llm_timeout_secs: u64,
 
-    /// MCP tool call timeout in seconds. Default: 60
+    /// Legacy UI setting retained for config compatibility.
+    /// Runtime now ignores this; MCP calls use an internal 300s request watchdog.
     #[serde(default = "default_mcp_call_timeout_secs")]
     pub mcp_call_timeout_secs: u64,
 
@@ -316,10 +326,10 @@ pub struct AppConfig {
 }
 
 fn default_tool_timeout() -> i64 {
-    30
+    0
 }
 fn default_agent_timeout() -> i64 {
-    180
+    0
 }
 fn default_cache_ttl_hours() -> u32 {
     24
@@ -343,7 +353,7 @@ fn default_llm_timeout_secs() -> u64 {
     300
 }
 fn default_mcp_call_timeout_secs() -> u64 {
-    60
+    300
 }
 fn default_dynamic_tool_visibility() -> bool {
     false
@@ -387,6 +397,7 @@ impl Default for AppConfig {
         Self {
             tool_timeout_secs: default_tool_timeout(),
             agent_timeout_secs: default_agent_timeout(),
+            timeout_defaults_version: CURRENT_TIMEOUT_DEFAULTS_VERSION,
             cache_ttl_hours: default_cache_ttl_hours(),
             default_search_limit: default_search_limit(),
             min_search_similarity: default_min_search_similarity(),
@@ -428,6 +439,22 @@ fn decrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreEr
     Ok(config)
 }
 
+fn migrate_timeout_defaults(mut config: AppConfig) -> (AppConfig, bool) {
+    if config.timeout_defaults_version >= CURRENT_TIMEOUT_DEFAULTS_VERSION {
+        return (config, false);
+    }
+
+    if config.tool_timeout_secs == LEGACY_DEFAULT_TOOL_TIMEOUT_SECS {
+        config.tool_timeout_secs = default_tool_timeout();
+    }
+    if config.agent_timeout_secs == LEGACY_DEFAULT_AGENT_TIMEOUT_SECS {
+        config.agent_timeout_secs = default_agent_timeout();
+    }
+
+    config.timeout_defaults_version = CURRENT_TIMEOUT_DEFAULTS_VERSION;
+    (config, true)
+}
+
 impl Database {
     pub fn load_app_config(&self) -> Result<AppConfig, CoreError> {
         let conn = self.conn();
@@ -446,8 +473,14 @@ impl Database {
         );
         match result {
             Ok(json) => {
+                drop(conn);
                 let config: AppConfig = serde_json::from_str(&json)?;
-                decrypt_app_config_secrets(config)
+                let config = decrypt_app_config_secrets(config)?;
+                let (config, migrated) = migrate_timeout_defaults(config);
+                if migrated {
+                    self.save_app_config(&config)?;
+                }
+                Ok(config)
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(AppConfig::default()),
             Err(e) => Err(CoreError::Database(e)),
@@ -550,6 +583,12 @@ mod tests {
     fn app_config_defaults_agent_behavior() {
         let config = AppConfig::default();
 
+        assert_eq!(config.tool_timeout_secs, 0);
+        assert_eq!(config.agent_timeout_secs, 0);
+        assert_eq!(
+            config.timeout_defaults_version,
+            CURRENT_TIMEOUT_DEFAULTS_VERSION
+        );
         assert!(!config.dynamic_tool_visibility);
         assert!(config.trace_enabled);
         assert_eq!(config.web_search.custom_providers.len(), 5);
@@ -563,6 +602,57 @@ mod tests {
             .custom_providers
             .iter()
             .any(|provider| provider.preset == WebSearchCustomProviderPreset::AnySearch));
+    }
+
+    #[test]
+    fn app_config_migrates_legacy_timeout_defaults_once() {
+        let db = Database::open_memory().expect("open_memory");
+        {
+            let conn = db.conn();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS app_config (
+                     key TEXT PRIMARY KEY NOT NULL,
+                     value TEXT NOT NULL,
+                     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 )",
+            )
+            .expect("create app_config table");
+            let legacy = serde_json::json!({
+                "toolTimeoutSecs": LEGACY_DEFAULT_TOOL_TIMEOUT_SECS,
+                "agentTimeoutSecs": LEGACY_DEFAULT_AGENT_TIMEOUT_SECS
+            });
+            conn.execute(
+                "INSERT INTO app_config (key, value, updated_at)
+                 VALUES (?1, ?2, datetime('now'))",
+                params![APP_CONFIG_KEY, legacy.to_string()],
+            )
+            .expect("insert legacy app config");
+        }
+
+        let migrated = db.load_app_config().expect("load migrated app config");
+        assert_eq!(migrated.tool_timeout_secs, 0);
+        assert_eq!(migrated.agent_timeout_secs, 0);
+        assert_eq!(
+            migrated.timeout_defaults_version,
+            CURRENT_TIMEOUT_DEFAULTS_VERSION
+        );
+
+        let mut explicit = migrated;
+        explicit.tool_timeout_secs = LEGACY_DEFAULT_TOOL_TIMEOUT_SECS;
+        explicit.agent_timeout_secs = LEGACY_DEFAULT_AGENT_TIMEOUT_SECS;
+        db.save_app_config(&explicit)
+            .expect("save explicit bounded timeouts");
+
+        let reloaded = db.load_app_config().expect("reload explicit app config");
+        assert_eq!(reloaded.tool_timeout_secs, LEGACY_DEFAULT_TOOL_TIMEOUT_SECS);
+        assert_eq!(
+            reloaded.agent_timeout_secs,
+            LEGACY_DEFAULT_AGENT_TIMEOUT_SECS
+        );
+        assert_eq!(
+            reloaded.timeout_defaults_version,
+            CURRENT_TIMEOUT_DEFAULTS_VERSION
+        );
     }
 
     #[test]

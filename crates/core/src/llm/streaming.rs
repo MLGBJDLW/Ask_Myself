@@ -1,10 +1,12 @@
 //! SSE (Server-Sent Events) stream parser for OpenAI-compatible APIs.
 
-use futures::StreamExt;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
-use super::{FinishReason, StreamChunk, ToolCallDelta, Usage};
+use super::{
+    next_stream_item_with_idle_timeout, FinishReason, StreamChunk, ToolCallDelta, Usage,
+    DEFAULT_STREAM_IDLE_TIMEOUT,
+};
 use crate::error::CoreError;
 
 // ---------------------------------------------------------------------------
@@ -513,6 +515,64 @@ async fn process_sse_line(
     Ok(false)
 }
 
+async fn process_sse_event_data_lines(
+    event_data_lines: &mut Vec<String>,
+    tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
+    in_think_block: &mut bool,
+    think_tag_buffer: &mut String,
+) -> Result<bool, CoreError> {
+    if event_data_lines.is_empty() {
+        return Ok(false);
+    }
+
+    let data = event_data_lines.join("\n");
+    event_data_lines.clear();
+    process_sse_line(
+        format!("data: {data}"),
+        tx,
+        in_think_block,
+        think_tag_buffer,
+    )
+    .await
+}
+
+async fn collect_or_dispatch_sse_line(
+    line: String,
+    event_data_lines: &mut Vec<String>,
+    tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
+    in_think_block: &mut bool,
+    think_tag_buffer: &mut String,
+) -> Result<bool, CoreError> {
+    if line.is_empty() {
+        return process_sse_event_data_lines(
+            event_data_lines,
+            tx,
+            in_think_block,
+            think_tag_buffer,
+        )
+        .await;
+    }
+
+    let Some(data) = line
+        .strip_prefix("data: ")
+        .or_else(|| line.strip_prefix("data:"))
+    else {
+        return Ok(false);
+    };
+
+    let trimmed = data.trim_start();
+    if !event_data_lines.is_empty() && (trimmed.starts_with('{') || trimmed == "[DONE]") {
+        if process_sse_event_data_lines(event_data_lines, tx, in_think_block, think_tag_buffer)
+            .await?
+        {
+            return Ok(true);
+        }
+    }
+
+    event_data_lines.push(data.to_string());
+    Ok(false)
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -529,9 +589,16 @@ pub async fn parse_sse_stream(
     let mut buffer: Vec<u8> = Vec::new();
     let mut in_think_block = false;
     let mut think_tag_buffer = String::new();
+    let mut event_data_lines: Vec<String> = Vec::new();
     let mut first_chunk = true;
 
-    while let Some(chunk_result) = byte_stream.next().await {
+    while let Some(chunk_result) = next_stream_item_with_idle_timeout(
+        &mut byte_stream,
+        DEFAULT_STREAM_IDLE_TIMEOUT,
+        "OpenAI SSE stream",
+    )
+    .await?
+    {
         let chunk = chunk_result.map_err(|e| {
             error!("Stream read error: {e}");
             let msg = e.to_string().to_ascii_lowercase();
@@ -559,7 +626,15 @@ pub async fn parse_sse_stream(
 
         buffer.extend_from_slice(&chunk);
         for line in drain_complete_sse_lines(&mut buffer) {
-            if process_sse_line(line, &tx, &mut in_think_block, &mut think_tag_buffer).await? {
+            if collect_or_dispatch_sse_line(
+                line,
+                &mut event_data_lines,
+                &tx,
+                &mut in_think_block,
+                &mut think_tag_buffer,
+            )
+            .await?
+            {
                 return Ok(());
             }
         }
@@ -567,9 +642,28 @@ pub async fn parse_sse_stream(
 
     if !buffer.is_empty() {
         let line = decode_sse_line(&buffer);
-        if process_sse_line(line, &tx, &mut in_think_block, &mut think_tag_buffer).await? {
+        if collect_or_dispatch_sse_line(
+            line,
+            &mut event_data_lines,
+            &tx,
+            &mut in_think_block,
+            &mut think_tag_buffer,
+        )
+        .await?
+        {
             return Ok(());
         }
+    }
+
+    if process_sse_event_data_lines(
+        &mut event_data_lines,
+        &tx,
+        &mut in_think_block,
+        &mut think_tag_buffer,
+    )
+    .await?
+    {
+        return Ok(());
     }
 
     // Stream ended without [DONE] marker — server likely crashed or disconnected.
@@ -827,5 +921,39 @@ mod tests {
 
         assert_eq!(lines, vec!["data: 中文".to_string()]);
         assert!(buffer.is_empty());
+    }
+
+    #[tokio::test]
+    async fn multiline_sse_data_event_is_parsed_as_one_json_payload() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut event_data_lines = Vec::new();
+        let mut in_think_block = false;
+        let mut think_tag_buffer = String::new();
+
+        for line in [
+            "data: {",
+            "data: \"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]",
+            "data: }",
+            "",
+        ] {
+            let done = collect_or_dispatch_sse_line(
+                line.to_string(),
+                &mut event_data_lines,
+                &tx,
+                &mut in_think_block,
+                &mut think_tag_buffer,
+            )
+            .await
+            .expect("process line");
+            assert!(!done);
+        }
+
+        let chunk = rx
+            .recv()
+            .await
+            .expect("chunk")
+            .expect("parsed stream chunk");
+        assert_eq!(chunk.delta, "hello");
+        assert!(rx.try_recv().is_err());
     }
 }

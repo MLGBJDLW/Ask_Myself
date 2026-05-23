@@ -340,16 +340,13 @@ export interface SaveAgentConfigInput {
 }
 
 export interface AppConfig {
-  toolTimeoutSecs: number;
-  agentTimeoutSecs: number;
+  timeoutDefaultsVersion: number;
   cacheTtlHours: number;
   defaultSearchLimit: number;
   minSearchSimilarity: number;
   maxTextFileSize: number;
   maxVideoFileSize: number;
   maxAudioFileSize: number;
-  llmTimeoutSecs: number;
-  mcpCallTimeoutSecs: number;
   dynamicToolVisibility?: boolean;
   traceEnabled?: boolean;
   confirmDestructive?: boolean;

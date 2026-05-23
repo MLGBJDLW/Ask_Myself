@@ -6,11 +6,13 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use super::{
-    streaming::parse_sse_stream, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
+    configured_request_timeout, send_stream_start_request, streaming::parse_sse_stream,
+    with_request_timeout, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
     LlmProvider, Message, ProviderConfig, ProviderType, ReasoningEffort, Role, StreamChunk,
     ToolCallRequest, ToolDefinition, Usage,
 };
@@ -585,12 +587,14 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
 pub struct OpenAiProvider {
     client: reqwest::Client,
     config: ProviderConfig,
+    request_timeout: Option<Duration>,
 }
 
 impl OpenAiProvider {
     /// Create a new provider with an async reqwest client.
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let timeout = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let request_timeout = configured_request_timeout(timeout);
         // SSE streams are extremely sensitive to HTTP/2 RST_STREAM frames
         // emitted by reverse proxies (e.g. Cloudflare, nginx) that terminate
         // long-lived idle h2 connections. Force HTTP/1.1 so the stream stays
@@ -598,7 +602,6 @@ impl OpenAiProvider {
         // keep-alive sockets are dropped before the upstream closes them.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(timeout))
             .pool_idle_timeout(std::time::Duration::from_secs(15))
             .pool_max_idle_per_host(5)
             .tcp_keepalive(std::time::Duration::from_secs(30))
@@ -606,7 +609,11 @@ impl OpenAiProvider {
             .build()
             .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
 
-        Ok(Self { client, config })
+        Ok(Self {
+            client,
+            config,
+            request_timeout,
+        })
     }
 
     fn base_url(&self) -> &str {
@@ -667,13 +674,15 @@ impl LlmProvider for OpenAiProvider {
         let url = format!("{}/models", self.base_url());
         let api_key = self.api_key()?;
 
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {api_key}"))
-            .send()
-            .await
-            .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+        let response = with_request_timeout(
+            self.client
+                .get(&url)
+                .header("Authorization", format!("Bearer {api_key}")),
+            self.request_timeout,
+        )
+        .send()
+        .await
+        .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
 
         let response = self.check_response(response).await?;
 
@@ -692,14 +701,16 @@ impl LlmProvider for OpenAiProvider {
 
         let mut attempt = 1;
         let oai: OaiResponse = loop {
-            let response = match self
-                .client
-                .post(&url)
-                .header("Authorization", format!("Bearer {api_key}"))
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-                .await
+            let response = match with_request_timeout(
+                self.client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .header("Content-Type", "application/json")
+                    .json(&body),
+                self.request_timeout,
+            )
+            .send()
+            .await
             {
                 Ok(response) => response,
                 Err(e) if is_retriable_reqwest_error(&e) && attempt < MAX_COMPLETE_ATTEMPTS => {
@@ -808,22 +819,20 @@ impl LlmProvider for OpenAiProvider {
         let body_json = serde_json::to_string(&body).unwrap_or_default();
         debug!("Request body: {} bytes", body_json.len());
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {api_key}"))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                error!("Stream send failed: {e}");
-                if e.is_connect() || e.is_timeout() {
-                    CoreError::TransientLlm(format!("Request failed: {e}"))
-                } else {
-                    CoreError::Llm(format!("Request failed: {e}"))
-                }
-            })?;
+        let response = send_stream_start_request(
+            self.client
+                .post(&url)
+                .header("Authorization", format!("Bearer {api_key}"))
+                .header("Content-Type", "application/json")
+                .json(&body),
+            self.request_timeout,
+            "OpenAI stream request",
+        )
+        .await
+        .map_err(|e| {
+            error!("Stream send failed: {e}");
+            e
+        })?;
 
         info!("Stream response status: {}", response.status());
         let response = self.check_response(response).await?;
@@ -855,6 +864,72 @@ impl LlmProvider for OpenAiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn serve_delayed_sse_response(listener: tokio::net::TcpListener) -> std::io::Result<()> {
+        let (mut socket, _) = listener.accept().await?;
+        let mut request = Vec::new();
+        let mut headers_end = None;
+
+        while headers_end.is_none() {
+            let mut buf = [0u8; 1024];
+            let n = socket.read(&mut buf).await?;
+            if n == 0 {
+                return Ok(());
+            }
+            request.extend_from_slice(&buf[..n]);
+            headers_end = request.windows(4).position(|window| window == b"\r\n\r\n");
+        }
+
+        let headers_end = headers_end.expect("headers end") + 4;
+        let headers = String::from_utf8_lossy(&request[..headers_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        while request.len() < headers_end + content_length {
+            let mut buf = [0u8; 1024];
+            let n = socket.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..n]);
+        }
+
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            )
+            .await?;
+        socket
+            .write_all(
+                br#"data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}
+
+"#,
+            )
+            .await?;
+        socket.flush().await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+        socket
+            .write_all(
+                br#"data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}
+
+data: [DONE]
+
+"#,
+            )
+            .await?;
+        socket.flush().await?;
+        socket.shutdown().await
+    }
 
     #[test]
     fn deepseek_v4_thinking_request_uses_supported_wire_shape() {
@@ -878,6 +953,47 @@ mod tests {
         assert_eq!(body["max_completion_tokens"], 100);
         assert!(body.get("temperature").is_none());
         assert!(body.get("max_tokens").is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_timeout_does_not_cap_total_response_body_duration() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(serve_delayed_sse_response(listener));
+
+        let provider = OpenAiProvider::new(ProviderConfig {
+            provider_type: ProviderType::OpenAi,
+            base_url: Some(format!("http://{addr}/v1")),
+            api_key: Some("test-key".to_string()),
+            org_id: None,
+            timeout_secs: Some(1),
+        })
+        .expect("provider");
+
+        let request = CompletionRequest {
+            model: "test-model".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: None,
+            max_tokens: Some(32),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::OpenAi),
+            parallel_tool_calls: true,
+        };
+
+        let mut stream = provider.stream(&request).await.expect("start stream");
+        let mut text = String::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.expect("stream chunk");
+            text.push_str(&chunk.delta);
+        }
+
+        server.await.expect("server task").expect("server result");
+        assert_eq!(text, "hello world");
     }
 
     #[test]

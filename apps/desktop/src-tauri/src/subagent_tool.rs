@@ -2058,12 +2058,18 @@ fn is_subagent_tool_name(name: &str) -> bool {
 
 fn resolve_delegation_timeout_secs(config: &AgentConfig, requested: Option<u32>) -> u64 {
     requested.unwrap_or_else(|| {
-        let tool_timeout = config.tool_timeout_secs.unwrap_or(30);
-        let turn_timeout = config.agent_timeout_secs.unwrap_or(120);
+        let tool_timeout = config
+            .tool_timeout_secs
+            .filter(|timeout| *timeout > 0)
+            .unwrap_or(60);
+        let turn_timeout = config
+            .agent_timeout_secs
+            .filter(|timeout| *timeout > 0)
+            .unwrap_or(180);
         tool_timeout
             .saturating_mul(2)
             .min(turn_timeout)
-            .clamp(15, 120)
+            .clamp(15, 180)
     }) as u64
 }
 
@@ -2783,6 +2789,15 @@ mod tests {
 
         assert_eq!(args.timeout_secs, Some(180));
         assert_eq!(args.task_id.as_deref(), Some("worker-1"));
+    }
+
+    #[test]
+    fn test_delegation_timeout_treats_unlimited_parent_as_default_budget() {
+        let mut config = AgentConfig::default();
+        config.tool_timeout_secs = Some(0);
+        config.agent_timeout_secs = Some(0);
+
+        assert_eq!(resolve_delegation_timeout_secs(&config, None), 120);
     }
 
     #[test]

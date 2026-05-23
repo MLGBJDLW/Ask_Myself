@@ -513,7 +513,6 @@ pub async fn generate_title_cmd(
     // 3. Build the provider + model pair for title generation.
     //    Prefer the agent's configured summarization provider/model; fall back
     //    to the default agent's primary provider/model.
-    let app_cfg = state.db.load_app_config().unwrap_or_default();
     let (provider, title_model) = if let Some(summ_provider_name) =
         db_config.summarization_provider.as_deref()
     {
@@ -522,7 +521,7 @@ pub async fn generate_title_cmd(
             api_key: Some(db_config.api_key.clone()),
             base_url: db_config.base_url.clone(),
             org_id: None,
-            timeout_secs: Some(app_cfg.llm_timeout_secs),
+            timeout_secs: None,
         };
         match create_provider(summ_config) {
             Ok(p) => {
@@ -536,8 +535,7 @@ pub async fn generate_title_cmd(
                 warn!(
                     "summarization provider '{summ_provider_name}' unavailable ({e}); falling back to default agent"
                 );
-                let provider_config =
-                    db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+                let provider_config = db_config_to_provider_config(&db_config, None);
                 let p = create_provider(provider_config).map_err(|e| e.to_string())?;
                 let model = db_config
                     .summarization_model
@@ -547,8 +545,7 @@ pub async fn generate_title_cmd(
             }
         }
     } else {
-        let provider_config =
-            db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+        let provider_config = db_config_to_provider_config(&db_config, None);
         let p = create_provider(provider_config).map_err(|e| e.to_string())?;
         let model = db_config
             .summarization_model
@@ -628,7 +625,7 @@ pub async fn compact_conversation_cmd(
     let db_config = select_agent_config_for_conversation(&state.db, &conv, None)?;
 
     let app_cfg = state.db.load_app_config().unwrap_or_default();
-    let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+    let provider_config = db_config_to_provider_config(&db_config, None);
     let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
 
     let executor_config = ExecutorConfig {
@@ -646,16 +643,8 @@ pub async fn compact_conversation_cmd(
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
-        tool_timeout_secs: Some(config_timeout_secs(
-            db_config.tool_timeout_secs,
-            app_cfg.tool_timeout_secs,
-            30,
-        )),
-        agent_timeout_secs: Some(config_timeout_secs(
-            db_config.agent_timeout_secs,
-            app_cfg.agent_timeout_secs,
-            180,
-        )),
+        tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
+        agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
         dynamic_tool_visibility: app_cfg.dynamic_tool_visibility,
         trace_enabled: app_cfg.trace_enabled,
@@ -671,7 +660,7 @@ pub async fn compact_conversation_cmd(
                 api_key: Some(db_config.api_key.clone()),
                 base_url: db_config.base_url.clone(),
                 org_id: None,
-                timeout_secs: Some(app_cfg.llm_timeout_secs),
+                timeout_secs: None,
             };
             create_provider(summ_config).ok()
         } else {

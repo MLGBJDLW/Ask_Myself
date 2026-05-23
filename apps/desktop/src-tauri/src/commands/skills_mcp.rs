@@ -287,9 +287,8 @@ pub async fn test_mcp_server_cmd(
         .ok_or_else(|| format!("MCP server {id} not found"))?;
     let mut manager = mcp_state.manager.lock().await;
     // connect_server stores the client so list_mcp_tools_cmd can reuse it.
-    let app_cfg = state.db.load_app_config().unwrap_or_default();
     let tools = manager
-        .connect_server(&server, Some(app_cfg.mcp_call_timeout_secs))
+        .connect_server(&server, Some(DEFAULT_MCP_CALL_TIMEOUT_SECS))
         .await
         .map_err(|e| e.to_string())?;
     // For built-in managed servers that aren't enabled, disconnect after
@@ -353,9 +352,8 @@ pub async fn list_mcp_tools_cmd(
         .into_iter()
         .find(|s| s.id == server_id)
         .ok_or_else(|| format!("MCP server {server_id} not found"))?;
-    let app_cfg = state.db.load_app_config().unwrap_or_default();
     manager
-        .connect_server(&server, Some(app_cfg.mcp_call_timeout_secs))
+        .connect_server(&server, Some(DEFAULT_MCP_CALL_TIMEOUT_SECS))
         .await
         .map_err(|e| e.to_string())
 }

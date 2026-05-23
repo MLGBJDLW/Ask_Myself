@@ -1,4 +1,4 @@
-import { Clock, RotateCcw, Save, Settings2, Star } from 'lucide-react';
+import { RotateCcw, Save, Settings2, Star } from 'lucide-react';
 import { useTranslation, type Locale } from '../../i18n';
 import { useUpdater } from '../../lib/useUpdater';
 import type { AppConfig } from '../../types/conversation';
@@ -41,8 +41,6 @@ export function AppearanceSettingsTab({
   onRerunWizard,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation();
-  const toolTimeoutUnlimited = (appConfig?.toolTimeoutSecs ?? 30) <= 0;
-  const agentTimeoutUnlimited = (appConfig?.agentTimeoutSecs ?? 180) <= 0;
 
   return (
     <Section icon={<Star size={20} />} title={t('settings.appearance')} delay={0.03}>
@@ -113,135 +111,6 @@ export function AppearanceSettingsTab({
             {t('wizard.rerunButton')}
           </Button>
         </div>
-
-        {/* Timeout Settings */}
-        <CollapsiblePanel
-          title={t('settings.timeout')}
-          defaultOpen={false}
-          summary={<Clock size={14} className="text-text-tertiary" />}
-        >
-          {appConfig && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-text-primary">{t('settings.toolTimeout')}</label>
-                  <div className="flex gap-2">
-                    <Input
-                      type="number"
-                      value={appConfig.toolTimeoutSecs}
-                      onChange={(e) => {
-                        const parsed = Number.parseInt(e.target.value, 10);
-                        onAppConfigChange({
-                          ...appConfig,
-                          toolTimeoutSecs: Number.isFinite(parsed) ? Math.max(0, parsed) : 30,
-                        });
-                      }}
-                      min={0}
-                      max={3600}
-                      step={30}
-                      disabled={toolTimeoutUnlimited}
-                    />
-                    <Button
-                      type="button"
-                      variant={toolTimeoutUnlimited ? 'primary' : 'secondary'}
-                      size="md"
-                      className="shrink-0"
-                      onClick={() =>
-                        onAppConfigChange({
-                          ...appConfig,
-                          toolTimeoutSecs: toolTimeoutUnlimited ? 30 : 0,
-                        })
-                      }
-                    >
-                      {t('settings.agentTimeoutNoLimit')}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-text-tertiary">
-                    {t('settings.toolTimeoutDesc')}
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-text-primary">{t('settings.agentTimeout')}</label>
-                  <div className="flex gap-2">
-                    <Input
-                      type="number"
-                      value={appConfig.agentTimeoutSecs}
-                      onChange={(e) => {
-                        const parsed = Number.parseInt(e.target.value, 10);
-                        onAppConfigChange({
-                          ...appConfig,
-                          agentTimeoutSecs: Number.isFinite(parsed) ? Math.max(0, parsed) : 180,
-                        });
-                      }}
-                      min={0}
-                      max={3600}
-                      step={30}
-                      disabled={agentTimeoutUnlimited}
-                    />
-                    <Button
-                      type="button"
-                      variant={agentTimeoutUnlimited ? 'primary' : 'secondary'}
-                      size="md"
-                      className="shrink-0"
-                      onClick={() =>
-                        onAppConfigChange({
-                          ...appConfig,
-                          agentTimeoutSecs: agentTimeoutUnlimited ? 180 : 0,
-                        })
-                      }
-                    >
-                      {t('settings.agentTimeoutNoLimit')}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-text-tertiary">
-                    {t('settings.agentTimeoutDesc')}
-                  </p>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-text-primary">{t('settings.llmTimeout')}</label>
-                  <Input
-                    type="number"
-                    value={appConfig.llmTimeoutSecs}
-                    onChange={(e) => onAppConfigChange({ ...appConfig, llmTimeoutSecs: parseInt(e.target.value) || 300 })}
-                    min={10}
-                    max={600}
-                    step={10}
-                  />
-                  <p className="text-xs text-text-tertiary">
-                    {t('settings.llmTimeoutDesc')}
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-text-primary">{t('settings.mcpTimeout')}</label>
-                  <Input
-                    type="number"
-                    value={appConfig.mcpCallTimeoutSecs}
-                    onChange={(e) => onAppConfigChange({ ...appConfig, mcpCallTimeoutSecs: parseInt(e.target.value) || 60 })}
-                    min={5}
-                    max={300}
-                    step={5}
-                  />
-                  <p className="text-xs text-text-tertiary">
-                    {t('settings.mcpTimeoutDesc')}
-                  </p>
-                </div>
-              </div>
-              <div className="flex justify-end">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  icon={<Save size={14} />}
-                  loading={appConfigLoading}
-                  onClick={onAppConfigSave}
-                >
-                  {t('common.save')}
-                </Button>
-              </div>
-            </div>
-          )}
-        </CollapsiblePanel>
 
         {/* Advanced Settings */}
         <CollapsiblePanel

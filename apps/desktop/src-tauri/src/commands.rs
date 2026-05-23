@@ -108,6 +108,9 @@ pub use sources::*;
 pub use watcher::*;
 pub use workflows::*;
 
+const DEFAULT_MCP_CALL_TIMEOUT_SECS: u64 = 300;
+const UNLIMITED_EXECUTOR_TIMEOUT_SECS: u32 = 0;
+
 /// Application state holding the database connection.
 pub struct AppState {
     pub db: Arc<Database>,
@@ -206,9 +209,8 @@ async fn sync_enabled_mcp_servers(
     manager: &mut nexa_core::mcp::McpManager,
 ) -> Result<HashMap<String, String>, String> {
     let enabled_servers = db.get_enabled_mcp_servers().map_err(|e| e.to_string())?;
-    let app_cfg = db.load_app_config().unwrap_or_default();
     Ok(manager
-        .sync_servers(&enabled_servers, Some(app_cfg.mcp_call_timeout_secs))
+        .sync_servers(&enabled_servers, Some(DEFAULT_MCP_CALL_TIMEOUT_SECS))
         .await)
 }
 
@@ -719,15 +721,6 @@ fn sanitize_tool_call_history(mut messages: Vec<Message>) -> Vec<Message> {
     }
 
     messages
-}
-
-fn config_timeout_secs(value: Option<i64>, app_value: i64, default_value: u32) -> u32 {
-    let secs = value.unwrap_or(app_value);
-    if secs < 0 {
-        default_value
-    } else {
-        secs.min(u32::MAX as i64) as u32
-    }
 }
 
 /// After an interrupted agent execution, check for assistant messages with

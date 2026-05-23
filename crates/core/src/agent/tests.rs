@@ -1787,7 +1787,12 @@ async fn test_persists_only_final_iteration_thinking_on_final_assistant() {
     );
     let non_loop_items = items
         .iter()
-        .filter(|item| item.get("kind").and_then(|v| v.as_str()) != Some("loop"))
+        .filter(|item| {
+            !matches!(
+                item.get("kind").and_then(|v| v.as_str()),
+                Some("loop") | Some("skillSelection")
+            )
+        })
         .collect::<Vec<_>>();
     assert_eq!(non_loop_items.len(), 5);
     assert_eq!(
