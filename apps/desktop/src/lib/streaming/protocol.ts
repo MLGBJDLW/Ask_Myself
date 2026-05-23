@@ -73,12 +73,23 @@ export interface TraceStatusEvent {
 
 export type TraceEvent = TraceThinkingEvent | TraceReplyEvent | TraceToolEvent | TraceStatusEvent;
 
+export interface ContextUsageSegment {
+  kind: string;
+  tokens: number;
+}
+
+export interface ContextUsageBreakdown {
+  totalTokens: number;
+  segments: ContextUsageSegment[];
+}
+
 export interface UsageTotal {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
   thinkingTokens?: number;
   lastPromptTokens?: number;
+  contextBreakdown?: ContextUsageBreakdown;
 }
 
 export interface StreamState {

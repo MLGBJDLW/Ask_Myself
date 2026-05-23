@@ -371,7 +371,7 @@ function TurnSkillStrip({
 
   return (
     <div className="mb-2 flex justify-start" data-testid="turn-skill-strip">
-      <div className="w-full max-w-[min(100%,72rem)] rounded-lg border border-border/70 bg-surface-1/75 px-3 py-2">
+      <div className="w-full min-w-0 rounded-lg border border-border/70 bg-surface-1/75 px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="inline-flex min-w-0 items-center gap-1.5 text-xs font-medium text-text-secondary">
             <BookOpen className="h-3.5 w-3.5 shrink-0 text-accent" />
@@ -708,7 +708,7 @@ export function ChatMessages({
 
       return (
         <div key={key} className="flex justify-start mb-4">
-          <div className="w-full max-w-[min(100%,72rem)] text-sm leading-relaxed text-text-primary">
+          <div className="w-full min-w-0 text-sm leading-relaxed text-text-primary">
             {evidenceItems.length > 0 && (
               <div className="mb-3 rounded-xl border border-border/70 bg-surface-1/70 px-2.5 py-2">
                 <div className="mb-1 flex items-center justify-between gap-2">
@@ -770,7 +770,7 @@ export function ChatMessages({
   const renderThinkingTraceNode = useCallback(
     (key: string, sections: ThinkingSection[], isStreaming = false) => (
       <div key={key} className="flex justify-start mb-1">
-        <div className="w-full max-w-[min(100%,72rem)]">
+        <div className="w-full min-w-0">
           <ThinkingBlock
             content=""
             sections={sections}
@@ -1440,7 +1440,7 @@ export function ChatMessages({
       const mergedDiffs = mergeFileDiffArtifactsByPath(diffs);
       return (
         <div className="my-2 flex justify-start" data-testid="turn-file-diff-previews">
-          <div className="w-full max-w-[min(100%,72rem)]">
+          <div className="w-full min-w-0">
             <FileDiffSummaryPanel diffs={mergedDiffs} />
           </div>
         </div>
@@ -1823,7 +1823,7 @@ export function ChatMessages({
           transition={shouldReduceMotion ? INSTANT_TRANSITION : SOFT_FADE_TRANSITION}
           className="flex justify-start mb-3"
         >
-          <div className="w-full max-w-[min(100%,72rem)]">
+          <div className="w-full min-w-0">
             <ThinkingBlock
               content=""
               sections={renderTimelineSections(currentTimelineSections)}

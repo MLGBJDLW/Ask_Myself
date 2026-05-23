@@ -3,6 +3,7 @@ import type {
   AgentTaskRun,
   AgentTaskRunEvent,
   ApprovalRequest,
+  ContextUsageBreakdown,
 } from '../../types/conversation';
 import { appendReplyTraceEvent } from './blockProjection';
 import type { UsageTotal } from './protocol';
@@ -49,7 +50,17 @@ export function applyUsageUpdateEvent(
   const usage = event.usageTotal ?? (raw.usage_total as UsageTotal | undefined);
   if (!usage) return;
   const lastPrompt = (raw.lastPromptTokens ?? raw.last_prompt_tokens) as number | undefined;
-  state.lastUsage = { ...usage, lastPromptTokens: lastPrompt ?? usage.lastPromptTokens };
+  const contextBreakdown = (
+    event.contextBreakdown
+    ?? raw.contextBreakdown
+    ?? raw.context_breakdown
+    ?? usage.contextBreakdown
+  ) as ContextUsageBreakdown | undefined;
+  state.lastUsage = {
+    ...usage,
+    lastPromptTokens: lastPrompt ?? usage.lastPromptTokens,
+    contextBreakdown,
+  };
 }
 
 export function applyStatusEvent(

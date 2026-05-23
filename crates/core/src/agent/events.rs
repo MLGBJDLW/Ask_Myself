@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::context::ContextUsageBreakdown;
 use crate::approval::{ApprovalDecision, ApprovalRequest};
 use crate::llm::{Message, Usage};
 use crate::plugins::ToolPluginInfo;
@@ -115,6 +116,8 @@ pub enum AgentEvent {
         /// represents how full the context window currently is).
         #[serde(rename = "lastPromptTokens")]
         last_prompt_tokens: u32,
+        #[serde(rename = "contextBreakdown", skip_serializing_if = "Option::is_none")]
+        context_breakdown: Option<ContextUsageBreakdown>,
         /// Whether this response came from the answer cache.
         #[serde(default)]
         cached: bool,
@@ -128,6 +131,8 @@ pub enum AgentEvent {
         usage_total: Usage,
         #[serde(rename = "lastPromptTokens")]
         last_prompt_tokens: u32,
+        #[serde(rename = "contextBreakdown", skip_serializing_if = "Option::is_none")]
+        context_breakdown: Option<ContextUsageBreakdown>,
     },
     /// An error occurred during execution.
     Error { message: String },

@@ -441,6 +441,25 @@ export type ProviderType =
   | 'baichuan'
   | 'custom';
 
+export interface ContextUsageSegment {
+  kind: string;
+  tokens: number;
+}
+
+export interface ContextUsageBreakdown {
+  totalTokens: number;
+  segments: ContextUsageSegment[];
+}
+
+export interface UsageTotal {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  thinkingTokens?: number;
+  lastPromptTokens?: number;
+  contextBreakdown?: ContextUsageBreakdown;
+}
+
 export interface AgentEvent {
   type:
     | 'textDelta'
@@ -487,7 +506,8 @@ export interface AgentEvent {
   artifacts?: ArtifactPayload;
   // `Done` events carry a full ConversationMessage; `Error` events carry a plain string.
   message?: ConversationMessage | string;
-  usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number; lastPromptTokens?: number };
+  usageTotal?: UsageTotal;
+  contextBreakdown?: ContextUsageBreakdown;
   taskRun?: AgentTaskRun;
   taskEvent?: AgentTaskRunEvent;
 }
@@ -620,7 +640,8 @@ export interface AgentFrontendEvent {
   isError?: boolean;
   artifacts?: ArtifactPayload;
   message?: ConversationMessage | string;
-  usageTotal?: { promptTokens: number; completionTokens: number; totalTokens: number; thinkingTokens?: number; lastPromptTokens?: number };
+  usageTotal?: UsageTotal;
+  contextBreakdown?: ContextUsageBreakdown;
   request?: ApprovalRequest;
   requestId?: string;
   decision?: ApprovalDecisionValue;

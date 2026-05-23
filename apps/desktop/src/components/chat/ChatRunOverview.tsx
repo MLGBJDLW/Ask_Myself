@@ -1,4 +1,14 @@
-import { useTranslation } from '../../i18n';
+import { useTranslation, type TranslationKey } from '../../i18n';
+
+interface ContextUsageSegment {
+  kind: string;
+  tokens: number;
+}
+
+interface ContextUsageBreakdown {
+  totalTokens: number;
+  segments: ContextUsageSegment[];
+}
 
 interface TokenUsage {
   promptTokens: number;
@@ -6,6 +16,7 @@ interface TokenUsage {
   contextWindow: number;
   completionTokens: number;
   thinkingTokens: number;
+  contextBreakdown?: ContextUsageBreakdown;
   isEstimated: boolean;
   source: 'live' | 'cached' | 'estimated';
 }
@@ -27,6 +38,65 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
   return String(n);
+}
+
+const CONTEXT_SEGMENT_COLOR: Record<string, string> = {
+  prompts: 'var(--context-prompts)',
+  conversation: 'var(--context-conversation)',
+  toolResults: 'var(--context-tool-results)',
+  tools: 'var(--context-tools)',
+  mcp: 'var(--context-mcp)',
+  overhead: 'var(--context-overhead)',
+};
+
+const CONTEXT_SEGMENT_LABEL_KEY: Record<string, TranslationKey> = {
+  prompts: 'chat.contextBreakdownPrompts',
+  conversation: 'chat.contextBreakdownConversation',
+  toolResults: 'chat.contextBreakdownToolResults',
+  tools: 'chat.contextBreakdownTools',
+  mcp: 'chat.contextBreakdownMcp',
+  overhead: 'chat.contextBreakdownOverhead',
+};
+
+interface RenderSegment {
+  key: string;
+  kind: string;
+  tokens: number;
+  sharePercent: number;
+  color: string;
+}
+
+function contextSegmentsForBar(usage: TokenUsage | null): RenderSegment[] {
+  const breakdown = usage?.contextBreakdown;
+  if (!usage || !breakdown || usage.promptTokens <= 0 || !Array.isArray(breakdown.segments)) {
+    return [];
+  }
+
+  const rawSegments = breakdown.segments
+    .map((segment) => ({
+      kind: segment.kind,
+      tokens: Math.max(0, Math.round(segment.tokens)),
+    }))
+    .filter((segment) => segment.kind && segment.tokens > 0);
+  if (rawSegments.length === 0) return [];
+
+  const rawTotal = rawSegments.reduce((sum, segment) => sum + segment.tokens, 0);
+  const basis = Math.max(1, rawTotal);
+  return rawSegments.map((segment, index) => {
+    const normalizedTokens = Math.max(1, Math.round((segment.tokens / basis) * usage.promptTokens));
+    return {
+      key: `${segment.kind}-${index}`,
+      kind: segment.kind,
+      tokens: normalizedTokens,
+      sharePercent: Math.max(0, (segment.tokens / basis) * 100),
+      color: CONTEXT_SEGMENT_COLOR[segment.kind] ?? 'var(--context-overhead)',
+    };
+  }).filter((segment) => segment.sharePercent > 0);
+}
+
+function contextSegmentLabel(t: ReturnType<typeof useTranslation>['t'], kind: string): string {
+  const key = CONTEXT_SEGMENT_LABEL_KEY[kind];
+  return key ? t(key) : kind;
 }
 
 export function ChatRunOverview({
@@ -53,6 +123,11 @@ export function ChatRunOverview({
     : isWarning
       ? 'bg-amber-300 shadow-[0_0_14px_rgba(251,191,36,0.34)]'
       : 'bg-accent shadow-[0_0_14px_rgba(20,184,166,0.34)]';
+  const fillGlow = isDanger
+    ? 'shadow-[0_0_16px_rgba(248,113,113,0.42)]'
+    : isWarning
+      ? 'shadow-[0_0_14px_rgba(251,191,36,0.34)]'
+      : 'shadow-[0_0_14px_rgba(20,184,166,0.34)]';
   const percentTone = isDanger
     ? 'text-red-300'
     : isWarning
@@ -61,6 +136,7 @@ export function ChatRunOverview({
   const usageLabel = contextWindow > 0
     ? `${formatTokens(usedTokens)} / ${formatTokens(contextWindow)}`
     : t('chat.contextNoUsage');
+  const contextSegments = contextSegmentsForBar(usage);
 
   return (
     <div className="shrink-0 border-b border-border/45 bg-surface-1/70 px-3 py-1 backdrop-blur">
@@ -76,10 +152,30 @@ export function ChatRunOverview({
           className="chat-context-hud relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface-3/80 ring-1 ring-border/50"
           data-active={isStreaming || isCompacting || Boolean(usage)}
         >
-          <div
-            className={`chat-context-hud-fill absolute inset-y-0 left-0 rounded-full ${fillTone}`}
-            style={{ width: fillWidth }}
-          />
+          {contextSegments.length > 0 ? (
+            <div
+              className={`chat-context-hud-fill absolute inset-y-0 left-0 flex overflow-hidden rounded-full ${fillGlow}`}
+              style={{ width: fillWidth }}
+            >
+              {contextSegments.map((segment) => (
+                <span
+                  key={segment.key}
+                  className="chat-context-hud-segment h-full shrink-0"
+                  style={{
+                    width: `${segment.sharePercent}%`,
+                    minWidth: contextSegments.length > 1 ? 2 : undefined,
+                    backgroundColor: segment.color,
+                  }}
+                  title={`${contextSegmentLabel(t, segment.kind)}: ${formatTokens(segment.tokens)} ${t('chat.tokensShort')}`}
+                />
+              ))}
+            </div>
+          ) : (
+            <div
+              className={`chat-context-hud-fill absolute inset-y-0 left-0 rounded-full ${fillTone}`}
+              style={{ width: fillWidth }}
+            />
+          )}
           <span className="absolute inset-y-[-2px] left-[80%] w-px bg-amber-300/45" />
           <span className="absolute inset-y-[-2px] left-[95%] w-px bg-red-300/50" />
         </div>
@@ -93,6 +189,29 @@ export function ChatRunOverview({
           </span>
         </div>
       </div>
+      {contextSegments.length > 1 && (
+        <div className="hidden h-3.5 items-center gap-x-2.5 gap-y-1 overflow-hidden pl-[7.5rem] pr-[9.5rem] text-[9px] leading-[14px] text-text-tertiary md:flex">
+          <span className="shrink-0 font-medium text-text-secondary">
+            {t('chat.contextBreakdownLegend')}
+          </span>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 overflow-hidden">
+            {contextSegments.map((segment) => (
+              <span
+                key={`legend-${segment.key}`}
+                className="inline-flex min-w-0 max-w-[9rem] shrink-0 items-center gap-1.5 tabular-nums"
+                title={`${contextSegmentLabel(t, segment.kind)}: ${formatTokens(segment.tokens)} ${t('chat.tokensShort')}`}
+              >
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-[2px] ring-1 ring-border/50"
+                  style={{ backgroundColor: segment.color }}
+                />
+                <span className="truncate">{contextSegmentLabel(t, segment.kind)}</span>
+                <span className="text-text-tertiary/80">{formatTokens(segment.tokens)}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

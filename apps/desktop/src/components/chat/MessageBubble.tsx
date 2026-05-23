@@ -186,7 +186,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
     >
       <div
         className={`group flex flex-col ${
-          isUser ? 'max-w-[80%]' : 'w-full max-w-[min(100%,72rem)]'
+          isUser ? 'max-w-[80%]' : 'w-full min-w-0'
         }`}
       >
         <div

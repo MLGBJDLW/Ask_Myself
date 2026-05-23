@@ -37,6 +37,7 @@ impl AgentExecutor {
         accumulated_content: &mut String,
         total_usage: Usage,
         last_prompt_tokens: u32,
+        context_breakdown: Option<context::ContextUsageBreakdown>,
     ) -> Message {
         let CancellationFinalizationContext {
             db,
@@ -142,6 +143,7 @@ impl AgentExecutor {
                 message: final_msg.clone(),
                 usage_total: total_usage,
                 last_prompt_tokens,
+                context_breakdown,
                 cached: false,
                 finish_reason: Some("cancelled".to_string()),
             })
@@ -167,6 +169,7 @@ impl AgentExecutor {
         cache_source_filter: Option<&str>,
         total_usage: Usage,
         last_prompt_tokens: u32,
+        context_breakdown: Option<context::ContextUsageBreakdown>,
         last_finish_reason: Option<String>,
     ) -> Message {
         let TurnFinalizationContext {
@@ -296,6 +299,7 @@ impl AgentExecutor {
                 message: assistant_msg.clone(),
                 usage_total: total_usage,
                 last_prompt_tokens,
+                context_breakdown,
                 cached: false,
                 finish_reason: last_finish_reason,
             })
@@ -318,6 +322,7 @@ impl AgentExecutor {
         mut final_content: String,
         total_usage: Usage,
         last_prompt_tokens: u32,
+        context_breakdown: Option<context::ContextUsageBreakdown>,
         last_finish_reason: Option<String>,
     ) -> Message {
         let TurnFinalizationContext {
@@ -400,6 +405,7 @@ impl AgentExecutor {
                 message: final_msg.clone(),
                 usage_total: total_usage,
                 last_prompt_tokens,
+                context_breakdown,
                 cached: false,
                 finish_reason: last_finish_reason,
             })

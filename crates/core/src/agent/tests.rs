@@ -294,8 +294,8 @@ fn test_route_user_turn_treats_tool_repair_as_file_operation() {
 }
 
 #[test]
-fn test_agent_config_defaults_to_full_tool_visibility() {
-    assert!(!AgentConfig::default().dynamic_tool_visibility);
+fn test_agent_config_defaults_to_dynamic_tool_visibility() {
+    assert!(AgentConfig::default().dynamic_tool_visibility);
 }
 
 struct MockProvider {

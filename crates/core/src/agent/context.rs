@@ -1,9 +1,13 @@
 //! Context management — prepare and trim messages for LLM requests.
 
+use std::collections::BTreeMap;
+
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use crate::conversation::memory::{
-    context_safety_buffer, estimate_tokens_for_model, model_context_window, trim_to_context_window,
+    context_safety_buffer, estimate_message_tokens_for_model, estimate_tokens_for_model,
+    model_context_window, trim_to_context_window,
 };
 use crate::llm::{ContentPart, Message, Role, ToolDefinition};
 use crate::skills::Skill;
@@ -194,11 +198,142 @@ pub fn estimate_tool_tokens(tools: &[ToolDefinition]) -> u32 {
 pub fn estimate_tool_tokens_for_model(model: &str, tools: &[ToolDefinition]) -> u32 {
     let mut total = 0u32;
     for tool in tools {
-        let tool_text = format!("{} {} {}", tool.name, tool.description, tool.parameters);
-        total += estimate_tokens_for_model(model, &tool_text);
-        total += 10; // overhead per tool (formatting, type annotations)
+        total += estimate_tool_definition_tokens_for_model(model, tool);
     }
     total
+}
+
+/// Token contribution of a context segment in the current model request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsageSegment {
+    pub kind: String,
+    pub tokens: u32,
+}
+
+/// Best-effort breakdown of the prompt tokens used by the latest model request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsageBreakdown {
+    pub total_tokens: u32,
+    pub segments: Vec<ContextUsageSegment>,
+}
+
+pub fn estimate_context_usage_breakdown_for_model(
+    model: &str,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    actual_prompt_tokens: Option<u32>,
+) -> ContextUsageBreakdown {
+    const ORDER: [&str; 6] = [
+        "prompts",
+        "conversation",
+        "toolResults",
+        "tools",
+        "mcp",
+        "overhead",
+    ];
+
+    let mut segments: BTreeMap<&'static str, u32> = BTreeMap::new();
+    for message in messages {
+        let kind = match message.role {
+            Role::System => "prompts",
+            Role::User | Role::Assistant => "conversation",
+            Role::Tool => "toolResults",
+        };
+        add_tokens(
+            &mut segments,
+            kind,
+            estimate_message_tokens_for_model(model, message),
+        );
+    }
+    for tool in tools {
+        let kind = if is_mcp_tool_definition(tool) {
+            "mcp"
+        } else {
+            "tools"
+        };
+        add_tokens(
+            &mut segments,
+            kind,
+            estimate_tool_definition_tokens_for_model(model, tool),
+        );
+    }
+
+    let estimated_total = segments.values().copied().sum::<u32>();
+    let actual_total = actual_prompt_tokens.unwrap_or(0);
+    let total_tokens = if actual_total > 0 {
+        actual_total
+    } else {
+        estimated_total
+    };
+
+    if actual_total > 0 && estimated_total > actual_total {
+        scale_segments_to_total(&mut segments, estimated_total, actual_total);
+    } else if actual_total > estimated_total {
+        add_tokens(&mut segments, "overhead", actual_total - estimated_total);
+    }
+
+    let segments = ORDER
+        .iter()
+        .filter_map(|kind| {
+            let tokens = segments.get(*kind).copied().unwrap_or(0);
+            (tokens > 0).then(|| ContextUsageSegment {
+                kind: (*kind).to_string(),
+                tokens,
+            })
+        })
+        .collect();
+
+    ContextUsageBreakdown {
+        total_tokens,
+        segments,
+    }
+}
+
+fn estimate_tool_definition_tokens_for_model(model: &str, tool: &ToolDefinition) -> u32 {
+    let tool_text = format!("{} {} {}", tool.name, tool.description, tool.parameters);
+    estimate_tokens_for_model(model, &tool_text) + 10
+}
+
+fn is_mcp_tool_definition(tool: &ToolDefinition) -> bool {
+    tool.name == "mcp_tool" || tool.name.starts_with("mcp__")
+}
+
+fn add_tokens(segments: &mut BTreeMap<&'static str, u32>, kind: &'static str, tokens: u32) {
+    if tokens == 0 {
+        return;
+    }
+    *segments.entry(kind).or_insert(0) += tokens;
+}
+
+fn scale_segments_to_total(
+    segments: &mut BTreeMap<&'static str, u32>,
+    estimated_total: u32,
+    actual_total: u32,
+) {
+    if estimated_total == 0 {
+        return;
+    }
+
+    let largest_kind = segments
+        .iter()
+        .max_by_key(|(_, tokens)| *tokens)
+        .map(|(kind, _)| *kind);
+    let mut scaled_total = 0u32;
+
+    for tokens in segments.values_mut() {
+        let scaled = ((*tokens as u64) * (actual_total as u64) / (estimated_total as u64)) as u32;
+        *tokens = scaled;
+        scaled_total = scaled_total.saturating_add(scaled);
+    }
+
+    if let Some(kind) = largest_kind {
+        let remainder = actual_total.saturating_sub(scaled_total);
+        if remainder > 0 {
+            *segments.entry(kind).or_insert(0) += remainder;
+        }
+    }
 }
 
 /// Enforce `MAX_SYSTEM_PROMPT_CHARS` on the system prompt.
@@ -420,6 +555,64 @@ mod tests {
         }];
         let tokens = estimate_tool_tokens(&tools);
         assert!(tokens > 10, "Tool tokens should be non-trivial");
+    }
+
+    #[test]
+    fn context_usage_breakdown_splits_prompt_conversation_tools_and_mcp() {
+        let mut assistant = msg(Role::Assistant, "I'll use a tool.");
+        assistant.tool_calls = Some(vec![crate::llm::ToolCallRequest {
+            id: "call_1".into(),
+            name: "search".into(),
+            arguments: r#"{"query":"rust"}"#.into(),
+            thought_signature: None,
+        }]);
+        let messages = vec![
+            msg(Role::System, "System prompt"),
+            msg(Role::User, "Find Rust docs"),
+            assistant,
+            Message::text_with_name(Role::Tool, "Search result", "call_1"),
+        ];
+        let tools = vec![
+            ToolDefinition {
+                name: "search_knowledge_base".into(),
+                description: "Search local knowledge".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "mcp__docs__lookup".into(),
+                description: "Lookup docs from MCP".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+
+        let breakdown =
+            estimate_context_usage_breakdown_for_model("gpt-4o", &messages, &tools, None);
+        let kinds = breakdown
+            .segments
+            .iter()
+            .map(|segment| segment.kind.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(kinds.contains(&"prompts"));
+        assert!(kinds.contains(&"conversation"));
+        assert!(kinds.contains(&"toolResults"));
+        assert!(kinds.contains(&"tools"));
+        assert!(kinds.contains(&"mcp"));
+    }
+
+    #[test]
+    fn context_usage_breakdown_reconciles_to_actual_prompt_tokens() {
+        let messages = vec![msg(Role::System, "System prompt"), msg(Role::User, "Hello")];
+        let breakdown =
+            estimate_context_usage_breakdown_for_model("gpt-4o", &messages, &[], Some(10));
+        let segment_total = breakdown
+            .segments
+            .iter()
+            .map(|segment| segment.tokens)
+            .sum::<u32>();
+
+        assert_eq!(breakdown.total_tokens, 10);
+        assert_eq!(segment_total, 10);
     }
 
     #[test]

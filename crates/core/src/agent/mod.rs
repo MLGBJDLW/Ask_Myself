@@ -245,7 +245,7 @@ fn default_trace_enabled() -> bool {
 }
 
 fn default_dynamic_tool_visibility() -> bool {
-    false
+    true
 }
 
 #[cfg(test)]
@@ -277,7 +277,7 @@ impl Default for AgentConfig {
             tool_timeout_secs: None,
             agent_timeout_secs: None,
             cache_ttl_hours: None,
-            dynamic_tool_visibility: false,
+            dynamic_tool_visibility: true,
             trace_enabled: true,
             require_tool_confirmation: false,
             shell_access_mode: ShellAccessMode::Restricted,

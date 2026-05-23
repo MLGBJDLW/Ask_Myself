@@ -356,7 +356,7 @@ fn default_mcp_call_timeout_secs() -> u64 {
     300
 }
 fn default_dynamic_tool_visibility() -> bool {
-    false
+    true
 }
 fn default_trace_enabled() -> bool {
     true
@@ -589,7 +589,7 @@ mod tests {
             config.timeout_defaults_version,
             CURRENT_TIMEOUT_DEFAULTS_VERSION
         );
-        assert!(!config.dynamic_tool_visibility);
+        assert!(config.dynamic_tool_visibility);
         assert!(config.trace_enabled);
         assert_eq!(config.web_search.custom_providers.len(), 5);
         assert!(config

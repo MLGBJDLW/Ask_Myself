@@ -199,7 +199,7 @@ export function AppearanceSettingsTab({
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={appConfig.dynamicToolVisibility ?? false}
+                    checked={appConfig.dynamicToolVisibility ?? true}
                     onChange={(e) => onAppConfigChange({ ...appConfig, dynamicToolVisibility: e.target.checked })}
                     className="rounded border-border"
                   />
