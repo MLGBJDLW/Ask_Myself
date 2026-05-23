@@ -14,6 +14,7 @@ import {
   shouldHideTraceStatus,
   shouldRenderTraceToolCall,
   skillNamesFromTraceItems,
+  skillRefsFromTraceItems,
   turnLifecycleTimelineSections,
   visibleTraceEventsForTimeline,
 } from '../src/lib/streaming/timelineViewModel';
@@ -624,6 +625,10 @@ test('timeline view model summarizes skills selected for each traced turn', () =
   const names = skillNamesFromTraceItems(items);
   assertEqual(names.length, 1, 'selected skill names are included');
   assertEqual(names[0], 'Fiction Writing', 'display name is preferred');
+  const skillRefs = skillRefsFromTraceItems(items);
+  assertEqual(skillRefs.length, 1, 'selected skill refs are included');
+  assertEqual(skillRefs[0].label, 'Fiction Writing', 'skill ref label');
+  assertEqual(skillRefs[0].activated, false, 'selected skill is not marked activated');
 
   const turn: ConversationTurn = {
     id: 'turn-selected',
@@ -708,6 +713,10 @@ test('timeline view model dedupes activated skills against selected skills', () 
   const names = skillNamesFromTraceItems(items);
   assertEqual(names.length, 1, 'skill activation names are deduped');
   assertEqual(names[0], 'Frontend Design', 'display name is preferred');
+  const skillRefs = skillRefsFromTraceItems(items);
+  assertEqual(skillRefs.length, 1, 'skill activation refs are deduped');
+  assertEqual(skillRefs[0].label, 'Frontend Design', 'skill activation ref label');
+  assertEqual(skillRefs[0].activated, true, 'activation upgrades selected skill ref');
 
   const turn: ConversationTurn = {
     id: 'turn-1',

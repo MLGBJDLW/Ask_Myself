@@ -16,6 +16,15 @@ import {
 
 export type TraceTone = 'muted' | 'success' | 'error';
 
+export interface TimelineSkillRef extends PersistedTraceSkillRef {
+  label: string;
+  key: string;
+  description?: string;
+  shortDescription?: string;
+  implicit?: boolean;
+  activated?: boolean;
+}
+
 export type TimelineSection =
   | { kind: 'thinking'; id: string; text: string }
   | { kind: 'status'; id: string; text: string; tone?: TraceTone }
@@ -71,13 +80,19 @@ function skillRefLabel(
   return { label, key };
 }
 
-function skillSelectionRef(skill: PersistedTraceSkillRef): { label: string; key: string } | null {
-  return skillRefLabel(skill.id, skill.name, skill.displayName);
+function skillSelectionRef(skill: PersistedTraceSkillRef): TimelineSkillRef | null {
+  const ref = skillRefLabel(skill.id, skill.name, skill.displayName);
+  if (!ref) return null;
+  return {
+    ...skill,
+    ...ref,
+    activated: false,
+  };
 }
 
 function skillActivationRefFromArtifacts(
   artifacts: unknown,
-): { label: string; key: string } | null {
+): TimelineSkillRef | null {
   const record = asRecord(artifacts);
   if (!record || record.kind !== 'skillActivation') return null;
   const skill = asRecord(record.skill);
@@ -87,7 +102,27 @@ function skillActivationRefFromArtifacts(
   const name = skill.name;
   const interfaceMetadata = asRecord(skill.interface);
   const displayName = interfaceMetadata?.displayName;
-  return skillRefLabel(id, name, displayName);
+  const ref = skillRefLabel(id, name, displayName);
+  if (!ref) return null;
+  const policy = asRecord(skill.policy);
+  return {
+    id: typeof id === 'string' ? id : undefined,
+    name: typeof name === 'string' ? name : undefined,
+    displayName: typeof displayName === 'string' ? displayName : undefined,
+    builtin: typeof skill.builtin === 'boolean' ? skill.builtin : undefined,
+    sourcePath: typeof skill.sourcePath === 'string' ? skill.sourcePath : undefined,
+    description: typeof skill.description === 'string' ? skill.description : undefined,
+    shortDescription:
+      typeof interfaceMetadata?.shortDescription === 'string'
+        ? interfaceMetadata.shortDescription
+        : undefined,
+    implicit:
+      typeof policy?.allowImplicitInvocation === 'boolean'
+        ? policy.allowImplicitInvocation
+        : undefined,
+    ...ref,
+    activated: true,
+  };
 }
 
 function skillActivationNameFromArtifacts(artifacts: unknown): string | null {
@@ -107,13 +142,36 @@ function isSuccessfulSkillActivation(toolCall: ToolCallEvent): boolean {
 export function skillNamesFromTraceItems(
   items: PersistedTraceItem[] | null | undefined,
 ): string[] {
-  const names: string[] = [];
-  const seen = new Set<string>();
+  return skillRefsFromTraceItems(items).map((skill) => skill.label);
+}
 
-  const addRef = (ref: { label: string; key: string } | null) => {
-    if (!ref || seen.has(ref.key)) return;
-    seen.add(ref.key);
-    names.push(ref.label);
+export function skillRefsFromTraceItems(
+  items: PersistedTraceItem[] | null | undefined,
+): TimelineSkillRef[] {
+  const skills: TimelineSkillRef[] = [];
+  const indexByKey = new Map<string, number>();
+
+  const addRef = (ref: TimelineSkillRef | null) => {
+    if (!ref) return;
+    const existingIndex = indexByKey.get(ref.key);
+    if (existingIndex != null) {
+      const existing = skills[existingIndex];
+      skills[existingIndex] = {
+        ...existing,
+        id: ref.id ?? existing.id,
+        name: ref.name ?? existing.name,
+        displayName: ref.displayName ?? existing.displayName,
+        builtin: ref.builtin ?? existing.builtin,
+        sourcePath: ref.sourcePath ?? existing.sourcePath,
+        description: ref.description ?? existing.description,
+        shortDescription: ref.shortDescription ?? existing.shortDescription,
+        implicit: ref.implicit ?? existing.implicit,
+        activated: Boolean(existing.activated || ref.activated),
+      };
+      return;
+    }
+    indexByKey.set(ref.key, skills.length);
+    skills.push(ref);
   };
 
   for (const item of items ?? []) {
@@ -129,7 +187,7 @@ export function skillNamesFromTraceItems(
     }
   }
 
-  return names;
+  return skills;
 }
 
 export function formatSkillSummary(names: string[]): string {

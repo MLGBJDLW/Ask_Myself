@@ -90,6 +90,16 @@ test.beforeEach(async ({ page }) => {
           kind: 'turnTrace',
           routeKind: 'KnowledgeRetrieval',
           items: [
+            {
+              kind: 'skillSelection',
+              skills: [
+                {
+                  id: 'builtin-diagnose',
+                  name: 'diagnose',
+                  displayName: 'Diagnose',
+                },
+              ],
+            },
             { kind: 'thinking', text: 'Checking the retry path through the saved evidence first.' },
             {
               kind: 'tool',
@@ -226,9 +236,14 @@ test.beforeEach(async ({ page }) => {
 test('renders persisted turn traces from conversation_turns data', async ({ page }) => {
   await page.goto('/chat/conv-turn-trace');
 
+  await expect(page.getByTestId('turn-skill-strip')).toBeVisible();
+  await expect(page.getByText('Skills used this turn')).toBeVisible();
+  await expect(page.getByText('Diagnose')).toBeVisible();
+
+  await page.getByRole('button', { name: /Thinking completed/ }).click();
   await expect(page.getByText('Route: Knowledge Retrieval')).toBeVisible();
-  await expect(page.getByText('Status: Success')).toBeVisible();
+  await expect(page.getByText('Skills: Diagnose')).toBeVisible();
   await expect(page.getByText('Checking the retry path through the saved evidence first.')).toBeVisible();
-  await expect(page.getByText('search_knowledge_base')).toBeVisible();
+  await expect(page.getByRole('button', { name: /Search .*retry guard.*done/ })).toBeVisible();
   await expect(page.getByText('The retry guard was bypassed because the timeout branch did not return early.')).toBeVisible();
 });
