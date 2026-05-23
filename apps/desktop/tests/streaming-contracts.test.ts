@@ -604,7 +604,7 @@ test('normalizes persisted trace tool calls through the shared tool status proje
   assert(isPendingToolCallStatus(items[1].toolCall.status), 'approval trace is pending');
 });
 
-test('timeline view model summarizes skills selected for each traced turn', () => {
+test('timeline view model ignores skill index selections for loaded skill summaries', () => {
   const items = extractPersistedTraceItems({
     kind: 'traceTimeline',
     items: [
@@ -623,12 +623,9 @@ test('timeline view model summarizes skills selected for each traced turn', () =
 
   assert(items, 'persisted skill selection trace should parse');
   const names = skillNamesFromTraceItems(items);
-  assertEqual(names.length, 1, 'selected skill names are included');
-  assertEqual(names[0], 'Fiction Writing', 'display name is preferred');
+  assertEqual(names.length, 0, 'indexed skill names are not counted as loaded');
   const skillRefs = skillRefsFromTraceItems(items);
-  assertEqual(skillRefs.length, 1, 'selected skill refs are included');
-  assertEqual(skillRefs[0].label, 'Fiction Writing', 'skill ref label');
-  assertEqual(skillRefs[0].activated, false, 'selected skill is not marked activated');
+  assertEqual(skillRefs.length, 0, 'indexed skill refs are not counted as loaded');
 
   const turn: ConversationTurn = {
     id: 'turn-selected',
@@ -649,15 +646,15 @@ test('timeline view model summarizes skills selected for each traced turn', () =
   });
 
   const skillSection = sections.find((section) => section.id === 'turn-skills-turn-selected');
-  assert(skillSection, 'turn lifecycle should include selected skill summary');
+  assert(skillSection, 'turn lifecycle should include loaded skill summary');
   if (skillSection.kind !== 'status') {
     throw new Error(`skill summary should be a status section, got ${skillSection.kind}`);
   }
-  assertEqual(skillSection.text, 'Skills: Fiction Writing', 'selected skill summary text');
-  assertEqual(skillSection.tone, 'success', 'selected skill summary tone');
+  assertEqual(skillSection.text, 'Skills: none', 'indexed-only skill summary text');
+  assertEqual(skillSection.tone, 'muted', 'indexed-only skill summary tone');
 });
 
-test('timeline view model dedupes activated skills against selected skills', () => {
+test('timeline view model dedupes loaded skills while ignoring index selections', () => {
   const items = extractPersistedTraceItems({
     kind: 'traceTimeline',
     items: [
@@ -695,10 +692,10 @@ test('timeline view model dedupes activated skills against selected skills', () 
         toolCall: {
           callId: 'skill-call-2',
           toolName: 'manage_skill',
-          arguments: '{"action":"activate_skill","skill_id":"frontend-design"}',
+          arguments: '{"action":"view_skill","skill_id":"frontend-design"}',
           status: 'done',
           artifacts: {
-            kind: 'skillActivation',
+            kind: 'skill',
             skill: {
               id: 'builtin-frontend-design',
               name: 'frontend-design',
@@ -716,7 +713,7 @@ test('timeline view model dedupes activated skills against selected skills', () 
   const skillRefs = skillRefsFromTraceItems(items);
   assertEqual(skillRefs.length, 1, 'skill activation refs are deduped');
   assertEqual(skillRefs[0].label, 'Frontend Design', 'skill activation ref label');
-  assertEqual(skillRefs[0].activated, true, 'activation upgrades selected skill ref');
+  assertEqual(skillRefs[0].activated, true, 'loaded skill ref is marked loaded');
 
   const turn: ConversationTurn = {
     id: 'turn-1',

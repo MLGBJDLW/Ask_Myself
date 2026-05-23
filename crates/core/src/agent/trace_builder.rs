@@ -73,6 +73,7 @@ pub(super) fn append_persisted_trace_thinking(items: &mut Vec<PersistedTraceItem
     });
 }
 
+#[cfg(test)]
 pub(super) fn append_persisted_trace_skill_selection(
     items: &mut Vec<PersistedTraceItem>,
     skills: &[Skill],

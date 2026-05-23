@@ -229,7 +229,36 @@ function buildExplicitEvidenceItems(
 const INSTANT_TRANSITION = { duration: 0 };
 const NEAR_BOTTOM_THRESHOLD = 96;
 const FOLLOW_RELEASE_THRESHOLD = 160;
-const WAITING_MOOD = "(｡•́‿•̀｡)";
+const WAITING_MOODS = [
+  "(｡•́‿•̀｡)",
+  "(づ｡◕‿‿◕｡)づ",
+  "(๑>◡<๑)",
+  "(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧",
+  "(ᵔ◡ᵔ)",
+  "(｡•̀ᴗ-)✧",
+  "(っ˘ω˘ς )",
+  "(๑˃ᴗ˂)ﻭ",
+  "(ง •̀_•́)ง",
+  "(´｡• ᵕ •｡`)",
+  "(✿◠‿◠)",
+  "(๑•̀ㅂ•́)و✧",
+];
+
+function randomMood(moods: readonly string[]): string {
+  return moods[Math.floor(Math.random() * moods.length)] ?? moods[0] ?? "";
+}
+
+function WaitingMoodBadge() {
+  const mood = useMemo(() => randomMood(WAITING_MOODS), []);
+  return (
+    <span
+      aria-hidden="true"
+      className="hidden rounded-md bg-surface-0/55 px-1.5 py-0.5 font-mono text-[11px] text-accent/80 sm:inline-block"
+    >
+      {mood}
+    </span>
+  );
+}
 
 interface TurnSkillDisplayRef {
   key: string;
@@ -1863,12 +1892,7 @@ export function ChatMessages({
               aria-label={t("chat.thinking")}
             >
               <div className="flex items-center gap-2 text-sm text-text-tertiary">
-                <span
-                  aria-hidden="true"
-                  className="hidden rounded-md bg-surface-0/55 px-1.5 py-0.5 font-mono text-[11px] text-accent/80 sm:inline-block"
-                >
-                  {WAITING_MOOD}
-                </span>
+                <WaitingMoodBadge />
                 <div className="flex gap-1">
                   <span
                     className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? "" : "animate-bounce"}`}

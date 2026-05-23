@@ -22,7 +22,8 @@ export const toolRenderers: ToolRendererDescriptor[] = [
       name.includes('create_file') ||
       name.includes('multi_edit') ||
       name.includes('write_note') ||
-      name.includes('apply_patch'),
+      name.includes('apply_patch') ||
+      name.includes('download_asset'),
   },
   {
     kind: 'subagent',

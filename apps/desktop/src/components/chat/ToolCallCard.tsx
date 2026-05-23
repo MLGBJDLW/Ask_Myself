@@ -347,20 +347,6 @@ function DiffStatsTicker({ stats, compact = false }: { stats: DiffStatsArtifact;
   );
 }
 
-function PendingDiffTicker({ compact = false }: { compact?: boolean }) {
-  const { t } = useTranslation();
-  return (
-    <span
-      className={`inline-flex shrink-0 items-center gap-1 rounded-md border border-accent/20 bg-accent/10 font-mono tabular-nums text-accent ${
-        compact ? 'h-5 px-1.5 text-[10px]' : 'h-6 px-2 text-[11px]'
-      }`}
-    >
-      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
-      {t('chat.diffPending')}
-    </span>
-  );
-}
-
 function DiffStatsSummaryPanel({ stats }: { stats: DiffStatsArtifact }) {
   const { t } = useTranslation();
   const path = stats.paths[0];
@@ -405,6 +391,8 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   playbook: BookOpen,
   multi_edit: PenLine,
   edit_file: PenLine,
+  create_file: PenLine,
+  apply_patch: PenLine,
   file: FileText,
   summarize: List,
   list_dir: FolderOpen,
@@ -465,6 +453,7 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 const TOOL_LABEL_KEYS = Object.keys(TOOL_LABELS).sort((a, b) => b.length - a.length);
+const TOOL_LABEL_SUBSTRING_KEYS = TOOL_LABEL_KEYS.filter((key) => key !== 'file');
 
 function getToolIcon(name?: string) {
   const lower = (name || '').toLowerCase();
@@ -494,8 +483,18 @@ function getToolDisplayName(name: string): string {
   const leaf = toolLeafName(lower);
   if (TOOL_LABELS[lower]) return TOOL_LABELS[lower];
   if (TOOL_LABELS[leaf]) return TOOL_LABELS[leaf];
-  const key = TOOL_LABEL_KEYS.find((candidate) => lower.includes(candidate));
+  const key = TOOL_LABEL_SUBSTRING_KEYS.find((candidate) => lower.includes(candidate));
   return key ? TOOL_LABELS[key] : humanizeToolName(name);
+}
+
+function getFileChangeDisplayName(name: string, isFileChange: boolean, operation?: string): string | null {
+  if (!isFileChange) return null;
+  const lower = name.toLowerCase();
+  if (operation === 'create' || lower.includes('create_file')) return TOOL_LABELS.create_file;
+  if (lower.includes('multi_edit') || lower.includes('apply_patch')) return TOOL_LABELS.multi_edit;
+  if (lower.includes('write_note')) return TOOL_LABELS.write_note;
+  if (lower.includes('download_asset')) return TOOL_LABELS.download_asset;
+  return TOOL_LABELS.edit_file;
 }
 
 function truncateMiddle(value: string, max = 42): string {
@@ -618,8 +617,8 @@ function formatArgs(raw?: string): string {
   }
 }
 
-function getToolBriefLabel(name: string, args?: string): string {
-  const label = getToolDisplayName(name);
+function getToolBriefLabel(name: string, args?: string, displayNameOverride?: string | null): string {
+  const label = displayNameOverride ?? getToolDisplayName(name);
   const target = getToolBriefTarget(args);
   return target ? `${label} \u00b7 ${target}` : label;
 }
@@ -1259,6 +1258,14 @@ export function ToolCallCard({
     : manageSkillArgs?.action === 'activate_skill'
       ? manageSkillArgs.skillId
       : undefined;
+  const fileDiff = useMemo(() => extractFileDiffArtifact(artifacts), [artifacts]);
+  const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
+  const isFileChangeRender = isFileChangeToolRender(safeToolName, renderKind);
+  const fileChangeDisplayName = getFileChangeDisplayName(
+    safeToolName,
+    isFileChangeRender,
+    diffStats?.operation ?? fileDiff?.operation,
+  );
   const formattedArgs = formatArgs(args);
   const briefLabel = skillActivationName
     ? (
@@ -1266,7 +1273,7 @@ export function ToolCallCard({
           ? t('chat.skillActivatedLabel', { name: skillActivationName })
           : t('chat.skillActivatingLabel', { name: skillActivationName })
       )
-    : getToolBriefLabel(safeToolName, args);
+    : getToolBriefLabel(safeToolName, args, fileChangeDisplayName);
   const briefResult = getToolBriefResult(status, t, content, safeToolName);
   const isPending = isPendingToolCallStatus(status);
   const argsByteLabel = formatByteCount(
@@ -1297,15 +1304,12 @@ export function ToolCallCard({
   const subagentJudgement = useMemo(() => extractSubagentJudgementArtifact(artifacts), [artifacts]);
   const planArtifact = useMemo(() => extractPlanArtifact(artifacts), [artifacts]);
   const verificationArtifact = useMemo(() => extractVerificationArtifact(artifacts), [artifacts]);
-  const fileDiff = useMemo(() => extractFileDiffArtifact(artifacts), [artifacts]);
-  const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
   const generatedImage = useMemo(() => extractGeneratedImageArtifact(artifacts), [artifacts]);
   const graphUsage = useMemo(() => extractGraphAgentUsage(artifacts), [artifacts]);
   const imageArgs = useMemo(() => parseImagePromptArgs(args), [args]);
   const isImageRender = renderKind === 'image' || safeToolName.toLowerCase() === 'generate_image';
   const showImagePendingPreview = isImageRender && isPending && !generatedImage;
-  const showPendingDiffStats = isPending && !diffStats && isFileChangeToolRender(safeToolName, renderKind);
   const isSearchDone =
     safeToolName.toLowerCase().includes('search') && status === 'done' && !!content;
   const searchItems = useMemo(
@@ -1377,9 +1381,9 @@ export function ToolCallCard({
               documents: String(graphUsage.usedDocuments.length),
             })
         : diffStats
-          ? `${diffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
-        : showPendingDiffStats
-          ? t('chat.fileDiffModified')
+          ? isPending
+            ? statusConfig.text
+            : `${diffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
         : status === 'done' && content
           ? briefResult
           : statusConfig.text;
@@ -1461,10 +1465,6 @@ export function ToolCallCard({
             {diffStats ? (
               <span className="hidden sm:inline-flex">
                 <DiffStatsTicker stats={diffStats} compact />
-              </span>
-            ) : showPendingDiffStats ? (
-              <span className="hidden sm:inline-flex">
-                <PendingDiffTicker compact />
               </span>
             ) : null}
             <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}>
@@ -1594,10 +1594,6 @@ export function ToolCallCard({
             {diffStats ? (
               <span className="hidden sm:inline-flex">
                 <DiffStatsTicker stats={diffStats} compact />
-              </span>
-            ) : showPendingDiffStats ? (
-              <span className="hidden sm:inline-flex">
-                <PendingDiffTicker compact />
               </span>
             ) : null}
             <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}>
@@ -1888,10 +1884,6 @@ export function ToolCallCard({
           {diffStats ? (
             <span className="hidden sm:inline-flex">
               <DiffStatsTicker stats={diffStats} />
-            </span>
-          ) : showPendingDiffStats ? (
-            <span className="hidden sm:inline-flex">
-              <PendingDiffTicker />
             </span>
           ) : null}
           <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md border ${statusBadgeClass}`}>

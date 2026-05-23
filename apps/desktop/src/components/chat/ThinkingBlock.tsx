@@ -25,7 +25,29 @@ interface ThinkingBlockProps {
   children?: React.ReactNode;
 }
 
-const THINKING_MOODS = ['(｡•̀ᴗ-)✧', '(・・?)', '( •̀ ω •́ )', '(。-`ω´-)'];
+const THINKING_MOODS = [
+  '(｡•̀ᴗ-)✧',
+  '(・・?)',
+  '( •̀ ω •́ )',
+  '(。-`ω´-)',
+  '(๑>◡<๑)',
+  '(づ｡◕‿‿◕｡)づ',
+  '(っ˘ω˘ς )',
+  '(๑˃ᴗ˂)ﻭ',
+  '(´｡• ᵕ •｡`)',
+  '(✿◠‿◠)',
+  '(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧',
+  '(๑•̀ㅂ•́)و✧',
+];
+
+function shuffledThinkingMoods(): string[] {
+  const moods = [...THINKING_MOODS];
+  for (let i = moods.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [moods[i], moods[j]] = [moods[j], moods[i]];
+  }
+  return moods;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Minimal markdown overrides (muted style)                           */
@@ -92,6 +114,7 @@ export function ThinkingBlock({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
   const [elapsed, setElapsed] = useState(0);
+  const [moodOrder, setMoodOrder] = useState(() => shuffledThinkingMoods());
 
   const effectiveSections = sections && sections.length > 0 ? sections : null;
   const combinedContent = effectiveSections
@@ -105,6 +128,7 @@ export function ThinkingBlock({
     if (!prevStreamingRef.current && isStreaming) {
       startTimeRef.current = Date.now();
       setElapsed(0);
+      setMoodOrder(shuffledThinkingMoods());
     }
     if (isStreaming && hasContent) {
       setExpanded(true);
@@ -155,7 +179,7 @@ export function ThinkingBlock({
       ? t('chat.thoughtFor', { seconds: elapsed.toString() })
       : t('chat.thinkingCompleted');
   const traceActive = isStreaming && !shouldReduceMotion;
-  const thinkingMood = THINKING_MOODS[Math.floor(elapsed / 6) % THINKING_MOODS.length];
+  const thinkingMood = moodOrder[Math.floor(elapsed / 6) % moodOrder.length] ?? THINKING_MOODS[0];
 
   return (
     <div className="mb-2">

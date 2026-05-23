@@ -79,8 +79,8 @@ use self::stream_recovery::{
 use self::tool_runtime::{build_tool_run_item, tool_call_execution_batches};
 use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
 use self::trace_builder::{
-    append_persisted_trace_loop_event, append_persisted_trace_skill_selection,
-    append_persisted_trace_status, append_persisted_trace_thinking, append_persisted_trace_tool,
+    append_persisted_trace_loop_event, append_persisted_trace_status,
+    append_persisted_trace_thinking, append_persisted_trace_tool,
     append_persisted_trace_visibility, build_task_run_artifacts, build_trace_artifacts,
     build_turn_trace, build_turn_trace_with_verification, evidence_signals_from_trace,
     PersistedTraceItem,
@@ -447,9 +447,9 @@ impl AgentExecutor {
         self
     }
 
-    /// Override the enabled skills injected into the system prompt for this run.
+    /// Override the available skill metadata injected into the system prompt.
     ///
-    /// When omitted, the executor loads all enabled skills from the database.
+    /// When omitted, the executor loads the enabled skill index from storage.
     pub fn with_skills_override(mut self, skills: Vec<Skill>) -> Self {
         self.skills_override = Some(skills);
         self

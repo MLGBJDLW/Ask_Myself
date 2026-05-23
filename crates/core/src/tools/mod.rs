@@ -858,26 +858,54 @@ impl ToolRegistry {
     }
 }
 
-/// Generic argument-size guard shared by both execute paths.
+/// Generic argument-size guard shared by all execute paths.
 ///
 /// `run_shell` has its own stricter per-arg + total limits, so it's skipped
-/// here. Other tools should never need more than 32 KB of JSON input; if an
-/// LLM tries to stuff document bytes into tool arguments, we reject early with
-/// a message pointing at the `doc-script-editor` skill.
+/// here. Plain-text mutation tools need room for exact old/new snippets, so
+/// they get a much larger cap while read/search tools keep the tighter guard.
 fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> {
-    const MAX_TOOL_ARG_BYTES: usize = 32 * 1024;
-    if name == "run_shell" {
+    const MAX_FILE_MUTATION_ARG_BYTES: usize = 2 * 1024 * 1024;
+
+    let Some(max_bytes) = tool_arg_limit_bytes(name) else {
         return Ok(());
-    }
+    };
     let arg_size = arguments.len();
-    if arg_size > MAX_TOOL_ARG_BYTES {
+    if arg_size > max_bytes {
+        let guidance = if max_bytes == MAX_FILE_MUTATION_ARG_BYTES {
+            "Split very large rewrites into smaller targeted edits, or use run_shell stdin for bulk generated content."
+        } else {
+            "For document editing with large content, use a file mutation tool for plain text or run_shell with the doc-script-editor skill for rich document formats."
+        };
         return Err(CoreError::InvalidInput(format!(
-            "Tool arguments exceed {} KB ({} bytes). For document editing with large content, use the 'run_shell' tool with the 'doc-script-editor' skill instead of passing file bytes in arguments.",
-            MAX_TOOL_ARG_BYTES / 1024,
-            arg_size
+            "Tool arguments exceed {} KB ({} bytes). {}",
+            max_bytes / 1024,
+            arg_size,
+            guidance,
         )));
     }
     Ok(())
+}
+
+fn tool_arg_limit_bytes(name: &str) -> Option<usize> {
+    const DEFAULT_MAX_TOOL_ARG_BYTES: usize = 32 * 1024;
+    const MAX_FILE_MUTATION_ARG_BYTES: usize = 2 * 1024 * 1024;
+
+    let lower = name.to_ascii_lowercase();
+    if lower == "run_shell" {
+        return None;
+    }
+    if matches!(
+        lower.as_str(),
+        "edit_file" | "multi_edit" | "create_file" | "write_note" | "apply_patch"
+    ) || lower.contains("edit_file")
+        || lower.contains("multi_edit")
+        || lower.contains("create_file")
+        || lower.contains("write_note")
+        || lower.contains("apply_patch")
+    {
+        return Some(MAX_FILE_MUTATION_ARG_BYTES);
+    }
+    Some(DEFAULT_MAX_TOOL_ARG_BYTES)
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,6 +1032,15 @@ mod tests {
         let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
 
         assert!(names.iter().any(|name| name == "desktop_automation"));
+    }
+
+    #[test]
+    fn select_tools_keeps_manage_skill_available_for_direct_turns() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools("Say hello briefly.", false);
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "manage_skill"));
     }
 
     #[test]
@@ -1189,6 +1226,50 @@ mod tests {
                 "{name} should use the lightweight retrieval renderer"
             );
         }
+    }
+
+    #[test]
+    fn file_mutation_tools_stream_ui_previews() {
+        let registry = default_tool_registry();
+        let preview_tools = ["edit_file", "multi_edit", "create_file", "write_note"];
+
+        for name in preview_tools {
+            let capabilities = registry.run_capabilities(name, &serde_json::Value::Null);
+            assert_eq!(
+                capabilities.input_streaming,
+                ToolInputStreamingMode::UiPreview,
+                "{name} should expose partial arguments for live diff previews"
+            );
+            assert_eq!(
+                capabilities.render_kind,
+                ToolRenderKind::FileChange,
+                "{name} should use the file change renderer"
+            );
+        }
+    }
+
+    #[test]
+    fn file_mutation_tools_allow_large_argument_payloads() {
+        let large_replacement = "x".repeat(64 * 1024);
+        let args = serde_json::json!({
+            "path": "notes.md",
+            "old_str": "before",
+            "new_str": large_replacement,
+        })
+        .to_string();
+
+        assert!(enforce_tool_arg_limit("edit_file", &args).is_ok());
+        assert!(enforce_tool_arg_limit("mcp__repo__apply_patch", &args).is_ok());
+    }
+
+    #[test]
+    fn generic_tools_keep_small_argument_guard() {
+        let large_query = "x".repeat(33 * 1024);
+        let args = serde_json::json!({ "query": large_query }).to_string();
+        let err = enforce_tool_arg_limit("search_knowledge_base", &args)
+            .expect_err("generic oversized tool arguments should be rejected");
+
+        assert!(err.to_string().contains("32 KB"));
     }
 
     #[test]

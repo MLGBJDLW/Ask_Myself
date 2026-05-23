@@ -80,21 +80,16 @@ function skillRefLabel(
   return { label, key };
 }
 
-function skillSelectionRef(skill: PersistedTraceSkillRef): TimelineSkillRef | null {
-  const ref = skillRefLabel(skill.id, skill.name, skill.displayName);
-  if (!ref) return null;
-  return {
-    ...skill,
-    ...ref,
-    activated: false,
-  };
-}
-
 function skillActivationRefFromArtifacts(
   artifacts: unknown,
 ): TimelineSkillRef | null {
   const record = asRecord(artifacts);
-  if (!record || record.kind !== 'skillActivation') return null;
+  if (
+    !record ||
+    (record.kind !== 'skillActivation' && record.kind !== 'skill')
+  ) {
+    return null;
+  }
   const skill = asRecord(record.skill);
   if (!skill) return null;
 
@@ -175,13 +170,6 @@ export function skillRefsFromTraceItems(
   };
 
   for (const item of items ?? []) {
-    if (item.kind === 'skillSelection') {
-      for (const skill of item.skills) {
-        addRef(skillSelectionRef(skill));
-      }
-      continue;
-    }
-
     if (item.kind === 'tool' && isSuccessfulSkillActivation(item.toolCall)) {
       addRef(skillActivationRefFromArtifacts(item.toolCall.artifacts));
     }

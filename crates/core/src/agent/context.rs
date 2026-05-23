@@ -14,6 +14,8 @@ use crate::skills::Skill;
 
 /// Approximate character limit for the system prompt (~4 000 tokens).
 const MAX_SYSTEM_PROMPT_CHARS: usize = 16_000;
+/// Keep enough room for the compact skill index even when the base prompt is long.
+const SKILL_PROMPT_RESERVE_CHARS: usize = 6_000;
 
 /// Build a complete message list for an LLM request, trimmed to fit the
 /// model's context window.
@@ -49,28 +51,12 @@ pub fn prepare_messages(
 
     // System message — always first, with current date/time and skills appended.
     let skills_section = crate::skills::build_skills_section_for_query(skills, &user_query);
-    let mut full_prompt = format!(
+    let base_prompt = format!(
         "{}\n\nCurrent date and time: {} (UTC)",
         system_prompt,
         Utc::now().format("%Y-%m-%d %H:%M UTC")
     );
-    // Inject skills before capping.
-    if !skills_section.is_empty() {
-        // Reserve space for the base prompt; truncate skills if they would exceed the cap.
-        let remaining = MAX_SYSTEM_PROMPT_CHARS.saturating_sub(full_prompt.len());
-        if remaining > 0 {
-            let truncated_skills = if skills_section.len() > remaining {
-                format!(
-                    "{}\n...[skills truncated]",
-                    &skills_section[..remaining.saturating_sub(25)]
-                )
-            } else {
-                skills_section
-            };
-            full_prompt.push_str(&truncated_skills);
-        }
-    }
-    let system_with_datetime = cap_system_prompt(full_prompt);
+    let system_with_datetime = assemble_system_prompt(base_prompt, skills_section);
     messages.push(Message::text(Role::System, system_with_datetime));
 
     // Prior conversation turns.
@@ -336,18 +322,56 @@ fn scale_segments_to_total(
     }
 }
 
+fn assemble_system_prompt(base_prompt: String, skills_section: String) -> String {
+    if skills_section.is_empty() {
+        return cap_system_prompt(base_prompt);
+    }
+
+    let skill_budget = skills_section
+        .len()
+        .min(SKILL_PROMPT_RESERVE_CHARS)
+        .min(MAX_SYSTEM_PROMPT_CHARS);
+    let base_budget = MAX_SYSTEM_PROMPT_CHARS.saturating_sub(skill_budget);
+    let mut prompt = cap_text_to_chars(
+        base_prompt,
+        base_budget,
+        "\n...[system prompt truncated before skills]",
+    );
+    let remaining = MAX_SYSTEM_PROMPT_CHARS.saturating_sub(prompt.len());
+    if remaining > 0 {
+        prompt.push_str(&cap_text_to_chars(
+            skills_section,
+            remaining,
+            "\n...[skills truncated]",
+        ));
+    }
+    prompt
+}
+
 /// Enforce `MAX_SYSTEM_PROMPT_CHARS` on the system prompt.
 ///
 /// If the prompt exceeds the limit it is truncated on a word boundary and
 /// a `...[truncated]` marker is appended so the LLM can see signalling.
 fn cap_system_prompt(text: String) -> String {
-    if text.len() <= MAX_SYSTEM_PROMPT_CHARS {
+    cap_text_to_chars(text, MAX_SYSTEM_PROMPT_CHARS, "\n...[truncated]")
+}
+
+fn cap_text_to_chars(text: String, max_chars: usize, marker: &str) -> String {
+    if text.len() <= max_chars {
         return text;
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    let marker_budget = marker.len().min(max_chars);
+    let content_limit = max_chars.saturating_sub(marker_budget);
+    if content_limit == 0 {
+        return marker.chars().take(max_chars).collect();
     }
     let safe_limit = text
         .char_indices()
         .map(|(index, _)| index)
-        .take_while(|index| *index <= MAX_SYSTEM_PROMPT_CHARS)
+        .take_while(|index| *index <= content_limit)
         .last()
         .unwrap_or(0);
     let truncated = &text[..safe_limit];
@@ -355,7 +379,7 @@ fn cap_system_prompt(text: String) -> String {
         .rfind('\n')
         .or_else(|| truncated.rfind(' '))
         .unwrap_or(safe_limit);
-    format!("{}\n...[truncated]", &text[..cut])
+    format!("{}{}", &text[..cut], marker)
 }
 
 /// Truncate text to `max_chars` on a word boundary, appending "..." if truncated.
@@ -544,6 +568,83 @@ mod tests {
             "Skills should be in system prompt"
         );
         assert!(sys_text.contains("Be Concise"));
+    }
+
+    #[test]
+    fn test_prepare_messages_preserves_skills_with_long_system_prompt() {
+        let skills = vec![Skill {
+            id: "skill-reserve".into(),
+            name: "Reserved Skill".into(),
+            description: "Use when the base prompt is long".into(),
+            content: "Always load this skill before using its workflow.".into(),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin: false,
+            interface: crate::skills::SkillInterfaceMetadata::default(),
+            dependencies: crate::skills::SkillDependencies::default(),
+            policy: crate::skills::SkillPolicy::default(),
+            source_path: None,
+            resources: Vec::new(),
+            resource_bundle: Vec::new(),
+        }];
+        let long_prompt = "Core instruction.\n".repeat(4_000);
+        let result = prepare_messages(
+            &long_prompt,
+            &[],
+            &[ContentPart::Text {
+                text: "Hi".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            None,
+            &skills,
+            &[],
+        );
+        let sys_text = result[0].text_content();
+        assert!(sys_text.len() <= MAX_SYSTEM_PROMPT_CHARS);
+        assert!(sys_text.contains("system prompt truncated before skills"));
+        assert!(
+            sys_text.contains("Available Skills"),
+            "skill index should survive a long base prompt"
+        );
+        assert!(sys_text.contains("Reserved Skill"));
+    }
+
+    #[test]
+    fn test_prepare_messages_preserves_skills_with_default_system_prompt() {
+        let skills = vec![Skill {
+            id: "skill-default-reserve".into(),
+            name: "Default Prompt Skill".into(),
+            description: "Use when the default prompt is already larger than the cap".into(),
+            content: "Load this skill from the compact index.".into(),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin: false,
+            interface: crate::skills::SkillInterfaceMetadata::default(),
+            dependencies: crate::skills::SkillDependencies::default(),
+            policy: crate::skills::SkillPolicy::default(),
+            source_path: None,
+            resources: Vec::new(),
+            resource_bundle: Vec::new(),
+        }];
+        let result = prepare_messages(
+            &super::super::default_system_prompt(),
+            &[],
+            &[ContentPart::Text {
+                text: "Hi".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            None,
+            &skills,
+            &[],
+        );
+        let sys_text = result[0].text_content();
+        assert!(sys_text.len() <= MAX_SYSTEM_PROMPT_CHARS);
+        assert!(sys_text.contains("Available Skills"));
+        assert!(sys_text.contains("Default Prompt Skill"));
     }
 
     #[test]
