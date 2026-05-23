@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.3...nexa-monorepo-v0.7.4) (2026-05-23)
+
+
+### Features
+
+* **chat:** add thinking mood accents ([37a0c26](https://github.com/MLGBJDLW/Nexa/commit/37a0c267b0bad247933c46fd7b5d024428b7273b))
+* **chat:** improve context budget visibility ([b682bed](https://github.com/MLGBJDLW/Nexa/commit/b682bed11923ecd2fd222684fc5ccd5d38daf86c))
+* **chat:** surface turn skills in chat ([144702d](https://github.com/MLGBJDLW/Nexa/commit/144702dcf53f9374f56e198395c4e1a0647d342a))
+
+
+### Bug Fixes
+
+* **agent:** relax restrictive runtime limits ([f0ea143](https://github.com/MLGBJDLW/Nexa/commit/f0ea1434cd8ae9d17110c3c58d565e46b23dad3f))
+* **chat:** improve tool traces and skill loading ([7d1905f](https://github.com/MLGBJDLW/Nexa/commit/7d1905f3ef3c1c7e897ee07ef284e27782b669e5))
+* **streaming:** remove hidden timeout limits ([cb48256](https://github.com/MLGBJDLW/Nexa/commit/cb48256c6a444ae7afe4c13ca853d09bd622813f))
+
 ## [0.7.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.2...nexa-monorepo-v0.7.3) (2026-05-23)
 
 
