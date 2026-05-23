@@ -12,10 +12,12 @@ use crate::conversation::memory::{
 use crate::llm::{ContentPart, Message, Role, ToolDefinition};
 use crate::skills::Skill;
 
-/// Approximate character limit for the system prompt (~4 000 tokens).
-const MAX_SYSTEM_PROMPT_CHARS: usize = 16_000;
-/// Keep enough room for the compact skill index even when the base prompt is long.
-const SKILL_PROMPT_RESERVE_CHARS: usize = 6_000;
+const CHARS_PER_TOKEN_ESTIMATE: usize = 4;
+const SYSTEM_PROMPT_CONTEXT_FRACTION: usize = 4;
+const MIN_SYSTEM_PROMPT_CHARS: usize = 16_000;
+const MAX_SYSTEM_PROMPT_CHARS: usize = 256_000;
+const MIN_SKILL_PROMPT_CHARS: usize = 8_000;
+const MAX_SKILL_PROMPT_CHARS: usize = 64_000;
 
 /// Build a complete message list for an LLM request, trimmed to fit the
 /// model's context window.
@@ -49,14 +51,27 @@ pub fn prepare_messages(
         .collect::<Vec<_>>()
         .join(" ");
 
-    // System message — always first, with current date/time and skills appended.
-    let skills_section = crate::skills::build_skills_section_for_query(skills, &user_query);
+    // Budget prompt layers from the model context instead of using a small
+    // fixed cap. This preserves mandatory prompt and skill-index layers on
+    // modern long-context models while still protecting small-context models.
+    let max_context = context_window_override.unwrap_or_else(|| model_context_window(model));
+    let tool_overhead = estimate_tool_tokens_for_model(model, tool_definitions);
+    let effective_context = max_context
+        .saturating_sub(tool_overhead)
+        .saturating_sub(context_safety_buffer(max_context));
+    let system_prompt_budget = system_prompt_char_budget(effective_context, max_tokens_response);
+    let skills_section = crate::skills::build_skills_section_for_query_with_budget(
+        skills,
+        &user_query,
+        skill_prompt_char_budget(max_context, system_prompt_budget),
+    );
     let base_prompt = format!(
         "{}\n\nCurrent date and time: {} (UTC)",
         system_prompt,
         Utc::now().format("%Y-%m-%d %H:%M UTC")
     );
-    let system_with_datetime = assemble_system_prompt(base_prompt, skills_section);
+    let system_with_datetime =
+        assemble_system_prompt(base_prompt, skills_section, system_prompt_budget);
     messages.push(Message::text(Role::System, system_with_datetime));
 
     // Prior conversation turns.
@@ -72,11 +87,6 @@ pub fn prepare_messages(
     });
 
     // Trim to fit context window, accounting for tool definition overhead.
-    let max_context = context_window_override.unwrap_or_else(|| model_context_window(model));
-    let tool_overhead = estimate_tool_tokens_for_model(model, tool_definitions);
-    let effective_context = max_context
-        .saturating_sub(tool_overhead)
-        .saturating_sub(context_safety_buffer(max_context));
     let mut trimmed = trim_to_context_window(&messages, effective_context, max_tokens_response);
 
     // If messages were evicted, inject an extractive recap into the system prompt
@@ -96,7 +106,11 @@ pub fn prepare_messages(
         if !recap.is_empty() {
             if let Some(sys) = trimmed.iter_mut().find(|m| m.role == Role::System) {
                 if let Some(ContentPart::Text { text }) = sys.parts.first_mut() {
-                    *text = cap_system_prompt(format!("{}\n\n{}", text, recap));
+                    *text = cap_text_to_chars(
+                        format!("{}\n\n{}", text, recap),
+                        system_prompt_budget,
+                        "\n...[truncated]",
+                    );
                 }
             }
         }
@@ -322,22 +336,41 @@ fn scale_segments_to_total(
     }
 }
 
-fn assemble_system_prompt(base_prompt: String, skills_section: String) -> String {
+fn system_prompt_char_budget(effective_context_tokens: u32, reserved_for_response: u32) -> usize {
+    let available_tokens = effective_context_tokens.saturating_sub(reserved_for_response) as usize;
+    if available_tokens == 0 {
+        return MIN_SYSTEM_PROMPT_CHARS
+            .min((effective_context_tokens as usize).saturating_mul(CHARS_PER_TOKEN_ESTIMATE));
+    }
+    let available_chars = available_tokens.saturating_mul(CHARS_PER_TOKEN_ESTIMATE);
+    let target = (available_chars / SYSTEM_PROMPT_CONTEXT_FRACTION)
+        .max(MIN_SYSTEM_PROMPT_CHARS)
+        .min(MAX_SYSTEM_PROMPT_CHARS);
+    target.min(available_chars)
+}
+
+fn skill_prompt_char_budget(context_window_tokens: u32, system_prompt_budget: usize) -> usize {
+    let one_percent_context_chars =
+        (context_window_tokens as usize).saturating_mul(CHARS_PER_TOKEN_ESTIMATE) / 100;
+    one_percent_context_chars
+        .max(MIN_SKILL_PROMPT_CHARS)
+        .min(MAX_SKILL_PROMPT_CHARS)
+        .min(system_prompt_budget / 2)
+}
+
+fn assemble_system_prompt(base_prompt: String, skills_section: String, max_chars: usize) -> String {
     if skills_section.is_empty() {
-        return cap_system_prompt(base_prompt);
+        return cap_text_to_chars(base_prompt, max_chars, "\n...[truncated]");
     }
 
-    let skill_budget = skills_section
-        .len()
-        .min(SKILL_PROMPT_RESERVE_CHARS)
-        .min(MAX_SYSTEM_PROMPT_CHARS);
-    let base_budget = MAX_SYSTEM_PROMPT_CHARS.saturating_sub(skill_budget);
+    let skill_budget = skills_section.len().min(max_chars);
+    let base_budget = max_chars.saturating_sub(skill_budget);
     let mut prompt = cap_text_to_chars(
         base_prompt,
         base_budget,
         "\n...[system prompt truncated before skills]",
     );
-    let remaining = MAX_SYSTEM_PROMPT_CHARS.saturating_sub(prompt.len());
+    let remaining = max_chars.saturating_sub(prompt.len());
     if remaining > 0 {
         prompt.push_str(&cap_text_to_chars(
             skills_section,
@@ -352,6 +385,7 @@ fn assemble_system_prompt(base_prompt: String, skills_section: String) -> String
 ///
 /// If the prompt exceeds the limit it is truncated on a word boundary and
 /// a `...[truncated]` marker is appended so the LLM can see signalling.
+#[cfg(test)]
 fn cap_system_prompt(text: String) -> String {
     cap_text_to_chars(text, MAX_SYSTEM_PROMPT_CHARS, "\n...[truncated]")
 }
@@ -588,7 +622,7 @@ mod tests {
             resources: Vec::new(),
             resource_bundle: Vec::new(),
         }];
-        let long_prompt = "Core instruction.\n".repeat(4_000);
+        let long_prompt = "Core instruction.\n".repeat(24_000);
         let result = prepare_messages(
             &long_prompt,
             &[],
@@ -616,7 +650,7 @@ mod tests {
         let skills = vec![Skill {
             id: "skill-default-reserve".into(),
             name: "Default Prompt Skill".into(),
-            description: "Use when the default prompt is already larger than the cap".into(),
+            description: "Use with the default prompt".into(),
             content: "Load this skill from the compact index.".into(),
             enabled: true,
             created_at: String::new(),

@@ -864,7 +864,7 @@ impl ToolRegistry {
 /// here. Plain-text mutation tools need room for exact old/new snippets, so
 /// they get a much larger cap while read/search tools keep the tighter guard.
 fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> {
-    const MAX_FILE_MUTATION_ARG_BYTES: usize = 2 * 1024 * 1024;
+    const MAX_FILE_MUTATION_ARG_BYTES: usize = 8 * 1024 * 1024;
 
     let Some(max_bytes) = tool_arg_limit_bytes(name) else {
         return Ok(());
@@ -887,8 +887,8 @@ fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> 
 }
 
 fn tool_arg_limit_bytes(name: &str) -> Option<usize> {
-    const DEFAULT_MAX_TOOL_ARG_BYTES: usize = 32 * 1024;
-    const MAX_FILE_MUTATION_ARG_BYTES: usize = 2 * 1024 * 1024;
+    const DEFAULT_MAX_TOOL_ARG_BYTES: usize = 256 * 1024;
+    const MAX_FILE_MUTATION_ARG_BYTES: usize = 8 * 1024 * 1024;
 
     let lower = name.to_ascii_lowercase();
     if lower == "run_shell" {
@@ -1263,13 +1263,13 @@ mod tests {
     }
 
     #[test]
-    fn generic_tools_keep_small_argument_guard() {
-        let large_query = "x".repeat(33 * 1024);
+    fn generic_tools_keep_argument_guard_at_transport_scale() {
+        let large_query = "x".repeat(257 * 1024);
         let args = serde_json::json!({ "query": large_query }).to_string();
         let err = enforce_tool_arg_limit("search_knowledge_base", &args)
             .expect_err("generic oversized tool arguments should be rejected");
 
-        assert!(err.to_string().contains("32 KB"));
+        assert!(err.to_string().contains("256 KB"));
     }
 
     #[test]

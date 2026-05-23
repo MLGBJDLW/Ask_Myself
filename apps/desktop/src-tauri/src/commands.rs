@@ -1035,4 +1035,53 @@ mod tests {
             other => panic!("unexpected compacted event: {other:?}"),
         }
     }
+
+    #[test]
+    fn compact_agent_event_preserves_full_diff_artifact_shape() {
+        let lines = (0..400)
+            .map(|idx| {
+                serde_json::json!({
+                    "type": "addition",
+                    "oldLine": null,
+                    "newLine": idx + 1,
+                    "content": format!("line {}", idx + 1),
+                })
+            })
+            .collect::<Vec<_>>();
+        let event = AgentEvent::ToolCallResult {
+            call_id: "call-1".to_string(),
+            tool_name: "edit_file".to_string(),
+            content: "ok".to_string(),
+            is_error: false,
+            artifacts: Some(serde_json::json!({
+                "diff": {
+                    "path": "src/main.rs",
+                    "operation": "str_replace",
+                    "hunks": [{
+                        "oldStart": 1,
+                        "newStart": 1,
+                        "oldLines": 0,
+                        "newLines": 400,
+                        "lines": lines,
+                    }],
+                },
+            })),
+        };
+
+        let compacted = compact_agent_event_for_frontend(event);
+
+        match compacted {
+            AgentEvent::ToolCallResult {
+                artifacts: Some(artifacts),
+                ..
+            } => {
+                let lines = artifacts["diff"]["hunks"][0]["lines"]
+                    .as_array()
+                    .expect("diff lines array");
+                assert_eq!(lines.len(), 400);
+                assert_eq!(lines[399]["newLine"].as_u64(), Some(400));
+            }
+            other => panic!("unexpected compacted event: {other:?}"),
+        }
+    }
 }

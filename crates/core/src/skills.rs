@@ -21,7 +21,10 @@ pub use model::{
     SkillInterfaceMetadata, SkillPolicy, SkillResourceEncoding, SkillResourceFile,
     SkillResourceInfo, SkillResourceKind, SkillToolDependency, SkillWarning, SkillWarningSeverity,
 };
-pub use prompt::{build_skills_section, build_skills_section_for_query, export_skill_to_md};
+pub use prompt::{
+    build_skills_section, build_skills_section_for_query,
+    build_skills_section_for_query_with_budget, export_skill_to_md,
+};
 pub use registry::{load_builtin_skills, parse_skill_file};
 pub use scanner::scan_skill_content;
 pub use selector::{

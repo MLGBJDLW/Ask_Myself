@@ -1,6 +1,6 @@
 use super::model::Skill;
 
-const MAX_SKILL_SECTION_CHARS: usize = 8_000;
+const DEFAULT_MAX_SKILL_SECTION_CHARS: usize = 8_000;
 const MAX_SKILL_LINE_CHARS: usize = 420;
 
 fn truncate_excerpt(text: &str, max_chars: usize) -> String {
@@ -71,7 +71,18 @@ fn render_dependencies(skill: &Skill) -> String {
 /// procedural details. This mirrors progressive disclosure while keeping Nexa's
 /// existing database-backed skill lifecycle.
 pub fn build_skills_section_for_query(skills: &[Skill], _query: &str) -> String {
+    build_skills_section_for_query_with_budget(skills, _query, DEFAULT_MAX_SKILL_SECTION_CHARS)
+}
+
+pub fn build_skills_section_for_query_with_budget(
+    skills: &[Skill],
+    _query: &str,
+    max_chars: usize,
+) -> String {
     if skills.is_empty() {
+        return String::new();
+    }
+    if max_chars == 0 {
         return String::new();
     }
 
@@ -137,8 +148,8 @@ pub fn build_skills_section_for_query(skills: &[Skill], _query: &str) -> String 
         ));
         section.push_str(&format!("resources: {}\n", render_resource_paths(skill)));
 
-        if section.len() >= MAX_SKILL_SECTION_CHARS {
-            section = truncate_excerpt(&section, MAX_SKILL_SECTION_CHARS);
+        if section.len() >= max_chars {
+            section = truncate_excerpt(&section, max_chars);
             section.push_str("\n...[skills metadata truncated]");
             break;
         }
