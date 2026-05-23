@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::evidence_verifier::{EvidenceSignals, RuntimeVerificationSignals};
+use crate::skills::Skill;
 use crate::tool_visibility_policy::ToolVisibilityDecision;
 use crate::tools::{ToolRegistry, ToolRenderKind, ToolRunCapabilities};
 
@@ -26,10 +27,36 @@ pub(super) struct PersistedTraceToolCall {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PersistedTraceSkillRef {
+    id: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+    builtin: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_path: Option<String>,
+}
+
+impl From<&Skill> for PersistedTraceSkillRef {
+    fn from(skill: &Skill) -> Self {
+        let display_name = skill.interface.display_name.trim();
+        Self {
+            id: skill.id.clone(),
+            name: skill.name.clone(),
+            display_name: (!display_name.is_empty()).then(|| display_name.to_string()),
+            builtin: skill.builtin,
+            source_path: skill.source_path.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(super) enum PersistedTraceItem {
     Thinking { text: String },
     Tool { tool_call: PersistedTraceToolCall },
+    SkillSelection { skills: Vec<PersistedTraceSkillRef> },
     Status { text: String, tone: String },
     Loop { event: TurnLoopEvent },
     ToolVisibility { decision: ToolVisibilityDecision },
@@ -43,6 +70,19 @@ pub(super) fn append_persisted_trace_thinking(items: &mut Vec<PersistedTraceItem
 
     items.push(PersistedTraceItem::Thinking {
         text: trimmed.to_string(),
+    });
+}
+
+pub(super) fn append_persisted_trace_skill_selection(
+    items: &mut Vec<PersistedTraceItem>,
+    skills: &[Skill],
+) {
+    if skills.is_empty() {
+        return;
+    }
+
+    items.push(PersistedTraceItem::SkillSelection {
+        skills: skills.iter().map(PersistedTraceSkillRef::from).collect(),
     });
 }
 
@@ -249,12 +289,29 @@ fn is_evidence_oriented_tool(tool_name: &str) -> bool {
     )
 }
 
-pub(super) fn build_task_run_artifacts(verification: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "kind": "agentTaskArtifacts",
-        "version": 1,
-        "verification": verification,
-    })
+pub(super) fn build_task_run_artifacts(
+    previous_artifacts: Option<serde_json::Value>,
+    verification: &serde_json::Value,
+) -> serde_json::Value {
+    let mut merged = match previous_artifacts {
+        Some(serde_json::Value::Object(map)) => map,
+        Some(previous) => {
+            let mut map = serde_json::Map::new();
+            map.insert("previous".to_string(), previous);
+            map
+        }
+        None => serde_json::Map::new(),
+    };
+    merged.insert(
+        "kind".to_string(),
+        serde_json::Value::String("agentTaskArtifacts".to_string()),
+    );
+    merged.insert(
+        "version".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(1)),
+    );
+    merged.insert("verification".to_string(), verification.clone());
+    serde_json::Value::Object(merged)
 }
 
 #[cfg(test)]
@@ -290,6 +347,82 @@ mod tests {
                 artifacts,
             },
         }
+    }
+
+    fn test_skill(id: &str, name: &str, display_name: &str) -> Skill {
+        Skill {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: "Use for test work".to_string(),
+            content: "Do test work.".to_string(),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin: true,
+            interface: crate::skills::SkillInterfaceMetadata {
+                display_name: display_name.to_string(),
+                short_description: String::new(),
+                icon_small: None,
+                icon_large: None,
+                default_prompt: None,
+            },
+            dependencies: crate::skills::SkillDependencies::default(),
+            policy: crate::skills::SkillPolicy::default(),
+            source_path: Some("bundled/test/SKILL.md".to_string()),
+            resources: Vec::new(),
+            resource_bundle: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn skill_selection_trace_serializes_selected_skill_refs() {
+        let mut items = Vec::new();
+        append_persisted_trace_skill_selection(
+            &mut items,
+            &[test_skill(
+                "builtin-fiction-writing",
+                "fiction-writing",
+                "Fiction Writing",
+            )],
+        );
+
+        let artifacts = build_trace_artifacts(&items).expect("trace artifacts");
+
+        assert_eq!(artifacts["items"][0]["kind"], "skillSelection");
+        assert_eq!(
+            artifacts["items"][0]["skills"][0]["id"],
+            "builtin-fiction-writing"
+        );
+        assert_eq!(
+            artifacts["items"][0]["skills"][0]["displayName"],
+            "Fiction Writing"
+        );
+    }
+
+    #[test]
+    fn task_run_artifacts_preserve_selected_skills_when_adding_verification() {
+        let previous = serde_json::json!({
+            "kind": "agentTaskArtifacts",
+            "version": 1,
+            "selectedSkills": {
+                "kind": "selectedSkills",
+                "skills": [{ "id": "builtin-fiction-writing", "name": "fiction-writing" }]
+            }
+        });
+        let verification = serde_json::json!({
+            "kind": "verification",
+            "overallStatus": "passed",
+            "checks": []
+        });
+
+        let merged = build_task_run_artifacts(Some(previous), &verification);
+
+        assert_eq!(merged["kind"], "agentTaskArtifacts");
+        assert_eq!(
+            merged["selectedSkills"]["skills"][0]["id"],
+            "builtin-fiction-writing"
+        );
+        assert_eq!(merged["verification"]["overallStatus"], "passed");
     }
 
     #[test]

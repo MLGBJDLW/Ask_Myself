@@ -375,7 +375,6 @@ fn main() {
             commands::save_skill_cmd,
             commands::delete_skill_cmd,
             commands::toggle_skill_cmd,
-            commands::list_selected_skills_cmd,
             commands::list_builtin_skills_cmd,
             commands::import_skill_from_md_cmd,
             commands::export_skill_to_md_cmd,

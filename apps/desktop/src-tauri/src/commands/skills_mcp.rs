@@ -88,38 +88,6 @@ pub async fn toggle_skill_cmd(
 }
 
 #[tauri::command]
-pub async fn list_selected_skills_cmd(
-    state: tauri::State<'_, AppState>,
-    query: String,
-    persona_id: Option<String>,
-) -> Result<Vec<Skill>, String> {
-    let pinned_skill_ids = match persona_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    {
-        Some(id) => nexa_core::persona::enabled_persona_by_id(&state.db, id)
-            .map_err(|e| e.to_string())?
-            .map(|persona| persona.default_skill_ids)
-            .unwrap_or_default(),
-        None => Vec::new(),
-    };
-
-    if pinned_skill_ids.is_empty() {
-        nexa_core::skills::get_active_skills_for_query(&state.db, &query, 5)
-            .map_err(|e| e.to_string())
-    } else {
-        nexa_core::skills::get_active_skills_for_query_with_pinned(
-            &state.db,
-            &query,
-            8,
-            &pinned_skill_ids,
-        )
-        .map_err(|e| e.to_string())
-    }
-}
-
-#[tauri::command]
 pub async fn list_builtin_skills_cmd() -> Result<Vec<Skill>, String> {
     Ok(nexa_core::skills::load_builtin_skills())
 }

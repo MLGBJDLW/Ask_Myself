@@ -688,7 +688,6 @@ pub async fn agent_chat_cmd(
     let handle = app_handle.clone();
     let assistant_sort_order = next_sort_order + 1;
     let db_config_for_extraction = db_config.clone();
-    let selected_skills_for_usage = selected_skills.clone();
     let forwarder_event_seq = Arc::clone(&stream_event_seq);
     let forwarder_terminal_emitted = Arc::clone(&terminal_emitted);
     let command_stream_event_seq = Arc::clone(&stream_event_seq);
@@ -927,27 +926,6 @@ pub async fn agent_chat_cmd(
             task_error.as_deref(),
             Some(&task_artifacts),
         );
-        let skill_outcome = match task_status {
-            "completed" => "success",
-            "failed" | "timed_out" => "failed",
-            other => other,
-        };
-        for skill in &selected_skills_for_usage {
-            let _ = db.record_skill_usage_event(
-                &nexa_core::workflow_automation::RecordSkillUsageInput {
-                    skill_id: skill.id.clone(),
-                    conversation_id: Some(conv_id.clone()),
-                    task_run_id: Some(task_run_id.clone()),
-                    outcome: skill_outcome.to_string(),
-                    evidence: serde_json::json!({
-                        "name": &skill.name,
-                        "taskStatus": task_status,
-                        "taskSummary": task_summary,
-                        "error": task_error.as_deref(),
-                    }),
-                },
-            );
-        }
         record_agent_run_status_task_event(
             &db,
             &handle,

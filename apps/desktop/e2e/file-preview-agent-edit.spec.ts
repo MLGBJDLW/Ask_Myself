@@ -150,7 +150,6 @@ test.beforeEach(async ({ page }) => {
         case 'list_user_memories_cmd':
         case 'list_skills_cmd':
         case 'list_builtin_skills_cmd':
-        case 'list_selected_skills_cmd':
         case 'list_mcp_servers_cmd':
           return [];
         case 'set_conversation_sources_cmd':

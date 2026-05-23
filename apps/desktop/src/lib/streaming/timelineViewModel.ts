@@ -3,7 +3,7 @@ import type {
   ToolRenderKind,
 } from '../../types/conversation';
 import { appTimeMs } from '../dateTime';
-import type { PersistedTraceItem } from './persistedTrace';
+import type { PersistedTraceItem, PersistedTraceSkillRef } from './persistedTrace';
 import type {
   StreamRoundEvent,
   ToolCallEvent,
@@ -42,18 +42,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function skillActivationRefFromArtifacts(
-  artifacts: unknown,
+function skillRefLabel(
+  id: unknown,
+  name: unknown,
+  displayName: unknown,
 ): { label: string; key: string } | null {
-  const record = asRecord(artifacts);
-  if (!record || record.kind !== 'skillActivation') return null;
-  const skill = asRecord(record.skill);
-  if (!skill) return null;
-
-  const id = skill.id;
-  const name = skill.name;
-  const interfaceMetadata = asRecord(skill.interface);
-  const displayName = interfaceMetadata?.displayName;
   let label: string | null = null;
   if (typeof displayName === 'string' && displayName.trim()) {
     label = displayName.trim();
@@ -78,6 +71,25 @@ function skillActivationRefFromArtifacts(
   return { label, key };
 }
 
+function skillSelectionRef(skill: PersistedTraceSkillRef): { label: string; key: string } | null {
+  return skillRefLabel(skill.id, skill.name, skill.displayName);
+}
+
+function skillActivationRefFromArtifacts(
+  artifacts: unknown,
+): { label: string; key: string } | null {
+  const record = asRecord(artifacts);
+  if (!record || record.kind !== 'skillActivation') return null;
+  const skill = asRecord(record.skill);
+  if (!skill) return null;
+
+  const id = skill.id;
+  const name = skill.name;
+  const interfaceMetadata = asRecord(skill.interface);
+  const displayName = interfaceMetadata?.displayName;
+  return skillRefLabel(id, name, displayName);
+}
+
 function skillActivationNameFromArtifacts(artifacts: unknown): string | null {
   return skillActivationRefFromArtifacts(artifacts)?.label ?? null;
 }
@@ -92,30 +104,37 @@ function isSuccessfulSkillActivation(toolCall: ToolCallEvent): boolean {
   );
 }
 
-export function activatedSkillNamesFromTraceItems(
+export function skillNamesFromTraceItems(
   items: PersistedTraceItem[] | null | undefined,
 ): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
 
-  for (const item of items ?? []) {
-    if (item.kind !== 'tool') continue;
-    if (!isSuccessfulSkillActivation(item.toolCall)) continue;
-
-    const ref = skillActivationRefFromArtifacts(item.toolCall.artifacts);
-    if (!ref) continue;
-
-    if (seen.has(ref.key)) continue;
+  const addRef = (ref: { label: string; key: string } | null) => {
+    if (!ref || seen.has(ref.key)) return;
     seen.add(ref.key);
     names.push(ref.label);
+  };
+
+  for (const item of items ?? []) {
+    if (item.kind === 'skillSelection') {
+      for (const skill of item.skills) {
+        addRef(skillSelectionRef(skill));
+      }
+      continue;
+    }
+
+    if (item.kind === 'tool' && isSuccessfulSkillActivation(item.toolCall)) {
+      addRef(skillActivationRefFromArtifacts(item.toolCall.artifacts));
+    }
   }
 
   return names;
 }
 
-export function formatSkillActivationSummary(names: string[]): string {
-  if (names.length === 0) return 'Skills activated: none';
-  return `Skills activated: ${names.join(', ')}`;
+export function formatSkillSummary(names: string[]): string {
+  if (names.length === 0) return 'Skills: none';
+  return `Skills: ${names.join(', ')}`;
 }
 
 export function normalizeThinking(content: string): string {
@@ -279,14 +298,14 @@ export function turnLifecycleTimelineSections(input: {
   }
 
   if (traceItems && traceItems.length > 0) {
-    const activatedSkills = activatedSkillNamesFromTraceItems(traceItems);
+    const skills = skillNamesFromTraceItems(traceItems);
     sections.push({
       kind: 'status',
       id: `turn-skills-${turn.id}`,
       text: formatSkillsSummary
-        ? formatSkillsSummary(activatedSkills)
-        : formatSkillActivationSummary(activatedSkills),
-      tone: activatedSkills.length > 0 ? 'success' : 'muted',
+        ? formatSkillsSummary(skills)
+        : formatSkillSummary(skills),
+      tone: skills.length > 0 ? 'success' : 'muted',
     });
   }
 

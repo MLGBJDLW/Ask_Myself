@@ -231,6 +231,7 @@ impl AgentExecutor {
         for event in loop_recorder.events().iter().cloned() {
             append_persisted_trace_loop_event(&mut persisted_trace_items, event);
         }
+        append_persisted_trace_skill_selection(&mut persisted_trace_items, &skills);
         append_persisted_trace_visibility(
             &mut persisted_trace_items,
             &route_plan.visibility_decision,

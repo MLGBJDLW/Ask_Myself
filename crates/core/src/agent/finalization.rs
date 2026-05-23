@@ -247,7 +247,12 @@ impl AgentExecutor {
                     Some(&trace_payload),
                 );
                 if let Ok(Some(task_run)) = db.get_agent_task_run_by_turn(tid) {
-                    let task_artifacts = build_task_run_artifacts(&verification_artifact);
+                    let previous_task_artifacts = db
+                        .get_agent_task_run(&task_run.id)
+                        .ok()
+                        .and_then(|run| run.artifacts);
+                    let task_artifacts =
+                        build_task_run_artifacts(previous_task_artifacts, &verification_artifact);
                     let _ = db.update_agent_task_run_progress(
                         &task_run.id,
                         Some("running"),
