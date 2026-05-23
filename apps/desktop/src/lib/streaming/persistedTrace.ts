@@ -16,7 +16,16 @@ export type PersistedTraceItem =
   | { kind: 'thinking'; text: string }
   | { kind: 'reply'; text: string }
   | { kind: 'tool'; toolCall: ToolCallEvent }
+  | { kind: 'skillSelection'; skills: PersistedTraceSkillRef[] }
   | { kind: 'status'; text: string; tone?: 'muted' | 'success' | 'error' };
+
+export interface PersistedTraceSkillRef {
+  id?: string;
+  name?: string;
+  displayName?: string;
+  builtin?: boolean;
+  sourcePath?: string;
+}
 
 export interface TurnTraceProjection {
   routeKind?: string;
@@ -84,6 +93,21 @@ function persistedToolCallFromRecord(toolCall: Record<string, unknown>): ToolCal
   };
 }
 
+function persistedSkillRefFromRecord(skill: Record<string, unknown>): PersistedTraceSkillRef | null {
+  const id = typeof skill.id === 'string' ? skill.id.trim() : '';
+  const name = typeof skill.name === 'string' ? skill.name.trim() : '';
+  const displayName = typeof skill.displayName === 'string' ? skill.displayName.trim() : '';
+  if (!id && !name && !displayName) return null;
+
+  return {
+    id: id || undefined,
+    name: name || undefined,
+    displayName: displayName || undefined,
+    builtin: typeof skill.builtin === 'boolean' ? skill.builtin : undefined,
+    sourcePath: typeof skill.sourcePath === 'string' ? skill.sourcePath : undefined,
+  };
+}
+
 export function extractPersistedTraceItems(
   artifacts: ConversationMessage['artifacts'] | unknown,
 ): PersistedTraceItem[] | null {
@@ -120,6 +144,16 @@ export function extractPersistedTraceItems(
       const toolCall = asRecord(item.toolCall);
       const projected = toolCall ? persistedToolCallFromRecord(toolCall) : null;
       if (projected) items.push({ kind: 'tool', toolCall: projected });
+      continue;
+    }
+
+    if (item.kind === 'skillSelection' && Array.isArray(item.skills)) {
+      const skills = item.skills
+        .map((rawSkill) => asRecord(rawSkill))
+        .filter((skill): skill is Record<string, unknown> => Boolean(skill))
+        .map(persistedSkillRefFromRecord)
+        .filter((skill): skill is PersistedTraceSkillRef => Boolean(skill));
+      if (skills.length > 0) items.push({ kind: 'skillSelection', skills });
     }
   }
 

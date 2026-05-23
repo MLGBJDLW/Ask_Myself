@@ -9,11 +9,11 @@ import {
   normalizePersistedToolCallStatus,
 } from '../src/lib/streaming/toolStatus';
 import {
-  activatedSkillNamesFromTraceItems,
   buildCurrentTimelineSections,
   buildLiveTraceTimeline,
   shouldHideTraceStatus,
   shouldRenderTraceToolCall,
+  skillNamesFromTraceItems,
   turnLifecycleTimelineSections,
   visibleTraceEventsForTimeline,
 } from '../src/lib/streaming/timelineViewModel';
@@ -603,10 +603,69 @@ test('normalizes persisted trace tool calls through the shared tool status proje
   assert(isPendingToolCallStatus(items[1].toolCall.status), 'approval trace is pending');
 });
 
-test('timeline view model summarizes activated skills for each traced turn', () => {
+test('timeline view model summarizes skills selected for each traced turn', () => {
   const items = extractPersistedTraceItems({
     kind: 'traceTimeline',
     items: [
+      {
+        kind: 'skillSelection',
+        skills: [
+          {
+            id: 'builtin-fiction-writing',
+            name: 'fiction-writing',
+            displayName: 'Fiction Writing',
+          },
+        ],
+      },
+    ],
+  });
+
+  assert(items, 'persisted skill selection trace should parse');
+  const names = skillNamesFromTraceItems(items);
+  assertEqual(names.length, 1, 'selected skill names are included');
+  assertEqual(names[0], 'Fiction Writing', 'display name is preferred');
+
+  const turn: ConversationTurn = {
+    id: 'turn-selected',
+    conversationId: 'conversation-1',
+    userMessageId: 'user-selected',
+    assistantMessageId: 'assistant-selected',
+    status: 'success',
+    trace: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:01.000Z',
+    finishedAt: '2026-01-01T00:00:01.000Z',
+  };
+
+  const sections = turnLifecycleTimelineSections({
+    turn,
+    routeKind: 'DirectResponse',
+    traceItems: items,
+  });
+
+  const skillSection = sections.find((section) => section.id === 'turn-skills-turn-selected');
+  assert(skillSection, 'turn lifecycle should include selected skill summary');
+  if (skillSection.kind !== 'status') {
+    throw new Error(`skill summary should be a status section, got ${skillSection.kind}`);
+  }
+  assertEqual(skillSection.text, 'Skills: Fiction Writing', 'selected skill summary text');
+  assertEqual(skillSection.tone, 'success', 'selected skill summary tone');
+});
+
+test('timeline view model dedupes activated skills against selected skills', () => {
+  const items = extractPersistedTraceItems({
+    kind: 'traceTimeline',
+    items: [
+      {
+        kind: 'skillSelection',
+        skills: [
+          {
+            id: 'builtin-frontend-design',
+            name: 'frontend-design',
+            displayName: 'Frontend Design',
+          },
+        ],
+      },
       {
         kind: 'tool',
         toolCall: {
@@ -646,7 +705,7 @@ test('timeline view model summarizes activated skills for each traced turn', () 
   });
 
   assert(items, 'persisted skill activation trace should parse');
-  const names = activatedSkillNamesFromTraceItems(items);
+  const names = skillNamesFromTraceItems(items);
   assertEqual(names.length, 1, 'skill activation names are deduped');
   assertEqual(names[0], 'Frontend Design', 'display name is preferred');
 
@@ -673,7 +732,7 @@ test('timeline view model summarizes activated skills for each traced turn', () 
   if (skillSection.kind !== 'status') {
     throw new Error(`skill summary should be a status section, got ${skillSection.kind}`);
   }
-  assertEqual(skillSection.text, 'Skills activated: Frontend Design', 'skill summary text');
+  assertEqual(skillSection.text, 'Skills: Frontend Design', 'skill summary text');
   assertEqual(skillSection.tone, 'success', 'activated skill summary tone');
 });
 
@@ -709,7 +768,7 @@ test('timeline view model reports when a traced turn activated no skills', () =>
   if (skillSection.kind !== 'status') {
     throw new Error(`no-skill summary should be a status section, got ${skillSection.kind}`);
   }
-  assertEqual(skillSection.text, 'Skills activated: none', 'no-skill summary text');
+  assertEqual(skillSection.text, 'Skills: none', 'no-skill summary text');
   assertEqual(skillSection.tone, 'muted', 'no-skill summary tone');
 });
 

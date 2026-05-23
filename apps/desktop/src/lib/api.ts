@@ -1119,12 +1119,6 @@ export const listAllSkills = async () => {
 export const listActiveSkills = async () =>
   (await listAllSkills()).filter((skill) => skill.enabled);
 
-export const listSelectedSkills = (query: string, personaId?: string | null) =>
-  invoke<Skill[]>('list_selected_skills_cmd', {
-    query,
-    personaId: personaId ?? null,
-  });
-
 export const importSkillFromMd = (content: string) =>
   invoke<Skill>('import_skill_from_md_cmd', { content });
 
