@@ -6,10 +6,10 @@ use std::time::Duration;
 use crate::llm::ToolCallRequest;
 use crate::tools::{structured_tool_error_result, ToolResult};
 
-/// Maximum characters to keep in a tool result for LLM context.
-/// ~4K tokens is about 16K chars for English text; the smaller cap leaves room
+/// Maximum characters to keep in a generic tool result for LLM context.
+/// This keeps normal read/edit/search results useful while still leaving room
 /// for conversation and follow-up tool calls.
-const MAX_TOOL_RESULT_CONTEXT_CHARS: usize = 4_800;
+const MAX_TOOL_RESULT_CONTEXT_CHARS: usize = 24_000;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolSchedulerPolicy {
@@ -137,9 +137,9 @@ pub(crate) fn compact_tool_result_for_context(tool_name: &str, content: &str) ->
         "list_dir" | "list_documents" | "list_sources" => {
             summarize_lines(content, 60, 10, MAX_TOOL_RESULT_CONTEXT_CHARS)
         }
-        "search_knowledge_base" => truncate_tool_result(content, 3_500),
-        "query_knowledge_graph" => truncate_tool_result(content, 2_500),
-        "retrieve_evidence" | "search_playbooks" => truncate_tool_result(content, 6_000),
+        "search_knowledge_base" => truncate_tool_result(content, 12_000),
+        "query_knowledge_graph" => truncate_tool_result(content, 8_000),
+        "retrieve_evidence" | "search_playbooks" => truncate_tool_result(content, 24_000),
         _ => truncate_tool_result(content, MAX_TOOL_RESULT_CONTEXT_CHARS),
     }
 }
@@ -339,5 +339,14 @@ mod tests {
         });
         assert!(decision.synthetic_result.unwrap().is_error);
         assert_eq!(decision.policy_label, "blockedByToolVisibility");
+    }
+
+    #[test]
+    fn tool_results_keep_substantial_context_before_truncating() {
+        let content = "x".repeat(20_000);
+        let compacted = compact_tool_result_for_context("read_file", &content);
+
+        assert_eq!(compacted.len(), content.len());
+        assert!(!compacted.contains("truncated"));
     }
 }

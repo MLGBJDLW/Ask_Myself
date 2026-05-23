@@ -34,6 +34,8 @@ const SPAWN_SUBAGENT_BATCH_JSON: &str =
 const JUDGE_SUBAGENT_RESULTS_JSON: &str =
     include_str!("../../../../crates/core/prompts/tools/judge_subagent_results.json");
 const MAX_SUBAGENT_DELEGATION_DEPTH: u8 = 1;
+const DEFAULT_SUBAGENT_MAX_TOKENS: u32 = 8_192;
+const MAX_SUBAGENT_MAX_TOKENS: u32 = 32_768;
 
 struct DelegationToolDef {
     description: String,
@@ -1506,7 +1508,12 @@ async fn run_subagent_once(
                 .unwrap_or(3)
         })
         .clamp(1, 6);
-    config.max_tokens = Some(config.max_tokens.unwrap_or(2048).min(2048));
+    config.max_tokens = Some(
+        config
+            .max_tokens
+            .unwrap_or(DEFAULT_SUBAGENT_MAX_TOKENS)
+            .clamp(1_024, MAX_SUBAGENT_MAX_TOKENS),
+    );
     let timeout_secs = estimate_subagent_timeout_secs(&runtime, &args, role_profile);
     config.agent_timeout_secs = Some(timeout_secs as u32);
     config.system_prompt =
@@ -2058,12 +2065,18 @@ fn is_subagent_tool_name(name: &str) -> bool {
 
 fn resolve_delegation_timeout_secs(config: &AgentConfig, requested: Option<u32>) -> u64 {
     requested.unwrap_or_else(|| {
-        let tool_timeout = config.tool_timeout_secs.unwrap_or(30);
-        let turn_timeout = config.agent_timeout_secs.unwrap_or(120);
+        let tool_timeout = config
+            .tool_timeout_secs
+            .filter(|timeout| *timeout > 0)
+            .unwrap_or(60);
+        let turn_timeout = config
+            .agent_timeout_secs
+            .filter(|timeout| *timeout > 0)
+            .unwrap_or(180);
         tool_timeout
             .saturating_mul(2)
             .min(turn_timeout)
-            .clamp(15, 120)
+            .clamp(15, 180)
     }) as u64
 }
 
@@ -2088,7 +2101,7 @@ fn estimate_reserved_tokens(config: &AgentConfig, request_text: &str, tools: &To
     estimate_tokens_for_model(model, &config.system_prompt)
         .saturating_add(estimate_tokens_for_model(model, request_text))
         .saturating_add(estimate_tool_tokens_for_model(model, &tools.definitions()))
-        .saturating_add(config.max_tokens.unwrap_or(2048))
+        .saturating_add(config.max_tokens.unwrap_or(DEFAULT_SUBAGENT_MAX_TOKENS))
 }
 
 fn build_subagent_executor_tools(
@@ -2783,6 +2796,15 @@ mod tests {
 
         assert_eq!(args.timeout_secs, Some(180));
         assert_eq!(args.task_id.as_deref(), Some("worker-1"));
+    }
+
+    #[test]
+    fn test_delegation_timeout_treats_unlimited_parent_as_default_budget() {
+        let mut config = AgentConfig::default();
+        config.tool_timeout_secs = Some(0);
+        config.agent_timeout_secs = Some(0);
+
+        assert_eq!(resolve_delegation_timeout_secs(&config, None), 120);
     }
 
     #[test]

@@ -37,8 +37,7 @@ pub async fn compile_document_cmd(
         .get_default_agent_config()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No default agent config set.".to_string())?;
-    let app_cfg = state.db.load_app_config().unwrap_or_default();
-    let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+    let provider_config = db_config_to_provider_config(&db_config, None);
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
     let result = nexa_core::compile::compile_document(
@@ -64,8 +63,7 @@ pub async fn compile_pending_documents_cmd(
         .get_default_agent_config()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No default agent config set.".to_string())?;
-    let app_cfg = state.db.load_app_config().unwrap_or_default();
-    let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+    let provider_config = db_config_to_provider_config(&db_config, None);
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
     let results = nexa_core::compile::compile_pending_with_progress(
@@ -153,8 +151,7 @@ pub async fn compile_after_scan_cmd(
         .get_default_agent_config()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No default agent config set.".to_string())?;
-    let app_cfg = state.db.load_app_config().unwrap_or_default();
-    let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+    let provider_config = db_config_to_provider_config(&db_config, None);
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
     let cap = limit.unwrap_or(10);

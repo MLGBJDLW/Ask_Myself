@@ -1,5 +1,6 @@
 //! Token usage, model-step trace, and automatic compaction accounting.
 
+use super::context;
 use super::turn_state::{TurnPhase, TurnStateMachine};
 use super::*;
 
@@ -8,12 +9,14 @@ pub(super) struct UsageAccountingContext<'a> {
     pub(super) model: &'a str,
     pub(super) messages: &'a mut Vec<Message>,
     pub(super) context_pipeline: ContextPipeline,
+    pub(super) tool_defs: &'a [ToolDefinition],
     pub(super) turn_state: &'a mut TurnStateMachine,
     pub(super) loop_recorder: &'a mut TurnLoopRecorder,
     pub(super) persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
     pub(super) trace: &'a mut Option<AgentTrace>,
     pub(super) total_usage: &'a mut Usage,
     pub(super) last_prompt_tokens: &'a mut u32,
+    pub(super) last_context_breakdown: &'a mut Option<context::ContextUsageBreakdown>,
 }
 
 impl AgentExecutor {
@@ -33,15 +36,24 @@ impl AgentExecutor {
             model,
             messages,
             context_pipeline,
+            tool_defs,
             turn_state,
             loop_recorder,
             persisted_trace_items,
             trace,
             total_usage,
             last_prompt_tokens,
+            last_context_breakdown,
         } = ctx;
 
         *last_prompt_tokens = u.prompt_tokens;
+        let context_breakdown = context::estimate_context_usage_breakdown_for_model(
+            model,
+            messages,
+            tool_defs,
+            Some(u.prompt_tokens),
+        );
+        *last_context_breakdown = Some(context_breakdown.clone());
         total_usage.prompt_tokens += u.prompt_tokens;
         total_usage.completion_tokens += u.completion_tokens;
         total_usage.total_tokens += u.total_tokens;
@@ -53,6 +65,7 @@ impl AgentExecutor {
             .send(AgentEvent::UsageUpdate {
                 usage_total: total_usage.clone(),
                 last_prompt_tokens: *last_prompt_tokens,
+                context_breakdown: Some(context_breakdown),
             })
             .await;
 

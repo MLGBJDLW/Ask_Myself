@@ -4,18 +4,19 @@
 //! System prompts use top-level `systemInstruction`, roles map "assistant" → "model",
 //! and tool calls use `functionCall`/`functionResponse` parts.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use super::{
-    CompletionRequest, CompletionResponse, ContentPart, FinishReason, LlmProvider, Message,
-    ProviderConfig, Role, StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
+    configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
+    with_request_timeout, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
+    LlmProvider, Message, ProviderConfig, Role, StreamChunk, ToolCallDelta, ToolCallRequest,
+    ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::error::CoreError;
 
@@ -543,7 +544,13 @@ async fn parse_gemini_stream(
     let mut emitted_thinking = String::new();
     let mut saw_finish_reason = false;
 
-    while let Some(chunk_result) = byte_stream.next().await {
+    while let Some(chunk_result) = next_stream_item_with_idle_timeout(
+        &mut byte_stream,
+        DEFAULT_STREAM_IDLE_TIMEOUT,
+        "Gemini SSE stream",
+    )
+    .await?
+    {
         let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
         let text = std::str::from_utf8(&chunk)
             .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in stream: {e}")))?;
@@ -740,16 +747,17 @@ async fn parse_gemini_stream(
 pub struct GeminiProvider {
     client: reqwest::Client,
     config: ProviderConfig,
+    request_timeout: Option<Duration>,
 }
 
 impl GeminiProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let timeout = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let request_timeout = configured_request_timeout(timeout);
         // Force HTTP/1.1 + short idle pool TTL so SSE streams are not
         // interrupted by upstream HTTP/2 RST_STREAM frames on stale sockets.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(timeout))
             .pool_idle_timeout(std::time::Duration::from_secs(15))
             .pool_max_idle_per_host(5)
             .tcp_keepalive(std::time::Duration::from_secs(30))
@@ -757,7 +765,11 @@ impl GeminiProvider {
             .build()
             .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
 
-        Ok(Self { client, config })
+        Ok(Self {
+            client,
+            config,
+            request_timeout,
+        })
     }
 
     fn base_url(&self) -> &str {
@@ -815,9 +827,7 @@ impl LlmProvider for GeminiProvider {
         let api_key = self.api_key()?;
         let url = format!("{}/models?key={}", self.base_url(), api_key);
 
-        let response = self
-            .client
-            .get(&url)
+        let response = with_request_timeout(self.client.get(&url), self.request_timeout)
             .send()
             .await
             .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
@@ -855,14 +865,16 @@ impl LlmProvider for GeminiProvider {
         let (system_instruction, contents) = convert_messages(&request.messages);
         let body = build_request_body(request, system_instruction, contents);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+        let response = with_request_timeout(
+            self.client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .json(&body),
+            self.request_timeout,
+        )
+        .send()
+        .await
+        .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
 
         let response = self.check_response(response).await?;
 
@@ -907,21 +919,19 @@ impl LlmProvider for GeminiProvider {
             request.model
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                error!("Gemini stream send failed: {e}");
-                if e.is_connect() || e.is_timeout() {
-                    CoreError::TransientLlm(format!("Request failed: {e}"))
-                } else {
-                    CoreError::Llm(format!("Request failed: {e}"))
-                }
-            })?;
+        let response = send_stream_start_request(
+            self.client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .json(&body),
+            self.request_timeout,
+            "Gemini stream request",
+        )
+        .await
+        .map_err(|e| {
+            error!("Gemini stream send failed: {e}");
+            e
+        })?;
 
         info!("Gemini stream response status: {}", response.status());
         let response = self.check_response(response).await?;

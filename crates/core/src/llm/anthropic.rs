@@ -6,14 +6,16 @@
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use super::{
-    CompletionRequest, CompletionResponse, ContentPart, FinishReason, LlmProvider, Message,
-    ProviderConfig, Role, StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
+    configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
+    with_request_timeout, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
+    LlmProvider, Message, ProviderConfig, Role, StreamChunk, ToolCallDelta, ToolCallRequest,
+    ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::conversation::memory::estimate_tokens;
 use crate::error::CoreError;
@@ -500,7 +502,13 @@ async fn parse_anthropic_stream(
     // Accumulate thinking content for token estimation.
     let mut thinking_text = String::new();
 
-    while let Some(chunk_result) = byte_stream.next().await {
+    while let Some(chunk_result) = next_stream_item_with_idle_timeout(
+        &mut byte_stream,
+        DEFAULT_STREAM_IDLE_TIMEOUT,
+        "Anthropic SSE stream",
+    )
+    .await?
+    {
         let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
         let text = std::str::from_utf8(&chunk)
             .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in stream: {e}")))?;
@@ -671,16 +679,17 @@ async fn parse_anthropic_stream(
 pub struct AnthropicProvider {
     client: reqwest::Client,
     config: ProviderConfig,
+    request_timeout: Option<Duration>,
 }
 
 impl AnthropicProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let timeout = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let request_timeout = configured_request_timeout(timeout);
         // Force HTTP/1.1 + short idle pool TTL so SSE streams are not
         // interrupted by upstream HTTP/2 RST_STREAM frames on stale sockets.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(timeout))
             .pool_idle_timeout(std::time::Duration::from_secs(15))
             .pool_max_idle_per_host(5)
             .tcp_keepalive(std::time::Duration::from_secs(30))
@@ -688,7 +697,11 @@ impl AnthropicProvider {
             .build()
             .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
 
-        Ok(Self { client, config })
+        Ok(Self {
+            client,
+            config,
+            request_timeout,
+        })
     }
 
     fn base_url(&self) -> &str {
@@ -758,17 +771,19 @@ impl LlmProvider for AnthropicProvider {
         let (system, messages) = convert_messages(&request.messages);
         let body = build_request_body(request, system, messages, false);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("x-api-key", api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", "prompt-caching-2024-07-31")
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+        let response = with_request_timeout(
+            self.client
+                .post(&url)
+                .header("x-api-key", api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("anthropic-beta", "prompt-caching-2024-07-31")
+                .header("Content-Type", "application/json")
+                .json(&body),
+            self.request_timeout,
+        )
+        .send()
+        .await
+        .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
 
         let response = self.check_response(response).await?;
 
@@ -848,24 +863,22 @@ impl LlmProvider for AnthropicProvider {
 
         info!("Anthropic stream request to {url}, model={}", request.model);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("x-api-key", api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", "prompt-caching-2024-07-31")
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                error!("Anthropic stream send failed: {e}");
-                if e.is_connect() || e.is_timeout() {
-                    CoreError::TransientLlm(format!("Request failed: {e}"))
-                } else {
-                    CoreError::Llm(format!("Request failed: {e}"))
-                }
-            })?;
+        let response = send_stream_start_request(
+            self.client
+                .post(&url)
+                .header("x-api-key", api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("anthropic-beta", "prompt-caching-2024-07-31")
+                .header("Content-Type", "application/json")
+                .json(&body),
+            self.request_timeout,
+            "Anthropic stream request",
+        )
+        .await
+        .map_err(|e| {
+            error!("Anthropic stream send failed: {e}");
+            e
+        })?;
 
         info!("Anthropic stream response status: {}", response.status());
         let response = self.check_response(response).await?;
@@ -893,20 +906,22 @@ impl LlmProvider for AnthropicProvider {
         let url = format!("{}/messages", self.base_url());
         let api_key = self.api_key()?;
 
-        let response = self
-            .client
-            .post(&url)
-            .header("x-api-key", api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({
-                "model": "claude-haiku-3-5-20241022",
-                "max_tokens": 1,
-                "messages": [{"role": "user", "content": "hi"}]
-            }))
-            .send()
-            .await
-            .map_err(|e| CoreError::Llm(format!("Health check failed: {e}")))?;
+        let response = with_request_timeout(
+            self.client
+                .post(&url)
+                .header("x-api-key", api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("Content-Type", "application/json")
+                .json(&serde_json::json!({
+                    "model": "claude-haiku-3-5-20241022",
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hi"}]
+                })),
+            self.request_timeout,
+        )
+        .send()
+        .await
+        .map_err(|e| CoreError::Llm(format!("Health check failed: {e}")))?;
 
         self.check_response(response).await?;
         Ok(())

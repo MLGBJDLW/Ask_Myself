@@ -25,6 +25,30 @@ interface ThinkingBlockProps {
   children?: React.ReactNode;
 }
 
+const THINKING_MOODS = [
+  '(｡•̀ᴗ-)✧',
+  '(・・?)',
+  '( •̀ ω •́ )',
+  '(。-`ω´-)',
+  '(๑>◡<๑)',
+  '(づ｡◕‿‿◕｡)づ',
+  '(っ˘ω˘ς )',
+  '(๑˃ᴗ˂)ﻭ',
+  '(´｡• ᵕ •｡`)',
+  '(✿◠‿◠)',
+  '(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧',
+  '(๑•̀ㅂ•́)و✧',
+];
+
+function shuffledThinkingMoods(): string[] {
+  const moods = [...THINKING_MOODS];
+  for (let i = moods.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [moods[i], moods[j]] = [moods[j], moods[i]];
+  }
+  return moods;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Minimal markdown overrides (muted style)                           */
 /* ------------------------------------------------------------------ */
@@ -90,6 +114,7 @@ export function ThinkingBlock({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
   const [elapsed, setElapsed] = useState(0);
+  const [moodOrder, setMoodOrder] = useState(() => shuffledThinkingMoods());
 
   const effectiveSections = sections && sections.length > 0 ? sections : null;
   const combinedContent = effectiveSections
@@ -103,6 +128,7 @@ export function ThinkingBlock({
     if (!prevStreamingRef.current && isStreaming) {
       startTimeRef.current = Date.now();
       setElapsed(0);
+      setMoodOrder(shuffledThinkingMoods());
     }
     if (isStreaming && hasContent) {
       setExpanded(true);
@@ -153,6 +179,7 @@ export function ThinkingBlock({
       ? t('chat.thoughtFor', { seconds: elapsed.toString() })
       : t('chat.thinkingCompleted');
   const traceActive = isStreaming && !shouldReduceMotion;
+  const thinkingMood = moodOrder[Math.floor(elapsed / 6) % moodOrder.length] ?? THINKING_MOODS[0];
 
   return (
     <div className="mb-2">
@@ -170,11 +197,19 @@ export function ThinkingBlock({
           <Brain size={12} />
           <span>{summaryText}</span>
           {isStreaming && (
-            <span className="flex gap-0.5 ml-0.5">
-              <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '300ms' }} />
-            </span>
+            <>
+              <span
+                aria-hidden="true"
+                className="hidden min-w-[5.5rem] text-center font-mono text-[11px] text-accent/80 sm:inline-block"
+              >
+                {thinkingMood}
+              </span>
+              <span className="flex gap-0.5 ml-0.5">
+                <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '300ms' }} />
+              </span>
+            </>
           )}
         </span>
       </button>

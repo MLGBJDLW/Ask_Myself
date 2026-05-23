@@ -1,15 +1,23 @@
 //! Context management — prepare and trim messages for LLM requests.
 
+use std::collections::BTreeMap;
+
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use crate::conversation::memory::{
-    context_safety_buffer, estimate_tokens_for_model, model_context_window, trim_to_context_window,
+    context_safety_buffer, estimate_message_tokens_for_model, estimate_tokens_for_model,
+    model_context_window, trim_to_context_window,
 };
 use crate::llm::{ContentPart, Message, Role, ToolDefinition};
 use crate::skills::Skill;
 
-/// Approximate character limit for the system prompt (~4 000 tokens).
-const MAX_SYSTEM_PROMPT_CHARS: usize = 16_000;
+const CHARS_PER_TOKEN_ESTIMATE: usize = 4;
+const SYSTEM_PROMPT_CONTEXT_FRACTION: usize = 4;
+const MIN_SYSTEM_PROMPT_CHARS: usize = 16_000;
+const MAX_SYSTEM_PROMPT_CHARS: usize = 256_000;
+const MIN_SKILL_PROMPT_CHARS: usize = 8_000;
+const MAX_SKILL_PROMPT_CHARS: usize = 64_000;
 
 /// Build a complete message list for an LLM request, trimmed to fit the
 /// model's context window.
@@ -43,30 +51,27 @@ pub fn prepare_messages(
         .collect::<Vec<_>>()
         .join(" ");
 
-    // System message — always first, with current date/time and skills appended.
-    let skills_section = crate::skills::build_skills_section_for_query(skills, &user_query);
-    let mut full_prompt = format!(
+    // Budget prompt layers from the model context instead of using a small
+    // fixed cap. This preserves mandatory prompt and skill-index layers on
+    // modern long-context models while still protecting small-context models.
+    let max_context = context_window_override.unwrap_or_else(|| model_context_window(model));
+    let tool_overhead = estimate_tool_tokens_for_model(model, tool_definitions);
+    let effective_context = max_context
+        .saturating_sub(tool_overhead)
+        .saturating_sub(context_safety_buffer(max_context));
+    let system_prompt_budget = system_prompt_char_budget(effective_context, max_tokens_response);
+    let skills_section = crate::skills::build_skills_section_for_query_with_budget(
+        skills,
+        &user_query,
+        skill_prompt_char_budget(max_context, system_prompt_budget),
+    );
+    let base_prompt = format!(
         "{}\n\nCurrent date and time: {} (UTC)",
         system_prompt,
         Utc::now().format("%Y-%m-%d %H:%M UTC")
     );
-    // Inject skills before capping.
-    if !skills_section.is_empty() {
-        // Reserve space for the base prompt; truncate skills if they would exceed the cap.
-        let remaining = MAX_SYSTEM_PROMPT_CHARS.saturating_sub(full_prompt.len());
-        if remaining > 0 {
-            let truncated_skills = if skills_section.len() > remaining {
-                format!(
-                    "{}\n...[skills truncated]",
-                    &skills_section[..remaining.saturating_sub(25)]
-                )
-            } else {
-                skills_section
-            };
-            full_prompt.push_str(&truncated_skills);
-        }
-    }
-    let system_with_datetime = cap_system_prompt(full_prompt);
+    let system_with_datetime =
+        assemble_system_prompt(base_prompt, skills_section, system_prompt_budget);
     messages.push(Message::text(Role::System, system_with_datetime));
 
     // Prior conversation turns.
@@ -82,11 +87,6 @@ pub fn prepare_messages(
     });
 
     // Trim to fit context window, accounting for tool definition overhead.
-    let max_context = context_window_override.unwrap_or_else(|| model_context_window(model));
-    let tool_overhead = estimate_tool_tokens_for_model(model, tool_definitions);
-    let effective_context = max_context
-        .saturating_sub(tool_overhead)
-        .saturating_sub(context_safety_buffer(max_context));
     let mut trimmed = trim_to_context_window(&messages, effective_context, max_tokens_response);
 
     // If messages were evicted, inject an extractive recap into the system prompt
@@ -106,7 +106,11 @@ pub fn prepare_messages(
         if !recap.is_empty() {
             if let Some(sys) = trimmed.iter_mut().find(|m| m.role == Role::System) {
                 if let Some(ContentPart::Text { text }) = sys.parts.first_mut() {
-                    *text = cap_system_prompt(format!("{}\n\n{}", text, recap));
+                    *text = cap_text_to_chars(
+                        format!("{}\n\n{}", text, recap),
+                        system_prompt_budget,
+                        "\n...[truncated]",
+                    );
                 }
             }
         }
@@ -194,25 +198,214 @@ pub fn estimate_tool_tokens(tools: &[ToolDefinition]) -> u32 {
 pub fn estimate_tool_tokens_for_model(model: &str, tools: &[ToolDefinition]) -> u32 {
     let mut total = 0u32;
     for tool in tools {
-        let tool_text = format!("{} {} {}", tool.name, tool.description, tool.parameters);
-        total += estimate_tokens_for_model(model, &tool_text);
-        total += 10; // overhead per tool (formatting, type annotations)
+        total += estimate_tool_definition_tokens_for_model(model, tool);
     }
     total
+}
+
+/// Token contribution of a context segment in the current model request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsageSegment {
+    pub kind: String,
+    pub tokens: u32,
+}
+
+/// Best-effort breakdown of the prompt tokens used by the latest model request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsageBreakdown {
+    pub total_tokens: u32,
+    pub segments: Vec<ContextUsageSegment>,
+}
+
+pub fn estimate_context_usage_breakdown_for_model(
+    model: &str,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    actual_prompt_tokens: Option<u32>,
+) -> ContextUsageBreakdown {
+    const ORDER: [&str; 6] = [
+        "prompts",
+        "conversation",
+        "toolResults",
+        "tools",
+        "mcp",
+        "overhead",
+    ];
+
+    let mut segments: BTreeMap<&'static str, u32> = BTreeMap::new();
+    for message in messages {
+        let kind = match message.role {
+            Role::System => "prompts",
+            Role::User | Role::Assistant => "conversation",
+            Role::Tool => "toolResults",
+        };
+        add_tokens(
+            &mut segments,
+            kind,
+            estimate_message_tokens_for_model(model, message),
+        );
+    }
+    for tool in tools {
+        let kind = if is_mcp_tool_definition(tool) {
+            "mcp"
+        } else {
+            "tools"
+        };
+        add_tokens(
+            &mut segments,
+            kind,
+            estimate_tool_definition_tokens_for_model(model, tool),
+        );
+    }
+
+    let estimated_total = segments.values().copied().sum::<u32>();
+    let actual_total = actual_prompt_tokens.unwrap_or(0);
+    let total_tokens = if actual_total > 0 {
+        actual_total
+    } else {
+        estimated_total
+    };
+
+    if actual_total > 0 && estimated_total > actual_total {
+        scale_segments_to_total(&mut segments, estimated_total, actual_total);
+    } else if actual_total > estimated_total {
+        add_tokens(&mut segments, "overhead", actual_total - estimated_total);
+    }
+
+    let segments = ORDER
+        .iter()
+        .filter_map(|kind| {
+            let tokens = segments.get(*kind).copied().unwrap_or(0);
+            (tokens > 0).then(|| ContextUsageSegment {
+                kind: (*kind).to_string(),
+                tokens,
+            })
+        })
+        .collect();
+
+    ContextUsageBreakdown {
+        total_tokens,
+        segments,
+    }
+}
+
+fn estimate_tool_definition_tokens_for_model(model: &str, tool: &ToolDefinition) -> u32 {
+    let tool_text = format!("{} {} {}", tool.name, tool.description, tool.parameters);
+    estimate_tokens_for_model(model, &tool_text) + 10
+}
+
+fn is_mcp_tool_definition(tool: &ToolDefinition) -> bool {
+    tool.name == "mcp_tool" || tool.name.starts_with("mcp__")
+}
+
+fn add_tokens(segments: &mut BTreeMap<&'static str, u32>, kind: &'static str, tokens: u32) {
+    if tokens == 0 {
+        return;
+    }
+    *segments.entry(kind).or_insert(0) += tokens;
+}
+
+fn scale_segments_to_total(
+    segments: &mut BTreeMap<&'static str, u32>,
+    estimated_total: u32,
+    actual_total: u32,
+) {
+    if estimated_total == 0 {
+        return;
+    }
+
+    let largest_kind = segments
+        .iter()
+        .max_by_key(|(_, tokens)| *tokens)
+        .map(|(kind, _)| *kind);
+    let mut scaled_total = 0u32;
+
+    for tokens in segments.values_mut() {
+        let scaled = ((*tokens as u64) * (actual_total as u64) / (estimated_total as u64)) as u32;
+        *tokens = scaled;
+        scaled_total = scaled_total.saturating_add(scaled);
+    }
+
+    if let Some(kind) = largest_kind {
+        let remainder = actual_total.saturating_sub(scaled_total);
+        if remainder > 0 {
+            *segments.entry(kind).or_insert(0) += remainder;
+        }
+    }
+}
+
+fn system_prompt_char_budget(effective_context_tokens: u32, reserved_for_response: u32) -> usize {
+    let available_tokens = effective_context_tokens.saturating_sub(reserved_for_response) as usize;
+    if available_tokens == 0 {
+        return MIN_SYSTEM_PROMPT_CHARS
+            .min((effective_context_tokens as usize).saturating_mul(CHARS_PER_TOKEN_ESTIMATE));
+    }
+    let available_chars = available_tokens.saturating_mul(CHARS_PER_TOKEN_ESTIMATE);
+    let target = (available_chars / SYSTEM_PROMPT_CONTEXT_FRACTION)
+        .max(MIN_SYSTEM_PROMPT_CHARS)
+        .min(MAX_SYSTEM_PROMPT_CHARS);
+    target.min(available_chars)
+}
+
+fn skill_prompt_char_budget(context_window_tokens: u32, system_prompt_budget: usize) -> usize {
+    let one_percent_context_chars =
+        (context_window_tokens as usize).saturating_mul(CHARS_PER_TOKEN_ESTIMATE) / 100;
+    one_percent_context_chars
+        .max(MIN_SKILL_PROMPT_CHARS)
+        .min(MAX_SKILL_PROMPT_CHARS)
+        .min(system_prompt_budget / 2)
+}
+
+fn assemble_system_prompt(base_prompt: String, skills_section: String, max_chars: usize) -> String {
+    if skills_section.is_empty() {
+        return cap_text_to_chars(base_prompt, max_chars, "\n...[truncated]");
+    }
+
+    let skill_budget = skills_section.len().min(max_chars);
+    let base_budget = max_chars.saturating_sub(skill_budget);
+    let mut prompt = cap_text_to_chars(
+        base_prompt,
+        base_budget,
+        "\n...[system prompt truncated before skills]",
+    );
+    let remaining = max_chars.saturating_sub(prompt.len());
+    if remaining > 0 {
+        prompt.push_str(&cap_text_to_chars(
+            skills_section,
+            remaining,
+            "\n...[skills truncated]",
+        ));
+    }
+    prompt
 }
 
 /// Enforce `MAX_SYSTEM_PROMPT_CHARS` on the system prompt.
 ///
 /// If the prompt exceeds the limit it is truncated on a word boundary and
 /// a `...[truncated]` marker is appended so the LLM can see signalling.
+#[cfg(test)]
 fn cap_system_prompt(text: String) -> String {
-    if text.len() <= MAX_SYSTEM_PROMPT_CHARS {
+    cap_text_to_chars(text, MAX_SYSTEM_PROMPT_CHARS, "\n...[truncated]")
+}
+
+fn cap_text_to_chars(text: String, max_chars: usize, marker: &str) -> String {
+    if text.len() <= max_chars {
         return text;
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    let marker_budget = marker.len().min(max_chars);
+    let content_limit = max_chars.saturating_sub(marker_budget);
+    if content_limit == 0 {
+        return marker.chars().take(max_chars).collect();
     }
     let safe_limit = text
         .char_indices()
         .map(|(index, _)| index)
-        .take_while(|index| *index <= MAX_SYSTEM_PROMPT_CHARS)
+        .take_while(|index| *index <= content_limit)
         .last()
         .unwrap_or(0);
     let truncated = &text[..safe_limit];
@@ -220,7 +413,7 @@ fn cap_system_prompt(text: String) -> String {
         .rfind('\n')
         .or_else(|| truncated.rfind(' '))
         .unwrap_or(safe_limit);
-    format!("{}\n...[truncated]", &text[..cut])
+    format!("{}{}", &text[..cut], marker)
 }
 
 /// Truncate text to `max_chars` on a word boundary, appending "..." if truncated.
@@ -412,6 +605,83 @@ mod tests {
     }
 
     #[test]
+    fn test_prepare_messages_preserves_skills_with_long_system_prompt() {
+        let skills = vec![Skill {
+            id: "skill-reserve".into(),
+            name: "Reserved Skill".into(),
+            description: "Use when the base prompt is long".into(),
+            content: "Always load this skill before using its workflow.".into(),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin: false,
+            interface: crate::skills::SkillInterfaceMetadata::default(),
+            dependencies: crate::skills::SkillDependencies::default(),
+            policy: crate::skills::SkillPolicy::default(),
+            source_path: None,
+            resources: Vec::new(),
+            resource_bundle: Vec::new(),
+        }];
+        let long_prompt = "Core instruction.\n".repeat(24_000);
+        let result = prepare_messages(
+            &long_prompt,
+            &[],
+            &[ContentPart::Text {
+                text: "Hi".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            None,
+            &skills,
+            &[],
+        );
+        let sys_text = result[0].text_content();
+        assert!(sys_text.len() <= MAX_SYSTEM_PROMPT_CHARS);
+        assert!(sys_text.contains("system prompt truncated before skills"));
+        assert!(
+            sys_text.contains("Available Skills"),
+            "skill index should survive a long base prompt"
+        );
+        assert!(sys_text.contains("Reserved Skill"));
+    }
+
+    #[test]
+    fn test_prepare_messages_preserves_skills_with_default_system_prompt() {
+        let skills = vec![Skill {
+            id: "skill-default-reserve".into(),
+            name: "Default Prompt Skill".into(),
+            description: "Use with the default prompt".into(),
+            content: "Load this skill from the compact index.".into(),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin: false,
+            interface: crate::skills::SkillInterfaceMetadata::default(),
+            dependencies: crate::skills::SkillDependencies::default(),
+            policy: crate::skills::SkillPolicy::default(),
+            source_path: None,
+            resources: Vec::new(),
+            resource_bundle: Vec::new(),
+        }];
+        let result = prepare_messages(
+            &super::super::default_system_prompt(),
+            &[],
+            &[ContentPart::Text {
+                text: "Hi".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            None,
+            &skills,
+            &[],
+        );
+        let sys_text = result[0].text_content();
+        assert!(sys_text.len() <= MAX_SYSTEM_PROMPT_CHARS);
+        assert!(sys_text.contains("Available Skills"));
+        assert!(sys_text.contains("Default Prompt Skill"));
+    }
+
+    #[test]
     fn test_estimate_tool_tokens() {
         let tools = vec![ToolDefinition {
             name: "search".into(),
@@ -420,6 +690,64 @@ mod tests {
         }];
         let tokens = estimate_tool_tokens(&tools);
         assert!(tokens > 10, "Tool tokens should be non-trivial");
+    }
+
+    #[test]
+    fn context_usage_breakdown_splits_prompt_conversation_tools_and_mcp() {
+        let mut assistant = msg(Role::Assistant, "I'll use a tool.");
+        assistant.tool_calls = Some(vec![crate::llm::ToolCallRequest {
+            id: "call_1".into(),
+            name: "search".into(),
+            arguments: r#"{"query":"rust"}"#.into(),
+            thought_signature: None,
+        }]);
+        let messages = vec![
+            msg(Role::System, "System prompt"),
+            msg(Role::User, "Find Rust docs"),
+            assistant,
+            Message::text_with_name(Role::Tool, "Search result", "call_1"),
+        ];
+        let tools = vec![
+            ToolDefinition {
+                name: "search_knowledge_base".into(),
+                description: "Search local knowledge".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "mcp__docs__lookup".into(),
+                description: "Lookup docs from MCP".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+
+        let breakdown =
+            estimate_context_usage_breakdown_for_model("gpt-4o", &messages, &tools, None);
+        let kinds = breakdown
+            .segments
+            .iter()
+            .map(|segment| segment.kind.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(kinds.contains(&"prompts"));
+        assert!(kinds.contains(&"conversation"));
+        assert!(kinds.contains(&"toolResults"));
+        assert!(kinds.contains(&"tools"));
+        assert!(kinds.contains(&"mcp"));
+    }
+
+    #[test]
+    fn context_usage_breakdown_reconciles_to_actual_prompt_tokens() {
+        let messages = vec![msg(Role::System, "System prompt"), msg(Role::User, "Hello")];
+        let breakdown =
+            estimate_context_usage_breakdown_for_model("gpt-4o", &messages, &[], Some(10));
+        let segment_total = breakdown
+            .segments
+            .iter()
+            .map(|segment| segment.tokens)
+            .sum::<u32>();
+
+        assert_eq!(breakdown.total_tokens, 10);
+        assert_eq!(segment_total, 10);
     }
 
     #[test]

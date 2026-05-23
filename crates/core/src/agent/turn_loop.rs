@@ -76,6 +76,7 @@ impl AgentExecutor {
                     message: msg.clone(),
                     usage_total: Usage::default(),
                     last_prompt_tokens: 0,
+                    context_breakdown: None,
                     cached: false,
                     finish_reason: Some("stop".to_string()),
                 })
@@ -223,6 +224,7 @@ impl AgentExecutor {
 
         let mut total_usage = Usage::default();
         let mut last_prompt_tokens: u32 = 0;
+        let mut last_context_breakdown: Option<context::ContextUsageBreakdown> = None;
         let mut sort_order = next_sort_order;
         let mut accumulated_content = String::new();
         let mut last_iteration_content = String::new();
@@ -231,7 +233,6 @@ impl AgentExecutor {
         for event in loop_recorder.events().iter().cloned() {
             append_persisted_trace_loop_event(&mut persisted_trace_items, event);
         }
-        append_persisted_trace_skill_selection(&mut persisted_trace_items, &skills);
         append_persisted_trace_visibility(
             &mut persisted_trace_items,
             &route_plan.visibility_decision,
@@ -311,6 +312,7 @@ impl AgentExecutor {
                             &mut accumulated_content,
                             total_usage.clone(),
                             last_prompt_tokens,
+                            last_context_breakdown.clone(),
                         )
                         .await;
                     turn_state.finish(TurnOutcome::Cancelled);
@@ -446,12 +448,14 @@ impl AgentExecutor {
                     model,
                     messages: &mut messages,
                     context_pipeline,
+                    tool_defs: &tool_defs,
                     turn_state: &mut turn_state,
                     loop_recorder: &mut loop_recorder,
                     persisted_trace_items: &mut persisted_trace_items,
                     trace: &mut trace,
                     total_usage: &mut total_usage,
                     last_prompt_tokens: &mut last_prompt_tokens,
+                    last_context_breakdown: &mut last_context_breakdown,
                 },
                 iteration,
                 tool_calls.len(),
@@ -581,6 +585,7 @@ impl AgentExecutor {
                         cache_source_filter.as_deref(),
                         total_usage,
                         last_prompt_tokens,
+                        last_context_breakdown,
                         last_finish_reason,
                     )
                     .await;
@@ -706,6 +711,7 @@ impl AgentExecutor {
                 final_content,
                 total_usage,
                 last_prompt_tokens,
+                last_context_breakdown,
                 last_finish_reason,
             )
             .await;

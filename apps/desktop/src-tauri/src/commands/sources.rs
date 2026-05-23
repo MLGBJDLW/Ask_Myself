@@ -551,14 +551,13 @@ fn spawn_learned_success_capture(
         Option<String>,
     ) = match db.get_default_agent_config() {
         Ok(Some(db_config)) => {
-            let app_cfg = db.load_app_config().unwrap_or_default();
             if let Some(ref summ_provider_name) = db_config.summarization_provider {
                 let summ_config = ProviderConfig {
                     provider_type: provider_type_for_parts(summ_provider_name, None),
                     api_key: Some(db_config.api_key.clone()),
                     base_url: db_config.base_url.clone(),
                     org_id: None,
-                    timeout_secs: Some(app_cfg.llm_timeout_secs),
+                    timeout_secs: None,
                 };
                 match create_provider(summ_config) {
                     Ok(p) => {

@@ -26,6 +26,14 @@
   --color-danger-hover: #f87171;
   --color-info: #3b82f6;
 
+  --context-prompts: #38bdf8;
+  --context-conversation: #2dd4bf;
+  --context-tool-results: #f59e0b;
+  --context-tools: #a78bfa;
+  --context-mcp: #f472b6;
+  --context-overhead: #94a3b8;
+  --context-segment-separator: rgba(10, 10, 15, 0.42);
+
   --color-border: #ffffff10;
   --color-border-hover: #ffffff20;
   --color-border-active: #14B8A680;
@@ -69,6 +77,14 @@
   --color-danger-hover: #ef4444;
   --color-info: #2563eb;
 
+  --context-prompts: #0284c7;
+  --context-conversation: #0d9488;
+  --context-tool-results: #d97706;
+  --context-tools: #7c3aed;
+  --context-mcp: #db2777;
+  --context-overhead: #64748b;
+  --context-segment-separator: rgba(248, 250, 252, 0.68);
+
   --color-border: #0f172a10;
   --color-border-hover: #0f172a20;
   --color-border-active: #0d948880;
@@ -101,6 +117,14 @@
   --color-danger: #ef4444;
   --color-danger-hover: #f87171;
   --color-info: #3b82f6;
+
+  --context-prompts: #38bdf8;
+  --context-conversation: #2dd4bf;
+  --context-tool-results: #f59e0b;
+  --context-tools: #a78bfa;
+  --context-mcp: #f472b6;
+  --context-overhead: #94a3b8;
+  --context-segment-separator: rgba(15, 23, 42, 0.58);
 
   --color-border: #f8fafc10;
   --color-border-hover: #f8fafc20;
@@ -135,6 +159,14 @@
   --color-danger-hover: #ff8f98;
   --color-info: #6fc7d8;
 
+  --context-prompts: #6fc7d8;
+  --context-conversation: #74d99f;
+  --context-tool-results: #f6c65b;
+  --context-tools: #b99cff;
+  --context-mcp: #ff8fb7;
+  --context-overhead: #9bb2a5;
+  --context-segment-separator: rgba(16, 20, 18, 0.48);
+
   --color-border: #dfffe614;
   --color-border-hover: #dfffe628;
   --color-border-active: #ff7a5c88;
@@ -167,6 +199,14 @@
   --color-danger: #d2264a;
   --color-danger-hover: #e54865;
   --color-info: #0f766e;
+
+  --context-prompts: #0284c7;
+  --context-conversation: #0f766e;
+  --context-tool-results: #b7791f;
+  --context-tools: #7e22ce;
+  --context-mcp: #c026d3;
+  --context-overhead: #718173;
+  --context-segment-separator: rgba(251, 252, 247, 0.72);
 
   --color-border: #1a211b12;
   --color-border-hover: #1a211b24;
@@ -309,6 +349,15 @@ body {
 
 .chat-context-hud-fill {
   transition: width 520ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.chat-context-hud-segment {
+  box-shadow: inset -1px 0 0 var(--context-segment-separator);
+  transition: width 520ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.chat-context-hud-segment:last-child {
+  box-shadow: none;
 }
 
 .chat-context-hud-fill::after {

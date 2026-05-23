@@ -37,7 +37,7 @@ pub async fn agent_chat_cmd(
 
     // 3. Create LLM provider.
     let app_cfg = state.db.load_app_config().unwrap_or_default();
-    let provider_config = db_config_to_provider_config(&db_config, Some(app_cfg.llm_timeout_secs));
+    let provider_config = db_config_to_provider_config(&db_config, None);
     let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
 
     // 4. Load conversation history and convert to LLM messages.
@@ -284,16 +284,8 @@ pub async fn agent_chat_cmd(
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
-        tool_timeout_secs: Some(config_timeout_secs(
-            db_config.tool_timeout_secs,
-            app_cfg.tool_timeout_secs,
-            30,
-        )),
-        agent_timeout_secs: Some(config_timeout_secs(
-            db_config.agent_timeout_secs,
-            app_cfg.agent_timeout_secs,
-            180,
-        )),
+        tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
+        agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
         dynamic_tool_visibility: app_cfg.dynamic_tool_visibility,
         trace_enabled: app_cfg.trace_enabled,
@@ -438,7 +430,7 @@ pub async fn agent_chat_cmd(
                 api_key: Some(db_config.api_key.clone()),
                 base_url: db_config.base_url.clone(),
                 org_id: None,
-                timeout_secs: Some(app_cfg.llm_timeout_secs),
+                timeout_secs: None,
             };
             create_provider(summ_config).ok()
         } else if db_config.summarization_model.is_some() {
@@ -692,7 +684,7 @@ pub async fn agent_chat_cmd(
     let forwarder_terminal_emitted = Arc::clone(&terminal_emitted);
     let command_stream_event_seq = Arc::clone(&stream_event_seq);
 
-    let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(180) as u64;
+    let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(0) as u64;
 
     const STREAM_KEEPALIVE_INTERVAL_SECS: u64 = 10;
 
@@ -962,7 +954,7 @@ pub async fn agent_chat_cmd(
                             api_key: Some(db_config_for_extraction.api_key.clone()),
                             base_url: db_config_for_extraction.base_url.clone(),
                             org_id: None,
-                            timeout_secs: Some(app_cfg.llm_timeout_secs),
+                            timeout_secs: None,
                         }
                     } else {
                         ProviderConfig {
@@ -970,7 +962,7 @@ pub async fn agent_chat_cmd(
                             api_key: Some(db_config_for_extraction.api_key.clone()),
                             base_url: db_config_for_extraction.base_url.clone(),
                             org_id: None,
-                            timeout_secs: Some(app_cfg.llm_timeout_secs),
+                            timeout_secs: None,
                         }
                     };
                 if let Ok(extract_llm) = create_provider(extract_provider_config) {

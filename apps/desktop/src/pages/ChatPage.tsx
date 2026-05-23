@@ -657,6 +657,7 @@ export function ChatPage() {
               thinkingText={chat.thinkingText}
               isThinking={chat.isThinking}
               toolCalls={chat.toolCalls}
+              taskRun={chat.taskRun}
               isStreaming={chat.isStreaming}
               error={chat.error}
               onRetry={chat.retry}

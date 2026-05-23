@@ -21,7 +21,10 @@ pub use model::{
     SkillInterfaceMetadata, SkillPolicy, SkillResourceEncoding, SkillResourceFile,
     SkillResourceInfo, SkillResourceKind, SkillToolDependency, SkillWarning, SkillWarningSeverity,
 };
-pub use prompt::{build_skills_section, build_skills_section_for_query, export_skill_to_md};
+pub use prompt::{
+    build_skills_section, build_skills_section_for_query,
+    build_skills_section_for_query_with_budget, export_skill_to_md,
+};
 pub use registry::{load_builtin_skills, parse_skill_file};
 pub use scanner::scan_skill_content;
 pub use selector::{
@@ -387,16 +390,16 @@ mod tests {
     }
 
     #[test]
-    fn test_get_active_skills_short_query_returns_all() {
+    fn test_get_active_skills_short_query_returns_none() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
 
         let active = get_active_skills_for_query(&db, "", 20).unwrap();
-        assert_eq!(active.len(), load_builtin_skills().len());
+        assert!(active.is_empty());
     }
 
     #[test]
-    fn test_short_query_prefers_user_skills_before_builtins() {
+    fn test_explicit_short_query_selects_named_skill() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
         let saved = db
@@ -410,12 +413,12 @@ mod tests {
             })
             .unwrap();
 
-        let active = get_active_skills_for_query(&db, "", 3).unwrap();
+        let active = get_active_skills_for_query(&db, "use Local House Style", 1).unwrap();
         assert_eq!(
             active.first().map(|s| s.id.as_str()),
             Some(saved.id.as_str())
         );
-        assert_eq!(active.len(), 3);
+        assert_eq!(active.len(), 1);
     }
 
     #[test]
@@ -472,15 +475,14 @@ mod tests {
     }
 
     #[test]
-    fn test_get_active_skills_no_match_falls_back_all() {
+    fn test_get_active_skills_no_match_returns_none() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
 
         let active = get_active_skills_for_query(&db, "zzzxxx qqqyyy wwwvvv", 20).unwrap();
-        assert_eq!(
-            active.len(),
-            load_builtin_skills().len(),
-            "fallback: return all built-ins"
+        assert!(
+            active.is_empty(),
+            "unmatched queries should not load all skills"
         );
     }
 

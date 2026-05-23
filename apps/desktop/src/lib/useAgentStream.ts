@@ -5,7 +5,7 @@ import type { ImageAttachment, ApprovalRequest } from '../types/conversation';
 import type { StreamState } from './streamStore';
 
 // Re-export types from streamStore for backward compatibility
-export type { ToolCallEvent, StreamRoundEvent, TraceEvent, UsageTotal } from './streamStore';
+export type { ContextUsageBreakdown, ToolCallEvent, StreamRoundEvent, TraceEvent, UsageTotal } from './streamStore';
 
 type AutoCompactedInfo = { summary: string } | null;
 type StreamRoundEvent = import('./streamStore').StreamRoundEvent;

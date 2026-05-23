@@ -1,6 +1,6 @@
 use super::model::Skill;
 
-const MAX_SKILL_SECTION_CHARS: usize = 8_000;
+const DEFAULT_MAX_SKILL_SECTION_CHARS: usize = 8_000;
 const MAX_SKILL_LINE_CHARS: usize = 420;
 
 fn truncate_excerpt(text: &str, max_chars: usize) -> String {
@@ -66,22 +66,38 @@ fn render_dependencies(skill: &Skill) -> String {
 
 /// Build a compact metadata-first skills section for system prompt injection.
 ///
-/// The model sees what skills are available, but not their full instructions.
-/// It must explicitly activate a skill through `manage_skill` before relying on
+/// The model sees the available skill index, but not full instructions.
+/// It must load matching skills through `manage_skill` before relying on
 /// procedural details. This mirrors progressive disclosure while keeping Nexa's
 /// existing database-backed skill lifecycle.
 pub fn build_skills_section_for_query(skills: &[Skill], _query: &str) -> String {
+    build_skills_section_for_query_with_budget(skills, _query, DEFAULT_MAX_SKILL_SECTION_CHARS)
+}
+
+pub fn build_skills_section_for_query_with_budget(
+    skills: &[Skill],
+    _query: &str,
+    max_chars: usize,
+) -> String {
     if skills.is_empty() {
+        return String::new();
+    }
+    if max_chars == 0 {
         return String::new();
     }
 
     let mut section = String::from(
         "\n\n## Available Skills\n\
-         Skills are procedural capabilities available for this turn. This list is metadata only; \
+         Skills are procedural capabilities available to load on demand. This list is metadata only; \
          do not treat it as the full skill instructions.\n\
-         - If a skill is relevant or the user explicitly names it, call `manage_skill` with \
-         action `activate_skill` and the `skill_id` before following the skill.\n\
-         - If an activated skill references bundled files, call `manage_skill` with action \
+         - At the start of each turn, scan this index. If a skill clearly matches the user task, \
+         your next action should be `manage_skill` with action `activate_skill` and the `skill_id` \
+         before you answer or use that workflow.\n\
+         - Use `view_skill` only when you need to inspect a skill without committing \
+         to its workflow.\n\
+         - Do not activate unrelated skills. If no listed skill clearly matches but the user asks \
+         for reusable skills, call `manage_skill` with action `list_skills`.\n\
+         - If a loaded skill references bundled files, call `manage_skill` with action \
          `view_resource`, `skill_id`, and `resource_path` to inspect the exact resource.\n\
          - Respect each skill's policy; skills with implicit=false should only be used when \
          explicitly requested or pinned by persona.\n",
@@ -132,8 +148,8 @@ pub fn build_skills_section_for_query(skills: &[Skill], _query: &str) -> String 
         ));
         section.push_str(&format!("resources: {}\n", render_resource_paths(skill)));
 
-        if section.len() >= MAX_SKILL_SECTION_CHARS {
-            section = truncate_excerpt(&section, MAX_SKILL_SECTION_CHARS);
+        if section.len() >= max_chars {
+            section = truncate_excerpt(&section, max_chars);
             section.push_str("\n...[skills metadata truncated]");
             break;
         }

@@ -108,6 +108,9 @@ pub use sources::*;
 pub use watcher::*;
 pub use workflows::*;
 
+const DEFAULT_MCP_CALL_TIMEOUT_SECS: u64 = 300;
+const UNLIMITED_EXECUTOR_TIMEOUT_SECS: u32 = 0;
+
 /// Application state holding the database connection.
 pub struct AppState {
     pub db: Arc<Database>,
@@ -206,9 +209,8 @@ async fn sync_enabled_mcp_servers(
     manager: &mut nexa_core::mcp::McpManager,
 ) -> Result<HashMap<String, String>, String> {
     let enabled_servers = db.get_enabled_mcp_servers().map_err(|e| e.to_string())?;
-    let app_cfg = db.load_app_config().unwrap_or_default();
     Ok(manager
-        .sync_servers(&enabled_servers, Some(app_cfg.mcp_call_timeout_secs))
+        .sync_servers(&enabled_servers, Some(DEFAULT_MCP_CALL_TIMEOUT_SECS))
         .await)
 }
 
@@ -721,15 +723,6 @@ fn sanitize_tool_call_history(mut messages: Vec<Message>) -> Vec<Message> {
     messages
 }
 
-fn config_timeout_secs(value: Option<i64>, app_value: i64, default_value: u32) -> u32 {
-    let secs = value.unwrap_or(app_value);
-    if secs < 0 {
-        default_value
-    } else {
-        secs.min(u32::MAX as i64) as u32
-    }
-}
-
 /// After an interrupted agent execution, check for assistant messages with
 /// `tool_calls` that lack corresponding tool response messages, and insert
 /// synthetic error responses so the conversation history remains valid.
@@ -1038,6 +1031,55 @@ mod tests {
                     .expect("large artifact string");
                 assert!(large.contains("[truncated]"));
                 assert!(large.chars().count() <= MAX_FRONTEND_ARTIFACT_STRING_CHARS);
+            }
+            other => panic!("unexpected compacted event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compact_agent_event_preserves_full_diff_artifact_shape() {
+        let lines = (0..400)
+            .map(|idx| {
+                serde_json::json!({
+                    "type": "addition",
+                    "oldLine": null,
+                    "newLine": idx + 1,
+                    "content": format!("line {}", idx + 1),
+                })
+            })
+            .collect::<Vec<_>>();
+        let event = AgentEvent::ToolCallResult {
+            call_id: "call-1".to_string(),
+            tool_name: "edit_file".to_string(),
+            content: "ok".to_string(),
+            is_error: false,
+            artifacts: Some(serde_json::json!({
+                "diff": {
+                    "path": "src/main.rs",
+                    "operation": "str_replace",
+                    "hunks": [{
+                        "oldStart": 1,
+                        "newStart": 1,
+                        "oldLines": 0,
+                        "newLines": 400,
+                        "lines": lines,
+                    }],
+                },
+            })),
+        };
+
+        let compacted = compact_agent_event_for_frontend(event);
+
+        match compacted {
+            AgentEvent::ToolCallResult {
+                artifacts: Some(artifacts),
+                ..
+            } => {
+                let lines = artifacts["diff"]["hunks"][0]["lines"]
+                    .as_array()
+                    .expect("diff lines array");
+                assert_eq!(lines.len(), 400);
+                assert_eq!(lines[399]["newLine"].as_u64(), Some(400));
             }
             other => panic!("unexpected compacted event: {other:?}"),
         }

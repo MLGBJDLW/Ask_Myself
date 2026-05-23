@@ -986,8 +986,14 @@ export const downloadOcrModels = (config: OcrConfig) =>
 export const getAppConfig = () =>
   invoke<AppConfig>('get_app_config_cmd');
 
-export const saveAppConfig = (config: AppConfig) =>
-  invoke<void>('save_app_config_cmd', { config });
+export const saveAppConfig = (config: AppConfig) => {
+  const configToSave = { ...config } as Record<string, unknown>;
+  delete configToSave.toolTimeoutSecs;
+  delete configToSave.agentTimeoutSecs;
+  delete configToSave.llmTimeoutSecs;
+  delete configToSave.mcpCallTimeoutSecs;
+  return invoke<void>('save_app_config_cmd', { config: configToSave });
+};
 
 export const getWebSearchStatus = (webSearch?: WebSearchConfig) =>
   invoke<WebSearchProviderStatus[]>('get_web_search_status_cmd', { webSearch });

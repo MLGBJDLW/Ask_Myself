@@ -22,6 +22,8 @@ import {
   Presentation,
   Table2,
   ClipboardList,
+  BookOpen,
+  CheckCircle2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -55,9 +57,11 @@ import {
   normalizeThinking,
   persistedTraceItemsToTimelineSections,
   persistedTraceItemToTimelineSections,
+  skillRefsFromTraceItems,
   toolCallToTimelineSection,
   turnLifecycleTimelineSections,
   visibleTraceEventsForTimeline,
+  type TimelineSkillRef,
   type TimelineSection,
 } from "../../lib/streaming/timelineViewModel";
 import { ToolCallCard } from "../../components/chat/ToolCallCard";
@@ -79,6 +83,7 @@ import { MessageBubble } from "../../components/chat/MessageBubble";
 import { CitationChip } from "../../components/chat/EvidenceCard";
 import { Skeleton } from "../../components/ui/Skeleton";
 import type {
+  AgentTaskRun,
   ArtifactPayload,
   ConversationMessage,
   ConversationTurn,
@@ -93,6 +98,7 @@ interface ChatMessagesProps {
   thinkingText: string;
   isThinking: boolean;
   toolCalls: ToolCallEvent[];
+  taskRun?: AgentTaskRun | null;
   isStreaming: boolean;
   error?: string | null;
   onRetry?: () => void;
@@ -223,11 +229,234 @@ function buildExplicitEvidenceItems(
 const INSTANT_TRANSITION = { duration: 0 };
 const NEAR_BOTTOM_THRESHOLD = 96;
 const FOLLOW_RELEASE_THRESHOLD = 160;
+const WAITING_MOODS = [
+  "(｡•́‿•̀｡)",
+  "(づ｡◕‿‿◕｡)づ",
+  "(๑>◡<๑)",
+  "(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧",
+  "(ᵔ◡ᵔ)",
+  "(｡•̀ᴗ-)✧",
+  "(っ˘ω˘ς )",
+  "(๑˃ᴗ˂)ﻭ",
+  "(ง •̀_•́)ง",
+  "(´｡• ᵕ •｡`)",
+  "(✿◠‿◠)",
+  "(๑•̀ㅂ•́)و✧",
+];
+
+function randomMood(moods: readonly string[]): string {
+  return moods[Math.floor(Math.random() * moods.length)] ?? moods[0] ?? "";
+}
+
+function WaitingMoodBadge() {
+  const mood = useMemo(() => randomMood(WAITING_MOODS), []);
+  return (
+    <span
+      aria-hidden="true"
+      className="hidden rounded-md bg-surface-0/55 px-1.5 py-0.5 font-mono text-[11px] text-accent/80 sm:inline-block"
+    >
+      {mood}
+    </span>
+  );
+}
+
+interface TurnSkillDisplayRef {
+  key: string;
+  label: string;
+  description?: string;
+  shortDescription?: string;
+  builtin?: boolean;
+  sourcePath?: string | null;
+  implicit?: boolean;
+  activated?: boolean;
+}
+
+const TURN_SKILL_VISIBLE_LIMIT = 6;
+
+function asObjectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function titleCaseSkillSlug(value: string): string {
+  const normalized = value
+    .replace(/^builtin[-_:]/i, "")
+    .replace(/[_-]+/g, " ")
+    .trim();
+  if (!normalized) return value.trim();
+  return normalized.replace(/\b[a-z]/g, (char) => char.toUpperCase());
+}
+
+function skillLabelKey(
+  id: unknown,
+  name: unknown,
+  displayName: unknown,
+): { label: string; key: string } | null {
+  const display = typeof displayName === "string" ? displayName.trim() : "";
+  const skillName = typeof name === "string" ? name.trim() : "";
+  const skillId = typeof id === "string" ? id.trim() : "";
+  const rawLabel = display || skillName || skillId;
+  if (!rawLabel) return null;
+
+  const label = display ? display : titleCaseSkillSlug(rawLabel);
+  const key = (skillId || skillName || label).toLowerCase();
+  return { label, key };
+}
+
+function turnSkillFromTimeline(skill: TimelineSkillRef): TurnSkillDisplayRef {
+  return {
+    key: skill.key,
+    label: skill.label,
+    description: skill.description,
+    shortDescription: skill.shortDescription,
+    builtin: skill.builtin,
+    sourcePath: skill.sourcePath ?? null,
+    implicit: skill.implicit,
+    activated: skill.activated,
+  };
+}
+
+function selectedSkillRefFromRecord(
+  skill: Record<string, unknown>,
+): TurnSkillDisplayRef | null {
+  if (skill.enabled === false) return null;
+  const ref = skillLabelKey(skill.id, skill.name, skill.displayName);
+  if (!ref) return null;
+  return {
+    ...ref,
+    description:
+      typeof skill.description === "string" ? skill.description : undefined,
+    shortDescription:
+      typeof skill.shortDescription === "string"
+        ? skill.shortDescription
+        : undefined,
+    builtin: typeof skill.builtin === "boolean" ? skill.builtin : undefined,
+    sourcePath:
+      typeof skill.sourcePath === "string" ? skill.sourcePath : undefined,
+    implicit: typeof skill.implicit === "boolean" ? skill.implicit : undefined,
+    activated: false,
+  };
+}
+
+function findSelectedSkillsArtifact(
+  artifacts: AgentTaskRun["artifacts"],
+): Record<string, unknown> | null {
+  if (Array.isArray(artifacts)) {
+    for (const item of artifacts) {
+      const selected = findSelectedSkillsArtifact(item as AgentTaskRun["artifacts"]);
+      if (selected) return selected;
+    }
+    return null;
+  }
+
+  const record = asObjectRecord(artifacts);
+  if (!record) return null;
+  if (record.kind === "selectedSkills") return record;
+
+  const nested = asObjectRecord(record.selectedSkills);
+  return nested?.kind === "selectedSkills" ? nested : null;
+}
+
+function extractTaskRunSelectedSkills(
+  artifacts: AgentTaskRun["artifacts"],
+): TurnSkillDisplayRef[] {
+  const selected = findSelectedSkillsArtifact(artifacts);
+  if (!selected || !Array.isArray(selected.skills)) return [];
+
+  const skills: TurnSkillDisplayRef[] = [];
+  const seen = new Set<string>();
+  for (const rawSkill of selected.skills) {
+    const skill = asObjectRecord(rawSkill);
+    const ref = skill ? selectedSkillRefFromRecord(skill) : null;
+    if (!ref || seen.has(ref.key)) continue;
+    seen.add(ref.key);
+    skills.push(ref);
+  }
+  return skills;
+}
+
+function isActiveTaskRunStatus(status: string | null | undefined): boolean {
+  return (
+    status === "queued" ||
+    status === "running" ||
+    status === "waiting_approval" ||
+    status === "cancelling"
+  );
+}
+
+function TurnSkillStrip({
+  skills,
+  live,
+}: {
+  skills: TurnSkillDisplayRef[];
+  live: boolean;
+}) {
+  const { t } = useTranslation();
+  if (skills.length === 0) return null;
+
+  const visibleSkills = skills.slice(0, TURN_SKILL_VISIBLE_LIMIT);
+  const hiddenCount = Math.max(0, skills.length - visibleSkills.length);
+
+  return (
+    <div className="mb-2 flex justify-start" data-testid="turn-skill-strip">
+      <div className="w-full min-w-0 rounded-lg border border-border/70 bg-surface-1/75 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex min-w-0 items-center gap-1.5 text-xs font-medium text-text-secondary">
+            <BookOpen className="h-3.5 w-3.5 shrink-0 text-accent" />
+            <span className="truncate">
+              {t(live ? "chat.turnSkillsLiveTitle" : "chat.turnSkillsTitle")}
+            </span>
+          </span>
+          <span className="rounded-md bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+            {t("chat.turnSkillsCount", { count: String(skills.length) })}
+          </span>
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            {visibleSkills.map((skill) => {
+              const detail =
+                skill.shortDescription ||
+                skill.description ||
+                skill.sourcePath ||
+                skill.label;
+              return (
+                <span
+                  key={skill.key}
+                  className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border/70 bg-surface-0/70 px-2 py-1 text-xs text-text-primary"
+                  title={detail}
+                >
+                  <CheckCircle2
+                    className={`h-3.5 w-3.5 shrink-0 ${
+                      skill.activated ? "text-success" : "text-accent"
+                    }`}
+                  />
+                  <span className="min-w-0 max-w-[12rem] truncate">
+                    {skill.label}
+                  </span>
+                  <span className="hidden shrink-0 text-[10px] text-text-tertiary sm:inline">
+                    {skill.activated
+                      ? t("chat.turnSkillsActivated")
+                      : t("chat.turnSkillsSelected")}
+                  </span>
+                </span>
+              );
+            })}
+            {hiddenCount > 0 && (
+              <span className="rounded-md border border-border/70 bg-surface-0/50 px-2 py-1 text-xs text-text-secondary">
+                {t("chat.turnSkillsMore", { count: String(hiddenCount) })}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 type MessageTraceGroup =
   | {
       type: "anchor";
       nodes: ReactNode[];
+      skills?: TurnSkillDisplayRef[];
       hideMessageBubble?: boolean;
       memberIndexes?: number[];
     }
@@ -311,6 +540,7 @@ export function ChatMessages({
   thinkingText,
   isThinking,
   toolCalls,
+  taskRun,
   isStreaming,
   error,
   onRetry,
@@ -507,7 +737,7 @@ export function ChatMessages({
 
       return (
         <div key={key} className="flex justify-start mb-4">
-          <div className="w-full max-w-[min(100%,72rem)] text-sm leading-relaxed text-text-primary">
+          <div className="w-full min-w-0 text-sm leading-relaxed text-text-primary">
             {evidenceItems.length > 0 && (
               <div className="mb-3 rounded-xl border border-border/70 bg-surface-1/70 px-2.5 py-2">
                 <div className="mb-1 flex items-center justify-between gap-2">
@@ -569,7 +799,7 @@ export function ChatMessages({
   const renderThinkingTraceNode = useCallback(
     (key: string, sections: ThinkingSection[], isStreaming = false) => (
       <div key={key} className="flex justify-start mb-1">
-        <div className="w-full max-w-[min(100%,72rem)]">
+        <div className="w-full min-w-0">
           <ThinkingBlock
             content=""
             sections={sections}
@@ -704,6 +934,19 @@ export function ChatMessages({
     return map;
   }, [messages]);
 
+  const liveTaskRunSkills = useMemo(() => {
+    if (!taskRun || !isActiveTaskRunStatus(taskRun.status)) return null;
+    const userIdx = messageIndexById.get(taskRun.userMessageId);
+    if (userIdx == null) return null;
+    const skills = extractTaskRunSelectedSkills(taskRun.artifacts);
+    if (skills.length === 0) return null;
+    return {
+      turnId: taskRun.turnId,
+      userIdx,
+      skills,
+    };
+  }, [messageIndexById, taskRun]);
+
   const turnRenderMap = useMemo(() => {
     const anchors = new Map<
       number,
@@ -732,6 +975,7 @@ export function ChatMessages({
     const finalAssistantIndexes = new Set<number>();
     const statusSectionsByAssistant = new Map<number, TimelineSection[]>();
     const fallbackSectionsByAssistant = new Map<number, TimelineSection[]>();
+    const skillsByAssistant = new Map<number, TurnSkillDisplayRef[]>();
 
     for (const turn of turns) {
       if (!turn.assistantMessageId) continue;
@@ -741,6 +985,10 @@ export function ChatMessages({
       finalAssistantIndexes.add(assistantIdx);
 
       const trace = extractTurnTrace(turn.trace);
+      skillsByAssistant.set(
+        assistantIdx,
+        skillRefsFromTraceItems(trace?.items ?? null).map(turnSkillFromTimeline),
+      );
       const sections = turnLifecycleTimelineSections({
         turn,
         routeKind: trace?.routeKind,
@@ -781,23 +1029,36 @@ export function ChatMessages({
         .reverse()
         .find((idx) => finalAssistantIndexes.has(idx));
       const anchorIdx = finalAssistantIdx ?? persistedTraceCarrierIdx ?? currentGroup[0];
+      const persistedTraceCarrier =
+        persistedTraceCarrierIdx == null ? null : messages[persistedTraceCarrierIdx];
+      const persistedTraceItems =
+        persistedTraceCarrier == null
+          ? null
+          : extractPersistedTraceItems(persistedTraceCarrier.artifacts);
 
       const persistedTraceSections: TimelineSection[] =
-        persistedTraceCarrierIdx == null
+        persistedTraceItems == null
           ? []
           : persistedTraceItemsToTimelineSections({
-              items: extractPersistedTraceItems(
-                messages[persistedTraceCarrierIdx].artifacts,
-              ),
-              idPrefix: `persisted-${messages[persistedTraceCarrierIdx].id}`,
+              items: persistedTraceItems,
+              idPrefix: `persisted-${persistedTraceCarrier?.id ?? "trace"}`,
               trace: true,
             });
+      const persistedSkills = skillRefsFromTraceItems(persistedTraceItems).map(
+        turnSkillFromTimeline,
+      );
+      const turnTraceSkills = skillsByAssistant.get(anchorIdx);
+      const traceSkills =
+        turnTraceSkills && turnTraceSkills.length > 0
+          ? turnTraceSkills
+          : persistedSkills;
 
       const statusSections =
         statusSectionsByAssistant.get(anchorIdx) ?? persistedTraceSections;
       const nodes: ReactNode[] = [];
       const hiddenMembers = new Set<number>();
       let activeSections: TimelineSection[] = [...statusSections];
+      let renderedTraceActivity = false;
       const flushThinkingNode = (key: string) => {
         if (!hasRenderableTimelineSections(activeSections)) return;
         nodes.push(renderTimelineTraceNode(key, activeSections));
@@ -831,6 +1092,7 @@ export function ChatMessages({
         });
 
         if (thinking) {
+          renderedTraceActivity = true;
           activeSections.push({
             kind: "thinking",
             id: `message-thinking-${msg.id}`,
@@ -854,6 +1116,7 @@ export function ChatMessages({
         }
 
         if (inlineToolSections.length > 0) {
+          renderedTraceActivity = true;
           activeSections.push(...inlineToolSections);
         }
 
@@ -862,12 +1125,18 @@ export function ChatMessages({
         }
       }
 
+      const fallbackSectionsForAnchor =
+        fallbackSectionsByAssistant.get(anchorIdx) ?? [];
+      if (!renderedTraceActivity && fallbackSectionsForAnchor.length > 0) {
+        activeSections.push(...fallbackSectionsForAnchor);
+      }
+
       flushThinkingNode(`trace-thinking-tail-${messages[anchorIdx].id}`);
 
       if (nodes.length === 0) {
         const fallbackSections = [
           ...statusSections,
-          ...(fallbackSectionsByAssistant.get(anchorIdx) ?? []),
+          ...fallbackSectionsForAnchor,
         ];
         if (hasRenderableTimelineSections(fallbackSections)) {
           nodes.push(
@@ -879,10 +1148,11 @@ export function ChatMessages({
         }
       }
 
-      if (nodes.length > 0) {
+      if (nodes.length > 0 || traceSkills.length > 0) {
         map.set(anchorIdx, {
           type: "anchor",
           nodes,
+          skills: traceSkills,
           hideMessageBubble: messages[anchorIdx].toolCalls.length > 0,
           memberIndexes: [...currentGroup],
         });
@@ -1048,6 +1318,7 @@ export function ChatMessages({
     streamRounds,
     traceEvents,
     toolCalls,
+    taskRun,
     getScrollMetrics,
     scrollToContainerBottom,
   ]);
@@ -1198,7 +1469,7 @@ export function ChatMessages({
       const mergedDiffs = mergeFileDiffArtifactsByPath(diffs);
       return (
         <div className="my-2 flex justify-start" data-testid="turn-file-diff-previews">
-          <div className="w-full max-w-[min(100%,72rem)]">
+          <div className="w-full min-w-0">
             <FileDiffSummaryPanel diffs={mergedDiffs} />
           </div>
         </div>
@@ -1359,6 +1630,16 @@ export function ChatMessages({
                       : [assistantIdx],
                   )
                 : undefined;
+            const traceSkills =
+              traceGroup?.type === "anchor" ? (traceGroup.skills ?? []) : [];
+            const liveSkills =
+              liveTaskRunSkills?.turnId === turnRender.turn.id
+                ? liveTaskRunSkills.skills
+                : [];
+            const visibleSkills =
+              traceSkills.length > 0 ? traceSkills : liveSkills;
+            const skillsAreLive =
+              traceSkills.length === 0 && liveSkills.length > 0;
 
             return (
               <div key={`turn-${turnRender.turn.id}`}>
@@ -1376,6 +1657,10 @@ export function ChatMessages({
                   onDeleteMessage={onDeleteMessage}
                   onEditAndResend={onEditAndResend}
                 />
+
+                {visibleSkills.length > 0 && (
+                  <TurnSkillStrip skills={visibleSkills} live={skillsAreLive} />
+                )}
 
                 {traceGroup?.type === "anchor" && (
                   <>{traceGroup.nodes}</>
@@ -1432,6 +1717,12 @@ export function ChatMessages({
           const traceGroup =
             msg.role === "assistant" ? messageTraceGroups.get(idx) : undefined;
           if (traceGroup?.type === "member") return null;
+          const traceSkills =
+            traceGroup?.type === "anchor" ? (traceGroup.skills ?? []) : [];
+          const liveUserSkills =
+            msg.role === "user" && liveTaskRunSkills?.userIdx === idx
+              ? liveTaskRunSkills.skills
+              : [];
           const hasRenderableAssistantContent =
             msg.role !== "assistant" ||
             (msg.content.trim().length > 0 &&
@@ -1462,6 +1753,10 @@ export function ChatMessages({
 
           return (
             <div key={msg.id}>
+              {traceSkills.length > 0 && (
+                <TurnSkillStrip skills={traceSkills} live={false} />
+              )}
+
               {traceGroup?.type === "anchor" && (
                 <>{traceGroup.nodes}</>
               )}
@@ -1489,6 +1784,10 @@ export function ChatMessages({
                   onDeleteMessage={onDeleteMessage}
                   onEditAndResend={onEditAndResend}
                 />
+              )}
+
+              {liveUserSkills.length > 0 && (
+                <TurnSkillStrip skills={liveUserSkills} live />
               )}
 
               {renderFileDiffPreviews(assistantDiffs, `message-diff-${msg.id}`)}
@@ -1553,7 +1852,7 @@ export function ChatMessages({
           transition={shouldReduceMotion ? INSTANT_TRANSITION : SOFT_FADE_TRANSITION}
           className="flex justify-start mb-3"
         >
-          <div className="w-full max-w-[min(100%,72rem)]">
+          <div className="w-full min-w-0">
             <ThinkingBlock
               content=""
               sections={renderTimelineSections(currentTimelineSections)}
@@ -1593,6 +1892,7 @@ export function ChatMessages({
               aria-label={t("chat.thinking")}
             >
               <div className="flex items-center gap-2 text-sm text-text-tertiary">
+                <WaitingMoodBadge />
                 <div className="flex gap-1">
                   <span
                     className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? "" : "animate-bounce"}`}

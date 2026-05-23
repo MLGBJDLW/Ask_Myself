@@ -433,16 +433,14 @@ export function SettingsPage() {
       setAppConfig(cfg);
     } catch {
       setAppConfig({
-        toolTimeoutSecs: 30,
-        agentTimeoutSecs: 180,
+        timeoutDefaultsVersion: 1,
         cacheTtlHours: 24,
         defaultSearchLimit: 20,
         minSearchSimilarity: 0.2,
         maxTextFileSize: 104857600,
         maxVideoFileSize: 2147483648,
         maxAudioFileSize: 536870912,
-        llmTimeoutSecs: 300,
-        mcpCallTimeoutSecs: 60,
+        dynamicToolVisibility: true,
         confirmDestructive: false,
         shellAccessMode: 'restricted',
         toolApprovalMode: 'ask',

@@ -59,12 +59,12 @@ pub(crate) enum PendingStreamDelta {
 }
 
 const MAX_STREAM_BLOCK_DELTA_BYTES: usize = 8 * 1024;
-pub(crate) const MAX_FRONTEND_TOOL_CONTENT_CHARS: usize = 64 * 1024;
-const MAX_FRONTEND_TOOL_ARGUMENT_CHARS: usize = 16 * 1024;
+pub(crate) const MAX_FRONTEND_TOOL_CONTENT_CHARS: usize = 128 * 1024;
+const MAX_FRONTEND_TOOL_ARGUMENT_CHARS: usize = 128 * 1024;
 const MAX_FRONTEND_MESSAGE_TEXT_CHARS: usize = 64 * 1024;
-pub(crate) const MAX_FRONTEND_ARTIFACT_STRING_CHARS: usize = 8 * 1024;
-const MAX_FRONTEND_ARTIFACT_ITEMS: usize = 64;
-const MAX_FRONTEND_ARTIFACT_DEPTH: usize = 6;
+pub(crate) const MAX_FRONTEND_ARTIFACT_STRING_CHARS: usize = 32 * 1024;
+const MAX_FRONTEND_ARTIFACT_ITEMS: usize = 512;
+const MAX_FRONTEND_ARTIFACT_DEPTH: usize = 8;
 pub(crate) const MAX_TASK_EVENT_TEXT_CHARS: usize = 4_000;
 
 pub(crate) fn split_text_by_utf8_bytes(text: &str, max_bytes: usize) -> Vec<&str> {
@@ -256,12 +256,14 @@ pub(crate) fn compact_agent_event_for_frontend(event: AgentEvent) -> AgentEvent 
             message,
             usage_total,
             last_prompt_tokens,
+            context_breakdown,
             cached,
             finish_reason,
         } => AgentEvent::Done {
             message: compact_message_for_frontend(message),
             usage_total,
             last_prompt_tokens,
+            context_breakdown,
             cached,
             finish_reason,
         },

@@ -294,8 +294,8 @@ fn test_route_user_turn_treats_tool_repair_as_file_operation() {
 }
 
 #[test]
-fn test_agent_config_defaults_to_full_tool_visibility() {
-    assert!(!AgentConfig::default().dynamic_tool_visibility);
+fn test_agent_config_defaults_to_dynamic_tool_visibility() {
+    assert!(AgentConfig::default().dynamic_tool_visibility);
 }
 
 struct MockProvider {
@@ -1787,7 +1787,12 @@ async fn test_persists_only_final_iteration_thinking_on_final_assistant() {
     );
     let non_loop_items = items
         .iter()
-        .filter(|item| item.get("kind").and_then(|v| v.as_str()) != Some("loop"))
+        .filter(|item| {
+            !matches!(
+                item.get("kind").and_then(|v| v.as_str()),
+                Some("loop") | Some("skillSelection")
+            )
+        })
         .collect::<Vec<_>>();
     assert_eq!(non_loop_items.len(), 5);
     assert_eq!(

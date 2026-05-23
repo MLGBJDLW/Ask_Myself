@@ -23,7 +23,7 @@ const DEF_JSON: &str = include_str!("../../prompts/tools/project_tool.json");
 const MANIFEST_DIRS: [&str; 2] = [".nexa/tools", ".agents/tools"];
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 1_800;
-const MAX_OUTPUT_CHARS: usize = 16_000;
+const MAX_OUTPUT_CHARS: usize = 64_000;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]

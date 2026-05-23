@@ -647,6 +647,7 @@ mod tests {
             message: Message::text(Role::Assistant, "Request cancelled by user."),
             usage_total: Usage::default(),
             last_prompt_tokens: 0,
+            context_breakdown: None,
             cached: false,
             finish_reason: Some("cancelled".to_string()),
         });

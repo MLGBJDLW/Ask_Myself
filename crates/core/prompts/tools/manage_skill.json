@@ -1,6 +1,6 @@
 {
   "name": "manage_skill",
-  "description": "List, activate, or inspect available skills and their bundled resources, and create, inspect, apply, or reject controlled skill change proposals. Use activate_skill before following a skill from the Available Skills metadata list. Use view_resource when an activated skill references a bundled file. Use proposals for self-evolution when a repeated workflow lesson should become a reusable skill. Proposals are safety-scanned; applying a proposal mutates active user skills and requires confirmation.",
+  "description": "List, load, activate, or inspect available skills and their bundled resources, and create, inspect, apply, or reject controlled skill change proposals. When a skill from the Available Skills metadata index clearly matches the user task, call activate_skill before answering or following that workflow. Use view_skill only to inspect a skill without committing to its workflow. Use list_skills when no relevant indexed skill is shown but the user asks for a reusable skill. Use view_resource when a loaded skill references a bundled file. Use proposals for self-evolution when a repeated workflow lesson should become a reusable skill. Proposals are safety-scanned; applying a proposal mutates active user skills and requires confirmation.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -102,13 +102,17 @@ pub(crate) fn score_skill(skill: &Skill, query_tokens: &[String], query_normaliz
         .filter(|token| surface.contains(token.as_str()))
         .count() as f32
         * 0.35;
-    let fuzzy = jaro_winkler(&normalize_text(&skill.name), query_normalized)
+    let fuzzy_similarity = jaro_winkler(&normalize_text(&skill.name), query_normalized)
         .max(jaro_winkler(
             &normalize_text(&skill.description),
             query_normalized,
         ))
-        .max(jaro_winkler(&surface, query_normalized)) as f32
-        * 3.0;
+        .max(jaro_winkler(&surface, query_normalized)) as f32;
+    let fuzzy = if fuzzy_similarity >= 0.82 {
+        fuzzy_similarity * 3.0
+    } else {
+        0.0
+    };
 
     (lexical + phrase + fuzzy) / query_tokens.len() as f32
 }
@@ -118,12 +122,6 @@ fn fallback_skill_order(a: &Skill, b: &Skill) -> std::cmp::Ordering {
         .cmp(&b.builtin)
         .then_with(|| a.created_at.cmp(&b.created_at))
         .then_with(|| a.name.cmp(&b.name))
-}
-
-fn fallback_skills(mut skills: Vec<Skill>, max_skills: usize) -> Vec<Skill> {
-    skills.sort_by(fallback_skill_order);
-    skills.truncate(max_skills);
-    skills
 }
 
 fn skill_slug(skill: &Skill) -> String {
@@ -194,24 +192,30 @@ pub fn select_skills_from_pool(skills: Vec<Skill>, query: &str, max_skills: usiz
 
     let query_normalized = normalize_text(query);
     let query_tokens = enrich_tokens(&tokenize(&query_normalized));
-    if query_tokens.len() < 2 {
-        return fallback_skills(skills, max_skills);
-    }
 
     let mut scored: Vec<(f32, Skill)> = skills
         .into_iter()
-        .map(|skill| (score_skill(&skill, &query_tokens, &query_normalized), skill))
+        .map(|skill| {
+            let explicit = is_skill_explicitly_requested(&skill, query);
+            let score = if explicit {
+                f32::MAX
+            } else if query_tokens.len() >= 2 {
+                score_skill(&skill, &query_tokens, &query_normalized)
+            } else {
+                0.0
+            };
+            (score, skill)
+        })
         .collect();
 
     let top_score = scored
         .iter()
+        .filter(|(score, _)| *score < f32::MAX)
         .map(|(score, _)| *score)
         .fold(0.0_f32, f32::max);
-    if top_score <= 0.05 {
-        return fallback_skills(
-            scored.into_iter().map(|(_, skill)| skill).collect(),
-            max_skills,
-        );
+    let has_explicit = scored.iter().any(|(score, _)| *score == f32::MAX);
+    if !has_explicit && (query_tokens.len() < 2 || top_score <= 0.05) {
+        return Vec::new();
     }
 
     scored.sort_by(|a, b| {
@@ -224,7 +228,7 @@ pub fn select_skills_from_pool(skills: Vec<Skill>, query: &str, max_skills: usiz
     let cutoff = (top_score * 0.55).max(0.18);
     scored
         .into_iter()
-        .filter(|(score, _)| *score >= cutoff)
+        .filter(|(score, _)| *score == f32::MAX || *score >= cutoff)
         .take(max_skills)
         .map(|(_, skill)| skill)
         .collect()
@@ -331,10 +335,9 @@ pub fn select_available_skills_from_pool(skills: Vec<Skill>, query: &str) -> Vec
 /// Return the skills active for a given user query.
 ///
 /// Combines built-in (bundled) skills with enabled user skills from the DB,
-/// then ranks by keyword overlap against the query. Falls back to returning
-/// user skills before built-ins (capped at `max_skills`) when the query is
-/// empty/short or when no skill matches, so user-authored abilities do not get
-/// silently starved by bundled defaults.
+/// then ranks by keyword overlap against the query. If no skill clearly
+/// matches, returns no skills; the model can still call `manage_skill
+/// list_skills` when it needs to discover the full catalog.
 pub fn get_active_skills_for_query(
     db: &Database,
     query: &str,

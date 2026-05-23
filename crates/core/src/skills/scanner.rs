@@ -1,8 +1,11 @@
 use super::model::{SkillWarning, SkillWarningSeverity};
 use super::registry::split_frontmatter;
 
-/// Maximum accepted SKILL.md size before a size warning is emitted.
-pub(crate) const SKILL_MAX_BYTES: usize = 50 * 1024;
+/// Size at which a SKILL.md import gets an advisory warning.
+///
+/// Large skills are valid; this is a review signal, not an import cap. Keep it
+/// high enough for longform Top-agent style skills with bundled workflows.
+pub(crate) const SKILL_MAX_BYTES: usize = 256 * 1024;
 
 /// Scan raw SKILL.md text for suspicious patterns before import.
 ///

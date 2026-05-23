@@ -1,7 +1,7 @@
 //! LLM provider types and traits for the agent framework.
 
 use async_trait::async_trait;
-use futures::{stream::BoxStream, StreamExt};
+use futures::{stream::BoxStream, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
@@ -351,10 +351,79 @@ pub struct ProviderConfig {
     /// Organisation / project header (OpenAI, Azure).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub org_id: Option<String>,
-    /// HTTP request timeout in seconds. When `None`, the provider's built-in
-    /// default (usually 300 s) is used.
+    /// HTTP request timeout in seconds. Non-streaming requests use it for the
+    /// full request. Streaming requests use it only until response headers are
+    /// received. Active streams use a separate idle timeout so healthy long
+    /// outputs are not capped by total duration. 0 disables the startup timeout.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+}
+
+pub(crate) fn configured_request_timeout(timeout_secs: u64) -> Option<std::time::Duration> {
+    (timeout_secs > 0).then(|| std::time::Duration::from_secs(timeout_secs))
+}
+
+pub(crate) const DEFAULT_STREAM_IDLE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(300);
+
+pub(crate) fn with_request_timeout(
+    builder: reqwest::RequestBuilder,
+    timeout: Option<std::time::Duration>,
+) -> reqwest::RequestBuilder {
+    match timeout {
+        Some(timeout) => builder.timeout(timeout),
+        None => builder,
+    }
+}
+
+pub(crate) async fn send_stream_start_request(
+    builder: reqwest::RequestBuilder,
+    timeout: Option<std::time::Duration>,
+    context: &str,
+) -> Result<reqwest::Response, CoreError> {
+    let send = builder.send();
+    let result = match timeout {
+        Some(timeout) => match tokio::time::timeout(timeout, send).await {
+            Ok(result) => result,
+            Err(_) => {
+                return Err(CoreError::TransientLlm(format!(
+                    "{context} timed out after {}s before the stream started",
+                    timeout.as_secs()
+                )));
+            }
+        },
+        None => send.await,
+    };
+
+    result.map_err(|e| {
+        let message = format!("{context} failed: {e}");
+        if e.is_connect() || e.is_timeout() {
+            CoreError::TransientLlm(message)
+        } else {
+            CoreError::Llm(message)
+        }
+    })
+}
+
+pub(crate) async fn next_stream_item_with_idle_timeout<S, T, E>(
+    stream: &mut S,
+    idle_timeout: std::time::Duration,
+    context: &str,
+) -> Result<Option<Result<T, E>>, CoreError>
+where
+    S: Stream<Item = Result<T, E>> + Unpin,
+{
+    if idle_timeout.is_zero() {
+        return Ok(stream.next().await);
+    }
+
+    match tokio::time::timeout(idle_timeout, stream.next()).await {
+        Ok(item) => Ok(item),
+        Err(_) => Err(CoreError::StreamIncomplete(format!(
+            "{context} was idle for {}s",
+            idle_timeout.as_secs()
+        ))),
+    }
 }
 
 /// Supported LLM provider backends.
@@ -528,6 +597,24 @@ mod tests {
         assert!(model_supports_vision(
             &ProviderType::LmStudio,
             "local-vision-model"
+        ));
+    }
+
+    #[tokio::test]
+    async fn next_stream_item_with_idle_timeout_reports_recoverable_idle_stream() {
+        let mut stream = futures::stream::pending::<Result<&'static str, ()>>();
+
+        let result = next_stream_item_with_idle_timeout(
+            &mut stream,
+            std::time::Duration::from_millis(10),
+            "test stream",
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(CoreError::StreamIncomplete(message))
+                if message.contains("test stream") && message.contains("idle")
         ));
     }
 

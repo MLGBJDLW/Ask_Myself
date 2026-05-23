@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import * as api from './api';
-import { useAgentStream, UsageTotal } from './useAgentStream';
+import { useAgentStream, type ContextUsageBreakdown, type UsageTotal } from './useAgentStream';
 import { streamStore } from './streamStore';
 import { useTranslation } from '../i18n';
 import type {
@@ -40,12 +40,82 @@ interface StoredUsageEntry {
   totalTokens: number;
   thinkingTokens: number;
   lastPromptTokens: number;
+  contextBreakdown?: ContextUsageBreakdown;
   updatedAt: number;
 }
 
 function sanitizeNumber(input: unknown, fallback = 0): number {
   if (typeof input !== 'number' || !Number.isFinite(input)) return fallback;
   return Math.max(0, Math.round(input));
+}
+
+function sanitizeContextBreakdown(input: unknown): ContextUsageBreakdown | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const record = input as Record<string, unknown>;
+  if (!Array.isArray(record.segments)) return undefined;
+  const segments = record.segments
+    .filter((segment): segment is Record<string, unknown> => Boolean(segment) && typeof segment === 'object')
+    .map((segment) => ({
+      kind: typeof segment.kind === 'string' ? segment.kind : '',
+      tokens: sanitizeNumber(segment.tokens),
+    }))
+    .filter((segment) => segment.kind.length > 0 && segment.tokens > 0);
+  if (segments.length === 0) return undefined;
+  const segmentTotal = segments.reduce((sum, segment) => sum + segment.tokens, 0);
+  return {
+    totalTokens: sanitizeNumber(record.totalTokens, segmentTotal),
+    segments,
+  };
+}
+
+function buildFallbackContextBreakdown(
+  messages: ConversationMessage[],
+  promptTokens: number,
+): ContextUsageBreakdown | undefined {
+  const totalTokens = sanitizeNumber(promptTokens);
+  if (totalTokens <= 0) return undefined;
+
+  const tokenSum = (roles: ConversationMessage['role'][]) => messages.reduce((sum, message) => {
+    if (!roles.includes(message.role)) return sum;
+    return sum + sanitizeNumber(message.tokenCount);
+  }, 0);
+  const conversationTokens = tokenSum(['user', 'assistant']);
+  const toolResultTokens = tokenSum(['tool']);
+  const toolCalls = messages.flatMap(message => message.toolCalls ?? []);
+  const hasMcpToolCall = toolCalls.some(call => call.name === 'mcp_tool' || call.name.startsWith('mcp__'));
+  const hasBuiltinToolCall = toolCalls.some(call => call.name !== 'mcp_tool' && !call.name.startsWith('mcp__'));
+
+  const promptsFloor = Math.max(1, Math.round(totalTokens * 0.18));
+  const mcpTokens = hasMcpToolCall ? Math.max(1, Math.round(totalTokens * 0.06)) : 0;
+  const toolTokens = hasBuiltinToolCall ? Math.max(1, Math.round(totalTokens * 0.04)) : 0;
+  const knownTokens = conversationTokens + toolResultTokens + mcpTokens + toolTokens;
+  const promptSegmentTokens = Math.max(promptsFloor, totalTokens - knownTokens);
+  const rawSegments = [
+    { kind: 'prompts', tokens: promptSegmentTokens },
+    { kind: 'conversation', tokens: conversationTokens },
+    { kind: 'toolResults', tokens: toolResultTokens },
+    { kind: 'tools', tokens: toolTokens },
+    { kind: 'mcp', tokens: mcpTokens },
+  ].filter(segment => segment.tokens > 0);
+
+  const rawTotal = rawSegments.reduce((sum, segment) => sum + segment.tokens, 0);
+  if (rawTotal <= 0) return undefined;
+
+  let scaledTotal = 0;
+  const segments = rawSegments.map(segment => {
+    const tokens = Math.max(1, Math.round((segment.tokens / rawTotal) * totalTokens));
+    scaledTotal += tokens;
+    return { kind: segment.kind, tokens };
+  });
+  const largest = segments.reduce((maxIndex, segment, index) => (
+    segment.tokens > segments[maxIndex].tokens ? index : maxIndex
+  ), 0);
+  segments[largest] = {
+    ...segments[largest],
+    tokens: Math.max(1, segments[largest].tokens + totalTokens - scaledTotal),
+  };
+
+  return { totalTokens, segments };
 }
 
 /**
@@ -160,12 +230,14 @@ function normalizeUsage(usage: UsageTotal): UsageTotal {
   const totalTokens = sanitizeNumber(usage.totalTokens, promptTokens + completionTokens);
   const thinkingTokens = sanitizeNumber(usage.thinkingTokens ?? 0);
   const lastPromptTokens = sanitizeNumber(usage.lastPromptTokens ?? promptTokens, promptTokens);
+  const contextBreakdown = sanitizeContextBreakdown(usage.contextBreakdown);
   return {
     promptTokens,
     completionTokens,
     totalTokens,
     thinkingTokens,
     lastPromptTokens,
+    contextBreakdown,
   };
 }
 
@@ -185,6 +257,7 @@ function readUsageCache(): Record<string, StoredUsageEntry> {
       const totalTokens = sanitizeNumber(row.totalTokens, promptTokens + completionTokens);
       const thinkingTokens = sanitizeNumber(row.thinkingTokens ?? 0);
       const lastPromptTokens = sanitizeNumber(row.lastPromptTokens ?? promptTokens, promptTokens);
+      const contextBreakdown = sanitizeContextBreakdown(row.contextBreakdown);
       const updatedAt = sanitizeNumber(row.updatedAt ?? Date.now(), Date.now());
       next[conversationId] = {
         promptTokens,
@@ -192,6 +265,7 @@ function readUsageCache(): Record<string, StoredUsageEntry> {
         totalTokens,
         thinkingTokens,
         lastPromptTokens,
+        contextBreakdown,
         updatedAt,
       };
     }
@@ -338,6 +412,7 @@ export interface UseChatSessionReturn {
     contextWindow: number;
     completionTokens: number;
     thinkingTokens: number;
+    contextBreakdown?: ContextUsageBreakdown;
     isEstimated: boolean;
     source: 'live' | 'cached' | 'estimated';
   } | null;
@@ -533,6 +608,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         totalTokens: normalized.totalTokens,
         thinkingTokens: normalized.thinkingTokens ?? 0,
         lastPromptTokens: normalized.lastPromptTokens ?? normalized.promptTokens,
+        contextBreakdown: normalized.contextBreakdown,
         updatedAt: Date.now(),
       },
     };
@@ -673,6 +749,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             totalTokens: restored.totalTokens,
             thinkingTokens: restored.thinkingTokens,
             lastPromptTokens: restored.lastPromptTokens,
+            contextBreakdown: restored.contextBreakdown,
           }
         : null,
     );
@@ -1314,15 +1391,19 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   const tokenUsage = contextWindow > 0
     ? (usageForView
-      ? {
-          promptTokens: usageForView.lastPromptTokens ?? usageForView.promptTokens,
-          totalTokens: usageForView.totalTokens,
-          contextWindow,
-          completionTokens: usageForView.completionTokens,
-          thinkingTokens: usageForView.thinkingTokens ?? 0,
-          isEstimated: false,
-          source: (scopedLastUsage ? 'live' : 'cached') as 'live' | 'cached',
-        }
+      ? (() => {
+          const promptTokens = usageForView.lastPromptTokens ?? usageForView.promptTokens;
+          return {
+            promptTokens,
+            totalTokens: usageForView.totalTokens,
+            contextWindow,
+            completionTokens: usageForView.completionTokens,
+            thinkingTokens: usageForView.thinkingTokens ?? 0,
+            contextBreakdown: usageForView.contextBreakdown ?? buildFallbackContextBreakdown(messages, promptTokens),
+            isEstimated: false,
+            source: (scopedLastUsage ? 'live' : 'cached') as 'live' | 'cached',
+          };
+        })()
       : (estimatedPromptTokens > 0
         ? {
             promptTokens: estimatedPromptTokens,
@@ -1330,6 +1411,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             contextWindow,
             completionTokens: 0,
             thinkingTokens: 0,
+            contextBreakdown: buildFallbackContextBreakdown(messages, estimatedPromptTokens),
             isEstimated: true,
             source: 'estimated' as const,
           }
