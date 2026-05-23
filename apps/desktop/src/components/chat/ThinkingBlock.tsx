@@ -25,6 +25,8 @@ interface ThinkingBlockProps {
   children?: React.ReactNode;
 }
 
+const THINKING_MOODS = ['(｡•̀ᴗ-)✧', '(・・?)', '( •̀ ω •́ )', '(。-`ω´-)'];
+
 /* ------------------------------------------------------------------ */
 /*  Minimal markdown overrides (muted style)                           */
 /* ------------------------------------------------------------------ */
@@ -153,6 +155,7 @@ export function ThinkingBlock({
       ? t('chat.thoughtFor', { seconds: elapsed.toString() })
       : t('chat.thinkingCompleted');
   const traceActive = isStreaming && !shouldReduceMotion;
+  const thinkingMood = THINKING_MOODS[Math.floor(elapsed / 6) % THINKING_MOODS.length];
 
   return (
     <div className="mb-2">
@@ -170,11 +173,19 @@ export function ThinkingBlock({
           <Brain size={12} />
           <span>{summaryText}</span>
           {isStreaming && (
-            <span className="flex gap-0.5 ml-0.5">
-              <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '300ms' }} />
-            </span>
+            <>
+              <span
+                aria-hidden="true"
+                className="hidden min-w-[5.5rem] text-center font-mono text-[11px] text-accent/80 sm:inline-block"
+              >
+                {thinkingMood}
+              </span>
+              <span className="flex gap-0.5 ml-0.5">
+                <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '300ms' }} />
+              </span>
+            </>
           )}
         </span>
       </button>
