@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.2...nexa-monorepo-v0.7.3) (2026-05-23)
+
+
+### Bug Fixes
+
+* **skills:** surface selected skills in chat trace ([b2a7541](https://github.com/MLGBJDLW/Nexa/commit/b2a754170494e500bac7dc0bbea0b28cada7e032))
+* **skills:** surface selected skills in chat trace ([1e7304b](https://github.com/MLGBJDLW/Nexa/commit/1e7304b2eab34751c074fcdf6960e80a4441dbc9))
+
 ## [0.7.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.1...nexa-monorepo-v0.7.2) (2026-05-22)
 
 
