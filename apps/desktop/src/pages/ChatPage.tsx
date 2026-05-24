@@ -450,13 +450,13 @@ export function ChatPage() {
     setIsCompacting(true);
     try {
       await api.compactConversation(chat.activeId);
-      await chat.reloadMessages();
+      await chat.reloadMessages({ resetUsage: true });
     } catch (e) {
       toast.error(formatUserError(t('chat.compact'), e));
     } finally {
       setIsCompacting(false);
     }
-  }, [chat.activeId, chat.reloadMessages, isCompacting]);
+  }, [chat.activeId, chat.reloadMessages, isCompacting, t]);
 
   const pendingChatAction = (
     location.state as { pendingChatAction?: string } | null
@@ -667,6 +667,7 @@ export function ChatPage() {
               loadingMsgs={chat.loadingMsgs}
               lastCached={chat.lastCached}
               onSuggestionClick={handleSuggestionClick}
+              isCompacting={isCompacting}
             />
             <TaskBoard
               messages={chat.messages}
@@ -712,7 +713,7 @@ export function ChatPage() {
               onSend={handleChatSend}
               onStop={chat.stop}
               isStreaming={chat.isStreaming}
-              disabled={!chat.agentConfig || chat.loadingMsgs}
+              disabled={!chat.agentConfig || chat.loadingMsgs || isCompacting}
               conversationId={chat.activeId ?? undefined}
               prefillText={prefillText}
               onCompact={chat.activeId ? handleCompactConversation : undefined}

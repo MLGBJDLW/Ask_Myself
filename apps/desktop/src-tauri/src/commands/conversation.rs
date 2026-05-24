@@ -585,6 +585,30 @@ pub async fn update_conversation_system_prompt_cmd(
 
 // ── Conversation Maintenance Commands ────────────────────────────────────
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactConversationResult {
+    pub conversation_id: String,
+    pub messages_before: usize,
+    pub messages_after: usize,
+    pub tokens_before: u32,
+    pub tokens_after: u32,
+    pub evicted_messages: usize,
+}
+
+fn estimate_conversation_message_tokens(messages: &[ConversationMessage]) -> u32 {
+    messages
+        .iter()
+        .map(|message| {
+            if message.token_count > 0 {
+                message.token_count
+            } else {
+                estimate_tokens(&message.content)
+            }
+        })
+        .sum()
+}
+
 #[tauri::command]
 pub async fn get_conversation_stats_cmd(
     state: tauri::State<'_, AppState>,
@@ -607,7 +631,7 @@ pub async fn cleanup_empty_conversations_cmd(
 pub async fn compact_conversation_cmd(
     state: tauri::State<'_, AppState>,
     conversation_id: String,
-) -> Result<(), String> {
+) -> Result<CompactConversationResult, String> {
     // 1. Load conversation and its messages.
     let conv = state
         .db
@@ -617,8 +641,17 @@ pub async fn compact_conversation_cmd(
         .db
         .get_messages(&conversation_id)
         .map_err(|e| e.to_string())?;
+    let messages_before = messages.len();
+    let tokens_before = estimate_conversation_message_tokens(&messages);
     if messages.is_empty() {
-        return Ok(());
+        return Ok(CompactConversationResult {
+            conversation_id,
+            messages_before: 0,
+            messages_after: 0,
+            tokens_before: 0,
+            tokens_after: 0,
+            evicted_messages: 0,
+        });
     }
 
     // 2. Load the config that matches this conversation's provider/model.
@@ -688,7 +721,23 @@ pub async fn compact_conversation_cmd(
         state.db.add_message(msg).map_err(|e| e.to_string())?;
     }
 
-    Ok(())
+    let messages_after = compacted.len();
+    let evicted_messages = if messages_after < messages_before {
+        messages_before
+            .saturating_add(1)
+            .saturating_sub(messages_after)
+    } else {
+        0
+    };
+
+    Ok(CompactConversationResult {
+        conversation_id,
+        messages_before,
+        messages_after,
+        tokens_before,
+        tokens_after: estimate_conversation_message_tokens(&compacted),
+        evicted_messages,
+    })
 }
 
 #[tauri::command]

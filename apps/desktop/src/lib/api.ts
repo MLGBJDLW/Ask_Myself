@@ -918,8 +918,17 @@ export const getConversationStats = () =>
 export const cleanupEmptyConversations = (daysOld: number) =>
   invoke<number>('cleanup_empty_conversations_cmd', { daysOld });
 
+export interface CompactConversationResult {
+  conversationId: string;
+  messagesBefore: number;
+  messagesAfter: number;
+  tokensBefore: number;
+  tokensAfter: number;
+  evictedMessages: number;
+}
+
 export const compactConversation = (conversationId: string) =>
-  invoke<void>('compact_conversation_cmd', { conversationId });
+  invoke<CompactConversationResult>('compact_conversation_cmd', { conversationId });
 
 export const searchConversations = (query: string, limit?: number) =>
   invoke<ConversationSearchResult[]>('search_conversations_cmd', { query, limit });

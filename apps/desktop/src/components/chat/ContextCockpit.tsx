@@ -147,7 +147,7 @@ export function ContextCockpit({
   return (
     <div className="shrink-0 border-b border-border/60 bg-surface-1/70 px-3 py-2 backdrop-blur">
       <details className="group rounded-xl border border-border/60 bg-surface-0/75">
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm text-text-secondary [&::-webkit-details-marker]:hidden">
+        <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-3 py-2 text-sm text-text-secondary [&::-webkit-details-marker]:hidden">
           {(() => {
             const pct = usage && usage.contextWindow > 0
               ? usage.promptTokens / usage.contextWindow
@@ -160,7 +160,7 @@ export function ContextCockpit({
               ? 'text-cyan-400 bg-cyan-400/10'
               : 'text-text-tertiary bg-surface-3';
 
-            const chipBase = `inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md ${colorClass}`;
+            const chipBase = `inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded-md ${colorClass}`;
             const IconComponent = isCompacting ? Loader2 : Gauge;
             const iconClass = `w-3 h-3${isCompacting ? ' animate-spin' : ''}`;
             const chipLabel = isCompacting ? t('chat.compacting') : usageSummaryLabel;
@@ -194,27 +194,27 @@ export function ContextCockpit({
           })()}
 
           {(usage || lastCached) && (
-          <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">
+          <span className="inline-flex max-w-[12rem] min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">
             <Zap className="h-3 w-3 text-text-tertiary" />
             <span className="truncate">{lastCached && !usage ? t('chat.cached') : usageSourceLabel}</span>
           </span>
         )}
 
-          <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">
+          <span className="inline-flex max-w-[14rem] min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">
             <Cpu className="h-3 w-3 text-text-tertiary" />
             <span className="truncate">{modelLabel}</span>
           </span>
 
-          <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">
+          <span className="inline-flex max-w-[18rem] min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2 py-1 text-[11px] text-text-secondary">
             <span className="truncate">{t('chat.knowledgeSources')}: {scopeSummary}</span>
           </span>
 
-          <span className={`inline-flex min-w-0 items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${riskChipTone}`}>
+          <span className={`inline-flex max-w-[16rem] min-w-0 items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${riskChipTone}`}>
             <RiskIcon className="h-3 w-3 shrink-0" />
             <span className="truncate">{riskSummaryLabel}</span>
           </span>
 
-          <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-text-tertiary transition-colors group-hover:text-text-secondary">
+          <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[11px] text-text-tertiary transition-colors group-hover:text-text-secondary">
             {t('common.expand')}
             <ChevronDown className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180" />
           </span>
@@ -344,17 +344,22 @@ export function ContextCockpit({
           <div className={`mt-2 rounded-lg border px-3 py-2.5 ${riskTone}`}>
             <div className="flex flex-wrap items-center gap-2">
               <RiskIcon className="h-4 w-4 shrink-0" />
-              <span className="text-sm font-medium">{riskTitle}</span>
-              {riskAction && <span className="text-sm opacity-90">{riskAction}</span>}
+              <span className="shrink-0 text-sm font-medium">{riskTitle}</span>
+              {riskAction && <span className="min-w-0 flex-1 text-sm opacity-90">{riskAction}</span>}
               {showDetailActions && (
-                <div className="ml-auto flex flex-wrap gap-1.5">
+                <div className="ml-auto flex shrink-0 flex-wrap gap-1.5">
                   {canCompact && (
                     <button
                       type="button"
                       onClick={onCompact}
-                      className="inline-flex items-center gap-1 rounded-md bg-black/10 px-2 py-1 text-[11px] font-medium transition-colors hover:bg-black/15"
+                      disabled={isCompacting}
+                      className="inline-flex items-center gap-1 rounded-md bg-black/10 px-2 py-1 text-[11px] font-medium transition-colors hover:bg-black/15 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      <ArchiveRestore className="h-3 w-3" />
+                      {isCompacting ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <ArchiveRestore className="h-3 w-3" />
+                      )}
                       {t('chat.compact')}
                     </button>
                   )}

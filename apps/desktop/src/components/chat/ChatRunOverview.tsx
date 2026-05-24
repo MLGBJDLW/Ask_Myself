@@ -178,10 +178,10 @@ export function ChatRunOverview({
 
   return (
     <div className="shrink-0 border-b border-border/45 bg-surface-1/70 px-3 py-1 backdrop-blur">
-      <div className="flex h-6 items-center gap-2 text-[11px]">
-        <div className="hidden w-28 shrink-0 items-center gap-1.5 text-text-tertiary sm:flex">
+      <div className="flex min-h-6 items-center gap-2 text-[11px]">
+        <div className="hidden w-24 shrink-0 items-center gap-1.5 text-text-tertiary sm:flex lg:w-28">
           <span className={`h-1.5 w-1.5 rounded-full ${isDanger ? 'bg-red-400' : isWarning ? 'bg-amber-300' : 'bg-accent'} ${isStreaming || isCompacting ? 'animate-pulse' : ''}`} />
-          <span className="truncate font-medium uppercase tracking-[0.12em]">
+          <span className="truncate whitespace-nowrap font-medium">
             {t('chat.contextBudgetLabel')}
           </span>
         </div>
@@ -218,21 +218,21 @@ export function ChatRunOverview({
           <span className="absolute inset-y-[-2px] left-[95%] w-px bg-red-300/50" />
         </div>
 
-        <div className="flex w-[9.5rem] shrink-0 items-baseline justify-end gap-2 tabular-nums">
-          <span className={`text-xs font-semibold ${percentTone}`}>
+        <div className="ml-auto flex max-w-[48%] min-w-[5.75rem] shrink-0 flex-wrap items-baseline justify-end gap-x-2 gap-y-0.5 tabular-nums sm:min-w-[8rem] md:max-w-none">
+          <span className={`whitespace-nowrap text-xs font-semibold ${percentTone}`}>
             {contextWindow > 0 ? t('chat.tokenUsagePercent', { percent: usagePercentRounded }) : '0%'}
           </span>
-          <span className="hidden max-w-[6.5rem] truncate text-[10px] text-text-tertiary md:inline">
+          <span className="hidden max-w-[7.5rem] truncate text-[10px] leading-4 text-text-tertiary lg:inline">
             {usageLabel}
           </span>
         </div>
       </div>
       {contextSegments.length > 1 && (
-        <div className="hidden h-3.5 items-center gap-x-2.5 gap-y-1 overflow-hidden pl-[7.5rem] pr-[9.5rem] text-[9px] leading-[14px] text-text-tertiary md:flex">
-          <span className="shrink-0 font-medium text-text-secondary">
+        <div className="hidden min-h-4 items-start gap-x-2.5 gap-y-1 pl-[6.5rem] pr-[6rem] text-[10px] leading-4 text-text-tertiary lg:flex xl:pl-[7.5rem] xl:pr-[9rem]">
+          <span className="shrink-0 whitespace-nowrap font-medium text-text-secondary">
             {t('chat.contextBreakdownLegend')}
           </span>
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 overflow-hidden">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
             {contextSegments.map((segment) => (
               <span
                 key={`legend-${segment.key}`}
@@ -243,8 +243,8 @@ export function ChatRunOverview({
                   className="h-1.5 w-1.5 shrink-0 rounded-[2px] ring-1 ring-border/50"
                   style={{ backgroundColor: segment.color }}
                 />
-                <span className="truncate">{contextSegmentLabel(t, segment.kind)}</span>
-                <span className="text-text-tertiary/80">{formatTokens(segment.tokens)}</span>
+                <span className="truncate leading-4">{contextSegmentLabel(t, segment.kind)}</span>
+                <span className="whitespace-nowrap text-text-tertiary/80">{formatTokens(segment.tokens)}</span>
               </span>
             ))}
           </div>

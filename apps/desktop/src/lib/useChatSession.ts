@@ -458,7 +458,7 @@ export interface UseChatSessionReturn {
   retry: () => Promise<void>;
   clearError: () => void;
   loadConversations: () => Promise<void>;
-  reloadMessages: () => Promise<void>;
+  reloadMessages: (options?: { resetUsage?: boolean }) => Promise<void>;
   deleteMessage: (messageId: string) => void;
   editAndResend: (messageId: string, newContent: string) => Promise<void>;
   switchAgentConfig: (config: AgentConfig) => Promise<void>;
@@ -1358,8 +1358,20 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   }, [activeId, messages, setMessagesForConversation, streamSend]);
 
   /* ── Reload messages (e.g. after compaction) ────────────────────── */
-  const reloadMessages = useCallback(async () => {
+  const reloadMessages = useCallback(async (options?: { resetUsage?: boolean }) => {
     if (!activeId) return;
+    if (options?.resetUsage) {
+      if (activeId in usageCacheRef.current) {
+        const next = { ...usageCacheRef.current };
+        delete next[activeId];
+        usageCacheRef.current = next;
+        writeUsageCache(next);
+      }
+      setCachedUsage(null);
+      if (usageConversationRef.current === activeId) {
+        usageConversationRef.current = null;
+      }
+    }
     try {
       const [[, msgs], conversationTurns, agentTaskRuns] = await Promise.all([
         api.getConversation(activeId),
