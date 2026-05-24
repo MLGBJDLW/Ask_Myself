@@ -386,6 +386,8 @@ async fn parse_ollama_ndjson_stream(
                         completion_tokens,
                         total_tokens: prompt_tokens + completion_tokens,
                         thinking_tokens: None,
+                        cache_read_tokens: None,
+                        cache_creation_tokens: None,
                     }),
                 )
             } else {
@@ -593,6 +595,8 @@ impl LlmProvider for OllamaProvider {
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         };
 
         Ok(CompletionResponse {

@@ -1,0 +1,33 @@
+{
+  "name": "manage_user_memory",
+  "description": "List, search, record, update, or delete cross-session user memories. Use this for durable user preferences and stable personal facts the user asks you to remember. Do not store temporary project state here.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["record", "search", "list", "update", "delete"],
+        "description": "User memory action to perform."
+      },
+      "id": {
+        "type": "string",
+        "description": "User memory id for update or delete."
+      },
+      "content": {
+        "type": "string",
+        "description": "Durable user preference or stable personal fact."
+      },
+      "query": {
+        "type": "string",
+        "description": "Search query for user memories."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "description": "Maximum memories to return."
+      }
+    },
+    "required": ["action"]
+  }
+}

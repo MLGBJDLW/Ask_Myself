@@ -311,6 +311,31 @@ mod tests {
     }
 
     #[test]
+    fn qwen_catalog_defaults_to_qwen37_max() {
+        let qwen = find_provider_preset(
+            "qwen",
+            Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        )
+        .expect("qwen preset should match");
+        let ids = qwen
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids.first(), Some(&"qwen3.7-max"));
+        assert!(ids.contains(&"qwen3.6-plus"));
+
+        let qwen37 = qwen
+            .models
+            .iter()
+            .find(|model| model.id == "qwen3.7-max")
+            .expect("qwen3.7-max should be listed");
+        assert_eq!(qwen37.recommended, Some(true));
+        assert_eq!(qwen37.tag_key.as_deref(), Some("providers.tagLatest"));
+    }
+
+    #[test]
     fn provider_catalog_drives_vision_capabilities() {
         assert_eq!(
             model_supports_vision_from_catalog(ProviderType::OpenAi, "gpt-5.5"),

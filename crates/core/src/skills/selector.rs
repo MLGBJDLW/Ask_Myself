@@ -37,6 +37,24 @@ fn token_aliases(token: &str) -> &'static [&'static str] {
         "cite" | "citation" | "citations" | "source" | "sources" | "evidence" => {
             &["cite", "citation", "source", "evidence"]
         }
+        _ if token.contains("小说")
+            || token.contains("网文")
+            || token.contains("故事")
+            || token.contains("章节")
+            || token.contains("角色")
+            || token.contains("剧情")
+            || token.contains("伏笔") =>
+        {
+            &[
+                "fiction",
+                "novel",
+                "story",
+                "chapter",
+                "character",
+                "plot",
+                "chinese",
+            ]
+        }
         _ => &[],
     }
 }

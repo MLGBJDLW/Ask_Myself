@@ -124,6 +124,18 @@ function skillActivationNameFromArtifacts(artifacts: unknown): string | null {
   return skillActivationRefFromArtifacts(artifacts)?.label ?? null;
 }
 
+function loadedSkillRefFromSelection(skill: PersistedTraceSkillRef): TimelineSkillRef | null {
+  if (skill.activated !== true) return null;
+  const ref = skillRefLabel(skill.id, skill.name, skill.displayName);
+  if (!ref) return null;
+
+  return {
+    ...skill,
+    ...ref,
+    activated: true,
+  };
+}
+
 function isSuccessfulSkillActivation(toolCall: ToolCallEvent): boolean {
   return (
     normalizeToolName(toolCall.toolName) === 'manage_skill' &&
@@ -170,6 +182,13 @@ export function skillRefsFromTraceItems(
   };
 
   for (const item of items ?? []) {
+    if (item.kind === 'skillSelection') {
+      for (const skill of item.skills) {
+        addRef(loadedSkillRefFromSelection(skill));
+      }
+      continue;
+    }
+
     if (item.kind === 'tool' && isSuccessfulSkillActivation(item.toolCall)) {
       addRef(skillActivationRefFromArtifacts(item.toolCall.artifacts));
     }

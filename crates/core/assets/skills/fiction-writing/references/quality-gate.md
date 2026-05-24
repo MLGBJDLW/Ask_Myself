@@ -12,6 +12,7 @@ into a long report.
 - Chapter Gate
 - Continuation Gate
 - Chinese Prose Gate
+- Dash and Punctuation Gate
 - De-Generic Gate
 - Revision Gate
 - Output Policy
@@ -100,6 +101,8 @@ For Chinese-language fiction or translated Chinese-style output:
 - The prose avoids translated English cadence: excessive abstract connectors,
   symmetrical over-polished phrasing, repeated "realized/felt/understood" moves,
   and generic emotional labels.
+- Punctuation feels native to Chinese prose; dashes are absent unless an actual
+  interruption or abrupt break requires one.
 - Terms of address, hierarchy, relationship language, and genre vocabulary are
   consistent.
 
@@ -109,6 +112,27 @@ Repair if weak:
 - Break long paragraphs at pressure shifts.
 - Give each speaker a different tactic.
 - Replace generic summary with a visible action.
+
+## Dash and Punctuation Gate
+
+Use this gate for any prose draft or polish, especially Chinese fiction:
+
+- Finished prose defaults to zero em dashes.
+- `—`, `——`, and `--` are not used as a general rhythm device.
+- If a dash appears, it marks a real interruption, sudden break in speech, or
+  abrupt turn. Otherwise rewrite with sentence breaks, action beats, dialogue,
+  silence, consequence, or paragraphing.
+- Chinese prose has no more than one dash construction per 1,000 Chinese
+  characters unless the user explicitly asks for a dash-heavy style.
+- Ellipses and exclamation marks are also restrained; pressure should come from
+  action, choice, conflict, and consequence.
+
+Repair if weak:
+
+- Split the sentence.
+- Put the turn in the next paragraph.
+- Replace the dash with a physical action or spoken line.
+- Cut ornamental punctuation that only signals drama without adding content.
 
 ## De-Generic Gate
 
@@ -120,6 +144,7 @@ Use when prose feels AI-smooth, interchangeable, or over-explained:
 - Does each important character react differently?
 - Is there subtext, silence, wrong inference, or asymmetry?
 - Are details functional rather than decorative?
+- Are punctuation and sentence patterns too neat, symmetrical, or repetitive?
 
 Repair with:
 

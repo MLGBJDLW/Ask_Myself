@@ -781,6 +781,8 @@ impl AgentExecutor {
                     tool_duration_ms: Some(duration_ms),
                     input_tokens: 0,
                     output_tokens: 0,
+                    cache_read_tokens: None,
+                    cache_creation_tokens: None,
                     context_usage_pct: 0.0,
                     was_compacted: false,
                 });

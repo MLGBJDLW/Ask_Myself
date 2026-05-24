@@ -7,6 +7,8 @@ interface TokenUsage {
   contextWindow: number;
   completionTokens: number;
   thinkingTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   isEstimated: boolean;
   source: 'live' | 'cached' | 'estimated';
 }
@@ -131,6 +133,8 @@ export function ContextCockpit({
   const usageSummaryLabel = usage
     ? t('chat.tokenUsagePercent', { percent: usagePercentRounded })
     : t('chat.contextNoUsage');
+  const cacheReadTokens = usage?.cacheReadTokens ?? 0;
+  const cacheCreationTokens = usage?.cacheCreationTokens ?? 0;
   const modelLabel = runtimeProfile
     ? `${runtimeProfile.provider} / ${runtimeProfile.model}`
     : t('chat.contextNoModel');
@@ -237,6 +241,12 @@ export function ContextCockpit({
                       total: formatTokens(usage.contextWindow),
                     })}
                   </div>
+                  {(cacheReadTokens > 0 || cacheCreationTokens > 0) && (
+                    <div className="mt-1 text-[11px] tabular-nums text-text-tertiary">
+                      Provider cache: {formatTokens(cacheReadTokens)} read
+                      {cacheCreationTokens > 0 ? ` / ${formatTokens(cacheCreationTokens)} write` : ''}
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="text-sm text-text-secondary">{usageSourceLabel}</div>

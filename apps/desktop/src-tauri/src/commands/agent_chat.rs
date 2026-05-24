@@ -115,12 +115,9 @@ pub async fn agent_chat_cmd(
         nexa_core::conversation::build_collection_context_prompt_section(
             conv.collection_context.as_ref(),
         );
-    let memory_section = if conv.project_id.is_some() {
-        String::new()
-    } else {
+    let memory_section =
         nexa_core::personalization::build_memory_summary_for_query(&state.db, Some(&message))
-            .unwrap_or_default()
-    };
+            .unwrap_or_default();
     let project_memory_section = nexa_core::project_memory::build_project_memory_summary_for_query(
         &state.db,
         conv.project_id.as_deref(),
@@ -218,6 +215,23 @@ pub async fn agent_chat_cmd(
     .unwrap_or_else(|err| {
         warn!(
             "Failed to select skills for task run {}: {err}",
+            task_run.id
+        );
+        Vec::new()
+    });
+    let auto_loaded_skills = if persona_default_skill_ids.is_empty() {
+        nexa_core::skills::get_active_skills_for_query(&state.db, &message, 3)
+    } else {
+        nexa_core::skills::get_active_skills_for_query_with_pinned(
+            &state.db,
+            &message,
+            3,
+            &persona_default_skill_ids,
+        )
+    }
+    .unwrap_or_else(|err| {
+        warn!(
+            "Failed to auto-load skills for task run {}: {err}",
             task_run.id
         );
         Vec::new()
@@ -740,7 +754,9 @@ pub async fn agent_chat_cmd(
         if let Some(summ_provider) = summarization_provider {
             executor = executor.with_summarization_provider(summ_provider);
         }
-        executor = executor.with_skills_override(selected_skills);
+        executor = executor
+            .with_skills_override(selected_skills)
+            .with_auto_loaded_skills_override(auto_loaded_skills);
         let run_future = executor.run(
             history,
             user_parts,

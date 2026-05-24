@@ -25,6 +25,7 @@ export interface PersistedTraceSkillRef {
   displayName?: string;
   builtin?: boolean;
   sourcePath?: string;
+  activated?: boolean;
 }
 
 export interface TurnTraceProjection {
@@ -105,6 +106,7 @@ function persistedSkillRefFromRecord(skill: Record<string, unknown>): PersistedT
     displayName: displayName || undefined,
     builtin: typeof skill.builtin === 'boolean' ? skill.builtin : undefined,
     sourcePath: typeof skill.sourcePath === 'string' ? skill.sourcePath : undefined,
+    activated: typeof skill.activated === 'boolean' ? skill.activated : undefined,
   };
 }
 

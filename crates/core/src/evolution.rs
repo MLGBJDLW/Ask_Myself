@@ -1455,6 +1455,8 @@ mod tests {
             tool_duration_ms: Some(10),
             input_tokens: 900,
             output_tokens: 100,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
             context_usage_pct: 95.0,
             was_compacted: true,
         });
@@ -1495,6 +1497,8 @@ mod tests {
                 tool_duration_ms: Some(10),
                 input_tokens: 100,
                 output_tokens: 50,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
                 context_usage_pct: 25.0,
                 was_compacted: false,
             });

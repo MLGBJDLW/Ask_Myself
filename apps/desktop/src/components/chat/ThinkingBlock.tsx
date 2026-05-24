@@ -194,22 +194,19 @@ export function ThinkingBlock({
           className={`transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
         />
         <span className="flex items-center gap-1.5">
-          <Brain size={12} />
-          <span>{summaryText}</span>
+          <Brain size={12} className={isStreaming ? 'text-accent/80' : ''} />
+          <span
+            className={`thinking-status-text ${isStreaming && !shouldReduceMotion ? 'thinking-status-text-active' : ''}`}
+          >
+            {summaryText}
+          </span>
           {isStreaming && (
-            <>
-              <span
-                aria-hidden="true"
-                className="hidden min-w-[5.5rem] text-center font-mono text-[11px] text-accent/80 sm:inline-block"
-              >
-                {thinkingMood}
-              </span>
-              <span className="flex gap-0.5 ml-0.5">
-                <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1 h-1 rounded-full bg-text-tertiary animate-bounce" style={{ animationDelay: '300ms' }} />
-              </span>
-            </>
+            <span
+              aria-hidden="true"
+              className="thinking-mood-badge hidden min-w-[5.5rem] text-center font-mono text-[11px] sm:inline-block"
+            >
+              {thinkingMood}
+            </span>
           )}
         </span>
       </button>

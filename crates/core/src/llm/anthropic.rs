@@ -99,6 +99,8 @@ enum AnthropicContent {
 enum AnthropicContentBlock {
     Text {
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     Image {
         source: AnthropicImageSource,
@@ -111,6 +113,8 @@ enum AnthropicContentBlock {
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
 }
 
@@ -162,6 +166,10 @@ enum AnthropicResponseBlock {
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -250,6 +258,10 @@ struct AnthropicMessageDelta {
 #[derive(Deserialize)]
 struct AnthropicDeltaUsage {
     output_tokens: u32,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -274,20 +286,19 @@ fn parse_finish_reason(s: &str) -> FinishReason {
 fn convert_messages(
     messages: &[Message],
 ) -> (Option<Vec<AnthropicSystemBlock>>, Vec<AnthropicMessage>) {
-    let mut system_text: Option<String> = None;
+    let mut system_blocks: Vec<AnthropicSystemBlock> = Vec::new();
     let mut out: Vec<AnthropicMessage> = Vec::new();
 
     for msg in messages {
         match msg.role {
             Role::System => {
-                // Anthropic only supports a single system prompt; concat if multiple.
                 let text = msg.text_content();
-                match &mut system_text {
-                    Some(existing) => {
-                        existing.push('\n');
-                        existing.push_str(&text);
-                    }
-                    None => system_text = Some(text),
+                if !text.is_empty() {
+                    system_blocks.push(AnthropicSystemBlock {
+                        r#type: "text".to_string(),
+                        text,
+                        cache_control: None,
+                    });
                 }
             }
             Role::User => {
@@ -296,9 +307,10 @@ fn convert_messages(
                         .parts
                         .iter()
                         .map(|p| match p {
-                            ContentPart::Text { text } => {
-                                AnthropicContentBlock::Text { text: text.clone() }
-                            }
+                            ContentPart::Text { text } => AnthropicContentBlock::Text {
+                                text: text.clone(),
+                                cache_control: None,
+                            },
                             ContentPart::Image { media_type, data } => {
                                 AnthropicContentBlock::Image {
                                     source: AnthropicImageSource {
@@ -327,7 +339,10 @@ fn convert_messages(
                     let mut blocks = Vec::new();
                     let text = msg.text_content();
                     if !text.is_empty() {
-                        blocks.push(AnthropicContentBlock::Text { text });
+                        blocks.push(AnthropicContentBlock::Text {
+                            text,
+                            cache_control: None,
+                        });
                     }
                     for tc in calls {
                         let input: serde_json::Value =
@@ -358,6 +373,7 @@ fn convert_messages(
                             blocks.push(AnthropicContentBlock::ToolResult {
                                 tool_use_id: msg.name.clone().unwrap_or_default(),
                                 content: msg.text_content(),
+                                cache_control: None,
                             });
                             true
                         } else {
@@ -377,6 +393,7 @@ fn convert_messages(
                             AnthropicContentBlock::ToolResult {
                                 tool_use_id: msg.name.clone().unwrap_or_default(),
                                 content: msg.text_content(),
+                                cache_control: None,
                             },
                         ]),
                     });
@@ -385,23 +402,57 @@ fn convert_messages(
         }
     }
 
-    // Wrap system text in content blocks with cache_control for prompt caching.
-    // Anthropic caches everything up to a cache_control breakpoint, so placing
-    // one on the system block ensures the system prompt is cached across turns.
-    let system = system_text.map(|text| {
-        vec![AnthropicSystemBlock {
-            r#type: "text".to_string(),
-            text,
-            cache_control: Some(CacheControl {
-                r#type: "ephemeral".to_string(),
-            }),
-        }]
-    });
+    // Keep the first system block as the stable cache prefix. Later system
+    // blocks carry runtime state such as dates, route plans, and loaded skills.
+    if let Some(first) = system_blocks.first_mut() {
+        first.cache_control = Some(CacheControl {
+            r#type: "ephemeral".to_string(),
+        });
+    }
+    add_cache_control_to_last_user_message(&mut out);
+    let system = (!system_blocks.is_empty()).then_some(system_blocks);
 
     (system, out)
 }
 
-fn convert_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
+fn add_cache_control_to_last_user_message(messages: &mut [AnthropicMessage]) {
+    let Some(last_user) = messages.iter_mut().rev().find(|msg| msg.role == "user") else {
+        return;
+    };
+    let cache_control = CacheControl {
+        r#type: "ephemeral".to_string(),
+    };
+    match &mut last_user.content {
+        AnthropicContent::Text(text) => {
+            let text = std::mem::take(text);
+            last_user.content = AnthropicContent::Blocks(vec![AnthropicContentBlock::Text {
+                text,
+                cache_control: Some(cache_control),
+            }]);
+        }
+        AnthropicContent::Blocks(blocks) => {
+            for block in blocks.iter_mut().rev() {
+                match block {
+                    AnthropicContentBlock::Text {
+                        cache_control: target,
+                        ..
+                    }
+                    | AnthropicContentBlock::ToolResult {
+                        cache_control: target,
+                        ..
+                    } => {
+                        *target = Some(cache_control.clone());
+                        break;
+                    }
+                    AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolUse { .. } => {
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn convert_tools(tools: &[ToolDefinition], cache_tools: bool) -> Vec<AnthropicTool> {
     let len = tools.len();
     tools
         .iter()
@@ -413,7 +464,7 @@ fn convert_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
             // Place cache_control breakpoint on the last tool definition.
             // Anthropic caches everything UP TO the breakpoint, so this
             // ensures all tool definitions (+ system prompt) are cached.
-            cache_control: if i == len - 1 {
+            cache_control: if cache_tools && i == len - 1 {
                 Some(CacheControl {
                     r#type: "ephemeral".to_string(),
                 })
@@ -454,7 +505,11 @@ fn build_request_body(
             )
         };
 
-    let anthropic_tools = request.tools.as_ref().map(|t| convert_tools(t));
+    let has_volatile_system_blocks = system.as_ref().is_some_and(|blocks| blocks.len() > 1);
+    let anthropic_tools = request
+        .tools
+        .as_ref()
+        .map(|t| convert_tools(t, !has_volatile_system_blocks));
     let tool_choice = match anthropic_tools.as_ref() {
         Some(tools) if !tools.is_empty() && request.parallel_tool_calls => {
             Some(AnthropicToolChoice {
@@ -496,6 +551,8 @@ async fn parse_anthropic_stream(
     let mut buffer = String::new();
     // Track input_tokens from message_start for final usage assembly.
     let mut input_tokens: u32 = 0;
+    let mut cache_read_tokens: Option<u32> = None;
+    let mut cache_creation_tokens: Option<u32> = None;
     // Track current tool call id/name from content_block_start.
     let mut current_tool_id = String::new();
     let mut current_tool_name: Option<String> = None;
@@ -551,6 +608,8 @@ async fn parse_anthropic_stream(
                 AnthropicStreamEvent::MessageStart { message } => {
                     if let Some(u) = message.usage {
                         input_tokens = u.input_tokens;
+                        cache_read_tokens = u.cache_read_input_tokens;
+                        cache_creation_tokens = u.cache_creation_input_tokens;
                     }
                 }
                 AnthropicStreamEvent::ContentBlockStart { content_block, .. } => {
@@ -638,11 +697,21 @@ async fn parse_anthropic_stream(
                     } else {
                         None
                     };
-                    let usage_info = usage.map(|u| Usage {
-                        prompt_tokens: input_tokens,
-                        completion_tokens: u.output_tokens,
-                        total_tokens: input_tokens + u.output_tokens,
-                        thinking_tokens: estimated_thinking,
+                    let usage_info = usage.map(|u| {
+                        if u.cache_read_input_tokens.is_some() {
+                            cache_read_tokens = u.cache_read_input_tokens;
+                        }
+                        if u.cache_creation_input_tokens.is_some() {
+                            cache_creation_tokens = u.cache_creation_input_tokens;
+                        }
+                        Usage {
+                            prompt_tokens: input_tokens,
+                            completion_tokens: u.output_tokens,
+                            total_tokens: input_tokens + u.output_tokens,
+                            thinking_tokens: estimated_thinking,
+                            cache_read_tokens,
+                            cache_creation_tokens,
+                        }
                     });
                     let chunk = StreamChunk {
                         delta: String::new(),
@@ -749,6 +818,89 @@ impl AnthropicProvider {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request_with_messages(
+        messages: Vec<Message>,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> CompletionRequest {
+        CompletionRequest {
+            model: "claude-sonnet-4-5".to_string(),
+            messages,
+            temperature: Some(0.2),
+            max_tokens: Some(1024),
+            tools,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: None,
+            parallel_tool_calls: true,
+        }
+    }
+
+    #[test]
+    fn system_cache_control_stays_on_stable_first_block() {
+        let messages = vec![
+            Message::text(Role::System, "stable prompt"),
+            Message::text(Role::System, "runtime date"),
+            Message::text(Role::User, "hello"),
+        ];
+
+        let (system, api_messages) = convert_messages(&messages);
+        let system_json = serde_json::to_value(system.unwrap()).unwrap();
+        assert_eq!(
+            system_json[0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+        assert!(system_json[1].get("cache_control").is_none());
+
+        let messages_json = serde_json::to_value(api_messages).unwrap();
+        assert_eq!(
+            messages_json[0]["content"][0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+    }
+
+    #[test]
+    fn tool_cache_control_is_skipped_when_system_has_volatile_blocks() {
+        let tool = ToolDefinition {
+            name: "search".into(),
+            description: "Search".into(),
+            parameters: serde_json::json!({"type":"object"}),
+        };
+        let messages = vec![
+            Message::text(Role::System, "stable prompt"),
+            Message::text(Role::System, "runtime plan"),
+            Message::text(Role::User, "hello"),
+        ];
+        let (system, api_messages) = convert_messages(&messages);
+        let body = build_request_body(
+            &request_with_messages(messages, Some(vec![tool])),
+            system,
+            api_messages,
+            false,
+        );
+        let body_json = serde_json::to_value(body).unwrap();
+        assert!(body_json["tools"][0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn anthropic_usage_deserializes_cache_tokens() {
+        let usage: AnthropicUsage = serde_json::from_value(serde_json::json!({
+            "input_tokens": 100,
+            "output_tokens": 25,
+            "cache_read_input_tokens": 80,
+            "cache_creation_input_tokens": 10
+        }))
+        .unwrap();
+
+        assert_eq!(usage.cache_read_input_tokens, Some(80));
+        assert_eq!(usage.cache_creation_input_tokens, Some(10));
+    }
+}
+
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     fn name(&self) -> &str {
@@ -832,6 +984,8 @@ impl LlmProvider for AnthropicProvider {
                 completion_tokens: u.output_tokens,
                 total_tokens: u.input_tokens + u.output_tokens,
                 thinking_tokens: estimated_thinking,
+                cache_read_tokens: u.cache_read_input_tokens,
+                cache_creation_tokens: u.cache_creation_input_tokens,
             })
             .unwrap_or_default();
 

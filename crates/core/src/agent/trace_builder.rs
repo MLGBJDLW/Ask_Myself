@@ -36,10 +36,16 @@ pub(super) struct PersistedTraceSkillRef {
     builtin: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_path: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    activated: bool,
 }
 
-impl From<&Skill> for PersistedTraceSkillRef {
-    fn from(skill: &Skill) -> Self {
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl PersistedTraceSkillRef {
+    fn from_skill(skill: &Skill, activated: bool) -> Self {
         let display_name = skill.interface.display_name.trim();
         Self {
             id: skill.id.clone(),
@@ -47,7 +53,14 @@ impl From<&Skill> for PersistedTraceSkillRef {
             display_name: (!display_name.is_empty()).then(|| display_name.to_string()),
             builtin: skill.builtin,
             source_path: skill.source_path.clone(),
+            activated,
         }
+    }
+}
+
+impl From<&Skill> for PersistedTraceSkillRef {
+    fn from(skill: &Skill) -> Self {
+        PersistedTraceSkillRef::from_skill(skill, false)
     }
 }
 
@@ -84,6 +97,22 @@ pub(super) fn append_persisted_trace_skill_selection(
 
     items.push(PersistedTraceItem::SkillSelection {
         skills: skills.iter().map(PersistedTraceSkillRef::from).collect(),
+    });
+}
+
+pub(super) fn append_persisted_trace_loaded_skills(
+    items: &mut Vec<PersistedTraceItem>,
+    skills: &[Skill],
+) {
+    if skills.is_empty() {
+        return;
+    }
+
+    items.push(PersistedTraceItem::SkillSelection {
+        skills: skills
+            .iter()
+            .map(|skill| PersistedTraceSkillRef::from_skill(skill, true))
+            .collect(),
     });
 }
 
@@ -398,6 +427,34 @@ mod tests {
             artifacts["items"][0]["skills"][0]["displayName"],
             "Fiction Writing"
         );
+        assert!(
+            artifacts["items"][0]["skills"][0]
+                .get("activated")
+                .is_none(),
+            "plain skill index selections are not activation records"
+        );
+    }
+
+    #[test]
+    fn loaded_skill_trace_marks_skill_refs_activated() {
+        let mut items = Vec::new();
+        append_persisted_trace_loaded_skills(
+            &mut items,
+            &[test_skill(
+                "builtin-fiction-writing",
+                "fiction-writing",
+                "Fiction Writing",
+            )],
+        );
+
+        let artifacts = build_trace_artifacts(&items).expect("trace artifacts");
+
+        assert_eq!(artifacts["items"][0]["kind"], "skillSelection");
+        assert_eq!(
+            artifacts["items"][0]["skills"][0]["id"],
+            "builtin-fiction-writing"
+        );
+        assert_eq!(artifacts["items"][0]["skills"][0]["activated"], true);
     }
 
     #[test]

@@ -88,12 +88,26 @@ struct SseUsage {
     total_tokens: u32,
     #[serde(default)]
     completion_tokens_details: Option<SseCompletionTokensDetails>,
+    #[serde(default)]
+    prompt_tokens_details: Option<SsePromptTokensDetails>,
 }
 
 #[derive(serde::Deserialize)]
 struct SseCompletionTokensDetails {
     #[serde(default)]
     reasoning_tokens: Option<u32>,
+}
+
+#[derive(serde::Deserialize)]
+struct SsePromptTokensDetails {
+    #[serde(default, alias = "cache_read_input_tokens", alias = "cachedTokens")]
+    cached_tokens: Option<u32>,
+    #[serde(
+        default,
+        alias = "cache_creation_input_tokens",
+        alias = "cache_write_input_tokens"
+    )]
+    cache_write_tokens: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -430,11 +444,16 @@ async fn process_sse_line(
             let finish_reason = choice
                 .and_then(|c| c.finish_reason.as_deref())
                 .map(parse_finish_reason);
-            let usage = sse.usage.map(|u| Usage {
-                prompt_tokens: u.prompt_tokens,
-                completion_tokens: u.completion_tokens,
-                total_tokens: u.total_tokens,
-                thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
+            let usage = sse.usage.map(|u| {
+                let prompt_details = u.prompt_tokens_details;
+                Usage {
+                    prompt_tokens: u.prompt_tokens,
+                    completion_tokens: u.completion_tokens,
+                    total_tokens: u.total_tokens,
+                    thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
+                    cache_read_tokens: prompt_details.as_ref().and_then(|d| d.cached_tokens),
+                    cache_creation_tokens: prompt_details.and_then(|d| d.cache_write_tokens),
+                }
             });
 
             // Emit provider-specific reasoning/thinking deltas if present.

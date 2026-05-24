@@ -25,6 +25,12 @@ pub struct AgentTrace {
     pub context_window_size: usize,
     /// Highest context usage percentage during the session.
     pub peak_context_usage_pct: f32,
+    /// Provider-side prompt-cache tokens read across all model steps.
+    #[serde(default)]
+    pub total_cache_read_tokens: u64,
+    /// Provider-side prompt-cache tokens written/created across all model steps.
+    #[serde(default)]
+    pub total_cache_creation_tokens: u64,
     /// How many tool definitions were sent to the LLM.
     pub tools_offered: u32,
     /// Whether the answer was served from cache.
@@ -68,6 +74,10 @@ pub struct TraceStep {
     pub tool_duration_ms: Option<u64>,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<u64>,
     pub context_usage_pct: f32,
     pub was_compacted: bool,
 }
@@ -102,6 +112,8 @@ impl AgentTrace {
             total_output_tokens: 0,
             context_window_size,
             peak_context_usage_pct: 0.0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             tools_offered: 0,
             cache_hit: false,
             route_kind: None,
@@ -122,6 +134,8 @@ impl AgentTrace {
         }
         self.total_input_tokens += step.input_tokens;
         self.total_output_tokens += step.output_tokens;
+        self.total_cache_read_tokens += step.cache_read_tokens.unwrap_or(0);
+        self.total_cache_creation_tokens += step.cache_creation_tokens.unwrap_or(0);
         if step.context_usage_pct > self.peak_context_usage_pct {
             self.peak_context_usage_pct = step.context_usage_pct;
         }

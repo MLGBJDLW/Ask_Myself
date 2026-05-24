@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use futures::{stream::FuturesUnordered, StreamExt};
@@ -54,6 +54,7 @@ mod finalization;
 pub mod loop_guard;
 mod model_step;
 mod pre_search;
+mod prompt_cache;
 pub mod route;
 mod sampling;
 pub mod scratchpad;
@@ -70,6 +71,7 @@ mod usage_accounting;
 
 use self::context_pipeline::ContextPipeline;
 use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
+use self::prompt_cache::PromptCacheTracker;
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
 use self::sampling::{completion_response_to_agent_stream, llm_streaming_disabled_by_env};
 use self::stream_recovery::{
@@ -79,8 +81,8 @@ use self::stream_recovery::{
 use self::tool_runtime::{build_tool_run_item, tool_call_execution_batches};
 use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
 use self::trace_builder::{
-    append_persisted_trace_loop_event, append_persisted_trace_status,
-    append_persisted_trace_thinking, append_persisted_trace_tool,
+    append_persisted_trace_loaded_skills, append_persisted_trace_loop_event,
+    append_persisted_trace_status, append_persisted_trace_thinking, append_persisted_trace_tool,
     append_persisted_trace_visibility, build_task_run_artifacts, build_trace_artifacts,
     build_turn_trace, build_turn_trace_with_verification, evidence_signals_from_trace,
     PersistedTraceItem,
@@ -245,7 +247,7 @@ fn default_trace_enabled() -> bool {
 }
 
 fn default_dynamic_tool_visibility() -> bool {
-    true
+    false
 }
 
 #[cfg(test)]
@@ -277,7 +279,7 @@ impl Default for AgentConfig {
             tool_timeout_secs: None,
             agent_timeout_secs: None,
             cache_ttl_hours: None,
-            dynamic_tool_visibility: true,
+            dynamic_tool_visibility: false,
             trace_enabled: true,
             require_tool_confirmation: false,
             shell_access_mode: ShellAccessMode::Restricted,
@@ -376,10 +378,12 @@ pub struct AgentExecutor {
     tools: ToolRegistry,
     config: AgentConfig,
     skills_override: Option<Vec<Skill>>,
+    auto_loaded_skills_override: Option<Vec<Skill>>,
     cancel_token: CancellationToken,
     steering_rx: Option<Arc<TokioMutex<mpsc::UnboundedReceiver<AgentSteeringMessage>>>>,
     confirmation_callback: Option<ConfirmationCallback>,
     approval_callback: Option<ApprovalCallback>,
+    prompt_cache_tracker: StdMutex<PromptCacheTracker>,
 }
 
 impl AgentExecutor {
@@ -391,10 +395,12 @@ impl AgentExecutor {
             tools,
             config,
             skills_override: None,
+            auto_loaded_skills_override: None,
             cancel_token: CancellationToken::new(),
             steering_rx: None,
             confirmation_callback: None,
             approval_callback: None,
+            prompt_cache_tracker: StdMutex::new(PromptCacheTracker::default()),
         }
     }
 
@@ -452,6 +458,15 @@ impl AgentExecutor {
     /// When omitted, the executor loads the enabled skill index from storage.
     pub fn with_skills_override(mut self, skills: Vec<Skill>) -> Self {
         self.skills_override = Some(skills);
+        self
+    }
+
+    /// Override the skill bodies injected into the system prompt for this turn.
+    ///
+    /// When omitted, the executor auto-loads the highest-confidence matches
+    /// from the available skill metadata.
+    pub fn with_auto_loaded_skills_override(mut self, skills: Vec<Skill>) -> Self {
+        self.auto_loaded_skills_override = Some(skills);
         self
     }
 }

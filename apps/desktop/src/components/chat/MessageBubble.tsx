@@ -282,17 +282,6 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
             </>
           ) : (
             <>
-              <div className="mb-2 flex items-center gap-2">
-                <span className="rounded-full bg-surface-3 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-text-tertiary">
-                  {t('chat.conclusion')}
-                </span>
-                {evidenceItems.length > 0 && (
-                  <span className="text-[11px] text-text-tertiary">
-                    {t('chat.answerEvidenceSummary', { count: String(evidenceItems.length) })}
-                  </span>
-                )}
-              </div>
-
               {evidenceItems.length > 0 && (
                 <div className="mb-3 rounded-xl border border-border/70 bg-surface-1/70 px-2.5 py-2">
                   <div className="mb-1 flex items-center justify-between gap-2">

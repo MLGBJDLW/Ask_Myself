@@ -294,8 +294,8 @@ fn test_route_user_turn_treats_tool_repair_as_file_operation() {
 }
 
 #[test]
-fn test_agent_config_defaults_to_dynamic_tool_visibility() {
-    assert!(AgentConfig::default().dynamic_tool_visibility);
+fn test_agent_config_defaults_to_cache_stable_tool_visibility() {
+    assert!(!AgentConfig::default().dynamic_tool_visibility);
 }
 
 struct MockProvider {
@@ -460,6 +460,8 @@ impl LlmProvider for RecoveringStreamProvider {
                 completion_tokens: 2,
                 total_tokens: 12,
                 thinking_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
             },
             thinking: None,
         })
@@ -623,6 +625,8 @@ impl LlmProvider for SteeringInterruptProvider {
                 completion_tokens: 2,
                 total_tokens: 14,
                 thinking_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
             }),
             thinking_delta: None,
         })])))

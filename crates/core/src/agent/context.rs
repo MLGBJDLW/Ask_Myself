@@ -38,9 +38,10 @@ pub fn prepare_messages(
     max_tokens_response: u32,
     context_window_override: Option<u32>,
     skills: &[Skill],
+    loaded_skills: &[Skill],
     tool_definitions: &[ToolDefinition],
 ) -> Vec<Message> {
-    let mut messages = Vec::with_capacity(history.len() + 2);
+    let mut messages = Vec::with_capacity(history.len() + 3);
 
     let user_query = user_parts
         .iter()
@@ -60,19 +61,32 @@ pub fn prepare_messages(
         .saturating_sub(tool_overhead)
         .saturating_sub(context_safety_buffer(max_context));
     let system_prompt_budget = system_prompt_char_budget(effective_context, max_tokens_response);
-    let skills_section = crate::skills::build_skills_section_for_query_with_budget(
+    let skill_budget = skill_prompt_char_budget(max_context, system_prompt_budget);
+    let loaded_skills_section = crate::skills::build_loaded_skills_section_with_budget(
+        loaded_skills,
+        loaded_skill_prompt_char_budget(skill_budget, !skills.is_empty()),
+    );
+    let remaining_skill_budget = skill_budget.saturating_sub(loaded_skills_section.len());
+    let available_skills_section = crate::skills::build_skills_section_for_query_with_budget(
         skills,
         &user_query,
-        skill_prompt_char_budget(max_context, system_prompt_budget),
+        remaining_skill_budget,
     );
-    let base_prompt = format!(
-        "{}\n\nCurrent date and time: {} (UTC)",
-        system_prompt,
-        Utc::now().format("%Y-%m-%d %H:%M UTC")
+    let stable_system_prompt = assemble_system_prompt(
+        system_prompt.to_string(),
+        available_skills_section,
+        system_prompt_budget,
     );
-    let system_with_datetime =
-        assemble_system_prompt(base_prompt, skills_section, system_prompt_budget);
-    messages.push(Message::text(Role::System, system_with_datetime));
+    messages.push(Message::text(Role::System, stable_system_prompt));
+
+    let runtime_section = format!(
+        "## Runtime Context\nCurrent date: {} (UTC)",
+        Utc::now().format("%Y-%m-%d")
+    );
+    let volatile_system_prompt = combine_prompt_sections(runtime_section, loaded_skills_section);
+    if !volatile_system_prompt.trim().is_empty() {
+        messages.push(Message::text(Role::System, volatile_system_prompt));
+    }
 
     // Prior conversation turns.
     messages.extend_from_slice(history);
@@ -104,7 +118,7 @@ pub fn prepare_messages(
 
         let recap = build_evicted_recap(&evicted);
         if !recap.is_empty() {
-            if let Some(sys) = trimmed.iter_mut().find(|m| m.role == Role::System) {
+            if let Some(sys) = trimmed.iter_mut().rev().find(|m| m.role == Role::System) {
                 if let Some(ContentPart::Text { text }) = sys.parts.first_mut() {
                     *text = cap_text_to_chars(
                         format!("{}\n\n{}", text, recap),
@@ -225,9 +239,27 @@ pub fn estimate_context_usage_breakdown_for_model(
     tools: &[ToolDefinition],
     actual_prompt_tokens: Option<u32>,
 ) -> ContextUsageBreakdown {
-    const ORDER: [&str; 6] = [
-        "prompts",
+    const ORDER: [&str; 24] = [
+        "systemCore",
+        "runtime",
+        "instructions",
+        "persona",
+        "routePlan",
+        "taskPlan",
+        "availableSkills",
+        "loadedSkills",
+        "userMemory",
+        "projectMemory",
+        "agentMemory",
+        "preferences",
+        "learnedSuccesses",
+        "scratchpad",
+        "sourceScope",
+        "collectionContext",
+        "conversationSummary",
         "conversation",
+        "thinking",
+        "toolCalls",
         "toolResults",
         "tools",
         "mcp",
@@ -236,16 +268,7 @@ pub fn estimate_context_usage_breakdown_for_model(
 
     let mut segments: BTreeMap<&'static str, u32> = BTreeMap::new();
     for message in messages {
-        let kind = match message.role {
-            Role::System => "prompts",
-            Role::User | Role::Assistant => "conversation",
-            Role::Tool => "toolResults",
-        };
-        add_tokens(
-            &mut segments,
-            kind,
-            estimate_message_tokens_for_model(model, message),
-        );
+        add_message_context_tokens(&mut segments, model, message);
     }
     for tool in tools {
         let kind = if is_mcp_tool_definition(tool) {
@@ -288,6 +311,157 @@ pub fn estimate_context_usage_breakdown_for_model(
     ContextUsageBreakdown {
         total_tokens,
         segments,
+    }
+}
+
+fn add_message_context_tokens(
+    segments: &mut BTreeMap<&'static str, u32>,
+    model: &str,
+    message: &Message,
+) {
+    match message.role {
+        Role::System => add_system_prompt_tokens(segments, model, &message.text_content()),
+        Role::Tool => add_tokens(
+            segments,
+            "toolResults",
+            estimate_message_tokens_for_model(model, message),
+        ),
+        Role::User => add_tokens(
+            segments,
+            "conversation",
+            estimate_message_body_tokens_for_model(model, message),
+        ),
+        Role::Assistant => {
+            add_tokens(
+                segments,
+                "conversation",
+                estimate_message_body_tokens_for_model(model, message),
+            );
+            if let Some(reasoning) = message.reasoning_content.as_deref() {
+                add_tokens(
+                    segments,
+                    "thinking",
+                    estimate_tokens_for_model(model, reasoning),
+                );
+            }
+            if let Some(tool_calls) = message.tool_calls.as_ref() {
+                let mut tokens = 0u32;
+                for call in tool_calls {
+                    tokens = tokens
+                        .saturating_add(estimate_tokens_for_model(model, &call.id))
+                        .saturating_add(estimate_tokens_for_model(model, &call.name))
+                        .saturating_add(estimate_tokens_for_model(model, &call.arguments))
+                        .saturating_add(4);
+                }
+                add_tokens(segments, "toolCalls", tokens);
+            }
+        }
+    }
+}
+
+fn estimate_message_body_tokens_for_model(model: &str, message: &Message) -> u32 {
+    let mut tokens = estimate_tokens_for_model(model, &message.text_content());
+    for part in &message.parts {
+        if let ContentPart::Image { data, .. } = part {
+            let estimated = (data.len() / 1500) as u32;
+            tokens = tokens.saturating_add(estimated.max(258));
+        }
+    }
+    tokens
+}
+
+fn add_system_prompt_tokens(segments: &mut BTreeMap<&'static str, u32>, model: &str, prompt: &str) {
+    for section in split_markdown_h2_sections(prompt) {
+        add_tokens(
+            segments,
+            context_kind_for_system_heading(section.heading),
+            estimate_tokens_for_model(model, section.text),
+        );
+    }
+}
+
+struct PromptSection<'a> {
+    heading: &'a str,
+    text: &'a str,
+}
+
+fn split_markdown_h2_sections(prompt: &str) -> Vec<PromptSection<'_>> {
+    if prompt.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let mut sections = Vec::new();
+    let mut current_heading = "";
+    let mut current_start = 0usize;
+    let mut cursor = 0usize;
+
+    for line in prompt.split_inclusive('\n') {
+        let line_start = cursor;
+        let line_end = cursor + line.len();
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("## ") && !trimmed.starts_with("### ") {
+            if line_start > current_start {
+                sections.push(PromptSection {
+                    heading: current_heading,
+                    text: &prompt[current_start..line_start],
+                });
+            }
+            current_heading = trimmed
+                .trim_start_matches('#')
+                .trim()
+                .trim_end_matches('\n')
+                .trim();
+            current_start = line_start;
+        }
+        cursor = line_end;
+    }
+
+    if current_start < prompt.len() {
+        sections.push(PromptSection {
+            heading: current_heading,
+            text: &prompt[current_start..],
+        });
+    }
+
+    sections
+}
+
+fn context_kind_for_system_heading(heading: &str) -> &'static str {
+    let normalized = heading.to_ascii_lowercase();
+    if normalized.contains("runtime context") || normalized.contains("current turn time") {
+        "runtime"
+    } else if normalized.contains("conversation-specific instructions") {
+        "instructions"
+    } else if normalized.contains("active persona") {
+        "persona"
+    } else if normalized.contains("active routing plan") {
+        "routePlan"
+    } else if normalized.contains("active task plan") {
+        "taskPlan"
+    } else if normalized.contains("available skills") {
+        "availableSkills"
+    } else if normalized.contains("loaded skills") {
+        "loadedSkills"
+    } else if normalized.contains("user long-term memory") {
+        "userMemory"
+    } else if normalized.contains("project memory") {
+        "projectMemory"
+    } else if normalized.contains("agent procedural memory") {
+        "agentMemory"
+    } else if normalized.contains("user preferences") {
+        "preferences"
+    } else if normalized.contains("learned successes") {
+        "learnedSuccesses"
+    } else if normalized.contains("agent scratchpad") {
+        "scratchpad"
+    } else if normalized.contains("active source scope") {
+        "sourceScope"
+    } else if normalized.contains("collection context") {
+        "collectionContext"
+    } else if normalized.contains("earlier conversation context") {
+        "conversationSummary"
+    } else {
+        "systemCore"
     }
 }
 
@@ -356,6 +530,25 @@ fn skill_prompt_char_budget(context_window_tokens: u32, system_prompt_budget: us
         .max(MIN_SKILL_PROMPT_CHARS)
         .min(MAX_SKILL_PROMPT_CHARS)
         .min(system_prompt_budget / 2)
+}
+
+fn loaded_skill_prompt_char_budget(total_skill_budget: usize, keep_available_index: bool) -> usize {
+    if total_skill_budget == 0 {
+        return 0;
+    }
+    if !keep_available_index {
+        return total_skill_budget;
+    }
+    total_skill_budget.saturating_mul(3) / 4
+}
+
+fn combine_prompt_sections(first: String, second: String) -> String {
+    match (first.is_empty(), second.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => first,
+        (true, false) => second,
+        (false, false) => format!("{first}{second}"),
+    }
 }
 
 fn assemble_system_prompt(base_prompt: String, skills_section: String, max_chars: usize) -> String {
@@ -456,13 +649,16 @@ mod tests {
             None,
             &[],
             &[],
+            &[],
         );
 
-        // System is first, with datetime appended.
+        // The first system message is stable for prompt caching; runtime state
+        // lives in a later system message.
         assert_eq!(result[0].role, Role::System);
-        assert!(result[0]
-            .text_content()
-            .starts_with("System prompt\n\nCurrent date and time:"));
+        assert_eq!(result[0].text_content(), "System prompt");
+        assert_eq!(result[1].role, Role::System);
+        assert!(result[1].text_content().starts_with("## Runtime Context"));
+        assert!(result[1].text_content().contains("Current date:"));
 
         // Last message is the new user input.
         assert_eq!(result.last().unwrap().text_content(), "What's up?");
@@ -501,6 +697,7 @@ mod tests {
             Some(8192),
             &[],
             &[],
+            &[],
         );
 
         // System message must survive.
@@ -516,10 +713,14 @@ mod tests {
         assert_eq!(result.last().unwrap().text_content(), "New");
 
         // System message should contain the evicted recap.
+        let system_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            result[0]
-                .text_content()
-                .contains("Earlier conversation context"),
+            system_text.contains("Earlier conversation context"),
             "System message should contain evicted recap"
         );
     }
@@ -538,12 +739,17 @@ mod tests {
             None,
             &[],
             &[],
+            &[],
         );
 
         // No trimming happened, so no recap.
-        assert!(!result[0]
-            .text_content()
-            .contains("Earlier conversation context"));
+        let system_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!system_text.contains("Earlier conversation context"));
     }
 
     #[test]
@@ -559,11 +765,13 @@ mod tests {
             None,
             &[],
             &[],
+            &[],
         );
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 3);
         assert_eq!(result[0].role, Role::System);
-        assert_eq!(result[1].role, Role::User);
-        assert_eq!(result[1].text_content(), "Hello");
+        assert_eq!(result[1].role, Role::System);
+        assert_eq!(result[2].role, Role::User);
+        assert_eq!(result[2].text_content(), "Hello");
     }
 
     #[test]
@@ -595,13 +803,70 @@ mod tests {
             None,
             &skills,
             &[],
+            &[],
         );
-        let sys_text = result[0].text_content();
+        let sys_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             sys_text.contains("Available Skills"),
             "Skills should be in system prompt"
         );
         assert!(sys_text.contains("Be Concise"));
+    }
+
+    #[test]
+    fn test_prepare_messages_with_loaded_skills() {
+        let loaded_skills = vec![Skill {
+            id: "skill-loaded".into(),
+            name: "Fiction Writing".into(),
+            description: "Use when writing fiction".into(),
+            content: "Draft scenes with concrete stakes and natural prose.".into(),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin: true,
+            interface: crate::skills::SkillInterfaceMetadata {
+                display_name: "Fiction Writing".into(),
+                short_description: "Write fiction".into(),
+                icon_small: None,
+                icon_large: None,
+                default_prompt: None,
+            },
+            dependencies: crate::skills::SkillDependencies::default(),
+            policy: crate::skills::SkillPolicy::default(),
+            source_path: None,
+            resources: Vec::new(),
+            resource_bundle: Vec::new(),
+        }];
+
+        let result = prepare_messages(
+            "System prompt",
+            &[],
+            &[ContentPart::Text {
+                text: "Write a chapter".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            None,
+            &loaded_skills,
+            &loaded_skills,
+            &[],
+        );
+
+        let sys_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(sys_text.contains("Loaded Skills"));
+        assert!(sys_text.contains("skill_id: skill-loaded"));
+        assert!(sys_text.contains("Draft scenes with concrete stakes"));
+        assert!(sys_text.contains("Available Skills"));
     }
 
     #[test]
@@ -633,6 +898,7 @@ mod tests {
             4096,
             None,
             &skills,
+            &[],
             &[],
         );
         let sys_text = result[0].text_content();
@@ -673,6 +939,7 @@ mod tests {
             4096,
             None,
             &skills,
+            &[],
             &[],
         );
         let sys_text = result[0].text_content();
@@ -728,11 +995,39 @@ mod tests {
             .map(|segment| segment.kind.as_str())
             .collect::<Vec<_>>();
 
-        assert!(kinds.contains(&"prompts"));
+        assert!(kinds.contains(&"systemCore"));
         assert!(kinds.contains(&"conversation"));
+        assert!(kinds.contains(&"toolCalls"));
         assert!(kinds.contains(&"toolResults"));
         assert!(kinds.contains(&"tools"));
         assert!(kinds.contains(&"mcp"));
+    }
+
+    #[test]
+    fn context_usage_breakdown_splits_skills_memory_and_thinking() {
+        let mut assistant = msg(Role::Assistant, "Visible answer");
+        assistant.reasoning_content = Some("hidden reasoning tokens".to_string());
+        let messages = vec![
+            msg(
+                Role::System,
+                "Core rules\n\n## Available Skills\nskill index\n\n## Loaded Skills\nskill body\n\n## Project Memory\nproject facts",
+            ),
+            msg(Role::User, "Draft a chapter"),
+            assistant,
+        ];
+
+        let breakdown = estimate_context_usage_breakdown_for_model("gpt-4o", &messages, &[], None);
+        let kinds = breakdown
+            .segments
+            .iter()
+            .map(|segment| segment.kind.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(kinds.contains(&"systemCore"));
+        assert!(kinds.contains(&"availableSkills"));
+        assert!(kinds.contains(&"loadedSkills"));
+        assert!(kinds.contains(&"projectMemory"));
+        assert!(kinds.contains(&"thinking"));
     }
 
     #[test]

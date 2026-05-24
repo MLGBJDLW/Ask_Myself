@@ -253,7 +253,7 @@ function WaitingMoodBadge() {
   return (
     <span
       aria-hidden="true"
-      className="hidden rounded-md bg-surface-0/55 px-1.5 py-0.5 font-mono text-[11px] text-accent/80 sm:inline-block"
+      className="thinking-mood-badge hidden rounded-md px-1.5 py-0.5 font-mono text-[11px] sm:inline-block"
     >
       {mood}
     </span>
@@ -1893,21 +1893,11 @@ export function ChatMessages({
             >
               <div className="flex items-center gap-2 text-sm text-text-tertiary">
                 <WaitingMoodBadge />
-                <div className="flex gap-1">
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? "" : "animate-bounce"}`}
-                    style={{ animationDelay: "0ms" }}
-                  />
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? "" : "animate-bounce"}`}
-                    style={{ animationDelay: "150ms" }}
-                  />
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full bg-text-tertiary ${shouldReduceMotion ? "" : "animate-bounce"}`}
-                    style={{ animationDelay: "300ms" }}
-                  />
-                </div>
-                {t("chat.thinking")}
+                <span
+                  className={`thinking-status-text ${shouldReduceMotion ? "" : "thinking-status-text-active"}`}
+                >
+                  {t("chat.thinking")}
+                </span>
               </div>
             </div>
           </motion.div>

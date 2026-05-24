@@ -92,8 +92,14 @@ enum OaiContent {
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum OaiContentPart {
-    Text { text: String },
-    ImageUrl { image_url: OaiImageUrl },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<OaiCacheControl>,
+    },
+    ImageUrl {
+        image_url: OaiImageUrl,
+    },
 }
 
 #[derive(Serialize)]
@@ -120,6 +126,8 @@ struct OaiTool {
     #[serde(rename = "type")]
     tool_type: String,
     function: OaiToolFunction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<OaiCacheControl>,
 }
 
 #[derive(Serialize)]
@@ -127,6 +135,11 @@ struct OaiToolFunction {
     name: String,
     description: String,
     parameters: serde_json::Value,
+}
+
+#[derive(Clone, Serialize)]
+struct OaiCacheControl {
+    r#type: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -189,12 +202,26 @@ struct OaiUsage {
     total_tokens: u32,
     #[serde(default)]
     completion_tokens_details: Option<OaiCompletionTokensDetails>,
+    #[serde(default)]
+    prompt_tokens_details: Option<OaiPromptTokensDetails>,
 }
 
 #[derive(Deserialize)]
 struct OaiCompletionTokensDetails {
     #[serde(default)]
     reasoning_tokens: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct OaiPromptTokensDetails {
+    #[serde(default, alias = "cache_read_input_tokens", alias = "cachedTokens")]
+    cached_tokens: Option<u32>,
+    #[serde(
+        default,
+        alias = "cache_creation_input_tokens",
+        alias = "cache_write_input_tokens"
+    )]
+    cache_write_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -358,6 +385,17 @@ fn requires_raw_tool_arguments(model: &str, provider_type: Option<&ProviderType>
     model_lower.contains("codex")
 }
 
+fn supports_anthropic_style_cache_control(
+    model: &str,
+    provider_type: Option<&ProviderType>,
+) -> bool {
+    if provider_type == Some(&ProviderType::Qwen) {
+        return true;
+    }
+    let model_lower = model.to_lowercase();
+    model_lower.contains("qwen/")
+}
+
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
@@ -378,6 +416,53 @@ fn parse_finish_reason(s: &str) -> FinishReason {
         "tool_calls" => FinishReason::ToolCalls,
         "content_filter" => FinishReason::ContentFilter,
         _ => FinishReason::Other,
+    }
+}
+
+fn ephemeral_cache_control() -> OaiCacheControl {
+    OaiCacheControl {
+        r#type: "ephemeral".to_string(),
+    }
+}
+
+fn add_cache_control_to_text_content(message: &mut OaiMessage) -> bool {
+    let cache_control = ephemeral_cache_control();
+    match &mut message.content {
+        Some(OaiContent::Text(text)) => {
+            let text = std::mem::take(text);
+            message.content = Some(OaiContent::Parts(vec![OaiContentPart::Text {
+                text,
+                cache_control: Some(cache_control),
+            }]));
+            true
+        }
+        Some(OaiContent::Parts(parts)) => {
+            for part in parts.iter_mut().rev() {
+                if let OaiContentPart::Text {
+                    cache_control: target,
+                    ..
+                } = part
+                {
+                    *target = Some(cache_control.clone());
+                    return true;
+                }
+            }
+            false
+        }
+        None => false,
+    }
+}
+
+fn add_openai_compatible_cache_control(messages: &mut [OaiMessage]) {
+    if let Some(system) = messages.iter_mut().find(|msg| msg.role == "system") {
+        add_cache_control_to_text_content(system);
+    }
+    if let Some(last_conversation) = messages
+        .iter_mut()
+        .rev()
+        .find(|msg| msg.role == "user" || msg.role == "assistant")
+    {
+        add_cache_control_to_text_content(last_conversation);
     }
 }
 
@@ -417,7 +502,10 @@ fn convert_message(
             .parts
             .iter()
             .map(|p| match p {
-                ContentPart::Text { text } => OaiContentPart::Text { text: text.clone() },
+                ContentPart::Text { text } => OaiContentPart::Text {
+                    text: text.clone(),
+                    cache_control: None,
+                },
                 ContentPart::Image { media_type, data } => {
                     let url = format!("data:{media_type};base64,{data}");
                     OaiContentPart::ImageUrl {
@@ -489,16 +577,21 @@ fn convert_message(
     oai
 }
 
-fn convert_tools(tools: &[ToolDefinition]) -> Vec<OaiTool> {
+fn convert_tools(tools: &[ToolDefinition], add_cache_control: bool) -> Vec<OaiTool> {
+    let len = tools.len();
     tools
         .iter()
-        .map(|t| OaiTool {
+        .enumerate()
+        .map(|(i, t)| OaiTool {
             tool_type: "function".to_string(),
             function: OaiToolFunction {
                 name: t.name.clone(),
                 description: t.description.clone(),
                 parameters: t.parameters.clone(),
             },
+            cache_control: (add_cache_control && i == len - 1).then(|| OaiCacheControl {
+                r#type: "ephemeral".to_string(),
+            }),
         })
         .collect()
 }
@@ -526,14 +619,20 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     let suppress_temperature = is_reasoning || is_deepseek || deepseek_thinking_enabled;
     // Some providers/models require function arguments as JSON objects, not strings.
     let raw_tool_args = requires_raw_tool_arguments(&request.model, request.provider_type.as_ref());
+    let add_cache_control =
+        supports_anthropic_style_cache_control(&request.model, request.provider_type.as_ref());
+    let mut messages: Vec<OaiMessage> = request
+        .messages
+        .iter()
+        .map(|m| convert_message(m, include_reasoning_content, raw_tool_args))
+        .collect();
+    if add_cache_control {
+        add_openai_compatible_cache_control(&mut messages);
+    }
 
     OaiRequest {
         model: request.model.clone(),
-        messages: request
-            .messages
-            .iter()
-            .map(|m| convert_message(m, include_reasoning_content, raw_tool_args))
-            .collect(),
+        messages,
         temperature: if suppress_temperature {
             None
         } else {
@@ -562,7 +661,10 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
         thinking: deepseek_thinking_mode.map(|mode| OaiThinking {
             thinking_type: mode.to_string(),
         }),
-        tools: request.tools.as_ref().map(|t| convert_tools(t)),
+        tools: request
+            .tools
+            .as_ref()
+            .map(|t| convert_tools(t, add_cache_control)),
         parallel_tool_calls: match request.tools.as_ref() {
             Some(tools) if !tools.is_empty() && request.parallel_tool_calls => Some(true),
             _ => None,
@@ -783,11 +885,16 @@ impl LlmProvider for OpenAiProvider {
 
         let usage = oai
             .usage
-            .map(|u| Usage {
-                prompt_tokens: u.prompt_tokens,
-                completion_tokens: u.completion_tokens,
-                total_tokens: u.total_tokens,
-                thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
+            .map(|u| {
+                let prompt_details = u.prompt_tokens_details;
+                Usage {
+                    prompt_tokens: u.prompt_tokens,
+                    completion_tokens: u.completion_tokens,
+                    total_tokens: u.total_tokens,
+                    thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
+                    cache_read_tokens: prompt_details.as_ref().and_then(|d| d.cached_tokens),
+                    cache_creation_tokens: prompt_details.and_then(|d| d.cache_write_tokens),
+                }
             })
             .unwrap_or_default();
 
@@ -1277,6 +1384,69 @@ data: [DONE]
     }
 
     #[test]
+    fn qwen_requests_add_explicit_prompt_cache_markers() {
+        let request = CompletionRequest {
+            model: "qwen3.7-max".to_string(),
+            messages: vec![
+                Message::text(Role::System, "stable system"),
+                Message::text(Role::System, "runtime plan"),
+                Message::text(Role::User, "hello"),
+            ],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: Some(vec![ToolDefinition {
+                name: "search".into(),
+                description: "Search".into(),
+                parameters: serde_json::json!({"type":"object"}),
+            }]),
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::Qwen),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+        assert!(body["messages"][1]["content"].is_string());
+        assert_eq!(
+            body["messages"][2]["content"][0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+        assert_eq!(
+            body["tools"][0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+    }
+
+    #[test]
+    fn openai_usage_deserializes_prompt_cache_tokens() {
+        let response: OaiResponse = serde_json::from_value(serde_json::json!({
+            "choices": [{
+                "message": {"content": "ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "prompt_tokens_details": {
+                    "cached_tokens": 64,
+                    "cache_write_tokens": 32
+                }
+            }
+        }))
+        .unwrap();
+
+        let details = response.usage.unwrap().prompt_tokens_details.unwrap();
+        assert_eq!(details.cached_tokens, Some(64));
+        assert_eq!(details.cache_write_tokens, Some(32));
+    }
+
+    #[test]
     fn invalid_history_tool_arguments_are_replaced_before_replay() {
         let assistant = Message {
             role: Role::Assistant,
@@ -1374,6 +1544,8 @@ data: [DONE]
                 completion_tokens: 4,
                 total_tokens: 7,
                 thinking_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
             },
             thinking: Some("thinking".to_string()),
         });
