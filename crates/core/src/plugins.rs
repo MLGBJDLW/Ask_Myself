@@ -293,6 +293,8 @@ const MEMORY_PLUGIN: BuiltinPlugin = BuiltinPlugin {
         "search_playbooks",
         "manage_playbook",
         "search_sessions",
+        "manage_user_memory",
+        "manage_project_memory",
         "manage_agent_memory",
         "update_scratchpad",
         "manage_skill",

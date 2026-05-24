@@ -115,12 +115,9 @@ pub async fn agent_chat_cmd(
         nexa_core::conversation::build_collection_context_prompt_section(
             conv.collection_context.as_ref(),
         );
-    let memory_section = if conv.project_id.is_some() {
-        String::new()
-    } else {
+    let memory_section =
         nexa_core::personalization::build_memory_summary_for_query(&state.db, Some(&message))
-            .unwrap_or_default()
-    };
+            .unwrap_or_default();
     let project_memory_section = nexa_core::project_memory::build_project_memory_summary_for_query(
         &state.db,
         conv.project_id.as_deref(),
