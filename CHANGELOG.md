@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.4...nexa-monorepo-v0.7.5) (2026-05-24)
+
+
+### Features
+
+* **agent:** add persona switching and context breakdown ([596f1a3](https://github.com/MLGBJDLW/Nexa/commit/596f1a366f4f58eced4ddf861aeefb451474c674))
+* **agent:** add usable memory tools ([656f782](https://github.com/MLGBJDLW/Nexa/commit/656f7828e48d7c62b9cbae8e9d251e1ea8ab72ea))
+* **agent:** auto-load matching skills ([93be607](https://github.com/MLGBJDLW/Nexa/commit/93be607d7059b73812fc7bd096bf8a3a3825ed35))
+* **agent:** improve prompt cache stability ([3e2c9c2](https://github.com/MLGBJDLW/Nexa/commit/3e2c9c2e59f43c31300374a3708375032f476fe0))
+
+
+### Bug Fixes
+
+* **chat:** simplify thinking status UI ([fa140d0](https://github.com/MLGBJDLW/Nexa/commit/fa140d0a39bb8194e04c21b6570bf79c1d0902ea))
+
 ## [0.7.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.3...nexa-monorepo-v0.7.4) (2026-05-23)
 
 
