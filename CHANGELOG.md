@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.5...nexa-monorepo-v0.7.6) (2026-05-24)
+
+
+### Bug Fixes
+
+* **chat:** improve compact feedback and context refresh ([878030a](https://github.com/MLGBJDLW/Nexa/commit/878030a7a3ff9938b6ebf1f927ed984110fea9d2))
+* **chat:** improve compact feedback and context refresh ([4f74fbd](https://github.com/MLGBJDLW/Nexa/commit/4f74fbd7a42eb9b3b7efa8cd99c6f1024b69de0b))
+
 ## [0.7.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.4...nexa-monorepo-v0.7.5) (2026-05-24)
 
 
