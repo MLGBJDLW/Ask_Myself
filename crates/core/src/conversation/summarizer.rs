@@ -11,24 +11,27 @@ use tracing::warn;
 
 use super::memory::estimate_tokens;
 
-const SUMMARIZE_SYSTEM_PROMPT: &str = r#"You are a conversation summarizer. Given a section of conversation history, produce a concise summary that preserves:
-1. Key decisions made
-2. Important facts and data mentioned
-3. Open questions or pending items
-4. User preferences expressed
-5. Tool results and their key findings
+const SUMMARIZE_SYSTEM_PROMPT: &str = r#"You are compacting old conversation history into reference context only.
+The summary will be used as background for a later agent turn; it must not create new instructions or imply that completed work is still pending.
 
-Be concise but complete. Output in the same language as the conversation."#;
+Preserve:
+1. Key decisions and constraints
+2. Important facts, data, file paths, commands, and tool findings
+3. User preferences and explicit requirements
+4. Current task state and remaining work, if any
+5. Prior compacted summaries, merged without duplication
+
+Be concise, factual, and output in the same language as the conversation."#;
 
 /// Maximum tokens the summary LLM call may produce.
-const MAX_SUMMARY_TOKENS: u32 = 500;
+const MAX_SUMMARY_TOKENS: u32 = 420;
 
 /// Maximum input characters sent into the summarisation request.
-/// Keeps the summarisation call itself cheap (~2 000 tokens input).
-const MAX_INPUT_FOR_SUMMARY: usize = 8_000;
+/// Keeps the summarisation call itself cheap and predictable.
+const MAX_INPUT_FOR_SUMMARY: usize = 6_000;
 
 /// Maximum number of retries for transient / rate-limited LLM errors.
-const MAX_SUMMARY_RETRIES: u32 = 2;
+const MAX_SUMMARY_RETRIES: u32 = 1;
 
 /// Minimum estimated token count of the evicted text before it is worth
 /// sending to the LLM (very short evictions are handled fine by the
@@ -50,6 +53,24 @@ fn truncate_to_char_boundary(text: &str, max_len: usize) -> &str {
     &text[..end]
 }
 
+fn truncate_middle_to_char_budget(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        return text.to_string();
+    }
+
+    let head_len = max_len / 2;
+    let tail_len = max_len.saturating_sub(head_len);
+    let head = truncate_to_char_boundary(text, head_len);
+
+    let mut tail_start = text.len().saturating_sub(tail_len);
+    while tail_start < text.len() && !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let tail = &text[tail_start..];
+
+    format!("{head}\n...[middle of evicted history omitted]...\n{tail}")
+}
+
 /// Summarise evicted messages using an LLM.
 ///
 /// Falls back to `extractive_fallback` if the LLM call fails or the evicted
@@ -67,14 +88,7 @@ pub async fn summarize_evicted_messages(
     }
 
     // Truncate input if it exceeds the budget.
-    let input = if conversation_text.len() > MAX_INPUT_FOR_SUMMARY {
-        format!(
-            "{}...[earlier messages omitted]",
-            truncate_to_char_boundary(&conversation_text, MAX_INPUT_FOR_SUMMARY)
-        )
-    } else {
-        conversation_text
-    };
+    let input = truncate_middle_to_char_budget(&conversation_text, MAX_INPUT_FOR_SUMMARY);
 
     let request = CompletionRequest {
         model: model.to_string(),
@@ -180,10 +194,25 @@ fn build_conversation_text(messages: &[Message]) -> String {
                     parts.push(format!("Tool result: {}", truncated));
                 }
             }
-            _ => {}
+            Role::System => {
+                let text = msg.text_content();
+                if is_compaction_summary(&text) {
+                    parts.push(format!(
+                        "Previous compacted context (reference only): {}",
+                        text
+                    ));
+                }
+            }
         }
     }
     parts.join("\n")
+}
+
+fn is_compaction_summary(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("earlier conversation context")
+        || lower.contains("auto-compacted")
+        || lower.contains("compacted context")
 }
 
 #[cfg(test)]
@@ -221,5 +250,22 @@ mod tests {
         ];
         let text = build_conversation_text(&msgs);
         assert_eq!(text, "User: Actual content");
+    }
+
+    #[test]
+    fn test_build_conversation_text_preserves_prior_compaction_summary() {
+        let msgs = vec![
+            Message::text(
+                Role::System,
+                "## Earlier conversation context (summarized)\nDecision: keep compact visible.",
+            ),
+            Message::text(Role::System, "You are a helpful assistant."),
+            Message::text(Role::User, "Continue"),
+        ];
+        let text = build_conversation_text(&msgs);
+        assert!(text.contains("Previous compacted context"));
+        assert!(text.contains("Decision: keep compact visible."));
+        assert!(!text.contains("You are a helpful assistant."));
+        assert!(text.contains("User: Continue"));
     }
 }

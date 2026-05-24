@@ -127,6 +127,8 @@ export function ChatInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
   const draftsRef = useRef<Record<string, ChatDraftState>>({});
+  const inputLocked = disabled || isCompacting;
+  const attachmentLocked = inputLocked || isStreaming;
 
   useEffect(() => {
     const draft = draftsRef.current[draftKey];
@@ -191,6 +193,7 @@ export function ChatInput({
   }, []);
 
   const handleSend = useCallback(() => {
+    if (inputLocked) return;
     const trimmed = value.trim();
     if (!trimmed && attachments.length === 0) return;
     if (isStreaming && (!trimmed || attachments.length > 0)) {
@@ -216,18 +219,18 @@ export function ChatInput({
         textareaRef.current.style.height = "auto";
       }
     }, 0);
-  }, [attachments, draftKey, isStreaming, onCompact, onSend, t, value]);
+  }, [attachments, draftKey, inputLocked, isStreaming, onCompact, onSend, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if (!disabled) {
+        if (!inputLocked) {
           handleSend();
         }
       }
     },
-    [handleSend, disabled],
+    [handleSend, inputLocked],
   );
 
   const addAttachmentFromDataUrl = useCallback(
@@ -288,11 +291,12 @@ export function ChatInput({
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (attachmentLocked) return;
     dragCounterRef.current += 1;
     if (e.dataTransfer.types.includes("Files")) {
       setIsDragging(true);
     }
-  }, []);
+  }, [attachmentLocked]);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -310,7 +314,7 @@ export function ChatInput({
       e.stopPropagation();
       dragCounterRef.current = 0;
       setIsDragging(false);
-      if (isStreaming) return;
+      if (attachmentLocked) return;
       const files = e.dataTransfer.files;
       if (!files) return;
       for (const file of Array.from(files)) {
@@ -322,12 +326,12 @@ export function ChatInput({
         }
       }
     },
-    [addAttachment, isStreaming],
+    [addAttachment, attachmentLocked],
   );
 
   const handlePaste = useCallback(
     async (e: React.ClipboardEvent) => {
-      if (isStreaming) return;
+      if (attachmentLocked) return;
       const clipboardData = e.clipboardData;
       if (!clipboardData) return;
 
@@ -387,7 +391,7 @@ export function ChatInput({
         }
       }
     },
-    [addAttachment, addAttachmentFromDataUrl, isStreaming, t],
+    [addAttachment, addAttachmentFromDataUrl, attachmentLocked, t],
   );
 
   const applyWorkflowTemplate = useCallback((template: WorkflowCatalogTemplate) => {
@@ -535,8 +539,8 @@ export function ChatInput({
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder={t("chat.placeholder")}
-          disabled={disabled}
+          placeholder={isCompacting ? `${t("chat.compacting")} (>_<)` : t("chat.placeholder")}
+          disabled={inputLocked}
           rows={1}
           className="block min-h-24 w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary outline-none disabled:pointer-events-none disabled:opacity-40"
         />
@@ -547,7 +551,7 @@ export function ChatInput({
               type="button"
               data-testid="workflow-catalog-trigger"
               onClick={() => setWorkflowCatalogOpen((open) => !open)}
-              disabled={disabled || isStreaming}
+              disabled={attachmentLocked}
               className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-text-secondary transition-colors duration-fast ease-out hover:bg-surface-2 hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
               aria-label={t("chat.workflows")}
               aria-expanded={workflowCatalogOpen}
@@ -559,7 +563,7 @@ export function ChatInput({
 
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={disabled || isStreaming}
+              disabled={attachmentLocked}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
               aria-label={t("chat.attachImage")}
             >
@@ -568,8 +572,9 @@ export function ChatInput({
             {conversationId && onCompact && (
               <button
                 type="button"
+                data-testid="chat-compact"
                 onClick={onCompact}
-                disabled={disabled || isStreaming || isCompacting}
+                disabled={attachmentLocked}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
                 aria-label={t("chat.compact")}
                 title="/compact"
@@ -595,7 +600,7 @@ export function ChatInput({
               onTranscript={(text) =>
                 setValue((prev) => prev + (prev ? " " : "") + text)
               }
-              disabled={disabled || isStreaming}
+              disabled={attachmentLocked}
             />
 
             <EmojiPicker
@@ -603,7 +608,7 @@ export function ChatInput({
                 setValue((prev) => prev + emoji);
                 textareaRef.current?.focus();
               }}
-              disabled={disabled || isStreaming}
+              disabled={attachmentLocked}
             />
 
             {isStreaming && (
@@ -619,7 +624,7 @@ export function ChatInput({
             <button
               onClick={handleSend}
               disabled={
-                disabled ||
+                inputLocked ||
                 (isStreaming
                   ? !value.trim() || attachments.length > 0
                   : !value.trim() && attachments.length === 0)

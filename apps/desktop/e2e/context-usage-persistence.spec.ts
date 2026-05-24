@@ -192,8 +192,54 @@ test.beforeEach(async ({ page }) => {
         }
         case 'list_checkpoints_cmd':
           return [];
-        case 'compact_conversation_cmd':
-          return null;
+        case 'compact_conversation_cmd': {
+          const conversationId = String(args.conversationId ?? '');
+          const before = messagesByConversation[conversationId] ?? [];
+          await new Promise((resolve) => setTimeout(resolve, 400));
+
+          if (before.length === 0) {
+            return {
+              conversationId,
+              messagesBefore: 0,
+              messagesAfter: 0,
+              tokensBefore: 0,
+              tokensAfter: 0,
+              evictedMessages: 0,
+            };
+          }
+
+          const tail = before.slice(-2).map((message, index) => ({
+            ...message,
+            tokenCount: index === 0 ? 180 : 220,
+            sortOrder: index + 1,
+          }));
+          const compacted: Message[] = [
+            {
+              id: nextId('m-compact-summary'),
+              conversationId,
+              role: 'system',
+              content: '## Earlier conversation context (summarized)\nThe previous turns were compacted for the E2E test.',
+              toolCallId: null,
+              toolCalls: [],
+              tokenCount: 900,
+              createdAt: new Date().toISOString(),
+              sortOrder: 0,
+              thinking: null,
+              imageAttachments: null,
+            },
+            ...tail,
+          ];
+          messagesByConversation[conversationId] = compacted;
+
+          return {
+            conversationId,
+            messagesBefore: before.length,
+            messagesAfter: compacted.length,
+            tokensBefore: 74000,
+            tokensAfter: 1300,
+            evictedMessages: Math.max(0, before.length + 1 - compacted.length),
+          };
+        }
         case 'agent_stop_cmd':
           return null;
         case 'agent_chat_cmd': {
@@ -313,4 +359,22 @@ test('usage cache is scoped to conversation id and does not leak to another conv
 
   await page.goto('/chat/conv-empty');
   await expect(page.getByText(/context used/i)).toHaveCount(0);
+});
+
+test('manual compact shows progress, locks input, and refreshes context usage', async ({ page }) => {
+  await page.goto('/chat/conv-e2e');
+
+  await page.getByTestId('chat-input-textarea').fill('Generate usage before compacting.');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByText('7% context used').first()).toBeVisible();
+
+  await page.getByTestId('chat-compact').click();
+  await expect(page.getByTestId('chat-compact-status')).toBeVisible();
+  await expect(page.getByTestId('chat-input-textarea')).toBeDisabled();
+  await expect(page.getByTestId('chat-send')).toBeDisabled();
+
+  await expect(page.getByTestId('chat-compact-status')).toBeHidden();
+  await expect(page.getByTestId('chat-input-textarea')).toBeEnabled();
+  await expect(page.getByText('7% context used')).toHaveCount(0);
+  await expect(page.getByText('0% context used').first()).toBeVisible();
 });

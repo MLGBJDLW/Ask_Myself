@@ -108,6 +108,7 @@ interface ChatMessagesProps {
   loadingMsgs?: boolean;
   lastCached?: boolean;
   onSuggestionClick?: (text: string) => void;
+  isCompacting?: boolean;
 }
 
 const SUGGESTIONS: {
@@ -550,6 +551,7 @@ export function ChatMessages({
   loadingMsgs,
   lastCached,
   onSuggestionClick,
+  isCompacting = false,
 }: ChatMessagesProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -1319,6 +1321,7 @@ export function ChatMessages({
     traceEvents,
     toolCalls,
     taskRun,
+    isCompacting,
     getScrollMetrics,
     scrollToContainerBottom,
   ]);
@@ -1519,7 +1522,7 @@ export function ChatMessages({
     error && !isStreaming && traceEvents.length === 0,
   );
 
-  if (messages.length === 0 && !isStreaming && !loadingMsgs) {
+  if (messages.length === 0 && !isStreaming && !loadingMsgs && !isCompacting) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center max-w-md w-full px-4">
@@ -1902,6 +1905,29 @@ export function ChatMessages({
             </div>
           </motion.div>
         )}
+
+      {isCompacting && (
+        <motion.div
+          initial={shouldReduceMotion ? false : { opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={shouldReduceMotion ? INSTANT_TRANSITION : SOFT_FADE_TRANSITION}
+          className="my-6 flex w-full justify-center px-2"
+        >
+          <div
+            data-testid="chat-compact-status"
+            data-reduce-motion={shouldReduceMotion ? "true" : "false"}
+            className="chat-compact-status-line"
+            role="status"
+            aria-label={t("chat.compacting")}
+          >
+            <span className="chat-compact-status-rule" aria-hidden="true" />
+            <span className="chat-compact-status-text">
+              {t("chat.compacting")} <span className="font-mono">{"(>_<)"}</span>
+            </span>
+            <span className="chat-compact-status-rule" aria-hidden="true" />
+          </div>
+        </motion.div>
+      )}
 
       {shouldRenderInlineError && (
         <motion.div
