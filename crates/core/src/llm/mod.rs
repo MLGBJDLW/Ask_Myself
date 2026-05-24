@@ -248,6 +248,12 @@ pub struct Usage {
     /// Tokens consumed by model thinking/reasoning (if supported).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_tokens: Option<u32>,
+    /// Provider-side prompt-cache tokens read for this request, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u32>,
+    /// Provider-side prompt-cache tokens written/created for this request, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<u32>,
 }
 
 /// Why the model stopped generating.

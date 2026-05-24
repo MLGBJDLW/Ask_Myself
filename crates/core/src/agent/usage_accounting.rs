@@ -60,6 +60,12 @@ impl AgentExecutor {
         if let Some(t) = u.thinking_tokens {
             *total_usage.thinking_tokens.get_or_insert(0) += t;
         }
+        if let Some(t) = u.cache_read_tokens {
+            *total_usage.cache_read_tokens.get_or_insert(0) += t;
+        }
+        if let Some(t) = u.cache_creation_tokens {
+            *total_usage.cache_creation_tokens.get_or_insert(0) += t;
+        }
 
         let _ = tx
             .send(AgentEvent::UsageUpdate {
@@ -116,6 +122,8 @@ impl AgentExecutor {
                 tool_duration_ms: None,
                 input_tokens: u.prompt_tokens as u64,
                 output_tokens: u.completion_tokens as u64,
+                cache_read_tokens: u.cache_read_tokens.map(u64::from),
+                cache_creation_tokens: u.cache_creation_tokens.map(u64::from),
                 context_usage_pct: iteration_context_pct,
                 was_compacted: iteration_compacted,
             });

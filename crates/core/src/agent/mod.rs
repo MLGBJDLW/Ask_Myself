@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use futures::{stream::FuturesUnordered, StreamExt};
@@ -54,6 +54,7 @@ mod finalization;
 pub mod loop_guard;
 mod model_step;
 mod pre_search;
+mod prompt_cache;
 pub mod route;
 mod sampling;
 pub mod scratchpad;
@@ -70,6 +71,7 @@ mod usage_accounting;
 
 use self::context_pipeline::ContextPipeline;
 use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
+use self::prompt_cache::PromptCacheTracker;
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
 use self::sampling::{completion_response_to_agent_stream, llm_streaming_disabled_by_env};
 use self::stream_recovery::{
@@ -245,7 +247,7 @@ fn default_trace_enabled() -> bool {
 }
 
 fn default_dynamic_tool_visibility() -> bool {
-    true
+    false
 }
 
 #[cfg(test)]
@@ -277,7 +279,7 @@ impl Default for AgentConfig {
             tool_timeout_secs: None,
             agent_timeout_secs: None,
             cache_ttl_hours: None,
-            dynamic_tool_visibility: true,
+            dynamic_tool_visibility: false,
             trace_enabled: true,
             require_tool_confirmation: false,
             shell_access_mode: ShellAccessMode::Restricted,
@@ -381,6 +383,7 @@ pub struct AgentExecutor {
     steering_rx: Option<Arc<TokioMutex<mpsc::UnboundedReceiver<AgentSteeringMessage>>>>,
     confirmation_callback: Option<ConfirmationCallback>,
     approval_callback: Option<ApprovalCallback>,
+    prompt_cache_tracker: StdMutex<PromptCacheTracker>,
 }
 
 impl AgentExecutor {
@@ -397,6 +400,7 @@ impl AgentExecutor {
             steering_rx: None,
             confirmation_callback: None,
             approval_callback: None,
+            prompt_cache_tracker: StdMutex::new(PromptCacheTracker::default()),
         }
     }
 

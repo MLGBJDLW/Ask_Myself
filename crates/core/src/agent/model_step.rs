@@ -89,6 +89,7 @@ impl AgentExecutor {
             provider_type: self.config.provider_type,
             parallel_tool_calls: true,
         };
+        self.begin_prompt_cache_observation(model, messages, tool_defs);
         let accumulated_len_before_iteration = accumulated_content.len();
         let mut sampling_retries = 0u32;
         let mut full_content = String::new();
@@ -660,6 +661,8 @@ impl AgentExecutor {
 
             break;
         }
+
+        self.complete_prompt_cache_observation(chunk_usage.as_ref());
 
         Ok(ModelStepOutcome::Completed(Box::new(ModelStepOutput {
             full_content,

@@ -1,7 +1,7 @@
 use super::model::Skill;
 
 const DEFAULT_MAX_SKILL_SECTION_CHARS: usize = 8_000;
-const MAX_SKILL_LINE_CHARS: usize = 420;
+const MAX_SKILL_LINE_CHARS: usize = 250;
 
 fn truncate_excerpt(text: &str, max_chars: usize) -> String {
     let compact = text
@@ -198,7 +198,16 @@ pub fn build_skills_section_for_query_with_budget(
          explicitly requested or pinned by persona.\n",
     );
 
-    for skill in skills {
+    let mut ordered_skills = skills.iter().collect::<Vec<_>>();
+    ordered_skills.sort_by(|a, b| {
+        a.builtin
+            .cmp(&b.builtin)
+            .then_with(|| a.created_at.cmp(&b.created_at))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    for skill in ordered_skills {
         let display_name = if skill.interface.display_name.trim().is_empty() {
             skill.name.as_str()
         } else {

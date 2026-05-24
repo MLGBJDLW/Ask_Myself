@@ -39,6 +39,8 @@ interface StoredUsageEntry {
   completionTokens: number;
   totalTokens: number;
   thinkingTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   lastPromptTokens: number;
   contextBreakdown?: ContextUsageBreakdown;
   updatedAt: number;
@@ -229,6 +231,8 @@ function normalizeUsage(usage: UsageTotal): UsageTotal {
   const completionTokens = sanitizeNumber(usage.completionTokens);
   const totalTokens = sanitizeNumber(usage.totalTokens, promptTokens + completionTokens);
   const thinkingTokens = sanitizeNumber(usage.thinkingTokens ?? 0);
+  const cacheReadTokens = sanitizeNumber(usage.cacheReadTokens ?? 0);
+  const cacheCreationTokens = sanitizeNumber(usage.cacheCreationTokens ?? 0);
   const lastPromptTokens = sanitizeNumber(usage.lastPromptTokens ?? promptTokens, promptTokens);
   const contextBreakdown = sanitizeContextBreakdown(usage.contextBreakdown);
   return {
@@ -236,6 +240,8 @@ function normalizeUsage(usage: UsageTotal): UsageTotal {
     completionTokens,
     totalTokens,
     thinkingTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
     lastPromptTokens,
     contextBreakdown,
   };
@@ -256,6 +262,8 @@ function readUsageCache(): Record<string, StoredUsageEntry> {
       const completionTokens = sanitizeNumber(row.completionTokens);
       const totalTokens = sanitizeNumber(row.totalTokens, promptTokens + completionTokens);
       const thinkingTokens = sanitizeNumber(row.thinkingTokens ?? 0);
+      const cacheReadTokens = sanitizeNumber(row.cacheReadTokens ?? 0);
+      const cacheCreationTokens = sanitizeNumber(row.cacheCreationTokens ?? 0);
       const lastPromptTokens = sanitizeNumber(row.lastPromptTokens ?? promptTokens, promptTokens);
       const contextBreakdown = sanitizeContextBreakdown(row.contextBreakdown);
       const updatedAt = sanitizeNumber(row.updatedAt ?? Date.now(), Date.now());
@@ -264,6 +272,8 @@ function readUsageCache(): Record<string, StoredUsageEntry> {
         completionTokens,
         totalTokens,
         thinkingTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
         lastPromptTokens,
         contextBreakdown,
         updatedAt,
@@ -412,6 +422,8 @@ export interface UseChatSessionReturn {
     contextWindow: number;
     completionTokens: number;
     thinkingTokens: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
     contextBreakdown?: ContextUsageBreakdown;
     isEstimated: boolean;
     source: 'live' | 'cached' | 'estimated';
@@ -607,6 +619,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         completionTokens: normalized.completionTokens,
         totalTokens: normalized.totalTokens,
         thinkingTokens: normalized.thinkingTokens ?? 0,
+        cacheReadTokens: normalized.cacheReadTokens ?? 0,
+        cacheCreationTokens: normalized.cacheCreationTokens ?? 0,
         lastPromptTokens: normalized.lastPromptTokens ?? normalized.promptTokens,
         contextBreakdown: normalized.contextBreakdown,
         updatedAt: Date.now(),
@@ -1399,6 +1413,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             contextWindow,
             completionTokens: usageForView.completionTokens,
             thinkingTokens: usageForView.thinkingTokens ?? 0,
+            cacheReadTokens: usageForView.cacheReadTokens ?? 0,
+            cacheCreationTokens: usageForView.cacheCreationTokens ?? 0,
             contextBreakdown: usageForView.contextBreakdown ?? buildFallbackContextBreakdown(messages, promptTokens),
             isEstimated: false,
             source: (scopedLastUsage ? 'live' : 'cached') as 'live' | 'cached',
@@ -1411,6 +1427,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             contextWindow,
             completionTokens: 0,
             thinkingTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
             contextBreakdown: buildFallbackContextBreakdown(messages, estimatedPromptTokens),
             isEstimated: true,
             source: 'estimated' as const,

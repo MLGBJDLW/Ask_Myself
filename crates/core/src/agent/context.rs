@@ -41,7 +41,7 @@ pub fn prepare_messages(
     loaded_skills: &[Skill],
     tool_definitions: &[ToolDefinition],
 ) -> Vec<Message> {
-    let mut messages = Vec::with_capacity(history.len() + 2);
+    let mut messages = Vec::with_capacity(history.len() + 3);
 
     let user_query = user_parts
         .iter()
@@ -72,15 +72,21 @@ pub fn prepare_messages(
         &user_query,
         remaining_skill_budget,
     );
-    let skills_section = combine_prompt_sections(loaded_skills_section, available_skills_section);
-    let base_prompt = format!(
-        "{}\n\nCurrent date and time: {} (UTC)",
-        system_prompt,
-        Utc::now().format("%Y-%m-%d %H:%M UTC")
+    let stable_system_prompt = assemble_system_prompt(
+        system_prompt.to_string(),
+        available_skills_section,
+        system_prompt_budget,
     );
-    let system_with_datetime =
-        assemble_system_prompt(base_prompt, skills_section, system_prompt_budget);
-    messages.push(Message::text(Role::System, system_with_datetime));
+    messages.push(Message::text(Role::System, stable_system_prompt));
+
+    let runtime_section = format!(
+        "## Runtime Context\nCurrent date: {} (UTC)",
+        Utc::now().format("%Y-%m-%d")
+    );
+    let volatile_system_prompt = combine_prompt_sections(runtime_section, loaded_skills_section);
+    if !volatile_system_prompt.trim().is_empty() {
+        messages.push(Message::text(Role::System, volatile_system_prompt));
+    }
 
     // Prior conversation turns.
     messages.extend_from_slice(history);
@@ -112,7 +118,7 @@ pub fn prepare_messages(
 
         let recap = build_evicted_recap(&evicted);
         if !recap.is_empty() {
-            if let Some(sys) = trimmed.iter_mut().find(|m| m.role == Role::System) {
+            if let Some(sys) = trimmed.iter_mut().rev().find(|m| m.role == Role::System) {
                 if let Some(ContentPart::Text { text }) = sys.parts.first_mut() {
                     *text = cap_text_to_chars(
                         format!("{}\n\n{}", text, recap),
@@ -486,11 +492,13 @@ mod tests {
             &[],
         );
 
-        // System is first, with datetime appended.
+        // The first system message is stable for prompt caching; runtime state
+        // lives in a later system message.
         assert_eq!(result[0].role, Role::System);
-        assert!(result[0]
-            .text_content()
-            .starts_with("System prompt\n\nCurrent date and time:"));
+        assert_eq!(result[0].text_content(), "System prompt");
+        assert_eq!(result[1].role, Role::System);
+        assert!(result[1].text_content().starts_with("## Runtime Context"));
+        assert!(result[1].text_content().contains("Current date:"));
 
         // Last message is the new user input.
         assert_eq!(result.last().unwrap().text_content(), "What's up?");
@@ -545,10 +553,14 @@ mod tests {
         assert_eq!(result.last().unwrap().text_content(), "New");
 
         // System message should contain the evicted recap.
+        let system_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            result[0]
-                .text_content()
-                .contains("Earlier conversation context"),
+            system_text.contains("Earlier conversation context"),
             "System message should contain evicted recap"
         );
     }
@@ -571,9 +583,13 @@ mod tests {
         );
 
         // No trimming happened, so no recap.
-        assert!(!result[0]
-            .text_content()
-            .contains("Earlier conversation context"));
+        let system_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!system_text.contains("Earlier conversation context"));
     }
 
     #[test]
@@ -591,10 +607,11 @@ mod tests {
             &[],
             &[],
         );
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 3);
         assert_eq!(result[0].role, Role::System);
-        assert_eq!(result[1].role, Role::User);
-        assert_eq!(result[1].text_content(), "Hello");
+        assert_eq!(result[1].role, Role::System);
+        assert_eq!(result[2].role, Role::User);
+        assert_eq!(result[2].text_content(), "Hello");
     }
 
     #[test]
@@ -628,7 +645,12 @@ mod tests {
             &[],
             &[],
         );
-        let sys_text = result[0].text_content();
+        let sys_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             sys_text.contains("Available Skills"),
             "Skills should be in system prompt"
@@ -675,7 +697,12 @@ mod tests {
             &[],
         );
 
-        let sys_text = result[0].text_content();
+        let sys_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(sys_text.contains("Loaded Skills"));
         assert!(sys_text.contains("skill_id: skill-loaded"));
         assert!(sys_text.contains("Draft scenes with concrete stakes"));
