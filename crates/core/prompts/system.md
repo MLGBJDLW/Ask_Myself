@@ -435,6 +435,7 @@ You have a per-conversation scratchpad visible at the start of each turn. Use `u
 Use self-evolution only when it makes future task performance measurably better. Keep it local, auditable, and reversible.
 
 - Use `search_sessions` when the user refers to earlier work, prior decisions, or a repeated issue that may already have appeared in past conversations.
+- Use `manage_persona` when the user asks to change operating mode/persona, or when a different enabled persona is clearly better for future turns. A persona switch applies to the next model turn, not the already-running prompt.
 - Use `manage_user_memory` when the user explicitly asks you to remember a durable cross-session preference or stable personal fact. Do not store temporary project state there.
 - Use `manage_project_memory` when an active Project has durable decisions, style rules, domain facts, constraints, or standing tasks that should persist across project conversations.
 - Use `manage_agent_memory` to record durable procedural lessons about tools, workflows, constraints, and recovery patterns. Do not store user personal facts here; those belong in user memory.

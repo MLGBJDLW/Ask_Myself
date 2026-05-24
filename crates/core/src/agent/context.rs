@@ -239,9 +239,27 @@ pub fn estimate_context_usage_breakdown_for_model(
     tools: &[ToolDefinition],
     actual_prompt_tokens: Option<u32>,
 ) -> ContextUsageBreakdown {
-    const ORDER: [&str; 6] = [
-        "prompts",
+    const ORDER: [&str; 24] = [
+        "systemCore",
+        "runtime",
+        "instructions",
+        "persona",
+        "routePlan",
+        "taskPlan",
+        "availableSkills",
+        "loadedSkills",
+        "userMemory",
+        "projectMemory",
+        "agentMemory",
+        "preferences",
+        "learnedSuccesses",
+        "scratchpad",
+        "sourceScope",
+        "collectionContext",
+        "conversationSummary",
         "conversation",
+        "thinking",
+        "toolCalls",
         "toolResults",
         "tools",
         "mcp",
@@ -250,16 +268,7 @@ pub fn estimate_context_usage_breakdown_for_model(
 
     let mut segments: BTreeMap<&'static str, u32> = BTreeMap::new();
     for message in messages {
-        let kind = match message.role {
-            Role::System => "prompts",
-            Role::User | Role::Assistant => "conversation",
-            Role::Tool => "toolResults",
-        };
-        add_tokens(
-            &mut segments,
-            kind,
-            estimate_message_tokens_for_model(model, message),
-        );
+        add_message_context_tokens(&mut segments, model, message);
     }
     for tool in tools {
         let kind = if is_mcp_tool_definition(tool) {
@@ -302,6 +311,157 @@ pub fn estimate_context_usage_breakdown_for_model(
     ContextUsageBreakdown {
         total_tokens,
         segments,
+    }
+}
+
+fn add_message_context_tokens(
+    segments: &mut BTreeMap<&'static str, u32>,
+    model: &str,
+    message: &Message,
+) {
+    match message.role {
+        Role::System => add_system_prompt_tokens(segments, model, &message.text_content()),
+        Role::Tool => add_tokens(
+            segments,
+            "toolResults",
+            estimate_message_tokens_for_model(model, message),
+        ),
+        Role::User => add_tokens(
+            segments,
+            "conversation",
+            estimate_message_body_tokens_for_model(model, message),
+        ),
+        Role::Assistant => {
+            add_tokens(
+                segments,
+                "conversation",
+                estimate_message_body_tokens_for_model(model, message),
+            );
+            if let Some(reasoning) = message.reasoning_content.as_deref() {
+                add_tokens(
+                    segments,
+                    "thinking",
+                    estimate_tokens_for_model(model, reasoning),
+                );
+            }
+            if let Some(tool_calls) = message.tool_calls.as_ref() {
+                let mut tokens = 0u32;
+                for call in tool_calls {
+                    tokens = tokens
+                        .saturating_add(estimate_tokens_for_model(model, &call.id))
+                        .saturating_add(estimate_tokens_for_model(model, &call.name))
+                        .saturating_add(estimate_tokens_for_model(model, &call.arguments))
+                        .saturating_add(4);
+                }
+                add_tokens(segments, "toolCalls", tokens);
+            }
+        }
+    }
+}
+
+fn estimate_message_body_tokens_for_model(model: &str, message: &Message) -> u32 {
+    let mut tokens = estimate_tokens_for_model(model, &message.text_content());
+    for part in &message.parts {
+        if let ContentPart::Image { data, .. } = part {
+            let estimated = (data.len() / 1500) as u32;
+            tokens = tokens.saturating_add(estimated.max(258));
+        }
+    }
+    tokens
+}
+
+fn add_system_prompt_tokens(segments: &mut BTreeMap<&'static str, u32>, model: &str, prompt: &str) {
+    for section in split_markdown_h2_sections(prompt) {
+        add_tokens(
+            segments,
+            context_kind_for_system_heading(section.heading),
+            estimate_tokens_for_model(model, section.text),
+        );
+    }
+}
+
+struct PromptSection<'a> {
+    heading: &'a str,
+    text: &'a str,
+}
+
+fn split_markdown_h2_sections(prompt: &str) -> Vec<PromptSection<'_>> {
+    if prompt.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let mut sections = Vec::new();
+    let mut current_heading = "";
+    let mut current_start = 0usize;
+    let mut cursor = 0usize;
+
+    for line in prompt.split_inclusive('\n') {
+        let line_start = cursor;
+        let line_end = cursor + line.len();
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("## ") && !trimmed.starts_with("### ") {
+            if line_start > current_start {
+                sections.push(PromptSection {
+                    heading: current_heading,
+                    text: &prompt[current_start..line_start],
+                });
+            }
+            current_heading = trimmed
+                .trim_start_matches('#')
+                .trim()
+                .trim_end_matches('\n')
+                .trim();
+            current_start = line_start;
+        }
+        cursor = line_end;
+    }
+
+    if current_start < prompt.len() {
+        sections.push(PromptSection {
+            heading: current_heading,
+            text: &prompt[current_start..],
+        });
+    }
+
+    sections
+}
+
+fn context_kind_for_system_heading(heading: &str) -> &'static str {
+    let normalized = heading.to_ascii_lowercase();
+    if normalized.contains("runtime context") || normalized.contains("current turn time") {
+        "runtime"
+    } else if normalized.contains("conversation-specific instructions") {
+        "instructions"
+    } else if normalized.contains("active persona") {
+        "persona"
+    } else if normalized.contains("active routing plan") {
+        "routePlan"
+    } else if normalized.contains("active task plan") {
+        "taskPlan"
+    } else if normalized.contains("available skills") {
+        "availableSkills"
+    } else if normalized.contains("loaded skills") {
+        "loadedSkills"
+    } else if normalized.contains("user long-term memory") {
+        "userMemory"
+    } else if normalized.contains("project memory") {
+        "projectMemory"
+    } else if normalized.contains("agent procedural memory") {
+        "agentMemory"
+    } else if normalized.contains("user preferences") {
+        "preferences"
+    } else if normalized.contains("learned successes") {
+        "learnedSuccesses"
+    } else if normalized.contains("agent scratchpad") {
+        "scratchpad"
+    } else if normalized.contains("active source scope") {
+        "sourceScope"
+    } else if normalized.contains("collection context") {
+        "collectionContext"
+    } else if normalized.contains("earlier conversation context") {
+        "conversationSummary"
+    } else {
+        "systemCore"
     }
 }
 
@@ -835,11 +995,39 @@ mod tests {
             .map(|segment| segment.kind.as_str())
             .collect::<Vec<_>>();
 
-        assert!(kinds.contains(&"prompts"));
+        assert!(kinds.contains(&"systemCore"));
         assert!(kinds.contains(&"conversation"));
+        assert!(kinds.contains(&"toolCalls"));
         assert!(kinds.contains(&"toolResults"));
         assert!(kinds.contains(&"tools"));
         assert!(kinds.contains(&"mcp"));
+    }
+
+    #[test]
+    fn context_usage_breakdown_splits_skills_memory_and_thinking() {
+        let mut assistant = msg(Role::Assistant, "Visible answer");
+        assistant.reasoning_content = Some("hidden reasoning tokens".to_string());
+        let messages = vec![
+            msg(
+                Role::System,
+                "Core rules\n\n## Available Skills\nskill index\n\n## Loaded Skills\nskill body\n\n## Project Memory\nproject facts",
+            ),
+            msg(Role::User, "Draft a chapter"),
+            assistant,
+        ];
+
+        let breakdown = estimate_context_usage_breakdown_for_model("gpt-4o", &messages, &[], None);
+        let kinds = breakdown
+            .segments
+            .iter()
+            .map(|segment| segment.kind.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(kinds.contains(&"systemCore"));
+        assert!(kinds.contains(&"availableSkills"));
+        assert!(kinds.contains(&"loadedSkills"));
+        assert!(kinds.contains(&"projectMemory"));
+        assert!(kinds.contains(&"thinking"));
     }
 
     #[test]

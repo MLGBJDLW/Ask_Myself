@@ -1,0 +1,19 @@
+{
+  "name": "manage_persona",
+  "description": "List available personas, inspect the current conversation persona, or switch the active conversation persona for future turns. Use this when the user asks to change operating mode/persona or when a different built-in persona is clearly better for subsequent work. Switching affects the next model turn; it does not rewrite the already-running prompt.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["list", "current", "switch"],
+        "description": "Persona action to perform."
+      },
+      "personaId": {
+        "type": "string",
+        "description": "Persona id for switch, for example default, novelist, researcher, speaker, or editor."
+      }
+    },
+    "required": ["action"]
+  }
+}

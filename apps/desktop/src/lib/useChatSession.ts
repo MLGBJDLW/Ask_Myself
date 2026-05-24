@@ -82,6 +82,10 @@ function buildFallbackContextBreakdown(
     return sum + sanitizeNumber(message.tokenCount);
   }, 0);
   const conversationTokens = tokenSum(['user', 'assistant']);
+  const thinkingTokens = messages.reduce((sum, message) => {
+    if (message.role !== 'assistant' || !message.thinking) return sum;
+    return sum + Math.max(1, Math.round(message.thinking.length / 4));
+  }, 0);
   const toolResultTokens = tokenSum(['tool']);
   const toolCalls = messages.flatMap(message => message.toolCalls ?? []);
   const hasMcpToolCall = toolCalls.some(call => call.name === 'mcp_tool' || call.name.startsWith('mcp__'));
@@ -90,11 +94,12 @@ function buildFallbackContextBreakdown(
   const promptsFloor = Math.max(1, Math.round(totalTokens * 0.18));
   const mcpTokens = hasMcpToolCall ? Math.max(1, Math.round(totalTokens * 0.06)) : 0;
   const toolTokens = hasBuiltinToolCall ? Math.max(1, Math.round(totalTokens * 0.04)) : 0;
-  const knownTokens = conversationTokens + toolResultTokens + mcpTokens + toolTokens;
+  const knownTokens = conversationTokens + thinkingTokens + toolResultTokens + mcpTokens + toolTokens;
   const promptSegmentTokens = Math.max(promptsFloor, totalTokens - knownTokens);
   const rawSegments = [
     { kind: 'prompts', tokens: promptSegmentTokens },
     { kind: 'conversation', tokens: conversationTokens },
+    { kind: 'thinking', tokens: thinkingTokens },
     { kind: 'toolResults', tokens: toolResultTokens },
     { kind: 'tools', tokens: toolTokens },
     { kind: 'mcp', tokens: mcpTokens },

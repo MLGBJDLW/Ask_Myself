@@ -109,6 +109,7 @@ pub mod manage_source_tool;
 pub mod mcp_tool;
 pub mod multi_edit_tool;
 pub mod path_utils;
+pub mod persona_tool;
 pub mod playbook_tool;
 pub mod prepare_document_tools_tool;
 pub mod project_memory_tool;
@@ -965,6 +966,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(run_shell_tool::RunShellTool));
     registry.register(Box::new(scratchpad_tool::UpdateScratchpadTool));
     registry.register(Box::new(session_search_tool::SessionSearchTool));
+    registry.register(Box::new(persona_tool::PersonaTool));
     registry.register(Box::new(user_memory_tool::UserMemoryTool));
     registry.register(Box::new(project_memory_tool::ProjectMemoryTool));
     registry.register(Box::new(agent_memory_tool::AgentMemoryTool));
@@ -1045,6 +1047,15 @@ mod tests {
         let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
 
         assert!(names.iter().any(|name| name == "manage_skill"));
+    }
+
+    #[test]
+    fn select_tools_keeps_manage_persona_available_for_direct_turns() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools("Say hello briefly.", false);
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "manage_persona"));
     }
 
     #[test]
