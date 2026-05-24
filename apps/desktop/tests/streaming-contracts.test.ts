@@ -654,6 +654,59 @@ test('timeline view model ignores skill index selections for loaded skill summar
   assertEqual(skillSection.tone, 'muted', 'indexed-only skill summary tone');
 });
 
+test('timeline view model counts auto-loaded skill selections', () => {
+  const items = extractPersistedTraceItems({
+    kind: 'traceTimeline',
+    items: [
+      {
+        kind: 'skillSelection',
+        skills: [
+          {
+            id: 'builtin-fiction-writing',
+            name: 'fiction-writing',
+            displayName: 'Fiction Writing',
+            activated: true,
+          },
+        ],
+      },
+    ],
+  });
+
+  assert(items, 'persisted auto-loaded skill trace should parse');
+  const names = skillNamesFromTraceItems(items);
+  assertEqual(names.length, 1, 'auto-loaded skill names are counted');
+  assertEqual(names[0], 'Fiction Writing', 'auto-loaded skill display name');
+  const skillRefs = skillRefsFromTraceItems(items);
+  assertEqual(skillRefs.length, 1, 'auto-loaded skill refs are counted');
+  assertEqual(skillRefs[0].activated, true, 'auto-loaded skill ref is marked loaded');
+
+  const turn: ConversationTurn = {
+    id: 'turn-auto-loaded',
+    conversationId: 'conversation-1',
+    userMessageId: 'user-auto-loaded',
+    assistantMessageId: 'assistant-auto-loaded',
+    status: 'success',
+    trace: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:01.000Z',
+    finishedAt: '2026-01-01T00:00:01.000Z',
+  };
+
+  const sections = turnLifecycleTimelineSections({
+    turn,
+    routeKind: 'DirectResponse',
+    traceItems: items,
+  });
+
+  const skillSection = sections.find((section) => section.id === 'turn-skills-turn-auto-loaded');
+  assert(skillSection, 'turn lifecycle should include auto-loaded skill summary');
+  if (skillSection.kind !== 'status') {
+    throw new Error(`skill summary should be a status section, got ${skillSection.kind}`);
+  }
+  assertEqual(skillSection.text, 'Skills: Fiction Writing', 'auto-loaded skill summary text');
+  assertEqual(skillSection.tone, 'success', 'auto-loaded skill summary tone');
+});
+
 test('timeline view model dedupes loaded skills while ignoring index selections', () => {
   const items = extractPersistedTraceItems({
     kind: 'traceTimeline',

@@ -38,6 +38,7 @@ pub fn prepare_messages(
     max_tokens_response: u32,
     context_window_override: Option<u32>,
     skills: &[Skill],
+    loaded_skills: &[Skill],
     tool_definitions: &[ToolDefinition],
 ) -> Vec<Message> {
     let mut messages = Vec::with_capacity(history.len() + 2);
@@ -60,11 +61,18 @@ pub fn prepare_messages(
         .saturating_sub(tool_overhead)
         .saturating_sub(context_safety_buffer(max_context));
     let system_prompt_budget = system_prompt_char_budget(effective_context, max_tokens_response);
-    let skills_section = crate::skills::build_skills_section_for_query_with_budget(
+    let skill_budget = skill_prompt_char_budget(max_context, system_prompt_budget);
+    let loaded_skills_section = crate::skills::build_loaded_skills_section_with_budget(
+        loaded_skills,
+        loaded_skill_prompt_char_budget(skill_budget, !skills.is_empty()),
+    );
+    let remaining_skill_budget = skill_budget.saturating_sub(loaded_skills_section.len());
+    let available_skills_section = crate::skills::build_skills_section_for_query_with_budget(
         skills,
         &user_query,
-        skill_prompt_char_budget(max_context, system_prompt_budget),
+        remaining_skill_budget,
     );
+    let skills_section = combine_prompt_sections(loaded_skills_section, available_skills_section);
     let base_prompt = format!(
         "{}\n\nCurrent date and time: {} (UTC)",
         system_prompt,
@@ -358,6 +366,25 @@ fn skill_prompt_char_budget(context_window_tokens: u32, system_prompt_budget: us
         .min(system_prompt_budget / 2)
 }
 
+fn loaded_skill_prompt_char_budget(total_skill_budget: usize, keep_available_index: bool) -> usize {
+    if total_skill_budget == 0 {
+        return 0;
+    }
+    if !keep_available_index {
+        return total_skill_budget;
+    }
+    total_skill_budget.saturating_mul(3) / 4
+}
+
+fn combine_prompt_sections(first: String, second: String) -> String {
+    match (first.is_empty(), second.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => first,
+        (true, false) => second,
+        (false, false) => format!("{first}{second}"),
+    }
+}
+
 fn assemble_system_prompt(base_prompt: String, skills_section: String, max_chars: usize) -> String {
     if skills_section.is_empty() {
         return cap_text_to_chars(base_prompt, max_chars, "\n...[truncated]");
@@ -456,6 +483,7 @@ mod tests {
             None,
             &[],
             &[],
+            &[],
         );
 
         // System is first, with datetime appended.
@@ -501,6 +529,7 @@ mod tests {
             Some(8192),
             &[],
             &[],
+            &[],
         );
 
         // System message must survive.
@@ -538,6 +567,7 @@ mod tests {
             None,
             &[],
             &[],
+            &[],
         );
 
         // No trimming happened, so no recap.
@@ -557,6 +587,7 @@ mod tests {
             "gpt-4o",
             4096,
             None,
+            &[],
             &[],
             &[],
         );
@@ -595,6 +626,7 @@ mod tests {
             None,
             &skills,
             &[],
+            &[],
         );
         let sys_text = result[0].text_content();
         assert!(
@@ -602,6 +634,52 @@ mod tests {
             "Skills should be in system prompt"
         );
         assert!(sys_text.contains("Be Concise"));
+    }
+
+    #[test]
+    fn test_prepare_messages_with_loaded_skills() {
+        let loaded_skills = vec![Skill {
+            id: "skill-loaded".into(),
+            name: "Fiction Writing".into(),
+            description: "Use when writing fiction".into(),
+            content: "Draft scenes with concrete stakes and natural prose.".into(),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin: true,
+            interface: crate::skills::SkillInterfaceMetadata {
+                display_name: "Fiction Writing".into(),
+                short_description: "Write fiction".into(),
+                icon_small: None,
+                icon_large: None,
+                default_prompt: None,
+            },
+            dependencies: crate::skills::SkillDependencies::default(),
+            policy: crate::skills::SkillPolicy::default(),
+            source_path: None,
+            resources: Vec::new(),
+            resource_bundle: Vec::new(),
+        }];
+
+        let result = prepare_messages(
+            "System prompt",
+            &[],
+            &[ContentPart::Text {
+                text: "Write a chapter".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            None,
+            &loaded_skills,
+            &loaded_skills,
+            &[],
+        );
+
+        let sys_text = result[0].text_content();
+        assert!(sys_text.contains("Loaded Skills"));
+        assert!(sys_text.contains("skill_id: skill-loaded"));
+        assert!(sys_text.contains("Draft scenes with concrete stakes"));
+        assert!(sys_text.contains("Available Skills"));
     }
 
     #[test]
@@ -633,6 +711,7 @@ mod tests {
             4096,
             None,
             &skills,
+            &[],
             &[],
         );
         let sys_text = result[0].text_content();
@@ -673,6 +752,7 @@ mod tests {
             4096,
             None,
             &skills,
+            &[],
             &[],
         );
         let sys_text = result[0].text_content();

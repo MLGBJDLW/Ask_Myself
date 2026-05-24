@@ -14,6 +14,7 @@ scene sequence.
 - Expanding Without Padding
 - Dialogue
 - Chinese Prose Naturalization
+- Dash Discipline
 - De-Generic Prose Pass
 - Chapter Gate
 
@@ -134,6 +135,20 @@ When drafting or polishing Chinese fiction:
   sentence pairs, and "he realized/felt/understood" summaries.
 - Use punctuation to carry rhythm; avoid stacking quotation, ellipsis, and
   exclamation as a substitute for pressure.
+- Avoid dash-heavy cadence. In Chinese prose, `—` and `——` should almost never
+  be the default way to signal reversal, hesitation, or drama.
+
+## Dash Discipline
+
+Before finalizing drafted prose:
+
+1. Search mentally or with tooling for `—`, `——`, and `--`.
+2. Delete every dash that only creates a dramatic pause.
+3. Keep a dash only for an actual interruption, broken speech, or abrupt turn.
+4. Prefer sentence breaks, paragraph breaks, action beats, silence, direct
+   dialogue, or visible consequence.
+5. For Chinese prose, keep dash use below one construction per 1,000 Chinese
+   characters unless the user has explicitly requested that punctuation style.
 
 ## De-Generic Prose Pass
 

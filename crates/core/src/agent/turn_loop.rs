@@ -106,6 +106,9 @@ impl AgentExecutor {
             crate::skills::get_available_skills_for_query(db, &user_query_text_for_tools)
                 .unwrap_or_default()
         });
+        let auto_loaded_skills = self.auto_loaded_skills_override.clone().unwrap_or_else(|| {
+            crate::skills::select_skills_from_pool(skills.clone(), &user_query_text_for_tools, 3)
+        });
 
         // --- Trace: initialize ------------------------------------------------
         let ctx_window_for_trace =
@@ -193,6 +196,7 @@ impl AgentExecutor {
             max_response_tokens,
             self.config.context_window,
             &skills,
+            &auto_loaded_skills,
             &tool_defs,
         );
         if !route_plan.prompt_section.trim().is_empty() {
@@ -237,6 +241,7 @@ impl AgentExecutor {
             &mut persisted_trace_items,
             &route_plan.visibility_decision,
         );
+        append_persisted_trace_loaded_skills(&mut persisted_trace_items, &auto_loaded_skills);
 
         // --- 3c. Extract user query text and build cache key -----------------
         let user_query_text = &user_query_text_for_tools;

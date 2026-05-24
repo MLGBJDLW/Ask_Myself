@@ -823,11 +823,17 @@
     "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "requiresApiKey": true,
     "icon": "🪶",
-    "description": "Qwen3.6 Plus/Flash, Qwen3-Max, QwQ, Qwen3-VL",
+    "description": "Qwen3.7 Max, Qwen3.6 Plus/Flash, QwQ, Qwen3-VL",
     "capabilities": {
       "vision": false
     },
     "models": [
+      {
+        "id": "qwen3.7-max",
+        "name": "Qwen3.7 Max",
+        "tagKey": "providers.tagLatest",
+        "recommended": true
+      },
       {
         "id": "qwen3-max-2026-01-23",
         "name": "Qwen3 Max",
@@ -851,8 +857,7 @@
       {
         "id": "qwen3.6-plus",
         "name": "Qwen3.6 Plus",
-        "tagKey": "providers.tagLatest",
-        "recommended": true
+        "tagKey": "providers.tagBestBalance"
       },
       {
         "id": "qwen3.6-flash",

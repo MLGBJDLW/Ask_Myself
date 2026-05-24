@@ -79,8 +79,8 @@ use self::stream_recovery::{
 use self::tool_runtime::{build_tool_run_item, tool_call_execution_batches};
 use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
 use self::trace_builder::{
-    append_persisted_trace_loop_event, append_persisted_trace_status,
-    append_persisted_trace_thinking, append_persisted_trace_tool,
+    append_persisted_trace_loaded_skills, append_persisted_trace_loop_event,
+    append_persisted_trace_status, append_persisted_trace_thinking, append_persisted_trace_tool,
     append_persisted_trace_visibility, build_task_run_artifacts, build_trace_artifacts,
     build_turn_trace, build_turn_trace_with_verification, evidence_signals_from_trace,
     PersistedTraceItem,
@@ -376,6 +376,7 @@ pub struct AgentExecutor {
     tools: ToolRegistry,
     config: AgentConfig,
     skills_override: Option<Vec<Skill>>,
+    auto_loaded_skills_override: Option<Vec<Skill>>,
     cancel_token: CancellationToken,
     steering_rx: Option<Arc<TokioMutex<mpsc::UnboundedReceiver<AgentSteeringMessage>>>>,
     confirmation_callback: Option<ConfirmationCallback>,
@@ -391,6 +392,7 @@ impl AgentExecutor {
             tools,
             config,
             skills_override: None,
+            auto_loaded_skills_override: None,
             cancel_token: CancellationToken::new(),
             steering_rx: None,
             confirmation_callback: None,
@@ -452,6 +454,15 @@ impl AgentExecutor {
     /// When omitted, the executor loads the enabled skill index from storage.
     pub fn with_skills_override(mut self, skills: Vec<Skill>) -> Self {
         self.skills_override = Some(skills);
+        self
+    }
+
+    /// Override the skill bodies injected into the system prompt for this turn.
+    ///
+    /// When omitted, the executor auto-loads the highest-confidence matches
+    /// from the available skill metadata.
+    pub fn with_auto_loaded_skills_override(mut self, skills: Vec<Skill>) -> Self {
+        self.auto_loaded_skills_override = Some(skills);
         self
     }
 }

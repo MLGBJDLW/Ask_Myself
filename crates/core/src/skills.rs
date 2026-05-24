@@ -22,7 +22,7 @@ pub use model::{
     SkillResourceInfo, SkillResourceKind, SkillToolDependency, SkillWarning, SkillWarningSeverity,
 };
 pub use prompt::{
-    build_skills_section, build_skills_section_for_query,
+    build_loaded_skills_section_with_budget, build_skills_section, build_skills_section_for_query,
     build_skills_section_for_query_with_budget, export_skill_to_md,
 };
 pub use registry::{load_builtin_skills, parse_skill_file};
@@ -471,6 +471,26 @@ mod tests {
                 .iter()
                 .any(|s| s.id == "builtin-xlsx-workbook-design"),
             "xlsx-workbook-design should match workbook/spreadsheet queries"
+        );
+    }
+
+    #[test]
+    fn test_get_active_skills_matches_fiction_query() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+
+        let active = get_active_skills_for_query(
+            &db,
+            "请帮我继续写这一章中文小说，保持人物关系和前文伏笔",
+            5,
+        )
+        .unwrap();
+
+        assert!(
+            active
+                .iter()
+                .any(|skill| skill.id == "builtin-fiction-writing"),
+            "fiction-writing should match Chinese novel continuation queries"
         );
     }
 

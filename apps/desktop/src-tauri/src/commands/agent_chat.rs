@@ -222,6 +222,23 @@ pub async fn agent_chat_cmd(
         );
         Vec::new()
     });
+    let auto_loaded_skills = if persona_default_skill_ids.is_empty() {
+        nexa_core::skills::get_active_skills_for_query(&state.db, &message, 3)
+    } else {
+        nexa_core::skills::get_active_skills_for_query_with_pinned(
+            &state.db,
+            &message,
+            3,
+            &persona_default_skill_ids,
+        )
+    }
+    .unwrap_or_else(|err| {
+        warn!(
+            "Failed to auto-load skills for task run {}: {err}",
+            task_run.id
+        );
+        Vec::new()
+    });
     let initial_task_artifacts = serde_json::json!({
         "kind": "agentTaskArtifacts",
         "version": 1,
@@ -740,7 +757,9 @@ pub async fn agent_chat_cmd(
         if let Some(summ_provider) = summarization_provider {
             executor = executor.with_summarization_provider(summ_provider);
         }
-        executor = executor.with_skills_override(selected_skills);
+        executor = executor
+            .with_skills_override(selected_skills)
+            .with_auto_loaded_skills_override(auto_loaded_skills);
         let run_future = executor.run(
             history,
             user_parts,

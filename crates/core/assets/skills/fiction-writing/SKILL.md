@@ -1,6 +1,6 @@
 ---
 name: fiction-writing
-description: Use this skill when the user asks to write, plan, revise, continue, import, or diagnose fiction, including novels, Chinese-language fiction, web novels, short stories, serial chapters, scenes, characters, plot, canon, worldbuilding, prose style, genre beats, outlines, chapter cards, cliffhangers, continuity, or fiction revision. Also use for longform fiction project workflows, story bibles, serialized chapter production, reader-promise design, de-generic/de-AI prose polishing, and narrative quality checks.
+description: Use this skill when the user asks to write, plan, revise, continue, import, or diagnose fiction, including novels, Chinese-language fiction, web novels, short stories, serial chapters, scenes, characters, plot, canon, worldbuilding, prose style, genre beats, outlines, chapter cards, cliffhangers, continuity, or fiction revision. Also use for longform fiction project workflows, story bibles, serialized chapter production, reader-promise design, low-dash human prose, de-generic/de-AI polishing, and narrative quality checks.
 ---
 
 # Fiction Writing
@@ -45,6 +45,15 @@ Use this when the user asks for a novel, web novel, chapter-by-chapter story, co
 - For style imitation: infer a style profile from the user's supplied text; do not claim to copy an absent style.
 - For Chinese prose: write in the user's requested Chinese register when asked, keep punctuation and paragraphing natural for Chinese fiction, and avoid translated English cadence.
 
+## Style Discipline
+- Default to zero em dashes in drafted prose. Avoid both `--` and Chinese dash forms such as `—` or `——` unless the user explicitly requests that punctuation or a source passage already requires it.
+- In Chinese fiction, use comma, period, colon, semicolon, ellipsis, paragraph breaks, short sentences, action beats, and dialogue tags for rhythm. Reserve dashes only for a true interruption, sudden break in speech, or abrupt turn that cannot be cleaner another way.
+- If a dash is unavoidable, keep it rare: at most one dash construction per 1,000 Chinese characters in finished prose, and only where it has a clear dramatic function.
+- Replace dash-heavy sentences with one of these moves: split the sentence, make the consequence visible, add a physical beat, let a silence carry the turn, use direct dialogue, or put the reversal in the next paragraph.
+- Avoid AI-ish prose patterns: symmetrical "not X but Y" phrasing, decorative abstractions, over-explained emotions, repeated sensory cliches, tidy summary paragraphs, exposition dumps, labeled feelings, generic epiphanies, and repeated "realized/knew/felt a surge" constructions.
+- Human prose should feel locally caused: concrete nouns and verbs, imperfect dialogue timing, subtext, specific physical behavior, asymmetry, pressure, consequence, and a little useful ambiguity.
+- Before finalizing a substantial draft or polish, run a dash audit and an AI-prose audit. Rewrite any paragraph where punctuation is carrying drama that should come from action, choice, or consequence.
+
 ## Quality Bar
 - Every scene or chapter needs a change: information, relationship, power, emotion, danger, status, location, ability, or commitment.
 - Character choices should reveal motive under pressure.
@@ -54,6 +63,7 @@ Use this when the user asks for a novel, web novel, chapter-by-chapter story, co
 - Chapter endings need forward pressure: a question, cost, reveal, deadline, threat, promise, emotional break, or irreversible choice.
 - Keep prose concrete: action, sensory anchors, subtext, rhythm, consequence, and sentence-level pressure.
 - Revise generic AI-sounding prose by adding specific behavior, asymmetry, silence, imperfect dialogue, concrete nouns/verbs, and scene-level stakes instead of decorative adjectives.
+- Finished fiction should not read like a style demonstration. Remove over-neat parallel phrasing, sermon-like explanations, and ornamental punctuation that makes the narrator sound more impressed than the characters are.
 
 ## Resources
 - Read `references/story-craft-playbook.md` for structure lenses, genre architecture, character arcs, suspense systems, and revision passes.
