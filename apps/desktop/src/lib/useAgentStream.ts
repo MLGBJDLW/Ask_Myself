@@ -27,6 +27,7 @@ interface UseAgentStreamReturn {
     attachments?: ImageAttachment[],
     agentConfigId?: string | null,
     personaId?: string | null,
+    skillIds?: string[],
   ) => Promise<void>;
   stop: (conversationId: string) => Promise<void>;
   isStreaming: boolean;
@@ -117,12 +118,13 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     attachments?: ImageAttachment[],
     agentConfigId?: string | null,
     personaId?: string | null,
+    skillIds?: string[],
   ) => {
     activeConversationRef.current = conversationId;
     streamStore.startStream(conversationId);
 
     try {
-      await api.agentChat(conversationId, message, attachments, agentConfigId, personaId);
+      await api.agentChat(conversationId, message, attachments, agentConfigId, personaId, skillIds);
     } catch (err) {
       streamStore.sendError(conversationId, String(err));
     }

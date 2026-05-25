@@ -879,6 +879,7 @@ export const agentChat = (
   attachments?: ImageAttachment[],
   agentConfigId?: string | null,
   personaId?: string | null,
+  skillIds?: string[],
 ) =>
   invoke<void>('agent_chat_cmd', {
     conversationId,
@@ -886,6 +887,7 @@ export const agentChat = (
     attachments: attachments ?? null,
     agentConfigId: agentConfigId ?? null,
     personaId: personaId ?? null,
+    skillIds: skillIds && skillIds.length > 0 ? skillIds : null,
   });
 
 export const agentSteer = (conversationId: string, message: string) =>

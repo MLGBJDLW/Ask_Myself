@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,4 +25,6 @@ run(process.execPath, [
   '-p',
   join(root, 'tsconfig.streaming-tests.json'),
 ]);
-run(process.execPath, [join(outDir, 'tests', 'streaming-contracts.test.js')]);
+for (const file of readdirSync(join(outDir, 'tests')).filter((name) => name.endsWith('.test.js')).sort()) {
+  run(process.execPath, [join(outDir, 'tests', file)]);
+}

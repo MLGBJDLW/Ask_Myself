@@ -1,10 +1,20 @@
-import { useState, useRef, useCallback, useEffect } from "react";
-import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, ArchiveRestore, Loader2 } from "lucide-react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, ArchiveRestore, Loader2, Command, BrainCircuit } from "lucide-react";
 import { toast } from "sonner";
-import { useTranslation } from "../../i18n";
-import type { Conversation, ImageAttachment } from "../../types/conversation";
+import { useTranslation, type TranslationKey } from "../../i18n";
+import type { ArtifactPayload, Conversation, ImageAttachment } from "../../types/conversation";
+import type { Skill } from "../../types/extensions";
 import type { WorkflowCatalogTemplate } from "../../lib/api";
 import * as api from "../../lib/api";
+import {
+  buildSlashCommandOptions,
+  getMatchingSlashCommands,
+  getSlashCommandTrigger,
+  insertSlashCommand,
+  resolveSlashCommandMessage,
+  type SlashCommandKind,
+  type SlashCommandOption,
+} from "../../lib/slashCommands";
 import { CheckpointMenu } from "./CheckpointMenu";
 import { VoiceInputButton } from "./VoiceInputButton";
 import { EmojiPicker } from "./EmojiPicker";
@@ -85,8 +95,13 @@ function getAllowedAttachmentMediaType(mediaType: string | undefined, name: stri
   return MIME_BY_EXTENSION.get(ext) ?? "application/octet-stream";
 }
 
+export interface ChatInputSendOptions {
+  skillIds?: string[];
+  userArtifacts?: ArtifactPayload | null;
+}
+
 interface ChatInputProps {
-  onSend: (message: string, attachments?: ImageAttachment[]) => void;
+  onSend: (message: string, attachments?: ImageAttachment[], options?: ChatInputSendOptions) => void;
   onStop: () => void;
   isStreaming: boolean;
   disabled: boolean;
@@ -101,6 +116,33 @@ interface ChatInputProps {
 interface ChatDraftState {
   value: string;
   attachments: ImageAttachment[];
+}
+
+type SlashCommandTab = "all" | SlashCommandKind;
+
+const SLASH_COMMAND_TABS: SlashCommandTab[] = ["all", "command", "skill", "workflow"];
+const LOCALIZED_COMMON_SLASH_COMMANDS = new Set([
+  "plan",
+  "review",
+  "debug",
+  "refactor",
+  "test",
+  "docs",
+  "research",
+  "summarize",
+  "compare",
+  "tasks",
+  "commit",
+  "image",
+  "skills",
+  "workflow",
+  "compact",
+]);
+
+function commonSlashCommandKey(name: string, field: "title" | "description"): TranslationKey | null {
+  return LOCALIZED_COMMON_SLASH_COMMANDS.has(name)
+    ? (`chat.slashCommand.${name}.${field}` as TranslationKey)
+    : null;
 }
 
 export function ChatInput({
@@ -121,10 +163,16 @@ export function ChatInput({
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowCatalogTemplate[]>([]);
+  const [activeSkills, setActiveSkills] = useState<Skill[]>([]);
   const [workflowCatalogOpen, setWorkflowCatalogOpen] = useState(false);
   const [workflowCatalogLoading, setWorkflowCatalogLoading] = useState(false);
+  const [caretPosition, setCaretPosition] = useState(0);
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
+  const [slashActiveTab, setSlashActiveTab] = useState<SlashCommandTab>("all");
+  const [dismissedSlashToken, setDismissedSlashToken] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const slashOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const dragCounterRef = useRef(0);
   const draftsRef = useRef<Record<string, ChatDraftState>>({});
   const inputLocked = disabled || isCompacting;
@@ -170,6 +218,10 @@ export function ChatInput({
   }, [value, adjustHeight]);
 
   useEffect(() => {
+    setCaretPosition((current) => Math.min(current, value.length));
+  }, [value.length]);
+
+  useEffect(() => {
     let cancelled = false;
     setWorkflowCatalogLoading(true);
     api.listWorkflowTemplates()
@@ -192,6 +244,161 @@ export function ChatInput({
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    api.listActiveSkills()
+      .then((skills) => {
+        if (!cancelled && Array.isArray(skills)) {
+          setActiveSkills(skills);
+        }
+      })
+      .catch((err) => {
+        console.warn("Failed to load skills for slash commands:", err);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const slashOptions = useMemo(
+    () => buildSlashCommandOptions(activeSkills, workflowTemplates),
+    [activeSkills, workflowTemplates],
+  );
+  const slashTrigger = useMemo(
+    () => getSlashCommandTrigger(value, caretPosition),
+    [caretPosition, value],
+  );
+  const slashMatches = useMemo(
+    () => slashTrigger ? getMatchingSlashCommands(slashOptions, slashTrigger.query, 64) : [],
+    [slashOptions, slashTrigger],
+  );
+  const slashTabCounts = useMemo<Record<SlashCommandTab, number>>(() => ({
+    all: slashMatches.length,
+    command: slashMatches.filter((option) => option.kind === "command").length,
+    skill: slashMatches.filter((option) => option.kind === "skill").length,
+    workflow: slashMatches.filter((option) => option.kind === "workflow").length,
+  }), [slashMatches]);
+  const visibleSlashMatches = useMemo(
+    () => slashActiveTab === "all"
+      ? slashMatches
+      : slashMatches.filter((option) => option.kind === slashActiveTab),
+    [slashActiveTab, slashMatches],
+  );
+  const slashEnabledTabs = useMemo(
+    () => SLASH_COMMAND_TABS.filter((tab) => tab === "all" || slashTabCounts[tab] > 0),
+    [slashTabCounts],
+  );
+  const slashMenuOpen = Boolean(
+    slashTrigger &&
+    !inputLocked &&
+    dismissedSlashToken !== slashTrigger.token,
+  );
+  const activeSlashIndex = Math.min(slashSelectedIndex, Math.max(0, visibleSlashMatches.length - 1));
+  const activeSlashOption = visibleSlashMatches[activeSlashIndex];
+
+  useEffect(() => {
+    setSlashSelectedIndex(0);
+    setSlashActiveTab("all");
+  }, [slashTrigger?.query, slashMatches.length]);
+
+  useEffect(() => {
+    setSlashSelectedIndex(0);
+  }, [slashActiveTab]);
+
+  useEffect(() => {
+    if (slashMenuOpen && slashActiveTab !== "all" && slashTabCounts[slashActiveTab] === 0) {
+      setSlashActiveTab("all");
+    }
+  }, [slashActiveTab, slashMenuOpen, slashTabCounts]);
+
+  useEffect(() => {
+    slashOptionRefs.current.length = visibleSlashMatches.length;
+  }, [visibleSlashMatches.length]);
+
+  useEffect(() => {
+    if (!slashMenuOpen) return;
+    slashOptionRefs.current[activeSlashIndex]?.scrollIntoView({ block: "nearest" });
+  }, [activeSlashIndex, slashMenuOpen, visibleSlashMatches]);
+
+  const updateCaretFromTextarea = useCallback(() => {
+    const el = textareaRef.current;
+    if (el) {
+      setCaretPosition(el.selectionStart);
+    }
+  }, []);
+
+  const applySlashOption = useCallback((option: SlashCommandOption) => {
+    if (!slashTrigger) return;
+    setDismissedSlashToken(null);
+
+    if (option.action === "openWorkflows") {
+      const nextValue = `${value.slice(0, slashTrigger.start)}${value.slice(slashTrigger.end)}`.trimStart();
+      setValue(nextValue);
+      draftsRef.current[draftKey] = { value: nextValue, attachments };
+      setWorkflowCatalogOpen(true);
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        setCaretPosition(textareaRef.current?.selectionStart ?? nextValue.length);
+        adjustHeight();
+      });
+      return;
+    }
+
+    const next = insertSlashCommand(value, slashTrigger, option);
+    setValue(next.value);
+    draftsRef.current[draftKey] = { value: next.value, attachments };
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(next.cursorPosition, next.cursorPosition);
+        setCaretPosition(next.cursorPosition);
+      }
+      adjustHeight();
+    });
+  }, [adjustHeight, attachments, draftKey, slashTrigger, value]);
+
+  const getSlashOptionTitle = useCallback((option: SlashCommandOption) => {
+    const key = option.kind === "command" ? commonSlashCommandKey(option.name, "title") : null;
+    return key ? t(key) : option.title;
+  }, [t]);
+
+  const getSlashOptionDescription = useCallback((option: SlashCommandOption) => {
+    const key = option.kind === "command" ? commonSlashCommandKey(option.name, "description") : null;
+    return key ? t(key) : option.description;
+  }, [t]);
+
+  const getSlashSourceLabel = useCallback((option: SlashCommandOption) => {
+    if (option.kind === "skill") {
+      return option.sourceLabel === "Built-in skill"
+        ? t("chat.slashCommandBuiltInSkill")
+        : t("chat.slashCommandUserSkill");
+    }
+    if (option.kind === "workflow") return t("chat.slashCommandKindWorkflow");
+    return t("chat.slashCommandKindCommand");
+  }, [t]);
+
+  const getSlashTabLabel = useCallback((tab: SlashCommandTab) => {
+    if (tab === "command") return t("chat.slashCommandTabCommands");
+    if (tab === "skill") return t("chat.slashCommandTabSkills");
+    if (tab === "workflow") return t("chat.slashCommandTabWorkflows");
+    return t("chat.slashCommandTabAll");
+  }, [t]);
+
+  const clearDraft = useCallback(() => {
+    draftsRef.current[draftKey] = { value: "", attachments: [] };
+    setValue("");
+    setAttachments([]);
+    setDismissedSlashToken(null);
+    setCaretPosition(0);
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
+    }, 0);
+  }, [draftKey]);
+
   const handleSend = useCallback(() => {
     if (inputLocked) return;
     const trimmed = value.trim();
@@ -200,29 +407,73 @@ export function ChatInput({
       toast.error("Attachments cannot be added while the agent is already running.");
       return;
     }
-    if (trimmed === "/compact" && attachments.length === 0 && onCompact) {
-      onCompact();
-      draftsRef.current[draftKey] = { value: "", attachments: [] };
-      setValue("");
-      setAttachments([]);
+    const slashResolution = trimmed ? resolveSlashCommandMessage(trimmed, slashOptions) : null;
+    if (slashResolution?.localAction === "openWorkflows") {
+      setWorkflowCatalogOpen(true);
+      const nextValue = slashResolution.message;
+      draftsRef.current[draftKey] = { value: nextValue, attachments };
+      setValue(nextValue);
+      requestAnimationFrame(() => textareaRef.current?.focus());
       return;
     }
-    onSend(
-      trimmed || t("chat.imageMessage"),
-      attachments.length > 0 ? attachments : undefined,
-    );
-    draftsRef.current[draftKey] = { value: "", attachments: [] };
-    setValue("");
-    setAttachments([]);
-    setTimeout(() => {
-      if (textareaRef.current) {
-        textareaRef.current.style.height = "auto";
+    if (slashResolution?.localAction === "compact") {
+      if (attachments.length === 0 && onCompact && slashResolution.message.length === 0) {
+        onCompact();
+        clearDraft();
+        return;
       }
-    }, 0);
-  }, [attachments, draftKey, inputLocked, isStreaming, onCompact, onSend, t, value]);
+      toast.error("/compact must be sent by itself.");
+      return;
+    }
+
+    const outgoingMessage = slashResolution?.message || trimmed || t("chat.imageMessage");
+    const sendOptions = slashResolution
+      ? {
+          skillIds: slashResolution.skillIds,
+          userArtifacts: slashResolution.artifact,
+        }
+      : undefined;
+    onSend(
+      outgoingMessage,
+      attachments.length > 0 ? attachments : undefined,
+      sendOptions,
+    );
+    clearDraft();
+  }, [attachments, clearDraft, draftKey, inputLocked, isStreaming, onCompact, onSend, slashOptions, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (slashMenuOpen && slashTrigger) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSlashSelectedIndex((index) => Math.min(index + 1, Math.max(0, visibleSlashMatches.length - 1)));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSlashSelectedIndex((index) => Math.max(0, index - 1));
+          return;
+        }
+        if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && slashEnabledTabs.length > 1) {
+          e.preventDefault();
+          const direction = e.key === "ArrowRight" ? 1 : -1;
+          const currentIndex = Math.max(0, slashEnabledTabs.indexOf(slashActiveTab));
+          const nextIndex = (currentIndex + direction + slashEnabledTabs.length) % slashEnabledTabs.length;
+          setSlashActiveTab(slashEnabledTabs[nextIndex]);
+          setSlashSelectedIndex(0);
+          return;
+        }
+        if ((e.key === "Enter" || e.key === "Tab") && activeSlashOption) {
+          e.preventDefault();
+          applySlashOption(activeSlashOption);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setDismissedSlashToken(slashTrigger.token);
+          return;
+        }
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         if (!inputLocked) {
@@ -230,7 +481,17 @@ export function ChatInput({
         }
       }
     },
-    [handleSend, inputLocked],
+    [
+      activeSlashOption,
+      applySlashOption,
+      handleSend,
+      inputLocked,
+      slashActiveTab,
+      slashEnabledTabs,
+      slashMenuOpen,
+      slashTrigger,
+      visibleSlashMatches.length,
+    ],
   );
 
   const addAttachmentFromDataUrl = useCallback(
@@ -428,7 +689,141 @@ export function ChatInput({
         </div>
       )}
 
-      {workflowCatalogOpen && (
+      {slashMenuOpen && slashTrigger && (
+        <div
+          data-testid="slash-command-menu"
+          className="absolute bottom-full left-4 right-4 z-40 mb-2 overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-2xl shadow-black/30 ring-1 ring-white/[0.04]"
+        >
+          <div className="border-b border-border/60 px-3 py-2">
+            <div className="flex min-h-8 items-center gap-2">
+              <Command className="h-4 w-4 shrink-0 text-accent" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-text-primary">{t("chat.slashCommands")}</div>
+                <div className="truncate text-xs text-text-tertiary">/{slashTrigger.query}</div>
+              </div>
+              <div
+                className="ml-auto rounded-md border border-border/60 bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase text-text-tertiary"
+                aria-label={t("chat.slashCommandCount", { count: String(visibleSlashMatches.length) })}
+              >
+                {visibleSlashMatches.length === 0 ? t("chat.slashCommandNoMatch") : visibleSlashMatches.length}
+              </div>
+            </div>
+
+            <div className="mt-2 grid grid-cols-4 gap-1 rounded-md border border-border/50 bg-surface-1 p-1" role="tablist">
+              {SLASH_COMMAND_TABS.map((tab) => {
+                const selected = tab === slashActiveTab;
+                const count = slashTabCounts[tab];
+                const disabledTab = tab !== "all" && count === 0;
+                return (
+                  <button
+                    key={tab}
+                    type="button"
+                    data-testid={`slash-command-tab-${tab}`}
+                    role="tab"
+                    aria-selected={selected}
+                    disabled={disabledTab}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      setSlashActiveTab(tab);
+                      setSlashSelectedIndex(0);
+                    }}
+                    className={`flex min-w-0 items-center justify-center gap-1 rounded px-1.5 py-1 text-[11px] font-medium transition-colors ${
+                      selected
+                        ? "bg-surface-0 text-text-primary shadow-sm ring-1 ring-border/60"
+                        : "text-text-tertiary hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-35"
+                    }`}
+                  >
+                    <span className="truncate">{getSlashTabLabel(tab)}</span>
+                    <span className="shrink-0 tabular-nums text-[10px] opacity-70">{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {visibleSlashMatches.length > 0 ? (
+            <>
+              <div
+                data-testid="slash-command-list"
+                className="max-h-64 overflow-y-auto p-1"
+                role="listbox"
+                aria-label={t("chat.slashCommands")}
+              >
+                {visibleSlashMatches.map((option, index) => {
+                const active = index === activeSlashIndex;
+                const Icon = option.kind === "skill" ? BrainCircuit : option.kind === "workflow" ? Workflow : Command;
+                const optionTitle = getSlashOptionTitle(option);
+                const optionDescription = getSlashOptionDescription(option);
+                return (
+                  <button
+                    key={option.id}
+                    ref={(node) => {
+                      slashOptionRefs.current[index] = node;
+                    }}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    data-testid={`slash-command-option-${option.name}`}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => applySlashOption(option)}
+                    className={`grid w-full grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
+                      active
+                        ? "bg-accent-subtle text-text-primary ring-1 ring-accent/25"
+                        : "text-text-secondary hover:bg-surface-1 hover:text-text-primary"
+                    }`}
+                  >
+                    <span
+                      className={`flex h-7 w-7 items-center justify-center rounded-md border ${
+                        active
+                          ? "border-accent/35 bg-accent/10 text-accent"
+                          : "border-border/60 bg-surface-1 text-text-tertiary"
+                      }`}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="flex min-w-0 items-baseline gap-2">
+                        <span className="shrink-0 font-mono text-[13px] text-accent">/{option.name}</span>
+                        <span className="truncate text-sm font-medium text-text-primary">{optionTitle}</span>
+                      </span>
+                      <span className="mt-0.5 block truncate text-[11px] leading-4 text-text-tertiary">
+                        {optionDescription}
+                      </span>
+                    </span>
+                    <span className="hidden max-w-28 truncate rounded-md border border-border/50 bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-tertiary sm:block">
+                      {getSlashSourceLabel(option)}
+                    </span>
+                  </button>
+                );
+              })}
+              </div>
+
+              {activeSlashOption && (
+                <div className="hidden border-t border-border/60 px-3 py-2 sm:block">
+                  <div className="flex min-w-0 items-center gap-2 text-xs">
+                    <span className="shrink-0 font-mono text-accent">/{activeSlashOption.name}</span>
+                    <span className="shrink-0 rounded border border-border/50 bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-tertiary">
+                      {getSlashSourceLabel(activeSlashOption)}
+                    </span>
+                    <span className="truncate font-medium text-text-primary">
+                      {getSlashOptionTitle(activeSlashOption)}
+                    </span>
+                  </div>
+                  <div className="mt-1 truncate text-xs text-text-tertiary">
+                    {getSlashOptionDescription(activeSlashOption)}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="px-3 py-5 text-center text-sm text-text-tertiary">
+              {t("chat.slashCommandNoResults")}
+            </div>
+          )}
+        </div>
+      )}
+
+      {workflowCatalogOpen && !slashMenuOpen && (
         <div
           data-testid="workflow-catalog-panel"
           className="absolute bottom-full left-4 right-4 z-30 mb-2 overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-2xl shadow-black/30"
@@ -536,8 +931,15 @@ export function ChatInput({
           data-testid="chat-input-textarea"
           ref={textareaRef}
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setCaretPosition(e.target.selectionStart);
+            setDismissedSlashToken(null);
+          }}
           onKeyDown={handleKeyDown}
+          onKeyUp={updateCaretFromTextarea}
+          onClick={updateCaretFromTextarea}
+          onSelect={updateCaretFromTextarea}
           onPaste={handlePaste}
           placeholder={isCompacting ? `${t("chat.compacting")} (>_<)` : t("chat.placeholder")}
           disabled={inputLocked}
