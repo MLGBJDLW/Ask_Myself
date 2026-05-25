@@ -16,6 +16,7 @@ import {
 
 const PROVIDER_ICON_META: Record<string, { icon: LucideIcon; tone: string; label: string }> = {
   open_ai: { icon: Atom, tone: 'bg-emerald-500/12 text-emerald-500', label: 'OpenAI' },
+  openrouter: { icon: Orbit, tone: 'bg-purple-500/12 text-purple-500', label: 'OpenRouter' },
   anthropic: { icon: Sparkles, tone: 'bg-amber-500/12 text-amber-500', label: 'Anthropic' },
   google: { icon: Gem, tone: 'bg-sky-500/12 text-sky-500', label: 'Google' },
   deep_seek: { icon: Waves, tone: 'bg-cyan-500/12 text-cyan-500', label: 'DeepSeek' },

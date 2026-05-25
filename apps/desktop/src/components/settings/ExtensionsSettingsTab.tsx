@@ -237,6 +237,7 @@ function PersonaEditor({
   onCancel: () => void;
   onDirtyChange: (dirty: boolean) => void;
 }) {
+  const isBuiltin = persona?.builtin === true;
   const [name, setName] = useState(persona?.name ?? '');
   const [description, setDescription] = useState(persona?.description ?? '');
   const [instructions, setInstructions] = useState(persona?.instructions ?? '');
@@ -294,6 +295,7 @@ function PersonaEditor({
             onChange={(event) => update(() => setName(event.target.value))}
             className="w-full rounded-md border border-border bg-surface-1 px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
             required
+            disabled={isBuiltin}
           />
         </label>
         <label className="space-y-1">
@@ -302,6 +304,7 @@ function PersonaEditor({
             value={description}
             onChange={(event) => update(() => setDescription(event.target.value))}
             className="w-full rounded-md border border-border bg-surface-1 px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+            disabled={isBuiltin}
           />
         </label>
       </div>
@@ -312,6 +315,7 @@ function PersonaEditor({
             type="button"
             onClick={() => update(() => setInstructions((value) => value.trim() ? value : PERSONA_INSTRUCTIONS_TEMPLATE))}
             className="text-[11px] font-medium text-accent hover:text-accent-hover"
+            disabled={isBuiltin}
           >
             Use template
           </button>
@@ -322,6 +326,7 @@ function PersonaEditor({
           rows={7}
           className="w-full resize-y rounded-md border border-border bg-surface-1 px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
           required
+          disabled={isBuiltin}
         />
       </label>
       <div className="flex items-center justify-between rounded-md border border-border bg-surface-1 px-3 py-2">
@@ -329,6 +334,7 @@ function PersonaEditor({
         <button
           type="button"
           onClick={() => update(() => setEnabled((value) => !value))}
+          disabled={isBuiltin}
           className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
             enabled ? 'bg-accent' : 'bg-surface-3'
           }`}
@@ -589,15 +595,13 @@ export function ExtensionsSettingsTab({
                               }`} />
                             </button>
                           )}
-                          {!persona.builtin && (
-                            <button
-                              onClick={() => onEditPersona(persona)}
-                              className="rounded p-1.5 text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
-                              aria-label={t('common.edit')}
-                            >
-                              <Pencil size={14} />
-                            </button>
-                          )}
+                          <button
+                            onClick={() => onEditPersona(persona)}
+                            className="rounded p-1.5 text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
+                            aria-label={t('common.edit')}
+                          >
+                            <Pencil size={14} />
+                          </button>
                           {!persona.builtin && (
                             <button
                               onClick={() => onDeletePersonaTargetChange(persona)}

@@ -42,6 +42,8 @@ struct OaiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<OaiReasoning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<OaiThinking>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OaiTool>>,
@@ -64,6 +66,14 @@ struct OaiStreamOptions {
 struct OaiThinking {
     #[serde(rename = "type")]
     thinking_type: String,
+}
+
+#[derive(Serialize)]
+struct OaiReasoning {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -162,7 +172,12 @@ struct OaiChoice {
 struct OaiResponseMessage {
     content: Option<String>,
     tool_calls: Option<Vec<OaiToolCallIn>>,
+    #[serde(default, alias = "reasoningContent")]
     reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<serde_json::Value>,
+    #[serde(default, alias = "reasoningDetails")]
+    reasoning_details: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -290,6 +305,52 @@ fn openai_reasoning_effort(effort: Option<&ReasoningEffort>) -> String {
         None => "medium",
     }
     .to_string()
+}
+
+fn reasoning_value_to_text(value: serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => Some(text),
+        serde_json::Value::Array(parts) => {
+            let text = parts
+                .into_iter()
+                .filter_map(reasoning_value_to_text)
+                .collect::<Vec<_>>()
+                .join("");
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        serde_json::Value::Object(mut object) => object
+            .remove("text")
+            .or_else(|| object.remove("content"))
+            .or_else(|| object.remove("summary_text"))
+            .or_else(|| object.remove("summaryText"))
+            .or_else(|| object.remove("reasoning_details"))
+            .or_else(|| object.remove("reasoningDetails"))
+            .and_then(reasoning_value_to_text),
+        _ => None,
+    }
+}
+
+fn is_openrouter_config(config: &ProviderConfig) -> bool {
+    matches!(config.provider_type, ProviderType::OpenRouter)
+        || config
+            .base_url
+            .as_deref()
+            .is_some_and(|url| url.to_ascii_lowercase().contains("openrouter.ai"))
+}
+
+fn apply_openrouter_headers(
+    builder: reqwest::RequestBuilder,
+    config: &ProviderConfig,
+) -> reqwest::RequestBuilder {
+    if is_openrouter_config(config) {
+        builder.header("X-OpenRouter-Title", "Nexa")
+    } else {
+        builder
+    }
 }
 
 fn requires_non_streaming_fallback(model: &str) -> bool {
@@ -599,6 +660,7 @@ fn convert_tools(tools: &[ToolDefinition], add_cache_control: bool) -> Vec<OaiTo
 fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     let is_reasoning = is_reasoning_model(&request.model, request.provider_type.as_ref());
     let is_deepseek = is_deepseek_reasoner(&request.model);
+    let is_openrouter_provider = matches!(request.provider_type, Some(ProviderType::OpenRouter));
     let model_lower = request.model.to_lowercase();
     let is_deepseek_provider = matches!(request.provider_type, Some(ProviderType::DeepSeek))
         || model_lower.contains("deepseek");
@@ -615,8 +677,10 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     };
     let deepseek_thinking_enabled = deepseek_thinking_mode == Some("enabled");
     let include_reasoning_content = is_deepseek_provider && deepseek_thinking_enabled;
-    let needs_completion_tokens = is_reasoning || is_deepseek || deepseek_thinking_enabled;
-    let suppress_temperature = is_reasoning || is_deepseek || deepseek_thinking_enabled;
+    let needs_completion_tokens =
+        !is_openrouter_provider && (is_reasoning || is_deepseek || deepseek_thinking_enabled);
+    let suppress_temperature =
+        !is_openrouter_provider && (is_reasoning || is_deepseek || deepseek_thinking_enabled);
     // Some providers/models require function arguments as JSON objects, not strings.
     let raw_tool_args = requires_raw_tool_arguments(&request.model, request.provider_type.as_ref());
     let add_cache_control =
@@ -650,11 +714,28 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
         },
         reasoning_effort: if deepseek_thinking_enabled {
             Some(deepseek_reasoning_effort(request.reasoning_effort.as_ref()))
-        } else if is_reasoning {
+        } else if is_reasoning && !is_openrouter_provider {
             request
                 .reasoning_effort
                 .as_ref()
                 .map(|effort| openai_reasoning_effort(Some(effort)))
+        } else {
+            None
+        },
+        reasoning: if is_openrouter_provider {
+            request
+                .reasoning_effort
+                .as_ref()
+                .map(|effort| OaiReasoning {
+                    effort: Some(openai_reasoning_effort(Some(effort))),
+                    max_tokens: None,
+                })
+                .or_else(|| {
+                    request.thinking_budget.map(|budget| OaiReasoning {
+                        effort: None,
+                        max_tokens: Some(budget),
+                    })
+                })
         } else {
             None
         },
@@ -777,9 +858,12 @@ impl LlmProvider for OpenAiProvider {
         let api_key = self.api_key()?;
 
         let response = with_request_timeout(
-            self.client
-                .get(&url)
-                .header("Authorization", format!("Bearer {api_key}")),
+            apply_openrouter_headers(
+                self.client
+                    .get(&url)
+                    .header("Authorization", format!("Bearer {api_key}")),
+                &self.config,
+            ),
             self.request_timeout,
         )
         .send()
@@ -804,11 +888,14 @@ impl LlmProvider for OpenAiProvider {
         let mut attempt = 1;
         let oai: OaiResponse = loop {
             let response = match with_request_timeout(
-                self.client
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {api_key}"))
-                    .header("Content-Type", "application/json")
-                    .json(&body),
+                apply_openrouter_headers(
+                    self.client
+                        .post(&url)
+                        .header("Authorization", format!("Bearer {api_key}"))
+                        .header("Content-Type", "application/json")
+                        .json(&body),
+                    &self.config,
+                ),
                 self.request_timeout,
             )
             .send()
@@ -898,12 +985,23 @@ impl LlmProvider for OpenAiProvider {
             })
             .unwrap_or_default();
 
+        let thinking = choice
+            .message
+            .reasoning_content
+            .or_else(|| choice.message.reasoning.and_then(reasoning_value_to_text))
+            .or_else(|| {
+                choice
+                    .message
+                    .reasoning_details
+                    .and_then(reasoning_value_to_text)
+            });
+
         Ok(CompletionResponse {
             content: choice.message.content.unwrap_or_default(),
             tool_calls,
             finish_reason,
             usage,
-            thinking: choice.message.reasoning_content,
+            thinking,
         })
     }
 
@@ -927,11 +1025,14 @@ impl LlmProvider for OpenAiProvider {
         debug!("Request body: {} bytes", body_json.len());
 
         let response = send_stream_start_request(
-            self.client
-                .post(&url)
-                .header("Authorization", format!("Bearer {api_key}"))
-                .header("Content-Type", "application/json")
-                .json(&body),
+            apply_openrouter_headers(
+                self.client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .header("Content-Type", "application/json")
+                    .json(&body),
+                &self.config,
+            ),
             self.request_timeout,
             "OpenAI stream request",
         )
@@ -1343,6 +1444,65 @@ data: [DONE]
         assert_eq!(body["max_completion_tokens"], 100);
         assert!(body.get("max_tokens").is_none());
         assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn openrouter_reasoning_uses_nested_reasoning_parameter() {
+        let request = CompletionRequest {
+            model: "x-ai/grok-4.3".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: Some(ReasoningEffort::High),
+            provider_type: Some(ProviderType::OpenRouter),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(body["max_tokens"], 100);
+        assert!(body.get("max_completion_tokens").is_none());
+        assert!(body.get("temperature").is_some());
+    }
+
+    #[test]
+    fn openrouter_reasoning_can_use_token_budget() {
+        let request = CompletionRequest {
+            model: "anthropic/claude-sonnet-4.6".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: Some(2048),
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::OpenRouter),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["reasoning"]["max_tokens"], 2048);
+        assert!(body["reasoning"].get("effort").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn openrouter_reasoning_details_text_is_extracted() {
+        let value = serde_json::json!([
+            { "type": "reasoning.text", "text": "first " },
+            { "type": "reasoning.summary", "summary_text": "second" }
+        ]);
+
+        assert_eq!(
+            reasoning_value_to_text(value).as_deref(),
+            Some("first second")
+        );
     }
 
     #[test]

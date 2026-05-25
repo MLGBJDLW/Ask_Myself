@@ -30,6 +30,12 @@ const PROVIDER_REGISTRY: &[ProviderRegistryEntry] = &[
         adapter: ProviderAdapterKind::OpenAiCompatible,
     },
     ProviderRegistryEntry {
+        provider_type: ProviderType::OpenRouter,
+        canonical_key: "openrouter",
+        aliases: &["openrouter", "open_router"],
+        adapter: ProviderAdapterKind::OpenAiCompatible,
+    },
+    ProviderRegistryEntry {
         provider_type: ProviderType::Anthropic,
         canonical_key: "anthropic",
         aliases: &["anthropic"],
@@ -131,6 +137,9 @@ pub fn provider_type_for_parts(provider: &str, base_url: Option<&str>) -> Provid
         if base_url_lower.contains("deepseek") {
             return ProviderType::DeepSeek;
         }
+        if base_url_lower.contains("openrouter.ai") {
+            return ProviderType::OpenRouter;
+        }
     }
     parsed
 }
@@ -161,6 +170,14 @@ mod tests {
         assert_eq!(
             provider_type_for_parts("custom", Some("https://api.deepseek.com")),
             ProviderType::DeepSeek
+        );
+        assert_eq!(
+            provider_type_from_key("open_router"),
+            Some(ProviderType::OpenRouter)
+        );
+        assert_eq!(
+            provider_type_for_parts("custom", Some("https://openrouter.ai/api/v1")),
+            ProviderType::OpenRouter
         );
         assert_eq!(
             provider_adapter_for_type(ProviderType::Qwen),
