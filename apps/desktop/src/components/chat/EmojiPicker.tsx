@@ -83,6 +83,7 @@ export function EmojiPicker({ onEmojiSelect, disabled }: EmojiPickerProps) {
                 theme={isLightTheme(theme) ? "light" : "dark"}
                 previewPosition="none"
                 skinTonePosition="search"
+                emojiButtonColors={["transparent"]}
                 maxFrequentRows={2}
                 perLine={8}
               />

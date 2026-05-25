@@ -1,4 +1,4 @@
-//! ToolSearchTool - searchable built-in tool catalog.
+//! ToolSearchTool - searchable enabled tool catalog.
 
 use std::sync::OnceLock;
 
@@ -9,7 +9,10 @@ use serde_json::json;
 use crate::db::Database;
 use crate::error::CoreError;
 
-use super::{default_tool_registry, Tool, ToolCategory, ToolDef, ToolResult};
+use super::{
+    default_tool_registry, Tool, ToolCategory, ToolDef, ToolExecutionContext, ToolRegistry,
+    ToolResult,
+};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/tool_search.json");
@@ -56,6 +59,30 @@ impl Tool for ToolSearchTool {
         _db: &Database,
         _source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
+        let registry = default_tool_registry();
+        self.execute_against_registry(call_id, arguments, &registry)
+    }
+
+    async fn execute_with_run_context(
+        &self,
+        ctx: ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        if let Some(registry) = ctx.tool_registry {
+            self.execute_against_registry(ctx.call_id, ctx.arguments, registry)
+        } else {
+            let registry = default_tool_registry();
+            self.execute_against_registry(ctx.call_id, ctx.arguments, &registry)
+        }
+    }
+}
+
+impl ToolSearchTool {
+    fn execute_against_registry(
+        &self,
+        call_id: &str,
+        arguments: &str,
+        registry: &ToolRegistry,
+    ) -> Result<ToolResult, CoreError> {
         let args: ToolSearchArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid tool_search arguments: {e}")))?;
         let query = args.query.trim();
@@ -70,7 +97,7 @@ impl Tool for ToolSearchTool {
 
         let limit = args.limit.unwrap_or(8).clamp(1, 20);
         let query_terms = tokenize(query);
-        let mut matches = default_tool_registry()
+        let mut matches = registry
             .definitions()
             .into_iter()
             .filter_map(|tool| {
@@ -88,7 +115,7 @@ impl Tool for ToolSearchTool {
         matches.truncate(limit);
 
         let mut content = format!(
-            "Found {} built-in tool match(es) for {:?}.",
+            "Found {} enabled tool match(es) for {:?}. Matching hidden tools are activated for the next model step when dynamic visibility is enabled.",
             matches.len(),
             query
         );
@@ -96,7 +123,7 @@ impl Tool for ToolSearchTool {
             content.push_str(&format!("\n- {}: {}", item.name, item.description));
         }
         if matches.is_empty() {
-            content.push_str("\nNo built-in tool matched. Enabled MCP tools may still be available through their mcp__server__tool names.");
+            content.push_str("\nNo enabled tool matched. Disabled MCP servers are not discoverable until they are connected.");
         }
 
         Ok(ToolResult {
@@ -148,7 +175,50 @@ fn truncate_description(description: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+
     use super::*;
+
+    struct RuntimeMcpTool;
+
+    #[async_trait]
+    impl Tool for RuntimeMcpTool {
+        fn name(&self) -> &str {
+            "mcp__runtime__browser_snapshot"
+        }
+
+        fn description(&self) -> &str {
+            "Captures browser snapshot data from a connected runtime MCP server."
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "selector": { "type": "string" }
+                }
+            })
+        }
+
+        fn categories(&self) -> &'static [ToolCategory] {
+            &[ToolCategory::Mcp]
+        }
+
+        async fn execute(
+            &self,
+            call_id: &str,
+            _arguments: &str,
+            _db: &Database,
+            _source_scope: &[String],
+        ) -> Result<ToolResult, CoreError> {
+            Ok(ToolResult {
+                call_id: call_id.to_string(),
+                content: "ok".to_string(),
+                is_error: false,
+                artifacts: None,
+            })
+        }
+    }
 
     #[tokio::test]
     async fn tool_search_finds_file_search_tools() {
@@ -161,5 +231,28 @@ mod tests {
 
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert!(result.content.contains("grep_files") || result.content.contains("search_files"));
+    }
+
+    #[tokio::test]
+    async fn tool_search_uses_runtime_registry_for_mcp_tools() {
+        let db = Database::open_memory().unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(RuntimeMcpTool));
+        let args = serde_json::json!({ "query": "browser snapshot" });
+        let result = ToolSearchTool
+            .execute_with_run_context(ToolExecutionContext {
+                call_id: "tool-search",
+                arguments: &args.to_string(),
+                db: &db,
+                source_scope: &[],
+                conversation_id: None,
+                tool_registry: Some(&registry),
+                cancel_token: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert!(result.content.contains("mcp__runtime__browser_snapshot"));
     }
 }

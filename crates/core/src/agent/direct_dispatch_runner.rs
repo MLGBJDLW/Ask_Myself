@@ -73,6 +73,7 @@ impl AgentExecutor {
                     db,
                     source_scope,
                     conversation_id,
+                    tool_registry: Some(&self.tools),
                     cancel_token: Some(&self.cancel_token),
                 },
             )

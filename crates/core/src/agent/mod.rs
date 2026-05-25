@@ -60,6 +60,7 @@ mod sampling;
 pub mod scratchpad;
 mod steering;
 mod stream_recovery;
+mod tool_discovery;
 mod tool_dispatch;
 mod tool_runtime;
 pub mod tool_scheduler;
