@@ -26,8 +26,10 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { rehypePlugins } from "../../components/chat/markdownComponents";
+import {
+  markdownRemarkPlugins,
+  rehypePlugins,
+} from "../../components/chat/markdownComponents";
 import { useTranslation } from "../../i18n";
 import { useTypewriter } from "../../lib/useTypewriter";
 import { hasTimeGap } from "../../lib/relativeTime";
@@ -656,7 +658,7 @@ export function ChatMessages({
     [],
   );
 
-  const remarkPlugins = useMemo(() => [remarkGfm], []);
+  const remarkPlugins = useMemo(() => markdownRemarkPlugins, []);
 
   const preprocessStreamingMarkdown = useCallback(
     (content: string) =>

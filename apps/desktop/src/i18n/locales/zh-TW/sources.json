@@ -75,7 +75,6 @@
   "presetAudio": "音訊",
   "presetJson": "JSON",
   "presetYaml": "YAML",
-  "presetCode": "程式碼",
   "presetLog": "日誌",
   "pathPlaceholder": "C:\\Users\\you\\notes  /  /home/user/notes",
   "addIncludePattern": "新增匹配模式...",

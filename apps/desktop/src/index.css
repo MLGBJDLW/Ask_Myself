@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "@fontsource-variable/inter";
+@import "katex/dist/katex.min.css";
 
 /* ── Default theme (Dark) — Tailwind class generation base ────────── */
 @theme {
@@ -277,6 +278,30 @@ body {
 
 .prose-chat > *:last-child {
   margin-bottom: 0;
+}
+
+.prose-chat .katex {
+  color: var(--color-text-primary);
+  font-size: 1.05em;
+  line-height: 1.35;
+}
+
+.prose-chat .katex-display {
+  margin: 0.85rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-surface-0) 72%, transparent);
+  padding: 0.7rem 0.85rem;
+}
+
+.prose-chat .katex-display > .katex {
+  max-width: 100%;
+}
+
+.prose-chat .katex-error {
+  color: var(--color-danger);
 }
 
 /* ── cmdk command palette ─────────────────────────────────────────── */

@@ -75,7 +75,6 @@
   "presetAudio": "Audio",
   "presetJson": "JSON",
   "presetYaml": "YAML",
-  "presetCode": "Code",
   "presetLog": "Journal",
   "pathPlaceholder": "C:\\Users\\you\\notes  /  /home/user/notes",
   "addIncludePattern": "Ajouter un motif...",

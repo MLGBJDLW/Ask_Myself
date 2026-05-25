@@ -2,7 +2,10 @@ import { createContext, useCallback, useContext, useEffect, useId, useState, typ
 import { Highlight, themes } from 'prism-react-renderer';
 import { Copy, Check, FileText, Paperclip, ExternalLink } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import rehypeRaw from 'rehype-raw';
+import rehypeKatex from 'rehype-katex';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { useTranslation } from '../../i18n';
 import { openFileInDefaultApp } from '../../lib/api';
@@ -457,6 +460,13 @@ function MermaidBlock({ chart }: { chart: string }) {
 export const sanitizeSchema = {
   ...defaultSchema,
   tagNames: [...(defaultSchema.tagNames || []), 'br', 'sub', 'sup', 'mark', 'kbd', 'abbr', 'details', 'summary'],
+  attributes: {
+    ...defaultSchema.attributes,
+    code: [
+      ...(defaultSchema.attributes?.code || []),
+      ['className', 'language-math', 'math-inline', 'math-display'],
+    ],
+  },
   protocols: {
     ...defaultSchema.protocols,
     href: [...(defaultSchema.protocols?.href || []), 'cite', 'doc', 'file', 'url'],
@@ -464,9 +474,17 @@ export const sanitizeSchema = {
   clobber: [],
 };
 
+/** Pre-built remark plugin list for ReactMarkdown */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const markdownRemarkPlugins: any[] = [remarkGfm, remarkMath];
+
 /** Pre-built rehype plugin list for ReactMarkdown */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const rehypePlugins: any[] = [rehypeRaw, [rehypeSanitize, sanitizeSchema]];
+export const rehypePlugins: any[] = [
+  rehypeRaw,
+  [rehypeSanitize, sanitizeSchema],
+  [rehypeKatex, { throwOnError: false, strict: 'warn', trust: false, output: 'html' }],
+];
 
 /** Shared markdown component map for ReactMarkdown */
 export const markdownComponents: Record<string, React.ComponentType<ComponentPropsWithoutRef<any>>> = {

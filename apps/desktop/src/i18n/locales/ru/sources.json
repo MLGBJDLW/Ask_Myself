@@ -75,7 +75,6 @@
   "presetAudio": "Аудио",
   "presetJson": "JSON",
   "presetYaml": "YAML",
-  "presetCode": "Код",
   "presetLog": "Журнал",
   "pathPlaceholder": "C:\\Users\\you\\notes  /  /home/user/notes",
   "addIncludePattern": "Добавить шаблон...",

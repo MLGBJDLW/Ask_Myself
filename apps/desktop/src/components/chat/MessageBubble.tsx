@@ -1,11 +1,16 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { rehypePlugins } from './markdownComponents';
 import { Check, CornerDownRight, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
-import { markdownComponents, preprocessFilePaths, preprocessCitations, CitationContext } from './markdownComponents';
+import {
+  CitationContext,
+  markdownComponents,
+  markdownRemarkPlugins,
+  preprocessCitations,
+  preprocessFilePaths,
+  rehypePlugins,
+} from './markdownComponents';
 import { extractChunkCitations, preprocessChunkCitations, preprocessInlineCitations } from '../../lib/citationParser';
 import type { CitationCardData } from '../../lib/citationParser';
 import { isWebUrl, sourceBasename, sourceHost } from '../../lib/sourceDisplay';
@@ -306,7 +311,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
               <div className="prose-chat">
                 <CitationContext.Provider value={citationLookup ?? { getCard: () => undefined }}>
                   <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
+                    remarkPlugins={markdownRemarkPlugins}
                     rehypePlugins={rehypePlugins}
                     components={markdownComponents}
                     urlTransform={(url) => url}

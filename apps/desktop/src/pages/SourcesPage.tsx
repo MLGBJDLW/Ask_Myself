@@ -108,7 +108,6 @@ const INCLUDE_PRESET_KEYS = [
   { labelKey: 'sources.presetAudio', value: '**/*.{mp3,wav,flac,ogg,aac,m4a,wma,opus}' },
   { labelKey: 'sources.presetJson', value: '**/*.json' },
   { labelKey: 'sources.presetYaml', value: '**/*.{yml,yaml}' },
-  { labelKey: 'sources.presetCode', value: '**/*.{ts,js,py,rs}' },
   { labelKey: 'sources.presetLog', value: '**/*.log' },
 ] as const;
 
