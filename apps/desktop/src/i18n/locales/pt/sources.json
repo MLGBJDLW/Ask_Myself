@@ -75,7 +75,6 @@
   "presetAudio": "Áudio",
   "presetJson": "JSON",
   "presetYaml": "YAML",
-  "presetCode": "Código",
   "presetLog": "Registro",
   "pathPlaceholder": "C:\\Users\\voce\\notas  /  /home/usuario/notas",
   "addIncludePattern": "Adicionar padrão...",

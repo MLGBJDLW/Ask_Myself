@@ -75,7 +75,6 @@
   "presetAudio": "オーディオ",
   "presetJson": "JSON",
   "presetYaml": "YAML",
-  "presetCode": "コード",
   "presetLog": "ログ",
   "pathPlaceholder": "C:\\Users\\you\\notes  /  /home/user/notes",
   "addIncludePattern": "パターンを追加...",

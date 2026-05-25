@@ -4,7 +4,7 @@ import { Network, Settings, PanelLeftClose, PanelLeftOpen, UserRound, X } from '
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
-import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard } from '../components/chat';
+import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, type ChatInputSendOptions } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
 import { ChatMessages } from '../features/chat';
 import { useApprovalQueue } from '../lib/useApprovalQueue';
@@ -151,7 +151,7 @@ export function ChatPage() {
   }, [chat.activeId, chat.setConversations, t]);
 
   const handleChatSend = useCallback(
-    async (content: string, attachments?: ImageAttachment[]) => {
+    async (content: string, attachments?: ImageAttachment[], inputOptions?: ChatInputSendOptions) => {
       const suggestedPersonaId =
         activePersonaId === 'default' ? suggestPersonaId(content, personas) : null;
       const personaForSend = suggestedPersonaId ?? activePersonaId;
@@ -162,18 +162,33 @@ export function ChatPage() {
       if (graphContext?.sourceId) {
         currentSourceIdsRef.current = [graphContext.sourceId];
       }
+      const userArtifacts =
+        graphContext && inputOptions?.userArtifacts
+          ? {
+              kind: 'chatSendContext',
+              graphContext,
+              slashCommand: inputOptions.userArtifacts,
+            }
+          : graphContext
+            ? {
+                kind: 'graphAgentContext',
+                graphContext,
+              }
+            : inputOptions?.userArtifacts;
       await chat.send(
         content,
         attachments,
         personaForSend,
-        graphContext
+        graphContext || inputOptions
           ? {
-              collectionContext: buildGraphCollectionContext(graphContext),
-              sourceIds: graphContext.sourceId ? [graphContext.sourceId] : [],
-              userArtifacts: {
-                kind: 'graphAgentContext',
-                graphContext,
-              },
+              ...(graphContext
+                ? {
+                    collectionContext: buildGraphCollectionContext(graphContext),
+                    sourceIds: graphContext.sourceId ? [graphContext.sourceId] : [],
+                  }
+                : {}),
+              skillIds: inputOptions?.skillIds,
+              userArtifacts: userArtifacts ?? null,
             }
           : undefined,
       );

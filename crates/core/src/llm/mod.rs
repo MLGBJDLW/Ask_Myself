@@ -437,6 +437,7 @@ where
 #[serde(rename_all = "camelCase")]
 pub enum ProviderType {
     OpenAi,
+    OpenRouter,
     Anthropic,
     Google,
     DeepSeek,
@@ -527,6 +528,11 @@ pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool 
         ProviderType::OpenAi | ProviderType::AzureOpenAi => {
             // Deny: older text-only models
             !(m.contains("gpt-3.5") || m.contains("text-davinci") || m.contains("text-embedding"))
+        }
+        ProviderType::OpenRouter => {
+            // OpenRouter serves a mixed catalog; prefer the shared catalog when
+            // known, otherwise allow modern multimodal families by default.
+            !(m.contains("text-embedding") || m.contains("embedding"))
         }
         ProviderType::Anthropic => {
             // Deny: pre-Claude-3 models

@@ -622,7 +622,7 @@ pub fn infer_tool_access_profile(
             false,
             false,
             ApprovalRisk::Low,
-            "Reads the built-in tool catalog to choose an appropriate tool.",
+            "Reads the enabled tool catalog and can activate hidden matches for later model steps.",
         ),
         _ => {
             return generic_access_profile(name, categories, capabilities);

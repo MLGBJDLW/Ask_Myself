@@ -336,6 +336,36 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_catalog_uses_openrouter_provider_type() {
+        let openrouter = find_provider_preset("openrouter", Some("https://openrouter.ai/api/v1"))
+            .expect("openrouter preset should match");
+        let ids = openrouter
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids.first(), Some(&"qwen/qwen3.7-max"));
+        assert!(ids.contains(&"x-ai/grok-build-0.1"));
+        assert!(ids.contains(&"anthropic/claude-sonnet-4.6"));
+        let codex = openrouter
+            .models
+            .iter()
+            .find(|model| model.id == "openai/gpt-5.3-codex")
+            .expect("OpenRouter should include duplicate native Codex model");
+        assert_eq!(codex.tag_key.as_deref(), Some("providers.tagCoding"));
+
+        assert_eq!(
+            model_supports_reasoning_from_catalog(ProviderType::OpenRouter, "x-ai/grok-4.3"),
+            Some(true)
+        );
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::OpenRouter, "qwen/qwen3.7-max"),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn provider_catalog_drives_vision_capabilities() {
         assert_eq!(
             model_supports_vision_from_catalog(ProviderType::OpenAi, "gpt-5.5"),

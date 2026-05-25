@@ -5,9 +5,14 @@ import { save as showSaveDialog } from '@tauri-apps/plugin-dialog';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { toast } from 'sonner';
 import {
+  Bot,
   Search,
   BookOpen,
+  BrainCircuit,
+  Database,
   FileText,
+  FileCode2,
+  FileSearch,
   List,
   ChevronDown,
   ChevronUp,
@@ -18,6 +23,7 @@ import {
   FolderOpen,
   Globe,
   Layers,
+  Network,
   PenLine,
   ClipboardList,
   ShieldCheck,
@@ -26,6 +32,9 @@ import {
   ExternalLink,
   Image as ImageIcon,
   Save,
+  Route,
+  ScrollText,
+  Sparkles,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
@@ -372,17 +381,19 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   search_sessions: BookOpen,
   search_by_date: Search,
   search: Search,
-  code_intelligence: Search,
-  grep_files: Search,
+  code_intelligence: FileCode2,
+  grep_files: FileSearch,
+  search_files: FileSearch,
   glob_files: FolderOpen,
   read_files: FileText,
   read_file: FileText,
   get_document_info: FileText,
+  database: Database,
   compare_documents: Layers,
   summarize_document: List,
   retrieve_evidence: BookOpen,
-  query_knowledge_graph: Layers,
-  get_related_concepts: Layers,
+  query_knowledge_graph: Network,
+  get_related_concepts: Network,
   list_documents: List,
   list_sources: BookOpen,
   compile_document: ClipboardList,
@@ -400,13 +411,20 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   web_research_context: Globe,
   fetch_url: Globe,
   download_asset: Download,
-  chunk_context: Layers,
+  chunk_context: Network,
   write_note: PenLine,
   update_plan: ClipboardList,
   record_verification: ShieldCheck,
   run_shell: Terminal,
+  shell_command: Terminal,
   generate_image: ImageIcon,
-  manage_skill: BookOpen,
+  manage_skill: BrainCircuit,
+  activate_skill: BrainCircuit,
+  spawn_subagent: Bot,
+  subagent: Bot,
+  route: Route,
+  memory: ScrollText,
+  model: Sparkles,
 };
 
 const TOOL_LABELS: Record<string, string> = {
@@ -454,6 +472,117 @@ const TOOL_LABELS: Record<string, string> = {
 
 const TOOL_LABEL_KEYS = Object.keys(TOOL_LABELS).sort((a, b) => b.length - a.length);
 const TOOL_LABEL_SUBSTRING_KEYS = TOOL_LABEL_KEYS.filter((key) => key !== 'file');
+
+type ToolTone = {
+  panel: string;
+  icon: string;
+  detailBorder: string;
+};
+
+const TOOL_TONES: Record<string, ToolTone> = {
+  search: {
+    panel: 'border-info/25 border-l-info/75 bg-info/5 hover:border-info/35 hover:bg-info/10',
+    icon: 'border-info/25 bg-info/10 text-info',
+    detailBorder: 'border-info/25',
+  },
+  evidence: {
+    panel: 'border-emerald-500/25 border-l-emerald-500/75 bg-emerald-500/5 hover:border-emerald-500/35 hover:bg-emerald-500/10',
+    icon: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400',
+    detailBorder: 'border-emerald-500/25',
+  },
+  code: {
+    panel: 'border-blue-500/25 border-l-blue-500/75 bg-blue-500/5 hover:border-blue-500/35 hover:bg-blue-500/10',
+    icon: 'border-blue-500/25 bg-blue-500/10 text-blue-400',
+    detailBorder: 'border-blue-500/25',
+  },
+  files: {
+    panel: 'border-slate-500/25 border-l-slate-500/75 bg-slate-500/5 hover:border-slate-500/35 hover:bg-slate-500/10',
+    icon: 'border-slate-500/25 bg-slate-500/10 text-slate-400',
+    detailBorder: 'border-slate-500/25',
+  },
+  edit: {
+    panel: 'border-teal-500/25 border-l-teal-500/75 bg-teal-500/5 hover:border-teal-500/35 hover:bg-teal-500/10',
+    icon: 'border-teal-500/25 bg-teal-500/10 text-teal-400',
+    detailBorder: 'border-teal-500/25',
+  },
+  graph: {
+    panel: 'border-violet-500/25 border-l-violet-500/75 bg-violet-500/5 hover:border-violet-500/35 hover:bg-violet-500/10',
+    icon: 'border-violet-500/25 bg-violet-500/10 text-violet-400',
+    detailBorder: 'border-violet-500/25',
+  },
+  web: {
+    panel: 'border-orange-500/25 border-l-orange-500/75 bg-orange-500/5 hover:border-orange-500/35 hover:bg-orange-500/10',
+    icon: 'border-orange-500/25 bg-orange-500/10 text-orange-400',
+    detailBorder: 'border-orange-500/25',
+  },
+  shell: {
+    panel: 'border-emerald-500/25 border-l-emerald-500/75 bg-emerald-500/5 hover:border-emerald-500/35 hover:bg-emerald-500/10',
+    icon: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400',
+    detailBorder: 'border-emerald-500/25',
+  },
+  image: {
+    panel: 'border-fuchsia-500/25 border-l-fuchsia-500/75 bg-fuchsia-500/5 hover:border-fuchsia-500/35 hover:bg-fuchsia-500/10',
+    icon: 'border-fuchsia-500/25 bg-fuchsia-500/10 text-fuchsia-400',
+    detailBorder: 'border-fuchsia-500/25',
+  },
+  skill: {
+    panel: 'border-purple-500/25 border-l-purple-500/75 bg-purple-500/5 hover:border-purple-500/35 hover:bg-purple-500/10',
+    icon: 'border-purple-500/25 bg-purple-500/10 text-purple-400',
+    detailBorder: 'border-purple-500/25',
+  },
+  plan: {
+    panel: 'border-amber-500/25 border-l-amber-500/75 bg-amber-500/5 hover:border-amber-500/35 hover:bg-amber-500/10',
+    icon: 'border-amber-500/25 bg-amber-500/10 text-amber-400',
+    detailBorder: 'border-amber-500/25',
+  },
+  verification: {
+    panel: 'border-success/25 border-l-success/75 bg-success/5 hover:border-success/35 hover:bg-success/10',
+    icon: 'border-success/25 bg-success/10 text-success',
+    detailBorder: 'border-success/25',
+  },
+  subagent: {
+    panel: 'border-cyan-500/25 border-l-cyan-500/75 bg-cyan-500/5 hover:border-cyan-500/35 hover:bg-cyan-500/10',
+    icon: 'border-cyan-500/25 bg-cyan-500/10 text-cyan-400',
+    detailBorder: 'border-cyan-500/25',
+  },
+  default: {
+    panel: 'border-border/45 border-l-border-hover bg-surface-0/35 hover:border-border/70 hover:bg-surface-0/55',
+    icon: 'border-border/45 bg-surface-1/65 text-text-tertiary',
+    detailBorder: 'border-border/35',
+  },
+};
+
+const TOOL_TONE_KEYS = Object.keys(TOOL_TONES).filter((key) => key !== 'default');
+
+function getToolTone(name?: string): ToolTone {
+  const lower = (name || '').toLowerCase();
+  if (lower.includes('knowledge_graph') || lower.includes('related_concepts') || lower.includes('chunk_context')) {
+    return TOOL_TONES.graph;
+  }
+  if (lower.includes('retrieve') || lower.includes('evidence') || lower.includes('document')) {
+    return TOOL_TONES.evidence;
+  }
+  if (lower.includes('code')) return TOOL_TONES.code;
+  if (lower.includes('grep') || lower.includes('glob') || lower.includes('read_file') || lower.includes('list_dir')) {
+    return TOOL_TONES.files;
+  }
+  if (lower.includes('edit') || lower.includes('patch') || lower.includes('write') || lower.includes('create_file')) {
+    return TOOL_TONES.edit;
+  }
+  if (lower.includes('web') || lower.includes('url') || lower.includes('download') || lower.includes('desktop')) {
+    return TOOL_TONES.web;
+  }
+  if (lower.includes('shell') || lower.includes('terminal') || lower.includes('command')) return TOOL_TONES.shell;
+  if (lower.includes('image')) return TOOL_TONES.image;
+  if (lower.includes('skill')) return TOOL_TONES.skill;
+  if (lower.includes('plan')) return TOOL_TONES.plan;
+  if (lower.includes('verification') || lower.includes('security') || lower.includes('approval')) {
+    return TOOL_TONES.verification;
+  }
+  if (lower.includes('subagent')) return TOOL_TONES.subagent;
+  const key = TOOL_TONE_KEYS.find((candidate) => lower.includes(candidate));
+  return key ? (TOOL_TONES[key] ?? TOOL_TONES.default) : TOOL_TONES.default;
+}
 
 function getToolIcon(name?: string) {
   const lower = (name || '').toLowerCase();
@@ -1415,16 +1544,13 @@ export function ToolCallCard({
     streamingArgsPreview,
   );
   const failedStatus = isUnsuccessfulToolCallStatus(status);
+  const toolTone = getToolTone(safeToolName);
   const traceToneClass = failedStatus
     ? 'border-danger/25 border-l-danger/75 bg-danger/10 hover:border-danger/35 hover:bg-danger/15'
-    : isPending
-      ? 'border-accent/25 border-l-accent/75 bg-surface-0/45 hover:border-accent/35 hover:bg-accent/10'
-      : 'border-border/45 border-l-border-hover bg-surface-0/35 hover:border-border/70 hover:bg-surface-0/55';
+    : toolTone.panel;
   const traceIconToneClass = failedStatus
     ? 'border-danger/25 bg-danger/10 text-danger'
-    : isPending
-      ? 'border-accent/25 bg-accent/10 text-accent'
-      : 'border-border/45 bg-surface-1/65 text-text-tertiary';
+    : toolTone.icon;
   const statusBadgeClass = failedStatus
     ? 'border-danger/25 bg-danger/10 text-danger'
     : isPending
@@ -1432,9 +1558,7 @@ export function ToolCallCard({
       : 'border-success/20 bg-success/10 text-success';
   const traceDetailBorderClass = failedStatus
     ? 'border-danger/25'
-    : isPending
-      ? 'border-accent/25'
-      : 'border-border/35';
+    : toolTone.detailBorder;
   const tracePreviewText = headerSummary;
 
   if (trace) {

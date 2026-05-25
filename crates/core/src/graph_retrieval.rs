@@ -472,7 +472,8 @@ fn escape_like(value: &str) -> String {
 }
 
 fn repeat_placeholders(count: usize) -> String {
-    std::iter::repeat_n("?", count)
+    std::iter::repeat("?")
+        .take(count)
         .collect::<Vec<_>>()
         .join(",")
 }

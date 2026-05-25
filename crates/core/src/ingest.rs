@@ -25,6 +25,24 @@ use crate::privacy::{self, PrivacyConfig};
 const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100 MB (text/docs)
 const MAX_VIDEO_FILE_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2 GB
 const MAX_AUDIO_FILE_SIZE: u64 = 500 * 1024 * 1024; // 500 MB
+const CODE_SOURCE_EXTENSIONS: &[&str] = &[
+    "astro", "bash", "bat", "c", "cc", "cjs", "clj", "cljs", "cmd", "cpp", "cs", "css", "cxx",
+    "dart", "erl", "ex", "exs", "fish", "fs", "fsx", "go", "gql", "graphql", "h", "hpp", "hrl",
+    "hxx", "java", "js", "jsx", "kt", "kts", "less", "lua", "mjs", "ml", "mli", "nim", "php",
+    "proto", "ps1", "py", "r", "rb", "rs", "sass", "scala", "scss", "sh", "sol", "sql", "svelte",
+    "swift", "ts", "tsx", "vue", "zig", "zsh",
+];
+const CODE_SOURCE_FILENAMES: &[&str] = &[
+    "build.gradle",
+    "cmakelists.txt",
+    "dockerfile",
+    "gemfile",
+    "justfile",
+    "makefile",
+    "podfile",
+    "rakefile",
+    "settings.gradle",
+];
 
 /// Configurable file-size limits for ingestion.
 #[derive(Debug, Clone, Copy)]
@@ -58,6 +76,23 @@ fn max_file_size_for_path(path: &Path, limits: &FileSizeLimits) -> u64 {
         Some("mp3" | "wav" | "flac" | "aac" | "ogg" | "wma" | "m4a" | "opus") => limits.max_audio,
         _ => limits.max_text,
     }
+}
+
+fn is_code_source_file(path: &Path) -> bool {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_ascii_lowercase());
+    if let Some(file_name) = file_name.as_deref() {
+        if CODE_SOURCE_FILENAMES.contains(&file_name) {
+            return true;
+        }
+    }
+
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| CODE_SOURCE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +297,16 @@ fn scan_source_inner(
             continue;
         }
 
+        if is_code_source_file(file_path) {
+            debug!(
+                "Skipping source code file for knowledge embedding: {}",
+                file_path.display()
+            );
+            result.files_skipped += 1;
+            files_processed += 1;
+            continue;
+        }
+
         result.files_scanned += 1;
         files_processed += 1;
 
@@ -354,7 +399,21 @@ fn scan_source_inner(
 
     // Purge stale documents: entries in the DB whose files no longer exist on disk.
     for (doc_path, (_doc_id, _hash)) in &existing_docs {
-        if !Path::new(doc_path).exists() {
+        let existing_path = Path::new(doc_path);
+        if is_code_source_file(existing_path) {
+            info!("Purging code document from knowledge source: {}", doc_path);
+            match db.delete_document_by_path(doc_path) {
+                Ok(true) => result.files_purged += 1,
+                Ok(false) => {
+                    debug!("Code document already removed: {}", doc_path);
+                }
+                Err(e) => {
+                    let msg = format!("Failed to purge code document {}: {}", doc_path, e);
+                    warn!("{}", msg);
+                    result.errors.push(msg);
+                }
+            }
+        } else if !existing_path.exists() {
             info!(
                 "Purging stale document (file removed from disk): {}",
                 doc_path
@@ -1124,6 +1183,16 @@ pub fn ingest_single_file(
         )));
     }
 
+    if is_code_source_file(path) {
+        debug!(
+            "Skipping source code file for knowledge embedding: {}",
+            path.display()
+        );
+        let path_str = path.to_string_lossy();
+        let _ = db.delete_document_by_path(path_str.as_ref())?;
+        return Ok(IngestFileResult::Unchanged);
+    }
+
     // Load file size limits from app config.
     let app_cfg = db.load_app_config().unwrap_or_default();
     let file_limits = FileSizeLimits {
@@ -1433,6 +1502,58 @@ mod tests {
 
         let result = scan_source(&db, &sid).unwrap();
         assert_eq!(result.files_scanned, 2, "log files should be excluded");
+    }
+
+    #[test]
+    fn test_scan_source_skips_code_files_for_embedding() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("notes.md"),
+            "# Notes\n\nMarkdown content with enough detail to produce a chunk for \
+             the knowledge index while source code files are ignored.",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::write(
+            tmp.path().join("src").join("app.ts"),
+            "export const answer = 42;\nconsole.log(answer);\n",
+        )
+        .unwrap();
+
+        let db = test_db();
+        let sid = create_test_source(&db, tmp.path(), vec![], vec![]);
+
+        let result = scan_source(&db, &sid).unwrap();
+        assert_eq!(
+            result.files_scanned, 1,
+            "only non-code files should be scanned"
+        );
+        assert_eq!(result.files_added, 1);
+        assert_eq!(result.files_skipped, 1);
+
+        let docs = db.get_document_paths_for_source(&sid).unwrap();
+        assert_eq!(docs.len(), 1);
+        assert!(docs.keys().any(|path| path.ends_with("notes.md")));
+        assert!(docs.keys().all(|path| !path.ends_with("app.ts")));
+    }
+
+    #[test]
+    fn test_code_include_glob_is_skipped_for_embedding() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("app.ts"),
+            "export function main() {\n  return 'not embedded';\n}\n",
+        )
+        .unwrap();
+
+        let db = test_db();
+        let sid = create_test_source(&db, tmp.path(), vec!["**/*.ts".to_string()], vec![]);
+
+        let result = scan_source(&db, &sid).unwrap();
+        assert_eq!(result.files_scanned, 0);
+        assert_eq!(result.files_added, 0);
+        assert_eq!(result.files_skipped, 1);
+        assert!(db.get_document_paths_for_source(&sid).unwrap().is_empty());
     }
 
     // ── Error handling ──────────────────────────────────────────────────

@@ -227,14 +227,6 @@ pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityD
         ToolCategory::Core,
         "core tools are always visible",
     );
-    activate_category(
-        &mut active_categories,
-        &mut log,
-        "category.always_mcp",
-        ToolCategory::Mcp,
-        "MCP tools are always visible",
-    );
-
     if has_signal(&signals, ToolVisibilitySignalKind::CodeOrToolOperation)
         || has_signal(&signals, ToolVisibilitySignalKind::FileOperation)
         || has_signal(&signals, ToolVisibilitySignalKind::FileWorkspace)
@@ -473,6 +465,7 @@ const QUESTION_TERMS: &[&str] = &[
     "analysis",
     "summarize",
     "compare",
+    "review",
     "分析",
     "总结",
     "为什么",
@@ -481,6 +474,11 @@ const QUESTION_TERMS: &[&str] = &[
     "哪些",
     "什么",
     "解释",
+    "帮我看",
+    "看一下",
+    "到底",
+    "还有哪些",
+    "还有多少",
 ];
 
 const CODE_OR_TOOL_TERMS: &[&str] = &[
@@ -500,7 +498,21 @@ const CODE_OR_TOOL_TERMS: &[&str] = &[
     "tool",
     "tools",
     "agent",
+    "agents",
     "subagent",
+    "claude",
+    "deepseek",
+    "top_agents",
+    "top agents",
+    "cli",
+    "ide",
+    "extension",
+    "eval",
+    "evaluation",
+    "benchmark",
+    "accuracy",
+    "hitrate",
+    "hit rate",
     "unavailable",
     "available",
     "fix",
@@ -521,6 +533,19 @@ const CODE_OR_TOOL_TERMS: &[&str] = &[
     "构建",
     "编译",
     "代码",
+    "代码细节",
+    "架构",
+    "架构设计",
+    "模型",
+    "路由",
+    "技能",
+    "命中",
+    "命中率",
+    "命中效率",
+    "准确率",
+    "召回率",
+    "评测",
+    "基准",
     "项目",
     "仓库",
     "主agent",
@@ -652,6 +677,8 @@ const KNOWLEDGE_TERMS: &[&str] = &[
     "saved",
     "bookmark",
     "skill",
+    "agent",
+    "agentic",
     "workflow",
     "compile",
     "compilation",
@@ -680,6 +707,13 @@ const KNOWLEDGE_TERMS: &[&str] = &[
     "健康",
     "归档",
     "概念",
+    "技能",
+    "命中",
+    "命中率",
+    "命中效率",
+    "准确率",
+    "评测",
+    "基准",
 ];
 
 const AUTOMATION_TERMS: &[&str] = &[
@@ -759,10 +793,7 @@ mod tests {
         });
 
         assert_eq!(decision.route, ToolVisibilityRouteKind::DirectResponse);
-        assert_eq!(
-            decision.active_categories,
-            vec![ToolCategory::Core, ToolCategory::Mcp]
-        );
+        assert_eq!(decision.active_categories, vec![ToolCategory::Core]);
     }
 
     #[test]
@@ -784,5 +815,26 @@ mod tests {
             .signals
             .iter()
             .any(|signal| { signal.kind == ToolVisibilitySignalKind::CollectionContext }));
+    }
+
+    #[test]
+    fn chinese_agent_hit_rate_query_selects_codebase_route() {
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "使用 DeepSeek 的情况下命中效率只有 85%，参考 Claude 顶级 agents 看看架构设计和代码细节。",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert_eq!(decision.route, ToolVisibilityRouteKind::CodebaseOperation);
+        assert!(decision
+            .active_categories
+            .contains(&ToolCategory::FileSystem));
+        assert!(decision.signals.iter().any(|signal| {
+            signal.kind == ToolVisibilitySignalKind::CodeOrToolOperation
+                && signal
+                    .matched_terms
+                    .iter()
+                    .any(|term| term == "deepseek" || term == "命中效率")
+        }));
     }
 }

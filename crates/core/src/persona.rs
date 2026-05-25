@@ -4,6 +4,7 @@ use crate::db::Database;
 use crate::error::CoreError;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,7 +72,7 @@ pub fn builtin_personas() -> Vec<PersonaProfile> {
             "Default",
             "Balanced workspace assistant for general reasoning, writing, research, and execution.",
             "",
-            &[],
+            &["builtin-evidence-first", "builtin-visual-explanations"],
         ),
         builtin_profile(
             "novelist",
@@ -120,6 +121,18 @@ pub fn builtin_persona_by_id(id: &str) -> Option<PersonaProfile> {
 
 pub fn is_builtin_persona_id(id: &str) -> bool {
     builtin_persona_by_id(id).is_some()
+}
+
+fn apply_builtin_skill_overrides(
+    mut builtin: PersonaProfile,
+    overrides: Option<&PersonaProfile>,
+) -> PersonaProfile {
+    if let Some(overrides) = overrides {
+        builtin.default_skill_ids = overrides.default_skill_ids.clone();
+        builtin.created_at = overrides.created_at.clone();
+        builtin.updated_at = overrides.updated_at.clone();
+    }
+    builtin
 }
 
 fn normalize_default_skill_ids(ids: &[String]) -> Vec<String> {
@@ -204,8 +217,25 @@ fn persona_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonaProfile>
 }
 
 pub fn list_personas(db: &Database) -> Result<Vec<PersonaProfile>, CoreError> {
-    let mut out = builtin_personas();
-    out.extend(db.list_user_personas()?);
+    let user_personas = db.list_user_personas()?;
+    let overrides = user_personas
+        .iter()
+        .filter(|persona| is_builtin_persona_id(&persona.id))
+        .map(|persona| (persona.id.clone(), persona))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut out = builtin_personas()
+        .into_iter()
+        .map(|persona| {
+            let override_row = overrides.get(&persona.id).copied();
+            apply_builtin_skill_overrides(persona, override_row)
+        })
+        .collect::<Vec<_>>();
+    out.extend(
+        user_personas
+            .into_iter()
+            .filter(|persona| !is_builtin_persona_id(&persona.id)),
+    );
     Ok(out)
 }
 
@@ -215,7 +245,11 @@ pub fn persona_by_id(db: &Database, id: &str) -> Result<Option<PersonaProfile>, 
         return Ok(None);
     }
     if let Some(builtin) = builtin_persona_by_id(id) {
-        return Ok(Some(builtin));
+        let override_row = db.get_user_persona(id)?;
+        return Ok(Some(apply_builtin_skill_overrides(
+            builtin,
+            override_row.as_ref(),
+        )));
     }
     db.get_user_persona(id)
 }
@@ -254,13 +288,33 @@ impl Database {
     }
 
     pub fn save_persona(&self, input: &SavePersonaInput) -> Result<PersonaProfile, CoreError> {
-        let input = normalize_persona_input(input)?;
-        if input.id.as_deref().is_some_and(is_builtin_persona_id) {
-            return Err(CoreError::InvalidInput(
-                "Built-in personas are read-only".into(),
-            ));
+        if let Some(builtin_id) = input.id.as_deref().filter(|id| is_builtin_persona_id(id)) {
+            let builtin = builtin_persona_by_id(builtin_id)
+                .ok_or_else(|| CoreError::NotFound(format!("Persona {builtin_id}")))?;
+            let skill_ids = normalize_default_skill_ids(&input.default_skill_ids);
+            let skill_ids_json = serialize_default_skill_ids(&skill_ids)?;
+            let conn = self.conn();
+            conn.execute(
+                "INSERT INTO personas
+                    (id, name, description, instructions, enabled, default_skill_ids_json)
+                 VALUES (?1, ?2, ?3, ?4, 1, ?5)
+                 ON CONFLICT(id) DO UPDATE SET
+                    default_skill_ids_json = excluded.default_skill_ids_json,
+                    updated_at = datetime('now')",
+                rusqlite::params![
+                    builtin_id,
+                    &builtin.name,
+                    &builtin.description,
+                    &builtin.instructions,
+                    &skill_ids_json
+                ],
+            )?;
+            drop(conn);
+            return persona_by_id(self, builtin_id)?
+                .ok_or_else(|| CoreError::NotFound(format!("Persona {builtin_id}")));
         }
 
+        let input = normalize_persona_input(input)?;
         let skill_ids_json = serialize_default_skill_ids(&input.default_skill_ids)?;
         let conn = self.conn();
         let id = match &input.id {
@@ -366,7 +420,13 @@ mod tests {
     fn test_builtin_personas_are_listed() {
         let db = Database::open_memory().unwrap();
         let personas = list_personas(&db).unwrap();
-        assert!(personas.iter().any(|p| p.id == "default" && p.builtin));
+        assert!(personas.iter().any(|p| {
+            p.id == "default"
+                && p.builtin
+                && p.default_skill_ids
+                    .iter()
+                    .any(|id| id == "builtin-evidence-first")
+        }));
         assert!(personas.iter().any(|p| p.id == "researcher" && p.builtin));
         assert!(personas.iter().any(|p| {
             p.id == "novelist"
@@ -418,18 +478,33 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_personas_are_read_only() {
+    fn test_builtin_persona_skill_bindings_can_be_overridden() {
         let db = Database::open_memory().unwrap();
-        let err = db
+        let saved = db
             .save_persona(&SavePersonaInput {
                 id: Some("researcher".into()),
                 name: "Changed".into(),
                 description: String::new(),
                 instructions: "Do something else.".into(),
                 enabled: true,
-                default_skill_ids: Vec::new(),
+                default_skill_ids: vec!["builtin-visual-explanations".into()],
             })
-            .unwrap_err();
-        assert!(err.to_string().contains("read-only"));
+            .unwrap();
+
+        assert!(saved.builtin);
+        assert_eq!(saved.name, "Researcher");
+        assert!(saved.instructions.contains("source critic"));
+        assert_eq!(saved.default_skill_ids, vec!["builtin-visual-explanations"]);
+
+        let personas = list_personas(&db).unwrap();
+        let researcher = personas
+            .into_iter()
+            .find(|persona| persona.id == "researcher")
+            .unwrap();
+        assert!(researcher.builtin);
+        assert_eq!(
+            researcher.default_skill_ids,
+            vec!["builtin-visual-explanations"]
+        );
     }
 }

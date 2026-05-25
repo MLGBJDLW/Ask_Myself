@@ -8,6 +8,7 @@ import {
   X,
   CheckCircle,
   BrainCircuit,
+  Search,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/Button";
@@ -25,6 +26,7 @@ import {
   getReasoningCapability,
   type ReasoningCapability,
   type ReasoningEffortLevel,
+  type ProviderModelPreset,
   type ProviderPreset,
 } from "../../lib/providerPresets";
 import {
@@ -49,6 +51,7 @@ interface AgentConfigFormProps {
 
 const PROVIDER_LABEL_KEYS: { value: ProviderType; labelKey: string }[] = [
   { value: "open_ai", labelKey: "settings.providerOpenAI" },
+  { value: "openrouter", labelKey: "settings.providerOpenRouter" },
   { value: "anthropic", labelKey: "settings.providerAnthropic" },
   { value: "google", labelKey: "settings.providerGoogleGemini" },
   { value: "deep_seek", labelKey: "settings.providerDeepSeek" },
@@ -66,6 +69,7 @@ const PROVIDER_LABEL_KEYS: { value: ProviderType; labelKey: string }[] = [
 
 const BASE_URL_PLACEHOLDERS: Record<ProviderType, string> = {
   open_ai: "https://api.openai.com/v1",
+  openrouter: "https://openrouter.ai/api/v1",
   anthropic: "https://api.anthropic.com/v1",
   google: "https://generativelanguage.googleapis.com/v1beta",
   deep_seek: "https://api.deepseek.com",
@@ -82,6 +86,7 @@ const BASE_URL_PLACEHOLDERS: Record<ProviderType, string> = {
 };
 
 const LOCAL_PROVIDERS: ProviderType[] = ["ollama", "lm_studio"];
+const MODEL_SEARCH_THRESHOLD = 20;
 
 const REASONING_EFFORT_LABEL_KEYS: Record<
   ReasoningEffortLevel,
@@ -98,6 +103,11 @@ const REASONING_EFFORT_LABEL_KEYS: Record<
 
 function normalizeBaseUrl(value: string | null | undefined): string {
   return (value ?? "").trim().replace(/\/+$/, "");
+}
+
+function modelNamespace(modelId: string): string {
+  const raw = modelId.split("/")[0] ?? "";
+  return raw.replace(/^~+/, "").replace(/[-_]/g, " ");
 }
 
 function defaultReasoningEffort(
@@ -246,6 +256,7 @@ export function AgentConfigForm({
     message: string;
   } | null>(null);
   const [useCustomModel, setUseCustomModel] = useState(initialUsesCustomModel);
+  const [modelSearch, setModelSearch] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(!!config);
   const initialDraftRef = useRef<SaveAgentConfigInput>({
     id: config?.id ?? null,
@@ -286,6 +297,33 @@ export function AgentConfigForm({
     activePreset?.models.find((m) => m.recommended)?.id ||
     activePreset?.models[0]?.id ||
     "";
+  const selectedPresetModel =
+    activePreset?.models.find((candidate) => candidate.id === model) ?? null;
+  const usesSearchableModelPicker =
+    (activePreset?.models.length ?? 0) > MODEL_SEARCH_THRESHOLD;
+  const filteredPresetModels = useMemo(() => {
+    if (!activePreset) {
+      return [];
+    }
+    const needle = modelSearch.trim().toLowerCase();
+    if (!needle) {
+      return activePreset.models;
+    }
+
+    return activePreset.models.filter((candidate) => {
+      const tagLabel = candidate.tagKey
+        ? t(candidate.tagKey as TranslationKey)
+        : "";
+      return [
+        candidate.name,
+        candidate.id,
+        modelNamespace(candidate.id),
+        tagLabel,
+      ]
+        .filter(Boolean)
+        .some((part) => part.toLowerCase().includes(needle));
+    });
+  }, [activePreset, modelSearch, t]);
   const reasoningCapability = useMemo(
     () => getReasoningCapability({ provider, baseUrl, model }),
     [provider, baseUrl, model],
@@ -442,6 +480,7 @@ export function AgentConfigForm({
     }
 
     setContextWindow(null);
+    setModelSearch("");
     previousProviderRef.current = provider;
   }, [baseUrl, provider, preset, useCustomModel]);
 
@@ -755,26 +794,100 @@ export function AgentConfigForm({
       {/* Model */}
       {activePreset && activePreset.models.length > 0 && !useCustomModel ? (
         <div className="space-y-2">
-          <label className="text-sm font-medium text-text-primary">
-            {t("settings.defaultModel")}
-          </label>
-          <select
-            value={model}
-            onChange={(e) => {
-              setModel(e.target.value);
-              setContextWindow(null);
-            }}
-            className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
-          >
-            {activePreset.models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.tagKey
-                  ? `${m.name} (${t(m.tagKey as TranslationKey)})`
-                  : m.name}
-                {m.recommended ? " ★" : ""}
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center justify-between gap-3">
+            <label className="text-sm font-medium text-text-primary">
+              {t("settings.defaultModel")}
+            </label>
+            {usesSearchableModelPicker && (
+              <span className="text-xs text-text-tertiary">
+                {filteredPresetModels.length}/{activePreset.models.length}
+              </span>
+            )}
+          </div>
+          {usesSearchableModelPicker ? (
+            <div className="space-y-2">
+              <Input
+                value={modelSearch}
+                onChange={(e) => setModelSearch(e.target.value)}
+                placeholder={t("settings.modelSearchPlaceholder")}
+                icon={<Search size={15} />}
+              />
+              <div className="max-h-72 overflow-y-auto rounded-md border border-border bg-surface-1">
+                {filteredPresetModels.length === 0 ? (
+                  <div className="px-3 py-6 text-center text-sm text-text-tertiary">
+                    {t("settings.modelSearchNoResults")}
+                  </div>
+                ) : (
+                  filteredPresetModels.map((m: ProviderModelPreset) => {
+                    const selected = m.id === model;
+                    const tag = m.tagKey
+                      ? t(m.tagKey as TranslationKey)
+                      : null;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() => {
+                          setModel(m.id);
+                          setContextWindow(null);
+                        }}
+                        className={`flex w-full items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5 text-left transition-colors last:border-b-0 ${
+                          selected
+                            ? "bg-accent/10 text-text-primary"
+                            : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+                        }`}
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium">
+                            {m.name}
+                          </span>
+                          <span className="block truncate text-xs text-text-tertiary">
+                            {m.id}
+                          </span>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          {tag && (
+                            <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-text-secondary">
+                              {tag}
+                            </span>
+                          )}
+                          {m.recommended && (
+                            <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-white">
+                              ★
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+              {selectedPresetModel && (
+                <p className="truncate text-xs text-text-tertiary">
+                  {selectedPresetModel.id}
+                </p>
+              )}
+            </div>
+          ) : (
+            <select
+              value={model}
+              onChange={(e) => {
+                setModel(e.target.value);
+                setContextWindow(null);
+              }}
+              className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
+            >
+              {activePreset.models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.tagKey
+                    ? `${m.name} (${t(m.tagKey as TranslationKey)})`
+                    : m.name}
+                  {m.recommended ? " ★" : ""}
+                </option>
+              ))}
+            </select>
+          )}
           <button
             type="button"
             onClick={() => setUseCustomModel(true)}
@@ -797,6 +910,8 @@ export function AgentConfigForm({
             placeholder={
               provider === "open_ai"
                 ? "gpt-5.5"
+                : provider === "openrouter"
+                  ? "qwen/qwen3.7-max"
                 : provider === "anthropic"
                   ? "claude-sonnet-4-6"
                   : provider === "google"

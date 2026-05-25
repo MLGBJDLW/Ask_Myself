@@ -427,6 +427,7 @@ export interface ImageGenerationConfig {
 
 export type ProviderType =
   | 'open_ai'
+  | 'openrouter'
   | 'anthropic'
   | 'google'
   | 'deep_seek'

@@ -1,7 +1,10 @@
 import { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { markdownComponents, rehypePlugins } from '../chat/markdownComponents';
+import {
+  markdownComponents,
+  markdownRemarkPlugins,
+  rehypePlugins,
+} from '../chat/markdownComponents';
 import { useTranslation } from '../../i18n';
 
 /**
@@ -24,8 +27,6 @@ interface ParsedSkillDoc {
   frontmatter: SkillFrontmatter | null;
   body: string;
 }
-
-const REMARK_PLUGINS = [remarkGfm];
 
 /**
  * Split a full SKILL.md-style string into frontmatter and body. If the input
@@ -208,7 +209,7 @@ export function SkillMarkdownPreview({
       {body.trim() ? (
         <div className="prose prose-sm prose-invert max-w-none text-text-primary">
           <ReactMarkdown
-            remarkPlugins={REMARK_PLUGINS}
+            remarkPlugins={markdownRemarkPlugins}
             rehypePlugins={rehypePlugins}
             components={markdownComponents}
           >

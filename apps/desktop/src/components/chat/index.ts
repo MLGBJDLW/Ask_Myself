@@ -1,6 +1,6 @@
 export { ChatSidebar } from './ChatSidebar';
 export { ChatMessages } from './ChatMessages';
-export { ChatInput } from './ChatInput';
+export { ChatInput, type ChatInputSendOptions } from './ChatInput';
 export { ToolCallCard } from './ToolCallCard';
 export { ThinkingBlock } from './ThinkingBlock';
 export { SourceSelector } from './SourceSelector';

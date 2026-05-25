@@ -12,7 +12,6 @@ import { useNavigate } from 'react-router-dom';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
 import {
   BotMessageSquare,
@@ -44,7 +43,11 @@ import {
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
 import { useResizablePanel } from '../../lib/useResizablePanel';
-import { markdownComponents, rehypePlugins } from '../../components/chat/markdownComponents';
+import {
+  markdownComponents,
+  markdownRemarkPlugins,
+  rehypePlugins,
+} from '../../components/chat/markdownComponents';
 import { FilePreviewContext } from './filePreviewContext';
 
 type PreviewMode = 'preview' | 'text' | 'edit' | 'split';
@@ -53,7 +56,6 @@ const INSTANT_TRANSITION = { duration: 0 };
 const FILE_PREVIEW_WIDTH_KEY = 'file-preview-panel-width';
 const FILE_PREVIEW_MIN_WIDTH = 560;
 const FILE_PREVIEW_MAX_WIDTH = 1180;
-const REMARK_PLUGINS = [remarkGfm];
 const MAX_AGENT_SELECTION_CHARS = 24_000;
 
 type TextSelectionState = {
@@ -439,7 +441,7 @@ function MarkdownPreview({ content }: { content: string }) {
   return (
     <div className="prose prose-sm prose-invert max-w-none px-5 py-4 text-text-primary">
       <ReactMarkdown
-        remarkPlugins={REMARK_PLUGINS}
+        remarkPlugins={markdownRemarkPlugins}
         rehypePlugins={rehypePlugins}
         components={markdownComponents}
       >

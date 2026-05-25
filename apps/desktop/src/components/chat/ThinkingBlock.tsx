@@ -2,9 +2,9 @@ import { useState, useRef, useEffect, useLayoutEffect, type ComponentPropsWithou
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ChevronRight, Brain } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useTranslation } from '../../i18n';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
+import { markdownRemarkPlugins, rehypePlugins } from './markdownComponents';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -234,7 +234,11 @@ export function ThinkingBlock({
                       <div key={secIdx}>
                         {secIdx > 0 && <div className="my-1.5 border-t border-border/20" />}
                         {sec.text && (
-                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={thinkingMarkdownComponents}>
+                          <ReactMarkdown
+                            remarkPlugins={markdownRemarkPlugins}
+                            rehypePlugins={rehypePlugins}
+                            components={thinkingMarkdownComponents}
+                          >
                             {sec.text}
                           </ReactMarkdown>
                         )}
@@ -243,7 +247,11 @@ export function ThinkingBlock({
                       </div>
                     ))
                   ) : (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={thinkingMarkdownComponents}>
+                    <ReactMarkdown
+                      remarkPlugins={markdownRemarkPlugins}
+                      rehypePlugins={rehypePlugins}
+                      components={thinkingMarkdownComponents}
+                    >
                       {content}
                     </ReactMarkdown>
                   )}

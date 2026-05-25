@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import {
   AlertTriangle,
   CheckCircle,
@@ -11,13 +10,15 @@ import {
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { useUpdater } from '../../lib/useUpdater';
-import { markdownComponents, rehypePlugins } from '../chat/markdownComponents';
+import {
+  markdownComponents,
+  markdownRemarkPlugins,
+  rehypePlugins,
+} from '../chat/markdownComponents';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 
 type UpdaterState = ReturnType<typeof useUpdater>;
-
-const UPDATE_NOTES_REMARK_PLUGINS = [remarkGfm];
 
 function formatUpdateTimestamp(value: string | undefined, locale: string): string {
   if (!value) return '';
@@ -196,7 +197,7 @@ export function UpdateSettingsPanel({ appVersion, updater }: UpdateSettingsPanel
           </summary>
           <div className="mt-2 max-h-72 overflow-auto rounded-md border border-border/60 bg-surface-1/70 px-3 py-2 text-xs leading-relaxed text-text-secondary">
             <ReactMarkdown
-              remarkPlugins={UPDATE_NOTES_REMARK_PLUGINS}
+              remarkPlugins={markdownRemarkPlugins}
               rehypePlugins={rehypePlugins}
               components={markdownComponents}
             >

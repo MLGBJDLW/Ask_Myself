@@ -12,7 +12,7 @@ pub(super) struct ToolDispatchContext<'a> {
     pub(super) privacy_cfg: &'a privacy::PrivacyConfig,
     pub(super) route_kind: AgentRouteKind,
     pub(super) iteration: u32,
-    pub(super) tool_defs: &'a [ToolDefinition],
+    pub(super) tool_defs: &'a mut Vec<ToolDefinition>,
     pub(super) messages: &'a mut Vec<Message>,
     pub(super) persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
     pub(super) task_plan: &'a mut AgentTaskPlan,
@@ -439,6 +439,7 @@ impl AgentExecutor {
                                     db,
                                     source_scope,
                                     conversation_id,
+                                    tool_registry: Some(&self.tools),
                                     cancel_token: Some(&self.cancel_token),
                                 },
                             );
@@ -647,6 +648,31 @@ impl AgentExecutor {
                         ),
                     })
                     .await;
+
+                if !tool_is_error && tc.name == "tool_search" {
+                    let activation = tool_discovery::activate_tool_search_matches(
+                        &self.tools,
+                        tool_defs,
+                        tool_artifacts.as_ref(),
+                    );
+                    if activation.has_changes() {
+                        let content = format!(
+                            "Activated {} deferred tool(s): {}",
+                            activation.activated.len(),
+                            activation.activated.join(", ")
+                        );
+                        append_persisted_trace_status(persisted_trace_items, &content, "muted");
+                        if let Some(ref mut t) = trace {
+                            t.tools_offered = tool_defs.len() as u32;
+                        }
+                        let _ = tx
+                            .send(AgentEvent::Status {
+                                content,
+                                tone: Some("muted".to_string()),
+                            })
+                            .await;
+                    }
+                }
 
                 // Redact tool output before adding to context.
                 let content = if privacy_cfg.enabled {

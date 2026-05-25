@@ -399,6 +399,7 @@ export interface ChatSendOptions {
   collectionContext?: Conversation['collectionContext'];
   sourceIds?: string[];
   userArtifacts?: ArtifactPayload | null;
+  skillIds?: string[];
 }
 
 export interface UseChatSessionReturn {
@@ -1259,7 +1260,14 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       pendingStreamConversationRef.current = convId;
       streamingConversationRef.current = convId;
 
-      await streamSend(convId, content, attachments, configForSend.id, personaForSend);
+      await streamSend(
+        convId,
+        content,
+        attachments,
+        configForSend.id,
+        personaForSend,
+        options?.skillIds,
+      );
     },
     [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, isStreaming, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
   );

@@ -10,7 +10,8 @@
     "outDir": "target/streaming-contracts"
   },
   "include": [
-    "tests/streaming-contracts.test.ts",
+    "tests/**/*.test.ts",
+    "src/lib/slashCommands.ts",
     "src/lib/streaming/**/*.ts",
     "src/types/**/*.ts"
   ]

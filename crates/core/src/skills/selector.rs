@@ -25,6 +25,51 @@ pub(crate) fn normalize_text(text: &str) -> String {
 
 fn token_aliases(token: &str) -> &'static [&'static str] {
     match token {
+        "debug" | "diagnose" | "diagnostics" | "troubleshoot" | "failure" | "error" | "broken"
+        | "regression" => &[
+            "diagnose",
+            "debug",
+            "troubleshoot",
+            "failure",
+            "error",
+            "regression",
+        ],
+        "agent" | "agents" | "claude" | "deepseek" | "eval" | "evaluation" | "benchmark"
+        | "accuracy" | "hitrate" | "hit" | "routing" | "router" => &[
+            "agent",
+            "routing",
+            "router",
+            "tool",
+            "tools",
+            "evaluation",
+            "benchmark",
+            "quality",
+            "diagnose",
+        ],
+        "frontend" | "ui" | "ux" | "interface" | "layout" | "style" | "styles" | "css"
+        | "visual" | "color" | "colour" | "button" | "theme" => &[
+            "frontend",
+            "ui",
+            "ux",
+            "interface",
+            "layout",
+            "style",
+            "visual",
+            "design",
+            "color",
+        ],
+        "refactor" | "refactoring" | "architecture" | "architectural" | "cleanup"
+        | "maintainability" => &[
+            "refactor",
+            "refactoring",
+            "architecture",
+            "cleanup",
+            "maintainability",
+            "code",
+        ],
+        "tdd" | "test" | "tests" | "testing" | "coverage" => {
+            &["tdd", "test", "tests", "testing", "coverage"]
+        }
         "diagram" | "diagramming" | "draw" | "flow" | "flowchart" | "visualize" | "visualise"
         | "mermaid" | "workflow" => &["diagram", "flowchart", "visual", "workflow", "mermaid"],
         "slide" | "slides" | "deck" | "presentation" | "ppt" | "pptx" => {
@@ -36,6 +81,90 @@ fn token_aliases(token: &str) -> &'static [&'static str] {
         }
         "cite" | "citation" | "citations" | "source" | "sources" | "evidence" => {
             &["cite", "citation", "source", "evidence"]
+        }
+        _ if token.contains("诊断")
+            || token.contains("排查")
+            || token.contains("调试")
+            || token.contains("报错")
+            || token.contains("失败")
+            || token.contains("不工作")
+            || token.contains("回归") =>
+        {
+            &[
+                "diagnose",
+                "debug",
+                "troubleshoot",
+                "failure",
+                "error",
+                "regression",
+            ]
+        }
+        _ if token.contains("命中")
+            || token.contains("准确率")
+            || token.contains("召回率")
+            || token.contains("评测")
+            || token.contains("基准")
+            || token.contains("路由")
+            || token.contains("工具选择")
+            || token.contains("claude")
+            || token.contains("deepseek")
+            || token.contains("智能体") =>
+        {
+            &[
+                "agent",
+                "routing",
+                "router",
+                "tool",
+                "tools",
+                "evaluation",
+                "benchmark",
+                "quality",
+                "diagnose",
+            ]
+        }
+        _ if token.contains("界面")
+            || token.contains("前端")
+            || token.contains("样式")
+            || token.contains("视觉")
+            || token.contains("布局")
+            || token.contains("颜色")
+            || token.contains("按钮")
+            || token.contains("主题")
+            || token.contains("颜表情") =>
+        {
+            &[
+                "frontend",
+                "ui",
+                "ux",
+                "interface",
+                "layout",
+                "style",
+                "visual",
+                "design",
+                "color",
+            ]
+        }
+        _ if token.contains("重构")
+            || token.contains("架构")
+            || token.contains("代码细节")
+            || token.contains("清理")
+            || token.contains("维护性") =>
+        {
+            &[
+                "refactor",
+                "refactoring",
+                "architecture",
+                "cleanup",
+                "maintainability",
+                "code",
+            ]
+        }
+        _ if token.contains("测试")
+            || token.contains("覆盖率")
+            || token.contains("测试驱动")
+            || token.contains("先写测试") =>
+        {
+            &["tdd", "test", "tests", "testing", "coverage"]
         }
         _ if token.contains("小说")
             || token.contains("网文")
@@ -407,4 +536,86 @@ pub fn get_available_skills_for_query_with_pinned(
         query,
         pinned_skill_ids,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skills::{
+        SkillDependencies, SkillInterfaceMetadata, SkillPolicy, SkillResourceFile,
+        SkillResourceInfo,
+    };
+
+    fn test_skill(id: &str, name: &str, description: &str) -> Skill {
+        Skill {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            content: format!("# {name}\n{description}"),
+            enabled: true,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            builtin: true,
+            interface: SkillInterfaceMetadata::default(),
+            dependencies: SkillDependencies::default(),
+            policy: SkillPolicy::default(),
+            source_path: None,
+            resources: Vec::<SkillResourceInfo>::new(),
+            resource_bundle: Vec::<SkillResourceFile>::new(),
+        }
+    }
+
+    #[test]
+    fn chinese_agent_hit_rate_query_selects_agent_quality_skill() {
+        let skills = vec![
+            test_skill(
+                "agent-quality",
+                "agent-quality",
+                "Diagnose agent routing, tool selection, evaluation benchmarks, and quality misses.",
+            ),
+            test_skill(
+                "office-document-design",
+                "office-document-design",
+                "Create polished documents, slides, and spreadsheets.",
+            ),
+        ];
+
+        let selected = select_skills_from_pool(
+            skills,
+            "使用 DeepSeek 的情况下命中效率只有 85%，参考 Claude 顶级 agents 看看路由和工具选择。",
+            2,
+        );
+
+        assert_eq!(
+            selected.first().map(|skill| skill.id.as_str()),
+            Some("agent-quality")
+        );
+    }
+
+    #[test]
+    fn chinese_frontend_style_query_selects_frontend_skill() {
+        let skills = vec![
+            test_skill(
+                "frontend-design",
+                "frontend-design",
+                "Improve frontend UI, visual design, layout, styling, color, and interaction polish.",
+            ),
+            test_skill(
+                "research-synthesis",
+                "research-synthesis",
+                "Synthesize sources into evidence-backed research notes.",
+            ),
+        ];
+
+        let selected = select_skills_from_pool(
+            skills,
+            "颜表情被同色的底盖住了，界面样式需要改成透明背景。",
+            2,
+        );
+
+        assert_eq!(
+            selected.first().map(|skill| skill.id.as_str()),
+            Some("frontend-design")
+        );
+    }
 }

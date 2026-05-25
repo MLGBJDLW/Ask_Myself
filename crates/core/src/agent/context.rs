@@ -518,8 +518,7 @@ fn system_prompt_char_budget(effective_context_tokens: u32, reserved_for_respons
     }
     let available_chars = available_tokens.saturating_mul(CHARS_PER_TOKEN_ESTIMATE);
     let target = (available_chars / SYSTEM_PROMPT_CONTEXT_FRACTION)
-        .max(MIN_SYSTEM_PROMPT_CHARS)
-        .min(MAX_SYSTEM_PROMPT_CHARS);
+        .clamp(MIN_SYSTEM_PROMPT_CHARS, MAX_SYSTEM_PROMPT_CHARS);
     target.min(available_chars)
 }
 
@@ -527,8 +526,7 @@ fn skill_prompt_char_budget(context_window_tokens: u32, system_prompt_budget: us
     let one_percent_context_chars =
         (context_window_tokens as usize).saturating_mul(CHARS_PER_TOKEN_ESTIMATE) / 100;
     one_percent_context_chars
-        .max(MIN_SKILL_PROMPT_CHARS)
-        .min(MAX_SKILL_PROMPT_CHARS)
+        .clamp(MIN_SKILL_PROMPT_CHARS, MAX_SKILL_PROMPT_CHARS)
         .min(system_prompt_budget / 2)
 }
 

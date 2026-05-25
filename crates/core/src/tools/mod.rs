@@ -304,6 +304,7 @@ pub struct ToolExecutionContext<'a> {
     pub db: &'a Database,
     pub source_scope: &'a [String],
     pub conversation_id: Option<&'a str>,
+    pub tool_registry: Option<&'a ToolRegistry>,
     pub cancel_token: Option<&'a tokio_util::sync::CancellationToken>,
 }
 
@@ -787,8 +788,9 @@ impl ToolRegistry {
 
     /// Select tool definitions using the shared typed visibility policy.
     ///
-    /// Core and MCP tools are always included. Other categories come from
+    /// Core tools are always included. Other categories come from
     /// [`ToolVisibilityDecision`], the same decision object used by routing.
+    /// Runtime MCP tools can be discovered lazily through `tool_search`.
     ///
     /// Dynamic visibility is an opt-in prompt compaction mode. The main agent
     /// should normally receive the full registry; this selector exists for
@@ -977,8 +979,46 @@ pub fn default_tool_registry() -> ToolRegistry {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+
     use super::*;
     use crate::approval::ApprovalRisk;
+
+    struct RuntimeMcpOnlyTool;
+
+    #[async_trait]
+    impl Tool for RuntimeMcpOnlyTool {
+        fn name(&self) -> &str {
+            "mcp__runtime__expensive_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Runtime MCP tool that should be discovered lazily."
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+
+        fn categories(&self) -> &'static [ToolCategory] {
+            &[ToolCategory::Mcp]
+        }
+
+        async fn execute(
+            &self,
+            call_id: &str,
+            _arguments: &str,
+            _db: &Database,
+            _source_scope: &[String],
+        ) -> Result<ToolResult, CoreError> {
+            Ok(ToolResult {
+                call_id: call_id.to_string(),
+                content: "ok".to_string(),
+                is_error: false,
+                artifacts: None,
+            })
+        }
+    }
 
     #[test]
     fn select_tools_includes_knowledge_for_collection_queries() {
@@ -1056,6 +1096,20 @@ mod tests {
         let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
 
         assert!(names.iter().any(|name| name == "manage_persona"));
+    }
+
+    #[test]
+    fn select_tools_defers_mcp_tools_for_direct_turns() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(tool_search_tool::ToolSearchTool));
+        registry.register(Box::new(RuntimeMcpOnlyTool));
+        let defs = registry.select_tools("Say hello briefly.", false);
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "tool_search"));
+        assert!(!names
+            .iter()
+            .any(|name| name == "mcp__runtime__expensive_tool"));
     }
 
     #[test]

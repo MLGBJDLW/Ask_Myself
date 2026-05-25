@@ -1,0 +1,253 @@
+import { expect, test } from '@playwright/test';
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    const testLocale = new URLSearchParams(window.location.search).get('locale') ?? 'en';
+    localStorage.setItem('nexa-locale', testLocale);
+
+    const nowIso = new Date().toISOString();
+    const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    const agentChatCalls: Array<Record<string, unknown>> = [];
+
+    const conversation = {
+      id: 'conv-slash',
+      title: 'Slash commands',
+      provider: 'open_ai',
+      model: 'gpt-4.1',
+      systemPrompt: '',
+      collectionContext: null,
+      projectId: null,
+      personaId: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    const defaultAgentConfig = {
+      id: 'cfg-slash',
+      name: 'Slash Config',
+      provider: 'open_ai',
+      apiKey: '',
+      baseUrl: null,
+      model: 'gpt-4.1',
+      temperature: 0.3,
+      maxTokens: 4096,
+      contextWindow: 1047576,
+      isDefault: true,
+      reasoningEnabled: null,
+      thinkingBudget: null,
+      reasoningEffort: null,
+      maxIterations: null,
+      summarizationModel: null,
+      summarizationProvider: null,
+      subagentAllowedTools: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    const frontendSkill = {
+      id: 'builtin-frontend-design',
+      name: 'frontend-design',
+      description: 'Create distinctive production-grade frontend interfaces.',
+      content: 'Use this skill when building web UI.',
+      enabled: true,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      builtin: true,
+      interface: {
+        displayName: 'Frontend Design',
+        shortDescription: 'Design and implement refined UI.',
+        defaultPrompt: 'Use frontend-design for this UI task.\n\nTask:\n{{input}}',
+      },
+      dependencies: { tools: [] },
+      policy: { allowImplicitInvocation: true },
+      sourcePath: null,
+      resources: [],
+    };
+
+    const callbackMap = new Map<number, (event: unknown) => void>();
+    const listeners = new Map<number, { event: string; handlerId: number }>();
+    let callbackSeq = 1;
+    let listenerSeq = 1;
+
+    const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
+      switch (cmd) {
+        case 'plugin:event|listen': {
+          const listenerId = listenerSeq++;
+          listeners.set(listenerId, {
+            event: String(args.event ?? ''),
+            handlerId: Number(args.handler ?? 0),
+          });
+          return listenerId;
+        }
+        case 'plugin:event|unlisten':
+          listeners.delete(Number(args.eventId ?? 0));
+          return null;
+        case 'agent_chat_cmd':
+          agentChatCalls.push(clone(args));
+          return null;
+        case 'list_workflow_templates_cmd':
+          return [];
+        case 'list_builtin_skills_cmd':
+          return [clone(frontendSkill)];
+        case 'list_skills_cmd':
+          return [];
+        case 'list_agent_configs_cmd':
+          return [clone(defaultAgentConfig)];
+        case 'get_model_context_window':
+          return 1047576;
+        case 'get_wizard_state_cmd':
+          return { completed: true, language: 'en', aiProvider: 'open_ai', sourceAdded: true };
+        case 'list_conversations_cmd':
+          return [clone(conversation)];
+        case 'get_conversation_cmd':
+          return [clone(conversation), []];
+        case 'get_conversation_turns_cmd':
+        case 'get_agent_task_runs_cmd':
+        case 'list_sources':
+        case 'get_conversation_sources_cmd':
+        case 'list_checkpoints_cmd':
+        case 'list_mcp_servers_cmd':
+        case 'list_projects_cmd':
+        case 'list_personas_cmd':
+          return [];
+        case 'get_index_stats':
+          return { totalDocuments: 0, totalChunks: 0, ftsRows: 0 };
+        case 'get_privacy_config':
+          return { enabled: false, excludePatterns: [], redactPatterns: [] };
+        case 'get_embedder_config_cmd':
+          return {
+            provider: 'tfidf',
+            apiKey: '',
+            apiBaseUrl: '',
+            apiModel: '',
+            localModel: '',
+            modelPath: '',
+            vectorDimensions: 384,
+          };
+        case 'get_ocr_config_cmd':
+          return {
+            enabled: false,
+            minConfidence: 0.5,
+            llmFallback: false,
+            detectionLimit: 2048,
+            useCls: false,
+          };
+        case 'check_ocr_models_cmd':
+          return false;
+        default:
+          return null;
+      }
+    };
+
+    (window as unknown as { __slashAgentChatCalls__: Array<Record<string, unknown>> }).__slashAgentChatCalls__ = agentChatCalls;
+    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
+      invoke,
+      transformCallback: (callback: (event: unknown) => void) => {
+        const id = callbackSeq++;
+        callbackMap.set(id, callback);
+        return id;
+      },
+      unregisterCallback: (id: number) => {
+        callbackMap.delete(id);
+      },
+      convertFileSrc: (filePath: string) => filePath,
+    };
+    (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+      unregisterListener: (_event: string, eventId: number) => {
+        listeners.delete(eventId);
+      },
+    };
+  });
+});
+
+test('slash command menu can pin a skill for the next send', async ({ page }) => {
+  await page.goto('/chat/conv-slash');
+
+  const textarea = page.getByTestId('chat-input-textarea');
+  await textarea.fill('/front');
+
+  const menu = page.getByTestId('slash-command-menu');
+  await expect(menu).toBeVisible();
+  await expect(menu).toContainText('/frontend-design');
+
+  await page.keyboard.press('Enter');
+  await expect(textarea).toHaveValue('/frontend-design ');
+
+  await textarea.fill('/frontend-design build a dense dashboard');
+  await page.getByTestId('chat-send').click();
+
+  await expect.poll(
+    () => page.evaluate(() =>
+      (window as unknown as { __slashAgentChatCalls__: Array<Record<string, unknown>> })
+        .__slashAgentChatCalls__[0]?.skillIds,
+    ),
+  ).toEqual(['builtin-frontend-design']);
+  await expect.poll(
+    () => page.evaluate(() =>
+      String((window as unknown as { __slashAgentChatCalls__: Array<Record<string, unknown>> })
+        .__slashAgentChatCalls__[0]?.message ?? ''),
+    ),
+  ).toContain('Use frontend-design for this UI task.');
+  await expect.poll(
+    () => page.evaluate(() =>
+      String((window as unknown as { __slashAgentChatCalls__: Array<Record<string, unknown>> })
+        .__slashAgentChatCalls__[0]?.message ?? ''),
+    ),
+  ).toContain('build a dense dashboard');
+});
+
+test('slash command tabs filter the second-level option list', async ({ page }) => {
+  await page.goto('/chat/conv-slash');
+
+  const textarea = page.getByTestId('chat-input-textarea');
+  await textarea.fill('/');
+
+  const menu = page.getByTestId('slash-command-menu');
+  await expect(menu).toBeVisible();
+  await expect(page.getByTestId('slash-command-tab-all')).toHaveAttribute('aria-selected', 'true');
+
+  await page.getByTestId('slash-command-tab-skill').click();
+  await expect(page.getByTestId('slash-command-tab-skill')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByTestId('slash-command-option-frontend-design')).toBeVisible();
+  await expect(page.getByTestId('slash-command-option-plan')).toHaveCount(0);
+
+  await page.getByTestId('slash-command-tab-command').click();
+  await expect(page.getByTestId('slash-command-option-plan')).toHaveCount(1);
+  await expect(page.getByTestId('slash-command-option-frontend-design')).toHaveCount(0);
+});
+
+test('slash command keyboard selection scrolls with the active row', async ({ page }) => {
+  await page.goto('/chat/conv-slash');
+
+  const textarea = page.getByTestId('chat-input-textarea');
+  await textarea.fill('/');
+
+  const list = page.getByTestId('slash-command-list');
+  await expect(list).toBeVisible();
+
+  for (let i = 0; i < 13; i += 1) {
+    await page.keyboard.press('ArrowDown');
+  }
+
+  await expect.poll(async () => page.evaluate(() => {
+    const listEl = document.querySelector('[data-testid=\"slash-command-list\"]');
+    const activeEl = document.querySelector('[data-testid=\"slash-command-list\"] [aria-selected=\"true\"]');
+    if (!listEl || !activeEl) return false;
+    const listRect = listEl.getBoundingClientRect();
+    const activeRect = activeEl.getBoundingClientRect();
+    return activeRect.top >= listRect.top - 1 && activeRect.bottom <= listRect.bottom + 1;
+  })).toBe(true);
+});
+
+test('slash command menu uses localized chrome and built-in command labels', async ({ page }) => {
+  await page.goto('/chat/conv-slash?locale=zh-CN');
+
+  const textarea = page.getByTestId('chat-input-textarea');
+  await textarea.fill('/plan');
+
+  const menu = page.getByTestId('slash-command-menu');
+  await expect(menu).toBeVisible();
+  await expect(menu).toContainText('斜杠命令');
+  await expect(menu).toContainText('规划');
+  await expect(menu).toContainText('将目标拆成有范围的实现计划');
+});

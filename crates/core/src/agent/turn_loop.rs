@@ -659,7 +659,7 @@ impl AgentExecutor {
                     privacy_cfg: &privacy_cfg,
                     route_kind: route_plan.kind,
                     iteration,
-                    tool_defs: &tool_defs,
+                    tool_defs: &mut tool_defs,
                     messages: &mut messages,
                     persisted_trace_items: &mut persisted_trace_items,
                     task_plan: &mut task_plan,

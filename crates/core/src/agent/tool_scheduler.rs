@@ -50,7 +50,7 @@ impl ToolSchedulerPolicy {
             Some(ToolResult {
                     call_id: call.id.clone(),
                     content: format!(
-                        "Tool '{}' is not available in the current tool policy for this turn. Use an offered tool or ask the user to change the request scope.",
+                        "Tool '{}' is hidden by dynamic tool visibility for this model step. Call tool_search with the capability you need; matching hidden tools will be available on the next model step, then retry.",
                         call.name
                     ),
                     is_error: true,
@@ -337,7 +337,10 @@ mod tests {
             arguments: "{}".to_string(),
             thought_signature: None,
         });
-        assert!(decision.synthetic_result.unwrap().is_error);
+        let synthetic_result = decision.synthetic_result.unwrap();
+        assert!(synthetic_result.is_error);
+        assert!(synthetic_result.content.contains("tool_search"));
+        assert!(synthetic_result.content.contains("next model step"));
         assert_eq!(decision.policy_label, "blockedByToolVisibility");
     }
 

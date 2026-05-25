@@ -44,6 +44,8 @@ struct SseDelta {
     reasoning: Option<serde_json::Value>,
     #[serde(default, alias = "reasoningDelta", alias = "reasoning_delta")]
     reasoning_delta: Option<serde_json::Value>,
+    #[serde(default, alias = "reasoningDetails", alias = "reasoning_details")]
+    reasoning_details: Option<serde_json::Value>,
     #[serde(default, alias = "thinkingContent", alias = "thinking_content")]
     thinking: Option<serde_json::Value>,
     #[serde(default, alias = "reasoningText", alias = "reasoning_text")]
@@ -164,8 +166,12 @@ fn json_value_to_text(value: &serde_json::Value) -> Option<String> {
                 "reasoningText",
                 "reasoning_delta",
                 "reasoningDelta",
+                "reasoning_details",
+                "reasoningDetails",
                 "reasoning_content_delta",
                 "reasoningContentDelta",
+                "summary_text",
+                "summaryText",
                 "delta",
                 "text_delta",
                 "textDelta",
@@ -194,6 +200,7 @@ fn extract_reasoning_delta(delta: &SseDelta) -> Option<String> {
         delta.reasoning_content_delta.as_ref(),
         delta.reasoning.as_ref(),
         delta.reasoning_delta.as_ref(),
+        delta.reasoning_details.as_ref(),
         delta.thinking.as_ref(),
         delta.reasoning_text.as_ref(),
     ]
@@ -580,12 +587,12 @@ async fn collect_or_dispatch_sse_line(
     };
 
     let trimmed = data.trim_start();
-    if !event_data_lines.is_empty() && (trimmed.starts_with('{') || trimmed == "[DONE]") {
-        if process_sse_event_data_lines(event_data_lines, tx, in_think_block, think_tag_buffer)
+    if !event_data_lines.is_empty()
+        && (trimmed.starts_with('{') || trimmed == "[DONE]")
+        && process_sse_event_data_lines(event_data_lines, tx, in_think_block, think_tag_buffer)
             .await?
-        {
-            return Ok(true);
-        }
+    {
+        return Ok(true);
     }
 
     event_data_lines.push(data.to_string());
@@ -743,6 +750,24 @@ mod tests {
         assert_eq!(
             extract_reasoning_from_choice(&choice).as_deref(),
             Some("partial reasoning")
+        );
+    }
+
+    #[test]
+    fn extracts_reasoning_from_openrouter_reasoning_details() {
+        let choice: SseChoice = serde_json::from_value(serde_json::json!({
+            "delta": {
+                "reasoning_details": [
+                    { "type": "reasoning.text", "text": "first " },
+                    { "type": "reasoning.summary", "summary_text": "second" }
+                ]
+            }
+        }))
+        .expect("deserialize choice");
+
+        assert_eq!(
+            extract_reasoning_from_choice(&choice).as_deref(),
+            Some("first second")
         );
     }
 

@@ -15,6 +15,7 @@ pub async fn agent_chat_cmd(
     attachments: Option<Vec<ImageAttachment>>,
     agent_config_id: Option<String>,
     persona_id: Option<String>,
+    skill_ids: Option<Vec<String>>,
 ) -> Result<(), String> {
     // 1. Load the conversation first so provider/model selection follows the
     // active chat, not whatever global default happened to be selected later.
@@ -203,13 +204,22 @@ pub async fn agent_chat_cmd(
         .as_ref()
         .map(|persona| persona.default_skill_ids.clone())
         .unwrap_or_default();
-    let selected_skills = if persona_default_skill_ids.is_empty() {
+    let mut pinned_skill_ids = persona_default_skill_ids;
+    if let Some(explicit_skill_ids) = skill_ids {
+        for id in explicit_skill_ids {
+            let trimmed = id.trim();
+            if !trimmed.is_empty() && !pinned_skill_ids.iter().any(|existing| existing == trimmed) {
+                pinned_skill_ids.push(trimmed.to_string());
+            }
+        }
+    }
+    let selected_skills = if pinned_skill_ids.is_empty() {
         nexa_core::skills::get_available_skills_for_query(&state.db, &message)
     } else {
         nexa_core::skills::get_available_skills_for_query_with_pinned(
             &state.db,
             &message,
-            &persona_default_skill_ids,
+            &pinned_skill_ids,
         )
     }
     .unwrap_or_else(|err| {
@@ -219,14 +229,15 @@ pub async fn agent_chat_cmd(
         );
         Vec::new()
     });
-    let auto_loaded_skills = if persona_default_skill_ids.is_empty() {
-        nexa_core::skills::get_active_skills_for_query(&state.db, &message, 3)
+    let max_loaded_skills = 3usize.max(pinned_skill_ids.len());
+    let auto_loaded_skills = if pinned_skill_ids.is_empty() {
+        nexa_core::skills::get_active_skills_for_query(&state.db, &message, max_loaded_skills)
     } else {
         nexa_core::skills::get_active_skills_for_query_with_pinned(
             &state.db,
             &message,
-            3,
-            &persona_default_skill_ids,
+            max_loaded_skills,
+            &pinned_skill_ids,
         )
     }
     .unwrap_or_else(|err| {

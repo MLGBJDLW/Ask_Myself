@@ -54,6 +54,7 @@ export function ProvidersSettingsTab({
   const { t } = useTranslation();
   const providerLabels: Record<string, string> = {
     open_ai: t('settings.providerOpenAI'),
+    openrouter: t('settings.providerOpenRouter'),
     anthropic: t('settings.providerAnthropic'),
     google: t('settings.providerGoogle'),
     deep_seek: t('settings.providerDeepSeek'),

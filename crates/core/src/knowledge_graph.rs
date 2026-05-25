@@ -536,7 +536,7 @@ fn scoped_path_patterns(source_root: Option<&str>, path_prefix: Option<&str>) ->
 }
 
 fn path_prefix_variants(prefix: &str) -> Vec<String> {
-    let normalized = prefix.trim_matches(|c| c == '/' || c == '\\');
+    let normalized = prefix.trim_matches(['/', '\\']);
     let slash = normalized.replace('\\', "/");
     let backslash = slash.replace('/', "\\");
     let mut variants = vec![slash, backslash];
@@ -547,7 +547,7 @@ fn path_prefix_variants(prefix: &str) -> Vec<String> {
 }
 
 fn push_like_pattern(patterns: &mut Vec<String>, value: &str) {
-    let trimmed = value.trim_end_matches(|c| c == '/' || c == '\\');
+    let trimmed = value.trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
         return;
     }

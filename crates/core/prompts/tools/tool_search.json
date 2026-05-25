@@ -1,6 +1,6 @@
 {
   "name": "tool_search",
-  "description": "Search the built-in tool catalog by name and description. Use this when you are unsure which local tool fits a task, or when a user asks what tools are available. This searches built-in tools only; enabled MCP tools are listed in the tool access map and may appear with mcp__server__tool names.",
+  "description": "Search the enabled built-in and MCP tool catalog by name and description. Use this when the right tool is hidden by dynamic visibility or when you are unsure which local tool fits a task. Matching hidden tools are activated for the next model step; disabled MCP servers are not discoverable until connected.",
   "parameters": {
     "type": "object",
     "properties": {
