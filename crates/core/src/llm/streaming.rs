@@ -587,12 +587,12 @@ async fn collect_or_dispatch_sse_line(
     };
 
     let trimmed = data.trim_start();
-    if !event_data_lines.is_empty() && (trimmed.starts_with('{') || trimmed == "[DONE]") {
-        if process_sse_event_data_lines(event_data_lines, tx, in_think_block, think_tag_buffer)
+    if !event_data_lines.is_empty()
+        && (trimmed.starts_with('{') || trimmed == "[DONE]")
+        && process_sse_event_data_lines(event_data_lines, tx, in_think_block, think_tag_buffer)
             .await?
-        {
-            return Ok(true);
-        }
+    {
+        return Ok(true);
     }
 
     event_data_lines.push(data.to_string());
