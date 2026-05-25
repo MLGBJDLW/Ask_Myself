@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.8.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.6...nexa-monorepo-v0.8.0) (2026-05-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* add slash command palette
+
+### Features
+
+* add slash command palette ([859974c](https://github.com/MLGBJDLW/Nexa/commit/859974c0e83ab8bd7f54cf71767e03bea970e95e))
+* **agent:** add deferred tool discovery ([28cd8fc](https://github.com/MLGBJDLW/Nexa/commit/28cd8fc8d8b8f1c1acdc838ef546197cc8fbd667))
+* **chat:** support latex and richer badges ([0e67235](https://github.com/MLGBJDLW/Nexa/commit/0e672356d715ba8ef8ae064bade99fa24ae9619c))
+* **settings:** add OpenRouter and persona skill controls ([635a1bd](https://github.com/MLGBJDLW/Nexa/commit/635a1bd0c9621656631fafc957455fa0bd3ce95e))
+
+
+### Bug Fixes
+
+* satisfy CI clippy lints ([4d31649](https://github.com/MLGBJDLW/Nexa/commit/4d31649da19706deab5f372378e212ffe4bb3ef9))
+
 ## [0.7.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.5...nexa-monorepo-v0.7.6) (2026-05-24)
 
 
