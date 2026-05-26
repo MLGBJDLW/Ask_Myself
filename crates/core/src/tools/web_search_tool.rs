@@ -1530,8 +1530,13 @@ async fn execute_search_request(
         }
 
         let mut wave = FuturesUnordered::new();
-        for index in next_index..wave_end {
-            let item = provider_plan[index].clone();
+        for (index, item) in provider_plan
+            .iter()
+            .enumerate()
+            .take(wave_end)
+            .skip(next_index)
+        {
+            let item = item.clone();
             let entry = SearchPlanEntry {
                 index,
                 engine: engine_for_plan_item(&item),
