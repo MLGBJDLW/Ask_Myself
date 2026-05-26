@@ -291,6 +291,7 @@ mod tests {
             capability: "Document generation and analysis".to_string(),
             description: "test".to_string(),
             built_in: true,
+            ecosystem_surface: crate::ecosystem::EcosystemSurfaceKind::CapabilityPackage,
             tools: vec!["prepare_document_tools".to_string()],
             settings_surfaces: vec!["office-runtime".to_string()],
             workflows: vec!["generate-presentation".to_string()],

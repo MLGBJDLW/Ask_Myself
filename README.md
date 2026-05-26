@@ -32,6 +32,7 @@ See the living docs:
 - [docs/ROADMAP.md](docs/ROADMAP.md)
 - [docs/UX_QUALITY_BAR.md](docs/UX_QUALITY_BAR.md)
 - [docs/I18N_GUIDELINES.md](docs/I18N_GUIDELINES.md)
+- [docs/ECOSYSTEM_ARCHITECTURE.md](docs/ECOSYSTEM_ARCHITECTURE.md)
 - [docs/README.md](docs/README.md)
 
 ## Core Workflow
@@ -106,6 +107,30 @@ Collections (historically called Playbooks in the code) are curated evidence wor
 - Source exclusion rules
 - No telemetry pipeline in the product itself
 
+### Ecosystem and Extensions
+
+Nexa separates extension surfaces by risk and purpose instead of treating every
+external touchpoint as a plugin:
+
+- Capability packages describe coherent built-in or installable abilities with
+  `capability.yaml`.
+- MCP connectors are the first external lane for service and tool integration.
+- Skill packages share reusable agent methods, references, scripts, and assets.
+- Workflow packages define user-facing task templates.
+- Adapters sit behind stable provider interfaces for models, search, image, and
+  document runtimes.
+- Native plugins are reserved for future isolated code, hook, or UI extensions
+  when safer surfaces are not enough.
+
+See:
+
+- [docs/ECOSYSTEM_ARCHITECTURE.md](docs/ECOSYSTEM_ARCHITECTURE.md)
+- [docs/CAPABILITY_PACKAGES.md](docs/CAPABILITY_PACKAGES.md)
+- [docs/MCP_CONNECTORS.md](docs/MCP_CONNECTORS.md)
+- [docs/SKILL_PACKAGES.md](docs/SKILL_PACKAGES.md)
+- [docs/WORKFLOW_PACKAGES.md](docs/WORKFLOW_PACKAGES.md)
+- [docs/PROTOCOL_EXITS.md](docs/PROTOCOL_EXITS.md)
+
 ## Current Architectural Highlights
 
 - Structured conversation context:
@@ -138,9 +163,9 @@ Collections (historically called Playbooks in the code) are curated evidence wor
 | Routing | React Router 7 |
 | Build tooling | Vite 6, Cargo |
 
-## Built-in Agent Tools
+## Built-In Agent Tools
 
-The default registry currently exposes two dozen built-in tools, including:
+The default registry currently exposes 50+ built-in tools, including:
 
 - Search tools
 - Collection management tools
@@ -150,7 +175,7 @@ The default registry currently exposes two dozen built-in tools, including:
 - Comparison and summarization tools
 - Source management tools
 - Statistics and verification tools
-- MCP-backed tools
+- MCP connector tools exposed by enabled connectors
 
 See [docs/TOOLS.md](docs/TOOLS.md) for the tool reference.
 
@@ -208,14 +233,20 @@ cargo build -p nexa-core --features video
 ## Repository Layout
 
 ```text
-self-reply/
+Nexa/
 |- crates/
 |  |- core/
 |     |- src/
 |        |- agent/            # Agent execution and routing
 |        |- conversation/     # Conversations, turns, checkpoints
 |        |- llm/              # Provider adapters
+|        |- mcp/              # MCP connector client/runtime
+|        |- skills/           # Skill packages, scanner, importer, selector
 |        |- tools/            # Built-in agent tools
+|        |- capability_package.rs
+|        |- ecosystem.rs
+|        |- protocol_exports.rs
+|        |- workflow_catalog.rs
 |        |- search.rs         # Hybrid retrieval
 |        |- embed.rs          # Embeddings
 |        |- parse.rs          # Parsing and chunking

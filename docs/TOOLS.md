@@ -8,7 +8,7 @@ Nexa ships with built-in tools that the AI agent calls autonomously during conve
 
 ### `tool_search`
 
-Search the built-in tool catalog by name and description. Use this when the appropriate local tool is unclear. This does not discover disabled MCP servers.
+Search the built-in tool catalog by name and description. Use this when the appropriate local tool is unclear. This does not discover disabled MCP connectors.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -141,7 +141,7 @@ When adding or changing tools, optimize for model-call correctness rather than d
 - Attach trust metadata when returning retrieved, external, or mixed-authority content.
 - Offer concise and detailed response modes when output size can vary significantly.
 - Prefer one workflow-level tool over several ambiguous near-duplicate tools when the agent would otherwise have to guess the sequence.
-- Every registered tool must expose a `ToolCapabilityDescriptor` through the registry. Treat it as the Nexa capability package manifest for the invocation: plugin package, UI render kind, runtime scheduling capabilities, resource keys, access category, read/write/execute/network capability, approval need, risk level, and risk reason. Settings, approval UI, scheduling, and stream projection should read this descriptor instead of maintaining separate name-based tables.
+- Every registered tool must expose a `ToolCapabilityDescriptor` through the registry. Treat it as the Nexa capability package manifest for the invocation: ecosystem surface, UI render kind, runtime scheduling capabilities, resource keys, access category, read/write/execute/network capability, approval need, risk level, and risk reason. Settings, approval UI, scheduling, and stream projection should read this descriptor instead of maintaining separate name-based tables.
 - Object-shaped tool schemas automatically include `wait_for_previous`. The model can set it to `true` when a tool call depends on files, artifacts, or command output from an earlier tool call in the same turn; the scheduler will start a new execution batch before that call.
 - Approval policy is target-aware. Shell commands are keyed by command prefix, file tools by resolved file resource, network tools by host, and MCP tools by server/tool identity. Use the target-aware policy APIs for new approval flows; legacy per-tool policies remain as a fallback only.
 - Tool results can expose separate output channels through `ToolOutput`: `llm_content` for the next model call, `display_content` for the UI, `data` for structured payloads, `artifacts` for auxiliary JSON, and `attachments` for rich outputs. Existing `ToolResult.content` remains the display fallback for older tools.

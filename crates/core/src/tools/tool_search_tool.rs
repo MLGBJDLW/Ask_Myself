@@ -123,7 +123,7 @@ impl ToolSearchTool {
             content.push_str(&format!("\n- {}: {}", item.name, item.description));
         }
         if matches.is_empty() {
-            content.push_str("\nNo enabled tool matched. Disabled MCP servers are not discoverable until they are connected.");
+            content.push_str("\nNo enabled tool matched. Disabled MCP connectors are not discoverable until they are connected.");
         }
 
         Ok(ToolResult {
@@ -188,7 +188,7 @@ mod tests {
         }
 
         fn description(&self) -> &str {
-            "Captures browser snapshot data from a connected runtime MCP server."
+            "Captures browser snapshot data from a connected runtime MCP connector."
         }
 
         fn parameters_schema(&self) -> serde_json::Value {

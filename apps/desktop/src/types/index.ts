@@ -56,6 +56,7 @@ export type {
   ApprovalRequest,
   ApprovalRisk,
   ApprovalDecisionValue,
+  EcosystemSurfaceKind,
   ToolPluginInfo,
   PluginManifest,
   PluginProviderCatalog,

@@ -525,6 +525,16 @@ export interface ToolPluginInfo {
   description: string;
 }
 
+export type EcosystemSurfaceKind =
+  | 'core_platform'
+  | 'capability_package'
+  | 'connector'
+  | 'skill_package'
+  | 'workflow_package'
+  | 'adapter'
+  | 'host_surface'
+  | 'native_plugin';
+
 export interface PluginProviderCatalog {
   id: string;
   label: string;
@@ -561,6 +571,7 @@ export interface PluginRuntimeCheck {
 
 export interface PluginManifest extends ToolPluginInfo {
   builtIn: boolean;
+  ecosystemSurface: EcosystemSurfaceKind;
   tools: string[];
   settingsSurfaces: string[];
   workflows: string[];
