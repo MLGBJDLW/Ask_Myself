@@ -6,14 +6,14 @@
     "properties": {
       "query": {
         "type": "string",
-        "description": "One focused, natural-language search query. Avoid keyword/operator stacks; use a second call only for a genuinely separate angle."
+        "description": "One focused, natural-language search query. Avoid keyword/operator stacks; use parallel or follow-up calls only for genuinely distinct angles, sites, jurisdictions, time windows, or competing hypotheses."
       },
       "limit": {
         "type": "integer",
         "minimum": 1,
         "maximum": 20,
         "default": 8,
-        "description": "Maximum normalized results to return."
+        "description": "Maximum normalized results to return. Use 10-15 for broad exploration or research scouting, and the default for precise lookups."
       },
       "region": {
         "type": "string",

@@ -579,7 +579,7 @@ Search the public web through Nexa's native no-key providers plus any enabled co
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | yes | One focused, natural-language search query |
-| `limit` | integer | no | Max normalized results, 1-20 (default 8) |
+| `limit` | integer | no | Max normalized results, 1-20 (default 8; use 10-15 for broad exploration) |
 | `region` | string | no | `auto`, `mainland_cn`, or `global` |
 | `language` | string | no | `auto`, `zh`, or `en` |
 | `engines` | string[] | no | Optional built-in fallback subset of `baidu`, `sogou`, `google`, `bing`, `duckduckgo`; does not override configured provider priority |
@@ -589,6 +589,7 @@ Search the public web through Nexa's native no-key providers plus any enabled co
 
 Language routing:
 - Chinese queries use Baidu first by default, then Sogou/Bing only when needed.
+- Provider calls are bounded and may run in small parallel waves; configured custom providers still respect the selected provider priority and fallback mode.
 - English queries use Google first by default, then DuckDuckGo/Bing only when needed.
 - Avoid stacking unusual operators or several near-duplicate queries. Start with one focused query; use a second query only for a genuinely separate angle.
 

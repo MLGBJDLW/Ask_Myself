@@ -44,11 +44,60 @@ export interface DiffStatsArtifact {
 }
 
 function diffPathKey(path: string): string {
-  return path.replace(/\\/g, '/');
+  const raw = path.trim();
+  if (!raw) return '';
+
+  let normalized = raw
+    .replace(/^file:\/\/\/?/i, '')
+    .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/');
+
+  const driveMatch = normalized.match(/^([A-Za-z]:)(\/|$)/);
+  const drive = driveMatch ? driveMatch[1].toLowerCase() : '';
+  if (drive) {
+    normalized = normalized.slice(drive.length);
+  }
+
+  const rooted = normalized.startsWith('/');
+  const parts: string[] = [];
+  for (const part of normalized.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..' && parts.length > 0 && parts[parts.length - 1] !== '..') {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+
+  const body = parts.join('/');
+  if (drive) return body ? `${drive}/${body}` : `${drive}/`;
+  if (rooted) return body ? `/${body}` : '/';
+  return body;
+}
+
+function diffPathAliasKeys(path: string | undefined): string[] {
+  if (!path) return [];
+  const normalized = diffPathKey(path);
+  if (!normalized) return [];
+
+  const aliases = [normalized];
+  const windowsPathLike = /^[a-z]:\//i.test(normalized) || path.includes('\\');
+  if (windowsPathLike) {
+    const caseFolded = normalized.toLowerCase();
+    if (caseFolded !== normalized) aliases.push(caseFolded);
+  }
+  return aliases;
+}
+
+function diffAliasKeys(diff: FileDiffArtifact): string[] {
+  const aliases = new Set<string>();
+  for (const alias of diffPathAliasKeys(diff.absolutePath)) aliases.add(alias);
+  for (const alias of diffPathAliasKeys(diff.path)) aliases.add(alias);
+  return Array.from(aliases);
 }
 
 function diffIdentityKey(diff: FileDiffArtifact): string {
-  return diffPathKey(diff.absolutePath || diff.path);
+  return diffAliasKeys(diff)[0] ?? diffPathKey(diff.path);
 }
 
 function mergeOperation(current: string, next: string): string {
@@ -59,17 +108,20 @@ function mergeOperation(current: string, next: string): string {
 
 export function mergeFileDiffArtifactsByPath(diffs: FileDiffArtifact[]): FileDiffArtifact[] {
   const ordered: FileDiffArtifact[] = [];
-  const byPath = new Map<string, FileDiffArtifact>();
+  const byPathAlias = new Map<string, FileDiffArtifact>();
 
   for (const diff of diffs) {
-    const key = diffIdentityKey(diff);
-    const existing = byPath.get(key);
+    const aliases = diffAliasKeys(diff);
+    const existing = aliases
+      .map((alias) => byPathAlias.get(alias))
+      .find((candidate): candidate is FileDiffArtifact => Boolean(candidate));
+
     if (!existing) {
       const copy = {
         ...diff,
         hunks: [...diff.hunks],
       };
-      byPath.set(key, copy);
+      for (const alias of aliases) byPathAlias.set(alias, copy);
       ordered.push(copy);
       continue;
     }
@@ -81,6 +133,9 @@ export function mergeFileDiffArtifactsByPath(diffs: FileDiffArtifact[]): FileDif
     existing.truncated = Boolean(existing.truncated || diff.truncated);
     existing.omittedLineCount = (existing.omittedLineCount ?? 0) + (diff.omittedLineCount ?? 0);
     existing.hunks = [...existing.hunks, ...diff.hunks];
+
+    for (const alias of diffAliasKeys(existing)) byPathAlias.set(alias, existing);
+    for (const alias of aliases) byPathAlias.set(alias, existing);
   }
 
   return ordered;
@@ -160,7 +215,9 @@ export function extractFileDiffArtifacts(artifacts: ArtifactPayload | undefined)
       const path = stringOrNull(change.path);
       const absolutePath = stringOrNull(change.absolutePath);
       if (path && absolutePath) {
-        absolutePathsByPath.set(diffPathKey(path), absolutePath);
+        for (const alias of diffPathAliasKeys(path)) {
+          absolutePathsByPath.set(alias, absolutePath);
+        }
       }
     }
   }
@@ -168,13 +225,19 @@ export function extractFileDiffArtifacts(artifacts: ArtifactPayload | undefined)
     const path = stringOrNull(artifacts.checkpoint.path);
     const absolutePath = stringOrNull(artifacts.checkpoint.absolutePath);
     if (path && absolutePath) {
-      absolutePathsByPath.set(diffPathKey(path), absolutePath);
+      for (const alias of diffPathAliasKeys(path)) {
+        absolutePathsByPath.set(alias, absolutePath);
+      }
     }
   }
 
   const parseWithFallback = (diff: unknown): FileDiffArtifact | null => {
     const directPath = isRecord(diff) ? stringOrNull(diff.path) : null;
-    const fallback = directPath ? absolutePathsByPath.get(diffPathKey(directPath)) : null;
+    const fallback = directPath
+      ? diffPathAliasKeys(directPath)
+          .map((alias) => absolutePathsByPath.get(alias))
+          .find((absolutePath): absolutePath is string => Boolean(absolutePath))
+      : null;
     return parseFileDiffArtifact(diff, fallback);
   };
 

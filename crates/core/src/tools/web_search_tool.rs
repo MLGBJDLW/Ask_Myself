@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use futures::{stream::FuturesUnordered, StreamExt};
 use reqwest::header::{ACCEPT, RETRY_AFTER};
 use tokio::sync::OnceCell;
 
@@ -80,6 +81,32 @@ struct SearchRuntimeConfig {
 enum SearchPlanItem {
     Native(SearchEngine),
     Custom(WebSearchCustomProviderConfig),
+}
+
+#[derive(Clone)]
+struct SearchPlanEntry {
+    index: usize,
+    item: SearchPlanItem,
+    engine: SearchEngine,
+    runtime_key: ProviderRuntimeKey,
+}
+
+struct ProviderAttemptResult {
+    entry: SearchPlanEntry,
+    time_range_applied: bool,
+    time_range_ignored: bool,
+    outcome: ProviderAttemptOutcome,
+}
+
+enum ProviderAttemptOutcome {
+    Success {
+        results: Vec<SearchResultItem>,
+        run_info: SearchProviderRunInfo,
+    },
+    Failure {
+        failure: SearchProviderFailure,
+        run_info: SearchProviderRunInfo,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -453,6 +480,46 @@ fn build_provider_plan(
         WebSearchProviderMode::CustomFirst => custom.into_iter().chain(native).collect(),
         WebSearchProviderMode::CustomOnly => custom,
     }
+}
+
+fn engine_for_plan_item(plan_item: &SearchPlanItem) -> SearchEngine {
+    match plan_item {
+        SearchPlanItem::Native(engine) => *engine,
+        SearchPlanItem::Custom(provider) => engine_for_custom_provider(provider),
+    }
+}
+
+fn provider_parallelism(request: &SearchRequest) -> usize {
+    if request.explicit_engines || should_force_full_profile(request.provider_profile) {
+        3
+    } else {
+        2
+    }
+}
+
+fn same_provider_tier(left: &SearchPlanItem, right: &SearchPlanItem) -> bool {
+    matches!(
+        (left, right),
+        (SearchPlanItem::Native(_), SearchPlanItem::Native(_))
+            | (SearchPlanItem::Custom(_), SearchPlanItem::Custom(_))
+    )
+}
+
+fn next_provider_wave_end(
+    provider_plan: &[SearchPlanItem],
+    start: usize,
+    max_parallel: usize,
+) -> usize {
+    if start >= provider_plan.len() {
+        return start;
+    }
+
+    let mut end = start + 1;
+    let max_end = provider_plan.len().min(start + max_parallel.max(1));
+    while end < max_end && same_provider_tier(&provider_plan[start], &provider_plan[end]) {
+        end += 1;
+    }
+    end
 }
 
 fn should_continue_to_fallback_provider(
@@ -1348,13 +1415,101 @@ fn custom_provider_supports_time_range(
     }
 }
 
+fn plan_item_time_range_support(
+    plan_item: &SearchPlanItem,
+    request: &SearchRequest,
+) -> (bool, bool) {
+    if request.time_range == crate::web_search::TimeRange::Any {
+        return (false, false);
+    }
+
+    match plan_item {
+        SearchPlanItem::Native(engine) => {
+            if provider_for_engine(*engine).supports_time_range(request.time_range) {
+                (true, false)
+            } else {
+                (false, true)
+            }
+        }
+        SearchPlanItem::Custom(provider) => {
+            if custom_provider_supports_time_range(provider.preset, request.time_range) {
+                (true, false)
+            } else {
+                (false, true)
+            }
+        }
+    }
+}
+
+async fn execute_provider_attempt(
+    request: SearchRequest,
+    client: reqwest::Client,
+    entry: SearchPlanEntry,
+) -> ProviderAttemptResult {
+    let (time_range_applied, time_range_ignored) =
+        plan_item_time_range_support(&entry.item, &request);
+
+    match prepare_provider_call(entry.runtime_key.clone()).await {
+        Ok(_) => {}
+        Err((failure, run_info)) => {
+            return ProviderAttemptResult {
+                entry,
+                time_range_applied,
+                time_range_ignored,
+                outcome: ProviderAttemptOutcome::Failure { failure, run_info },
+            };
+        }
+    }
+
+    let started_at = Instant::now();
+    let search_result = match &entry.item {
+        SearchPlanItem::Native(engine) => {
+            let ctx = SearchProviderContext { client: &client };
+            provider_for_engine(*engine).search(&request, &ctx).await
+        }
+        SearchPlanItem::Custom(provider) => {
+            search_custom_provider(provider, &request, &client).await
+        }
+    };
+
+    match search_result {
+        Ok(mut results) => {
+            let latency_ms = started_at.elapsed().as_millis();
+            if !request.include_snippets {
+                for result in &mut results {
+                    result.snippet.clear();
+                }
+            }
+            let result_count = results.len();
+            let run_info =
+                run_info_for_success(entry.engine, &entry.runtime_key, latency_ms, result_count);
+            ProviderAttemptResult {
+                entry,
+                time_range_applied,
+                time_range_ignored,
+                outcome: ProviderAttemptOutcome::Success { results, run_info },
+            }
+        }
+        Err(failure) => {
+            let latency_ms = started_at.elapsed().as_millis();
+            let run_info =
+                run_info_for_failure(entry.engine, &entry.runtime_key, latency_ms, &failure);
+            ProviderAttemptResult {
+                entry,
+                time_range_applied,
+                time_range_ignored,
+                outcome: ProviderAttemptOutcome::Failure { failure, run_info },
+            }
+        }
+    }
+}
+
 async fn execute_search_request(
     request: SearchRequest,
     runtime: SearchRuntimeConfig,
     client: reqwest::Client,
     redirect_client: reqwest::Client,
 ) -> SearchExecution {
-    let ctx = SearchProviderContext { client: &client };
     let provider_plan = build_provider_plan(&request, &runtime);
 
     let mut raw_results = Vec::new();
@@ -1365,94 +1520,75 @@ async fn execute_search_request(
     let mut time_range_ignored_by = Vec::new();
     let mut attempted = 0usize;
     let mut engines_requested = Vec::new();
+    let max_parallel = provider_parallelism(&request);
+    let mut next_index = 0usize;
 
-    for plan_item in provider_plan {
-        attempted += 1;
-        let engine = match &plan_item {
-            SearchPlanItem::Native(engine) => *engine,
-            SearchPlanItem::Custom(provider) => engine_for_custom_provider(provider),
-        };
-        let runtime_key = runtime_key_for_plan_item(&plan_item);
-        engines_requested.push(engine);
-
-        match &plan_item {
-            SearchPlanItem::Native(engine)
-                if request.time_range != crate::web_search::TimeRange::Any =>
-            {
-                let provider = provider_for_engine(*engine);
-                if provider.supports_time_range(request.time_range) {
-                    time_range_applied_by.push(*engine);
-                } else {
-                    time_range_ignored_by.push(*engine);
-                }
-            }
-            SearchPlanItem::Custom(provider)
-                if request.time_range != crate::web_search::TimeRange::Any =>
-            {
-                if custom_provider_supports_time_range(provider.preset, request.time_range) {
-                    time_range_applied_by.push(engine);
-                } else {
-                    time_range_ignored_by.push(engine);
-                }
-            }
-            _ => {}
+    while next_index < provider_plan.len() {
+        let wave_end = next_provider_wave_end(&provider_plan, next_index, max_parallel);
+        if wave_end <= next_index {
+            break;
         }
 
-        match prepare_provider_call(runtime_key.clone()).await {
-            Ok(_) => {}
-            Err((failure, run_info)) => {
-                engines_failed.push(failure);
-                provider_health.push(run_info);
-                continue;
-            }
+        let mut wave = FuturesUnordered::new();
+        for index in next_index..wave_end {
+            let item = provider_plan[index].clone();
+            let entry = SearchPlanEntry {
+                index,
+                engine: engine_for_plan_item(&item),
+                runtime_key: runtime_key_for_plan_item(&item),
+                item,
+            };
+            wave.push(execute_provider_attempt(
+                request.clone(),
+                client.clone(),
+                entry,
+            ));
         }
 
-        let started_at = Instant::now();
-        let search_result = match &plan_item {
-            SearchPlanItem::Native(engine) => {
-                provider_for_engine(*engine).search(&request, &ctx).await
+        let mut attempts = Vec::new();
+        while let Some(attempt) = wave.next().await {
+            attempts.push(attempt);
+        }
+        attempts.sort_by_key(|attempt| attempt.entry.index);
+
+        let mut last_plan_item = None;
+        for attempt in attempts {
+            attempted += 1;
+            engines_requested.push(attempt.entry.engine);
+            if attempt.time_range_applied {
+                time_range_applied_by.push(attempt.entry.engine);
             }
-            SearchPlanItem::Custom(provider) => {
-                search_custom_provider(provider, &request, &client).await
+            if attempt.time_range_ignored {
+                time_range_ignored_by.push(attempt.entry.engine);
             }
-        };
-        match search_result {
-            Ok(mut results) => {
-                let latency_ms = started_at.elapsed().as_millis();
-                if !request.include_snippets {
-                    for result in &mut results {
-                        result.snippet.clear();
-                    }
+            last_plan_item = Some(attempt.entry.item.clone());
+
+            match attempt.outcome {
+                ProviderAttemptOutcome::Success {
+                    mut results,
+                    run_info,
+                } => {
+                    engines_responded.push(attempt.entry.engine);
+                    raw_results.append(&mut results);
+                    provider_health.push(run_info);
                 }
-                let result_count = results.len();
-                engines_responded.push(engine);
-                raw_results.append(&mut results);
-                provider_health.push(run_info_for_success(
-                    engine,
-                    &runtime_key,
-                    latency_ms,
-                    result_count,
-                ));
-            }
-            Err(failure) => {
-                let latency_ms = started_at.elapsed().as_millis();
-                provider_health.push(run_info_for_failure(
-                    engine,
-                    &runtime_key,
-                    latency_ms,
-                    &failure,
-                ));
-                engines_failed.push(failure);
+                ProviderAttemptOutcome::Failure { failure, run_info } => {
+                    engines_failed.push(failure);
+                    provider_health.push(run_info);
+                }
             }
         }
+        next_index = wave_end;
 
         if should_stop_after_success(&request, raw_results.len(), engines_responded.len()) {
-            if should_continue_to_fallback_provider(
-                &request,
-                &plan_item,
-                &runtime,
-                raw_results.len(),
-            ) {
+            if last_plan_item.is_some_and(|plan_item| {
+                should_continue_to_fallback_provider(
+                    &request,
+                    &plan_item,
+                    &runtime,
+                    raw_results.len(),
+                )
+            }) {
                 continue;
             }
             break;
@@ -1717,22 +1853,30 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stop_policy_uses_one_or_two_default_providers() {
-        let mut request = SearchRequest {
+    fn test_search_request() -> SearchRequest {
+        SearchRequest {
             query: "nexa".to_string(),
             effective_query: "nexa".to_string(),
             limit: 8,
             region: SearchRegion::Global,
             language: SearchLanguage::En,
-            engines: vec![SearchEngine::Bing, SearchEngine::DuckDuckGo],
+            engines: vec![
+                SearchEngine::Google,
+                SearchEngine::DuckDuckGo,
+                SearchEngine::Bing,
+            ],
             explicit_engines: false,
             time_range: TimeRange::Any,
             site: None,
             include_snippets: true,
             provider_profile: WebSearchProviderProfile::Default,
             reranker: WebSearchReranker::None,
-        };
+        }
+    }
+
+    #[test]
+    fn stop_policy_uses_one_or_two_default_providers() {
+        let mut request = test_search_request();
 
         assert!(should_stop_after_success(&request, 8, 1));
         assert!(should_stop_after_success(&request, 2, 2));
@@ -1742,6 +1886,58 @@ mod tests {
         request.explicit_engines = false;
         request.provider_profile = WebSearchProviderProfile::MaxEvidence;
         assert!(!should_stop_after_success(&request, 2, 2));
+    }
+
+    #[test]
+    fn default_provider_parallelism_uses_two_provider_waves() {
+        let request = test_search_request();
+        let provider_plan = build_provider_plan(
+            &request,
+            &SearchRuntimeConfig {
+                provider_mode: WebSearchProviderMode::BuiltInFirst,
+                custom_providers: Vec::new(),
+            },
+        );
+
+        assert_eq!(provider_parallelism(&request), 2);
+        assert_eq!(
+            next_provider_wave_end(&provider_plan, 0, provider_parallelism(&request)),
+            2
+        );
+        assert_eq!(
+            next_provider_wave_end(&provider_plan, 2, provider_parallelism(&request)),
+            3
+        );
+    }
+
+    #[test]
+    fn provider_waves_do_not_mix_custom_and_native_tiers() {
+        let mut request = test_search_request();
+        request.explicit_engines = true;
+        let custom = WebSearchCustomProviderConfig {
+            id: "anysearch".to_string(),
+            preset: WebSearchCustomProviderPreset::AnySearch,
+            name: "AnySearch".to_string(),
+            enabled: true,
+            api_key: String::new(),
+            base_url: WebSearchCustomProviderPreset::AnySearch.default_base_url(),
+            priority: 1,
+        };
+        let runtime = SearchRuntimeConfig {
+            provider_mode: WebSearchProviderMode::CustomFirst,
+            custom_providers: vec![custom],
+        };
+        let provider_plan = build_provider_plan(&request, &runtime);
+
+        assert_eq!(provider_parallelism(&request), 3);
+        assert_eq!(
+            next_provider_wave_end(&provider_plan, 0, provider_parallelism(&request)),
+            1
+        );
+        assert_eq!(
+            next_provider_wave_end(&provider_plan, 1, provider_parallelism(&request)),
+            4
+        );
     }
 
     #[test]

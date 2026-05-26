@@ -79,6 +79,17 @@ test.beforeEach(async ({ page }) => {
       createdAt: nowIso,
       updatedAt: nowIso,
     };
+    const mixedPathDiffConversation: Conversation = {
+      id: 'conv-mixed-path-diffs',
+      title: 'Mixed path diffs',
+      provider: 'open_ai',
+      model: 'gpt-4.1',
+      systemPrompt: '',
+      collectionContext: null,
+      projectId: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
 
     const planToolCallId = 'call-update-plan';
     const updatePlanArtifact = {
@@ -463,6 +474,95 @@ test.beforeEach(async ({ page }) => {
         imageAttachments: null,
       },
     ];
+    const mixedPathDiffMessages: Message[] = [
+      {
+        id: 'm-user-mixed-path-diffs',
+        conversationId: mixedPathDiffConversation.id,
+        role: 'user',
+        content: 'Edit the same file through mixed path artifacts.',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 0,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-assistant-mixed-path-diffs',
+        conversationId: mixedPathDiffConversation.id,
+        role: 'assistant',
+        content: 'Updated the file twice.',
+        toolCallId: null,
+        toolCalls: [{
+          id: 'call-mixed-path-diffs',
+          name: 'run_shell',
+          arguments: JSON.stringify({ program: 'python', args: ['-'], cwd: 'D:/workspace' }),
+        }],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 1,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-tool-mixed-path-diffs',
+        conversationId: mixedPathDiffConversation.id,
+        role: 'tool',
+        content: 'Exit code: 0\n\nFile changes: 1 file(s), +2, -2\n',
+        toolCallId: 'call-mixed-path-diffs',
+        toolCalls: [],
+        artifacts: {
+          kind: 'fileChangeSet',
+          source: 'run_shell',
+          fileChanges: [
+            { path: 'src/example.ts', absolutePath: 'D:/workspace/src/example.ts', operation: 'modify', textDiff: true },
+          ],
+          diffs: [
+            {
+              path: 'src/example.ts',
+              absolutePath: 'D:/workspace/src/example.ts',
+              operation: 'run_shell',
+              additions: 1,
+              deletions: 1,
+              hunks: [{
+                oldStart: 1,
+                newStart: 1,
+                oldLines: 1,
+                newLines: 1,
+                lines: [
+                  { type: 'deletion', oldLine: 1, newLine: null, content: 'const answer = 42;' },
+                  { type: 'addition', oldLine: null, newLine: 1, content: 'const answer = 43;' },
+                ],
+              }],
+            },
+            {
+              path: './src/example.ts',
+              operation: 'run_shell',
+              additions: 1,
+              deletions: 1,
+              hunks: [{
+                oldStart: 2,
+                newStart: 2,
+                oldLines: 1,
+                newLines: 1,
+                lines: [
+                  { type: 'deletion', oldLine: 2, newLine: null, content: 'export const label = "old";' },
+                  { type: 'addition', oldLine: null, newLine: 2, content: 'export const label = "new";' },
+                ],
+              }],
+            },
+          ],
+        },
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 2,
+        thinking: null,
+        imageAttachments: null,
+      },
+    ];
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handlerId: number }>();
     let callbackSeq = 1;
@@ -577,6 +677,7 @@ test.beforeEach(async ({ page }) => {
             clone(autoPlanOnlyConversation),
             clone(diffMergeConversation),
             clone(runShellDiffConversation),
+            clone(mixedPathDiffConversation),
           ];
         case 'get_conversation_cmd': {
           const conversationId = String(args.id ?? '');
@@ -589,6 +690,9 @@ test.beforeEach(async ({ page }) => {
           if (conversationId === runShellDiffConversation.id) {
             return [clone(runShellDiffConversation), clone(runShellDiffMessages)];
           }
+          if (conversationId === mixedPathDiffConversation.id) {
+            return [clone(mixedPathDiffConversation), clone(mixedPathDiffMessages)];
+          }
           return [clone(conversation), clone(messages)];
         }
         case 'get_conversation_turns_cmd':
@@ -597,7 +701,8 @@ test.beforeEach(async ({ page }) => {
           const conversationId = String(args.conversationId ?? '');
           if (
             conversationId === diffMergeConversation.id ||
-            conversationId === runShellDiffConversation.id
+            conversationId === runShellDiffConversation.id ||
+            conversationId === mixedPathDiffConversation.id
           ) {
             return [];
           }
@@ -779,4 +884,22 @@ test('file diff previews render run_shell diff arrays', async ({ page }) => {
   await expect(firstDiff.getByText('+1')).toBeVisible();
   await firstDiff.getByRole('button').first().click();
   await expect(firstDiff.getByText('alpha')).toBeVisible();
+});
+
+test('file diff summary merges mixed path aliases for the same file', async ({ page }) => {
+  await page.goto('/chat/conv-mixed-path-diffs');
+
+  const previewGroup = page.getByTestId('turn-file-diff-previews');
+  await expect(previewGroup).toBeVisible();
+
+  const summaryPanel = previewGroup.getByTestId('file-diff-summary-panel');
+  await expect(summaryPanel).toContainText('Edited 1 files');
+  await expect(summaryPanel.getByTestId('file-diff-preview')).toHaveCount(1);
+  await expect(summaryPanel.getByText('+2').first()).toBeVisible();
+  await expect(summaryPanel.getByText('-2').first()).toBeVisible();
+
+  const diffCard = summaryPanel.getByTestId('file-diff-preview').first();
+  await diffCard.getByRole('button').first().click();
+  await expect(diffCard.getByText('const answer = 43;')).toBeVisible();
+  await expect(diffCard.getByText('export const label = "new";')).toBeVisible();
 });

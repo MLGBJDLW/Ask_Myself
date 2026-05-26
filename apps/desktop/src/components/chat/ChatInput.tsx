@@ -15,6 +15,7 @@ import {
   type SlashCommandKind,
   type SlashCommandOption,
 } from "../../lib/slashCommands";
+import { buildWorkflowBatchPrompt } from "../../lib/workflowPrompts";
 import { CheckpointMenu } from "./CheckpointMenu";
 import { VoiceInputButton } from "./VoiceInputButton";
 import { EmojiPicker } from "./EmojiPicker";
@@ -656,10 +657,10 @@ export function ChatInput({
   );
 
   const applyWorkflowTemplate = useCallback((template: WorkflowCatalogTemplate) => {
-    const prompt = template.promptTemplate.trimEnd();
     setValue((currentValue) => {
       const current = currentValue.trim();
-      const nextValue = current ? `${prompt}\n\n${current}` : prompt;
+      const batchGoal = current ? `${template.promptTemplate.trimEnd()}\n\n${current}` : undefined;
+      const nextValue = buildWorkflowBatchPrompt(template, batchGoal);
       draftsRef.current[draftKey] = { value: nextValue, attachments };
       return nextValue;
     });

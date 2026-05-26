@@ -1,4 +1,5 @@
 import type { Skill } from "../types/extensions";
+import { buildWorkflowBatchPrompt } from "./workflowPrompts";
 
 export type SlashCommandKind = "command" | "skill" | "workflow";
 export type SlashCommandAction = "prompt" | "compact" | "openWorkflows";
@@ -387,9 +388,12 @@ export function resolveSlashCommandMessage(
   }
 
   const skillIds = option.skillId ? [option.skillId] : [];
+  const expandedMessage = expandPromptTemplate(option.promptTemplate, remainder);
   return {
     command: option,
-    message: expandPromptTemplate(option.promptTemplate, remainder),
+    message: option.kind === "workflow" && option.workflowTemplateId
+      ? buildWorkflowBatchPrompt({ id: option.workflowTemplateId }, expandedMessage)
+      : expandedMessage,
     skillIds,
     artifact: slashCommandArtifact(option),
   };

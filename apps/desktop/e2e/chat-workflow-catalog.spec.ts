@@ -182,6 +182,10 @@ test('workflow catalog can prefill the chat composer', async ({ page }) => {
 
   await catalog.getByRole('button', { name: /Meeting Summary/ }).click();
 
-  await expect(page.getByTestId('chat-input-textarea')).toHaveValue(/Run the Meeting Summary workflow/);
+  const composer = page.getByTestId('chat-input-textarea');
+  await expect(composer).toHaveValue(/spawn_subagent_batch/);
+  await expect(composer).toHaveValue(/workflow_template: meeting_summary/);
+  await expect(composer).toHaveValue(/batch_goal:/);
+  await expect(composer).toHaveValue(/Run the Meeting Summary workflow/);
   await expect(catalog).toHaveCount(0);
 });

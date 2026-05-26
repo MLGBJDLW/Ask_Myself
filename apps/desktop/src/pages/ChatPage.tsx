@@ -1,6 +1,6 @@
-import { useCallback, useState, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useState, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Network, Settings, PanelLeftClose, PanelLeftOpen, UserRound, X } from 'lucide-react';
+import { ChevronDown, Cpu, Network, Settings, PanelLeftClose, PanelLeftOpen, UserRound, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
@@ -64,6 +64,70 @@ function suggestPersonaId(message: string, personas: api.PersonaProfile[]): stri
 const CHAT_SIDEBAR_WIDTH_KEY = 'chat-sidebar-width';
 const CHAT_SIDEBAR_MIN_WIDTH = 200;
 const CHAT_SIDEBAR_MAX_WIDTH = 420;
+
+interface SessionSelectProps {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  detail?: string;
+  selectValue: string;
+  title: string;
+  ariaLabel: string;
+  tone?: 'accent' | 'info';
+  onChange: (value: string) => void | Promise<void>;
+  children: ReactNode;
+}
+
+function SessionSelect({
+  icon,
+  label,
+  value,
+  detail,
+  selectValue,
+  title,
+  ariaLabel,
+  tone = 'accent',
+  onChange,
+  children,
+}: SessionSelectProps) {
+  const toneClass = tone === 'info' ? 'text-info' : 'text-accent';
+
+  return (
+    <label
+      className="group relative flex h-9 min-w-[7.25rem] flex-1 cursor-pointer items-center gap-2 overflow-hidden
+        rounded-md border border-border/60 bg-surface-2/50 px-2.5 transition-colors
+        hover:border-border-hover hover:bg-surface-2 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20"
+      title={title}
+    >
+      <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/50 bg-surface-1/80 ${toneClass}`}>
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[9px] font-medium leading-none text-text-tertiary">
+          {label}
+        </span>
+        <span className="mt-0.5 flex min-w-0 items-baseline gap-1.5">
+          <span className="truncate text-xs font-semibold text-text-primary">{value}</span>
+          {detail && (
+            <span className="hidden truncate text-[10px] text-text-tertiary xl:block">
+              {detail}
+            </span>
+          )}
+        </span>
+      </span>
+      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary transition-colors group-hover:text-text-secondary" />
+      <select
+        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+        value={selectValue}
+        title={title}
+        aria-label={ariaLabel}
+        onChange={(event) => { void onChange(event.target.value); }}
+      >
+        {children}
+      </select>
+    </label>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -209,6 +273,17 @@ export function ChatPage() {
   useEffect(() => {
     api.listAgentConfigs().then(setAgentConfigs);
   }, []);
+  const selectedAgentConfig =
+    agentConfigs.find((config) => config.id === chat.agentConfig?.id) ?? chat.agentConfig;
+  const selectedAgentLabel = selectedAgentConfig?.name?.trim() || selectedAgentConfig?.model || '';
+  const selectedAgentDetail = selectedAgentConfig
+    ? selectedAgentConfig.name?.trim()
+      ? `${selectedAgentConfig.provider} / ${selectedAgentConfig.model}`
+      : selectedAgentConfig.provider
+    : '';
+  const selectedPersona = personas.find((persona) => persona.id === activePersonaId);
+  const selectedPersonaLabel = selectedPersona?.name || activePersonaId;
+  const selectedPersonaDetail = selectedPersona?.description || activePersonaId;
   const collectionContext = chat.activeConversation?.collectionContext ?? initialCollectionContext;
 
   const sentInitialRef = useRef<string | null>(null);
@@ -582,12 +657,12 @@ export function ChatPage() {
         ) : (
           <>
             {chat.activeId && (
-              <div className="sticky top-0 z-10 shrink-0 border-b border-border/60 bg-surface-1/80 px-3 py-1.5 backdrop-blur">
-                <div className="flex min-h-8 items-center gap-1.5">
+              <div className="sticky top-0 z-10 shrink-0 border-b border-border/60 bg-surface-1/85 px-3 py-1.5 backdrop-blur">
+                <div className="flex min-h-10 flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={toggleSidebar}
-                    className="flex h-7 w-7 items-center justify-center rounded-md border border-border/50 bg-surface-2/70
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/50 bg-surface-2/70
                       text-text-tertiary hover:text-text-primary hover:bg-surface-3
                       transition-colors cursor-pointer"
                     title={t('chat.toggleSidebar')}
@@ -595,47 +670,54 @@ export function ChatPage() {
                   >
                     {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
                   </button>
-                  {chat.agentConfig && agentConfigs.length > 0 && (
-                    <div className="relative min-w-[140px]">
-                      <select
-                        className="h-7 w-full max-w-[210px] cursor-pointer appearance-none rounded-md border border-border/70 bg-surface-2/80 pl-2 pr-6 text-xs text-text-secondary outline-none transition-colors hover:border-border-hover focus:border-accent"
-                        value={chat.agentConfig.id}
-                        aria-label={t('settings.defaultModel')}
-                        onChange={async (e) => {
-                          const selected = agentConfigs.find(c => c.id === e.target.value);
-                          if (selected) await chat.switchAgentConfig(selected);
-                        }}
-                        title={`${chat.agentConfig.provider} / ${chat.agentConfig.model}`}
-                      >
-                        {agentConfigs.map(c => (
-                          <option key={c.id} value={c.id}>
-                            {c.name || `${c.provider}/${c.model}`}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-text-tertiary">▾</span>
+                  {(chat.agentConfig && agentConfigs.length > 0) || personas.length > 0 ? (
+                    <div
+                      className="flex min-w-0 max-w-[21rem] flex-1 basis-0 flex-wrap items-center gap-1.5
+                        rounded-lg border border-border/60 bg-surface-1/70 p-1 shadow-sm"
+                    >
+                      {chat.agentConfig && agentConfigs.length > 0 && (
+                        <SessionSelect
+                          icon={<Cpu className="h-4 w-4" />}
+                          label={t('settings.provider')}
+                          value={selectedAgentLabel}
+                          detail={selectedAgentDetail}
+                          selectValue={chat.agentConfig.id}
+                          ariaLabel={t('settings.defaultModel')}
+                          title={selectedAgentConfig ? `${selectedAgentConfig.provider} / ${selectedAgentConfig.model}` : t('settings.defaultModel')}
+                          onChange={async (value) => {
+                            const selected = agentConfigs.find((config) => config.id === value);
+                            if (selected) await chat.switchAgentConfig(selected);
+                          }}
+                        >
+                          {agentConfigs.map((config) => (
+                            <option key={config.id} value={config.id}>
+                              {config.name || `${config.provider}/${config.model}`}
+                            </option>
+                          ))}
+                        </SessionSelect>
+                      )}
+                      {personas.length > 0 && (
+                        <SessionSelect
+                          icon={<UserRound className="h-4 w-4" />}
+                          label={t('settings.personas')}
+                          value={selectedPersonaLabel}
+                          detail={selectedPersonaDetail}
+                          selectValue={activePersonaId}
+                          ariaLabel={t('settings.personas')}
+                          title={selectedPersonaLabel}
+                          tone="info"
+                          onChange={setPersona}
+                        >
+                          {personas.map((persona) => (
+                            <option key={persona.id} value={persona.id}>
+                              {persona.name}
+                            </option>
+                          ))}
+                        </SessionSelect>
+                      )}
                     </div>
-                  )}
-                  {personas.length > 0 && (
-                    <div className="relative min-w-[132px]">
-                      <UserRound className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
-                      <select
-                        className="h-7 w-full max-w-[178px] cursor-pointer appearance-none rounded-md border border-border/70 bg-surface-2/80 pl-7 pr-6 text-xs text-text-secondary outline-none transition-colors hover:border-border-hover focus:border-accent"
-                        value={activePersonaId}
-                        aria-label={t('settings.personas')}
-                        onChange={(e) => setPersona(e.target.value)}
-                        title={`Persona: ${personas.find((p) => p.id === activePersonaId)?.name ?? activePersonaId}`}
-                      >
-                        {personas.map((persona) => (
-                          <option key={persona.id} value={persona.id}>
-                            {persona.name}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-text-tertiary">▾</span>
-                    </div>
-                  )}
-                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                  ) : null}
+                  <div className="flex min-w-0 flex-1 basis-full flex-wrap items-center justify-end gap-2 sm:basis-0">
                     <SourceSelector
                       conversationId={chat.activeId}
                       initialSelectedIds={initialSourceIds}

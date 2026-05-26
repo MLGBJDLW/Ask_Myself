@@ -23,6 +23,7 @@ import * as api from '../lib/api';
 import { useTranslation, type TranslationKey } from '../i18n';
 import type { Source } from '../types';
 import type { WorkflowCatalogTemplate } from '../lib/api';
+import { buildWorkflowBatchPrompt } from '../lib/workflowPrompts';
 import type {
   BrowserEvidenceCapture,
   LearningGovernanceSnapshot,
@@ -221,7 +222,7 @@ export function WorkflowsPage() {
   }, [navigate]);
 
   const runTemplate = useCallback((template: WorkflowCatalogTemplate) => {
-    runPrompt(templateText(template, 'prompt', tr));
+    runPrompt(buildWorkflowBatchPrompt(template, templateText(template, 'prompt', tr)));
   }, [runPrompt, tr]);
 
   const runAutomation = useCallback(async (automation: WorkflowAutomation) => {

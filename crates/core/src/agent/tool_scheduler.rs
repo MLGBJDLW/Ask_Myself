@@ -102,10 +102,15 @@ pub(crate) fn tool_timeout_for_call(
 
     let multiplier = match tool_name {
         "retrieve_evidence" => 2,
-        "spawn_subagent" | "spawn_subagent_batch" => 3,
         _ => 1,
     };
     let mut timeout_secs = base_timeout.saturating_mul(multiplier);
+
+    timeout_secs = match tool_name {
+        "spawn_subagent" => timeout_secs.max(180),
+        "spawn_subagent_batch" => timeout_secs.max(240),
+        _ => timeout_secs,
+    };
 
     if tool_name == "run_shell" {
         let requested = parsed_args
@@ -325,6 +330,22 @@ mod tests {
             &serde_json::json!({ "timeout_secs": 120 }),
         );
         assert_eq!(timeout, Some(Duration::from_secs(125)));
+    }
+
+    #[test]
+    fn timeout_gives_subagents_minimum_outer_budget() {
+        assert_eq!(
+            tool_timeout_for_call(Some(30), "spawn_subagent", &serde_json::json!({})),
+            Some(Duration::from_secs(180))
+        );
+        assert_eq!(
+            tool_timeout_for_call(Some(30), "spawn_subagent_batch", &serde_json::json!({})),
+            Some(Duration::from_secs(240))
+        );
+        assert_eq!(
+            tool_timeout_for_call(Some(300), "spawn_subagent_batch", &serde_json::json!({})),
+            Some(Duration::from_secs(300))
+        );
     }
 
     #[test]
