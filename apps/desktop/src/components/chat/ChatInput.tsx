@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, ArchiveRestore, Loader2, Command, BrainCircuit } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation, type TranslationKey } from "../../i18n";
@@ -107,6 +107,7 @@ interface ChatInputProps {
   isStreaming: boolean;
   disabled: boolean;
   conversationId?: string;
+  sessionControls?: ReactNode;
   onRestoreCheckpoint?: () => void;
   onBranchCheckpoint?: (conversation: Conversation) => void;
   prefillText?: string;
@@ -152,6 +153,7 @@ export function ChatInput({
   isStreaming,
   disabled,
   conversationId,
+  sessionControls,
   onRestoreCheckpoint,
   onBranchCheckpoint,
   prefillText,
@@ -949,7 +951,7 @@ export function ChatInput({
         />
 
         <div className="flex min-h-11 items-center justify-between gap-3 border-t border-border/35 px-2.5 py-2">
-          <div className="flex min-w-0 items-center gap-1.5">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden">
             <button
               type="button"
               data-testid="workflow-catalog-trigger"
@@ -963,6 +965,8 @@ export function ChatInput({
               <span className="hidden sm:inline">{t("chat.workflows")}</span>
               <ChevronDown className={`h-3 w-3 transition-transform ${workflowCatalogOpen ? "rotate-180" : ""}`} />
             </button>
+
+            {sessionControls}
 
             <button
               onClick={() => fileInputRef.current?.click()}
