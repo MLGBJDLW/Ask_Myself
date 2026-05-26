@@ -47,8 +47,15 @@ function diffPathKey(path: string): string {
   const raw = path.trim();
   if (!raw) return '';
 
-  let normalized = raw
-    .replace(/^file:\/\/\/?/i, '')
+  let normalized = raw;
+  if (/^file:\/\//i.test(normalized)) {
+    normalized = normalized.replace(/^file:\/\//i, '');
+    if (/^\/[A-Za-z]:($|\/)/.test(normalized)) {
+      normalized = normalized.slice(1);
+    }
+  }
+
+  normalized = normalized
     .replace(/\\/g, '/')
     .replace(/\/{2,}/g, '/');
 
