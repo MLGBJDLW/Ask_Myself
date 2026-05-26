@@ -6,7 +6,6 @@ import { openFileInDefaultApp, showInFileExplorer, getEvidenceCard } from '../..
 import { canPreviewInApp, useFilePreview } from '../../features/preview';
 import { getSoftDropdownMotion } from '../../lib/uiMotion';
 import { VideoPreviewModal } from '../media/VideoPreviewModal';
-import { SaveToPlaybookButton } from '../SaveToPlaybookButton';
 import type { CitationCardData } from '../../lib/citationParser';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { isWebUrl, sourceBasename, sourceHost } from '../../lib/sourceDisplay';
@@ -222,7 +221,6 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
             </>
           )}
           <div className="flex-1" />
-          <SaveToPlaybookButton chunkId={card.chunkId} size="sm" />
           <button
             type="button"
             onClick={handleCopy}

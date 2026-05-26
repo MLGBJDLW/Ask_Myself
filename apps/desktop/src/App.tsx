@@ -25,7 +25,6 @@ import { useKnowledgeInsights } from "./lib/useKnowledgeInsights";
 
 const SearchPage = lazy(() => import("./pages/SearchPage").then((module) => ({ default: module.SearchPage })));
 const SourcesPage = lazy(() => import("./pages/SourcesPage").then((module) => ({ default: module.SourcesPage })));
-const PlaybooksPage = lazy(() => import("./pages/PlaybooksPage").then((module) => ({ default: module.PlaybooksPage })));
 const KnowledgePage = lazy(() => import("./pages/KnowledgePage").then((module) => ({ default: module.KnowledgePage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 const ChatPage = lazy(() => import("./pages/ChatPage").then((module) => ({ default: module.ChatPage })));
@@ -141,7 +140,7 @@ const router = createBrowserRouter(
       <Route element={<Layout />}>
         <Route path="/" element={<LazyPage><SearchPage /></LazyPage>} />
         <Route path="/sources" element={<LazyPage><SourcesPage /></LazyPage>} />
-        <Route path="/playbooks" element={<LazyPage><PlaybooksPage /></LazyPage>} />
+        <Route path="/playbooks" element={<Navigate to="/" replace />} />
         <Route path="/knowledge" element={<LazyPage><KnowledgePage /></LazyPage>} />
         <Route path="/chat/:conversationId?" element={<LazyPage><ChatPage /></LazyPage>} />
         <Route path="/tasks" element={<LazyPage><TaskCenterPage /></LazyPage>} />

@@ -1,7 +1,8 @@
-import { useCallback, useState, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useState, useEffect, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Network, Settings, PanelLeftClose, PanelLeftOpen, UserRound, X } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { Check, ChevronDown, Cpu, Network, Settings, PanelLeftClose, PanelLeftOpen, UserRound, X } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, type ChatInputSendOptions } from '../components/chat';
@@ -15,6 +16,7 @@ import { useChatSession } from '../lib/useChatSession';
 import { useResizablePanel } from '../lib/useResizablePanel';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
+import { ProviderIcon } from '../lib/providerIcons';
 import type { AgentConfig, Conversation, ImageAttachment } from '../types/conversation';
 import { formatUserError } from '../lib/userError';
 import {
@@ -64,6 +66,218 @@ function suggestPersonaId(message: string, personas: api.PersonaProfile[]): stri
 const CHAT_SIDEBAR_WIDTH_KEY = 'chat-sidebar-width';
 const CHAT_SIDEBAR_MIN_WIDTH = 200;
 const CHAT_SIDEBAR_MAX_WIDTH = 420;
+
+interface SessionSelectProps {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  detail?: string;
+  selectValue: string;
+  title: string;
+  ariaLabel: string;
+  tone?: 'accent' | 'info';
+  onChange: (value: string) => void | Promise<void>;
+  options: SessionSelectOption[];
+}
+
+interface SessionSelectOption {
+  value: string;
+  label: string;
+  detail?: string;
+  icon?: ReactNode;
+}
+
+function SessionSelect({
+  icon,
+  label,
+  value,
+  detail,
+  selectValue,
+  title,
+  ariaLabel,
+  tone = 'accent',
+  onChange,
+  options,
+}: SessionSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
+  const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const iconClass = tone === 'info' ? 'text-info' : 'text-accent';
+  const controlTitle = detail ? `${title} · ${detail}` : title;
+  const selectedOption = options.find((option) => option.value === selectValue);
+  const toneClasses = tone === 'info'
+    ? {
+        icon: 'border-info/25 bg-info/10 text-info',
+        active: 'bg-info/10 text-text-primary ring-1 ring-info/25',
+        activeIcon: 'border-info/35 bg-info/10 text-info',
+        check: 'text-info',
+      }
+    : {
+        icon: 'border-accent/25 bg-accent/10 text-accent',
+        active: 'bg-accent-subtle text-text-primary ring-1 ring-accent/25',
+        activeIcon: 'border-accent/35 bg-accent/10 text-accent',
+        check: 'text-accent',
+      };
+
+  const updatePanelPosition = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = Math.min(320, Math.max(240, window.innerWidth - 16));
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    setPanelStyle({
+      bottom: window.innerHeight - rect.top + 8,
+      left,
+      width,
+    });
+  }, []);
+
+  const closeMenu = useCallback(() => setOpen(false), []);
+
+  useEffect(() => {
+    if (!open) return;
+    updatePanelPosition();
+    const handlePointerDown = (event: MouseEvent) => {
+      if (ref.current?.contains(event.target as Node)) return;
+      if (panelRef.current?.contains(event.target as Node)) return;
+      closeMenu();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenu();
+        triggerRef.current?.focus();
+      }
+    };
+    window.addEventListener('resize', updatePanelPosition);
+    window.addEventListener('scroll', updatePanelPosition, true);
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('resize', updatePanelPosition);
+      window.removeEventListener('scroll', updatePanelPosition, true);
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [closeMenu, open, updatePanelPosition]);
+
+  const handleSelect = useCallback((nextValue: string) => {
+    setOpen(false);
+    if (nextValue !== selectValue) {
+      void onChange(nextValue);
+    }
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  }, [onChange, selectValue]);
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`group flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center gap-0
+          overflow-hidden rounded-md px-2 text-xs font-medium transition-colors duration-fast ease-out
+          hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:outline-none focus-visible:ring-2
+          focus-visible:ring-accent/20 sm:w-auto sm:max-w-[10rem] sm:justify-start sm:gap-1.5 ${
+            open ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:text-text-primary'
+          }`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        title={controlTitle}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <span className={`flex h-4 w-4 shrink-0 items-center justify-center ${iconClass}`}>
+          {icon}
+        </span>
+        <span className="hidden min-w-0 sm:flex">
+          <span className="truncate text-xs font-medium text-text-secondary group-hover:text-text-primary">
+            {value}
+          </span>
+        </span>
+        <ChevronDown className={`hidden h-3 w-3 shrink-0 text-text-tertiary transition-transform group-hover:text-text-secondary sm:block ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {createPortal(
+        <AnimatePresence>
+          {open && (
+            <motion.div
+              ref={panelRef}
+              initial={{ opacity: 0, y: 4, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 4, scale: 0.98 }}
+              transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+              className="fixed z-50 overflow-hidden rounded-lg border border-border/70 bg-surface-0
+                shadow-2xl shadow-black/25 ring-1 ring-white/[0.04]"
+              style={panelStyle}
+              role="listbox"
+              aria-label={ariaLabel}
+            >
+              <div className="flex min-w-0 items-center gap-2 border-b border-border/60 px-3 py-2">
+                <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border ${toneClasses.icon}`}>
+                  {icon}
+                </span>
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-text-primary">{label}</div>
+                  <div className="truncate text-[11px] text-text-tertiary">
+                    {selectedOption?.label ?? value}
+                  </div>
+                </div>
+              </div>
+              <div className="max-h-72 overflow-y-auto p-1">
+                {options.map((option) => {
+                  const selected = option.value === selectValue;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      onClick={() => handleSelect(option.value)}
+                      className={`grid w-full grid-cols-[1.75rem_minmax(0,1fr)_1rem] items-center gap-2 rounded-md px-2 py-2 text-left transition-colors ${
+                        selected
+                          ? toneClasses.active
+                          : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary'
+                      }`}
+                    >
+                      <span
+                        className={`flex h-7 w-7 items-center justify-center rounded-md border ${
+                          selected
+                            ? toneClasses.activeIcon
+                            : 'border-border/60 bg-surface-1 text-text-tertiary'
+                        }`}
+                      >
+                        {option.icon ?? icon}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-text-primary">
+                          {option.label}
+                        </span>
+                        {option.detail && (
+                          <span className="mt-0.5 block truncate text-[11px] leading-4 text-text-tertiary">
+                            {option.detail}
+                          </span>
+                        )}
+                      </span>
+                      {selected && <Check className={`h-3.5 w-3.5 ${toneClasses.check}`} />}
+                    </button>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
+    </div>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -209,6 +423,63 @@ export function ChatPage() {
   useEffect(() => {
     api.listAgentConfigs().then(setAgentConfigs);
   }, []);
+  const selectedAgentConfig =
+    agentConfigs.find((config) => config.id === chat.agentConfig?.id) ?? chat.agentConfig;
+  const selectedAgentLabel = selectedAgentConfig?.name?.trim() || selectedAgentConfig?.model || '';
+  const selectedAgentDetail = selectedAgentConfig
+    ? selectedAgentConfig.name?.trim()
+      ? `${selectedAgentConfig.provider} / ${selectedAgentConfig.model}`
+      : selectedAgentConfig.provider
+    : '';
+  const selectedPersona = personas.find((persona) => persona.id === activePersonaId);
+  const selectedPersonaLabel = selectedPersona?.name || activePersonaId;
+  const selectedPersonaDetail = selectedPersona?.description || activePersonaId;
+  const sessionControls = (chat.agentConfig && agentConfigs.length > 0) || personas.length > 0 ? (
+    <div className="flex shrink-0 items-center gap-1.5">
+      {chat.agentConfig && agentConfigs.length > 0 && (
+        <SessionSelect
+          icon={<Cpu className="h-3.5 w-3.5" />}
+          label={t('settings.provider')}
+          value={selectedAgentLabel}
+          detail={selectedAgentDetail}
+          selectValue={chat.agentConfig.id}
+          ariaLabel={t('settings.defaultModel')}
+          title={selectedAgentConfig ? `${selectedAgentConfig.provider} / ${selectedAgentConfig.model}` : t('settings.defaultModel')}
+          onChange={async (value) => {
+            const selected = agentConfigs.find((config) => config.id === value);
+            if (selected) await chat.switchAgentConfig(selected);
+          }}
+          options={agentConfigs.map((config) => ({
+            value: config.id,
+            label: config.name || `${config.provider}/${config.model}`,
+            detail: config.name?.trim()
+              ? `${config.provider} / ${config.model}`
+              : config.model,
+            icon: <ProviderIcon provider={config.provider} size="sm" />,
+          }))}
+        />
+      )}
+      {personas.length > 0 && (
+        <SessionSelect
+          icon={<UserRound className="h-3.5 w-3.5" />}
+          label={t('settings.personas')}
+          value={selectedPersonaLabel}
+          detail={selectedPersonaDetail}
+          selectValue={activePersonaId}
+          ariaLabel={t('settings.personas')}
+          title={selectedPersonaLabel}
+          tone="info"
+          onChange={setPersona}
+          options={personas.map((persona) => ({
+            value: persona.id,
+            label: persona.name,
+            detail: persona.description,
+            icon: <UserRound className="h-3.5 w-3.5" />,
+          }))}
+        />
+      )}
+    </div>
+  ) : undefined;
   const collectionContext = chat.activeConversation?.collectionContext ?? initialCollectionContext;
 
   const sentInitialRef = useRef<string | null>(null);
@@ -582,12 +853,12 @@ export function ChatPage() {
         ) : (
           <>
             {chat.activeId && (
-              <div className="sticky top-0 z-10 shrink-0 border-b border-border/60 bg-surface-1/80 px-3 py-1.5 backdrop-blur">
-                <div className="flex min-h-8 items-center gap-1.5">
+              <div className="sticky top-0 z-10 shrink-0 border-b border-border/60 bg-surface-1/85 px-3 py-1.5 backdrop-blur">
+                <div className="flex min-h-10 flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={toggleSidebar}
-                    className="flex h-7 w-7 items-center justify-center rounded-md border border-border/50 bg-surface-2/70
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/50 bg-surface-2/70
                       text-text-tertiary hover:text-text-primary hover:bg-surface-3
                       transition-colors cursor-pointer"
                     title={t('chat.toggleSidebar')}
@@ -595,47 +866,7 @@ export function ChatPage() {
                   >
                     {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
                   </button>
-                  {chat.agentConfig && agentConfigs.length > 0 && (
-                    <div className="relative min-w-[140px]">
-                      <select
-                        className="h-7 w-full max-w-[210px] cursor-pointer appearance-none rounded-md border border-border/70 bg-surface-2/80 pl-2 pr-6 text-xs text-text-secondary outline-none transition-colors hover:border-border-hover focus:border-accent"
-                        value={chat.agentConfig.id}
-                        aria-label={t('settings.defaultModel')}
-                        onChange={async (e) => {
-                          const selected = agentConfigs.find(c => c.id === e.target.value);
-                          if (selected) await chat.switchAgentConfig(selected);
-                        }}
-                        title={`${chat.agentConfig.provider} / ${chat.agentConfig.model}`}
-                      >
-                        {agentConfigs.map(c => (
-                          <option key={c.id} value={c.id}>
-                            {c.name || `${c.provider}/${c.model}`}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-text-tertiary">▾</span>
-                    </div>
-                  )}
-                  {personas.length > 0 && (
-                    <div className="relative min-w-[132px]">
-                      <UserRound className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
-                      <select
-                        className="h-7 w-full max-w-[178px] cursor-pointer appearance-none rounded-md border border-border/70 bg-surface-2/80 pl-7 pr-6 text-xs text-text-secondary outline-none transition-colors hover:border-border-hover focus:border-accent"
-                        value={activePersonaId}
-                        aria-label={t('settings.personas')}
-                        onChange={(e) => setPersona(e.target.value)}
-                        title={`Persona: ${personas.find((p) => p.id === activePersonaId)?.name ?? activePersonaId}`}
-                      >
-                        {personas.map((persona) => (
-                          <option key={persona.id} value={persona.id}>
-                            {persona.name}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-text-tertiary">▾</span>
-                    </div>
-                  )}
-                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center justify-start gap-2">
                     <SourceSelector
                       conversationId={chat.activeId}
                       initialSelectedIds={initialSourceIds}
@@ -730,6 +961,7 @@ export function ChatPage() {
               isStreaming={chat.isStreaming}
               disabled={!chat.agentConfig || chat.loadingMsgs || isCompacting}
               conversationId={chat.activeId ?? undefined}
+              sessionControls={sessionControls}
               prefillText={prefillText}
               onCompact={chat.activeId ? handleCompactConversation : undefined}
               isCompacting={isCompacting}

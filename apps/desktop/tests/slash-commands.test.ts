@@ -85,7 +85,10 @@ test('resolves workflow command templates', () => {
   const resolved = resolveSlashCommandMessage('/workflow:research_verify model routing', options);
   assert(resolved, 'workflow slash command should resolve');
   assertEqual(resolved.skillIds.length, 0, 'workflow command does not pin skills');
-  assertEqual(resolved.message, 'Run research.\n\nGoal:\nmodel routing', 'workflow template is expanded');
+  assert(resolved.message.includes('spawn_subagent_batch'), 'workflow prompt requires batch tool');
+  assert(resolved.message.includes('workflow_template: research_verify'), 'workflow prompt includes template id');
+  assert(resolved.message.includes('batch_goal:'), 'workflow prompt includes batch goal key');
+  assert(resolved.message.includes('Run research.\n\nGoal:\nmodel routing'), 'workflow template is expanded');
 });
 
 test('resolves compact as a local command', () => {

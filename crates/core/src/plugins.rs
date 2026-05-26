@@ -1,13 +1,15 @@
-//! Built-in plugin metadata.
+//! Built-in ecosystem surface metadata.
 //!
-//! This is the first plugin-host seam: capabilities are grouped as coherent
-//! packages before their implementations are moved behind package-specific
-//! modules.
+//! The public type names still use `Plugin` for compatibility with existing
+//! desktop calls, but this module classifies built-in capabilities by their
+//! ecosystem surface so "plugin" does not become the umbrella term.
 
 pub(crate) mod image_generation;
 pub(crate) mod office_documents;
 
 use crate::app_settings::AppConfig;
+use crate::capability_package::{CapabilityPackageManifest, CapabilityPackagePermissions};
+use crate::ecosystem::EcosystemSurfaceKind;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,6 +87,7 @@ pub struct PluginManifest {
     pub capability: String,
     pub description: String,
     pub built_in: bool,
+    pub ecosystem_surface: EcosystemSurfaceKind,
     pub tools: Vec<String>,
     pub settings_surfaces: Vec<String>,
     pub workflows: Vec<String>,
@@ -94,6 +97,28 @@ pub struct PluginManifest {
     pub provider_catalogs: Vec<PluginProviderCatalog>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_checks: Vec<PluginRuntimeCheck>,
+}
+
+impl PluginManifest {
+    pub fn to_capability_manifest(&self) -> CapabilityPackageManifest {
+        CapabilityPackageManifest {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            surface: self.ecosystem_surface,
+            description: self.description.clone(),
+            version: 1,
+            tools: self.tools.clone(),
+            skills: Vec::new(),
+            workflows: self.workflows.clone(),
+            settings_surfaces: self.settings_surfaces.clone(),
+            runtime_checks: self
+                .runtime_checks
+                .iter()
+                .map(|check| check.id.clone())
+                .collect(),
+            permissions: CapabilityPackagePermissions::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -108,6 +133,7 @@ struct BuiltinPlugin {
     name: &'static str,
     capability: &'static str,
     description: &'static str,
+    ecosystem_surface: EcosystemSurfaceKind,
     tools: &'static [&'static str],
     settings_surfaces: &'static [&'static str],
     workflows: &'static [&'static str],
@@ -130,6 +156,7 @@ impl BuiltinPlugin {
             capability: self.capability.to_string(),
             description: self.description.to_string(),
             built_in: true,
+            ecosystem_surface: self.ecosystem_surface,
             tools: self.tools.iter().map(|tool| (*tool).to_string()).collect(),
             settings_surfaces: self
                 .settings_surfaces
@@ -172,6 +199,7 @@ const CORE_AGENT_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     capability: "Run orchestration",
     description:
         "Routes tasks, tracks plans, and records verification without owning domain tools.",
+    ecosystem_surface: EcosystemSurfaceKind::CorePlatform,
     tools: &["tool_search", "update_plan", "record_verification"],
     settings_surfaces: &["agent-quality", "tool-approvals"],
     workflows: &["task-planning", "verification"],
@@ -182,6 +210,7 @@ const KNOWLEDGE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     name: "Knowledge Base",
     capability: "Local evidence retrieval",
     description: "Searches, indexes, and inspects local knowledge sources with evidence metadata.",
+    ecosystem_surface: EcosystemSurfaceKind::CorePlatform,
     tools: &[
         "search_knowledge_base",
         "retrieve_evidence",
@@ -206,6 +235,7 @@ const OFFICE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     capability: "Document generation and analysis",
     description:
         "Prepares document runtimes and works with PPT, DOCX, XLSX, PDF, and HTML document flows.",
+    ecosystem_surface: EcosystemSurfaceKind::CapabilityPackage,
     tools: &[
         "prepare_document_tools",
         "get_document_info",
@@ -227,6 +257,7 @@ const IMAGE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     capability: "Image creation",
     description:
         "Routes image requests through provider-specific adapters and stores generated assets.",
+    ecosystem_surface: EcosystemSurfaceKind::Adapter,
     tools: &["generate_image"],
     settings_surfaces: &["image-generation"],
     workflows: &["generate-image"],
@@ -238,10 +269,12 @@ const WEB_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     capability: "Network research",
     description:
         "Fetches remote pages and web search results with explicit network trust metadata.",
+    ecosystem_surface: EcosystemSurfaceKind::Adapter,
     tools: &[
         "web_search",
         "web_research_context",
         "fetch_url",
+        "browser_evidence_capture",
         "download_asset",
     ],
     settings_surfaces: &["network", "web-search"],
@@ -254,6 +287,7 @@ const FILE_WORKSPACE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     capability: "Scoped file work",
     description:
         "Reads, searches, edits, and archives files through source-scoped workspace tools.",
+    ecosystem_surface: EcosystemSurfaceKind::CapabilityPackage,
     tools: &[
         "read_file",
         "read_files",
@@ -278,6 +312,7 @@ const DESKTOP_AUTOMATION_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     name: "Desktop Automation",
     capability: "System and desktop actions",
     description: "Runs local commands and controlled desktop actions behind approval gates.",
+    ecosystem_surface: EcosystemSurfaceKind::HostSurface,
     tools: &["run_shell", "desktop_automation"],
     settings_surfaces: &["tool-approvals"],
     workflows: &["run-command", "control-desktop"],
@@ -289,6 +324,7 @@ const MEMORY_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     capability: "Reusable working context",
     description:
         "Manages playbooks, sessions, skills, scratchpads, feedback, and durable agent memory.",
+    ecosystem_surface: EcosystemSurfaceKind::CapabilityPackage,
     tools: &[
         "search_playbooks",
         "manage_playbook",
@@ -311,6 +347,7 @@ const EVALUATION_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     capability: "Quality checks",
     description:
         "Runs readiness previews and quality checks for agent configuration and workflows.",
+    ecosystem_surface: EcosystemSurfaceKind::CorePlatform,
     tools: &["agent_harness_dry_run"],
     settings_surfaces: &["agent-quality"],
     workflows: &["dry-run-agent"],
@@ -321,6 +358,7 @@ const DELEGATION_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     name: "Delegation",
     capability: "Subagent work",
     description: "Delegates bounded work to subagents and adjudicates their outputs.",
+    ecosystem_surface: EcosystemSurfaceKind::CapabilityPackage,
     tools: &[
         "spawn_subagent",
         "spawn_subagent_batch",
@@ -336,6 +374,7 @@ const MCP_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     capability: "External connectors",
     description:
         "Exposes server-defined tools from configured MCP connectors with explicit approval policy.",
+    ecosystem_surface: EcosystemSurfaceKind::Connector,
     tools: &["mcp_tool"],
     settings_surfaces: &["mcp"],
     workflows: &["connector-tool-call"],
@@ -375,6 +414,19 @@ pub fn builtin_plugin_manifests_with_context(
         .collect()
 }
 
+pub fn builtin_capability_manifests() -> Vec<CapabilityPackageManifest> {
+    builtin_capability_manifests_with_context(PluginManifestContext::default())
+}
+
+pub fn builtin_capability_manifests_with_context(
+    context: PluginManifestContext<'_>,
+) -> Vec<CapabilityPackageManifest> {
+    builtin_plugin_manifests_with_context(context)
+        .into_iter()
+        .map(|manifest| manifest.to_capability_manifest())
+        .collect()
+}
+
 pub fn plugin_for_tool(name: &str) -> ToolPluginInfo {
     plugin_for_tool_name(name).info()
 }
@@ -393,6 +445,7 @@ fn plugin_for_tool_name(name: &str) -> BuiltinPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecosystem::EcosystemSurfaceKind;
 
     #[test]
     fn maps_tools_to_capability_packages() {
@@ -421,5 +474,92 @@ mod tests {
             .settings_surfaces
             .iter()
             .any(|surface| surface == "office-runtime"));
+    }
+
+    #[test]
+    fn builtin_manifests_classify_ecosystem_surfaces() {
+        let manifests = builtin_plugin_manifests();
+
+        let kind_for = |id: &str| {
+            manifests
+                .iter()
+                .find(|manifest| manifest.id == id)
+                .map(|manifest| manifest.ecosystem_surface)
+        };
+
+        assert_eq!(
+            kind_for("core-agent"),
+            Some(EcosystemSurfaceKind::CorePlatform)
+        );
+        assert_eq!(
+            kind_for("knowledge-base"),
+            Some(EcosystemSurfaceKind::CorePlatform)
+        );
+        assert_eq!(
+            kind_for("office-documents"),
+            Some(EcosystemSurfaceKind::CapabilityPackage)
+        );
+        assert_eq!(
+            kind_for("image-generation"),
+            Some(EcosystemSurfaceKind::Adapter)
+        );
+        assert_eq!(
+            kind_for("web-research"),
+            Some(EcosystemSurfaceKind::Adapter)
+        );
+        assert_eq!(
+            kind_for("desktop-automation"),
+            Some(EcosystemSurfaceKind::HostSurface)
+        );
+        assert_eq!(
+            kind_for("mcp-connectors"),
+            Some(EcosystemSurfaceKind::Connector)
+        );
+    }
+
+    #[test]
+    fn builtin_capability_manifests_derive_from_compat_manifests() {
+        let compat_manifests = builtin_plugin_manifests();
+        let capability_manifests = builtin_capability_manifests();
+
+        assert_eq!(capability_manifests.len(), compat_manifests.len());
+        for capability_manifest in &capability_manifests {
+            crate::capability_package::validate_capability_manifest(capability_manifest)
+                .expect("builtin capability manifest should validate");
+            let compat = compat_manifests
+                .iter()
+                .find(|manifest| manifest.id == capability_manifest.id)
+                .expect("capability manifest should come from compat manifest");
+
+            assert_eq!(capability_manifest.name, compat.name);
+            assert_eq!(capability_manifest.surface, compat.ecosystem_surface);
+            assert_eq!(capability_manifest.description, compat.description);
+            assert_eq!(capability_manifest.tools, compat.tools);
+            assert_eq!(
+                capability_manifest.settings_surfaces,
+                compat.settings_surfaces
+            );
+            assert_eq!(capability_manifest.workflows, compat.workflows);
+        }
+    }
+
+    #[test]
+    fn default_registry_tools_are_declared_by_one_builtin_manifest() {
+        let manifests = builtin_plugin_manifests();
+        let registry = crate::tools::default_tool_registry();
+
+        for tool_name in registry.tool_names() {
+            let owners = manifests
+                .iter()
+                .filter(|manifest| manifest.tools.iter().any(|tool| tool == &tool_name))
+                .map(|manifest| manifest.id.as_str())
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                owners.len(),
+                1,
+                "{tool_name} should be declared by exactly one built-in ecosystem manifest; owners: {owners:?}"
+            );
+        }
     }
 }

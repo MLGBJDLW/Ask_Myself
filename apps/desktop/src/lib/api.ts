@@ -3,8 +3,6 @@ import type {
   Source,
   ScanError,
   EvidenceCard,
-  Playbook,
-  PlaybookCitation,
   SearchResult,
   SearchFilters,
   IngestResult,
@@ -119,41 +117,6 @@ export const getEvidenceCards = (chunkIds: string[]) =>
 export const getIndexStats = () => invoke<IndexStats>("get_index_stats");
 
 export const rebuildIndex = () => invoke<void>("rebuild_index");
-
-// ── Playbooks ───────────────────────────────────────────────────────────
-
-export const createPlaybook = (
-  title: string,
-  description: string,
-  queryText: string,
-) => invoke<Playbook>("create_playbook", { title, description, queryText });
-
-export const listPlaybooks = () => invoke<Playbook[]>("list_playbooks");
-
-export const getPlaybook = (playbookId: string) =>
-  invoke<Playbook>("get_playbook", { playbookId });
-
-export const updatePlaybook = (
-  playbookId: string,
-  title: string,
-  description: string,
-) => invoke<Playbook>("update_playbook", { playbookId, title, description });
-
-export const deletePlaybook = (playbookId: string) =>
-  invoke<void>("delete_playbook", { playbookId });
-
-export const addCitation = (
-  playbookId: string,
-  chunkId: string,
-  note: string,
-  sortOrder: number,
-) => invoke<PlaybookCitation>("add_citation", { playbookId, chunkId, note, sortOrder });
-
-export const listCitations = (playbookId: string) =>
-  invoke<PlaybookCitation[]>("list_citations", { playbookId });
-
-export const removeCitation = (citationId: string) =>
-  invoke<void>("remove_citation", { citationId });
 
 // ── Query Log ───────────────────────────────────────────────────────────
 
@@ -549,14 +512,6 @@ export const saveGeneratedImage = (input: SaveGeneratedImageInput) =>
 
 export const optimizeFtsIndex = () =>
   invoke<void>('optimize_fts_index');
-
-// ── Citations (extra) ───────────────────────────────────────────────────
-
-export const updateCitationNote = (citationId: string, note: string) =>
-  invoke<void>('update_citation_note', { citationId, note });
-
-export const reorderCitations = (playbookId: string, citationIds: string[]) =>
-  invoke<void>('reorder_citations', { playbookId, citationIds });
 
 // ── Watcher ─────────────────────────────────────────────────────────────
 

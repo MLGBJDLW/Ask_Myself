@@ -292,6 +292,15 @@ pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityD
             "document-analysis or sourced-question signals need comparison and summary tools",
         );
     }
+    if has_subagent_relevance_signal(&signals) {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.subagent",
+            ToolCategory::SubAgent,
+            "complex, agent, or workflow signals can require delegated work tools",
+        );
+    }
 
     let route_categories = route_categories(route);
     for category in &route_categories {
@@ -448,6 +457,51 @@ fn activate_category(
 
 fn has_signal(signals: &[ToolVisibilitySignal], kind: ToolVisibilitySignalKind) -> bool {
     signals.iter().any(|signal| signal.kind == kind)
+}
+
+fn has_subagent_relevance_signal(signals: &[ToolVisibilitySignal]) -> bool {
+    const SUBAGENT_RELEVANCE_TERMS: &[&str] = &[
+        "agent",
+        "agents",
+        "agentic",
+        "subagent",
+        "workflow",
+        "complex",
+        "multi-step",
+        "multi step",
+        "architecture",
+        "review",
+        "compare",
+        "comparison",
+        "research",
+        "verify",
+        "verification",
+        "critique",
+        "并行",
+        "复杂",
+        "研究",
+        "验证",
+        "审查",
+        "评审",
+        "对比",
+        "比较",
+        "架构",
+        "主agent",
+        "子agent",
+    ];
+
+    signals.iter().any(|signal| {
+        matches!(
+            signal.kind,
+            ToolVisibilitySignalKind::CodeOrToolOperation
+                | ToolVisibilitySignalKind::KnowledgeWork
+                | ToolVisibilitySignalKind::DocumentAnalysis
+                | ToolVisibilitySignalKind::WebLookup
+        ) && signal
+            .matched_terms
+            .iter()
+            .any(|term| SUBAGENT_RELEVANCE_TERMS.contains(&term.as_str()))
+    })
 }
 
 const QUESTION_TERMS: &[&str] = &[
@@ -680,6 +734,10 @@ const KNOWLEDGE_TERMS: &[&str] = &[
     "agent",
     "agentic",
     "workflow",
+    "complex",
+    "multi-step",
+    "multi step",
+    "research",
     "compile",
     "compilation",
     "entity",
@@ -708,6 +766,7 @@ const KNOWLEDGE_TERMS: &[&str] = &[
     "归档",
     "概念",
     "技能",
+    "研究",
     "命中",
     "命中率",
     "命中效率",
@@ -744,6 +803,10 @@ const DOCUMENT_ANALYSIS_TERMS: &[&str] = &[
     "summary",
     "analyze",
     "analysis",
+    "review",
+    "verify",
+    "verification",
+    "critique",
     "evidence",
     "citation",
     "statistics",
@@ -751,6 +814,9 @@ const DOCUMENT_ANALYSIS_TERMS: &[&str] = &[
     "info",
     "分析",
     "总结",
+    "审查",
+    "评审",
+    "验证",
     "引用",
     "文档",
     "比较",
@@ -836,5 +902,16 @@ mod tests {
                     .iter()
                     .any(|term| term == "deepseek" || term == "命中效率")
         }));
+    }
+
+    #[test]
+    fn workflow_signal_activates_subagent_category() {
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "Plan a complex workflow for this research task.",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert!(decision.active_categories.contains(&ToolCategory::SubAgent));
     }
 }

@@ -2,7 +2,6 @@ export type { Source, ScanError } from "./source";
 export type { Document, FileType } from "./document";
 export type { Chunk } from "./chunk";
 export type { EvidenceCard, Highlight } from "./evidence";
-export type { Playbook, PlaybookCitation } from "./playbook";
 export type {
   GraphDocumentHit,
   GraphEntityHit,
@@ -57,6 +56,7 @@ export type {
   ApprovalRequest,
   ApprovalRisk,
   ApprovalDecisionValue,
+  EcosystemSurfaceKind,
   ToolPluginInfo,
   PluginManifest,
   PluginProviderCatalog,

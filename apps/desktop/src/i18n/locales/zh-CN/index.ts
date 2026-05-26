@@ -13,7 +13,6 @@ import evidence from './evidence.json';
 import knowledge from './knowledge.json';
 import media from './media.json';
 import nav from './nav.json';
-import playbooks from './playbooks.json';
 import project from './project.json';
 import providers from './providers.json';
 import search from './search.json';
@@ -41,7 +40,6 @@ export const zhCN: TranslationKeys = flattenTranslationNamespaces({
   knowledge,
   media,
   nav,
-  playbooks,
   project,
   providers,
   search,

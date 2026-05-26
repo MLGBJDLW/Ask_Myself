@@ -21,7 +21,7 @@ use crate::tools::ToolRegistry;
 // Data models
 // ---------------------------------------------------------------------------
 
-/// Persisted MCP server configuration.
+/// Persisted MCP connector configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServer {
@@ -41,11 +41,11 @@ pub struct McpServer {
     pub created_at: String,
     pub updated_at: String,
     /// Non-`None` for built-in servers managed by the app (e.g. "playwright-browser").
-    /// Built-in servers cannot be deleted and have their process lifecycle managed.
+    /// Built-in connectors cannot be deleted and have their process lifecycle managed.
     pub builtin_id: Option<String>,
 }
 
-/// Input for creating or updating an MCP server configuration.
+/// Input for creating or updating an MCP connector configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveMcpServerInput {
@@ -61,7 +61,7 @@ pub struct SaveMcpServerInput {
     pub enabled: bool,
 }
 
-/// Tool information returned by an MCP server.
+/// Tool information returned by an MCP connector.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolInfo {
     pub name: String,
@@ -174,7 +174,7 @@ fn normalize_http_url(field: &str, value: &Option<String>) -> Result<Option<Stri
 }
 
 fn normalize_save_input(input: &SaveMcpServerInput) -> Result<SaveMcpServerInput, CoreError> {
-    let name = normalize_required_text("MCP server name", &input.name)?;
+    let name = normalize_required_text("MCP connector name", &input.name)?;
     let transport = match input.transport.trim() {
         "" => {
             return Err(CoreError::InvalidInput(
@@ -293,7 +293,7 @@ fn expand_managed_arg(arg: &str, port: u16) -> String {
 // ---------------------------------------------------------------------------
 
 impl Database {
-    /// List all MCP servers, newest first.
+    /// List all MCP connectors, newest first.
     pub fn list_mcp_servers(&self) -> Result<Vec<McpServer>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -325,7 +325,7 @@ impl Database {
         Ok(out)
     }
 
-    /// Create or update an MCP server configuration.
+    /// Create or update an MCP connector configuration.
     pub fn save_mcp_server(&self, input: &SaveMcpServerInput) -> Result<McpServer, CoreError> {
         let input = normalize_save_input(input)?;
         let conn = self.conn();
@@ -401,20 +401,20 @@ impl Database {
         self.get_mcp_server(&id)
     }
 
-    /// Delete an MCP server by ID.
+    /// Delete an MCP connector by ID.
     pub fn delete_mcp_server(&self, id: &str) -> Result<(), CoreError> {
         let conn = self.conn();
-        // Prevent deletion of built-in servers.
+        // Prevent deletion of built-in connectors.
         let builtin: Option<String> = conn
             .query_row(
                 "SELECT builtin_id FROM mcp_servers WHERE id = ?1",
                 rusqlite::params![id],
                 |row| row.get(0),
             )
-            .map_err(|_| CoreError::NotFound(format!("MCP server {id}")))?;
+            .map_err(|_| CoreError::NotFound(format!("MCP connector {id}")))?;
         if builtin.is_some() {
             return Err(CoreError::InvalidInput(
-                "Cannot delete built-in MCP server".into(),
+                "Cannot delete built-in MCP connector".into(),
             ));
         }
         let affected = conn.execute(
@@ -422,12 +422,12 @@ impl Database {
             rusqlite::params![id],
         )?;
         if affected == 0 {
-            return Err(CoreError::NotFound(format!("MCP server {id}")));
+            return Err(CoreError::NotFound(format!("MCP connector {id}")));
         }
         Ok(())
     }
 
-    /// Toggle an MCP server's enabled state.
+    /// Toggle an MCP connector's enabled state.
     pub fn toggle_mcp_server(&self, id: &str, enabled: bool) -> Result<(), CoreError> {
         let conn = self.conn();
         let affected = conn.execute(
@@ -435,12 +435,12 @@ impl Database {
             rusqlite::params![id, enabled as i32],
         )?;
         if affected == 0 {
-            return Err(CoreError::NotFound(format!("MCP server {id}")));
+            return Err(CoreError::NotFound(format!("MCP connector {id}")));
         }
         Ok(())
     }
 
-    /// Get only enabled MCP servers.
+    /// Get only enabled MCP connectors.
     pub fn get_enabled_mcp_servers(&self) -> Result<Vec<McpServer>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -498,7 +498,7 @@ impl Database {
                 })
             },
         )
-        .map_err(|_| CoreError::NotFound(format!("MCP server {id}")))
+        .map_err(|_| CoreError::NotFound(format!("MCP connector {id}")))
     }
 }
 
@@ -506,7 +506,7 @@ impl Database {
 // MCP Manager
 // ---------------------------------------------------------------------------
 
-/// Manages MCP server connections and their lifecycle.
+/// Manages MCP connector connections and their lifecycle.
 pub struct McpManager {
     clients: HashMap<String, Arc<Mutex<McpClient>>>,
     connected_servers: HashMap<String, McpServer>,
@@ -522,13 +522,13 @@ impl McpManager {
         }
     }
 
-    /// Start a managed process for a built-in MCP server.
+    /// Start a managed process for a built-in MCP connector.
     /// Returns the port the process is listening on.
     async fn start_managed_process(&mut self, server: &McpServer) -> Result<u16, CoreError> {
         let command = server
             .command
             .as_deref()
-            .ok_or_else(|| CoreError::Mcp("Built-in server missing command".into()))?;
+            .ok_or_else(|| CoreError::Mcp("Built-in connector missing command".into()))?;
 
         let port = find_free_port()?;
 
@@ -587,7 +587,7 @@ impl McpManager {
         })?;
 
         tracing::info!(
-            "Started managed MCP server '{}' (PID {}) on port {}",
+            "Started managed MCP connector '{}' (PID {}) on port {}",
             server.name,
             child.id(),
             port
@@ -643,7 +643,7 @@ impl McpManager {
         Ok(port)
     }
 
-    /// Connect to an MCP server and return the tools it offers.
+    /// Connect to an MCP connector and return the tools it offers.
     pub async fn connect_server(
         &mut self,
         server: &McpServer,
@@ -780,7 +780,7 @@ impl McpManager {
         errors
     }
 
-    /// Disconnect and shut down a specific MCP server.
+    /// Disconnect and shut down a specific MCP connector.
     pub async fn disconnect_server(&mut self, server_id: &str) -> Result<(), CoreError> {
         self.connected_servers.remove(server_id);
         if let Some(client) = self.clients.remove(server_id) {
@@ -796,7 +796,7 @@ impl McpManager {
         Ok(())
     }
 
-    /// Disconnect all MCP servers.
+    /// Disconnect all MCP connectors.
     pub async fn disconnect_all(&mut self) {
         let ids: Vec<String> = self.clients.keys().cloned().collect();
         for id in ids {

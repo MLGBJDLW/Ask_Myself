@@ -693,6 +693,7 @@ mod tests {
                 capability: "Image creation".to_string(),
                 description: "test".to_string(),
                 built_in: true,
+                ecosystem_surface: crate::ecosystem::EcosystemSurfaceKind::Adapter,
                 tools: vec!["generate_image".to_string()],
                 settings_surfaces: vec!["image-generation".to_string()],
                 workflows: vec!["generate-image".to_string()],

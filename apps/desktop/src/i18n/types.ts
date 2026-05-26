@@ -11,7 +11,6 @@ import type evidence from './locales/en/evidence.json';
 import type knowledge from './locales/en/knowledge.json';
 import type media from './locales/en/media.json';
 import type nav from './locales/en/nav.json';
-import type playbooks from './locales/en/playbooks.json';
 import type project from './locales/en/project.json';
 import type providers from './locales/en/providers.json';
 import type search from './locales/en/search.json';
@@ -54,7 +53,6 @@ export const translationNamespaces = [
   'knowledge',
   'media',
   'nav',
-  'playbooks',
   'project',
   'providers',
   'search',
@@ -85,7 +83,6 @@ type NamespaceKeyMap = {
   knowledge: typeof knowledge;
   media: typeof media;
   nav: typeof nav;
-  playbooks: typeof playbooks;
   project: typeof project;
   providers: typeof providers;
   search: typeof search;

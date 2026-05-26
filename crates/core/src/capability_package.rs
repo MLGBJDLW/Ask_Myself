@@ -5,7 +5,10 @@
 //! workflows, and tests so runtime discovery does not need per-feature path
 //! conventions.
 
+use crate::ecosystem::{ecosystem_surface_policy, EcosystemSurfaceKind};
+use crate::error::CoreError;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 pub const NEXA_CAPABILITY_PACKAGES_DIR: &str = ".nexa/capabilities";
 pub const NEXA_CAPABILITY_MANIFEST_FILE: &str = "capability.yaml";
@@ -49,6 +52,43 @@ pub struct CapabilityPackageLayout {
     pub component_dirs: Vec<CapabilityComponentDirectory>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityPackagePermissions {
+    #[serde(default)]
+    pub read: bool,
+    #[serde(default)]
+    pub write: bool,
+    #[serde(default)]
+    pub execute: bool,
+    #[serde(default)]
+    pub network: bool,
+    #[serde(default)]
+    pub native_code: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityPackageManifest {
+    pub id: String,
+    pub name: String,
+    pub surface: EcosystemSurfaceKind,
+    pub description: String,
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflows: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings_surfaces: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_checks: Vec<String>,
+    #[serde(default)]
+    pub permissions: CapabilityPackagePermissions,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityPackageEntry {
@@ -57,6 +97,95 @@ pub struct CapabilityPackageEntry {
     pub kind: CapabilityComponentKind,
     pub path: String,
     pub built_in: bool,
+}
+
+pub fn validate_capability_manifest(
+    manifest: &CapabilityPackageManifest,
+) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    if manifest.id.trim().is_empty() {
+        errors.push("id is required".to_string());
+    }
+    if manifest.name.trim().is_empty() {
+        errors.push("name is required".to_string());
+    }
+    if manifest.description.trim().is_empty() {
+        errors.push("description is required".to_string());
+    }
+    if manifest.version == 0 {
+        errors.push("version must be at least 1".to_string());
+    }
+
+    let policy =
+        ecosystem_surface_policy(manifest.surface).expect("all ecosystem surfaces have policies");
+    if manifest.permissions.native_code && !policy.native_code_allowed {
+        errors.push(format!(
+            "{} cannot declare nativeCode permission",
+            policy.label
+        ));
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+pub fn capability_packages_dir(project_root: impl AsRef<Path>) -> PathBuf {
+    project_root.as_ref().join(NEXA_CAPABILITY_PACKAGES_DIR)
+}
+
+pub fn read_capability_manifest(
+    manifest_path: impl AsRef<Path>,
+) -> Result<CapabilityPackageManifest, CoreError> {
+    let manifest_path = manifest_path.as_ref();
+    let content = std::fs::read_to_string(manifest_path)?;
+    let manifest =
+        serde_yaml::from_str::<CapabilityPackageManifest>(&content).map_err(|error| {
+            CoreError::Parse(format!(
+                "Invalid capability manifest {}: {error}",
+                manifest_path.display()
+            ))
+        })?;
+
+    validate_capability_manifest(&manifest).map_err(|errors| {
+        CoreError::InvalidInput(format!(
+            "Invalid capability manifest {}: {}",
+            manifest_path.display(),
+            errors.join("; ")
+        ))
+    })?;
+
+    Ok(manifest)
+}
+
+pub fn discover_capability_manifests(
+    project_root: impl AsRef<Path>,
+) -> Result<Vec<CapabilityPackageManifest>, CoreError> {
+    let packages_dir = capability_packages_dir(project_root);
+    if !packages_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut manifest_paths = Vec::new();
+    for entry in std::fs::read_dir(&packages_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            let manifest_path = entry.path().join(NEXA_CAPABILITY_MANIFEST_FILE);
+            if manifest_path.is_file() {
+                manifest_paths.push(manifest_path);
+            }
+        }
+    }
+    manifest_paths.sort();
+
+    let mut manifests = Vec::with_capacity(manifest_paths.len());
+    for manifest_path in manifest_paths {
+        manifests.push(read_capability_manifest(manifest_path)?);
+    }
+    manifests.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(manifests)
 }
 
 pub fn nexa_capability_package_layout() -> CapabilityPackageLayout {
@@ -142,6 +271,7 @@ fn normalize_relative_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecosystem::EcosystemSurfaceKind;
 
     #[test]
     fn layout_unifies_all_capability_component_dirs() {
@@ -202,5 +332,142 @@ mod tests {
             ".nexa/capabilities/automation/hooks/before-run/hook.yaml"
         );
         assert!(!entry.built_in);
+    }
+
+    #[test]
+    fn parses_capability_manifest_yaml_with_surface() {
+        let manifest: CapabilityPackageManifest = serde_yaml::from_str(
+            r#"
+id: office-documents
+name: Office Documents
+surface: capability_package
+description: Works with PPT, DOCX, XLSX, PDF, and HTML document flows.
+version: 1
+tools:
+  - prepare_document_tools
+  - get_document_info
+settingsSurfaces:
+  - office-runtime
+workflows:
+  - generate-presentation
+runtimeChecks:
+  - office-runtime
+"#,
+        )
+        .expect("valid capability manifest yaml");
+
+        assert_eq!(manifest.id, "office-documents");
+        assert_eq!(manifest.surface, EcosystemSurfaceKind::CapabilityPackage);
+        assert_eq!(
+            manifest.tools,
+            ["prepare_document_tools", "get_document_info"]
+        );
+        validate_capability_manifest(&manifest).expect("manifest should validate");
+    }
+
+    #[test]
+    fn manifest_validation_rejects_native_code_except_native_plugin() {
+        let mut manifest = CapabilityPackageManifest {
+            id: "unsafe-connector".to_string(),
+            name: "Unsafe Connector".to_string(),
+            surface: EcosystemSurfaceKind::Connector,
+            description: "test".to_string(),
+            version: 1,
+            tools: Vec::new(),
+            skills: Vec::new(),
+            workflows: Vec::new(),
+            settings_surfaces: Vec::new(),
+            runtime_checks: Vec::new(),
+            permissions: CapabilityPackagePermissions {
+                native_code: true,
+                ..CapabilityPackagePermissions::default()
+            },
+        };
+
+        assert!(validate_capability_manifest(&manifest).is_err());
+
+        manifest.surface = EcosystemSurfaceKind::NativePlugin;
+        validate_capability_manifest(&manifest).expect("native plugins may declare native code");
+    }
+
+    #[test]
+    fn discovers_project_capability_manifests_from_standard_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let packages = capability_packages_dir(dir.path());
+        std::fs::create_dir_all(packages.join("z-connector")).unwrap();
+        std::fs::create_dir_all(packages.join("a-skill")).unwrap();
+        std::fs::write(
+            packages
+                .join("z-connector")
+                .join(NEXA_CAPABILITY_MANIFEST_FILE),
+            r#"
+id: z-connector
+name: Z Connector
+surface: connector
+description: External connector package.
+version: 1
+permissions:
+  read: true
+  network: true
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            packages.join("a-skill").join(NEXA_CAPABILITY_MANIFEST_FILE),
+            r#"
+id: a-skill
+name: A Skill
+surface: skill_package
+description: Portable skill package.
+version: 1
+skills:
+  - a-skill
+"#,
+        )
+        .unwrap();
+
+        let manifests = discover_capability_manifests(dir.path()).unwrap();
+
+        assert_eq!(
+            manifests
+                .iter()
+                .map(|manifest| manifest.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a-skill", "z-connector"]
+        );
+        assert_eq!(manifests[0].surface, EcosystemSurfaceKind::SkillPackage);
+        assert_eq!(manifests[1].surface, EcosystemSurfaceKind::Connector);
+    }
+
+    #[test]
+    fn discover_returns_empty_when_capability_directory_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let manifests = discover_capability_manifests(dir.path()).unwrap();
+
+        assert!(manifests.is_empty());
+    }
+
+    #[test]
+    fn read_capability_manifest_reports_validation_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join(NEXA_CAPABILITY_MANIFEST_FILE);
+        std::fs::write(
+            &manifest_path,
+            r#"
+id: bad
+name: Bad
+surface: connector
+description: Invalid native connector.
+version: 1
+permissions:
+  nativeCode: true
+"#,
+        )
+        .unwrap();
+
+        let error = read_capability_manifest(&manifest_path).unwrap_err();
+
+        assert!(error.to_string().contains("cannot declare nativeCode"));
     }
 }

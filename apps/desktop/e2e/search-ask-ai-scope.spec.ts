@@ -214,8 +214,6 @@ test.beforeEach(async ({ page }) => {
           };
         case 'search_conversations_cmd':
           return [];
-        case 'list_playbooks':
-          return [];
         case 'agent_chat_cmd': {
           const conversationId = String(args.conversationId ?? '');
           const current = messagesByConversation[conversationId] ?? [];

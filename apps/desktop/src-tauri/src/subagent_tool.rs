@@ -18,7 +18,7 @@ use nexa_core::search;
 use nexa_core::skills::Skill;
 use nexa_core::task_run::AgentTaskRuntime;
 use nexa_core::task_timeline::TaskTimelineEvent;
-use nexa_core::tools::{Tool, ToolRegistry, ToolResult};
+use nexa_core::tools::{Tool, ToolCategory, ToolRegistry, ToolResult};
 use nexa_core::workflow_catalog::{
     workflow_template_by_id, workflow_template_id_values, WorkflowTemplateDefinition,
 };
@@ -138,6 +138,18 @@ const SUBAGENT_TOOL_SPECS: &[SubagentToolSpec] = &[
     },
     SubagentToolSpec {
         name: "fetch_url",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "web_search",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "web_research_context",
+        enabled_by_default: true,
+    },
+    SubagentToolSpec {
+        name: "browser_evidence_capture",
         enabled_by_default: true,
     },
     SubagentToolSpec {
@@ -274,6 +286,8 @@ const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "grep_files",
             "get_chunk_context",
             "fetch_url",
+            "web_search",
+            "web_research_context",
             "search_playbooks",
             "get_document_info",
             "search_by_date",
@@ -298,6 +312,9 @@ const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "glob_files",
             "search_files",
             "grep_files",
+            "fetch_url",
+            "web_search",
+            "web_research_context",
             "compare_documents",
             "get_document_info",
             "run_health_check",
@@ -370,6 +387,8 @@ const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "search_playbooks",
             "search_knowledge_base",
             "fetch_url",
+            "web_search",
+            "web_research_context",
             "record_verification",
         ],
         default_max_iterations: 2,
@@ -471,7 +490,7 @@ impl SubagentBudgetController {
         let max_calls_per_turn = config.subagent_max_calls_per_turn.unwrap_or(6).clamp(1, 32);
         let token_budget = config
             .subagent_token_budget
-            .unwrap_or(12_000)
+            .unwrap_or(32_000)
             .clamp(256, 200_000);
 
         Self {
@@ -2163,6 +2182,10 @@ impl Tool for SubagentTool {
         spawn_subagent_parameters_schema()
     }
 
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::SubAgent]
+    }
+
     async fn execute(
         &self,
         call_id: &str,
@@ -2236,6 +2259,10 @@ impl Tool for SubagentBatchTool {
 
     fn parameters_schema(&self) -> serde_json::Value {
         spawn_subagent_batch_parameters_schema()
+    }
+
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::SubAgent]
     }
 
     async fn execute(
@@ -2428,6 +2455,10 @@ impl Tool for JudgeSubagentResultsTool {
         delegation_tool_def(&JUDGE_SUBAGENT_RESULTS_DEF, JUDGE_SUBAGENT_RESULTS_JSON)
             .parameters
             .clone()
+    }
+
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::SubAgent]
     }
 
     async fn execute(
@@ -2807,6 +2838,26 @@ mod tests {
         assert_eq!(resolve_delegation_timeout_secs(&config, None), 120);
     }
 
+    #[tokio::test]
+    async fn test_budget_uses_realistic_default_token_budget() {
+        let budget = SubagentBudgetController::new(&AgentConfig::default());
+        let snapshot = budget.snapshot().await;
+
+        assert_eq!(snapshot.token_budget, 32_000);
+    }
+
+    #[test]
+    fn test_default_subagent_tools_include_read_only_web_research() {
+        let tools = default_subagent_tool_names();
+
+        assert!(tools.contains(&"web_search".to_string()));
+        assert!(tools.contains(&"web_research_context".to_string()));
+        assert!(tools.contains(&"browser_evidence_capture".to_string()));
+        assert!(!tools.contains(&"desktop_automation".to_string()));
+        assert!(!tools.contains(&"edit_file".to_string()));
+        assert!(!tools.contains(&"multi_edit".to_string()));
+    }
+
     #[test]
     fn test_normalize_spawn_args_accepts_structured_role_id() {
         let args = normalize_spawn_args(SpawnSubagentArgs {
@@ -2871,6 +2922,8 @@ mod tests {
     fn test_role_profile_narrows_default_tools() {
         let base_tools = vec![
             "search_knowledge_base".to_string(),
+            "web_search".to_string(),
+            "web_research_context".to_string(),
             "desktop_automation".to_string(),
             "run_shell".to_string(),
             "record_verification".to_string(),
@@ -2879,6 +2932,8 @@ mod tests {
         let tools = resolve_allowed_tools_for_role(&base_tools, None, Some(verifier));
 
         assert!(tools.contains(&"search_knowledge_base".to_string()));
+        assert!(tools.contains(&"web_search".to_string()));
+        assert!(tools.contains(&"web_research_context".to_string()));
         assert!(tools.contains(&"record_verification".to_string()));
         assert!(!tools.contains(&"desktop_automation".to_string()));
         assert!(!tools.contains(&"run_shell".to_string()));

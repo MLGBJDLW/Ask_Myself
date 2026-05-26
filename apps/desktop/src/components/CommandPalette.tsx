@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Command } from 'cmdk';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { Search, FolderOpen, BookOpen, MessageCircle, Settings, ScanSearch, Database, Clock, Keyboard, Archive } from 'lucide-react';
+import { Search, FolderOpen, MessageCircle, Settings, ScanSearch, Database, Clock, Keyboard, Archive } from 'lucide-react';
 import * as api from '../lib/api';
 import type { QueryLog } from '../types';
 import { useTranslation } from '../i18n';
@@ -246,10 +246,6 @@ export function CommandPalette() {
                   <Command.Item onSelect={() => select(() => navigate('/sources'))}>
                     <FolderOpen className="h-4 w-4 shrink-0 text-text-tertiary" />
                     {t('nav.sources')}
-                  </Command.Item>
-                  <Command.Item onSelect={() => select(() => navigate('/playbooks'))}>
-                    <BookOpen className="h-4 w-4 shrink-0 text-text-tertiary" />
-                    {t('nav.playbooks')}
                   </Command.Item>
                   <Command.Item onSelect={() => select(() => navigate('/chat'))}>
                     <MessageCircle className="h-4 w-4 shrink-0 text-text-tertiary" />

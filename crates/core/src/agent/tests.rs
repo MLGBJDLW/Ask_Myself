@@ -45,14 +45,22 @@ fn test_tool_timeout_leaves_room_for_run_shell_default_timeout() {
 }
 
 #[test]
-fn test_tool_timeout_preserves_existing_multipliers() {
+fn test_tool_timeout_preserves_existing_multipliers_and_subagent_minimums() {
     assert_eq!(
         tool_timeout_for_call(Some(30), "retrieve_evidence", &serde_json::json!({})),
         Some(Duration::from_secs(60))
     );
     assert_eq!(
         tool_timeout_for_call(Some(30), "spawn_subagent", &serde_json::json!({})),
-        Some(Duration::from_secs(90))
+        Some(Duration::from_secs(180))
+    );
+    assert_eq!(
+        tool_timeout_for_call(Some(30), "spawn_subagent_batch", &serde_json::json!({})),
+        Some(Duration::from_secs(240))
+    );
+    assert_eq!(
+        tool_timeout_for_call(Some(300), "spawn_subagent", &serde_json::json!({})),
+        Some(Duration::from_secs(300))
     );
 }
 
