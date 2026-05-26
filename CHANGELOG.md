@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.0...nexa-monorepo-v0.8.1) (2026-05-26)
+
+
+### Features
+
+* **app:** update chat and workflow surfaces ([20c663d](https://github.com/MLGBJDLW/Nexa/commit/20c663dc70bca167dbeb3a655d3a3f6fca23b58d))
+* **ecosystem:** add capability package catalog ([7aed04d](https://github.com/MLGBJDLW/Nexa/commit/7aed04d7ed0f0d25729e322592f03b20fabe62bc))
+
+
+### Bug Fixes
+
+* **chat:** refine session controls layout ([0f5b2d3](https://github.com/MLGBJDLW/Nexa/commit/0f5b2d3a923d8ea4c4c4a6c86da6c42c2e926387))
+* **chat:** refine session controls layout ([820f090](https://github.com/MLGBJDLW/Nexa/commit/820f0907b80f07782cde799268fb9821158a5b28))
+* **core:** satisfy web search clippy lint ([de28411](https://github.com/MLGBJDLW/Nexa/commit/de28411cbb03769f88efcbb70c2e402f303f0ec4))
+
 ## [0.8.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.7.6...nexa-monorepo-v0.8.0) (2026-05-25)
 
 
