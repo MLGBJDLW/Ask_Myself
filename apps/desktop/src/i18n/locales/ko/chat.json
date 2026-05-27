@@ -156,6 +156,7 @@
   "compact": "대화 압축",
   "compactNow": "지금 압축",
   "compacting": "압축 중…",
+  "compactComplete": "압축 완료",
   "thinkingTokens": "사고",
   "cached": "캐시됨",
   "truncated": "응답이 잘렸습니다 (토큰 한도 도달)",

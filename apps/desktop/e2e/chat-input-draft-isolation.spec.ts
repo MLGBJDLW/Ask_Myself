@@ -189,3 +189,19 @@ test('keeps input drafts scoped to each conversation', async ({ page }) => {
   await page.getByRole('button', { name: /Draft B/ }).click();
   await expect(input).toHaveValue('draft for B');
 });
+
+test('keeps an input draft after leaving and returning to chat', async ({ page }) => {
+  await page.goto('/chat/conv-draft-a');
+
+  const input = page.getByTestId('chat-input-textarea');
+  await input.fill('draft survives page switch');
+
+  await page.getByRole('link', { name: 'Search' }).click();
+  await expect(page).toHaveURL(/\/$/);
+
+  await page.getByRole('link', { name: 'Chat' }).click();
+  await expect(page).toHaveURL(/\/chat$/);
+
+  await page.getByRole('button', { name: /Draft A/ }).click();
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('draft survives page switch');
+});

@@ -7,6 +7,10 @@ use crate::tools::ToolRegistry;
 
 use super::merge_tool_definitions;
 
+pub(super) fn dynamic_tool_visibility_prompt() -> &'static str {
+    "## Dynamic Tool Discovery\nSome enabled tools may be hidden from the current model step to keep context small. `tool_search` is the resident discovery tool. If the task needs a capability and the exact tool is not visible, call `tool_search` with the capability or tool-name fragment before using a nearby substitute. After `tool_search` returns, use the activated matching tool on the next model step. Do not claim an enabled capability is unavailable until `tool_search` fails or returns no match."
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct ToolSearchActivation {
     pub(super) activated: Vec<String>,
@@ -126,6 +130,15 @@ mod tests {
                 artifacts: None,
             })
         }
+    }
+
+    #[test]
+    fn dynamic_tool_visibility_prompt_points_to_resident_search() {
+        let prompt = dynamic_tool_visibility_prompt();
+
+        assert!(prompt.contains("tool_search"));
+        assert!(prompt.contains("resident discovery tool"));
+        assert!(prompt.contains("before using a nearby substitute"));
     }
 
     #[test]

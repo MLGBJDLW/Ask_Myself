@@ -730,19 +730,40 @@ export function ChatPage() {
   }, []);
 
   const [isCompacting, setIsCompacting] = useState(false);
+  const [compactCompleteVisible, setCompactCompleteVisible] = useState(false);
   const handleCompactConversation = useCallback(async () => {
     if (!chat.activeId) return;
     if (isCompacting) return;
+    setCompactCompleteVisible(false);
     setIsCompacting(true);
     try {
       await api.compactConversation(chat.activeId);
       await chat.reloadMessages({ resetUsage: true });
+      setCompactCompleteVisible(true);
     } catch (e) {
       toast.error(formatUserError(t('chat.compact'), e));
     } finally {
       setIsCompacting(false);
     }
   }, [chat.activeId, chat.reloadMessages, isCompacting, t]);
+
+  useEffect(() => {
+    if (!compactCompleteVisible) return;
+    const timeout = window.setTimeout(() => {
+      setCompactCompleteVisible(false);
+    }, 4800);
+    return () => window.clearTimeout(timeout);
+  }, [compactCompleteVisible]);
+
+  useEffect(() => {
+    if (chat.isStreaming) {
+      setCompactCompleteVisible(false);
+    }
+  }, [chat.isStreaming]);
+
+  useEffect(() => {
+    setCompactCompleteVisible(false);
+  }, [chat.activeId]);
 
   const pendingChatAction = (
     location.state as { pendingChatAction?: string } | null
@@ -914,6 +935,7 @@ export function ChatPage() {
               lastCached={chat.lastCached}
               onSuggestionClick={handleSuggestionClick}
               isCompacting={isCompacting}
+              compactCompleteVisible={compactCompleteVisible}
             />
             <TaskBoard
               messages={chat.messages}

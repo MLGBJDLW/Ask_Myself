@@ -156,6 +156,7 @@
   "compact": "Compact conversation",
   "compactNow": "Compact now",
   "compacting": "Compacting...",
+  "compactComplete": "Compaction complete",
   "thinkingTokens": "thinking",
   "cached": "cached",
   "truncated": "Response was truncated (token limit reached)",

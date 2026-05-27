@@ -156,6 +156,7 @@
   "compact": "Сжать диалог",
   "compactNow": "Сжать сейчас",
   "compacting": "Сжатие…",
+  "compactComplete": "Сжатие завершено",
   "thinkingTokens": "размышление",
   "cached": "из кэша",
   "truncated": "Ответ был обрезан (достигнут лимит токенов)",

@@ -14,6 +14,7 @@ not a formula sheet. Treat it as a set of reader-payoff and production lenses.
 - Chapter Rhythm
 - Character And Relationship Engines
 - Prose And Mobile Readability
+- Draft Format And Length Contracts
 - Common Failure Modes
 - Prompt Patterns
 
@@ -197,10 +198,55 @@ Track relationship changes as leverage shifts:
 - Keep cultural register coherent: narration, idiom, address forms, and status
   language should match the setting and character background.
 
+## Draft Format And Length Contracts
+
+Use these constraints for Chinese web-serial drafts unless the user provides a
+different platform or house style.
+
+Chapter scale:
+
+- Full web-serial chapter: default to 2,500-5,000 Chinese characters when the
+  user asks for a complete chapter but gives no length.
+- Long commercial chapter: 3,000-5,000 Chinese characters when the user asks
+  for a standard long chapter or a chapter-by-chapter project.
+- Short scene or excerpt: follow the user's requested scope. Do not pad a scene
+  into a chapter just to hit the full-chapter target.
+- If a length target exists and the draft is saved to a file, check the count
+  mechanically when practical.
+
+Paragraph rules:
+
+- Separate paragraphs with a blank line in Markdown/chat output.
+- Default paragraph length is 15-80 Chinese characters.
+- Treat 120 Chinese characters as the normal hard cap for a paragraph.
+- A paragraph may reach 150 Chinese characters only for a deliberate slow
+  descriptive or reflective beat; do not use that density in action, argument,
+  fear, romance tension, or face-slap release.
+- Split whenever the beat changes: action -> reaction, observation -> decision,
+  question -> answer, public pressure -> private thought, clue -> consequence.
+- One speaker gets one paragraph. Do not bury multiple speakers in one block.
+- Put short action beats in their own paragraph when they change the meaning of
+  a line of dialogue.
+
+Density and payoff rules:
+
+- In every 800-1,200 Chinese characters, something concrete should change:
+  information, leverage, danger, relationship, resource, status, location,
+  deadline, ability, or commitment.
+- Do not spend more than two adjacent paragraphs on static explanation before a
+  visible pressure returns.
+- End a chapter with forward pressure, not only atmosphere. The hook can be a
+  fact, threat, choice, clue, relationship rupture, deadline, absence, or image
+  with changed meaning.
+
 ## Common Failure Modes
 
 - The opening explains the book instead of starting the story.
 - Every chapter ends with a hook but pays off too little.
+- Paragraphs are too dense for mobile reading, or dialogue and action are
+  merged into wall-of-text blocks.
+- The draft hits a target length by repeating introspection instead of adding
+  pressure, choice, reveal, consequence, or relationship movement.
 - The protagonist wins without price, tactic, or proof.
 - The love line uses declaration instead of behavior.
 - Suspense withholds facts the POV would naturally notice.

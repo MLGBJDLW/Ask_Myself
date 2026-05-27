@@ -46,6 +46,9 @@ Use this when the user asks for a novel, web novel, chapter-by-chapter story, co
 - For Chinese prose: write in the user's requested Chinese register when asked, keep punctuation and paragraphing natural for Chinese fiction, and avoid translated English cadence.
 
 ## Style Discipline
+- For Chinese web-serial prose, enforce mobile-readable paragraphing unless the user supplies a different house style: one beat per paragraph, a blank line between paragraphs in Markdown/chat output, one speaker per dialogue paragraph, and no dense wall-of-text blocks.
+- Default Chinese fiction paragraph length is 15-80 Chinese characters. Split action, reaction, new information, dialogue, and emotional turns into separate paragraphs. Treat 120 Chinese characters as the normal hard cap; exceed it only for a deliberate slow descriptive passage that earns the density.
+- Respect explicit length targets. If the user asks for a full web-serial chapter without specifying length, use 2,500-5,000 Chinese characters as the working range; if they ask for a short scene, use the requested scale rather than padding. When writing to files, verify substantial chapter length with tooling when practical.
 - Default to zero em dashes in drafted prose. Avoid both `--` and Chinese dash forms such as `—` or `——` unless the user explicitly requests that punctuation or a source passage already requires it.
 - In Chinese fiction, use comma, period, colon, semicolon, ellipsis, paragraph breaks, short sentences, action beats, and dialogue tags for rhythm. Reserve dashes only for a true interruption, sudden break in speech, or abrupt turn that cannot be cleaner another way.
 - If a dash is unavoidable, keep it rare: at most one dash construction per 1,000 Chinese characters in finished prose, and only where it has a clear dramatic function.
@@ -64,6 +67,7 @@ Use this when the user asks for a novel, web novel, chapter-by-chapter story, co
 - Keep prose concrete: action, sensory anchors, subtext, rhythm, consequence, and sentence-level pressure.
 - Revise generic AI-sounding prose by adding specific behavior, asymmetry, silence, imperfect dialogue, concrete nouns/verbs, and scene-level stakes instead of decorative adjectives.
 - Finished fiction should not read like a style demonstration. Remove over-neat parallel phrasing, sermon-like explanations, and ornamental punctuation that makes the narrator sound more impressed than the characters are.
+- Chinese web-serial drafts should pass a format check before delivery: paragraphs separated by blank lines, no accidental ultra-long paragraphs, no repeated summary paragraphs, and the visible ending hook has forward pressure.
 
 ## Resources
 - Read `references/story-craft-playbook.md` for structure lenses, genre architecture, character arcs, suspense systems, and revision passes.
@@ -73,6 +77,7 @@ Use this when the user asks for a novel, web novel, chapter-by-chapter story, co
 - Read `references/continuity-state-playbook.md` when continuing, importing, revising, or managing a long manuscript with active canon, character state, timeline, promises, clues, powers, inventory, or relationship changes.
 - Read `references/quality-gate.md` before finalizing substantial fiction deliverables, especially full chapters, longform outlines, continuations, imported manuscript diagnoses, or de-generic prose passes.
 - Use `assets/fiction-outline-template.md` when the user wants a reusable novel/story planning template or a project bible starter.
+- Use `scripts/check_chinese_fiction_format.py` when a Chinese prose draft is saved to a file and paragraph length or chapter word count needs a mechanical check.
 
 ## Resource Routing
 - New Chinese web novel, web-serial concept, or chapter plan: use `chinese-webnovel-playbook.md` plus `story-craft-playbook.md`.

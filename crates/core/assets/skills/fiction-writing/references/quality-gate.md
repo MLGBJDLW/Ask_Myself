@@ -12,6 +12,7 @@ into a long report.
 - Chapter Gate
 - Continuation Gate
 - Chinese Prose Gate
+- Chinese Web-Serial Format Gate
 - Dash and Punctuation Gate
 - De-Generic Gate
 - Revision Gate
@@ -66,6 +67,7 @@ For chapter or scene drafts:
 - The ending hook is earned by the chapter and opens forward pressure.
 - If a length target exists, verify with a tool when practical; do not estimate
   long chapter length by eye.
+- For Chinese web-serial work, paragraphing follows the format gate below.
 
 Repair if weak:
 
@@ -112,6 +114,32 @@ Repair if weak:
 - Break long paragraphs at pressure shifts.
 - Give each speaker a different tactic.
 - Replace generic summary with a visible action.
+
+## Chinese Web-Serial Format Gate
+
+Use for Chinese web-novel chapters, continuations, or prose rewrites:
+
+- Paragraphs are separated by blank lines in Markdown/chat output.
+- Most paragraphs are 15-80 Chinese characters.
+- No ordinary paragraph exceeds 120 Chinese characters.
+- A 121-150 character paragraph appears only when the slower density is
+  deliberate and useful.
+- No action, argument, suspense, romance-tension, or face-slap payoff beat is
+  buried in a long block.
+- Each speaker has a separate paragraph.
+- In every 800-1,200 Chinese characters, at least one concrete state changes:
+  information, leverage, danger, relationship, status, resource, location,
+  deadline, ability, or commitment.
+- If a full chapter target exists, the count was checked mechanically when the
+  prose is in a file.
+
+Repair if weak:
+
+- Split at beat changes.
+- Move reactions and consequences into their own paragraphs.
+- Replace repeated introspection with an obstacle, tactic shift, reveal, cost,
+  or relationship move.
+- Shorten dense explanation until pressure returns within two paragraphs.
 
 ## Dash and Punctuation Gate
 

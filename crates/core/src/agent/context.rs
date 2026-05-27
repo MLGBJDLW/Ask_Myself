@@ -72,10 +72,15 @@ pub fn prepare_messages(
         &user_query,
         remaining_skill_budget,
     );
-    let stable_system_prompt = assemble_system_prompt(
+    let volatile_skill_budget = if skills.is_empty() && loaded_skills.is_empty() {
+        0
+    } else {
+        skill_budget
+    };
+    let stable_system_prompt = cap_text_to_chars(
         system_prompt.to_string(),
-        available_skills_section,
-        system_prompt_budget,
+        stable_system_prompt_char_budget(system_prompt_budget, volatile_skill_budget),
+        "\n...[truncated]",
     );
     messages.push(Message::text(Role::System, stable_system_prompt));
 
@@ -83,7 +88,9 @@ pub fn prepare_messages(
         "## Runtime Context\nCurrent date: {} (UTC)",
         Utc::now().format("%Y-%m-%d")
     );
-    let volatile_system_prompt = combine_prompt_sections(runtime_section, loaded_skills_section);
+    let volatile_skills_section =
+        combine_prompt_sections(available_skills_section, loaded_skills_section);
+    let volatile_system_prompt = combine_prompt_sections(runtime_section, volatile_skills_section);
     if !volatile_system_prompt.trim().is_empty() {
         messages.push(Message::text(Role::System, volatile_system_prompt));
     }
@@ -530,6 +537,10 @@ fn skill_prompt_char_budget(context_window_tokens: u32, system_prompt_budget: us
         .min(system_prompt_budget / 2)
 }
 
+fn stable_system_prompt_char_budget(system_prompt_budget: usize, skill_budget: usize) -> usize {
+    system_prompt_budget.saturating_sub(skill_budget)
+}
+
 fn loaded_skill_prompt_char_budget(total_skill_budget: usize, keep_available_index: bool) -> usize {
     if total_skill_budget == 0 {
         return 0;
@@ -547,29 +558,6 @@ fn combine_prompt_sections(first: String, second: String) -> String {
         (true, false) => second,
         (false, false) => format!("{first}{second}"),
     }
-}
-
-fn assemble_system_prompt(base_prompt: String, skills_section: String, max_chars: usize) -> String {
-    if skills_section.is_empty() {
-        return cap_text_to_chars(base_prompt, max_chars, "\n...[truncated]");
-    }
-
-    let skill_budget = skills_section.len().min(max_chars);
-    let base_budget = max_chars.saturating_sub(skill_budget);
-    let mut prompt = cap_text_to_chars(
-        base_prompt,
-        base_budget,
-        "\n...[system prompt truncated before skills]",
-    );
-    let remaining = max_chars.saturating_sub(prompt.len());
-    if remaining > 0 {
-        prompt.push_str(&cap_text_to_chars(
-            skills_section,
-            remaining,
-            "\n...[skills truncated]",
-        ));
-    }
-    prompt
 }
 
 /// Enforce `MAX_SYSTEM_PROMPT_CHARS` on the system prompt.
@@ -631,6 +619,25 @@ mod tests {
 
     fn msg(role: Role, content: &str) -> Message {
         Message::text(role, content)
+    }
+
+    fn skill(id: &str, name: &str, description: &str) -> Skill {
+        Skill {
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+            content: format!("Follow the {name} workflow."),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin: false,
+            interface: crate::skills::SkillInterfaceMetadata::default(),
+            dependencies: crate::skills::SkillDependencies::default(),
+            policy: crate::skills::SkillPolicy::default(),
+            source_path: None,
+            resources: Vec::new(),
+            resource_bundle: Vec::new(),
+        }
     }
 
     #[test]
@@ -774,22 +781,7 @@ mod tests {
 
     #[test]
     fn test_prepare_messages_with_skills() {
-        let skills = vec![Skill {
-            id: "1".into(),
-            name: "Be Concise".into(),
-            description: "Always favor brevity".into(),
-            content: "Always answer briefly.".into(),
-            enabled: true,
-            created_at: String::new(),
-            updated_at: String::new(),
-            builtin: false,
-            interface: crate::skills::SkillInterfaceMetadata::default(),
-            dependencies: crate::skills::SkillDependencies::default(),
-            policy: crate::skills::SkillPolicy::default(),
-            source_path: None,
-            resources: Vec::new(),
-            resource_bundle: Vec::new(),
-        }];
+        let skills = vec![skill("1", "Be Concise", "Always favor brevity")];
         let result = prepare_messages(
             "System prompt",
             &[],
@@ -814,6 +806,49 @@ mod tests {
             "Skills should be in system prompt"
         );
         assert!(sys_text.contains("Be Concise"));
+    }
+
+    #[test]
+    fn test_available_skills_do_not_change_stable_system_prompt() {
+        let first = prepare_messages(
+            "System prompt",
+            &[],
+            &[ContentPart::Text {
+                text: "Write a short scene".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            None,
+            &[skill(
+                "fiction",
+                "Fiction Writing",
+                "Use when writing fiction",
+            )],
+            &[],
+            &[],
+        );
+        let second = prepare_messages(
+            "System prompt",
+            &[],
+            &[ContentPart::Text {
+                text: "Audit a spreadsheet".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            None,
+            &[skill(
+                "xlsx",
+                "Spreadsheet Analysis",
+                "Use when reviewing workbooks",
+            )],
+            &[],
+            &[],
+        );
+
+        assert_eq!(first[0].text_content(), second[0].text_content());
+        assert!(!first[0].text_content().contains("Available Skills"));
+        assert!(first[1].text_content().contains("Fiction Writing"));
+        assert!(second[1].text_content().contains("Spreadsheet Analysis"));
     }
 
     #[test]
@@ -899,9 +934,16 @@ mod tests {
             &[],
             &[],
         );
-        let sys_text = result[0].text_content();
-        assert!(sys_text.len() <= MAX_SYSTEM_PROMPT_CHARS);
-        assert!(sys_text.contains("system prompt truncated before skills"));
+        let stable_sys_text = result[0].text_content();
+        assert!(stable_sys_text.len() <= MAX_SYSTEM_PROMPT_CHARS);
+        assert!(stable_sys_text.contains("...[truncated]"));
+        assert!(!stable_sys_text.contains("Available Skills"));
+        let sys_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             sys_text.contains("Available Skills"),
             "skill index should survive a long base prompt"
@@ -940,8 +982,15 @@ mod tests {
             &[],
             &[],
         );
-        let sys_text = result[0].text_content();
-        assert!(sys_text.len() <= MAX_SYSTEM_PROMPT_CHARS);
+        let stable_sys_text = result[0].text_content();
+        assert!(stable_sys_text.len() <= MAX_SYSTEM_PROMPT_CHARS);
+        assert!(!stable_sys_text.contains("Available Skills"));
+        let sys_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(sys_text.contains("Available Skills"));
         assert!(sys_text.contains("Default Prompt Skill"));
     }

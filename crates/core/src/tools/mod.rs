@@ -644,6 +644,13 @@ pub struct ToolRegistry {
     tools: Vec<Arc<dyn Tool>>,
 }
 
+fn stable_tool_definitions(mut definitions: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+    definitions.sort_by(|a, b| a.name.cmp(&b.name));
+    definitions
+}
+
+const RESIDENT_DISCOVERY_TOOL_NAMES: &[&str] = &["tool_search"];
+
 impl ToolRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
@@ -662,7 +669,7 @@ impl ToolRegistry {
 
     /// Return [`ToolDefinition`]s for every registered tool.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.iter().map(|t| t.definition()).collect()
+        stable_tool_definitions(self.tools.iter().map(|t| t.definition()).collect())
     }
 
     /// Look up a tool by name.
@@ -779,11 +786,13 @@ impl ToolRegistry {
         &self,
         active: &HashSet<ToolCategory>,
     ) -> Vec<ToolDefinition> {
-        self.tools
-            .iter()
-            .filter(|t| t.categories().iter().any(|c| active.contains(c)))
-            .map(|t| t.definition())
-            .collect()
+        stable_tool_definitions(
+            self.tools
+                .iter()
+                .filter(|t| t.categories().iter().any(|c| active.contains(c)))
+                .map(|t| t.definition())
+                .collect(),
+        )
     }
 
     /// Select tool definitions using the shared typed visibility policy.
@@ -810,7 +819,21 @@ impl ToolRegistry {
     ) -> Vec<ToolDefinition> {
         let categories: HashSet<ToolCategory> =
             decision.active_categories.iter().copied().collect();
-        self.definitions_for_categories(&categories)
+        let mut definitions = self.definitions_for_categories(&categories);
+        let mut selected_names: HashSet<String> =
+            definitions.iter().map(|tool| tool.name.clone()).collect();
+
+        // Discovery tools are the recovery lane for dynamic visibility. Keep
+        // them resident even if future policy changes remove Core from a route.
+        for tool in &self.tools {
+            if RESIDENT_DISCOVERY_TOOL_NAMES.contains(&tool.name())
+                && selected_names.insert(tool.name().to_string())
+            {
+                definitions.push(tool.definition());
+            }
+        }
+
+        stable_tool_definitions(definitions)
     }
 
     /// Execute a tool by name, returning an error if the tool is not found.
@@ -1060,6 +1083,20 @@ mod tests {
     }
 
     #[test]
+    fn tool_definitions_are_sorted_for_prompt_cache_stability() {
+        let registry = default_tool_registry();
+        let names: Vec<String> = registry
+            .definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+
+        assert_eq!(names, sorted);
+    }
+
+    #[test]
     fn default_registry_does_not_offer_legacy_office_generators() {
         let registry = default_tool_registry();
         let names = registry.tool_names();
@@ -1110,6 +1147,23 @@ mod tests {
         assert!(!names
             .iter()
             .any(|name| name == "mcp__runtime__expensive_tool"));
+    }
+
+    #[test]
+    fn select_tools_keeps_tool_search_resident_even_without_core_category() {
+        let registry = default_tool_registry();
+        let decision = ToolVisibilityDecision {
+            route: crate::tool_visibility_policy::ToolVisibilityRouteKind::DirectResponse,
+            active_categories: Vec::new(),
+            route_categories: Vec::new(),
+            signals: Vec::new(),
+            log: Vec::new(),
+        };
+        let defs = registry.select_tools_for_decision(&decision);
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "tool_search"));
+        assert!(!names.iter().any(|name| name == "read_file"));
     }
 
     #[test]

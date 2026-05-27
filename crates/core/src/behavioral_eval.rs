@@ -126,6 +126,17 @@ fn cases() -> Vec<BehavioralEvalCase> {
             forbidden_tools: &[],
         },
         BehavioralEvalCase {
+            id: "dynamic-tool-discovery-is-resident",
+            query: "Say hello briefly.",
+            system_prompt: "",
+            has_sources: false,
+            expected_route: "DirectResponse",
+            expected_evidence_mode: Some(EvidenceMode::NotRequired),
+            required_tools: &["tool_search"],
+            required_plan_tools: &[],
+            forbidden_tools: &["create_file", "edit_file", "write_note", "run_shell"],
+        },
+        BehavioralEvalCase {
             id: "casual-chat-does-not-offer-file-mutation-tools",
             query: "Tell me a quick joke.",
             system_prompt: "",
