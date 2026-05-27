@@ -1,6 +1,8 @@
 //! Knowledge loop — self-reinforcing flywheel: archive outputs, track gaps, suggest explorations.
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::db::Database;
 use crate::error::CoreError;
@@ -40,23 +42,21 @@ impl Database {
         title: &str,
         source_dir: &str,
     ) -> Result<ArchiveResult, CoreError> {
-        let conn = self.conn();
         let now = chrono::Utc::now().to_rfc3339();
 
-        // Validate source_dir is a registered source
-        let source_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sources WHERE path = ?1",
-            rusqlite::params![source_dir],
-            |row| row.get(0),
-        )?;
-        if source_count == 0 {
-            return Err(CoreError::InvalidInput(
-                "Source directory is not registered".into(),
-            ));
-        }
+        let (source_id, source_root): (String, String) = {
+            let conn = self.conn();
+            conn.query_row(
+                "SELECT id, root_path FROM sources WHERE root_path = ?1",
+                rusqlite::params![source_dir],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::InvalidInput("Source directory is not registered".into()))?
+        };
 
         // Sanitize the title for use as filename
-        let safe_title: String = title
+        let mut safe_title: String = title
             .chars()
             .map(|c| {
                 if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
@@ -66,8 +66,12 @@ impl Database {
                 }
             })
             .collect();
+        safe_title = safe_title.trim().to_string();
+        if safe_title.is_empty() {
+            safe_title = "untitled".to_string();
+        }
         let filename = format!("{safe_title}.md");
-        let file_path = std::path::Path::new(source_dir)
+        let file_path = std::path::Path::new(&source_root)
             .join("_kb_archive")
             .join(&filename);
 
@@ -82,20 +86,32 @@ impl Database {
         );
         std::fs::write(&file_path, &content)?;
 
-        // Insert as document (it will be picked up by watcher/re-scan, but also insert directly)
         let path_str = file_path.to_string_lossy().to_string();
-        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let mut ingest_result = crate::ingest::ingest_single_file(self, &source_id, &file_path)?;
+        let mut document = self.get_document_by_path(&path_str)?.ok_or_else(|| {
+            CoreError::Internal(format!(
+                "Archived document was not indexed after write: {path_str}"
+            ))
+        })?;
 
-        let doc_id = uuid::Uuid::new_v4().to_string();
+        if document_chunk_count(self, &document.0)? == 0 {
+            let _ = self.delete_document_by_path(&path_str)?;
+            ingest_result = crate::ingest::ingest_single_file(self, &source_id, &file_path)?;
+            document = self.get_document_by_path(&path_str)?.ok_or_else(|| {
+                CoreError::Internal(format!(
+                    "Archived document was not indexed after stale-row repair: {path_str}"
+                ))
+            })?;
+        }
 
-        conn.execute(
-            "INSERT OR IGNORE INTO documents (id, path, source_id, content_hash, mime_type, file_size, indexed_at, modified_at)
-             VALUES (?1, ?2, (SELECT id FROM sources WHERE ?2 LIKE path || '%' LIMIT 1), ?3, 'text/markdown', ?4, ?5, ?5)",
-            rusqlite::params![doc_id, path_str, hash, content.len() as i64, now],
-        )?;
+        if !matches!(ingest_result, crate::ingest::IngestFileResult::Unchanged) {
+            if let Err(e) = crate::ingest::embed_source(self, &source_id) {
+                warn!("Archived document indexed without embeddings: {e}");
+            }
+        }
 
         Ok(ArchiveResult {
-            document_id: doc_id,
+            document_id: document.0,
             source: path_str,
             title: title.to_string(),
         })
@@ -206,5 +222,76 @@ impl Database {
 
         suggestions.truncate(limit);
         Ok(suggestions)
+    }
+}
+
+fn document_chunk_count(db: &Database, document_id: &str) -> Result<i64, CoreError> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT COUNT(*) FROM chunks WHERE document_id = ?1",
+        rusqlite::params![document_id],
+        |row| row.get(0),
+    )
+    .map_err(CoreError::Database)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sources::CreateSourceInput;
+
+    #[test]
+    fn archive_agent_output_ingests_markdown_chunks_for_registered_source() {
+        let db = Database::open_memory().expect("open db");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: dir.path().to_string_lossy().to_string(),
+                include_globs: vec!["**/*.md".to_string()],
+                exclude_globs: Vec::new(),
+                watch_enabled: false,
+            })
+            .expect("add source");
+
+        let result = db
+            .archive_agent_output(
+                "conversation-1",
+                "Reusable answer about a candle ritual and three named characters.",
+                "Candle Theory",
+                &source.root_path,
+            )
+            .expect("archive output");
+
+        assert!(std::path::Path::new(&result.source).exists());
+        let (doc_id, _) = db
+            .get_document_by_path(&result.source)
+            .expect("lookup document")
+            .expect("document row");
+        assert_eq!(doc_id, result.document_id);
+        assert!(
+            document_chunk_count(&db, &doc_id).expect("chunk count") > 0,
+            "archived document should be parsed into retrievable chunks"
+        );
+        let full_text = db.get_document_full_text(&doc_id).expect("full text");
+        assert!(full_text.contains("candle ritual"));
+    }
+
+    #[test]
+    fn archive_agent_output_rejects_unregistered_source_directory() {
+        let db = Database::open_memory().expect("open db");
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let err = db
+            .archive_agent_output(
+                "conversation-1",
+                "content",
+                "title",
+                &dir.path().to_string_lossy(),
+            )
+            .expect_err("unregistered source should fail");
+
+        assert!(err
+            .to_string()
+            .contains("Source directory is not registered"));
     }
 }

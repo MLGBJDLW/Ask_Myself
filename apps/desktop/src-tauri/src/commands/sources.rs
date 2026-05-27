@@ -122,10 +122,11 @@ pub async fn scan_source(
     let db = state.db.clone();
     let scan_lock = state.scan_lock.clone();
     let sid = source_id.clone();
+    let progress_handle = app_handle.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _lock = scan_lock.lock().map_err(|e| format!("scan lock: {e}"))?;
         ingest::scan_source_with_progress(&db, &sid, |progress| {
-            emit_app_event(&app_handle, "source:scan-progress", &progress);
+            emit_app_event(&progress_handle, "source:scan-progress", &progress);
         })
         .map_err(|e| e.to_string())
     })
@@ -134,6 +135,7 @@ pub async fn scan_source(
 
     // Invalidate cached answers that may reference this source.
     let _ = state.db.invalidate_cache_for_source(&source_id);
+    emit_file_changed_after_scan(&app_handle, &result);
 
     Ok(result)
 }
@@ -145,13 +147,14 @@ pub async fn scan_all_sources(
 ) -> Result<Vec<IngestResult>, String> {
     let db = state.db.clone();
     let scan_lock = state.scan_lock.clone();
+    let progress_handle = app_handle.clone();
     let results = tokio::task::spawn_blocking(move || {
         let _lock = scan_lock.lock().map_err(|e| format!("scan lock: {e}"))?;
         let sources = db.list_sources().map_err(|e| e.to_string())?;
         let source_count = sources.len();
         let mut results = Vec::with_capacity(source_count);
         for (i, source) in sources.iter().enumerate() {
-            let ah = app_handle.clone();
+            let ah = progress_handle.clone();
             let sid = source.id.clone();
             let result = ingest::scan_source_with_progress(&db, &source.id, move |progress| {
                 emit_app_event(
@@ -175,12 +178,32 @@ pub async fn scan_all_sources(
         Ok::<_, String>(results)
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())??;
 
     // Invalidate all cached answers after re-scanning all sources.
     let _ = state.db.clear_answer_cache();
+    for result in &results {
+        emit_file_changed_after_scan(&app_handle, result);
+    }
 
-    results
+    Ok(results)
+}
+
+fn emit_file_changed_after_scan(app_handle: &AppHandle, result: &IngestResult) {
+    if result.files_added == 0 && result.files_updated == 0 && result.files_purged == 0 {
+        return;
+    }
+
+    emit_app_event(
+        app_handle,
+        "file-changed",
+        &serde_json::json!({
+            "sourceId": result.source_id,
+            "filesAdded": result.files_added,
+            "filesUpdated": result.files_updated,
+            "filesRemoved": result.files_purged,
+        }),
+    );
 }
 
 // ── Search Commands ─────────────────────────────────────────────────────

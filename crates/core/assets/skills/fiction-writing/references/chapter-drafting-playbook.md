@@ -14,6 +14,7 @@ scene sequence.
 - Expanding Without Padding
 - Dialogue
 - Chinese Prose Naturalization
+- Mobile Paragraphing And Length
 - Dash Discipline
 - De-Generic Prose Pass
 - Chapter Gate
@@ -138,6 +139,27 @@ When drafting or polishing Chinese fiction:
 - Avoid dash-heavy cadence. In Chinese prose, `—` and `——` should almost never
   be the default way to signal reversal, hesitation, or drama.
 
+## Mobile Paragraphing And Length
+
+For Chinese web-serial chapters, format is part of pacing. Apply these rules
+unless the user gives a different style guide:
+
+- Use a blank line between paragraphs in Markdown/chat output.
+- Default to 15-80 Chinese characters per paragraph.
+- Treat 120 Chinese characters as the normal hard cap. Only slow descriptive or
+  reflective beats may stretch to 150 Chinese characters.
+- Split paragraphs at every beat change: new action, reaction, clue, decision,
+  line of dialogue, interruption, consequence, or emotional turn.
+- Give each speaker a separate paragraph. Do not combine two speakers in one
+  paragraph.
+- Keep action and argument paragraphs short; long blocks drain tension on
+  mobile screens.
+- If the user requests a full Chinese web-serial chapter but gives no length,
+  draft toward 2,500-5,000 Chinese characters. Use 3,000-5,000 when the user
+  explicitly wants a standard long commercial chapter.
+- Do not reach length by repeating explanation. Add obstacles, tactic shifts,
+  reveals, costs, relationship leverage, sensory constraints, or consequences.
+
 ## Dash Discipline
 
 Before finalizing drafted prose:
@@ -175,3 +197,5 @@ Before calling a chapter done, check:
 - Ending hook follows from the chapter rather than feeling pasted on.
 - Continuity changes are recorded if working in a project.
 - If a word target exists, the count is checked with tooling where practical.
+- Chinese web-serial drafts use blank-line paragraphing and have no accidental
+  ultra-long paragraphs.
