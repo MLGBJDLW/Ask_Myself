@@ -354,6 +354,7 @@ fn merge_tool_definitions(
         }
     }
 
+    merged.sort_by(|a, b| a.name.cmp(&b.name));
     merged
 }
 

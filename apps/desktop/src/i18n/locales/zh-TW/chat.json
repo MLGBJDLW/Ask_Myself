@@ -156,6 +156,7 @@
   "compact": "壓縮對話",
   "compactNow": "壓縮上下文",
   "compacting": "正在壓縮…",
+  "compactComplete": "壓縮完成",
   "thinkingTokens": "思考",
   "cached": "已快取",
   "truncated": "回覆已截斷（達到 token 限制）",

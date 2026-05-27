@@ -156,6 +156,7 @@
   "compact": "Compactar conversa",
   "compactNow": "Compactar agora",
   "compacting": "Compactando…",
+  "compactComplete": "Compactação concluída",
   "thinkingTokens": "pensamento",
   "cached": "em cache",
   "truncated": "Resposta foi truncada (limite de tokens atingido)",

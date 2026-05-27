@@ -111,6 +111,7 @@ interface ChatMessagesProps {
   lastCached?: boolean;
   onSuggestionClick?: (text: string) => void;
   isCompacting?: boolean;
+  compactCompleteVisible?: boolean;
 }
 
 const SUGGESTIONS: {
@@ -554,6 +555,7 @@ export function ChatMessages({
   lastCached,
   onSuggestionClick,
   isCompacting = false,
+  compactCompleteVisible = false,
 }: ChatMessagesProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -1324,6 +1326,7 @@ export function ChatMessages({
     toolCalls,
     taskRun,
     isCompacting,
+    compactCompleteVisible,
     getScrollMetrics,
     scrollToContainerBottom,
   ]);
@@ -1524,7 +1527,13 @@ export function ChatMessages({
     error && !isStreaming && traceEvents.length === 0,
   );
 
-  if (messages.length === 0 && !isStreaming && !loadingMsgs && !isCompacting) {
+  if (
+    messages.length === 0 &&
+    !isStreaming &&
+    !loadingMsgs &&
+    !isCompacting &&
+    !compactCompleteVisible
+  ) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center max-w-md w-full px-4">
@@ -1908,7 +1917,7 @@ export function ChatMessages({
           </motion.div>
         )}
 
-      {isCompacting && (
+      {(isCompacting || compactCompleteVisible) && (
         <motion.div
           initial={shouldReduceMotion ? false : { opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
@@ -1920,11 +1929,12 @@ export function ChatMessages({
             data-reduce-motion={shouldReduceMotion ? "true" : "false"}
             className="chat-compact-status-line"
             role="status"
-            aria-label={t("chat.compacting")}
+            aria-label={isCompacting ? t("chat.compacting") : t("chat.compactComplete")}
           >
             <span className="chat-compact-status-rule" aria-hidden="true" />
             <span className="chat-compact-status-text">
-              {t("chat.compacting")} <span className="font-mono">{"(>_<)"}</span>
+              {isCompacting ? t("chat.compacting") : t("chat.compactComplete")}{" "}
+              <span className="font-mono">{isCompacting ? "(>_<)" : "(｡•̀ᴗ-)✧"}</span>
             </span>
             <span className="chat-compact-status-rule" aria-hidden="true" />
           </div>

@@ -644,6 +644,11 @@ pub struct ToolRegistry {
     tools: Vec<Arc<dyn Tool>>,
 }
 
+fn stable_tool_definitions(mut definitions: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+    definitions.sort_by(|a, b| a.name.cmp(&b.name));
+    definitions
+}
+
 impl ToolRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
@@ -662,7 +667,7 @@ impl ToolRegistry {
 
     /// Return [`ToolDefinition`]s for every registered tool.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.iter().map(|t| t.definition()).collect()
+        stable_tool_definitions(self.tools.iter().map(|t| t.definition()).collect())
     }
 
     /// Look up a tool by name.
@@ -779,11 +784,13 @@ impl ToolRegistry {
         &self,
         active: &HashSet<ToolCategory>,
     ) -> Vec<ToolDefinition> {
-        self.tools
-            .iter()
-            .filter(|t| t.categories().iter().any(|c| active.contains(c)))
-            .map(|t| t.definition())
-            .collect()
+        stable_tool_definitions(
+            self.tools
+                .iter()
+                .filter(|t| t.categories().iter().any(|c| active.contains(c)))
+                .map(|t| t.definition())
+                .collect(),
+        )
     }
 
     /// Select tool definitions using the shared typed visibility policy.
@@ -1057,6 +1064,20 @@ mod tests {
         assert_eq!(def.parameters["required"], serde_json::json!([]));
         assert!(def.description.contains("queries"));
         assert!(def.description.contains("at most 1-2 query variants"));
+    }
+
+    #[test]
+    fn tool_definitions_are_sorted_for_prompt_cache_stability() {
+        let registry = default_tool_registry();
+        let names: Vec<String> = registry
+            .definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+
+        assert_eq!(names, sorted);
     }
 
     #[test]

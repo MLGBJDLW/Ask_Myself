@@ -156,6 +156,7 @@
   "compact": "会話を圧縮",
   "compactNow": "コンパクト化",
   "compacting": "圧縮中…",
+  "compactComplete": "圧縮が完了しました",
   "thinkingTokens": "思考",
   "cached": "キャッシュ済み",
   "truncated": "応答が切り詰められました（トークン上限に達しました）",
