@@ -8,14 +8,14 @@ Nexa ships with built-in tools that the AI agent calls autonomously during conve
 
 ### `tool_search`
 
-Search the built-in tool catalog by name and description. Use this when the appropriate local tool is unclear. This does not discover disabled MCP connectors.
+Search the enabled built-in and MCP tool catalog by name and description. `tool_search` is the resident discovery lane for dynamic tool visibility: when a needed enabled tool is hidden from the current model step, matching results activate that tool for the next step. Disabled MCP connectors are not discoverable until connected.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | yes | Natural language query or tool-name fragment |
 | `limit` | integer | no | Max matches, 1-20 (default 8) |
 
-> **Example:** Ask which built-in tool should handle source-scoped text search or document comparison.
+> **Example:** Ask which enabled tool should handle source-scoped text search, document comparison, or an enabled connector capability.
 
 ---
 

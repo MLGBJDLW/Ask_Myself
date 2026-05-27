@@ -211,6 +211,16 @@ impl AgentExecutor {
             plan_insert_at,
             Message::text(Role::System, task_plan.to_prompt_section()),
         );
+        if self.config.dynamic_tool_visibility && self.tools.contains("tool_search") {
+            let discovery_insert_at = messages.len().min(3);
+            messages.insert(
+                discovery_insert_at,
+                Message::text(
+                    Role::System,
+                    tool_discovery::dynamic_tool_visibility_prompt().to_string(),
+                ),
+            );
+        }
 
         // --- 2. Privacy redaction on outgoing user content --------------------
         let privacy_cfg = db.load_privacy_config().unwrap_or_default();
