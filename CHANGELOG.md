@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.1...nexa-monorepo-v0.8.2) (2026-05-27)
+
+
+### Bug Fixes
+
+* **agent:** keep tool search discoverable ([16e4660](https://github.com/MLGBJDLW/Nexa/commit/16e466007cc4c3f7cd43299f3ef5a2f87f031ea2))
+* **agent:** stabilize prompt cache inputs ([a144acd](https://github.com/MLGBJDLW/Nexa/commit/a144acd9e7e91ab4ad04affaef598eb6f889dbc4))
+* **chat:** preserve input drafts across navigation ([ede5eb9](https://github.com/MLGBJDLW/Nexa/commit/ede5eb9b38c680d0a24ab4c86176b66d22a3c2cd))
+* **core:** restore knowledge archive indexing ([426cd6d](https://github.com/MLGBJDLW/Nexa/commit/426cd6dd9d84191e10260228b67beacc970964d7))
+
 ## [0.8.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.0...nexa-monorepo-v0.8.1) (2026-05-26)
 
 
