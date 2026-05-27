@@ -120,7 +120,17 @@ interface ChatDraftState {
   attachments: ImageAttachment[];
 }
 
+interface StoredChatDraftState {
+  value: string;
+  updatedAt: number;
+}
+
 type SlashCommandTab = "all" | SlashCommandKind;
+
+const NEW_CONVERSATION_DRAFT_KEY = "__new__";
+const CHAT_INPUT_DRAFT_STORAGE_KEY = "chat-input-drafts-v1";
+const MAX_STORED_CHAT_INPUT_DRAFTS = 100;
+const chatInputDrafts: Record<string, ChatDraftState> = {};
 
 const SLASH_COMMAND_TABS: SlashCommandTab[] = ["all", "command", "skill", "workflow"];
 const LOCALIZED_COMMON_SLASH_COMMANDS = new Set([
@@ -147,6 +157,82 @@ function commonSlashCommandKey(name: string, field: "title" | "description"): Tr
     : null;
 }
 
+function cloneDraftState(draft: ChatDraftState): ChatDraftState {
+  return {
+    value: draft.value,
+    attachments: draft.attachments.slice(),
+  };
+}
+
+function readStoredChatInputDrafts(): Record<string, StoredChatDraftState> {
+  try {
+    const raw = sessionStorage.getItem(CHAT_INPUT_DRAFT_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+
+    const drafts: Record<string, StoredChatDraftState> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!key || !value || typeof value !== "object") continue;
+      const row = value as Record<string, unknown>;
+      if (typeof row.value !== "string") continue;
+      const updatedAt = typeof row.updatedAt === "number" && Number.isFinite(row.updatedAt)
+        ? row.updatedAt
+        : 0;
+      drafts[key] = { value: row.value, updatedAt };
+    }
+    return drafts;
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredChatInputDrafts(drafts: Record<string, StoredChatDraftState>) {
+  try {
+    const entries = Object.entries(drafts)
+      .sort(([, a], [, b]) => b.updatedAt - a.updatedAt)
+      .slice(0, MAX_STORED_CHAT_INPUT_DRAFTS);
+    if (entries.length === 0) {
+      sessionStorage.removeItem(CHAT_INPUT_DRAFT_STORAGE_KEY);
+      return;
+    }
+    sessionStorage.setItem(CHAT_INPUT_DRAFT_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function readChatInputDraft(draftKey: string): ChatDraftState {
+  const cached = chatInputDrafts[draftKey];
+  if (cached) return cloneDraftState(cached);
+
+  const stored = readStoredChatInputDrafts()[draftKey];
+  const draft = { value: stored?.value ?? "", attachments: [] };
+  chatInputDrafts[draftKey] = cloneDraftState(draft);
+  return draft;
+}
+
+function persistChatInputDraft(draftKey: string, draft: ChatDraftState) {
+  chatInputDrafts[draftKey] = cloneDraftState(draft);
+
+  const storedDrafts = readStoredChatInputDrafts();
+  if (draft.value.length > 0) {
+    storedDrafts[draftKey] = { value: draft.value, updatedAt: Date.now() };
+  } else {
+    delete storedDrafts[draftKey];
+  }
+  writeStoredChatInputDrafts(storedDrafts);
+}
+
+function clearChatInputDraft(draftKey: string) {
+  delete chatInputDrafts[draftKey];
+
+  const storedDrafts = readStoredChatInputDrafts();
+  if (!(draftKey in storedDrafts)) return;
+  delete storedDrafts[draftKey];
+  writeStoredChatInputDrafts(storedDrafts);
+}
+
 export function ChatInput({
   onSend,
   onStop,
@@ -161,9 +247,16 @@ export function ChatInput({
   isCompacting = false,
 }: ChatInputProps) {
   const { t } = useTranslation();
-  const draftKey = conversationId ?? "__new__";
-  const [value, setValue] = useState("");
-  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const draftKey = conversationId ?? NEW_CONVERSATION_DRAFT_KEY;
+  const initialDraftRef = useRef<ChatDraftState | null>(null);
+  if (initialDraftRef.current === null) {
+    initialDraftRef.current = readChatInputDraft(draftKey);
+  }
+  const [value, setValue] = useState(() => initialDraftRef.current?.value ?? "");
+  const [attachments, setAttachments] = useState<ImageAttachment[]>(() => (
+    initialDraftRef.current?.attachments ?? []
+  ));
+  const [loadedDraftKey, setLoadedDraftKey] = useState(draftKey);
   const [isDragging, setIsDragging] = useState(false);
   const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowCatalogTemplate[]>([]);
   const [activeSkills, setActiveSkills] = useState<Skill[]>([]);
@@ -177,14 +270,24 @@ export function ChatInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const slashOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const dragCounterRef = useRef(0);
-  const draftsRef = useRef<Record<string, ChatDraftState>>({});
+  const draftsRef = useRef<Record<string, ChatDraftState>>(
+    initialDraftRef.current ? { [draftKey]: cloneDraftState(initialDraftRef.current) } : {},
+  );
   const inputLocked = disabled || isCompacting;
   const attachmentLocked = inputLocked || isStreaming;
 
+  const persistDraft = useCallback((nextValue: string, nextAttachments: ImageAttachment[] = attachments) => {
+    const draft = { value: nextValue, attachments: nextAttachments };
+    draftsRef.current[draftKey] = cloneDraftState(draft);
+    persistChatInputDraft(draftKey, draft);
+  }, [attachments, draftKey]);
+
   useEffect(() => {
-    const draft = draftsRef.current[draftKey];
-    setValue(draft?.value ?? "");
-    setAttachments(draft?.attachments ?? []);
+    const draft = draftsRef.current[draftKey] ?? readChatInputDraft(draftKey);
+    draftsRef.current[draftKey] = cloneDraftState(draft);
+    setLoadedDraftKey(draftKey);
+    setValue(draft.value);
+    setAttachments(draft.attachments);
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
@@ -193,17 +296,18 @@ export function ChatInput({
   }, [draftKey]);
 
   useEffect(() => {
-    draftsRef.current[draftKey] = { value, attachments };
-  }, [attachments, draftKey, value]);
+    if (loadedDraftKey !== draftKey) return;
+    persistDraft(value, attachments);
+  }, [attachments, draftKey, loadedDraftKey, persistDraft, value]);
 
   // Accept prefilled text from outside (e.g. suggestion cards)
   useEffect(() => {
     if (prefillText != null && prefillText !== "") {
       setValue(prefillText);
-      draftsRef.current[draftKey] = { value: prefillText, attachments };
+      persistDraft(prefillText);
       setTimeout(() => textareaRef.current?.focus(), 0);
     }
-  }, [attachments, draftKey, prefillText]);
+  }, [persistDraft, prefillText]);
 
   // Auto-resize textarea
   const adjustHeight = useCallback(() => {
@@ -338,7 +442,7 @@ export function ChatInput({
     if (option.action === "openWorkflows") {
       const nextValue = `${value.slice(0, slashTrigger.start)}${value.slice(slashTrigger.end)}`.trimStart();
       setValue(nextValue);
-      draftsRef.current[draftKey] = { value: nextValue, attachments };
+      persistDraft(nextValue);
       setWorkflowCatalogOpen(true);
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
@@ -350,7 +454,7 @@ export function ChatInput({
 
     const next = insertSlashCommand(value, slashTrigger, option);
     setValue(next.value);
-    draftsRef.current[draftKey] = { value: next.value, attachments };
+    persistDraft(next.value);
     requestAnimationFrame(() => {
       const el = textareaRef.current;
       if (el) {
@@ -360,7 +464,7 @@ export function ChatInput({
       }
       adjustHeight();
     });
-  }, [adjustHeight, attachments, draftKey, slashTrigger, value]);
+  }, [adjustHeight, persistDraft, slashTrigger, value]);
 
   const getSlashOptionTitle = useCallback((option: SlashCommandOption) => {
     const key = option.kind === "command" ? commonSlashCommandKey(option.name, "title") : null;
@@ -390,6 +494,7 @@ export function ChatInput({
   }, [t]);
 
   const clearDraft = useCallback(() => {
+    clearChatInputDraft(draftKey);
     draftsRef.current[draftKey] = { value: "", attachments: [] };
     setValue("");
     setAttachments([]);
@@ -414,8 +519,8 @@ export function ChatInput({
     if (slashResolution?.localAction === "openWorkflows") {
       setWorkflowCatalogOpen(true);
       const nextValue = slashResolution.message;
-      draftsRef.current[draftKey] = { value: nextValue, attachments };
       setValue(nextValue);
+      persistDraft(nextValue);
       requestAnimationFrame(() => textareaRef.current?.focus());
       return;
     }
@@ -442,7 +547,7 @@ export function ChatInput({
       sendOptions,
     );
     clearDraft();
-  }, [attachments, clearDraft, draftKey, inputLocked, isStreaming, onCompact, onSend, slashOptions, t, value]);
+  }, [attachments, clearDraft, inputLocked, isStreaming, onCompact, onSend, persistDraft, slashOptions, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -504,13 +609,17 @@ export function ChatInput({
       const [, mediaType, base64Data] = match;
       const allowedMediaType = getAllowedAttachmentMediaType(mediaType, name);
       if (!allowedMediaType) return false;
-      setAttachments((prev) => [
-        ...prev,
-        { base64Data, mediaType: allowedMediaType, originalName: name },
-      ]);
+      setAttachments((prev) => {
+        const next = [
+          ...prev,
+          { base64Data, mediaType: allowedMediaType, originalName: name },
+        ];
+        persistDraft(value, next);
+        return next;
+      });
       return true;
     },
-    [],
+    [persistDraft, value],
   );
 
   const addAttachment = useCallback(
@@ -544,8 +653,12 @@ export function ChatInput({
   );
 
   const removeAttachment = useCallback((index: number) => {
-    setAttachments((prev) => prev.filter((_, i) => i !== index));
-  }, []);
+    setAttachments((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+      persistDraft(value, next);
+      return next;
+    });
+  }, [persistDraft, value]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -663,7 +776,7 @@ export function ChatInput({
       const current = currentValue.trim();
       const batchGoal = current ? `${template.promptTemplate.trimEnd()}\n\n${current}` : undefined;
       const nextValue = buildWorkflowBatchPrompt(template, batchGoal);
-      draftsRef.current[draftKey] = { value: nextValue, attachments };
+      persistDraft(nextValue);
       return nextValue;
     });
     setWorkflowCatalogOpen(false);
@@ -671,7 +784,7 @@ export function ChatInput({
       textareaRef.current?.focus();
       adjustHeight();
     });
-  }, [adjustHeight, attachments, draftKey]);
+  }, [adjustHeight, persistDraft]);
 
   return (
     <div
@@ -935,7 +1048,9 @@ export function ChatInput({
           ref={textareaRef}
           value={value}
           onChange={(e) => {
-            setValue(e.target.value);
+            const nextValue = e.target.value;
+            setValue(nextValue);
+            persistDraft(nextValue);
             setCaretPosition(e.target.selectionStart);
             setDismissedSlashToken(null);
           }}
@@ -1004,15 +1119,23 @@ export function ChatInput({
 
           <div className="flex shrink-0 items-center gap-1.5">
             <VoiceInputButton
-              onTranscript={(text) =>
-                setValue((prev) => prev + (prev ? " " : "") + text)
-              }
+              onTranscript={(text) => {
+                setValue((prev) => {
+                  const nextValue = prev + (prev ? " " : "") + text;
+                  persistDraft(nextValue);
+                  return nextValue;
+                });
+              }}
               disabled={attachmentLocked}
             />
 
             <EmojiPicker
               onEmojiSelect={(emoji) => {
-                setValue((prev) => prev + emoji);
+                setValue((prev) => {
+                  const nextValue = prev + emoji;
+                  persistDraft(nextValue);
+                  return nextValue;
+                });
                 textareaRef.current?.focus();
               }}
               disabled={attachmentLocked}
