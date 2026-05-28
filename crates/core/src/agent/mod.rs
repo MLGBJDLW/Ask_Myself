@@ -51,6 +51,7 @@ mod direct_dispatch;
 mod direct_dispatch_runner;
 mod events;
 mod finalization;
+mod long_task;
 pub mod loop_guard;
 mod model_step;
 mod pre_search;
@@ -71,6 +72,10 @@ mod turn_state;
 mod usage_accounting;
 
 use self::context_pipeline::ContextPipeline;
+use self::long_task::{
+    create_task_checkpoint_for_turn, create_task_checkpoint_for_turn_with_state,
+    LongTaskCompactionContext, LongTaskState,
+};
 use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
 use self::prompt_cache::PromptCacheTracker;
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
@@ -135,6 +140,9 @@ async fn emit_error_and_finalize_turn(
     }
 
     if let Some(tid) = turn_id {
+        if let Err(err) = create_task_checkpoint_for_turn(db, Some(tid), "error") {
+            warn!("Failed to create error resume checkpoint: {err}");
+        }
         let trace = build_turn_trace(route_kind, persisted_trace_items);
         let _ = db.finalize_conversation_turn(tid, "error", None, Some(&trace));
     }

@@ -306,9 +306,23 @@ impl AgentExecutor {
         // Macro for cancellation checkpoints — saves partial conversation and
         // returns gracefully when the token is cancelled.
         macro_rules! check_cancelled {
-            ($last_tool_calls:expr) => {
+            ($last_tool_calls:expr, $long_task_state:expr, $task_plan:expr, $iteration:expr) => {
                 if self.cancel_token.is_cancelled() {
                     warn!("Agent execution cancelled by user");
+                    let live_state = $long_task_state.checkpoint_live_state(
+                        &$task_plan,
+                        $iteration,
+                        self.config.max_iterations,
+                        &loop_recorder,
+                    );
+                    if let Err(err) = create_task_checkpoint_for_turn_with_state(
+                        db,
+                        turn_id,
+                        "cancelled",
+                        Some(&live_state),
+                    ) {
+                        warn!("Failed to create cancellation resume checkpoint: {err}");
+                    }
                     let final_msg = self
                         .finish_cancelled_turn(
                             finalization::CancellationFinalizationContext {
@@ -358,6 +372,7 @@ impl AgentExecutor {
         let context_pipeline =
             ContextPipeline::new(model, self.config.context_window, max_response_tokens);
         let mut loop_guard = AgentLoopGuard::new();
+        let mut long_task_state = LongTaskState::new();
         let mut force_non_streaming_llm = llm_streaming_disabled_by_env();
         'react_loop: for iteration in 0..self.config.max_iterations {
             turn_state.start_iteration(iteration);
@@ -368,7 +383,7 @@ impl AgentExecutor {
             loop_recorder.record(step_started.clone());
             append_persisted_trace_loop_event(&mut persisted_trace_items, step_started);
             // ── Cancellation checkpoint: before LLM call ─────────────────
-            check_cancelled!(last_tool_calls);
+            check_cancelled!(last_tool_calls, long_task_state, task_plan, iteration);
             let steering_texts = {
                 let mut steering_ctx = SteeringDrainContext {
                     db,
@@ -421,6 +436,24 @@ impl AgentExecutor {
                     messages.push(Message::text(Role::System, budget_hint));
                 }
             }
+
+            long_task_state.refresh_plan_recitation(
+                &mut messages,
+                &task_plan,
+                iteration,
+                self.config.max_iterations,
+            );
+            self.compact_before_model_step_if_needed(LongTaskCompactionContext {
+                tx: &tx,
+                model,
+                messages: &mut messages,
+                context_pipeline,
+                tool_defs: &tool_defs,
+                turn_state: &mut turn_state,
+                loop_recorder: &mut loop_recorder,
+                persisted_trace_items: &mut persisted_trace_items,
+            })
+            .await;
 
             let model_step = self
                 .run_model_step(model_step::ModelStepContext {
@@ -628,7 +661,7 @@ impl AgentExecutor {
             last_tool_calls = Some(tool_calls.clone());
 
             // ── Cancellation checkpoint: before tool execution ────────
-            check_cancelled!(last_tool_calls);
+            check_cancelled!(last_tool_calls, long_task_state, task_plan, iteration);
 
             let loop_guard_block_reason = loop_guard_intervention
                 .as_ref()
@@ -687,11 +720,44 @@ impl AgentExecutor {
             last_tool_calls = None;
 
             // ── Cancellation checkpoint: after tool execution ─────────
-            check_cancelled!(last_tool_calls);
+            check_cancelled!(last_tool_calls, long_task_state, task_plan, iteration);
 
             // Re-trim messages to fit context window after appending tool results.
             // This prevents unbounded growth across iterations.
             messages = context_pipeline.trim_after_tool_results(&messages);
+
+            if long_task_state.should_checkpoint_after_tool_round(iteration) {
+                let reason = format!("auto_tool_round_{}", iteration.saturating_add(1));
+                let live_state = long_task_state.checkpoint_live_state(
+                    &task_plan,
+                    iteration,
+                    self.config.max_iterations,
+                    &loop_recorder,
+                );
+                match create_task_checkpoint_for_turn_with_state(
+                    db,
+                    turn_id,
+                    &reason,
+                    Some(&live_state),
+                ) {
+                    Ok(Some(_checkpoint_id)) => {
+                        long_task_state.record_checkpoint(iteration);
+                        let summary = format!(
+                            "Resume checkpoint saved after tool round {}.",
+                            iteration.saturating_add(1)
+                        );
+                        append_persisted_trace_status(&mut persisted_trace_items, &summary, "info");
+                        let _ = tx
+                            .send(AgentEvent::Status {
+                                content: summary,
+                                tone: Some("muted".to_string()),
+                            })
+                            .await;
+                    }
+                    Ok(None) => {}
+                    Err(err) => warn!("Failed to create auto resume checkpoint: {err}"),
+                }
+            }
 
             // Loop back → next LLM call with tool results.
         }
@@ -702,6 +768,29 @@ impl AgentExecutor {
             self.config.max_iterations
         );
         turn_state.transition_to(TurnPhase::Finalizing);
+        let final_iteration = self.config.max_iterations.saturating_sub(1);
+        let live_state = long_task_state.checkpoint_live_state(
+            &task_plan,
+            final_iteration,
+            self.config.max_iterations,
+            &loop_recorder,
+        );
+        match create_task_checkpoint_for_turn_with_state(
+            db,
+            turn_id,
+            "max_iterations",
+            Some(&live_state),
+        ) {
+            Ok(Some(_checkpoint_id)) => {
+                append_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    "Saved a resume checkpoint after reaching max iterations.",
+                    "warning",
+                );
+            }
+            Ok(None) => {}
+            Err(err) => warn!("Failed to create max-iterations resume checkpoint: {err}"),
+        }
 
         let final_content = if !last_iteration_content.trim().is_empty() {
             last_iteration_content

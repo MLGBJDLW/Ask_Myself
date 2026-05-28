@@ -467,7 +467,7 @@ fn compact_json(value: &Value, max_chars: usize) -> String {
 
 fn build_resume_prompt(run: &AgentTaskRun, checkpoint_id: &str, state: &Value) -> String {
     format!(
-        "Resume this Nexa task from a durable checkpoint.\n\nTask: {}\nRun ID: {}\nCheckpoint ID: {}\nPrevious status: {}\nPrevious phase: {}\nRoute: {}\nSummary: {}\n\nInstructions:\n- Continue from the checkpoint state instead of restarting completed work.\n- Reuse existing evidence and artifacts when they are still valid.\n- Re-check stale or missing evidence before making final claims.\n- Preserve the user's source scope and approval boundaries.\n- Say what was resumed and what still needs verification.\n\nCheckpoint state:\n{}",
+        "Resume this Nexa task from a durable checkpoint.\n\nTask: {}\nRun ID: {}\nCheckpoint ID: {}\nPrevious status: {}\nPrevious phase: {}\nRoute: {}\nSummary: {}\n\nInstructions:\n- Start by naming the resumed checkpoint and the next unfinished phase.\n- Prefer liveTurnState.taskPlan when present; it is the freshest in-memory execution state captured at the checkpoint boundary.\n- Continue from the checkpoint state instead of restarting completed work.\n- Do not redo completed tool work unless the checkpoint shows stale, failed, missing, or contradictory evidence.\n- Treat recentEvents and artifacts as durable pointers; inspect only the files, sources, or records needed for the next decision.\n- Reuse existing evidence and artifacts when they are still valid.\n- Re-check stale or missing evidence before making final claims.\n- Preserve the user's source scope and approval boundaries.\n- Run verification before the final answer, then say what was resumed and what still needs verification.\n\nCheckpoint state:\n{}",
         run.title,
         run.id,
         checkpoint_id,
@@ -836,6 +836,15 @@ impl Database {
         run_id: &str,
         reason: &str,
     ) -> Result<TaskResumeCheckpoint, CoreError> {
+        self.create_task_resume_checkpoint_with_state(run_id, reason, None)
+    }
+
+    pub fn create_task_resume_checkpoint_with_state(
+        &self,
+        run_id: &str,
+        reason: &str,
+        live_state: Option<&Value>,
+    ) -> Result<TaskResumeCheckpoint, CoreError> {
         let run = self.get_agent_task_run(run_id)?;
         let events = self
             .get_agent_task_run_events(run_id)?
@@ -848,12 +857,17 @@ impl Database {
         let artifacts = self
             .list_agent_task_artifacts(run_id)
             .unwrap_or_else(|_| Vec::new());
-        let state = serde_json::json!({
+        let mut state = serde_json::json!({
             "run": run,
             "recentEvents": events,
             "artifacts": artifacts,
             "checkpointedAt": Utc::now().to_rfc3339(),
         });
+        if let Some(live_state) = live_state {
+            if let Some(map) = state.as_object_mut() {
+                map.insert("liveTurnState".to_string(), live_state.clone());
+            }
+        }
         let run = self.get_agent_task_run(run_id)?;
         let checkpoint_id = new_id();
         let resume_prompt = build_resume_prompt(&run, &checkpoint_id, &state);
@@ -1518,10 +1532,73 @@ mod tests {
             .create_task_resume_checkpoint(&run.id, "user_pause")
             .unwrap();
         assert!(checkpoint.resume_prompt.contains("Document comparison"));
+        assert!(checkpoint
+            .resume_prompt
+            .contains("Do not redo completed tool work"));
+        assert!(checkpoint
+            .resume_prompt
+            .contains("Start by naming the resumed checkpoint"));
         assert!(checkpoint.state.get("run").is_some());
 
         let prompt = db.build_task_resume_prompt(&run.id).unwrap();
         assert!(prompt.prompt.contains("Resume this Nexa task"));
+    }
+
+    #[test]
+    fn task_resume_checkpoint_can_embed_live_turn_state() {
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-5".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let user = add_user_message(&db, &conversation.id, "Research for a while");
+        let turn = db
+            .create_conversation_turn(&conversation.id, &user.id, Some("web"))
+            .unwrap();
+        let run = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &user.id,
+                "Long research task",
+                Some("openai"),
+                Some("gpt-5"),
+            )
+            .unwrap();
+        let live_state = serde_json::json!({
+            "kind": "longTaskLiveState",
+            "iteration": 3,
+            "taskPlan": {
+                "objective": "Research for a while",
+                "steps": []
+            }
+        });
+
+        let checkpoint = db
+            .create_task_resume_checkpoint_with_state(
+                &run.id,
+                "auto_tool_round_3",
+                Some(&live_state),
+            )
+            .unwrap();
+
+        assert_eq!(
+            checkpoint.state["liveTurnState"]["kind"].as_str(),
+            Some("longTaskLiveState")
+        );
+        assert_eq!(
+            checkpoint.state["liveTurnState"]["taskPlan"]["objective"].as_str(),
+            Some("Research for a while")
+        );
+        assert!(checkpoint
+            .resume_prompt
+            .contains("Prefer liveTurnState.taskPlan"));
     }
 
     #[test]
