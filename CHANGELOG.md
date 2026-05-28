@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.8.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.2...nexa-monorepo-v0.8.3) (2026-05-28)
+
+
+### Features
+
+* **agent:** add OCR tool and Qwen thinking support ([72f63ee](https://github.com/MLGBJDLW/Nexa/commit/72f63eec83e762c1b0bcaeacbb8894067329884f))
+* **agent:** add read-only plan mode ([35732ba](https://github.com/MLGBJDLW/Nexa/commit/35732bae5af85faca07358b2d9b8af30dd225eba))
+* **agent:** add read-only plan mode ([67b26c4](https://github.com/MLGBJDLW/Nexa/commit/67b26c446c5149f6c6842b231ffc42ac19a522d1))
+* **agent:** harden long-running task resilience ([0fd18c8](https://github.com/MLGBJDLW/Nexa/commit/0fd18c8fe8448a3b8b3ee82db42465de0553cc07))
+
+
+### Bug Fixes
+
+* **agent:** stabilize hidden tools and previews ([1ffb334](https://github.com/MLGBJDLW/Nexa/commit/1ffb334abd31ccb9328b46fbc1c89cb34141f234))
+* **desktop:** auto-select tauri dev port ([7ba2f9e](https://github.com/MLGBJDLW/Nexa/commit/7ba2f9e8d90610b970f9950528b72acc996dce4b))
+* **i18n:** localize remaining desktop UI copy ([3139e2e](https://github.com/MLGBJDLW/Nexa/commit/3139e2eef3ca17701d30e2d59a2d2d269566b9a2))
+* **knowledge:** rework edge pulse as comet shape ([928278a](https://github.com/MLGBJDLW/Nexa/commit/928278a946ab683bd2a05b1392acb032c781a58c))
+
 ## [0.8.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.1...nexa-monorepo-v0.8.2) (2026-05-27)
 
 
