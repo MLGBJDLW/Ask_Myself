@@ -348,6 +348,7 @@ export interface AppConfig {
   maxVideoFileSize: number;
   maxAudioFileSize: number;
   dynamicToolVisibility?: boolean;
+  toolVisibilityDefaultsVersion?: number;
   traceEnabled?: boolean;
   confirmDestructive?: boolean;
   shellAccessMode?: 'restricted' | 'confirm_all' | 'open';

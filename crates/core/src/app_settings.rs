@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 const APP_CONFIG_KEY: &str = "app_config";
 const WIZARD_STATE_KEY: &str = "wizard_state";
 const CURRENT_TIMEOUT_DEFAULTS_VERSION: u32 = 1;
+const CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION: u32 = 2;
 const LEGACY_DEFAULT_TOOL_TIMEOUT_SECS: i64 = 30;
 const LEGACY_DEFAULT_AGENT_TIMEOUT_SECS: i64 = 180;
 
@@ -279,6 +280,11 @@ pub struct AppConfig {
     #[serde(default = "default_dynamic_tool_visibility")]
     pub dynamic_tool_visibility: bool,
 
+    /// Version marker for agent tool-visibility defaults. Older configs used
+    /// dynamic visibility by default, which hurts prompt-cache stability.
+    #[serde(default)]
+    pub tool_visibility_defaults_version: u32,
+
     /// Whether to collect detailed agent traces. Default: true.
     #[serde(default = "default_trace_enabled")]
     pub trace_enabled: bool,
@@ -356,7 +362,7 @@ fn default_mcp_call_timeout_secs() -> u64 {
     300
 }
 fn default_dynamic_tool_visibility() -> bool {
-    true
+    false
 }
 fn default_trace_enabled() -> bool {
     true
@@ -407,6 +413,7 @@ impl Default for AppConfig {
             llm_timeout_secs: default_llm_timeout_secs(),
             mcp_call_timeout_secs: default_mcp_call_timeout_secs(),
             dynamic_tool_visibility: default_dynamic_tool_visibility(),
+            tool_visibility_defaults_version: CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION,
             trace_enabled: default_trace_enabled(),
             confirm_destructive: false,
             shell_access_mode: ShellAccessMode::Restricted,
@@ -455,6 +462,19 @@ fn migrate_timeout_defaults(mut config: AppConfig) -> (AppConfig, bool) {
     (config, true)
 }
 
+fn migrate_tool_visibility_defaults(mut config: AppConfig) -> (AppConfig, bool) {
+    if config.tool_visibility_defaults_version >= CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION {
+        return (config, false);
+    }
+
+    // Dynamic visibility changes the tool schema prefix between model steps and
+    // turns. Keep it opt-in so default agent runs prefer reliability and prompt
+    // cache reuse. Users can still re-enable it after this one-time migration.
+    config.dynamic_tool_visibility = false;
+    config.tool_visibility_defaults_version = CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION;
+    (config, true)
+}
+
 impl Database {
     pub fn load_app_config(&self) -> Result<AppConfig, CoreError> {
         let conn = self.conn();
@@ -476,7 +496,9 @@ impl Database {
                 drop(conn);
                 let config: AppConfig = serde_json::from_str(&json)?;
                 let config = decrypt_app_config_secrets(config)?;
-                let (config, migrated) = migrate_timeout_defaults(config);
+                let (config, timeout_migrated) = migrate_timeout_defaults(config);
+                let (config, visibility_migrated) = migrate_tool_visibility_defaults(config);
+                let migrated = timeout_migrated || visibility_migrated;
                 if migrated {
                     self.save_app_config(&config)?;
                 }
@@ -589,7 +611,11 @@ mod tests {
             config.timeout_defaults_version,
             CURRENT_TIMEOUT_DEFAULTS_VERSION
         );
-        assert!(config.dynamic_tool_visibility);
+        assert!(!config.dynamic_tool_visibility);
+        assert_eq!(
+            config.tool_visibility_defaults_version,
+            CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION
+        );
         assert!(config.trace_enabled);
         assert_eq!(config.web_search.custom_providers.len(), 5);
         assert!(config
@@ -635,6 +661,11 @@ mod tests {
         assert_eq!(
             migrated.timeout_defaults_version,
             CURRENT_TIMEOUT_DEFAULTS_VERSION
+        );
+        assert!(!migrated.dynamic_tool_visibility);
+        assert_eq!(
+            migrated.tool_visibility_defaults_version,
+            CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION
         );
 
         let mut explicit = migrated;

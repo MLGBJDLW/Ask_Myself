@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useId, useState, type ComponentPropsWithoutRef } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
 import { Copy, Check, FileText, Paperclip, ExternalLink } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
@@ -29,6 +29,26 @@ const defaultLookup: CitationLookup = { getCard: () => undefined };
 
 export const CitationContext = createContext<CitationLookup>(defaultLookup);
 
+export interface MarkdownRenderState {
+  isStreaming: boolean;
+}
+
+const MarkdownRenderStateContext = createContext<MarkdownRenderState>({ isStreaming: false });
+
+export function MarkdownRenderStateProvider({
+  isStreaming,
+  children,
+}: {
+  isStreaming: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <MarkdownRenderStateContext.Provider value={{ isStreaming }}>
+      {children}
+    </MarkdownRenderStateContext.Provider>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  File-path detection constants                                      */
 /* ------------------------------------------------------------------ */
@@ -52,7 +72,13 @@ const FILE_PATH_REGEX = new RegExp(
  * into backtick-wrapped paths so the `code` component renders them as FileBadge.
  */
 export function preprocessCitations(content: string): string {
-  return content.replace(/\[source:\s*([^\]]+)\]/gi, (_match, path: string) => `\`${path.trim()}\``);
+  return content.replace(/\[source:\s*([^\]]+)\]/gi, (_match, path: string) => {
+    const target = path.trim();
+    if (/^https?:\/\//i.test(target)) {
+      return `[${sourceHost(target) || target}](url:${target})`;
+    }
+    return `\`${target}\``;
+  });
 }
 
 /**
@@ -121,7 +147,7 @@ function scrollAnchorIntoChatContainer(target: HTMLElement): boolean {
 /** Open links in the system browser via Tauri shell, or render citation chips */
 function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>) {
   const citationCtx = useContext(CitationContext);
-  const { openFilePreview } = useFilePreview();
+  const { openFilePreview, openWebPreview } = useFilePreview();
 
   // Detect citation links: href="cite:CHUNK_ID"
   if (href && href.startsWith('cite:')) {
@@ -193,7 +219,7 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
         type="button"
         onClick={() => {
           if (/^https?:\/\//i.test(rawUrl)) {
-            open(rawUrl);
+            openWebPreview(rawUrl, displayLabel);
           }
         }}
         className="inline-flex items-center gap-0.5 px-1.5 py-0 text-[11px] font-medium
@@ -209,8 +235,7 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
     );
   }
 
-  const handleClick = useCallback(
-    (e: React.MouseEvent<HTMLAnchorElement>) => {
+  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
       e.preventDefault();
       if (!href) return;
 
@@ -233,10 +258,15 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
       }
 
       e.preventDefault();
+      if (/^https?:\/\//i.test(href)) {
+        const label = Array.isArray(children)
+          ? children.map(String).join('')
+          : String(children ?? '');
+        openWebPreview(href, label || sourceHost(href));
+        return;
+      }
       open(href);
-    },
-    [href],
-  );
+  };
   return (
     <a
       {...rest}
@@ -321,6 +351,7 @@ async function loadMermaid() {
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'strict',
+    suppressErrorRendering: true,
     theme: 'base',
     fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
     themeVariables: {
@@ -357,9 +388,12 @@ export function normalizeMermaidChart(chart: string): string {
 
 function MermaidBlock({ chart }: { chart: string }) {
   const { t } = useTranslation();
+  const { isStreaming } = useContext(MarkdownRenderStateContext);
   const [copied, setCopied] = useState(false);
   const [svg, setSvg] = useState('');
-  const [rendering, setRendering] = useState(true);
+  const [renderState, setRenderState] = useState<'rendering' | 'ready' | 'deferred' | 'invalid'>(
+    'rendering',
+  );
   const diagramId = useId().replace(/[:]/g, '-');
   const normalizedChart = normalizeMermaidChart(chart);
 
@@ -377,23 +411,40 @@ function MermaidBlock({ chart }: { chart: string }) {
     let cancelled = false;
 
     const render = async () => {
+      if (!normalizedChart) {
+        if (!cancelled) {
+          setSvg('');
+          setRenderState(isStreaming ? 'deferred' : 'invalid');
+        }
+        return;
+      }
+
       try {
         const mermaid = await loadMermaid();
-        setRendering(true);
+        if (cancelled) return;
+        setSvg('');
+        setRenderState('rendering');
+
+        const parsed = await mermaid.parse(normalizedChart, { suppressErrors: true });
+        if (!parsed) {
+          if (!cancelled) {
+            setRenderState(isStreaming ? 'deferred' : 'invalid');
+          }
+          return;
+        }
+
         const { svg: nextSvg } = await mermaid.render(
           `mermaid-${diagramId}-${Date.now()}`,
           normalizedChart,
         );
         if (!cancelled) {
           setSvg(nextSvg);
+          setRenderState('ready');
         }
       } catch {
         if (!cancelled) {
           setSvg('');
-        }
-      } finally {
-        if (!cancelled) {
-          setRendering(false);
+          setRenderState(isStreaming ? 'deferred' : 'invalid');
         }
       }
     };
@@ -402,7 +453,7 @@ function MermaidBlock({ chart }: { chart: string }) {
     return () => {
       cancelled = true;
     };
-  }, [normalizedChart, diagramId]);
+  }, [normalizedChart, diagramId, isStreaming]);
 
   return (
     <div className="group/code relative my-2 overflow-hidden rounded-lg border border-border bg-surface-1/70">
@@ -431,13 +482,22 @@ function MermaidBlock({ chart }: { chart: string }) {
       </div>
 
       <div className="overflow-x-auto bg-white px-3 py-3">
-        {svg ? (
+        {svg && renderState === 'ready' ? (
           <div
             className="[&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full"
             dangerouslySetInnerHTML={{ __html: svg }}
           />
-        ) : rendering ? (
+        ) : renderState === 'rendering' ? (
           <div className="py-6 text-center text-xs text-slate-500">Rendering diagram...</div>
+        ) : renderState === 'deferred' ? (
+          <div className="space-y-2">
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              Waiting for the complete Mermaid diagram...
+            </div>
+            <pre className="max-h-64 overflow-x-auto rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+              <code>{normalizedChart || chart}</code>
+            </pre>
+          </div>
         ) : (
           <div className="space-y-2">
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">

@@ -629,6 +629,12 @@ const FILE_ROUTE_TERMS: &[&str] = &[
     "文件",
     "读取",
     "编辑",
+    "写",
+    "写入",
+    "新建",
+    "创建",
+    "保存",
+    "修改",
     "移动",
     "重命名",
     "复制",
@@ -667,6 +673,14 @@ const FILE_WORKSPACE_TERMS: &[&str] = &[
     "文件",
     "读取",
     "编辑",
+    "写",
+    "写入",
+    "新建",
+    "创建",
+    "保存",
+    "修改",
+    "改写",
+    "润色",
     "替换",
     "查找",
     "搜索文件",
@@ -923,5 +937,19 @@ mod tests {
         });
 
         assert!(decision.active_categories.contains(&ToolCategory::SubAgent));
+    }
+
+    #[test]
+    fn chinese_write_or_modify_query_selects_filesystem_tools() {
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "帮我修改这个文件并保存。",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert_eq!(decision.route, ToolVisibilityRouteKind::FileOperation);
+        assert!(decision
+            .active_categories
+            .contains(&ToolCategory::FileSystem));
     }
 }

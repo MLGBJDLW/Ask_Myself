@@ -305,7 +305,7 @@
   "maxAudioFileSize": "音频文件上限（MB）",
   "fileSizeLimits": "文件大小限制",
   "dynamicTools": "动态工具可见性",
-  "dynamicToolsDesc": "根据对话上下文只向 AI 展示相关工具。减少 token 消耗，提升决策质量。",
+  "dynamicToolsDesc": "实验性提示压缩：只展示相关工具 schema。为保证可靠性和提示缓存稳定，建议保持关闭。",
   "traceEnabled": "Agent 轨迹收集",
   "traceEnabledDesc": "记录 Agent 交互的详细轨迹，用于调试和优化。",
   "autoMemoryExtraction": "自动提取记忆",

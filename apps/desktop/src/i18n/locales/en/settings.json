@@ -305,7 +305,7 @@
   "maxAudioFileSize": "Max Audio File Size (MB)",
   "fileSizeLimits": "File Size Limits",
   "dynamicTools": "Dynamic Tool Visibility",
-  "dynamicToolsDesc": "Only show relevant tools to the AI based on the conversation context. Reduces token usage and improves decision quality.",
+  "dynamicToolsDesc": "Experimental prompt compaction: show only relevant tool schemas. Keep off for maximum reliability and prompt-cache stability.",
   "traceEnabled": "Agent Trace Collection",
   "traceEnabledDesc": "Record detailed traces of agent interactions for debugging and optimization.",
   "autoMemoryExtraction": "Automatic Memory Extraction",

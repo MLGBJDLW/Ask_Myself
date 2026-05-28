@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
@@ -23,6 +24,7 @@ import {
   FileSpreadsheet,
   FileText,
   FolderOpen,
+  Globe2,
   Image as ImageIcon,
   Languages,
   ListTree,
@@ -42,6 +44,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
+import { isWebUrl, sourceHost } from '../../lib/sourceDisplay';
 import { useResizablePanel } from '../../lib/useResizablePanel';
 import {
   markdownComponents,
@@ -364,6 +367,7 @@ function copyForLocale(locale: string) {
   const zh = locale.startsWith('zh');
   return {
     title: zh ? '文件预览' : 'File Preview',
+    webTitle: zh ? '网页预览' : 'Web Preview',
     preview: zh ? '预览' : 'Preview',
     structured: zh ? '结构化' : 'Structured',
     edit: zh ? '编辑' : 'Edit',
@@ -376,12 +380,16 @@ function copyForLocale(locale: string) {
     discard: zh ? '还原草稿' : 'Discard draft',
     reload: zh ? '重新加载' : 'Reload',
     openExternal: zh ? '外部打开' : 'Open externally',
+    copyUrl: zh ? '复制链接' : 'Copy URL',
     showFolder: zh ? '所在文件夹' : 'Show in folder',
     copyPath: zh ? '复制路径' : 'Copy path',
     copied: zh ? '已复制' : 'Copied',
     close: zh ? '关闭' : 'Close',
     resizePanel: zh ? '调整预览面板宽度' : 'Resize preview panel',
     loading: zh ? '正在读取文件...' : 'Reading file...',
+    webPreviewNotice: zh
+      ? '如果网站禁止嵌入，请使用外部打开。'
+      : 'If the site blocks embedding, open it externally.',
     empty: zh ? '没有可预览的文本内容。' : 'No text content is available for preview.',
     unsupported: zh ? '这个文件暂时不能在应用内预览或编辑。' : 'This file cannot be previewed or edited inline yet.',
     sheets: zh ? '工作表' : 'sheets',
@@ -1019,6 +1027,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const labels = useMemo(() => copyForLocale(locale), [locale]);
   const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
+  const [webPreview, setWebPreview] = useState<{ url: string; title?: string } | null>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [preview, setPreview] = useState<api.FilePreview | null>(null);
   const [draft, setDraft] = useState('');
@@ -1030,6 +1039,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedPath, setCopiedPath] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(false);
   const {
     size: previewPanelWidth,
     setSize: setPreviewPanelWidth,
@@ -1085,9 +1095,24 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
     if (dirtyRef.current && !window.confirm(labels.discardPrompt)) {
       return;
     }
+    setWebPreview(null);
     setOpen(true);
     void loadFile(path);
   }, [labels.discardPrompt, loadFile]);
+
+  const openWebPreview = useCallback((url: string, title?: string) => {
+    const trimmed = url.trim();
+    if (!isWebUrl(trimmed)) {
+      void openExternal(trimmed);
+      return;
+    }
+    if (dirtyRef.current && !window.confirm(labels.discardPrompt)) {
+      return;
+    }
+    setOpen(false);
+    setWebPreview({ url: trimmed, title });
+    setCopiedUrl(false);
+  }, [labels.discardPrompt]);
 
   const close = useCallback(() => {
     if (dirty && !window.confirm(labels.discardPrompt)) {
@@ -1095,6 +1120,10 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
     }
     setOpen(false);
   }, [dirty, labels.discardPrompt]);
+
+  const closeWebPreview = useCallback(() => {
+    setWebPreview(null);
+  }, []);
 
   const handlePreviewPanelResizeKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowLeft') {
@@ -1267,7 +1296,10 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', handler);
   }, [close, open, save]);
 
-  const contextValue = useMemo(() => ({ openFilePreview }), [openFilePreview]);
+  const contextValue = useMemo(
+    () => ({ openFilePreview, openWebPreview }),
+    [openFilePreview, openWebPreview],
+  );
   const content = preview?.content ?? '';
   const hasStructured = hasStructuredPreview(preview);
   const hasRenderedPreview = Boolean(preview?.renderedPreview?.pages?.length);
@@ -1700,6 +1732,94 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                 </motion.div>
               )}
             </AnimatePresence>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {webPreview && (
+          <>
+            <motion.div
+              key="web-preview-backdrop"
+              initial={shouldReduceMotion ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.15 }}
+              className="fixed inset-0 z-50 bg-black/35 backdrop-blur-[1px]"
+              onClick={closeWebPreview}
+              aria-hidden="true"
+            />
+            <motion.aside
+              key="web-preview-panel"
+              initial={shouldReduceMotion ? false : { x: '100%', opacity: 0.8 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={shouldReduceMotion ? { opacity: 0 } : { x: '100%', opacity: 0.8 }}
+              transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+              className="fixed inset-y-0 right-0 z-[51] flex w-[min(920px,100vw)] flex-col border-l border-border bg-surface-1 shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-label={labels.webTitle}
+            >
+              <header className="shrink-0 border-b border-border bg-surface-1/95 px-4 py-3 backdrop-blur">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-surface-2 text-accent">
+                    <Globe2 size={18} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h2 className="truncate text-sm font-semibold text-text-primary">
+                      {webPreview.title || sourceHost(webPreview.url) || labels.webTitle}
+                    </h2>
+                    <p className="mt-1 truncate text-[11px] text-text-tertiary" title={webPreview.url}>
+                      {webPreview.url}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeWebPreview}
+                    className="rounded-md p-2 text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                    title={labels.close}
+                    aria-label={labels.close}
+                  >
+                    <PanelRightClose size={18} />
+                  </button>
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate rounded-md border border-border bg-surface-0 px-2.5 py-1.5 text-[11px] text-text-secondary">
+                    {labels.webPreviewNotice}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { void openExternal(webPreview.url); }}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                  >
+                    <ExternalLink size={14} />
+                    {labels.openExternal}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await navigator.clipboard.writeText(webPreview.url);
+                      setCopiedUrl(true);
+                      setTimeout(() => setCopiedUrl(false), 1600);
+                    }}
+                    className="inline-flex h-8 items-center justify-center rounded-md px-2 text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                    title={labels.copyUrl}
+                    aria-label={labels.copyUrl}
+                  >
+                    {copiedUrl ? <Check size={15} className="text-success" /> : <Copy size={15} />}
+                  </button>
+                </div>
+              </header>
+              <div className="min-h-0 flex-1 bg-white">
+                <iframe
+                  key={webPreview.url}
+                  title={webPreview.title || webPreview.url}
+                  src={webPreview.url}
+                  sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"
+                  referrerPolicy="no-referrer"
+                  className="h-full w-full border-0 bg-white"
+                />
+              </div>
             </motion.aside>
           </>
         )}

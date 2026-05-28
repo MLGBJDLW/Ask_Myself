@@ -7,7 +7,6 @@ import { canPreviewInApp, useFilePreview } from '../../features/preview';
 import { getSoftDropdownMotion } from '../../lib/uiMotion';
 import { VideoPreviewModal } from '../media/VideoPreviewModal';
 import type { CitationCardData } from '../../lib/citationParser';
-import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { isWebUrl, sourceBasename, sourceHost } from '../../lib/sourceDisplay';
 
 /* ------------------------------------------------------------------ */
@@ -59,7 +58,7 @@ function formatScore(score: number): string {
 export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPopupProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
-  const { openFilePreview } = useFilePreview();
+  const { openFilePreview, openWebPreview } = useFilePreview();
   const popupRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const [videoPreviewPath, setVideoPreviewPath] = useState<string | null>(null);
@@ -87,7 +86,7 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
   const handleOpenFile = useCallback(() => {
     if (!card.documentPath) return;
     if (isWebUrl(card.documentPath)) {
-      openExternal(card.documentPath);
+      openWebPreview(card.documentPath, card.documentTitle || sourceHost(card.documentPath));
       return;
     }
     if (canPreviewInApp(card.documentPath)) {
@@ -95,7 +94,7 @@ export function EvidenceCardPopup({ card, anchorRect, onClose }: EvidenceCardPop
     } else {
       openFileInDefaultApp(card.documentPath);
     }
-  }, [card.documentPath, openFilePreview]);
+  }, [card.documentPath, card.documentTitle, openFilePreview, openWebPreview]);
 
   const handleShowInExplorer = useCallback(() => {
     if (card.documentPath && !isWebUrl(card.documentPath)) showInFileExplorer(card.documentPath);

@@ -1364,7 +1364,8 @@ fn test_resource_keys_allow_independent_writes_to_share_batch() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ResourceLockedTool));
     let offered = HashSet::from(["locked_write".to_string()]);
-    let policy = ToolSchedulerPolicy::new(None, false, offered);
+    let registered = registry.tool_names().into_iter().collect();
+    let policy = ToolSchedulerPolicy::new(None, false, offered, registered);
     let calls = vec![
         test_tool_call("a", "locked_write", serde_json::json!({ "path": "a.txt" })),
         test_tool_call("b", "locked_write", serde_json::json!({ "path": "b.txt" })),
@@ -1381,7 +1382,8 @@ fn test_unkeyed_exclusive_tool_remains_serial_barrier() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ResourceLockedTool));
     let offered = HashSet::from(["locked_write".to_string()]);
-    let policy = ToolSchedulerPolicy::new(None, false, offered);
+    let registered = registry.tool_names().into_iter().collect();
+    let policy = ToolSchedulerPolicy::new(None, false, offered, registered);
     let calls = vec![
         test_tool_call("a", "locked_write", serde_json::json!({})),
         test_tool_call("b", "locked_write", serde_json::json!({ "path": "b.txt" })),
@@ -1401,7 +1403,8 @@ fn test_wait_for_previous_forces_new_execution_batch() {
         delay_ms: 0,
     }));
     let offered = HashSet::from(["fast_tool".to_string()]);
-    let policy = ToolSchedulerPolicy::new(None, false, offered);
+    let registered = registry.tool_names().into_iter().collect();
+    let policy = ToolSchedulerPolicy::new(None, false, offered, registered);
     let calls = vec![
         test_tool_call("a", "fast_tool", serde_json::json!({ "value": "a" })),
         test_tool_call(
