@@ -51,8 +51,14 @@ const overrideConfig = {
 await fs.writeFile(overridePath, `${JSON.stringify(overrideConfig, null, 2)}\n`, 'utf8');
 console.log(`[tauri:autoport] Using dev port ${port}`);
 
-const tauriBin = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-const child = spawn(tauriBin, ['tauri', 'dev', '--config', overridePath], {
+const tauriBin = process.execPath;
+const tauriArgs = [
+  path.join(appDir, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'),
+  'dev',
+  '--config',
+  overridePath,
+];
+const child = spawn(tauriBin, tauriArgs, {
   cwd: appDir,
   stdio: 'inherit',
   env: process.env,

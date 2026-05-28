@@ -13,7 +13,7 @@
     "test:streaming": "node ./scripts/run-streaming-contracts.mjs",
     "test:voice-runtime": "node ./scripts/run-voice-runtime-contracts.mjs",
     "preview": "vite preview",
-    "tauri": "tauri",
+    "tauri": "node ./scripts/tauri-cli.mjs",
     "e2e": "playwright test",
     "e2e:context": "playwright test e2e/context-usage-persistence.spec.ts"
   },
