@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { useTranslation, type TranslationKey } from "../../i18n";
 import type { ArtifactPayload, Conversation, ImageAttachment } from "../../types/conversation";
 import type { Skill } from "../../types/extensions";
-import type { WorkflowCatalogTemplate } from "../../lib/api";
+import type { AgentExecutionMode, WorkflowCatalogTemplate } from "../../lib/api";
 import * as api from "../../lib/api";
 import {
   buildSlashCommandOptions,
@@ -99,6 +99,7 @@ function getAllowedAttachmentMediaType(mediaType: string | undefined, name: stri
 export interface ChatInputSendOptions {
   skillIds?: string[];
   userArtifacts?: ArtifactPayload | null;
+  executionMode?: AgentExecutionMode;
 }
 
 interface ChatInputProps {
@@ -113,6 +114,8 @@ interface ChatInputProps {
   prefillText?: string;
   onCompact?: () => void;
   isCompacting?: boolean;
+  planModeEnabled?: boolean;
+  onPlanModeChange?: (enabled: boolean) => void;
 }
 
 interface ChatDraftState {
@@ -245,6 +248,8 @@ export function ChatInput({
   prefillText,
   onCompact,
   isCompacting = false,
+  planModeEnabled,
+  onPlanModeChange,
 }: ChatInputProps) {
   const { t } = useTranslation();
   const draftKey = conversationId ?? NEW_CONVERSATION_DRAFT_KEY;
@@ -266,6 +271,7 @@ export function ChatInput({
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
   const [slashActiveTab, setSlashActiveTab] = useState<SlashCommandTab>("all");
   const [dismissedSlashToken, setDismissedSlashToken] = useState<string | null>(null);
+  const [localPlanModeEnabled, setLocalPlanModeEnabled] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const slashOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -275,6 +281,14 @@ export function ChatInput({
   );
   const inputLocked = disabled || isCompacting;
   const attachmentLocked = inputLocked || isStreaming;
+  const effectivePlanModeEnabled = planModeEnabled ?? localPlanModeEnabled;
+
+  const setPlanMode = useCallback((enabled: boolean) => {
+    if (planModeEnabled === undefined) {
+      setLocalPlanModeEnabled(enabled);
+    }
+    onPlanModeChange?.(enabled);
+  }, [onPlanModeChange, planModeEnabled]);
 
   const persistDraft = useCallback((nextValue: string, nextAttachments: ImageAttachment[] = attachments) => {
     const draft = { value: nextValue, attachments: nextAttachments };
@@ -452,6 +466,19 @@ export function ChatInput({
       return;
     }
 
+    if (option.action === "planMode") {
+      const nextValue = `${value.slice(0, slashTrigger.start)}${value.slice(slashTrigger.end)}`.trimStart();
+      setValue(nextValue);
+      persistDraft(nextValue);
+      setPlanMode(true);
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        setCaretPosition(textareaRef.current?.selectionStart ?? nextValue.length);
+        adjustHeight();
+      });
+      return;
+    }
+
     const next = insertSlashCommand(value, slashTrigger, option);
     setValue(next.value);
     persistDraft(next.value);
@@ -464,7 +491,7 @@ export function ChatInput({
       }
       adjustHeight();
     });
-  }, [adjustHeight, persistDraft, slashTrigger, value]);
+  }, [adjustHeight, persistDraft, setPlanMode, slashTrigger, value]);
 
   const getSlashOptionTitle = useCallback((option: SlashCommandOption) => {
     const key = option.kind === "command" ? commonSlashCommandKey(option.name, "title") : null;
@@ -533,21 +560,38 @@ export function ChatInput({
       toast.error(t("chat.compactMustBeAlone"));
       return;
     }
+    if (slashResolution?.executionMode === "plan" && slashResolution.message.length === 0 && attachments.length === 0) {
+      setPlanMode(true);
+      clearDraft();
+      return;
+    }
 
     const outgoingMessage = slashResolution?.message || trimmed || t("chat.imageMessage");
-    const sendOptions = slashResolution
+    const planModeArtifact: ArtifactPayload | null = effectivePlanModeEnabled
       ? {
-          skillIds: slashResolution.skillIds,
-          userArtifacts: slashResolution.artifact,
+          kind: "executionMode",
+          mode: "plan",
+          source: "toggle",
+        }
+      : null;
+    const executionMode = slashResolution?.executionMode ?? (effectivePlanModeEnabled ? "plan" : undefined);
+    const sendOptions = slashResolution || executionMode
+      ? {
+          skillIds: slashResolution?.skillIds,
+          userArtifacts: slashResolution?.artifact ?? planModeArtifact,
+          executionMode,
         }
       : undefined;
+    if (executionMode === "plan") {
+      setPlanMode(true);
+    }
     onSend(
       outgoingMessage,
       attachments.length > 0 ? attachments : undefined,
       sendOptions,
     );
     clearDraft();
-  }, [attachments, clearDraft, inputLocked, isStreaming, onCompact, onSend, persistDraft, slashOptions, t, value]);
+  }, [attachments, clearDraft, effectivePlanModeEnabled, inputLocked, isStreaming, onCompact, onSend, persistDraft, setPlanMode, slashOptions, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -786,6 +830,71 @@ export function ChatInput({
     });
   }, [adjustHeight, persistDraft]);
 
+  const modeSegment = (
+    <div className="flex items-center px-3 pt-2">
+      <div
+        className={`relative grid h-6 w-[8.25rem] shrink-0 grid-cols-[minmax(0,1fr)_0.75rem_minmax(0,1fr)] overflow-hidden rounded-full border p-px text-[10px] font-semibold shadow-inner transition-colors duration-200 ${
+          effectivePlanModeEnabled
+            ? "border-accent/30 bg-accent/10 text-text-secondary"
+            : "border-border/60 bg-surface-1/80 text-text-secondary"
+        }`}
+        role="group"
+        aria-label="Message mode"
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            width: "calc((100% - 0.75rem) / 2)",
+            transform: effectivePlanModeEnabled
+              ? "translateX(0)"
+              : "translateX(calc(100% + 0.75rem))",
+            borderRadius: effectivePlanModeEnabled ? "999px 2px 2px 999px" : "2px 999px 999px 2px",
+            clipPath: effectivePlanModeEnabled
+              ? "polygon(0 0, 100% 0, calc(100% - 0.32rem) 100%, 0 100%)"
+              : "polygon(0.32rem 0, 100% 0, 100% 100%, 0 100%)",
+          }}
+          className={`absolute bottom-px left-px top-px border shadow-sm transition-all duration-200 ease-out ${
+            effectivePlanModeEnabled
+              ? "border-accent/35 bg-accent text-on-accent shadow-accent/20"
+              : "border-border/70 bg-surface-0 text-text-primary"
+          }`}
+        />
+        <button
+          type="button"
+          data-testid="chat-plan-mode"
+          onClick={() => setPlanMode(true)}
+          disabled={attachmentLocked}
+          aria-pressed={effectivePlanModeEnabled}
+          className={`relative z-10 col-start-1 row-start-1 flex min-w-0 items-center justify-center rounded-full pl-1.5 pr-1 transition-colors duration-200 disabled:pointer-events-none disabled:opacity-45 ${
+            effectivePlanModeEnabled ? "text-on-accent" : "text-text-tertiary hover:text-text-primary"
+          }`}
+        >
+          <span className="truncate">{t("chat.planLabel")}</span>
+        </button>
+        <span
+          aria-hidden="true"
+          className={`pointer-events-none relative z-20 col-start-2 row-start-1 flex items-center justify-center text-[10px] font-medium transition-colors duration-200 ${
+            effectivePlanModeEnabled ? "text-accent/70" : "text-text-tertiary/70"
+          }`}
+        >
+          /
+        </span>
+        <button
+          type="button"
+          data-testid="chat-normal-mode"
+          onClick={() => setPlanMode(false)}
+          disabled={attachmentLocked}
+          aria-pressed={!effectivePlanModeEnabled}
+          className={`relative z-10 col-start-3 row-start-1 flex min-w-0 items-center justify-center rounded-full pl-1 pr-1.5 transition-colors duration-200 disabled:pointer-events-none disabled:opacity-45 ${
+            effectivePlanModeEnabled ? "text-text-tertiary hover:text-text-primary" : "text-text-primary"
+          }`}
+        >
+          <span className="truncate">{t("chat.normalLabel")}</span>
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <div
       data-testid="chat-input"
@@ -1003,7 +1112,11 @@ export function ChatInput({
         </div>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-border/80 bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast focus-within:border-accent/55 focus-within:ring-accent/20">
+      <div
+        className={`overflow-hidden rounded-xl border bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast focus-within:border-accent/55 focus-within:ring-accent/20 ${
+          effectivePlanModeEnabled ? "border-accent/35" : "border-border/80"
+        }`}
+      >
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-2 border-b border-border/35 px-3 py-2.5">
             {attachments.map((att, i) => (
@@ -1043,6 +1156,8 @@ export function ChatInput({
           onChange={handleFileSelect}
         />
 
+        {modeSegment}
+
         <textarea
           data-testid="chat-input-textarea"
           ref={textareaRef}
@@ -1062,7 +1177,7 @@ export function ChatInput({
           placeholder={isCompacting ? `${t("chat.compacting")} (>_<)` : t("chat.placeholder")}
           disabled={inputLocked}
           rows={1}
-          className="block min-h-24 w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary outline-none disabled:pointer-events-none disabled:opacity-40"
+          className="block min-h-24 w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-2.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary outline-none disabled:pointer-events-none disabled:opacity-40"
         />
 
         <div className="flex min-h-11 items-center justify-between gap-3 border-t border-border/35 px-2.5 py-2">

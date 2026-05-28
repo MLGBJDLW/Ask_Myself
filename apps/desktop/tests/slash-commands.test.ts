@@ -99,6 +99,16 @@ test('resolves compact as a local command', () => {
   assertEqual(resolved.message, '', 'compact has no message body');
 });
 
+test('resolves plan as execution mode without prompt expansion', () => {
+  const options = buildSlashCommandOptions([], []);
+  const resolved = resolveSlashCommandMessage('/plan build the reporting dashboard', options);
+  assert(resolved, 'plan should resolve');
+  assertEqual(resolved.executionMode, 'plan', 'plan enters plan execution mode');
+  assertEqual(resolved.message, 'build the reporting dashboard', 'plan preserves the user goal');
+  assertEqual(resolved.skillIds.length, 0, 'plan does not pin skills');
+  assertEqual(resolved.artifact.executionMode, 'plan', 'plan artifact records execution mode');
+});
+
 async function main(): Promise<void> {
   for (const { name, fn } of tests) {
     await fn();

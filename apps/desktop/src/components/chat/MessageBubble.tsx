@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
-import { Check, CornerDownRight, X } from 'lucide-react';
+import { Check, CheckCircle2, ClipboardList, CornerDownRight, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import {
   CitationContext,
@@ -18,6 +18,11 @@ import { MessageActions } from './MessageActions';
 import { messageTimestamp } from '../../lib/relativeTime';
 import type { ConversationMessage } from '../../types/conversation';
 import { CitationChip } from './EvidenceCard';
+import {
+  extractProposedPlan,
+  stripProposedPlanBlock,
+  type ProposedPlanArtifact,
+} from '../../lib/proposedPlan';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -41,6 +46,8 @@ export interface MessageBubbleProps {
   onDeleteMessage?: (messageId: string) => void;
   /** Called when a message is edited and re-sent */
   onEditAndResend?: (messageId: string, newContent: string) => void;
+  /** Called when a proposed plan is approved for implementation */
+  onApprovePlan?: (planMarkdown: string, sourceMessageId: string) => void;
 }
 
 function isSteeringMessage(msg: ConversationMessage): boolean {
@@ -59,12 +66,65 @@ function isSteeringMessage(msg: ConversationMessage): boolean {
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAssistant, lastCached, onRetry, alwaysShowTimestamp, onDeleteMessage, onEditAndResend }: MessageBubbleProps) {
+function ProposedPlanCard({
+  plan,
+  onApprove,
+}: {
+  plan: ProposedPlanArtifact;
+  onApprove?: () => void;
+}) {
+  return (
+    <div className="mb-3 overflow-hidden rounded-lg border border-accent/25 bg-surface-1/80">
+      <div className="flex min-w-0 items-center gap-2 border-b border-border/50 px-3 py-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
+          <ClipboardList className="h-3.5 w-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-semibold text-text-primary">Plan mode</div>
+          <div className="truncate text-[11px] text-text-tertiary">Read-only proposal</div>
+        </div>
+        {onApprove && (
+          <button
+            type="button"
+            onClick={onApprove}
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-accent px-2.5 text-xs font-medium text-on-accent transition-colors hover:bg-accent/90"
+          >
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            Approve and implement
+          </button>
+        )}
+      </div>
+      <div className="px-3 py-3">
+        <h3 className="mb-2 text-sm font-semibold leading-5 text-text-primary">{plan.title}</h3>
+        <div className="prose-chat text-sm">
+          <ReactMarkdown
+            remarkPlugins={markdownRemarkPlugins}
+            rehypePlugins={rehypePlugins}
+            components={markdownComponents}
+            urlTransform={(url) => url}
+          >
+            {preprocessFilePaths(preprocessCitations(preprocessInlineCitations(preprocessChunkCitations(plan.markdown))))}
+          </ReactMarkdown>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAssistant, lastCached, onRetry, alwaysShowTimestamp, onDeleteMessage, onEditAndResend, onApprovePlan }: MessageBubbleProps) {
   const { t } = useTranslation();
   const isUser = msg.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(msg.content);
   const editRef = useRef<HTMLTextAreaElement>(null);
+  const proposedPlan = useMemo(
+    () => (isUser ? null : extractProposedPlan(msg.artifacts, msg.content)),
+    [isUser, msg.artifacts, msg.content],
+  );
+  const visibleContent = proposedPlan ? stripProposedPlanBlock(msg.content) : msg.content;
+  const actionText = proposedPlan
+    ? [visibleContent, proposedPlan.markdown].filter(Boolean).join('\n\n')
+    : msg.content;
 
   // Focus textarea when entering edit mode
   useEffect(() => {
@@ -109,7 +169,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
   const evidenceItems = useMemo(() => {
     if (isUser) return [];
 
-    const parsed = extractChunkCitations(msg.content);
+    const parsed = extractChunkCitations(visibleContent);
     const grouped = new Map<string, {
       chunkId: string;
       card?: CitationCardData;
@@ -172,7 +232,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
           displayText: item.count > 1 ? `${baseLabel} ×${item.count}` : baseLabel,
         };
       });
-  }, [citationLookup, isUser, msg.content, t]);
+  }, [citationLookup, isUser, visibleContent, t]);
 
   const timestamp = messageTimestamp(msg.createdAt, t);
   const steering = isSteeringMessage(msg);
@@ -204,7 +264,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
         >
           {!isEditing && (
             <MessageActions
-              text={msg.content}
+              text={actionText}
               showFeedback={!isUser}
               chunkIds={chunkIds}
               queryText={queryText}
@@ -271,7 +331,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
                   {t('chat.steeringLabel')}
                 </span>
               )}
-              <span className="whitespace-pre-wrap">{msg.content}</span>
+              <span className="whitespace-pre-wrap">{visibleContent}</span>
               {msg.imageAttachments && msg.imageAttachments.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mt-1.5">
                   {msg.imageAttachments.map((att, i) => (
@@ -308,18 +368,31 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
                 </div>
               )}
 
-              <div className="prose-chat">
-                <CitationContext.Provider value={citationLookup ?? { getCard: () => undefined }}>
-                  <ReactMarkdown
-                    remarkPlugins={markdownRemarkPlugins}
-                    rehypePlugins={rehypePlugins}
-                    components={markdownComponents}
-                    urlTransform={(url) => url}
-                  >
-                    {preprocessFilePaths(preprocessCitations(preprocessInlineCitations(preprocessChunkCitations(msg.content))))}
-                  </ReactMarkdown>
-                </CitationContext.Provider>
-              </div>
+              {proposedPlan && (
+                <ProposedPlanCard
+                  plan={proposedPlan}
+                  onApprove={
+                    onApprovePlan
+                      ? () => onApprovePlan(proposedPlan.markdown, msg.id)
+                      : undefined
+                  }
+                />
+              )}
+
+              {visibleContent.length > 0 && (
+                <div className="prose-chat">
+                  <CitationContext.Provider value={citationLookup ?? { getCard: () => undefined }}>
+                    <ReactMarkdown
+                      remarkPlugins={markdownRemarkPlugins}
+                      rehypePlugins={rehypePlugins}
+                      components={markdownComponents}
+                      urlTransform={(url) => url}
+                    >
+                      {preprocessFilePaths(preprocessCitations(preprocessInlineCitations(preprocessChunkCitations(visibleContent))))}
+                    </ReactMarkdown>
+                  </CitationContext.Provider>
+                </div>
+              )}
             </>
           )}
         </div>

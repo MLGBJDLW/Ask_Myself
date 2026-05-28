@@ -63,6 +63,17 @@ function suggestPersonaId(message: string, personas: api.PersonaProfile[]): stri
   return null;
 }
 
+function buildApprovedPlanPrompt(planMarkdown: string): string {
+  return [
+    'Implement the approved plan below.',
+    'Treat the plan as the source of truth for this turn. Make the required changes, run focused verification, and report exactly what changed and what was verified.',
+    '',
+    '<approved_plan>',
+    planMarkdown.trim(),
+    '</approved_plan>',
+  ].join('\n');
+}
+
 const CHAT_SIDEBAR_WIDTH_KEY = 'chat-sidebar-width';
 const CHAT_SIDEBAR_MIN_WIDTH = 200;
 const CHAT_SIDEBAR_MAX_WIDTH = 420;
@@ -334,6 +345,11 @@ export function ChatPage() {
   const [pendingGraphContext, setPendingGraphContext] = useState<GraphAgentContext | null>(
     () => readGraphAgentContext(),
   );
+  const [planModeEnabled, setPlanModeEnabled] = useState(false);
+
+  useEffect(() => {
+    setPlanModeEnabled(false);
+  }, [chat.activeId]);
 
   useEffect(() => {
     const syncGraphContext = () => setPendingGraphContext(readGraphAgentContext());
@@ -403,6 +419,7 @@ export function ChatPage() {
                 : {}),
               skillIds: inputOptions?.skillIds,
               userArtifacts: userArtifacts ?? null,
+              executionMode: inputOptions?.executionMode,
             }
           : undefined,
       );
@@ -412,6 +429,23 @@ export function ChatPage() {
       }
     },
     [activePersonaId, chat.send, pendingGraphContext, personas, setPersona],
+  );
+
+  const handleApprovePlan = useCallback(
+    (planMarkdown: string, sourceMessageId: string) => {
+      setPlanModeEnabled(false);
+      const prompt = buildApprovedPlanPrompt(planMarkdown);
+      void handleChatSend(prompt, undefined, {
+        executionMode: 'normal',
+        userArtifacts: {
+          kind: 'approvedPlan',
+          version: 1,
+          sourceMessageId,
+          plan: planMarkdown,
+        },
+      });
+    },
+    [handleChatSend],
   );
 
   const handleClearGraphContext = useCallback(() => {
@@ -931,6 +965,7 @@ export function ChatPage() {
               onDismissError={() => chat.clearError()}
               onDeleteMessage={chat.deleteMessage}
               onEditAndResend={chat.editAndResend}
+              onApprovePlan={handleApprovePlan}
               loadingMsgs={chat.loadingMsgs}
               lastCached={chat.lastCached}
               onSuggestionClick={handleSuggestionClick}
@@ -987,6 +1022,8 @@ export function ChatPage() {
               prefillText={prefillText}
               onCompact={chat.activeId ? handleCompactConversation : undefined}
               isCompacting={isCompacting}
+              planModeEnabled={planModeEnabled}
+              onPlanModeChange={setPlanModeEnabled}
               onRestoreCheckpoint={chat.activeId ? async () => {
                 await chat.reloadMessages();
               } : undefined}

@@ -109,6 +109,7 @@ interface ChatMessagesProps {
   onDismissError?: () => void;
   onDeleteMessage?: (messageId: string) => void;
   onEditAndResend?: (messageId: string, newContent: string) => void;
+  onApprovePlan?: (planMarkdown: string, sourceMessageId: string) => void;
   loadingMsgs?: boolean;
   lastCached?: boolean;
   onSuggestionClick?: (text: string) => void;
@@ -553,6 +554,7 @@ export function ChatMessages({
   onDismissError,
   onDeleteMessage,
   onEditAndResend,
+  onApprovePlan,
   loadingMsgs,
   lastCached,
   onSuggestionClick,
@@ -1672,6 +1674,7 @@ export function ChatMessages({
                   })()}
                   onDeleteMessage={onDeleteMessage}
                   onEditAndResend={onEditAndResend}
+                  onApprovePlan={onApprovePlan}
                 />
 
                 {visibleSkills.length > 0 && (
@@ -1711,6 +1714,7 @@ export function ChatMessages({
                       )}
                       onDeleteMessage={onDeleteMessage}
                       onEditAndResend={onEditAndResend}
+                      onApprovePlan={onApprovePlan}
                     />
                   )}
 
@@ -1799,6 +1803,7 @@ export function ChatMessages({
                   })()}
                   onDeleteMessage={onDeleteMessage}
                   onEditAndResend={onEditAndResend}
+                  onApprovePlan={onApprovePlan}
                 />
               )}
 

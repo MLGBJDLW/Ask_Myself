@@ -719,6 +719,24 @@ impl ToolRegistry {
         registry
     }
 
+    /// Build the tool surface exposed during Plan Mode.
+    ///
+    /// Plan Mode may inspect local and remote evidence, but it must not mutate
+    /// state, execute commands, delegate to other agents, or expose tools whose
+    /// schema mixes read-only and write actions.
+    pub fn plan_mode_filtered(&self) -> ToolRegistry {
+        let mut registry = ToolRegistry::new();
+        let empty_args = serde_json::json!({});
+
+        for tool in &self.tools {
+            if plan_mode_allows_tool(tool.name(), &tool.access_profile(&empty_args)) {
+                registry.register_shared(Arc::clone(tool));
+            }
+        }
+
+        registry
+    }
+
     /// Check if a tool requires confirmation for the given arguments.
     pub fn requires_confirmation(&self, name: &str, args: &serde_json::Value) -> bool {
         self.get(name)
@@ -886,6 +904,32 @@ impl ToolRegistry {
             .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
         tool.execute_with_run_context(ctx).await
     }
+}
+
+fn plan_mode_allows_tool(name: &str, access: &ToolAccessProfile) -> bool {
+    if name == "mcp_tool" || name.starts_with("mcp__") {
+        return false;
+    }
+
+    if matches!(
+        name,
+        "run_shell"
+            | "project_tool"
+            | "desktop_automation"
+            | "browser_evidence_capture"
+            | "download_asset"
+            | "generate_image"
+            | "prepare_document_tools"
+            | "update_plan"
+            | "record_verification"
+            | "spawn_subagent"
+            | "spawn_subagent_batch"
+            | "judge_subagent_results"
+    ) {
+        return false;
+    }
+
+    access.can_read && !access.can_write && !access.can_execute && !access.needs_approval
 }
 
 /// Generic argument-size guard shared by all execute paths.
@@ -1065,6 +1109,43 @@ mod tests {
 
         assert!(names.iter().any(|name| name == "compare_documents"));
         assert!(names.iter().any(|name| name == "summarize_document"));
+    }
+
+    #[test]
+    fn plan_mode_registry_excludes_mutating_and_execution_tools() {
+        let registry = default_tool_registry();
+        let plan_registry = registry.plan_mode_filtered();
+        let names = plan_registry.tool_names();
+
+        for blocked in [
+            "run_shell",
+            "edit_file",
+            "multi_edit",
+            "create_file",
+            "write_note",
+            "update_plan",
+            "record_verification",
+            "project_tool",
+            "spawn_subagent",
+        ] {
+            assert!(
+                !names.iter().any(|name| name == blocked),
+                "{blocked} should be blocked"
+            );
+        }
+
+        for allowed in [
+            "read_file",
+            "grep_files",
+            "search_files",
+            "web_search",
+            "tool_search",
+        ] {
+            assert!(
+                names.iter().any(|name| name == allowed),
+                "{allowed} should remain available"
+            );
+        }
     }
 
     #[cfg(feature = "ocr")]

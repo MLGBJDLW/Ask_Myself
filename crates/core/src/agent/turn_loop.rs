@@ -265,42 +265,46 @@ impl AgentExecutor {
         };
 
         // --- 3c'. Try direct dispatch (skip LLM for simple commands) ---------
-        turn_state.transition_to(TurnPhase::DirectDispatch);
-        if let Some(msg) = self
-            .try_direct_dispatch(
-                user_query_text,
-                db,
-                &source_scope,
-                &tx,
-                conversation_id,
-                turn_id,
-                next_sort_order,
-            )
-            .await
-        {
-            turn_state.finish(TurnOutcome::DirectDispatch);
-            return Ok(msg);
+        if !self.config.execution_mode.is_plan() {
+            turn_state.transition_to(TurnPhase::DirectDispatch);
+            if let Some(msg) = self
+                .try_direct_dispatch(
+                    user_query_text,
+                    db,
+                    &source_scope,
+                    &tx,
+                    conversation_id,
+                    turn_id,
+                    next_sort_order,
+                )
+                .await
+            {
+                turn_state.finish(TurnOutcome::DirectDispatch);
+                return Ok(msg);
+            }
         }
 
         // --- 3d. Check answer cache before ReAct loop ------------------------
-        turn_state.transition_to(TurnPhase::CacheLookup);
-        if let Some(msg) = self
-            .try_cached_answer(
-                user_query_text,
-                cache_source_filter.as_deref(),
-                db,
-                &tx,
-                conversation_id,
-                turn_id,
-                model,
-                sort_order,
-                route_plan.kind,
-                &mut trace,
-            )
-            .await
-        {
-            turn_state.finish(TurnOutcome::Cached);
-            return Ok(msg);
+        if !self.config.execution_mode.is_plan() {
+            turn_state.transition_to(TurnPhase::CacheLookup);
+            if let Some(msg) = self
+                .try_cached_answer(
+                    user_query_text,
+                    cache_source_filter.as_deref(),
+                    db,
+                    &tx,
+                    conversation_id,
+                    turn_id,
+                    model,
+                    sort_order,
+                    route_plan.kind,
+                    &mut trace,
+                )
+                .await
+            {
+                turn_state.finish(TurnOutcome::Cached);
+                return Ok(msg);
+            }
         }
 
         // Macro for cancellation checkpoints — saves partial conversation and

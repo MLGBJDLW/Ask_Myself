@@ -21,8 +21,8 @@ use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, SubagentBatchTool, SubagentTool,
 };
 use nexa_core::agent::{
-    build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutor,
-    AgentSteeringMessage, CancellationToken, ConfirmationCallback,
+    build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutionMode,
+    AgentExecutor, AgentSteeringMessage, CancellationToken, ConfirmationCallback,
 };
 use nexa_core::agent_run::{AgentRunEvent, AgentRunPhase};
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};

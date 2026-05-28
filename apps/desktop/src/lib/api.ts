@@ -38,6 +38,7 @@ import type {
   ConversationStats,
   ConversationSearchResult,
   ImageAttachment,
+  ArtifactPayload,
   Checkpoint,
   CheckpointBranch,
   FileCheckpoint,
@@ -828,6 +829,8 @@ export const removeConversationFromProject = (conversationId: string) =>
 
 // ── Agent Chat ──────────────────────────────────────────────────────────
 
+export type AgentExecutionMode = 'normal' | 'plan';
+
 export const agentChat = (
   conversationId: string,
   message: string,
@@ -835,6 +838,8 @@ export const agentChat = (
   agentConfigId?: string | null,
   personaId?: string | null,
   skillIds?: string[],
+  executionMode?: AgentExecutionMode | null,
+  userArtifacts?: ArtifactPayload | null,
 ) =>
   invoke<void>('agent_chat_cmd', {
     conversationId,
@@ -843,6 +848,8 @@ export const agentChat = (
     agentConfigId: agentConfigId ?? null,
     personaId: personaId ?? null,
     skillIds: skillIds && skillIds.length > 0 ? skillIds : null,
+    executionMode: executionMode ?? null,
+    userArtifacts: userArtifacts ?? null,
   });
 
 export const agentSteer = (conversationId: string, message: string) =>
