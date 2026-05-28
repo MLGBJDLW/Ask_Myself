@@ -404,6 +404,10 @@ mod tests {
             Some(true)
         );
         assert_eq!(
+            model_supports_reasoning_from_catalog(ProviderType::Qwen, "qwen3.6-plus"),
+            Some(true)
+        );
+        assert_eq!(
             model_supports_reasoning_from_catalog(ProviderType::OpenAi, "grok-4.3"),
             Some(false)
         );

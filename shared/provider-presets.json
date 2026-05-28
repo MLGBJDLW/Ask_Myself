@@ -6225,6 +6225,15 @@
     "icon": "🪶",
     "description": "Qwen3.7 Max, Qwen3.6 Plus/Flash, QwQ, Qwen3-VL",
     "capabilities": {
+      "reasoning": {
+        "effortLevels": [],
+        "thinkingBudget": {
+          "enabled": true,
+          "defaultTokens": 10000,
+          "minTokens": 1,
+          "step": 500
+        }
+      },
       "vision": false
     },
     "models": [

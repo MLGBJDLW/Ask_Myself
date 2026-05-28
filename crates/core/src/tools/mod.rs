@@ -108,6 +108,8 @@ pub mod manage_skill_tool;
 pub mod manage_source_tool;
 pub mod mcp_tool;
 pub mod multi_edit_tool;
+#[cfg(feature = "ocr")]
+pub mod ocr_tool;
 pub mod path_utils;
 pub mod persona_tool;
 pub mod playbook_tool;
@@ -986,6 +988,8 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(knowledge_graph_tool::KnowledgeGraphTool));
     registry.register(Box::new(health_check_tool::HealthCheckTool));
     registry.register(Box::new(image_generation_tool::GenerateImageTool));
+    #[cfg(feature = "ocr")]
+    registry.register(Box::new(ocr_tool::ExtractImageTextTool));
     registry.register(Box::new(archive_output_tool::ArchiveOutputTool));
     registry.register(Box::new(related_concepts_tool::RelatedConceptsTool));
     registry.register(Box::new(run_shell_tool::RunShellTool));
@@ -1061,6 +1065,16 @@ mod tests {
 
         assert!(names.iter().any(|name| name == "compare_documents"));
         assert!(names.iter().any(|name| name == "summarize_document"));
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn select_tools_includes_ocr_for_image_text_requests() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools("请 OCR 识别这张截图里的文字", false);
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "extract_image_text"));
     }
 
     #[test]
@@ -1314,6 +1328,8 @@ mod tests {
             "web_research_context",
             "read_file",
             "read_files",
+            #[cfg(feature = "ocr")]
+            "extract_image_text",
             "list_dir",
             "glob_files",
             "grep_files",

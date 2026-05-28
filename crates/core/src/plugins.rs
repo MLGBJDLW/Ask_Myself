@@ -234,11 +234,13 @@ const OFFICE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     name: "Office Documents",
     capability: "Document generation and analysis",
     description:
-        "Prepares document runtimes and works with PPT, DOCX, XLSX, PDF, and HTML document flows.",
+        "Prepares document runtimes and works with PPT, DOCX, XLSX, PDF, HTML, and OCR image flows.",
     ecosystem_surface: EcosystemSurfaceKind::CapabilityPackage,
     tools: &[
         "prepare_document_tools",
         "get_document_info",
+        #[cfg(feature = "ocr")]
+        "extract_image_text",
         "compare_documents",
         "summarize_document",
         "compile_document",
