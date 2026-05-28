@@ -1091,23 +1091,12 @@ export function KnowledgeGraphView() {
                       .kg-edge-transfer {
                         pointer-events: none;
                       }
-                      .kg-edge-transfer-bridge {
-                        fill: none;
-                        stroke: currentColor;
-                        stroke-linecap: round;
-                        stroke-linejoin: round;
-                        stroke-opacity: 0.32;
-                        filter: url(#knowledge-transfer-soften);
-                      }
-                      .kg-edge-transfer-swell {
+                      .kg-edge-comet {
                         fill: currentColor;
-                        fill-opacity: 0.18;
-                        filter: url(#knowledge-transfer-soften);
+                        filter: url(#knowledge-transfer-glow);
                       }
-                      .kg-edge-transfer-orb {
-                        fill: currentColor;
-                        stroke: rgba(255, 255, 255, 0.58);
-                        stroke-width: 0.85;
+                      .kg-edge-comet-core {
+                        fill: rgba(255, 255, 255, 0.98);
                         filter: url(#knowledge-transfer-glow);
                       }
                       .kg-node-hit {
@@ -1156,7 +1145,7 @@ export function KnowledgeGraphView() {
                     </feMerge>
                   </filter>
                   <filter id="knowledge-transfer-glow" x="-180%" y="-180%" width="460%" height="460%">
-                    <feGaussianBlur stdDeviation="3" result="blur" />
+                    <feGaussianBlur stdDeviation="2.4" result="blur" />
                     <feMerge>
                       <feMergeNode in="blur" />
                       <feMergeNode in="SourceGraphic" />
@@ -1235,6 +1224,8 @@ export function KnowledgeGraphView() {
                     const path = edgePath(source, target);
                     const showRelationBadge = bundle.relationCount > 1 || directlySelected || agentUsed;
                     const pulsing = directlySelected || agentUsed || Boolean(graphMode === 'focus' && connectedToSelectedNode);
+                    const bundleWaveDuration = directlySelected || agentUsed ? '2.6s' : '3.4s';
+                    const bundleWaveBegin = `${(bundleIndex % 7) * 0.42}s`;
                     const selectBundle = () => {
                       handleSelectBundle(bundle.id);
                     };
@@ -1257,9 +1248,9 @@ export function KnowledgeGraphView() {
                             if (!edgeSource || !edgeTarget) return null;
                             const edgeStyle = RELATION_CATEGORY_STYLE[buildRelationBundles([edge])[0]?.category ?? 'general'];
                             const expandedPath = edgePath(edgeSource, edgeTarget, relationOffset(index, bundle.edges.length));
-                            const edgePulsing = selected || agentUsedEdgeIds.has(edge.id) || graphMode === 'focus';
-                            const edgeWaveDuration = selected ? '7.8s' : '9.6s';
-                            const edgeWaveBegin = `${(index % 6) * 0.75}s`;
+                            const edgePulsing = selected || agentUsedEdgeIds.has(edge.id);
+                            const edgeWaveDuration = directlySelected || agentUsedEdgeIds.has(edge.id) ? '2.6s' : '3.4s';
+                            const edgeWaveBegin = `${(index % 6) * 0.42}s`;
                             return (
                               <g key={edge.id}>
                                 <path
@@ -1277,41 +1268,17 @@ export function KnowledgeGraphView() {
                                     <animateMotion dur={edgeWaveDuration} begin={edgeWaveBegin} repeatCount="indefinite" path={expandedPath} rotate="auto" />
                                     <animate
                                       attributeName="opacity"
-                                      values="0;0.72;0.82;0.44;0"
-                                      keyTimes="0;0.14;0.68;0.92;1"
+                                      values="0;1;1;0"
+                                      keyTimes="0;0.08;0.88;1"
                                       dur={edgeWaveDuration}
                                       begin={edgeWaveBegin}
                                       repeatCount="indefinite"
                                     />
-                                    <path d="M -20 0 L 11 0" className="kg-edge-transfer-bridge" strokeWidth={selected ? 4.7 : 3.5} />
-                                    <ellipse cx="-3" cy="0" rx={selected ? 15 : 12} ry={selected ? 5.4 : 4.2} className="kg-edge-transfer-swell">
-                                      <animate
-                                        attributeName="rx"
-                                        values={`${selected ? 8 : 6};${selected ? 17 : 13};${selected ? 11 : 9};2`}
-                                        keyTimes="0;0.28;0.82;1"
-                                        dur={edgeWaveDuration}
-                                        begin={edgeWaveBegin}
-                                        repeatCount="indefinite"
-                                      />
-                                      <animate
-                                        attributeName="ry"
-                                        values={`${selected ? 2.6 : 2};${selected ? 5.8 : 4.6};${selected ? 3.6 : 3};0.8`}
-                                        keyTimes="0;0.28;0.82;1"
-                                        dur={edgeWaveDuration}
-                                        begin={edgeWaveBegin}
-                                        repeatCount="indefinite"
-                                      />
-                                    </ellipse>
-                                    <circle r={selected ? 4.6 : 3.6} className="kg-edge-transfer-orb">
-                                      <animate
-                                        attributeName="r"
-                                        values={`${selected ? 2.8 : 2.2};${selected ? 4.8 : 3.8};${selected ? 4.4 : 3.4};0.9`}
-                                        keyTimes="0;0.2;0.86;1"
-                                        dur={edgeWaveDuration}
-                                        begin={edgeWaveBegin}
-                                        repeatCount="indefinite"
-                                      />
-                                    </circle>
+                                    <path
+                                      d="M 2.6 0 C 1.2 -1.6 -3 -2.8 -10 -2 C -16 -1.2 -22 -0.4 -22 0 C -22 0.4 -16 1.2 -10 2 C -3 2.8 1.2 1.6 2.6 0 Z"
+                                      className="kg-edge-comet"
+                                    />
+                                    <circle r="1.05" className="kg-edge-comet-core" />
                                   </g>
                                 )}
                               </g>
@@ -1333,49 +1300,25 @@ export function KnowledgeGraphView() {
                             {pulsing && (
                               <g className="kg-edge-transfer" style={{ color: agentUsed ? '#f59e0b' : style.color }}>
                                 <animateMotion
-                                  dur={selected || agentUsed ? '7.8s' : '9.6s'}
-                                  begin={`${(bundleIndex % 7) * 0.65}s`}
+                                  dur={bundleWaveDuration}
+                                  begin={bundleWaveBegin}
                                   repeatCount="indefinite"
                                   path={path}
                                   rotate="auto"
                                 />
                                 <animate
                                   attributeName="opacity"
-                                  values="0;0.72;0.82;0.44;0"
-                                  keyTimes="0;0.14;0.68;0.92;1"
-                                  dur={selected || agentUsed ? '7.8s' : '9.6s'}
-                                  begin={`${(bundleIndex % 7) * 0.65}s`}
+                                  values="0;1;1;0"
+                                  keyTimes="0;0.08;0.88;1"
+                                  dur={bundleWaveDuration}
+                                  begin={bundleWaveBegin}
                                   repeatCount="indefinite"
                                 />
-                                <path d="M -20 0 L 11 0" className="kg-edge-transfer-bridge" strokeWidth={selected || agentUsed ? 4.9 : 3.7} />
-                                <ellipse cx="-3" cy="0" rx={selected || agentUsed ? 15 : 12} ry={selected || agentUsed ? 5.5 : 4.3} className="kg-edge-transfer-swell">
-                                  <animate
-                                    attributeName="rx"
-                                    values={`${selected || agentUsed ? 8 : 6};${selected || agentUsed ? 17 : 13};${selected || agentUsed ? 11 : 9};2`}
-                                    keyTimes="0;0.28;0.82;1"
-                                    dur={selected || agentUsed ? '7.8s' : '9.6s'}
-                                    begin={`${(bundleIndex % 7) * 0.65}s`}
-                                    repeatCount="indefinite"
-                                  />
-                                  <animate
-                                    attributeName="ry"
-                                    values={`${selected || agentUsed ? 2.6 : 2};${selected || agentUsed ? 5.9 : 4.7};${selected || agentUsed ? 3.6 : 3};0.8`}
-                                    keyTimes="0;0.28;0.82;1"
-                                    dur={selected || agentUsed ? '7.8s' : '9.6s'}
-                                    begin={`${(bundleIndex % 7) * 0.65}s`}
-                                    repeatCount="indefinite"
-                                  />
-                                </ellipse>
-                                <circle r={selected || agentUsed ? 4.7 : 3.7} className="kg-edge-transfer-orb">
-                                  <animate
-                                    attributeName="r"
-                                    values={`${selected || agentUsed ? 2.8 : 2.2};${selected || agentUsed ? 4.9 : 3.9};${selected || agentUsed ? 4.4 : 3.4};0.9`}
-                                    keyTimes="0;0.2;0.86;1"
-                                    dur={selected || agentUsed ? '7.8s' : '9.6s'}
-                                    begin={`${(bundleIndex % 7) * 0.65}s`}
-                                    repeatCount="indefinite"
-                                  />
-                                </circle>
+                                <path
+                                  d="M 2.8 0 C 1.4 -1.7 -3.2 -3 -10.5 -2.2 C -17 -1.3 -23.5 -0.4 -23.5 0 C -23.5 0.4 -17 1.3 -10.5 2.2 C -3.2 3 1.4 1.7 2.8 0 Z"
+                                  className="kg-edge-comet"
+                                />
+                                <circle r="1.15" className="kg-edge-comet-core" />
                               </g>
                             )}
                           </>
