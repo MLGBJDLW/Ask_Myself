@@ -38,7 +38,7 @@ export function TagInput({
   value,
   onChange,
   presets,
-  placeholder = 'Type and press Enter…',
+  placeholder,
   label,
   showSelectAll,
 }: TagInputProps) {
@@ -153,7 +153,7 @@ export function TagInput({
           value={inputValue}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          placeholder={tags.length === 0 ? placeholder : ''}
+          placeholder={tags.length === 0 ? (placeholder ?? t('common.tagInputPlaceholder')) : ''}
           className="flex-1 min-w-[80px] bg-transparent text-sm text-text-primary
             placeholder:text-text-tertiary outline-none border-none p-0"
         />

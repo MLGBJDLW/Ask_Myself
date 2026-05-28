@@ -912,13 +912,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             .catch((e) => {
               // LLM title failed; placeholder remains in local state only.
               console.error('LLM title generation failed, keeping placeholder:', e);
-              toast.warning(`Smart title generation failed: ${String(e)}`);
+              toast.warning(t('chat.smartTitleGenerationFailed', { message: String(e) }));
             });
         }
       }
     }
     return () => { cancelled = true; };
-  }, [activeId, isStreaming, loadConversations, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
+  }, [activeId, isStreaming, loadConversations, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation, t]);
 
   /* ── Sync stream errors to chatError ────────────────────────────── */
   useEffect(() => {
@@ -1135,7 +1135,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       if (convId && streamingConversationRef.current === convId && isStreaming) {
         const steeringConversationId = convId;
         if (attachments && attachments.length > 0) {
-          toast.error('Attachments cannot be added while the agent is already running.');
+          toast.error(t('chat.attachmentWhileRunning'));
           return;
         }
 

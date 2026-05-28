@@ -82,5 +82,6 @@
   "template.report_brief.prompt": "Executez le workflow Brief de rapport pour ce sujet :\n\nSujet :\n\nPublic :\n\nSources ou contraintes :\n\nRetournez un brouillon de rapport structure avec les notes de preuve et les lacunes.",
   "template.connector_background.label": "Connecteur + tache d'arriere-plan",
   "template.connector_background.description": "Evaluer la configuration du connecteur et les risques du cycle de vie des taches d'arriere-plan.",
-  "template.connector_background.prompt": "Executez le workflow Connecteur + tache d'arriere-plan pour cet objectif d'automatisation locale :\n\nObjectif :\n\nConnecteur, dossier ou application concerne :\n\nRetournez la configuration recommandee, le cycle de vie en arriere-plan, le comportement d'annulation et les controles de securite."
+  "template.connector_background.prompt": "Executez le workflow Connecteur + tache d'arriere-plan pour cet objectif d'automatisation locale :\n\nObjectif :\n\nConnecteur, dossier ou application concerne :\n\nRetournez la configuration recommandee, le cycle de vie en arriere-plan, le comportement d'annulation et les controles de securite.",
+  "browserUrlPlaceholder": "https://example.com/report"
 }

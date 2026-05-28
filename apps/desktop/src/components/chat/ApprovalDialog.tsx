@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { ApprovalDecisionValue, ApprovalRequest } from '../../types';
 import { approveToolCall } from '../../lib/api';
+import { useTranslation } from '../../i18n';
 
 interface ApprovalDialogProps {
   request: ApprovalRequest | null;
@@ -14,13 +15,8 @@ const RISK_COLOR: Record<ApprovalRequest['riskLevel'], string> = {
   high: 'bg-rose-50 text-rose-700 border-rose-200',
 };
 
-const RISK_LABEL: Record<ApprovalRequest['riskLevel'], string> = {
-  low: 'LOW RISK',
-  medium: 'MEDIUM RISK',
-  high: 'HIGH RISK',
-};
-
 export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
+  const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -60,7 +56,11 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
           <span
             className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${RISK_COLOR[request.riskLevel]}`}
           >
-            {RISK_LABEL[request.riskLevel]}
+            {request.riskLevel === 'high'
+              ? t('chat.approvalRiskHigh')
+              : request.riskLevel === 'medium'
+                ? t('chat.approvalRiskMedium')
+                : t('chat.approvalRiskLow')}
           </span>
         </div>
 
@@ -74,7 +74,7 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
           )}
           {request.checkpointPreview?.planned && (
             <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
-              <div className="font-semibold">Safety checkpoint will be saved first</div>
+              <div className="font-semibold">{t('chat.approvalCheckpointSavedFirst')}</div>
               <div className="mt-1">{request.checkpointPreview.note}</div>
               {request.checkpointPreview.targetPaths.length > 0 && (
                 <ul className="mt-1 list-inside list-disc space-y-0.5">
@@ -87,7 +87,7 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
           )}
           <details className="rounded-md border border-zinc-200 dark:border-zinc-700">
             <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-zinc-600 dark:text-zinc-400">
-              Arguments
+              {t('chat.approvalArguments')}
             </summary>
             <pre className="max-h-64 overflow-auto px-3 py-2 text-xs">
               <code>{preview}</code>
@@ -102,7 +102,7 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
             onClick={() => decide('deny')}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-100 disabled:opacity-60 dark:border-zinc-600 dark:hover:bg-zinc-800"
           >
-            Deny
+            {t('chat.approvalDeny')}
           </button>
           <button
             type="button"
@@ -110,7 +110,7 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
             onClick={() => decide('allow_session')}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-100 disabled:opacity-60 dark:border-zinc-600 dark:hover:bg-zinc-800"
           >
-            Allow (Session)
+            {t('chat.approvalAllowSession')}
           </button>
           <button
             type="button"
@@ -118,7 +118,7 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
             onClick={() => decide('allow_once')}
             className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
           >
-            Allow Once
+            {t('chat.approvalAllowOnce')}
           </button>
         </div>
 
@@ -128,7 +128,7 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
             onClick={() => setShowAdvanced(v => !v)}
             className="underline-offset-2 hover:underline"
           >
-            {showAdvanced ? 'Hide advanced' : 'Advanced'}
+            {showAdvanced ? t('chat.approvalHideAdvanced') : t('chat.approvalAdvanced')}
           </button>
           {showAdvanced && (
             <div className="mt-2">
@@ -138,7 +138,7 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
                 onClick={() => decide('never')}
                 className="rounded-md border border-rose-300 px-2 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-60 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-950"
               >
-                Never allow this target
+                {t('chat.approvalNeverAllowTarget')}
               </button>
             </div>
           )}

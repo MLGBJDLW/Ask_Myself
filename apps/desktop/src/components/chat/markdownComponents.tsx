@@ -459,7 +459,7 @@ function MermaidBlock({ chart }: { chart: string }) {
     <div className="group/code relative my-2 overflow-hidden rounded-lg border border-border bg-surface-1/70">
       <div className="flex items-center justify-between border-b border-border/60 bg-surface-2/80 px-3 py-2">
         <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-text-tertiary">
-          Mermaid
+          {t('chat.mermaidDiagram')}
         </span>
         <button
           type="button"
@@ -488,11 +488,11 @@ function MermaidBlock({ chart }: { chart: string }) {
             dangerouslySetInnerHTML={{ __html: svg }}
           />
         ) : renderState === 'rendering' ? (
-          <div className="py-6 text-center text-xs text-slate-500">Rendering diagram...</div>
+          <div className="py-6 text-center text-xs text-slate-500">{t('chat.mermaidRendering')}</div>
         ) : renderState === 'deferred' ? (
           <div className="space-y-2">
             <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-              Waiting for the complete Mermaid diagram...
+              {t('chat.mermaidWaiting')}
             </div>
             <pre className="max-h-64 overflow-x-auto rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
               <code>{normalizedChart || chart}</code>
@@ -501,7 +501,7 @@ function MermaidBlock({ chart }: { chart: string }) {
         ) : (
           <div className="space-y-2">
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              Could not render this Mermaid diagram. The source is shown below.
+              {t('chat.mermaidFailed')}
             </div>
             <pre className="overflow-x-auto rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
               <code>{normalizedChart || chart}</code>

@@ -16,5 +16,16 @@
   "clear": "清除",
   "selectAll": "全选",
   "clearAll": "清除全部",
-  "undo": "撤销"
+  "undo": "撤销",
+  "tagInputPlaceholder": "输入后按 Enter...",
+  "moreOptions": "更多选项",
+  "recommended": "推荐",
+  "enableAll": "全部启用",
+  "disableAll": "全部禁用",
+  "selectGroup": "选择分组",
+  "clearGroup": "清空分组",
+  "builtIn": "内置",
+  "bundled": "内置包",
+  "userDefined": "用户定义",
+  "none": "无"
 }

@@ -82,5 +82,6 @@
   "template.report_brief.prompt": "为这个主题运行“报告简报”工作流：\n\n主题：\n\n受众：\n\n数据源或限制：\n\n请返回结构化报告草稿，并标明证据说明和缺口。",
   "template.connector_background.label": "连接器 + 后台任务",
   "template.connector_background.description": "评估连接器设置和后台任务生命周期风险。",
-  "template.connector_background.prompt": "为这个本地自动化目标运行“连接器 + 后台任务”工作流：\n\n目标：\n\n涉及的连接器、文件夹或应用：\n\n请返回推荐设置、后台生命周期、取消行为和安全检查。"
+  "template.connector_background.prompt": "为这个本地自动化目标运行“连接器 + 后台任务”工作流：\n\n目标：\n\n涉及的连接器、文件夹或应用：\n\n请返回推荐设置、后台生命周期、取消行为和安全检查。",
+  "browserUrlPlaceholder": "https://example.com/report"
 }

@@ -469,7 +469,7 @@ export function ChatSidebar({
                 onClick={() => setMenuOpen((v) => !v)}
                 className="p-1.5 rounded-md text-text-tertiary hover:text-text-primary hover:bg-surface-2
                   transition-colors cursor-pointer"
-                aria-label="More options"
+                aria-label={t('common.moreOptions')}
               >
                 <MoreVertical className="h-3.5 w-3.5" />
               </button>

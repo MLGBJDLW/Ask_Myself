@@ -134,7 +134,7 @@ export function ModelCard({
             <button
               onClick={() => setExpanded(!expanded)}
               className="rounded-md p-1.5 text-text-tertiary hover:text-text-secondary hover:bg-surface-3 transition-colors cursor-pointer"
-              aria-label={expanded ? 'Collapse' : 'Expand'}
+              aria-label={expanded ? t('common.collapse') : t('common.expand')}
             >
               {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
             </button>

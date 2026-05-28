@@ -11,6 +11,7 @@ import type evidence from './locales/en/evidence.json';
 import type knowledge from './locales/en/knowledge.json';
 import type media from './locales/en/media.json';
 import type nav from './locales/en/nav.json';
+import type preview from './locales/en/preview.json';
 import type project from './locales/en/project.json';
 import type providers from './locales/en/providers.json';
 import type search from './locales/en/search.json';
@@ -18,6 +19,7 @@ import type settings from './locales/en/settings.json';
 import type shortcuts from './locales/en/shortcuts.json';
 import type sidebar from './locales/en/sidebar.json';
 import type sources from './locales/en/sources.json';
+import type taskCenter from './locales/en/taskCenter.json';
 import type time from './locales/en/time.json';
 import type update from './locales/en/update.json';
 import type voice from './locales/en/voice.json';
@@ -53,6 +55,7 @@ export const translationNamespaces = [
   'knowledge',
   'media',
   'nav',
+  'preview',
   'project',
   'providers',
   'search',
@@ -60,6 +63,7 @@ export const translationNamespaces = [
   'shortcuts',
   'sidebar',
   'sources',
+  'taskCenter',
   'time',
   'update',
   'voice',
@@ -83,6 +87,7 @@ type NamespaceKeyMap = {
   knowledge: typeof knowledge;
   media: typeof media;
   nav: typeof nav;
+  preview: typeof preview;
   project: typeof project;
   providers: typeof providers;
   search: typeof search;
@@ -90,6 +95,7 @@ type NamespaceKeyMap = {
   shortcuts: typeof shortcuts;
   sidebar: typeof sidebar;
   sources: typeof sources;
+  taskCenter: typeof taskCenter;
   time: typeof time;
   update: typeof update;
   voice: typeof voice;

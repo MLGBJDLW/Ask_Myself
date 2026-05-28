@@ -82,5 +82,6 @@
   "template.report_brief.prompt": "為這個主題執行「報告簡報」工作流程：\n\n主題：\n\n受眾：\n\n資料來源或限制：\n\n請返回結構化報告草稿，並標明證據說明和缺口。",
   "template.connector_background.label": "連接器 + 背景任務",
   "template.connector_background.description": "評估連接器設定和背景任務生命週期風險。",
-  "template.connector_background.prompt": "為這個本機自動化目標執行「連接器 + 背景任務」工作流程：\n\n目標：\n\n涉及的連接器、資料夾或應用：\n\n請返回建議設定、背景生命週期、取消行為和安全檢查。"
+  "template.connector_background.prompt": "為這個本機自動化目標執行「連接器 + 背景任務」工作流程：\n\n目標：\n\n涉及的連接器、資料夾或應用：\n\n請返回建議設定、背景生命週期、取消行為和安全檢查。",
+  "browserUrlPlaceholder": "https://example.com/report"
 }

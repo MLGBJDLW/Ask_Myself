@@ -169,21 +169,20 @@ function defaultModeForPreview(preview: api.FilePreview): PreviewMode {
   return 'preview';
 }
 
+type TranslateFn = ReturnType<typeof useTranslation>['t'];
+
 function buildAgentEditPrompt({
-  locale,
+  t,
   preview,
   selection,
   instruction,
 }: {
-  locale: string;
+  t: TranslateFn;
   preview: api.FilePreview;
   selection: TextSelectionSummary;
   instruction: string;
 }): string {
-  const zh = locale.startsWith('zh');
-  const fallbackInstruction = zh
-    ? '请在不改变原意的前提下，优化这段文字的表达。'
-    : 'Improve this passage without changing its intent.';
+  const fallbackInstruction = t('preview.defaultAgentInstruction');
   const finalInstruction = instruction.trim() || fallbackInstruction;
   const lineRange =
     selection.startLine === selection.endLine
@@ -191,243 +190,88 @@ function buildAgentEditPrompt({
       : `${selection.startLine}-${selection.endLine}`;
   const fence = codeFenceFor(selection.text);
   const officeDocument = isOfficeDocumentPreview(preview);
+  const promptKey = officeDocument
+    ? 'preview.agentPromptOffice'
+    : preview.editable
+      ? 'preview.agentPromptEditable'
+      : 'preview.agentPromptReadOnly';
 
-  if (zh) {
-    if (officeDocument) {
-      return [
-        '请使用 Python 文档 skill 直接修改下面这个 Office 文档中的选中文本片段。',
-        '',
-        `文件: ${preview.path}`,
-        `文件名: ${preview.displayName}`,
-        `来源: ${preview.sourceName}`,
-        `提取文本行号: ${lineRange}`,
-        `预览字符范围: ${selection.start}-${selection.end}`,
-        `当前文件哈希: ${preview.hash}`,
-        '',
-        '用户修改要求:',
-        finalInstruction,
-        '',
-        '选中文本:',
-        fence,
-        selection.text,
-        fence,
-        '',
-        '执行规则:',
-        '1. 先用 read_file 验证文档的提取文本仍然包含这段选中文本。',
-        '2. 根据用户修改要求生成替换后的 new_text。',
-        '3. 使用 doc-script-editor skill，通过 run_shell 调用 `python <SKILL_DIR>/scripts/edit_doc.py` 修改文档；run_shell 的 cwd 必须设为包含该文件的已注册来源目录，必要时先用 list_sources 确认。',
-        '4. 如果运行环境不完整，先使用 prepare_document_tools 检查或准备必需依赖。',
-        '5. 先执行 replace --dry-run 预览替换，再执行实际 replace；--find 必须是上方选中文本的精确内容。',
-        '6. 不要使用 edit_file 修改 Office 二进制文档。',
-        '7. 只替换这段文本；如果无法唯一定位、文本已变化或 Python skill 无法完成，请先停下来问我确认。',
-        '8. 修改后运行 validate，并简要说明改了什么和如何回滚。',
-      ].join('\n');
-    }
-
-    if (!preview.editable) {
-      return [
-        '请处理下面这个只读提取文本中的选中片段，并在工具支持时直接修改源文件。',
-        '',
-        `文件: ${preview.path}`,
-        `文件名: ${preview.displayName}`,
-        `来源: ${preview.sourceName}`,
-        `提取文本行号: ${lineRange}`,
-        `预览字符范围: ${selection.start}-${selection.end}`,
-        `当前文件哈希: ${preview.hash}`,
-        '',
-        '用户修改要求:',
-        finalInstruction,
-        '',
-        '选中文本:',
-        fence,
-        selection.text,
-        fence,
-        '',
-        '执行规则:',
-        '1. 先用 read_file 验证源文件内容或提取文本仍然匹配。',
-        '2. 如果当前工具支持安全修改该文件格式，请直接修改源文件。',
-        '3. 如果该格式不能被当前工具安全写回，请不要用 edit_file 强行修改；请给出替换后的文本并说明需要我确认下一步。',
-        '4. 只处理这段选中文本，除非我的修改要求明确需要扩大范围。',
-      ].join('\n');
-    }
-
-    return [
-      '请直接修改下面这个已索引来源文件中的选中文本片段。',
-      '',
-      `文件: ${preview.path}`,
-      `文件名: ${preview.displayName}`,
-      `来源: ${preview.sourceName}`,
-      `行号: ${lineRange}`,
-      `预览字符范围: ${selection.start}-${selection.end}`,
-      `当前文件哈希: ${preview.hash}`,
-      '',
-      '用户修改要求:',
-      finalInstruction,
-      '',
-      '选中文本:',
-      fence,
-      selection.text,
-      fence,
-      '',
-      '执行规则:',
-      '1. 先用 read_file 验证文件内容和选中文本仍然匹配。',
-      '2. 只替换这段选中文本，除非我的修改要求明确需要扩大范围。',
-      '3. 使用 edit_file 修改文件，不要只给建议或改写稿。',
-      '4. 如果文本已经变化、无法唯一定位，或文件不在已注册来源内，请先停下来问我确认。',
-      '5. 修改后简要说明改了什么，并保留可回滚 checkpoint。',
-    ].join('\n');
-  }
-
-  if (officeDocument) {
-    return [
-      'Please use the Python document skill to directly edit the selected text in this Office document.',
-      '',
-      `File: ${preview.path}`,
-      `Display name: ${preview.displayName}`,
-      `Source: ${preview.sourceName}`,
-      `Extracted text line range: ${lineRange}`,
-      `Preview character range: ${selection.start}-${selection.end}`,
-      `Current file hash: ${preview.hash}`,
-      '',
-      'Requested change:',
-      finalInstruction,
-      '',
-      'Selected text:',
-      fence,
-      selection.text,
-      fence,
-      '',
-      'Execution rules:',
-      '1. Use read_file first to verify that the extracted document text still contains this selected text.',
-      '2. Generate the replacement new_text from the requested change.',
-      '3. Use the doc-script-editor skill through run_shell by invoking `python <SKILL_DIR>/scripts/edit_doc.py`; set run_shell cwd to the registered source directory that contains this file, using list_sources first if needed.',
-      '4. If the runtime is incomplete, use prepare_document_tools to check or prepare the required dependencies first.',
-      '5. Run replace --dry-run first, then run the real replace. The --find value must be exactly the selected text above.',
-      '6. Do not use edit_file on the Office binary document.',
-      '7. Replace only this text. If it cannot be uniquely located, has changed, or the Python skill cannot complete the edit, stop and ask me to confirm.',
-      '8. After editing, run validate and briefly summarize what changed and how to roll it back.',
-    ].join('\n');
-  }
-
-  if (!preview.editable) {
-    return [
-      'Please work on the selected text from this read-only extracted preview and directly modify the source file only when the available tools safely support that format.',
-      '',
-      `File: ${preview.path}`,
-      `Display name: ${preview.displayName}`,
-      `Source: ${preview.sourceName}`,
-      `Extracted text line range: ${lineRange}`,
-      `Preview character range: ${selection.start}-${selection.end}`,
-      `Current file hash: ${preview.hash}`,
-      '',
-      'Requested change:',
-      finalInstruction,
-      '',
-      'Selected text:',
-      fence,
-      selection.text,
-      fence,
-      '',
-      'Execution rules:',
-      '1. Use read_file first to verify that the source file or extracted text still matches.',
-      '2. If the current tools safely support editing this format, directly edit the source file.',
-      '3. If the format cannot be safely written by the current tools, do not force an edit with edit_file. Provide the replacement text and ask me to confirm the next step.',
-      '4. Work only on this selected text unless the requested change explicitly requires a wider edit.',
-    ].join('\n');
-  }
-
-  return [
-    'Please directly edit the selected text in this indexed source file.',
-    '',
-    `File: ${preview.path}`,
-    `Display name: ${preview.displayName}`,
-    `Source: ${preview.sourceName}`,
-    `Line range: ${lineRange}`,
-    `Preview character range: ${selection.start}-${selection.end}`,
-    `Current file hash: ${preview.hash}`,
-    '',
-    'Requested change:',
-    finalInstruction,
-    '',
-    'Selected text:',
+  return t(promptKey as Parameters<TranslateFn>[0], {
+    path: preview.path,
+    displayName: preview.displayName,
+    sourceName: preview.sourceName,
+    lineRange,
+    start: selection.start,
+    end: selection.end,
+    hash: preview.hash,
+    instruction: finalInstruction,
     fence,
-    selection.text,
-    fence,
-    '',
-    'Execution rules:',
-    '1. Use read_file first to verify that the file and selected text still match.',
-    '2. Replace only this selected text unless the requested change explicitly requires a wider edit.',
-    '3. Use edit_file to modify the file. Do not only provide advice or a rewritten draft.',
-    '4. If the text has changed, cannot be uniquely located, or is outside a registered source, stop and ask me to confirm.',
-    '5. After editing, briefly summarize what changed and keep the rollback checkpoint available.',
-  ].join('\n');
+    text: selection.text,
+  });
 }
 
-function copyForLocale(locale: string) {
-  const zh = locale.startsWith('zh');
+function createPreviewLabels(t: TranslateFn) {
   return {
-    title: zh ? '文件预览' : 'File Preview',
-    webTitle: zh ? '网页预览' : 'Web Preview',
-    preview: zh ? '预览' : 'Preview',
-    structured: zh ? '结构化' : 'Structured',
-    edit: zh ? '编辑' : 'Edit',
-    split: zh ? '分屏' : 'Split',
-    extracted: zh ? '提取文本' : 'Extracted Text',
-    readOnly: zh ? '只读' : 'Read-only',
-    editable: zh ? '可编辑' : 'Editable',
-    save: zh ? '保存' : 'Save',
-    saved: zh ? '已保存' : 'Saved',
-    discard: zh ? '还原草稿' : 'Discard draft',
-    reload: zh ? '重新加载' : 'Reload',
-    openExternal: zh ? '外部打开' : 'Open externally',
-    copyUrl: zh ? '复制链接' : 'Copy URL',
-    showFolder: zh ? '所在文件夹' : 'Show in folder',
-    copyPath: zh ? '复制路径' : 'Copy path',
-    copied: zh ? '已复制' : 'Copied',
-    close: zh ? '关闭' : 'Close',
-    resizePanel: zh ? '调整预览面板宽度' : 'Resize preview panel',
-    loading: zh ? '正在读取文件...' : 'Reading file...',
-    webPreviewNotice: zh
-      ? '如果网站禁止嵌入，请使用外部打开。'
-      : 'If the site blocks embedding, open it externally.',
-    empty: zh ? '没有可预览的文本内容。' : 'No text content is available for preview.',
-    unsupported: zh ? '这个文件暂时不能在应用内预览或编辑。' : 'This file cannot be previewed or edited inline yet.',
-    sheets: zh ? '工作表' : 'sheets',
-    rows: zh ? '行' : 'rows',
-    columns: zh ? '列' : 'columns',
-    formula: zh ? '公式' : 'Formula',
-    truncatedPreview: zh ? '预览已截断' : 'Preview truncated',
-    conflict: zh ? '文件已在磁盘上变化，请重新加载后再保存。' : 'The file changed on disk. Reload before saving.',
-    saveFailed: zh ? '保存失败' : 'Save failed',
-    loadFailed: zh ? '预览失败' : 'Preview failed',
-    reindexFailed: zh ? '文件已保存，但重新索引失败' : 'Saved, but reindexing failed',
-    dirty: zh ? '未保存' : 'Unsaved',
-    lines: zh ? '行' : 'lines',
-    pages: zh ? '页' : 'pages',
-    page: zh ? '页' : 'Page',
-    pageBreak: zh ? '分页' : 'Page break',
-    zoomIn: zh ? '放大' : 'Zoom in',
-    zoomOut: zh ? '缩小' : 'Zoom out',
-    resetZoom: zh ? '重置缩放' : 'Reset zoom',
-    source: zh ? '来源' : 'Source',
-    encoding: zh ? '编码' : 'Encoding',
-    discardPrompt: zh ? '当前文件有未保存修改，确定要关闭吗？' : 'This file has unsaved changes. Close anyway?',
-    agentEdit: zh ? 'Agent 修改' : 'Agent Edit',
-    selected: zh ? '已选择' : 'Selected',
-    chars: zh ? '字符' : 'chars',
-    lineRange: zh ? '行' : 'lines',
-    agentInstructionPlaceholder: zh ? '告诉 Agent 要如何修改这段文字...' : 'Tell the agent how to change this selection...',
-    askAgent: zh ? '让 Agent 修改' : 'Ask Agent to Edit',
-    copyRequest: zh ? '复制请求' : 'Copy Request',
-    requestCopied: zh ? '请求已复制' : 'Request copied',
-    agentRequestSent: zh ? '已发送给 Agent' : 'Sent to agent',
-    saveBeforeAgent: zh ? '请先保存当前草稿，再让 Agent 按磁盘文件修改。' : 'Save the current draft before asking the agent to edit the disk file.',
-    selectionTooLarge: zh ? '选区较长，Agent 会先重新读取文件再定位。' : 'Large selection. The agent will re-read the file before locating it.',
-    selectionMapFailed: zh ? '预览选区无法精确映射，请切到编辑或分屏后选择。' : 'That preview selection could not be mapped exactly. Select it in Edit or Split mode.',
-    quickRewrite: zh ? '改写更清晰' : 'Rewrite Clearly',
-    quickShorten: zh ? '压缩' : 'Shorten',
-    quickFix: zh ? '修正语法' : 'Fix Grammar',
-    quickTranslateZh: zh ? '翻译中文' : 'Translate to Chinese',
+    title: t('preview.title'),
+    webTitle: t('preview.webTitle'),
+    preview: t('preview.preview'),
+    structured: t('preview.structured'),
+    edit: t('preview.edit'),
+    split: t('preview.split'),
+    extracted: t('preview.extracted'),
+    readOnly: t('preview.readOnly'),
+    editable: t('preview.editable'),
+    save: t('preview.save'),
+    saved: t('preview.saved'),
+    discard: t('preview.discard'),
+    reload: t('preview.reload'),
+    openExternal: t('preview.openExternal'),
+    copyUrl: t('preview.copyUrl'),
+    showFolder: t('preview.showFolder'),
+    copyPath: t('preview.copyPath'),
+    copied: t('preview.copied'),
+    close: t('preview.close'),
+    resizePanel: t('preview.resizePanel'),
+    loading: t('preview.loading'),
+    webPreviewNotice: t('preview.webPreviewNotice'),
+    empty: t('preview.empty'),
+    unsupported: t('preview.unsupported'),
+    sheets: t('preview.sheets'),
+    rows: t('preview.rows'),
+    columns: t('preview.columns'),
+    formula: t('preview.formula'),
+    truncatedPreview: t('preview.truncatedPreview'),
+    conflict: t('preview.conflict'),
+    saveFailed: t('preview.saveFailed'),
+    loadFailed: t('preview.loadFailed'),
+    reindexFailed: t('preview.reindexFailed'),
+    dirty: t('preview.dirty'),
+    lines: t('preview.lines'),
+    pages: t('preview.pages'),
+    page: t('preview.page'),
+    pageBreak: t('preview.pageBreak'),
+    zoomIn: t('preview.zoomIn'),
+    zoomOut: t('preview.zoomOut'),
+    resetZoom: t('preview.resetZoom'),
+    source: t('preview.source'),
+    encoding: t('preview.encoding'),
+    discardPrompt: t('preview.discardPrompt'),
+    agentEdit: t('preview.agentEdit'),
+    selected: t('preview.selected'),
+    chars: t('preview.chars'),
+    lineRange: t('preview.lineRange'),
+    agentInstructionPlaceholder: t('preview.agentInstructionPlaceholder'),
+    askAgent: t('preview.askAgent'),
+    copyRequest: t('preview.copyRequest'),
+    requestCopied: t('preview.requestCopied'),
+    agentRequestSent: t('preview.agentRequestSent'),
+    saveBeforeAgent: t('preview.saveBeforeAgent'),
+    selectionTooLarge: t('preview.selectionTooLarge'),
+    selectionMapFailed: t('preview.selectionMapFailed'),
+    quickRewrite: t('preview.quickRewrite'),
+    quickShorten: t('preview.quickShorten'),
+    quickFix: t('preview.quickFix'),
+    quickTranslateZh: t('preview.quickTranslateZh'),
   };
 }
 
@@ -459,7 +303,7 @@ function MarkdownPreview({ content }: { content: string }) {
   );
 }
 
-type PreviewLabels = ReturnType<typeof copyForLocale>;
+type PreviewLabels = ReturnType<typeof createPreviewLabels>;
 
 function isSafeCssColor(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
@@ -1022,9 +866,9 @@ function ModeButton({
 }
 
 export function FilePreviewProvider({ children }: { children: ReactNode }) {
-  const { locale } = useTranslation();
+  const { locale, t } = useTranslation();
   const navigate = useNavigate();
-  const labels = useMemo(() => copyForLocale(locale), [locale]);
+  const labels = useMemo(() => createPreviewLabels(t), [t]);
   const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
   const [webPreview, setWebPreview] = useState<{ url: string; title?: string } | null>(null);
@@ -1172,37 +1016,29 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
       {
         id: 'rewrite',
         label: labels.quickRewrite,
-        instruction: locale.startsWith('zh')
-          ? '请把选中文本改写得更清晰、更自然，保留原意。'
-          : 'Rewrite the selected text to be clearer and more natural while preserving the intent.',
+        instruction: t('preview.quickRewriteInstruction'),
         icon: <Sparkles size={13} />,
       },
       {
         id: 'shorten',
         label: labels.quickShorten,
-        instruction: locale.startsWith('zh')
-          ? '请压缩选中文本，保留关键信息，减少冗余。'
-          : 'Shorten the selected text, preserving the key information and removing redundancy.',
+        instruction: t('preview.quickShortenInstruction'),
         icon: <Scissors size={13} />,
       },
       {
         id: 'fix',
         label: labels.quickFix,
-        instruction: locale.startsWith('zh')
-          ? '请修正选中文本中的语法、错别字和不通顺表达。'
-          : 'Fix grammar, typos, and awkward phrasing in the selected text.',
+        instruction: t('preview.quickFixInstruction'),
         icon: <TextCursorInput size={13} />,
       },
       {
         id: 'translate-zh',
         label: labels.quickTranslateZh,
-        instruction: locale.startsWith('zh')
-          ? '请将选中文本翻译成自然、准确的中文。'
-          : 'Translate the selected text into natural, accurate Chinese.',
+        instruction: t('preview.quickTranslateZhInstruction'),
         icon: <Languages size={13} />,
       },
     ],
-    [labels.quickFix, labels.quickRewrite, labels.quickShorten, labels.quickTranslateZh, locale],
+    [labels.quickFix, labels.quickRewrite, labels.quickShorten, labels.quickTranslateZh, t],
   );
 
   const updateSelectionFromEditor = useCallback((target: HTMLTextAreaElement) => {
@@ -1244,12 +1080,12 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const buildCurrentAgentPrompt = useCallback(() => {
     if (!preview || !selectedText) return '';
     return buildAgentEditPrompt({
-      locale,
+      t,
       preview,
       selection: selectedText,
       instruction: agentInstruction,
     });
-  }, [agentInstruction, locale, preview, selectedText]);
+  }, [agentInstruction, preview, selectedText, t]);
 
   const copyAgentRequest = useCallback(async () => {
     const prompt = buildCurrentAgentPrompt();

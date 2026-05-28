@@ -220,7 +220,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
           {msg.tokenCount > 0 && !isEditing && (
             <span
               className="absolute bottom-0.5 right-2 text-[9px] text-text-tertiary/0 group-hover:text-text-tertiary/60 transition-colors tabular-nums select-none"
-              title={`${msg.tokenCount.toLocaleString()} tokens`}
+              title={`${msg.tokenCount.toLocaleString()} ${t('chat.tokensLabel')}`}
             >
               {msg.tokenCount.toLocaleString()} {t('chat.tokensShort')}
             </span>

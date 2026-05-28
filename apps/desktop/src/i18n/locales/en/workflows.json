@@ -82,5 +82,6 @@
   "template.report_brief.prompt": "Run the Report Brief workflow for this topic:\n\nTopic:\n\nAudience:\n\nSources or constraints:\n\nReturn a structured report draft with evidence notes and gaps.",
   "template.connector_background.label": "Connector + Background Task",
   "template.connector_background.description": "Assess connector setup and background-task lifecycle risks.",
-  "template.connector_background.prompt": "Run the Connector + Background Task workflow for this local automation goal:\n\nGoal:\n\nConnector or folder/app involved:\n\nReturn the recommended setup, background lifecycle, cancellation behavior, and safety checks."
+  "template.connector_background.prompt": "Run the Connector + Background Task workflow for this local automation goal:\n\nGoal:\n\nConnector or folder/app involved:\n\nReturn the recommended setup, background lifecycle, cancellation behavior, and safety checks.",
+  "browserUrlPlaceholder": "https://example.com/report"
 }

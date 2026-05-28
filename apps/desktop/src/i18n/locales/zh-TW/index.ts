@@ -13,6 +13,7 @@ import evidence from './evidence.json';
 import knowledge from './knowledge.json';
 import media from './media.json';
 import nav from './nav.json';
+import preview from './preview.json';
 import project from './project.json';
 import providers from './providers.json';
 import search from './search.json';
@@ -20,6 +21,7 @@ import settings from './settings.json';
 import shortcuts from './shortcuts.json';
 import sidebar from './sidebar.json';
 import sources from './sources.json';
+import taskCenter from './taskCenter.json';
 import time from './time.json';
 import update from './update.json';
 import voice from './voice.json';
@@ -40,6 +42,7 @@ export const zhTW: TranslationKeys = flattenTranslationNamespaces({
   knowledge,
   media,
   nav,
+  preview,
   project,
   providers,
   search,
@@ -47,6 +50,7 @@ export const zhTW: TranslationKeys = flattenTranslationNamespaces({
   shortcuts,
   sidebar,
   sources,
+  taskCenter,
   time,
   update,
   voice,

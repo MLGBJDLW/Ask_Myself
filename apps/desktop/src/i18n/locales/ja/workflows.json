@@ -82,5 +82,6 @@
   "template.report_brief.prompt": "このトピックについて「レポートブリーフ」ワークフローを実行してください:\n\nトピック:\n\n対象読者:\n\nソースまたは制約:\n\n証拠メモと不足点を含む構造化されたレポート草案を返してください。",
   "template.connector_background.label": "コネクター + バックグラウンドタスク",
   "template.connector_background.description": "コネクター設定とバックグラウンドタスクのライフサイクルリスクを評価します。",
-  "template.connector_background.prompt": "このローカル自動化目標について「コネクター + バックグラウンドタスク」ワークフローを実行してください:\n\n目標:\n\n関連するコネクター、フォルダー、またはアプリ:\n\n推奨設定、バックグラウンドライフサイクル、キャンセル動作、安全チェックを返してください。"
+  "template.connector_background.prompt": "このローカル自動化目標について「コネクター + バックグラウンドタスク」ワークフローを実行してください:\n\n目標:\n\n関連するコネクター、フォルダー、またはアプリ:\n\n推奨設定、バックグラウンドライフサイクル、キャンセル動作、安全チェックを返してください。",
+  "browserUrlPlaceholder": "https://example.com/report"
 }

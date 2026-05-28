@@ -82,5 +82,6 @@
   "template.report_brief.prompt": "이 주제에 대해 보고서 브리프 워크플로를 실행하세요:\n\n주제:\n\n대상 독자:\n\n출처 또는 제약:\n\n증거 메모와 공백이 포함된 구조화된 보고서 초안을 반환하세요.",
   "template.connector_background.label": "커넥터 + 백그라운드 작업",
   "template.connector_background.description": "커넥터 설정과 백그라운드 작업 수명주기 위험을 평가합니다.",
-  "template.connector_background.prompt": "이 로컬 자동화 목표에 대해 커넥터 + 백그라운드 작업 워크플로를 실행하세요:\n\n목표:\n\n관련 커넥터, 폴더 또는 앱:\n\n권장 설정, 백그라운드 수명주기, 취소 동작, 안전 점검을 반환하세요."
+  "template.connector_background.prompt": "이 로컬 자동화 목표에 대해 커넥터 + 백그라운드 작업 워크플로를 실행하세요:\n\n목표:\n\n관련 커넥터, 폴더 또는 앱:\n\n권장 설정, 백그라운드 수명주기, 취소 동작, 안전 점검을 반환하세요.",
+  "browserUrlPlaceholder": "https://example.com/report"
 }

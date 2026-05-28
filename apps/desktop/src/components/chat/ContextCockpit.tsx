@@ -243,8 +243,12 @@ export function ContextCockpit({
                   </div>
                   {(cacheReadTokens > 0 || cacheCreationTokens > 0) && (
                     <div className="mt-1 text-[11px] tabular-nums text-text-tertiary">
-                      Provider cache: {formatTokens(cacheReadTokens)} read
-                      {cacheCreationTokens > 0 ? ` / ${formatTokens(cacheCreationTokens)} write` : ''}
+                      {t('chat.providerCache')}: {cacheCreationTokens > 0
+                        ? t('chat.cacheReadWrite', {
+                          read: formatTokens(cacheReadTokens),
+                          write: formatTokens(cacheCreationTokens),
+                        })
+                        : t('chat.cacheRead', { read: formatTokens(cacheReadTokens) })}
                     </div>
                   )}
                 </>

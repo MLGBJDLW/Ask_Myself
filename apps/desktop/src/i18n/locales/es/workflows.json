@@ -82,5 +82,6 @@
   "template.report_brief.prompt": "Ejecuta el flujo Brief de informe para este tema:\n\nTema:\n\nAudiencia:\n\nFuentes o restricciones:\n\nDevuelve un borrador de informe estructurado con notas de evidencia y vacios.",
   "template.connector_background.label": "Conector + tarea en segundo plano",
   "template.connector_background.description": "Evalua la configuracion del conector y los riesgos del ciclo de vida de tareas en segundo plano.",
-  "template.connector_background.prompt": "Ejecuta el flujo Conector + tarea en segundo plano para este objetivo de automatizacion local:\n\nObjetivo:\n\nConector, carpeta o app involucrada:\n\nDevuelve la configuracion recomendada, ciclo de vida en segundo plano, comportamiento de cancelacion y comprobaciones de seguridad."
+  "template.connector_background.prompt": "Ejecuta el flujo Conector + tarea en segundo plano para este objetivo de automatizacion local:\n\nObjetivo:\n\nConector, carpeta o app involucrada:\n\nDevuelve la configuracion recomendada, ciclo de vida en segundo plano, comportamiento de cancelacion y comprobaciones de seguridad.",
+  "browserUrlPlaceholder": "https://example.com/report"
 }

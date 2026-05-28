@@ -512,7 +512,7 @@ export function ChatInput({
     const trimmed = value.trim();
     if (!trimmed && attachments.length === 0) return;
     if (isStreaming && (!trimmed || attachments.length > 0)) {
-      toast.error("Attachments cannot be added while the agent is already running.");
+      toast.error(t("chat.attachmentWhileRunning"));
       return;
     }
     const slashResolution = trimmed ? resolveSlashCommandMessage(trimmed, slashOptions) : null;
@@ -530,7 +530,7 @@ export function ChatInput({
         clearDraft();
         return;
       }
-      toast.error("/compact must be sent by itself.");
+      toast.error(t("chat.compactMustBeAlone"));
       return;
     }
 
