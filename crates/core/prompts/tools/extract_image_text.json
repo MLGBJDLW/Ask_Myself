@@ -1,0 +1,23 @@
+{
+  "description": "Extract visible text from a local image using the app's PaddleOCR runtime. Use this when the user asks to read text in an image, screenshot, scanned page, chart labels, or when a text-only model needs OCR for a local image. Provide either `path` or `document_id`; paths must be in the accessible source scope unless file access is open. Returns extracted text, OCR confidence, region count, and actionable setup errors if OCR is disabled or models are missing.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to a local image file to OCR. The file must be inside the current source scope unless open file access is enabled."
+      },
+      "document_id": {
+        "type": "string",
+        "description": "ID of an indexed image document to OCR. Use this when a previous search or document lookup returned a document id."
+      },
+      "max_chars": {
+        "type": "integer",
+        "description": "Maximum characters of OCR text to return. Defaults to 12000; use a smaller value for quick inspection.",
+        "minimum": 500,
+        "maximum": 50000
+      }
+    },
+    "required": []
+  }
+}

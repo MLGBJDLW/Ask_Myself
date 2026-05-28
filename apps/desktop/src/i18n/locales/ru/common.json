@@ -16,5 +16,16 @@
   "clear": "Очистить",
   "selectAll": "Выбрать все",
   "clearAll": "Очистить все",
-  "undo": "Отменить"
+  "undo": "Отменить",
+  "tagInputPlaceholder": "Type and press Enter...",
+  "moreOptions": "More options",
+  "recommended": "Recommended",
+  "enableAll": "Enable all",
+  "disableAll": "Disable all",
+  "selectGroup": "Select group",
+  "clearGroup": "Clear group",
+  "builtIn": "Built-in",
+  "bundled": "bundled",
+  "userDefined": "user-defined",
+  "none": "none"
 }

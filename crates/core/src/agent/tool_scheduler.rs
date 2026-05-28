@@ -16,6 +16,7 @@ pub(crate) struct ToolSchedulerPolicy {
     configured_timeout_secs: Option<u32>,
     dynamic_tool_visibility: bool,
     offered_tool_names: HashSet<String>,
+    registered_tool_names: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,11 +32,13 @@ impl ToolSchedulerPolicy {
         configured_timeout_secs: Option<u32>,
         dynamic_tool_visibility: bool,
         offered_tool_names: HashSet<String>,
+        registered_tool_names: HashSet<String>,
     ) -> Self {
         Self {
             configured_timeout_secs,
             dynamic_tool_visibility,
             offered_tool_names,
+            registered_tool_names,
         }
     }
 
@@ -44,13 +47,17 @@ impl ToolSchedulerPolicy {
             serde_json::from_str(&call.arguments).unwrap_or_default();
         let timeout = tool_timeout_for_call(self.configured_timeout_secs, &call.name, &parsed_args);
 
+        let hidden_registered_tool = self.dynamic_tool_visibility
+            && !self.offered_tool_names.contains(&call.name)
+            && self.registered_tool_names.contains(&call.name);
         let synthetic_result = if self.dynamic_tool_visibility
             && !self.offered_tool_names.contains(&call.name)
+            && !hidden_registered_tool
         {
             Some(ToolResult {
                     call_id: call.id.clone(),
                     content: format!(
-                        "Tool '{}' is hidden by dynamic tool visibility for this model step. Call tool_search with the capability you need; matching hidden tools will be available on the next model step, then retry.",
+                        "Tool '{}' is not available in the enabled tool registry for this model step. Call tool_search with the capability you need; matching enabled hidden tools will be available on the next model step, then retry.",
                         call.name
                     ),
                     is_error: true,
@@ -63,7 +70,9 @@ impl ToolSchedulerPolicy {
         ToolSchedulingDecision {
             parsed_args,
             timeout,
-            policy_label: if synthetic_result.is_some() {
+            policy_label: if hidden_registered_tool {
+                "executeHiddenRegistered"
+            } else if synthetic_result.is_some() {
                 "blockedByToolVisibility"
             } else {
                 "execute"
@@ -350,8 +359,12 @@ mod tests {
 
     #[test]
     fn dynamic_visibility_blocks_unoffered_tools() {
-        let policy =
-            ToolSchedulerPolicy::new(Some(30), true, HashSet::from(["read_file".to_string()]));
+        let policy = ToolSchedulerPolicy::new(
+            Some(30),
+            true,
+            HashSet::from(["read_file".to_string()]),
+            HashSet::from(["read_file".to_string()]),
+        );
         let decision = policy.decision_for(&ToolCallRequest {
             id: "call-1".to_string(),
             name: "run_shell".to_string(),
@@ -363,6 +376,25 @@ mod tests {
         assert!(synthetic_result.content.contains("tool_search"));
         assert!(synthetic_result.content.contains("next model step"));
         assert_eq!(decision.policy_label, "blockedByToolVisibility");
+    }
+
+    #[test]
+    fn dynamic_visibility_executes_hidden_registered_tools() {
+        let policy = ToolSchedulerPolicy::new(
+            Some(30),
+            true,
+            HashSet::from(["read_file".to_string()]),
+            HashSet::from(["read_file".to_string(), "edit_file".to_string()]),
+        );
+        let decision = policy.decision_for(&ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "edit_file".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        });
+
+        assert!(decision.synthetic_result.is_none());
+        assert_eq!(decision.policy_label, "executeHiddenRegistered");
     }
 
     #[test]

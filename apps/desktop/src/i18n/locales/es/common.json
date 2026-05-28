@@ -16,5 +16,16 @@
   "clear": "Borrar",
   "selectAll": "Seleccionar todo",
   "clearAll": "Borrar todo",
-  "undo": "Deshacer"
+  "undo": "Deshacer",
+  "tagInputPlaceholder": "Type and press Enter...",
+  "moreOptions": "More options",
+  "recommended": "Recommended",
+  "enableAll": "Enable all",
+  "disableAll": "Disable all",
+  "selectGroup": "Select group",
+  "clearGroup": "Clear group",
+  "builtIn": "Built-in",
+  "bundled": "bundled",
+  "userDefined": "user-defined",
+  "none": "none"
 }

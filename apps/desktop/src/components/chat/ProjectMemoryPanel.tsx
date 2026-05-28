@@ -6,6 +6,7 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { Modal } from '../ui/Modal';
+import { useTranslation, type TranslationKey } from '../../i18n';
 
 interface ProjectMemoryPanelProps {
   projectId: string | null;
@@ -13,17 +14,18 @@ interface ProjectMemoryPanelProps {
   onClose: () => void;
 }
 
-const KIND_OPTIONS = [
-  { value: 'note', label: '笔记' },
-  { value: 'fact', label: '事实' },
-  { value: 'decision', label: '决策' },
-  { value: 'style', label: '风格' },
-  { value: 'constraint', label: '约束' },
-  { value: 'todo', label: '待办' },
-  { value: 'preference', label: '偏好' },
+const KIND_OPTIONS: Array<{ value: string; labelKey: TranslationKey }> = [
+  { value: 'note', labelKey: 'project.memoryKindNote' },
+  { value: 'fact', labelKey: 'project.memoryKindFact' },
+  { value: 'decision', labelKey: 'project.memoryKindDecision' },
+  { value: 'style', labelKey: 'project.memoryKindStyle' },
+  { value: 'constraint', labelKey: 'project.memoryKindConstraint' },
+  { value: 'todo', labelKey: 'project.memoryKindTodo' },
+  { value: 'preference', labelKey: 'project.memoryKindPreference' },
 ];
 
 export function ProjectMemoryPanel({ projectId, open, onClose }: ProjectMemoryPanelProps) {
+  const { t } = useTranslation();
   const [memories, setMemories] = useState<api.ProjectMemory[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -96,10 +98,10 @@ export function ProjectMemoryPanel({ projectId, open, onClose }: ProjectMemoryPa
     <Modal
       open={open && !!projectId}
       onClose={onClose}
-      title="Project 记忆"
+      title={t('project.memoryTitle')}
       footer={
         <Button variant="ghost" size="sm" onClick={onClose}>
-          关闭
+          {t('common.close')}
         </Button>
       }
     >
@@ -112,19 +114,19 @@ export function ProjectMemoryPanel({ projectId, open, onClose }: ProjectMemoryPa
               className="h-9 rounded-md border border-border bg-surface-0 px-2 text-xs text-text-primary outline-none focus:border-accent"
             >
               {KIND_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
+                <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
               ))}
             </select>
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="标题，可选"
+              placeholder={t('project.memoryTitlePlaceholder')}
             />
           </div>
           <textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            placeholder="记录这个 Project 跨对话都应该记住的事实、决策、风格或约束"
+            placeholder={t('project.memoryContentPlaceholder')}
             className="min-h-24 w-full resize-y rounded-md border border-border bg-surface-0 px-3 py-2 text-sm text-text-primary outline-none placeholder:text-text-tertiary focus:border-accent"
           />
           <div className="mt-3 flex items-center justify-between gap-3">
@@ -135,7 +137,7 @@ export function ProjectMemoryPanel({ projectId, open, onClose }: ProjectMemoryPa
                 onChange={(e) => setPinned(e.target.checked)}
                 className="h-4 w-4 rounded border-border text-accent focus:ring-accent/30"
               />
-              固定到 prompt
+              {t('project.memoryPinToPrompt')}
             </label>
             <Button
               variant="primary"
@@ -145,19 +147,19 @@ export function ProjectMemoryPanel({ projectId, open, onClose }: ProjectMemoryPa
               loading={saving}
               disabled={!content.trim()}
             >
-              添加记忆
+              {t('project.memoryAdd')}
             </Button>
           </div>
         </div>
 
         <div className="flex items-center justify-between">
-          <div className="text-xs font-medium text-text-secondary">当前 Project 记忆</div>
+          <div className="text-xs font-medium text-text-secondary">{t('project.memoryCurrent')}</div>
           <Button
             variant="ghost"
             size="sm"
             iconOnly
-            aria-label="刷新项目记忆"
-            title="刷新项目记忆"
+            aria-label={t('project.memoryRefresh')}
+            title={t('project.memoryRefresh')}
             icon={<RefreshCw size={13} />}
             loading={loading}
             onClick={load}
@@ -167,7 +169,7 @@ export function ProjectMemoryPanel({ projectId, open, onClose }: ProjectMemoryPa
         <div className="max-h-72 space-y-2 overflow-auto">
           {memories.length === 0 && !loading ? (
             <div className="rounded-md border border-dashed border-border px-3 py-8 text-center text-xs text-text-tertiary">
-              还没有项目记忆。
+              {t('project.memoryEmpty')}
             </div>
           ) : (
             memories.map((memory) => (
@@ -184,14 +186,14 @@ export function ProjectMemoryPanel({ projectId, open, onClose }: ProjectMemoryPa
                     size="sm"
                     onClick={() => void togglePinned(memory)}
                   >
-                    {memory.pinned ? '取消固定' : '固定'}
+                    {memory.pinned ? t('project.memoryUnpin') : t('project.memoryPin')}
                   </Button>
                   <Button
                     variant="danger"
                     size="sm"
                     iconOnly
-                    aria-label="删除项目记忆"
-                    title="删除项目记忆"
+                    aria-label={t('project.memoryDelete')}
+                    title={t('project.memoryDelete')}
                     icon={<Trash2 size={13} />}
                     onClick={() => void deleteMemory(memory)}
                   />

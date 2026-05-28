@@ -1098,7 +1098,7 @@ export function SourcesPage() {
               className="h-4 w-4 rounded border-border text-accent focus:ring-accent/30"
             />
             <label htmlFor="add-index-now" className="text-xs font-medium text-text-secondary">
-              添加后立即扫描并嵌入
+              {t('sources.addIndexNow')}
             </label>
           </div>
         </div>

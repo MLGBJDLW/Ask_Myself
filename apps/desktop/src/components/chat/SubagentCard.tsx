@@ -19,11 +19,13 @@ interface SubagentCardProps {
   defaultOpen?: boolean;
 }
 
-function statusCopy(status: SubagentRun['status']) {
+type TranslateFn = ReturnType<typeof useTranslation>['t'];
+
+function statusCopy(status: SubagentRun['status'], t: TranslateFn) {
   switch (status) {
     case 'running':
       return {
-        label: 'Running',
+        label: t('chat.subagentStatusRunning'),
         icon: Loader2,
         className: 'text-accent',
         chipClassName: 'border-accent/25 bg-accent/10 text-accent',
@@ -31,7 +33,7 @@ function statusCopy(status: SubagentRun['status']) {
       };
     case 'error':
       return {
-        label: 'Needs attention',
+        label: t('chat.subagentStatusNeedsAttention'),
         icon: AlertTriangle,
         className: 'text-danger',
         chipClassName: 'border-danger/25 bg-danger/10 text-danger',
@@ -40,7 +42,7 @@ function statusCopy(status: SubagentRun['status']) {
     case 'done':
     default:
       return {
-        label: 'Complete',
+        label: t('chat.subagentStatusComplete'),
         icon: CheckCircle2,
         className: 'text-success',
         chipClassName: 'border-success/25 bg-success/10 text-success',
@@ -67,7 +69,7 @@ export function SubagentCard({
   const { t } = useTranslation();
   const autoOpen = defaultOpen ?? run.status === 'running';
   const [expanded, setExpanded] = useState(autoOpen);
-  const status = statusCopy(run.status);
+  const status = statusCopy(run.status, t);
   const StatusIcon = status.icon;
 
   useEffect(() => {
@@ -88,7 +90,7 @@ export function SubagentCard({
     ? truncate(run.result, compact ? 120 : 180)
     : run.content
       ? truncate(run.content, compact ? 120 : 180)
-      : 'Delegated work is in progress.';
+      : t('chat.subagentInProgress');
   const displayRole = run.roleName?.trim() || run.role?.trim() || t('chat.helperDefaultLabel');
 
   return (
@@ -120,13 +122,13 @@ export function SubagentCard({
             {startedTools.length > 0 && (
               <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary">
                 <Wrench className="h-3 w-3" />
-                {startedTools.length} tool{startedTools.length === 1 ? '' : 's'}
+                {t('chat.subagentToolCount', { count: String(startedTools.length) })}
               </span>
             )}
             {failedTools.length > 0 && (
               <span className="inline-flex items-center gap-1 rounded-full border border-danger/25 bg-danger/10 px-2 py-0.5 text-[11px] text-danger">
                 <AlertTriangle className="h-3 w-3" />
-                {failedTools.length} issue{failedTools.length === 1 ? '' : 's'}
+                {t('chat.subagentIssueCount', { count: String(failedTools.length) })}
               </span>
             )}
           </div>
@@ -151,17 +153,17 @@ export function SubagentCard({
             )}
             {run.parallelGroup && (
               <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
-                parallel: {run.parallelGroup}
+                {t('chat.subagentParallel', { value: run.parallelGroup })}
               </span>
             )}
             {run.deliverableStyle && (
               <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
-                style: {run.deliverableStyle}
+                {t('chat.subagentStyle', { value: run.deliverableStyle })}
               </span>
             )}
             {run.finishReason && (
               <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
-                finish: {run.finishReason}
+                {t('chat.subagentFinish', { value: run.finishReason })}
               </span>
             )}
             {typeof run.usageTotal?.totalTokens === 'number' && run.usageTotal.totalTokens > 0 && (
@@ -171,12 +173,12 @@ export function SubagentCard({
             )}
             {run.sourceScopeApplied && (
               <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
-                source scope inherited
+                {t('chat.subagentSourceScopeInherited')}
               </span>
             )}
             {run.evidenceChunkIds && run.evidenceChunkIds.length > 0 && (
               <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5 text-[11px] text-text-secondary">
-                evidence: {run.evidenceChunkIds.length}
+                {t('chat.subagentEvidenceCount', { count: String(run.evidenceChunkIds.length) })}
               </span>
             )}
           </div>
@@ -184,7 +186,7 @@ export function SubagentCard({
           {run.acceptanceCriteria && run.acceptanceCriteria.length > 0 && (
             <div className="mt-3">
               <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
-                Acceptance criteria
+                {t('chat.subagentAcceptanceCriteria')}
               </div>
               <ul className="space-y-1 text-xs text-text-secondary">
                 {run.acceptanceCriteria.map((criterion, index) => (
@@ -201,7 +203,7 @@ export function SubagentCard({
               {run.requestedSourceScope && run.requestedSourceScope.length > 0 && (
                 <div>
                   <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
-                    Requested source scope
+                    {t('chat.subagentRequestedSourceScope')}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {run.requestedSourceScope.map(sourceId => (
@@ -218,7 +220,7 @@ export function SubagentCard({
               {run.effectiveSourceScope && run.effectiveSourceScope.length > 0 && (
                 <div>
                   <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
-                    Effective source scope
+                    {t('chat.subagentEffectiveSourceScope')}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {run.effectiveSourceScope.map(sourceId => (
@@ -238,7 +240,7 @@ export function SubagentCard({
           {run.allowedTools && (
             <div className="mt-3">
               <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
-                Allowed tools
+                {t('chat.subagentAllowedTools')}
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {run.allowedTools.length > 0 ? run.allowedTools.map(toolName => (
@@ -250,7 +252,7 @@ export function SubagentCard({
                     {toolLabel(toolName)}
                   </span>
                 )) : (
-                  <span className="text-xs text-text-tertiary">No tools delegated.</span>
+                  <span className="text-xs text-text-tertiary">{t('chat.subagentNoToolsDelegated')}</span>
                 )}
               </div>
             </div>
@@ -259,7 +261,7 @@ export function SubagentCard({
           {run.allowedSkills && (
             <div className="mt-3">
               <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
-                Allowed skills
+                {t('chat.subagentAllowedSkills')}
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {run.allowedSkills.length > 0 ? run.allowedSkills.map(skill => (
@@ -271,7 +273,7 @@ export function SubagentCard({
                     {skill.name}
                   </span>
                 )) : (
-                  <span className="text-xs text-text-tertiary">No skills delegated.</span>
+                  <span className="text-xs text-text-tertiary">{t('chat.subagentNoSkillsDelegated')}</span>
                 )}
               </div>
             </div>
@@ -280,7 +282,7 @@ export function SubagentCard({
           {run.requestedAllowedTools && run.requestedAllowedTools.length > 0 && (
             <div className="mt-3">
               <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
-                Requested tool scope
+                {t('chat.subagentRequestedToolScope')}
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {run.requestedAllowedTools.map(toolName => (
@@ -299,7 +301,7 @@ export function SubagentCard({
           {run.returnSections && run.returnSections.length > 0 && (
             <div className="mt-3">
               <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
-                Requested sections
+                {t('chat.subagentRequestedSections')}
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {run.returnSections.map((section, index) => (
@@ -317,7 +319,7 @@ export function SubagentCard({
           {run.evidenceHandoff && run.evidenceHandoff.length > 0 && (
             <div className="mt-3">
               <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
-                Evidence handoff
+                {t('chat.subagentEvidenceHandoff')}
               </div>
               <div className="space-y-2">
                 {run.evidenceHandoff.map((evidence) => (
@@ -346,7 +348,7 @@ export function SubagentCard({
           {run.result && (
             <div className="mt-3">
               <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
-                Result
+                {t('chat.subagentResult')}
               </div>
               <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border/60 bg-surface-1 p-3 text-xs text-text-secondary">
                 {run.result}
@@ -357,7 +359,7 @@ export function SubagentCard({
           {run.toolEvents.length > 0 && (
             <div className="mt-3">
               <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
-                Inner trace
+                {t('chat.subagentInnerTrace')}
               </div>
               <div className="space-y-1.5">
                 {run.toolEvents.map((event, index) => (
@@ -375,7 +377,7 @@ export function SubagentCard({
                       </span>
                       {event.isError && (
                         <span className="rounded-full border border-danger/25 bg-danger/10 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-danger">
-                          error
+                          {t('chat.subagentError')}
                         </span>
                       )}
                     </div>
@@ -394,7 +396,7 @@ export function SubagentCard({
             <details className="group mt-3 rounded-lg border border-border/60 bg-surface-1 px-3 py-2">
               <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-text-secondary [&::-webkit-details-marker]:hidden">
                 <BrainCircuit className="h-3.5 w-3.5 text-accent" />
-                Supervisor notes from the subagent
+                {t('chat.subagentSupervisorNotes')}
                 <ChevronDown className="ml-auto h-3.5 w-3.5 text-text-tertiary transition-transform group-open:rotate-180" />
               </summary>
               <div className="mt-2 space-y-2">

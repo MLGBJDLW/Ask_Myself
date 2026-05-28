@@ -35,6 +35,7 @@ import { useTypewriter } from "../../lib/useTypewriter";
 import { hasTimeGap } from "../../lib/relativeTime";
 import {
   preprocessChunkCitations,
+  preprocessInlineCitations,
   buildCitationMap,
   extractChunkCitations,
 } from "../../lib/citationParser";
@@ -80,6 +81,7 @@ import {
   preprocessFilePaths,
   preprocessCitations,
   CitationContext,
+  MarkdownRenderStateProvider,
 } from "../../components/chat/markdownComponents";
 import { MessageBubble } from "../../components/chat/MessageBubble";
 import { CitationChip } from "../../components/chat/EvidenceCard";
@@ -107,6 +109,7 @@ interface ChatMessagesProps {
   onDismissError?: () => void;
   onDeleteMessage?: (messageId: string) => void;
   onEditAndResend?: (messageId: string, newContent: string) => void;
+  onApprovePlan?: (planMarkdown: string, sourceMessageId: string) => void;
   loadingMsgs?: boolean;
   lastCached?: boolean;
   onSuggestionClick?: (text: string) => void;
@@ -551,6 +554,7 @@ export function ChatMessages({
   onDismissError,
   onDeleteMessage,
   onEditAndResend,
+  onApprovePlan,
   loadingMsgs,
   lastCached,
   onSuggestionClick,
@@ -665,7 +669,7 @@ export function ChatMessages({
   const preprocessStreamingMarkdown = useCallback(
     (content: string) =>
       preprocessFilePaths(
-        preprocessCitations(preprocessChunkCitations(content)),
+        preprocessCitations(preprocessInlineCitations(preprocessChunkCitations(content))),
       ),
     [],
   );
@@ -768,26 +772,26 @@ export function ChatMessages({
                 </div>
               </div>
             )}
-            <CitationContext.Provider
-              value={effectiveCitationLookup}
-            >
-              <div className="relative">
-                <div className="prose-chat">
-                  <ReactMarkdown
-                    remarkPlugins={remarkPlugins}
-                    rehypePlugins={rehypePlugins}
-                    components={markdownComponents}
-                    urlTransform={(url) => url}
-                  >
-                    {preprocessStreamingMarkdown(content)}
-                  </ReactMarkdown>
+            <CitationContext.Provider value={effectiveCitationLookup}>
+              <MarkdownRenderStateProvider isStreaming={isStreaming}>
+                <div className="relative">
+                  <div className="prose-chat">
+                    <ReactMarkdown
+                      remarkPlugins={remarkPlugins}
+                      rehypePlugins={rehypePlugins}
+                      components={markdownComponents}
+                      urlTransform={(url) => url}
+                    >
+                      {preprocessStreamingMarkdown(content)}
+                    </ReactMarkdown>
+                  </div>
+                  {isStreaming && (
+                    <span
+                      className={`streaming-caret-overlay ${shouldReduceMotion ? "" : "animate-pulse"}`}
+                    />
+                  )}
                 </div>
-                {isStreaming && (
-                  <span
-                    className={`streaming-caret-overlay ${shouldReduceMotion ? "" : "animate-pulse"}`}
-                  />
-                )}
-              </div>
+              </MarkdownRenderStateProvider>
             </CitationContext.Provider>
           </div>
         </div>
@@ -1670,6 +1674,7 @@ export function ChatMessages({
                   })()}
                   onDeleteMessage={onDeleteMessage}
                   onEditAndResend={onEditAndResend}
+                  onApprovePlan={onApprovePlan}
                 />
 
                 {visibleSkills.length > 0 && (
@@ -1709,6 +1714,7 @@ export function ChatMessages({
                       )}
                       onDeleteMessage={onDeleteMessage}
                       onEditAndResend={onEditAndResend}
+                      onApprovePlan={onApprovePlan}
                     />
                   )}
 
@@ -1797,6 +1803,7 @@ export function ChatMessages({
                   })()}
                   onDeleteMessage={onDeleteMessage}
                   onEditAndResend={onEditAndResend}
+                  onApprovePlan={onApprovePlan}
                 />
               )}
 

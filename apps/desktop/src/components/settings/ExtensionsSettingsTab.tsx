@@ -237,6 +237,7 @@ function PersonaEditor({
   onCancel: () => void;
   onDirtyChange: (dirty: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const isBuiltin = persona?.builtin === true;
   const [name, setName] = useState(persona?.name ?? '');
   const [description, setDescription] = useState(persona?.description ?? '');
@@ -317,7 +318,7 @@ function PersonaEditor({
             className="text-[11px] font-medium text-accent hover:text-accent-hover"
             disabled={isBuiltin}
           >
-            Use template
+            {t('settings.skillUseTemplate')}
           </button>
         </span>
         <textarea
@@ -614,10 +615,10 @@ export function ExtensionsSettingsTab({
                         </div>
                       </div>
                       <details className="mt-3 rounded-md border border-border/60 bg-surface-1 px-3 py-2 text-xs">
-                        <summary className="cursor-pointer select-none text-text-secondary">Preview</summary>
+                        <summary className="cursor-pointer select-none text-text-secondary">{t('settings.skillPreview')}</summary>
                         <div className="mt-2 space-y-2 text-text-secondary">
                           <p className="whitespace-pre-wrap leading-5">
-                            {persona.instructions.trim() || 'Balanced default behavior with no extra persona prompt.'}
+                            {persona.instructions.trim() || t('settings.personaDefaultInstructions')}
                           </p>
                           {defaultSkillNames.length > 0 && (
                             <div className="flex flex-wrap gap-1">
@@ -856,7 +857,7 @@ export function ExtensionsSettingsTab({
                           <p className="text-sm font-medium text-text-primary truncate">{skill.name}</p>
                           {skill.builtin && (
                             <Badge variant="default" className="text-[10px] shrink-0 border-accent/40 text-accent">
-                              built-in
+                              {t('settings.skillBuiltIn')}
                             </Badge>
                           )}
                           <Badge variant="default" className="text-[10px] shrink-0">
@@ -1295,7 +1296,7 @@ export function ExtensionsSettingsTab({
                 </h2>
                 {viewSkill.builtin && (
                   <Badge variant="default" className="text-[10px] shrink-0 border-accent/40 text-accent">
-                    built-in
+                    {t('settings.skillBuiltIn')}
                   </Badge>
                 )}
               </div>
@@ -1310,25 +1311,27 @@ export function ExtensionsSettingsTab({
             <div className="overflow-auto px-5 py-4">
               <div className="mb-3 grid gap-2 rounded-md border border-border bg-surface-1 px-3 py-2 text-xs text-text-secondary md:grid-cols-2">
                 <div>
-                  <span className="text-text-tertiary">Short description</span>
+                  <span className="text-text-tertiary">{t('settings.skillShortDescription')}</span>
                   <p className="mt-0.5 text-text-primary">{skillShortDescription(viewSkill) || '—'}</p>
                 </div>
                 <div>
-                  <span className="text-text-tertiary">Policy</span>
+                  <span className="text-text-tertiary">{t('settings.skillPolicy')}</span>
                   <p className="mt-0.5 text-text-primary">
-                    implicit={String(viewSkill.policy?.allowImplicitInvocation ?? true)}
+                    {t('settings.skillImplicitPolicy', {
+                      value: String(viewSkill.policy?.allowImplicitInvocation ?? true),
+                    })}
                   </p>
                 </div>
                 <div>
-                  <span className="text-text-tertiary">Source</span>
+                  <span className="text-text-tertiary">{t('settings.skillSource')}</span>
                   <p className="mt-0.5 truncate text-text-primary" title={viewSkill.sourcePath ?? undefined}>
-                    {viewSkill.sourcePath ?? (viewSkill.builtin ? 'bundled' : 'user-defined')}
+                    {viewSkill.sourcePath ?? (viewSkill.builtin ? t('common.bundled') : t('common.userDefined'))}
                   </p>
                 </div>
                 <div>
-                  <span className="text-text-tertiary">Resources</span>
+                  <span className="text-text-tertiary">{t('settings.skillResources')}</span>
                   <p className="mt-0.5 text-text-primary">
-                    {viewSkill.resources?.length ? viewSkill.resources.map((resource) => resource.path).slice(0, 3).join(', ') : 'none'}
+                    {viewSkill.resources?.length ? viewSkill.resources.map((resource) => resource.path).slice(0, 3).join(', ') : t('common.none')}
                   </p>
                 </div>
               </div>

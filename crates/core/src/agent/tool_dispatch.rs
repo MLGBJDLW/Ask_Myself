@@ -87,10 +87,12 @@ impl AgentExecutor {
         // Build futures for all tool calls and execute concurrently.
         let offered_tool_names: HashSet<String> =
             tool_defs.iter().map(|tool| tool.name.clone()).collect();
+        let registered_tool_names: HashSet<String> = self.tools.tool_names().into_iter().collect();
         let tool_policy = ToolSchedulerPolicy::new(
             self.config.tool_timeout_secs,
             self.config.dynamic_tool_visibility,
             offered_tool_names,
+            registered_tool_names,
         );
         for tc in tool_calls {
             let decision = tool_policy.decision_for(tc);

@@ -440,7 +440,8 @@ export function SettingsPage() {
         maxTextFileSize: 104857600,
         maxVideoFileSize: 2147483648,
         maxAudioFileSize: 536870912,
-        dynamicToolVisibility: true,
+        dynamicToolVisibility: false,
+        toolVisibilityDefaultsVersion: 2,
         confirmDestructive: false,
         shellAccessMode: 'restricted',
         toolApprovalMode: 'ask',
@@ -523,18 +524,17 @@ export function SettingsPage() {
 
   const handleAskAiPrepareOfficeRuntime = useCallback(() => {
     const readinessSummary = officeRuntime
-      ? `Current document tools status: ${officeRuntime.status}. ${officeRuntime.summary}`
-      : 'Current document tools status has not been checked yet.';
+      ? t('settings.documentToolsStatusCurrent', {
+        status: officeRuntime.status,
+        summary: officeRuntime.summary,
+      })
+      : t('settings.documentToolsStatusUnchecked');
     navigate('/chat', {
       state: {
-        initialMessage:
-          `请帮我准备本机文档工具，用于 DOCX、XLSX、PPTX 和 PDF 的创建、编辑。\n\n` +
-          `${readinessSummary}\n\n` +
-          `请先调用 prepare_document_tools 检查当前状态。若必需依赖缺失，请帮我准备必需的 Python 环境和包。` +
-          `如果准备过程中发生权限、网络或路径问题，请继续诊断并给出可执行的下一步。`,
+        initialMessage: t('settings.documentToolsPrepareAgentPrompt', { readinessSummary }),
       },
     });
-  }, [navigate, officeRuntime]);
+  }, [navigate, officeRuntime, t]);
 
   /**
    * Reset the "wizard_completed" flag and navigate to `/wizard`.

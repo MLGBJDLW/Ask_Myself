@@ -243,15 +243,15 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
                 }`}
                 style={{ backgroundColor: option.value }}
                 title={option.label}
-                aria-label={`Project color ${option.label}`}
+                aria-label={t('project.colorLabel', { label: option.label })}
               />
             );
           })}
         </div>
         <label
           className="relative flex h-6 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-border bg-surface-1 transition-colors hover:bg-surface-3"
-          title="Custom project color"
-          aria-label="Custom project color"
+          title={t('project.customColor')}
+          aria-label={t('project.customColor')}
         >
           <span
             className="h-3.5 w-3.5 rounded-full border border-white/30 shadow-sm"
@@ -288,9 +288,9 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
       <div className="space-y-1.5 rounded-md border border-border/70 bg-surface-1 p-2">
         <div className="flex items-center gap-1.5 text-[11px] font-medium text-text-secondary">
           <Database size={12} />
-          <span>Project sources</span>
+          <span>{t('project.sources')}</span>
           <span className="ml-auto text-[10px] text-text-tertiary">
-            {selected.size === 0 ? 'All' : `${selected.size}/${sources.length}`}
+            {selected.size === 0 ? t('project.allSources') : `${selected.size}/${sources.length}`}
           </span>
         </div>
         <div className="max-h-28 space-y-1 overflow-y-auto pr-1">
@@ -444,7 +444,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
               className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
             >
               <Brain className="h-3 w-3 shrink-0" />
-              <span className="flex-1 text-left">Project 记忆</span>
+              <span className="flex-1 text-left">{t('chat.projectMemoryMenu')}</span>
             </button>
           )}
 

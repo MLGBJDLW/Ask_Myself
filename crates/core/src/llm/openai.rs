@@ -46,6 +46,10 @@ struct OaiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<OaiThinking>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    enable_thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_budget: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OaiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parallel_tool_calls: Option<bool>,
@@ -553,6 +557,7 @@ fn serialize_tool_arguments_for_history(raw: &str, raw_tool_args: bool) -> serde
 fn convert_message(
     msg: &Message,
     include_reasoning_content: bool,
+    synthesize_missing_reasoning_content: bool,
     raw_tool_args: bool,
 ) -> OaiMessage {
     let has_images = msg.has_images();
@@ -626,13 +631,15 @@ fn convert_message(
     }
 
     if include_reasoning_content && msg.role == Role::Assistant {
-        oai.reasoning_content = Some(
-            msg.reasoning_content
-                .as_deref()
-                .filter(|content| !content.trim().is_empty())
-                .unwrap_or(MISSING_REASONING_CONTENT_PLACEHOLDER)
-                .to_string(),
-        );
+        if let Some(content) = msg
+            .reasoning_content
+            .as_deref()
+            .filter(|content| !content.trim().is_empty())
+        {
+            oai.reasoning_content = Some(content.to_string());
+        } else if synthesize_missing_reasoning_content {
+            oai.reasoning_content = Some(MISSING_REASONING_CONTENT_PLACEHOLDER.to_string());
+        }
     }
 
     oai
@@ -661,6 +668,7 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     let is_reasoning = is_reasoning_model(&request.model, request.provider_type.as_ref());
     let is_deepseek = is_deepseek_reasoner(&request.model);
     let is_openrouter_provider = matches!(request.provider_type, Some(ProviderType::OpenRouter));
+    let is_qwen_provider = matches!(request.provider_type, Some(ProviderType::Qwen));
     let model_lower = request.model.to_lowercase();
     let is_deepseek_provider = matches!(request.provider_type, Some(ProviderType::DeepSeek))
         || model_lower.contains("deepseek");
@@ -676,11 +684,21 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
         None
     };
     let deepseek_thinking_enabled = deepseek_thinking_mode == Some("enabled");
-    let include_reasoning_content = is_deepseek_provider && deepseek_thinking_enabled;
-    let needs_completion_tokens =
-        !is_openrouter_provider && (is_reasoning || is_deepseek || deepseek_thinking_enabled);
-    let suppress_temperature =
-        !is_openrouter_provider && (is_reasoning || is_deepseek || deepseek_thinking_enabled);
+    let qwen_thinking_enabled = is_qwen_provider
+        && (request.thinking_budget.is_some()
+            || request
+                .reasoning_effort
+                .as_ref()
+                .is_some_and(|effort| effort != &ReasoningEffort::None));
+    let include_reasoning_content =
+        (is_deepseek_provider && deepseek_thinking_enabled) || qwen_thinking_enabled;
+    let synthesize_missing_reasoning_content = is_deepseek_provider && deepseek_thinking_enabled;
+    let needs_completion_tokens = !is_openrouter_provider
+        && !is_qwen_provider
+        && (is_reasoning || is_deepseek || deepseek_thinking_enabled);
+    let suppress_temperature = !is_openrouter_provider
+        && !is_qwen_provider
+        && (is_reasoning || is_deepseek || deepseek_thinking_enabled);
     // Some providers/models require function arguments as JSON objects, not strings.
     let raw_tool_args = requires_raw_tool_arguments(&request.model, request.provider_type.as_ref());
     let add_cache_control =
@@ -688,7 +706,14 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     let mut messages: Vec<OaiMessage> = request
         .messages
         .iter()
-        .map(|m| convert_message(m, include_reasoning_content, raw_tool_args))
+        .map(|m| {
+            convert_message(
+                m,
+                include_reasoning_content,
+                synthesize_missing_reasoning_content,
+                raw_tool_args,
+            )
+        })
         .collect();
     if add_cache_control {
         add_openai_compatible_cache_control(&mut messages);
@@ -714,7 +739,7 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
         },
         reasoning_effort: if deepseek_thinking_enabled {
             Some(deepseek_reasoning_effort(request.reasoning_effort.as_ref()))
-        } else if is_reasoning && !is_openrouter_provider {
+        } else if is_reasoning && !is_openrouter_provider && !is_qwen_provider {
             request
                 .reasoning_effort
                 .as_ref()
@@ -742,6 +767,10 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
         thinking: deepseek_thinking_mode.map(|mode| OaiThinking {
             thinking_type: mode.to_string(),
         }),
+        enable_thinking: qwen_thinking_enabled.then_some(true),
+        thinking_budget: qwen_thinking_enabled
+            .then_some(request.thinking_budget)
+            .flatten(),
         tools: request
             .tools
             .as_ref()
@@ -1541,6 +1570,95 @@ data: [DONE]
                 "args": ["-c", "print(1)"]
             })
         );
+    }
+
+    #[test]
+    fn qwen_thinking_request_uses_dashscope_extra_body_fields() {
+        let request = CompletionRequest {
+            model: "qwen3.6-plus".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: Some(2048),
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::Qwen),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, true)).unwrap();
+
+        assert_eq!(body["enable_thinking"], true);
+        assert_eq!(body["thinking_budget"], 2048);
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(body["max_tokens"], 100);
+    }
+
+    #[test]
+    fn qwen_thinking_does_not_send_openai_reasoning_effort() {
+        let request = CompletionRequest {
+            model: "qwen3.6-plus".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: Some(ReasoningEffort::High),
+            provider_type: Some(ProviderType::Qwen),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, true)).unwrap();
+
+        assert_eq!(body["enable_thinking"], true);
+        assert!(body.get("thinking_budget").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+        let temperature = body["temperature"].as_f64().expect("temperature");
+        assert!((temperature - 0.4).abs() < 1e-6);
+        assert_eq!(body["max_tokens"], 100);
+    }
+
+    #[test]
+    fn qwen_thinking_replays_real_reasoning_content_without_placeholder() {
+        let assistant_with_reasoning = Message {
+            role: Role::Assistant,
+            parts: vec![],
+            name: None,
+            tool_calls: Some(vec![ToolCallRequest {
+                id: "call_1".to_string(),
+                name: "lookup".to_string(),
+                arguments: "{\"query\":\"x\"}".to_string(),
+                thought_signature: None,
+            }]),
+            reasoning_content: Some("need lookup".to_string()),
+        };
+        let assistant_without_reasoning = Message {
+            role: Role::Assistant,
+            parts: vec![],
+            name: None,
+            tool_calls: None,
+            reasoning_content: None,
+        };
+        let request = CompletionRequest {
+            model: "qwen3.6-plus".to_string(),
+            messages: vec![assistant_with_reasoning, assistant_without_reasoning],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: Some(2048),
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::Qwen),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["messages"][0]["reasoning_content"], "need lookup");
+        assert!(body["messages"][1].get("reasoning_content").is_none());
     }
 
     #[test]

@@ -1,5 +1,15 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { AlertTriangle, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
+import enErrorBoundary from '../i18n/locales/en/errorBoundary.json';
+import zhCNErrorBoundary from '../i18n/locales/zh-CN/errorBoundary.json';
+import zhTWErrorBoundary from '../i18n/locales/zh-TW/errorBoundary.json';
+import jaErrorBoundary from '../i18n/locales/ja/errorBoundary.json';
+import koErrorBoundary from '../i18n/locales/ko/errorBoundary.json';
+import frErrorBoundary from '../i18n/locales/fr/errorBoundary.json';
+import deErrorBoundary from '../i18n/locales/de/errorBoundary.json';
+import esErrorBoundary from '../i18n/locales/es/errorBoundary.json';
+import ptErrorBoundary from '../i18n/locales/pt/errorBoundary.json';
+import ruErrorBoundary from '../i18n/locales/ru/errorBoundary.json';
 
 interface Props {
   children: ReactNode;
@@ -22,78 +32,30 @@ interface State {
 
 function getStoredLocale(): string {
   try {
-    return localStorage.getItem('app-locale') || 'en';
+    return localStorage.getItem('nexa-locale')
+      || localStorage.getItem('ask-myself-locale')
+      || 'en';
   } catch {
     return 'en';
   }
 }
 
-const LABELS: Record<string, { title: string; description: string; restart: string; details: string }> = {
-  en: {
-    title: 'Something went wrong',
-    description: 'An unexpected error occurred. You can try restarting the application.',
-    restart: 'Restart',
-    details: 'Error details',
-  },
-  'zh-CN': {
-    title: '出现了问题',
-    description: '发生了意外错误。您可以尝试重启应用。',
-    restart: '重启',
-    details: '错误详情',
-  },
-  'zh-TW': {
-    title: '出現了問題',
-    description: '發生了意外錯誤。您可以嘗試重新啟動應用程式。',
-    restart: '重新啟動',
-    details: '錯誤詳情',
-  },
-  ja: {
-    title: '問題が発生しました',
-    description: '予期しないエラーが発生しました。アプリを再起動してみてください。',
-    restart: '再起動',
-    details: 'エラー詳細',
-  },
-  ko: {
-    title: '문제가 발생했습니다',
-    description: '예기치 않은 오류가 발생했습니다. 앱을 다시 시작해 보세요.',
-    restart: '다시 시작',
-    details: '오류 상세',
-  },
-  fr: {
-    title: 'Une erreur est survenue',
-    description: 'Une erreur inattendue s\'est produite. Vous pouvez essayer de redémarrer l\'application.',
-    restart: 'Redémarrer',
-    details: 'Détails de l\'erreur',
-  },
-  de: {
-    title: 'Ein Fehler ist aufgetreten',
-    description: 'Ein unerwarteter Fehler ist aufgetreten. Versuchen Sie, die Anwendung neu zu starten.',
-    restart: 'Neu starten',
-    details: 'Fehlerdetails',
-  },
-  es: {
-    title: 'Algo salió mal',
-    description: 'Ocurrió un error inesperado. Puede intentar reiniciar la aplicación.',
-    restart: 'Reiniciar',
-    details: 'Detalles del error',
-  },
-  pt: {
-    title: 'Algo deu errado',
-    description: 'Ocorreu um erro inesperado. Você pode tentar reiniciar o aplicativo.',
-    restart: 'Reiniciar',
-    details: 'Detalhes do erro',
-  },
-  ru: {
-    title: 'Что-то пошло не так',
-    description: 'Произошла непредвиденная ошибка. Попробуйте перезапустить приложение.',
-    restart: 'Перезапустить',
-    details: 'Подробности ошибки',
-  },
+const LABELS = {
+  en: enErrorBoundary,
+  'zh-CN': zhCNErrorBoundary,
+  'zh-TW': zhTWErrorBoundary,
+  ja: jaErrorBoundary,
+  ko: koErrorBoundary,
+  fr: frErrorBoundary,
+  de: deErrorBoundary,
+  es: esErrorBoundary,
+  pt: ptErrorBoundary,
+  ru: ruErrorBoundary,
 };
 
 function getLabels() {
   const locale = getStoredLocale();
-  return LABELS[locale] ?? LABELS.en;
+  return LABELS[locale as keyof typeof LABELS] ?? LABELS.en;
 }
 
 export class ErrorBoundary extends Component<Props, State> {

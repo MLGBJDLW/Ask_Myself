@@ -16,5 +16,16 @@
   "clear": "Löschen",
   "selectAll": "Alle auswählen",
   "clearAll": "Alle löschen",
-  "undo": "Rückgängig"
+  "undo": "Rückgängig",
+  "tagInputPlaceholder": "Type and press Enter...",
+  "moreOptions": "More options",
+  "recommended": "Recommended",
+  "enableAll": "Enable all",
+  "disableAll": "Disable all",
+  "selectGroup": "Select group",
+  "clearGroup": "Clear group",
+  "builtIn": "Built-in",
+  "bundled": "bundled",
+  "userDefined": "user-defined",
+  "none": "none"
 }

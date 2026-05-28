@@ -1,8 +1,9 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import * as api from './api';
 import { streamStore } from './streamStore';
-import type { ImageAttachment, ApprovalRequest } from '../types/conversation';
+import type { ImageAttachment, ApprovalRequest, ArtifactPayload } from '../types/conversation';
 import type { StreamState } from './streamStore';
+import type { AgentExecutionMode } from './api';
 
 // Re-export types from streamStore for backward compatibility
 export type { ContextUsageBreakdown, ToolCallEvent, StreamRoundEvent, TraceEvent, UsageTotal } from './streamStore';
@@ -28,6 +29,8 @@ interface UseAgentStreamReturn {
     agentConfigId?: string | null,
     personaId?: string | null,
     skillIds?: string[],
+    executionMode?: AgentExecutionMode | null,
+    userArtifacts?: ArtifactPayload | null,
   ) => Promise<void>;
   stop: (conversationId: string) => Promise<void>;
   isStreaming: boolean;
@@ -119,12 +122,23 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     agentConfigId?: string | null,
     personaId?: string | null,
     skillIds?: string[],
+    executionMode?: AgentExecutionMode | null,
+    userArtifacts?: ArtifactPayload | null,
   ) => {
     activeConversationRef.current = conversationId;
     streamStore.startStream(conversationId);
 
     try {
-      await api.agentChat(conversationId, message, attachments, agentConfigId, personaId, skillIds);
+      await api.agentChat(
+        conversationId,
+        message,
+        attachments,
+        agentConfigId,
+        personaId,
+        skillIds,
+        executionMode,
+        userArtifacts,
+      );
     } catch (err) {
       streamStore.sendError(conversationId, String(err));
     }

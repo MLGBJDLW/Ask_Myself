@@ -16,5 +16,16 @@
   "clear": "クリア",
   "selectAll": "すべて選択",
   "clearAll": "すべてクリア",
-  "undo": "元に戻す"
+  "undo": "元に戻す",
+  "tagInputPlaceholder": "Type and press Enter...",
+  "moreOptions": "More options",
+  "recommended": "Recommended",
+  "enableAll": "Enable all",
+  "disableAll": "Disable all",
+  "selectGroup": "Select group",
+  "clearGroup": "Clear group",
+  "builtIn": "Built-in",
+  "bundled": "bundled",
+  "userDefined": "user-defined",
+  "none": "none"
 }

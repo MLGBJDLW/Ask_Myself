@@ -943,12 +943,15 @@ export function AgentConfigForm({
 
       <CollapsiblePanel
         title={t("settings.advancedSettings")}
-        description="Generation limits, cost controls, and delegated worker access."
+        description={t("settings.advancedSettingsDesc")}
         open={showAdvanced}
         onOpenChange={setShowAdvanced}
         summary={
           <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
-            {visibleSelectedToolCount}/{subagentToolCatalog.length} tools
+            {t("settings.selectedToolsSummary", {
+              selected: String(visibleSelectedToolCount),
+              total: String(subagentToolCatalog.length),
+            })}
           </span>
         }
       >
@@ -1180,23 +1183,24 @@ export function AgentConfigForm({
           <div className="flex items-center justify-between gap-3">
             <div>
               <h4 className="text-sm font-semibold text-text-primary">
-                Subagents
+                {t("settings.subagents")}
               </h4>
               <p className="text-xs text-text-tertiary">
-                Choose which delegated tools and enabled skills subagents may
-                inherit, and set concurrency and budget limits for delegated
-                workers and adjudicators.
+                {t("settings.subagentsDesc")}
               </p>
             </div>
             <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
-              {visibleSelectedToolCount}/{subagentToolCatalog.length} tools
+              {t("settings.selectedToolsSummary", {
+                selected: String(visibleSelectedToolCount),
+                total: String(subagentToolCatalog.length),
+              })}
             </span>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">
-                Max parallel workers
+                {t("settings.maxParallelWorkers")}
               </label>
               <Input
                 type="number"
@@ -1210,12 +1214,12 @@ export function AgentConfigForm({
                 step={1}
               />
               <p className="text-xs text-text-tertiary">
-                Hard cap on how many delegated workers may run at the same time.
+                {t("settings.maxParallelWorkersDesc")}
               </p>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">
-                Max worker calls / turn
+                {t("settings.maxWorkerCallsPerTurn")}
               </label>
               <Input
                 type="number"
@@ -1231,13 +1235,12 @@ export function AgentConfigForm({
                 step={1}
               />
               <p className="text-xs text-text-tertiary">
-                Limits total delegated worker and judge invocations in one
-                parent turn.
+                {t("settings.maxWorkerCallsPerTurnDesc")}
               </p>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">
-                Token budget / turn
+                {t("settings.tokenBudgetPerTurn")}
               </label>
               <Input
                 type="number"
@@ -1250,8 +1253,7 @@ export function AgentConfigForm({
                 step={256}
               />
               <p className="text-xs text-text-tertiary">
-                Soft total token budget for delegated workers and result
-                adjudication.
+                {t("settings.tokenBudgetPerTurnDesc")}
               </p>
             </div>
           </div>
@@ -1264,7 +1266,7 @@ export function AgentConfigForm({
                 size="sm"
                 onClick={setRecommendedSubagentTools}
               >
-                Recommended
+                {t("common.recommended")}
               </Button>
               <Button
                 type="button"
@@ -1272,7 +1274,7 @@ export function AgentConfigForm({
                 size="sm"
                 onClick={setAllSubagentTools}
               >
-                Enable all
+                {t("common.enableAll")}
               </Button>
               <Button
                 type="button"
@@ -1280,7 +1282,7 @@ export function AgentConfigForm({
                 size="sm"
                 onClick={clearSubagentTools}
               >
-                Disable all
+                {t("common.disableAll")}
               </Button>
             </div>
 
@@ -1310,7 +1312,7 @@ export function AgentConfigForm({
                         size="sm"
                         onClick={() => setSubagentToolGroupSelection(groupToolNames, true)}
                       >
-                        Select group
+                        {t("common.selectGroup")}
                       </Button>
                       <Button
                         type="button"
@@ -1318,7 +1320,7 @@ export function AgentConfigForm({
                         size="sm"
                         onClick={() => setSubagentToolGroupSelection(groupToolNames, false)}
                       >
-                        Clear group
+                        {t("common.clearGroup")}
                       </Button>
                     </div>
                     <div className="grid gap-2 md:grid-cols-2">
@@ -1358,7 +1360,7 @@ export function AgentConfigForm({
                               </span>
                               {tool.serverName && (
                                 <span className="mt-0.5 block truncate text-[10px] text-text-tertiary">
-                                  MCP: {tool.serverName}
+                                  {t("settings.mcpServerPrefix", { server: tool.serverName })}
                                 </span>
                               )}
                             </span>
@@ -1373,8 +1375,8 @@ export function AgentConfigForm({
           </div>
 
           <CollapsiblePanel
-            title="Delegated skills"
-            description="Enabled global skills are inherited by default. Open this only when a provider needs a narrower skill set."
+            title={t("settings.delegatedSkills")}
+            description={t("settings.delegatedSkillsDesc")}
             summary={
               <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
                 {subagentAllowedSkillIds.length}/{enabledSkills.length}
@@ -1389,7 +1391,7 @@ export function AgentConfigForm({
                   size="sm"
                   onClick={() => setSubagentAllowedSkillIds(orderSkillSelection(availableSkillIds))}
                 >
-                  Enable all
+                  {t("common.enableAll")}
                 </Button>
                 <Button
                   type="button"
@@ -1397,7 +1399,7 @@ export function AgentConfigForm({
                   size="sm"
                   onClick={() => setSubagentAllowedSkillIds([])}
                 >
-                  Disable all
+                  {t("common.disableAll")}
                 </Button>
               </div>
 
@@ -1447,7 +1449,7 @@ export function AgentConfigForm({
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed border-border/70 bg-surface-2 px-3 py-4 text-xs text-text-tertiary">
-                  No enabled skills are currently available to delegate.
+                  {t("settings.noEnabledSkillsToDelegate")}
                 </div>
               )}
             </div>

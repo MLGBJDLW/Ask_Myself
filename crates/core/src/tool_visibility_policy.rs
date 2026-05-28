@@ -629,6 +629,12 @@ const FILE_ROUTE_TERMS: &[&str] = &[
     "文件",
     "读取",
     "编辑",
+    "写",
+    "写入",
+    "新建",
+    "创建",
+    "保存",
+    "修改",
     "移动",
     "重命名",
     "复制",
@@ -667,6 +673,14 @@ const FILE_WORKSPACE_TERMS: &[&str] = &[
     "文件",
     "读取",
     "编辑",
+    "写",
+    "写入",
+    "新建",
+    "创建",
+    "保存",
+    "修改",
+    "改写",
+    "润色",
     "替换",
     "查找",
     "搜索文件",
@@ -799,6 +813,9 @@ const AUTOMATION_TERMS: &[&str] = &[
 const DOCUMENT_ANALYSIS_TERMS: &[&str] = &[
     "compare",
     "document",
+    "image",
+    "screenshot",
+    "ocr",
     "summarize",
     "summary",
     "analyze",
@@ -812,6 +829,7 @@ const DOCUMENT_ANALYSIS_TERMS: &[&str] = &[
     "statistics",
     "stats",
     "info",
+    "vision",
     "分析",
     "总结",
     "审查",
@@ -819,6 +837,12 @@ const DOCUMENT_ANALYSIS_TERMS: &[&str] = &[
     "验证",
     "引用",
     "文档",
+    "图片",
+    "图像",
+    "截图",
+    "ocr",
+    "文字识别",
+    "识别图片",
     "比较",
     "统计",
 ];
@@ -913,5 +937,19 @@ mod tests {
         });
 
         assert!(decision.active_categories.contains(&ToolCategory::SubAgent));
+    }
+
+    #[test]
+    fn chinese_write_or_modify_query_selects_filesystem_tools() {
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "帮我修改这个文件并保存。",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert_eq!(decision.route, ToolVisibilityRouteKind::FileOperation);
+        assert!(decision
+            .active_categories
+            .contains(&ToolCategory::FileSystem));
     }
 }

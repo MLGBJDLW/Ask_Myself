@@ -82,5 +82,6 @@
   "template.report_brief.prompt": "Fuehre den Workflow Berichtsbriefing fuer dieses Thema aus:\n\nThema:\n\nZielgruppe:\n\nQuellen oder Vorgaben:\n\nGib einen strukturierten Berichtsentwurf mit Belegnotizen und Luecken zurueck.",
   "template.connector_background.label": "Connector + Hintergrundaufgabe",
   "template.connector_background.description": "Connector-Einrichtung und Lebenszyklusrisiken von Hintergrundaufgaben bewerten.",
-  "template.connector_background.prompt": "Fuehre den Workflow Connector + Hintergrundaufgabe fuer dieses lokale Automatisierungsziel aus:\n\nZiel:\n\nBetroffener Connector, Ordner oder App:\n\nGib empfohlene Einrichtung, Hintergrund-Lebenszyklus, Abbruchverhalten und Sicherheitspruefungen zurueck."
+  "template.connector_background.prompt": "Fuehre den Workflow Connector + Hintergrundaufgabe fuer dieses lokale Automatisierungsziel aus:\n\nZiel:\n\nBetroffener Connector, Ordner oder App:\n\nGib empfohlene Einrichtung, Hintergrund-Lebenszyklus, Abbruchverhalten und Sicherheitspruefungen zurueck.",
+  "browserUrlPlaceholder": "https://example.com/report"
 }

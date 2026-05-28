@@ -16,5 +16,16 @@
   "clear": "지우기",
   "selectAll": "모두 선택",
   "clearAll": "모두 지우기",
-  "undo": "실행 취소"
+  "undo": "실행 취소",
+  "tagInputPlaceholder": "Type and press Enter...",
+  "moreOptions": "More options",
+  "recommended": "Recommended",
+  "enableAll": "Enable all",
+  "disableAll": "Disable all",
+  "selectGroup": "Select group",
+  "clearGroup": "Clear group",
+  "builtIn": "Built-in",
+  "bundled": "bundled",
+  "userDefined": "user-defined",
+  "none": "none"
 }

@@ -636,7 +636,7 @@ export function WorkflowsPage() {
                 </div>
                 <div className="space-y-3">
                   <Field label={tr('url')}>
-                    <input className={textInputClass()} value={browserUrl} onChange={(event) => setBrowserUrl(event.target.value)} placeholder="https://example.com/report" />
+                    <input className={textInputClass()} value={browserUrl} onChange={(event) => setBrowserUrl(event.target.value)} placeholder={tr('browserUrlPlaceholder')} />
                   </Field>
                   <Field label={tr('mode')}>
                     <select className={textInputClass()} value={browserMode} onChange={(event) => setBrowserMode(event.target.value)}>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import * as api from './api';
+import type { AgentExecutionMode } from './api';
 import { useAgentStream, type ContextUsageBreakdown, type UsageTotal } from './useAgentStream';
 import { streamStore } from './streamStore';
 import { useTranslation } from '../i18n';
@@ -400,6 +401,7 @@ export interface ChatSendOptions {
   sourceIds?: string[];
   userArtifacts?: ArtifactPayload | null;
   skillIds?: string[];
+  executionMode?: AgentExecutionMode;
 }
 
 export interface UseChatSessionReturn {
@@ -511,7 +513,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const activeId = externalConversationId ?? internalConversationId;
 
   // Track last user message for retry
-  const lastUserMessageRef = useRef<{ content: string; attachments?: ImageAttachment[] } | null>(null);
+  const lastUserMessageRef = useRef<{
+    content: string;
+    attachments?: ImageAttachment[];
+    personaId?: string | null;
+    options?: ChatSendOptions;
+  } | null>(null);
   const usageConversationRef = useRef<string | null>(null);
   const usageCacheRef = useRef<Record<string, StoredUsageEntry>>(readUsageCache());
   const pendingStreamConversationRef = useRef<string | null>(null);
@@ -912,13 +919,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             .catch((e) => {
               // LLM title failed; placeholder remains in local state only.
               console.error('LLM title generation failed, keeping placeholder:', e);
-              toast.warning(`Smart title generation failed: ${String(e)}`);
+              toast.warning(t('chat.smartTitleGenerationFailed', { message: String(e) }));
             });
         }
       }
     }
     return () => { cancelled = true; };
-  }, [activeId, isStreaming, loadConversations, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
+  }, [activeId, isStreaming, loadConversations, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation, t]);
 
   /* ── Sync stream errors to chatError ────────────────────────────── */
   useEffect(() => {
@@ -1128,14 +1135,19 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       setChatError(null);
 
       // Track for retry
-      lastUserMessageRef.current = { content, attachments };
+      lastUserMessageRef.current = {
+        content,
+        attachments,
+        personaId: personaForSend,
+        options,
+      };
 
       let convId = activeId;
 
       if (convId && streamingConversationRef.current === convId && isStreaming) {
         const steeringConversationId = convId;
         if (attachments && attachments.length > 0) {
-          toast.error('Attachments cannot be added while the agent is already running.');
+          toast.error(t('chat.attachmentWhileRunning'));
           return;
         }
 
@@ -1267,6 +1279,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         configForSend.id,
         personaForSend,
         options?.skillIds,
+        options?.executionMode,
+        options?.userArtifacts,
       );
     },
     [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, isStreaming, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
@@ -1297,7 +1311,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
     setChatError(null);
 
-    const { content, attachments } = lastUserMessageRef.current;
+    const { content, attachments, personaId, options } = lastUserMessageRef.current;
 
     // Re-add optimistic user message
     const optimisticMsg: ConversationMessage = {
@@ -1307,7 +1321,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       content,
       toolCallId: null,
       toolCalls: [],
-      artifacts: null,
+      artifacts: options?.userArtifacts ?? null,
       tokenCount: 0,
       createdAt: new Date().toISOString(),
       sortOrder: messages.length,
@@ -1319,8 +1333,17 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     pendingStreamConversationRef.current = activeId;
     streamingConversationRef.current = activeId;
 
-    await streamSend(activeId, content, attachments, activeAgentConfigRef.current?.id ?? null);
-  }, [activeId, messages, setMessagesForConversation, setTurnsForConversation, streamSend, turns]);
+    await streamSend(
+      activeId,
+      content,
+      attachments,
+      activeAgentConfigRef.current?.id ?? null,
+      personaId ?? activePersonaId,
+      options?.skillIds,
+      options?.executionMode,
+      options?.userArtifacts,
+    );
+  }, [activeId, activePersonaId, messages, setMessagesForConversation, setTurnsForConversation, streamSend, turns]);
 
   /* ── Delete single message (optimistic, local only) ─────────────── */
   const deleteMessage = useCallback((messageId: string) => {

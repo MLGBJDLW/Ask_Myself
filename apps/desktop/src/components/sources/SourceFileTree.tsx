@@ -14,6 +14,7 @@ import * as api from '../../lib/api';
 import { canPreviewInApp, useFilePreview } from '../../features/preview';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
+import { useTranslation } from '../../i18n';
 
 interface SourceFileTreeProps {
   sourceId: string;
@@ -33,6 +34,7 @@ function formatBytes(bytes?: number | null): string {
 }
 
 export function SourceFileTree({ sourceId, className = '' }: SourceFileTreeProps) {
+  const { t } = useTranslation();
   const { openFilePreview } = useFilePreview();
   const [childrenByPath, setChildrenByPath] = useState<Record<string, api.SourceTreeNode[]>>({});
   const [truncatedByPath, setTruncatedByPath] = useState<Record<string, boolean>>({});
@@ -115,8 +117,8 @@ export function SourceFileTree({ sourceId, className = '' }: SourceFileTreeProps
                   type="button"
                   onClick={() => void toggleDirectory(node)}
                   className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-surface-3 hover:text-text-primary"
-                  aria-label={isExpanded ? '收起文件夹' : '展开文件夹'}
-                  title={isExpanded ? '收起文件夹' : '展开文件夹'}
+                  aria-label={isExpanded ? t('sources.collapseFolder') : t('sources.expandFolder')}
+                  title={isExpanded ? t('sources.collapseFolder') : t('sources.expandFolder')}
                 >
                   <ChevronRight size={13} className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                 </button>
@@ -143,11 +145,11 @@ export function SourceFileTree({ sourceId, className = '' }: SourceFileTreeProps
                 <>
                   <span className="hidden shrink-0 text-[10px] text-text-tertiary sm:inline">{formatBytes(node.sizeBytes)}</span>
                   <Badge variant={node.indexed ? 'success' : 'default'}>
-                    {node.indexed ? '已索引' : '未索引'}
+                    {node.indexed ? t('sources.indexed') : t('sources.notIndexed')}
                   </Badge>
                   {node.chunkCount ? (
                     <span className="hidden shrink-0 text-[10px] text-text-tertiary sm:inline">
-                      {node.chunkCount} chunks
+                      {t('sources.chunks', { count: String(node.chunkCount) })}
                     </span>
                   ) : null}
                   <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -155,8 +157,8 @@ export function SourceFileTree({ sourceId, className = '' }: SourceFileTreeProps
                       variant="ghost"
                       size="sm"
                       iconOnly
-                      title="预览或打开"
-                      aria-label="预览或打开"
+                      title={t('sources.previewOrOpen')}
+                      aria-label={t('sources.previewOrOpen')}
                       icon={<ExternalLink size={13} />}
                       onClick={() => openFile(node)}
                     />
@@ -164,8 +166,8 @@ export function SourceFileTree({ sourceId, className = '' }: SourceFileTreeProps
                       variant="ghost"
                       size="sm"
                       iconOnly
-                      title="在文件管理器中显示"
-                      aria-label="在文件管理器中显示"
+                      title={t('sources.showInFolder')}
+                      aria-label={t('sources.showInFolder')}
                       icon={<LocateFixed size={13} />}
                       onClick={() => void api.showInFileExplorer(node.path)}
                     />
@@ -182,7 +184,7 @@ export function SourceFileTree({ sourceId, className = '' }: SourceFileTreeProps
                     style={{ paddingLeft: 28 + (level + 1) * 14 }}
                   >
                     <RefreshCw size={12} className="animate-spin" />
-                    加载中
+                    {t('sources.loadingFolder')}
                   </div>
                 ) : childNodes.length > 0 ? (
                   renderNodes(childNodes, level + 1)
@@ -191,7 +193,7 @@ export function SourceFileTree({ sourceId, className = '' }: SourceFileTreeProps
                     className="h-8 px-2 py-2 text-xs text-text-tertiary"
                     style={{ paddingLeft: 28 + (level + 1) * 14 }}
                   >
-                    空文件夹
+                    {t('sources.emptyFolder')}
                   </div>
                 )}
                 {truncatedByPath[node.relativePath] && (
@@ -199,7 +201,7 @@ export function SourceFileTree({ sourceId, className = '' }: SourceFileTreeProps
                     className="px-2 py-1 text-[11px] text-amber-500"
                     style={{ paddingLeft: 28 + (level + 1) * 14 }}
                   >
-                    当前目录结果已截断，请进入更深目录继续查看。
+                    {t('sources.directoryTruncated')}
                   </div>
                 )}
               </div>
@@ -219,20 +221,22 @@ export function SourceFileTree({ sourceId, className = '' }: SourceFileTreeProps
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
             <Folder size={15} className="text-accent" />
-            文件浏览器
+            {t('sources.fileBrowser')}
           </div>
           <div className="mt-0.5 truncate text-[11px] text-text-tertiary">
             {rootLoading && rootNodes.length === 0
-              ? '正在读取目录'
-              : `${rootNodes.length} 个顶层条目${truncatedByPath[''] ? '，已截断' : ''}`}
+              ? t('sources.readingDirectory')
+              : truncatedByPath['']
+                ? t('sources.topEntriesTruncated', { count: String(rootNodes.length) })
+                : t('sources.topEntries', { count: String(rootNodes.length) })}
           </div>
         </div>
         <Button
           variant="ghost"
           size="sm"
           iconOnly
-          title="刷新文件树"
-          aria-label="刷新文件树"
+          title={t('sources.refreshFileTree')}
+          aria-label={t('sources.refreshFileTree')}
           icon={<RefreshCw size={13} />}
           loading={rootLoading}
           onClick={refresh}
@@ -253,18 +257,18 @@ export function SourceFileTree({ sourceId, className = '' }: SourceFileTreeProps
         {rootLoading && rootNodes.length === 0 ? (
           <div className="flex h-full min-h-64 items-center justify-center gap-2 text-xs text-text-tertiary">
             <RefreshCw size={13} className="animate-spin" />
-            加载文件树
+            {t('sources.loadFileTree')}
           </div>
         ) : rootNodes.length > 0 ? (
           renderNodes(rootNodes, 0)
         ) : (
           <div className="flex h-full min-h-64 items-center justify-center text-xs text-text-tertiary">
-            没有匹配当前包含/排除规则的文件。
+            {t('sources.fileTreeNoMatches')}
           </div>
         )}
         {truncatedByPath[''] && (
           <div className="px-2 py-1 text-[11px] text-amber-500">
-            根目录结果已截断，请展开子文件夹继续缩小范围。
+            {t('sources.rootTruncated')}
           </div>
         )}
       </div>

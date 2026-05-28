@@ -2,7 +2,8 @@ import type { Skill } from "../types/extensions";
 import { buildWorkflowBatchPrompt } from "./workflowPrompts";
 
 export type SlashCommandKind = "command" | "skill" | "workflow";
-export type SlashCommandAction = "prompt" | "compact" | "openWorkflows";
+export type SlashCommandAction = "prompt" | "compact" | "openWorkflows" | "planMode";
+export type SlashCommandExecutionMode = "normal" | "plan";
 
 export interface SlashWorkflowTemplate {
   id: string;
@@ -37,7 +38,8 @@ export interface ResolvedSlashCommand {
   command: SlashCommandOption;
   message: string;
   skillIds: string[];
-  localAction?: Exclude<SlashCommandAction, "prompt">;
+  localAction?: Exclude<SlashCommandAction, "prompt" | "planMode">;
+  executionMode?: SlashCommandExecutionMode;
   artifact: Record<string, unknown>;
 }
 
@@ -48,10 +50,8 @@ const COMMON_COMMANDS: Array<Omit<SlashCommandOption, "id" | "kind" | "sourceLab
   {
     name: "plan",
     title: "Plan",
-    description: "Turn a goal into a scoped implementation plan with risks and checkpoints.",
-    action: "prompt",
-    promptTemplate:
-      "Create a concise implementation plan before making changes.\n\nGoal:\n{{input}}\n\nInclude architecture impact, files likely to change, test strategy, and unresolved questions.",
+    description: "Enter read-only Plan Mode and produce an approval-ready implementation plan.",
+    action: "planMode",
   },
   {
     name: "review",
@@ -387,6 +387,16 @@ export function resolveSlashCommandMessage(
     };
   }
 
+  if (option.action === "planMode") {
+    return {
+      command: option,
+      message: remainder,
+      skillIds: [],
+      executionMode: "plan",
+      artifact: slashCommandArtifact(option),
+    };
+  }
+
   const skillIds = option.skillId ? [option.skillId] : [];
   const expandedMessage = expandPromptTemplate(option.promptTemplate, remainder);
   return {
@@ -407,5 +417,6 @@ export function slashCommandArtifact(option: SlashCommandOption): Record<string,
     title: option.title,
     skillId: option.skillId ?? null,
     workflowTemplateId: option.workflowTemplateId ?? null,
+    executionMode: option.action === "planMode" ? "plan" : null,
   };
 }

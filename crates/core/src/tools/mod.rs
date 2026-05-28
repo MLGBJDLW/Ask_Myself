@@ -108,6 +108,8 @@ pub mod manage_skill_tool;
 pub mod manage_source_tool;
 pub mod mcp_tool;
 pub mod multi_edit_tool;
+#[cfg(feature = "ocr")]
+pub mod ocr_tool;
 pub mod path_utils;
 pub mod persona_tool;
 pub mod playbook_tool;
@@ -717,6 +719,24 @@ impl ToolRegistry {
         registry
     }
 
+    /// Build the tool surface exposed during Plan Mode.
+    ///
+    /// Plan Mode may inspect local and remote evidence, but it must not mutate
+    /// state, execute commands, delegate to other agents, or expose tools whose
+    /// schema mixes read-only and write actions.
+    pub fn plan_mode_filtered(&self) -> ToolRegistry {
+        let mut registry = ToolRegistry::new();
+        let empty_args = serde_json::json!({});
+
+        for tool in &self.tools {
+            if plan_mode_allows_tool(tool.name(), &tool.access_profile(&empty_args)) {
+                registry.register_shared(Arc::clone(tool));
+            }
+        }
+
+        registry
+    }
+
     /// Check if a tool requires confirmation for the given arguments.
     pub fn requires_confirmation(&self, name: &str, args: &serde_json::Value) -> bool {
         self.get(name)
@@ -886,6 +906,32 @@ impl ToolRegistry {
     }
 }
 
+fn plan_mode_allows_tool(name: &str, access: &ToolAccessProfile) -> bool {
+    if name == "mcp_tool" || name.starts_with("mcp__") {
+        return false;
+    }
+
+    if matches!(
+        name,
+        "run_shell"
+            | "project_tool"
+            | "desktop_automation"
+            | "browser_evidence_capture"
+            | "download_asset"
+            | "generate_image"
+            | "prepare_document_tools"
+            | "update_plan"
+            | "record_verification"
+            | "spawn_subagent"
+            | "spawn_subagent_batch"
+            | "judge_subagent_results"
+    ) {
+        return false;
+    }
+
+    access.can_read && !access.can_write && !access.can_execute && !access.needs_approval
+}
+
 /// Generic argument-size guard shared by all execute paths.
 ///
 /// `run_shell` has its own stricter per-arg + total limits, so it's skipped
@@ -986,6 +1032,8 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(knowledge_graph_tool::KnowledgeGraphTool));
     registry.register(Box::new(health_check_tool::HealthCheckTool));
     registry.register(Box::new(image_generation_tool::GenerateImageTool));
+    #[cfg(feature = "ocr")]
+    registry.register(Box::new(ocr_tool::ExtractImageTextTool));
     registry.register(Box::new(archive_output_tool::ArchiveOutputTool));
     registry.register(Box::new(related_concepts_tool::RelatedConceptsTool));
     registry.register(Box::new(run_shell_tool::RunShellTool));
@@ -1061,6 +1109,53 @@ mod tests {
 
         assert!(names.iter().any(|name| name == "compare_documents"));
         assert!(names.iter().any(|name| name == "summarize_document"));
+    }
+
+    #[test]
+    fn plan_mode_registry_excludes_mutating_and_execution_tools() {
+        let registry = default_tool_registry();
+        let plan_registry = registry.plan_mode_filtered();
+        let names = plan_registry.tool_names();
+
+        for blocked in [
+            "run_shell",
+            "edit_file",
+            "multi_edit",
+            "create_file",
+            "write_note",
+            "update_plan",
+            "record_verification",
+            "project_tool",
+            "spawn_subagent",
+        ] {
+            assert!(
+                !names.iter().any(|name| name == blocked),
+                "{blocked} should be blocked"
+            );
+        }
+
+        for allowed in [
+            "read_file",
+            "grep_files",
+            "search_files",
+            "web_search",
+            "tool_search",
+        ] {
+            assert!(
+                names.iter().any(|name| name == allowed),
+                "{allowed} should remain available"
+            );
+        }
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn select_tools_includes_ocr_for_image_text_requests() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools("请 OCR 识别这张截图里的文字", false);
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "extract_image_text"));
     }
 
     #[test]
@@ -1314,6 +1409,8 @@ mod tests {
             "web_research_context",
             "read_file",
             "read_files",
+            #[cfg(feature = "ocr")]
+            "extract_image_text",
             "list_dir",
             "glob_files",
             "grep_files",

@@ -187,12 +187,35 @@ impl AgentExecutor {
         } = ctx;
 
         let final_text = assistant_msg.text_content();
-        let evidence_audit = audit_final_answer(
-            task_plan,
-            &final_text,
-            evidence_signals_from_trace(persisted_trace_items),
-        );
-        let verification_artifact = evidence_audit.to_artifact();
+        let proposed_plan_artifact = self
+            .config
+            .execution_mode
+            .is_plan()
+            .then(|| extract_proposed_plan_artifact(&final_text))
+            .flatten();
+        let verification_artifact = if self.config.execution_mode.is_plan() {
+            serde_json::json!({
+                "kind": "verification",
+                "version": 1,
+                "overallStatus": "passed",
+                "mode": "plan",
+                "summary": "Plan Mode completed without executing write tools.",
+                "checks": [
+                    {
+                        "id": "plan-mode-read-only",
+                        "label": "Read-only planning turn",
+                        "status": "passed"
+                    }
+                ]
+            })
+        } else {
+            audit_final_answer(
+                task_plan,
+                &final_text,
+                evidence_signals_from_trace(persisted_trace_items),
+            )
+            .to_artifact()
+        };
         let verification_passed = verification_artifact_passed(&verification_artifact);
         if finalize_task_plan(task_plan, verification_passed) {
             emit_task_plan_update(
@@ -207,14 +230,19 @@ impl AgentExecutor {
             )
             .await;
         }
-        append_persisted_trace_status(
-            persisted_trace_items,
-            &format!(
+        let verification_trace_status = if self.config.execution_mode.is_plan() {
+            "Plan mode audit: read-only planning turn passed.".to_string()
+        } else {
+            format!(
                 "Evidence audit: {}.",
                 verification_artifact["overallStatus"]
                     .as_str()
                     .unwrap_or("pending")
-            ),
+            )
+        };
+        append_persisted_trace_status(
+            persisted_trace_items,
+            &verification_trace_status,
             verification_artifact_tone(&verification_artifact),
         );
 
@@ -227,7 +255,10 @@ impl AgentExecutor {
                 content: final_text.clone(),
                 tool_call_id: None,
                 tool_calls: assistant_msg.tool_calls.clone().unwrap_or_default(),
-                artifacts: build_trace_artifacts(persisted_trace_items),
+                artifacts: build_assistant_artifacts(
+                    persisted_trace_items,
+                    proposed_plan_artifact.as_ref(),
+                ),
                 token_count: estimate_message_tokens_for_model(model, &assistant_msg),
                 created_at: String::new(),
                 sort_order,
@@ -238,11 +269,14 @@ impl AgentExecutor {
                 warn!("Failed to save final assistant message: {e}");
             }
             if let Some(tid) = turn_id {
-                let trace_payload = build_turn_trace_with_verification(
+                let mut trace_payload = build_turn_trace_with_verification(
                     route_kind,
                     persisted_trace_items,
                     Some(&verification_artifact),
                 );
+                if let Some(plan) = proposed_plan_artifact.as_ref() {
+                    trace_payload["proposedPlan"] = plan.clone();
+                }
                 let _ = db.finalize_conversation_turn(
                     tid,
                     "success",
@@ -254,8 +288,11 @@ impl AgentExecutor {
                         .get_agent_task_run(&task_run.id)
                         .ok()
                         .and_then(|run| run.artifacts);
-                    let task_artifacts =
+                    let mut task_artifacts =
                         build_task_run_artifacts(previous_task_artifacts, &verification_artifact);
+                    if let Some(plan) = proposed_plan_artifact.as_ref() {
+                        task_artifacts["proposedPlan"] = plan.clone();
+                    }
                     let _ = db.update_agent_task_run_progress(
                         &task_run.id,
                         Some("running"),
@@ -276,7 +313,10 @@ impl AgentExecutor {
             }
         }
 
-        if !final_text.is_empty() && !user_query_text.is_empty() {
+        if !self.config.execution_mode.is_plan()
+            && !final_text.is_empty()
+            && !user_query_text.is_empty()
+        {
             let citations = crate::cache::extract_citations(&final_text);
             if !citations.is_empty() {
                 let _ = db.cache_answer(
@@ -434,6 +474,78 @@ fn verification_artifact_tone(artifact: &serde_json::Value) -> &'static str {
     }
 }
 
+fn build_assistant_artifacts(
+    trace_items: &[PersistedTraceItem],
+    proposed_plan: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let trace_artifacts = build_trace_artifacts(trace_items);
+    match (trace_artifacts, proposed_plan) {
+        (None, None) => None,
+        (Some(trace), None) => Some(trace),
+        (None, Some(plan)) => Some(serde_json::json!({
+            "kind": "assistantArtifacts",
+            "version": 1,
+            "proposedPlan": plan,
+        })),
+        (Some(serde_json::Value::Object(mut map)), Some(plan)) => {
+            map.insert("proposedPlan".to_string(), plan.clone());
+            Some(serde_json::Value::Object(map))
+        }
+        (Some(trace), Some(plan)) => Some(serde_json::json!({
+            "kind": "assistantArtifacts",
+            "version": 1,
+            "trace": trace,
+            "proposedPlan": plan,
+        })),
+    }
+}
+
+fn extract_proposed_plan_artifact(final_text: &str) -> Option<serde_json::Value> {
+    let start_tag = "<proposed_plan>";
+    let end_tag = "</proposed_plan>";
+    let start = find_ascii_case_insensitive(final_text, start_tag)? + start_tag.len();
+    let end = find_ascii_case_insensitive(&final_text[start..], end_tag)? + start;
+    let markdown = final_text[start..end].trim();
+    if markdown.is_empty() {
+        return None;
+    }
+
+    Some(serde_json::json!({
+        "kind": "proposedPlan",
+        "version": 1,
+        "mode": "plan",
+        "title": proposed_plan_title(markdown),
+        "markdown": markdown,
+    }))
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+fn proposed_plan_title(markdown: &str) -> String {
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let without_heading = trimmed.trim_start_matches('#').trim();
+        let without_number = without_heading
+            .trim_start_matches(|ch: char| {
+                ch.is_ascii_digit() || ch == '.' || ch == ')' || ch.is_whitespace()
+            })
+            .trim();
+        let title = without_number.trim_matches(['*', '`', ':']);
+        if !title.is_empty() {
+            return title.chars().take(96).collect();
+        }
+    }
+    "Proposed plan".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,5 +560,19 @@ mod tests {
                 "overallStatus": status
             })));
         }
+    }
+
+    #[test]
+    fn extracts_proposed_plan_artifact_from_final_text() {
+        let artifact = extract_proposed_plan_artifact(
+            "Context.\n\n<proposed_plan>\n# Implement Plan Mode\n\n- Add readonly tools.\n</proposed_plan>",
+        )
+        .expect("plan artifact");
+
+        assert_eq!(artifact["kind"].as_str(), Some("proposedPlan"));
+        assert_eq!(artifact["title"].as_str(), Some("Implement Plan Mode"));
+        assert!(artifact["markdown"]
+            .as_str()
+            .is_some_and(|text| text.contains("readonly tools")));
     }
 }

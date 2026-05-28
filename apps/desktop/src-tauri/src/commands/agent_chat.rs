@@ -2,6 +2,37 @@ use super::*;
 
 // ── Agent Chat Command (streaming) ──────────────────────────────────────
 
+fn execution_mode_artifact(execution_mode: AgentExecutionMode) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "executionMode",
+        "version": 1,
+        "mode": execution_mode.as_str(),
+    })
+}
+
+fn annotate_user_artifacts_with_execution_mode(
+    artifacts: Option<serde_json::Value>,
+    execution_mode: AgentExecutionMode,
+) -> Option<serde_json::Value> {
+    if !execution_mode.is_plan() {
+        return artifacts;
+    }
+
+    let marker = execution_mode_artifact(execution_mode);
+    match artifacts {
+        None => Some(marker),
+        Some(serde_json::Value::Object(mut map)) => {
+            map.insert("executionMode".to_string(), marker);
+            Some(serde_json::Value::Object(map))
+        }
+        Some(value) => Some(serde_json::json!({
+            "kind": "chatSendContext",
+            "userArtifacts": value,
+            "executionMode": marker,
+        })),
+    }
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn agent_chat_cmd(
@@ -16,7 +47,12 @@ pub async fn agent_chat_cmd(
     agent_config_id: Option<String>,
     persona_id: Option<String>,
     skill_ids: Option<Vec<String>>,
+    execution_mode: Option<String>,
+    user_artifacts: Option<serde_json::Value>,
 ) -> Result<(), String> {
+    let execution_mode = AgentExecutionMode::from_wire(execution_mode.as_deref())?;
+    let plan_mode = execution_mode.is_plan();
+
     // 1. Load the conversation first so provider/model selection follows the
     // active chat, not whatever global default happened to be selected later.
     let mut conv = state
@@ -51,6 +87,8 @@ pub async fn agent_chat_cmd(
     let next_sort_order = existing_msgs.len() as i64;
 
     // 5. Save user message to DB.
+    let persisted_user_artifacts =
+        annotate_user_artifacts_with_execution_mode(user_artifacts, execution_mode);
     let user_msg = ConversationMessage {
         id: Uuid::new_v4().to_string(),
         conversation_id: conversation_id.clone(),
@@ -58,7 +96,7 @@ pub async fn agent_chat_cmd(
         content: message.clone(),
         tool_call_id: None,
         tool_calls: vec![],
-        artifacts: None,
+        artifacts: persisted_user_artifacts,
         token_count: estimate_tokens(&message),
         created_at: String::new(),
         sort_order: next_sort_order,
@@ -247,11 +285,14 @@ pub async fn agent_chat_cmd(
         );
         Vec::new()
     });
-    let initial_task_artifacts = serde_json::json!({
+    let mut initial_task_artifacts = serde_json::json!({
         "kind": "agentTaskArtifacts",
         "version": 1,
         "selectedSkills": build_selected_skills_artifact(&selected_skills),
     });
+    if plan_mode {
+        initial_task_artifacts["executionMode"] = execution_mode_artifact(execution_mode);
+    }
     let _ = state.db.update_agent_task_run_progress(
         &task_run.id,
         None,
@@ -265,10 +306,16 @@ pub async fn agent_chat_cmd(
     let persona_section =
         nexa_core::persona::build_persona_prompt_section(persona_profile.as_ref());
     let current_turn_time_section = build_current_turn_time_section();
+    let plan_mode_section = if plan_mode {
+        nexa_core::agent::plan_mode_prompt_section()
+    } else {
+        ""
+    };
     let system_prompt = build_system_prompt(
         Some(&conv.system_prompt),
         &[
             &current_turn_time_section,
+            plan_mode_section,
             &persona_section,
             &collection_context_section,
             &source_scope_section,
@@ -317,6 +364,7 @@ pub async fn agent_chat_cmd(
         require_tool_confirmation: app_cfg.confirm_destructive,
         shell_access_mode: app_cfg.shell_access_mode,
         tool_approval_mode: app_cfg.tool_approval_mode,
+        execution_mode,
     };
 
     // 6b. Build confirmation callback if enabled.
@@ -517,6 +565,26 @@ pub async fn agent_chat_cmd(
         delegation_runtime.clone(),
     )));
     delegation_runtime.set_tool_registry(tools.clone());
+    if plan_mode {
+        let before_count = tools.tool_names().len();
+        tools = tools.plan_mode_filtered();
+        let after_count = tools.tool_names().len();
+        info!(
+            "Plan mode tool registry filtered from {before_count} to {after_count} read-only tools"
+        );
+        emit_agent_frontend_event(
+            &app_handle,
+            &stream_event_seq,
+            &conversation_id,
+            &task_run.id,
+            Some(&turn.id),
+            AgentEvent::Status {
+                content: "Plan mode active: write, execution, MCP, automation, and delegation tools are disabled."
+                    .to_string(),
+                tone: Some("info".to_string()),
+            },
+        );
+    }
 
     // 7b. Build user content parts (text + optional attachments).
     let vision_supported = model_supports_vision(&provider_config.provider_type, &db_config.model);

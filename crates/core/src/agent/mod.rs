@@ -51,6 +51,7 @@ mod direct_dispatch;
 mod direct_dispatch_runner;
 mod events;
 mod finalization;
+mod long_task;
 pub mod loop_guard;
 mod model_step;
 mod pre_search;
@@ -71,6 +72,10 @@ mod turn_state;
 mod usage_accounting;
 
 use self::context_pipeline::ContextPipeline;
+use self::long_task::{
+    create_task_checkpoint_for_turn, create_task_checkpoint_for_turn_with_state,
+    LongTaskCompactionContext, LongTaskState,
+};
 use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
 use self::prompt_cache::PromptCacheTracker;
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
@@ -135,6 +140,9 @@ async fn emit_error_and_finalize_turn(
     }
 
     if let Some(tid) = turn_id {
+        if let Err(err) = create_task_checkpoint_for_turn(db, Some(tid), "error") {
+            warn!("Failed to create error resume checkpoint: {err}");
+        }
         let trace = build_turn_trace(route_kind, persisted_trace_items);
         let _ = db.finalize_conversation_turn(tid, "error", None, Some(&trace));
     }
@@ -241,6 +249,41 @@ pub struct AgentConfig {
     /// Global GUI approval mode for high-risk tool calls.
     #[serde(default)]
     pub tool_approval_mode: ToolApprovalMode,
+    /// Per-turn execution mode. Plan mode is read-only and produces an
+    /// approval-ready plan instead of applying changes.
+    #[serde(default)]
+    pub execution_mode: AgentExecutionMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentExecutionMode {
+    #[default]
+    Normal,
+    Plan,
+}
+
+impl AgentExecutionMode {
+    pub fn is_plan(self) -> bool {
+        self == Self::Plan
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Plan => "plan",
+        }
+    }
+
+    pub fn from_wire(value: Option<&str>) -> Result<Self, String> {
+        match value.map(str::trim).filter(|text| !text.is_empty()) {
+            None => Ok(Self::Normal),
+            Some(value) if value.eq_ignore_ascii_case("normal") => Ok(Self::Normal),
+            Some(value) if value.eq_ignore_ascii_case("default") => Ok(Self::Normal),
+            Some(value) if value.eq_ignore_ascii_case("plan") => Ok(Self::Plan),
+            Some(value) => Err(format!("Unsupported agent execution mode '{value}'.")),
+        }
+    }
 }
 
 fn default_trace_enabled() -> bool {
@@ -285,6 +328,7 @@ impl Default for AgentConfig {
             require_tool_confirmation: false,
             shell_access_mode: ShellAccessMode::Restricted,
             tool_approval_mode: ToolApprovalMode::default(),
+            execution_mode: AgentExecutionMode::Normal,
         }
     }
 }
@@ -322,6 +366,24 @@ pub fn build_system_prompt(conversation_prompt: Option<&str>, dynamic_sections: 
     }
 
     prompt
+}
+
+pub fn plan_mode_prompt_section() -> &'static str {
+    "## Plan Mode\n\n\
+You are in Plan Mode for this user turn.\n\n\
+Hard constraints:\n\
+- Do not modify files, notes, memory, sources, skills, indexes, browser/desktop state, or any other durable state.\n\
+- Do not execute shell commands, project tools, subagents, MCP tools, automation, image generation, downloads, or write-oriented helper tools.\n\
+- Use only read-only inspection and retrieval tools that are available in this mode.\n\
+- Do not call `update_plan`; Plan Mode is not the execution progress checklist.\n\n\
+Work style:\n\
+- Ground the plan in the repository, active sources, and relevant docs before proposing implementation.\n\
+- Ask a concise clarifying question only when a missing decision would make the implementation materially risky.\n\
+- Otherwise produce one complete implementation plan that is ready for the user to approve.\n\n\
+Final response contract:\n\
+- End with exactly one complete `<proposed_plan>...</proposed_plan>` block.\n\
+- Inside the block, write Markdown with: Goal, Proposed Approach, Backend Changes, Frontend/UI Changes, Data/State Model, Safety and Permissions, Tests/Verification, Risks/Open Questions.\n\
+- The plan must be concrete enough that a follow-up implementation turn can execute it without rediscovery."
 }
 
 fn default_system_prompt() -> String {
