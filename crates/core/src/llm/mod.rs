@@ -12,6 +12,7 @@ pub mod anthropic;
 pub mod google;
 pub mod ollama;
 pub mod openai;
+mod prompt_cache;
 pub mod streaming;
 
 // ---------------------------------------------------------------------------
@@ -178,7 +179,7 @@ pub struct CompletionRequest {
     /// Anthropic extended thinking budget (token count).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_budget: Option<u32>,
-    /// OpenAI o-series reasoning effort.
+    /// Provider-specific reasoning effort.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Provider type hint — lets providers apply model-specific logic.
@@ -251,6 +252,9 @@ pub struct Usage {
     /// Provider-side prompt-cache tokens read for this request, when reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u32>,
+    /// Provider-side prompt-cache tokens missed for this request, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_miss_tokens: Option<u32>,
     /// Provider-side prompt-cache tokens written/created for this request, when reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_tokens: Option<u32>,

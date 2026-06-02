@@ -28,6 +28,9 @@ pub struct AgentTrace {
     /// Provider-side prompt-cache tokens read across all model steps.
     #[serde(default)]
     pub total_cache_read_tokens: u64,
+    /// Provider-side prompt-cache tokens missed across all model steps.
+    #[serde(default)]
+    pub total_cache_miss_tokens: u64,
     /// Provider-side prompt-cache tokens written/created across all model steps.
     #[serde(default)]
     pub total_cache_creation_tokens: u64,
@@ -77,6 +80,8 @@ pub struct TraceStep {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_miss_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_tokens: Option<u64>,
     pub context_usage_pct: f32,
     pub was_compacted: bool,
@@ -113,6 +118,7 @@ impl AgentTrace {
             context_window_size,
             peak_context_usage_pct: 0.0,
             total_cache_read_tokens: 0,
+            total_cache_miss_tokens: 0,
             total_cache_creation_tokens: 0,
             tools_offered: 0,
             cache_hit: false,
@@ -135,6 +141,7 @@ impl AgentTrace {
         self.total_input_tokens += step.input_tokens;
         self.total_output_tokens += step.output_tokens;
         self.total_cache_read_tokens += step.cache_read_tokens.unwrap_or(0);
+        self.total_cache_miss_tokens += step.cache_miss_tokens.unwrap_or(0);
         self.total_cache_creation_tokens += step.cache_creation_tokens.unwrap_or(0);
         if step.context_usage_pct > self.peak_context_usage_pct {
             self.peak_context_usage_pct = step.context_usage_pct;

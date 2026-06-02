@@ -56,6 +56,7 @@ pub mod loop_guard;
 mod model_step;
 mod pre_search;
 mod prompt_cache;
+mod prompt_layout;
 pub mod route;
 mod sampling;
 pub mod scratchpad;

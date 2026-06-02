@@ -462,6 +462,7 @@
   "compactMustBeAlone": "/compact must be sent by itself.",
   "providerCache": "Provider cache",
   "cacheReadWrite": "{read} read / {write} write",
+  "cacheReadMissWrite": "{read} read / {miss} miss / {write} write",
   "cacheRead": "{read} read",
   "smartTitleGenerationFailed": "Smart title generation failed: {message}",
   "mermaidDiagram": "Mermaid",

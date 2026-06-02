@@ -34,6 +34,8 @@ struct OaiRequest {
     model: String,
     messages: Vec<OaiMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
@@ -220,6 +222,10 @@ struct OaiUsage {
     completion_tokens: u32,
     total_tokens: u32,
     #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_cache_miss_tokens: Option<u32>,
+    #[serde(default)]
     completion_tokens_details: Option<OaiCompletionTokensDetails>,
     #[serde(default)]
     prompt_tokens_details: Option<OaiPromptTokensDetails>,
@@ -241,6 +247,23 @@ struct OaiPromptTokensDetails {
         alias = "cache_write_input_tokens"
     )]
     cache_write_tokens: Option<u32>,
+}
+
+fn usage_from_oai_usage(u: OaiUsage) -> Usage {
+    let prompt_details = u.prompt_tokens_details;
+    let cache_read_tokens = super::prompt_cache::openai_compatible_cache_read_tokens(
+        prompt_details.as_ref().and_then(|d| d.cached_tokens),
+        u.prompt_cache_hit_tokens,
+    );
+    Usage {
+        prompt_tokens: u.prompt_tokens,
+        completion_tokens: u.completion_tokens,
+        total_tokens: u.total_tokens,
+        thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
+        cache_read_tokens,
+        cache_miss_tokens: u.prompt_cache_miss_tokens,
+        cache_creation_tokens: prompt_details.and_then(|d| d.cache_write_tokens),
+    }
 }
 
 #[derive(Deserialize)]
@@ -522,12 +545,8 @@ fn add_openai_compatible_cache_control(messages: &mut [OaiMessage]) {
     if let Some(system) = messages.iter_mut().find(|msg| msg.role == "system") {
         add_cache_control_to_text_content(system);
     }
-    if let Some(last_conversation) = messages
-        .iter_mut()
-        .rev()
-        .find(|msg| msg.role == "user" || msg.role == "assistant")
-    {
-        add_cache_control_to_text_content(last_conversation);
+    if let Some(last_user) = messages.iter_mut().rev().find(|msg| msg.role == "user") {
+        add_cache_control_to_text_content(last_user);
     }
 }
 
@@ -722,6 +741,12 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     OaiRequest {
         model: request.model.clone(),
         messages,
+        prompt_cache_key: super::prompt_cache::openai_prompt_cache_key(
+            request.provider_type.as_ref(),
+            &request.model,
+            &request.messages,
+            request.tools.as_deref(),
+        ),
         temperature: if suppress_temperature {
             None
         } else {
@@ -999,20 +1024,7 @@ impl LlmProvider for OpenAiProvider {
             .map(parse_finish_reason)
             .unwrap_or(FinishReason::Other);
 
-        let usage = oai
-            .usage
-            .map(|u| {
-                let prompt_details = u.prompt_tokens_details;
-                Usage {
-                    prompt_tokens: u.prompt_tokens,
-                    completion_tokens: u.completion_tokens,
-                    total_tokens: u.total_tokens,
-                    thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
-                    cache_read_tokens: prompt_details.as_ref().and_then(|d| d.cached_tokens),
-                    cache_creation_tokens: prompt_details.and_then(|d| d.cache_write_tokens),
-                }
-            })
-            .unwrap_or_default();
+        let usage = oai.usage.map(usage_from_oai_usage).unwrap_or_default();
 
         let thinking = choice
             .message
@@ -1701,6 +1713,109 @@ data: [DONE]
     }
 
     #[test]
+    fn qwen_cache_marker_stays_on_latest_user_not_tool_loop_tail() {
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls = Some(vec![ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "search".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        }]);
+        let mut tool = Message::text(Role::Tool, "tool result");
+        tool.name = Some("call-1".to_string());
+        let request = CompletionRequest {
+            model: "qwen3.7-max".to_string(),
+            messages: vec![
+                Message::text(Role::System, "stable system"),
+                Message::text(Role::User, "original request"),
+                assistant,
+                tool,
+            ],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::Qwen),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(
+            body["messages"][1]["content"][0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+        assert!(body["messages"][2].get("cache_control").is_none());
+        assert!(body["messages"][3].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn direct_openai_requests_include_stable_prompt_cache_key() {
+        let tool = ToolDefinition {
+            name: "search".into(),
+            description: "Search".into(),
+            parameters: serde_json::json!({"type":"object"}),
+        };
+        let first = CompletionRequest {
+            model: "gpt-5.1".to_string(),
+            messages: vec![
+                Message::text(Role::System, "stable system"),
+                Message::text(Role::System, "runtime one"),
+                Message::text(Role::User, "hello"),
+            ],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: Some(vec![tool.clone()]),
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::OpenAi),
+            parallel_tool_calls: true,
+        };
+        let second = CompletionRequest {
+            messages: vec![
+                Message::text(Role::System, "stable system"),
+                Message::text(Role::System, "runtime two"),
+                Message::text(Role::User, "different user input"),
+            ],
+            ..first.clone()
+        };
+
+        let first_body = serde_json::to_value(build_request_body(&first, false)).unwrap();
+        let second_body = serde_json::to_value(build_request_body(&second, false)).unwrap();
+        let key = first_body["prompt_cache_key"].as_str().expect("cache key");
+
+        assert!(key.starts_with("nexa-"));
+        assert!(key.len() <= 64);
+        assert_eq!(
+            first_body["prompt_cache_key"],
+            second_body["prompt_cache_key"]
+        );
+    }
+
+    #[test]
+    fn custom_openai_compatible_requests_do_not_send_prompt_cache_key() {
+        let request = CompletionRequest {
+            model: "custom-model".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::Custom),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
     fn openai_usage_deserializes_prompt_cache_tokens() {
         let response: OaiResponse = serde_json::from_value(serde_json::json!({
             "choices": [{
@@ -1722,6 +1837,23 @@ data: [DONE]
         let details = response.usage.unwrap().prompt_tokens_details.unwrap();
         assert_eq!(details.cached_tokens, Some(64));
         assert_eq!(details.cache_write_tokens, Some(32));
+    }
+
+    #[test]
+    fn openai_compatible_usage_maps_top_level_prompt_cache_hits() {
+        let usage: OaiUsage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "prompt_cache_hit_tokens": 48,
+            "prompt_cache_miss_tokens": 52
+        }))
+        .unwrap();
+
+        let normalized = usage_from_oai_usage(usage);
+
+        assert_eq!(normalized.cache_read_tokens, Some(48));
+        assert_eq!(normalized.cache_miss_tokens, Some(52));
     }
 
     #[test]
@@ -1823,6 +1955,7 @@ data: [DONE]
                 total_tokens: 7,
                 thinking_tokens: None,
                 cache_read_tokens: None,
+                cache_miss_tokens: None,
                 cache_creation_tokens: None,
             },
             thinking: Some("thinking".to_string()),

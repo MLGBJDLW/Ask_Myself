@@ -462,6 +462,7 @@
   "compactMustBeAlone": "/compact 必须单独发送。",
   "providerCache": "Provider 缓存",
   "cacheReadWrite": "{read} 读取 / {write} 写入",
+  "cacheReadMissWrite": "{read} 读取 / {miss} 未命中 / {write} 写入",
   "cacheRead": "{read} 读取",
   "smartTitleGenerationFailed": "智慧標題產生失敗：{message}",
   "mermaidDiagram": "Mermaid",

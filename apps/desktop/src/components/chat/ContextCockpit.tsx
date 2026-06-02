@@ -8,6 +8,7 @@ interface TokenUsage {
   completionTokens: number;
   thinkingTokens: number;
   cacheReadTokens?: number;
+  cacheMissTokens?: number;
   cacheCreationTokens?: number;
   isEstimated: boolean;
   source: 'live' | 'cached' | 'estimated';
@@ -134,6 +135,7 @@ export function ContextCockpit({
     ? t('chat.tokenUsagePercent', { percent: usagePercentRounded })
     : t('chat.contextNoUsage');
   const cacheReadTokens = usage?.cacheReadTokens ?? 0;
+  const cacheMissTokens = usage?.cacheMissTokens ?? 0;
   const cacheCreationTokens = usage?.cacheCreationTokens ?? 0;
   const modelLabel = runtimeProfile
     ? `${runtimeProfile.provider} / ${runtimeProfile.model}`
@@ -241,14 +243,20 @@ export function ContextCockpit({
                       total: formatTokens(usage.contextWindow),
                     })}
                   </div>
-                  {(cacheReadTokens > 0 || cacheCreationTokens > 0) && (
+                  {(cacheReadTokens > 0 || cacheMissTokens > 0 || cacheCreationTokens > 0) && (
                     <div className="mt-1 text-[11px] tabular-nums text-text-tertiary">
-                      {t('chat.providerCache')}: {cacheCreationTokens > 0
-                        ? t('chat.cacheReadWrite', {
+                      {t('chat.providerCache')}: {cacheMissTokens > 0
+                        ? t('chat.cacheReadMissWrite', {
                           read: formatTokens(cacheReadTokens),
+                          miss: formatTokens(cacheMissTokens),
                           write: formatTokens(cacheCreationTokens),
                         })
-                        : t('chat.cacheRead', { read: formatTokens(cacheReadTokens) })}
+                        : cacheCreationTokens > 0
+                          ? t('chat.cacheReadWrite', {
+                            read: formatTokens(cacheReadTokens),
+                            write: formatTokens(cacheCreationTokens),
+                          })
+                          : t('chat.cacheRead', { read: formatTokens(cacheReadTokens) })}
                     </div>
                   )}
                 </>

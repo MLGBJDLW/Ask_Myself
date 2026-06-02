@@ -88,9 +88,12 @@ impl AgentExecutor {
         let offered_tool_names: HashSet<String> =
             tool_defs.iter().map(|tool| tool.name.clone()).collect();
         let registered_tool_names: HashSet<String> = self.tools.tool_names().into_iter().collect();
+        let layout = prompt_layout::PromptLayout::for_provider(self.config.provider_type);
+        let effective_dynamic_tool_visibility =
+            layout.effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility);
         let tool_policy = ToolSchedulerPolicy::new(
             self.config.tool_timeout_secs,
-            self.config.dynamic_tool_visibility,
+            effective_dynamic_tool_visibility,
             offered_tool_names,
             registered_tool_names,
         );
@@ -810,6 +813,7 @@ impl AgentExecutor {
                     input_tokens: 0,
                     output_tokens: 0,
                     cache_read_tokens: None,
+                    cache_miss_tokens: None,
                     cache_creation_tokens: None,
                     context_usage_pct: 0.0,
                     was_compacted: false,

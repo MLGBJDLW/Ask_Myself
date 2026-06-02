@@ -176,7 +176,10 @@ impl AgentExecutor {
 
         debug!("Agent route selected: {:?}", route_plan.kind);
 
-        let mut tool_defs = if self.config.dynamic_tool_visibility {
+        let layout = prompt_layout::PromptLayout::for_provider(self.config.provider_type);
+        let effective_dynamic_tool_visibility =
+            layout.effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility);
+        let mut tool_defs = if effective_dynamic_tool_visibility {
             self.tools
                 .select_tools_for_decision(&route_plan.visibility_decision)
         } else {
@@ -188,7 +191,7 @@ impl AgentExecutor {
             t.task_plan = Some(task_plan_value.clone());
             t.tool_visibility_decision = Some(route_plan.visibility_decision.clone());
         }
-        let mut messages = context::prepare_messages(
+        let mut messages = context::prepare_messages_with_options(
             &self.config.system_prompt,
             &history,
             &user_parts,
@@ -198,29 +201,17 @@ impl AgentExecutor {
             &skills,
             &auto_loaded_skills,
             &tool_defs,
+            context::PrepareMessagesOptions {
+                include_skill_system_prompt: layout.include_skill_system_prompt,
+            },
         );
-        if !route_plan.prompt_section.trim().is_empty() {
-            let insert_at = messages.len().min(1);
-            messages.insert(
-                insert_at,
-                Message::text(Role::System, route_plan.prompt_section.clone()),
-            );
-        }
-        let plan_insert_at = messages.len().min(2);
-        messages.insert(
-            plan_insert_at,
-            Message::text(Role::System, task_plan.to_prompt_section()),
+        prompt_layout::insert_turn_scaffolding_system_prompts(
+            &mut messages,
+            &route_plan.prompt_section,
+            &task_plan,
+            effective_dynamic_tool_visibility && self.tools.contains("tool_search"),
+            layout,
         );
-        if self.config.dynamic_tool_visibility && self.tools.contains("tool_search") {
-            let discovery_insert_at = messages.len().min(3);
-            messages.insert(
-                discovery_insert_at,
-                Message::text(
-                    Role::System,
-                    tool_discovery::dynamic_tool_visibility_prompt().to_string(),
-                ),
-            );
-        }
 
         // --- 2. Privacy redaction on outgoing user content --------------------
         let privacy_cfg = db.load_privacy_config().unwrap_or_default();

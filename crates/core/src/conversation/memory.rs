@@ -181,9 +181,10 @@ pub fn model_context_window(model: &str) -> u32 {
         "codex-mini-latest" => 200_000,
 
         // Anthropic Claude 4.x
-        // Default API context is 200K. Opus 4.6, Sonnet 4.6, Sonnet 4.5, and
-        // Sonnet 4 can reach 1M only when the context-1m-2025-08-07 beta
-        // header is enabled.
+        // Opus 4.8 and 4.7 default to 1M context. Most other Claude 4.x
+        // models default to 200K; selected models can reach 1M only when the
+        // context-1m-2025-08-07 beta header is enabled.
+        "claude-opus-4-8" => 1_000_000,
         "claude-opus-4-7" => 1_000_000,
         "claude-opus-4-6" => 200_000,
         "claude-opus-4-5" | "claude-opus-4-5-20251101" => 200_000,
@@ -602,6 +603,7 @@ mod tests {
         assert_eq!(model_context_window("o4-mini"), 200_000);
         assert_eq!(model_context_window("codex-mini-latest"), 200_000);
         // Anthropic
+        assert_eq!(model_context_window("claude-opus-4-8"), 1_000_000);
         assert_eq!(model_context_window("claude-opus-4-7"), 1_000_000);
         assert_eq!(model_context_window("claude-opus-4-6"), 200_000);
         assert_eq!(model_context_window("claude-sonnet-4-6"), 200_000);

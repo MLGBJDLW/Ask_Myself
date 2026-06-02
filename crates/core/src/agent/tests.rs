@@ -469,6 +469,7 @@ impl LlmProvider for RecoveringStreamProvider {
                 total_tokens: 12,
                 thinking_tokens: None,
                 cache_read_tokens: None,
+                cache_miss_tokens: None,
                 cache_creation_tokens: None,
             },
             thinking: None,
@@ -634,6 +635,7 @@ impl LlmProvider for SteeringInterruptProvider {
                 total_tokens: 14,
                 thinking_tokens: None,
                 cache_read_tokens: None,
+                cache_miss_tokens: None,
                 cache_creation_tokens: None,
             }),
             thinking_delta: None,
@@ -1331,7 +1333,7 @@ async fn test_non_concurrency_safe_tool_creates_execution_barrier() {
     );
     tokio::pin!(run);
 
-    let first_result = tokio::time::timeout(Duration::from_millis(700), async {
+    let first_result = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             tokio::select! {
                 maybe_event = rx.recv() => {

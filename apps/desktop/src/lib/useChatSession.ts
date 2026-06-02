@@ -41,6 +41,7 @@ interface StoredUsageEntry {
   totalTokens: number;
   thinkingTokens: number;
   cacheReadTokens?: number;
+  cacheMissTokens?: number;
   cacheCreationTokens?: number;
   lastPromptTokens: number;
   contextBreakdown?: ContextUsageBreakdown;
@@ -238,6 +239,7 @@ function normalizeUsage(usage: UsageTotal): UsageTotal {
   const totalTokens = sanitizeNumber(usage.totalTokens, promptTokens + completionTokens);
   const thinkingTokens = sanitizeNumber(usage.thinkingTokens ?? 0);
   const cacheReadTokens = sanitizeNumber(usage.cacheReadTokens ?? 0);
+  const cacheMissTokens = sanitizeNumber(usage.cacheMissTokens ?? 0);
   const cacheCreationTokens = sanitizeNumber(usage.cacheCreationTokens ?? 0);
   const lastPromptTokens = sanitizeNumber(usage.lastPromptTokens ?? promptTokens, promptTokens);
   const contextBreakdown = sanitizeContextBreakdown(usage.contextBreakdown);
@@ -247,6 +249,7 @@ function normalizeUsage(usage: UsageTotal): UsageTotal {
     totalTokens,
     thinkingTokens,
     cacheReadTokens,
+    cacheMissTokens,
     cacheCreationTokens,
     lastPromptTokens,
     contextBreakdown,
@@ -269,6 +272,7 @@ function readUsageCache(): Record<string, StoredUsageEntry> {
       const totalTokens = sanitizeNumber(row.totalTokens, promptTokens + completionTokens);
       const thinkingTokens = sanitizeNumber(row.thinkingTokens ?? 0);
       const cacheReadTokens = sanitizeNumber(row.cacheReadTokens ?? 0);
+      const cacheMissTokens = sanitizeNumber(row.cacheMissTokens ?? 0);
       const cacheCreationTokens = sanitizeNumber(row.cacheCreationTokens ?? 0);
       const lastPromptTokens = sanitizeNumber(row.lastPromptTokens ?? promptTokens, promptTokens);
       const contextBreakdown = sanitizeContextBreakdown(row.contextBreakdown);
@@ -279,6 +283,7 @@ function readUsageCache(): Record<string, StoredUsageEntry> {
         totalTokens,
         thinkingTokens,
         cacheReadTokens,
+        cacheMissTokens,
         cacheCreationTokens,
         lastPromptTokens,
         contextBreakdown,
@@ -431,6 +436,7 @@ export interface UseChatSessionReturn {
     completionTokens: number;
     thinkingTokens: number;
     cacheReadTokens?: number;
+    cacheMissTokens?: number;
     cacheCreationTokens?: number;
     contextBreakdown?: ContextUsageBreakdown;
     isEstimated: boolean;
@@ -633,6 +639,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         totalTokens: normalized.totalTokens,
         thinkingTokens: normalized.thinkingTokens ?? 0,
         cacheReadTokens: normalized.cacheReadTokens ?? 0,
+        cacheMissTokens: normalized.cacheMissTokens ?? 0,
         cacheCreationTokens: normalized.cacheCreationTokens ?? 0,
         lastPromptTokens: normalized.lastPromptTokens ?? normalized.promptTokens,
         contextBreakdown: normalized.contextBreakdown,
@@ -1462,6 +1469,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             completionTokens: usageForView.completionTokens,
             thinkingTokens: usageForView.thinkingTokens ?? 0,
             cacheReadTokens: usageForView.cacheReadTokens ?? 0,
+            cacheMissTokens: usageForView.cacheMissTokens ?? 0,
             cacheCreationTokens: usageForView.cacheCreationTokens ?? 0,
             contextBreakdown: usageForView.contextBreakdown ?? buildFallbackContextBreakdown(messages, promptTokens),
             isEstimated: false,
@@ -1476,6 +1484,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             completionTokens: 0,
             thinkingTokens: 0,
             cacheReadTokens: 0,
+            cacheMissTokens: 0,
             cacheCreationTokens: 0,
             contextBreakdown: buildFallbackContextBreakdown(messages, estimatedPromptTokens),
             isEstimated: true,

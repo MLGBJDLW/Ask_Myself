@@ -311,6 +311,50 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_catalog_defaults_to_opus_48() {
+        let anthropic = find_provider_preset("anthropic", Some("https://api.anthropic.com/v1"))
+            .expect("anthropic preset should match");
+        let ids = anthropic
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids.first(), Some(&"claude-opus-4-8"));
+        assert!(ids.contains(&"claude-opus-4-7"));
+        assert!(ids.contains(&"claude-sonnet-4-6"));
+
+        let opus_48 = anthropic
+            .models
+            .iter()
+            .find(|model| model.id == "claude-opus-4-8")
+            .expect("claude-opus-4-8 should be listed");
+        let reasoning = opus_48
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning.as_ref())
+            .expect("claude-opus-4-8 should expose reasoning capability");
+        assert_eq!(
+            reasoning.effort_levels,
+            vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "xhigh".to_string(),
+                "max".to_string(),
+            ]
+        );
+        assert_eq!(reasoning.default_effort.as_deref(), Some("high"));
+        assert_eq!(
+            reasoning
+                .thinking_budget
+                .as_ref()
+                .map(|budget| budget.enabled),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn qwen_catalog_defaults_to_qwen37_max() {
         let qwen = find_provider_preset(
             "qwen",
@@ -401,6 +445,10 @@ mod tests {
         );
         assert_eq!(
             model_supports_reasoning_from_catalog(ProviderType::DeepSeek, "deepseek-v4-pro"),
+            Some(true)
+        );
+        assert_eq!(
+            model_supports_reasoning_from_catalog(ProviderType::Anthropic, "claude-opus-4-8"),
             Some(true)
         );
         assert_eq!(
