@@ -178,7 +178,7 @@ pub struct CompletionRequest {
     /// Anthropic extended thinking budget (token count).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_budget: Option<u32>,
-    /// OpenAI o-series reasoning effort.
+    /// Provider-specific reasoning effort.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Provider type hint — lets providers apply model-specific logic.

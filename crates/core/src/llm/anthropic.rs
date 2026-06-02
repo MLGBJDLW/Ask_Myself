@@ -14,8 +14,8 @@ use tracing::{error, info};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
     with_request_timeout, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
-    LlmProvider, Message, ProviderConfig, Role, StreamChunk, ToolCallDelta, ToolCallRequest,
-    ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    LlmProvider, Message, ProviderConfig, ReasoningEffort, Role, StreamChunk, ToolCallDelta,
+    ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::conversation::memory::estimate_tokens;
 use crate::error::CoreError;
@@ -32,7 +32,13 @@ const DEFAULT_MAX_TOKENS: u32 = 4096;
 #[derive(Debug, Serialize)]
 struct AnthropicThinking {
     r#type: String,
-    budget_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_tokens: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+struct AnthropicOutputConfig {
+    effort: String,
 }
 
 /// Anthropic `tool_choice`. We only emit `{"type":"auto", ...}` with an
@@ -77,6 +83,8 @@ struct AnthropicRequest {
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<AnthropicThinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<AnthropicOutputConfig>,
 }
 
 #[derive(Serialize)]
@@ -475,35 +483,83 @@ fn convert_tools(tools: &[ToolDefinition], cache_tools: bool) -> Vec<AnthropicTo
         .collect()
 }
 
+fn uses_adaptive_thinking(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "claude-opus-4-8" | "claude-opus-4-7"
+    )
+}
+
+fn anthropic_reasoning_effort(effort: Option<&ReasoningEffort>) -> Option<String> {
+    match effort {
+        Some(ReasoningEffort::None) => None,
+        Some(ReasoningEffort::Minimal) | Some(ReasoningEffort::Low) => Some("low".to_string()),
+        Some(ReasoningEffort::Medium) => Some("medium".to_string()),
+        None => Some("high".to_string()),
+        Some(ReasoningEffort::High) => Some("high".to_string()),
+        Some(ReasoningEffort::XHigh) => Some("xhigh".to_string()),
+        Some(ReasoningEffort::Max) => Some("max".to_string()),
+    }
+}
+
 fn build_request_body(
     request: &CompletionRequest,
     system: Option<Vec<AnthropicSystemBlock>>,
     messages: Vec<AnthropicMessage>,
     stream: bool,
 ) -> AnthropicRequest {
+    let supports_adaptive_thinking = uses_adaptive_thinking(&request.model);
+    let uses_adaptive = supports_adaptive_thinking
+        && (request.reasoning_effort.is_some() || request.thinking_budget.is_some());
+    let temperature = if supports_adaptive_thinking {
+        None
+    } else {
+        request.temperature
+    };
     // NOTE: Anthropic's API returns a clear error for models that don't support
-    // thinking, so no model-gating is applied here (unlike Gemini).
-    let (thinking, temperature, effective_max_tokens) =
-        if let Some(budget) = request.thinking_budget {
-            let budget = budget.max(1024); // Anthropic requires budget_tokens >= 1024
-            let base_max = request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
-            // Ensure max_tokens > budget_tokens, with headroom for the response
-            let effective_max = base_max.max(budget + 4096);
+    // thinking, so budget-based thinking is not model-gated (unlike Gemini).
+    let (thinking, output_config, temperature, effective_max_tokens) = if uses_adaptive {
+        let effort = anthropic_reasoning_effort(request.reasoning_effort.as_ref());
+        if let Some(effort) = effort {
             (
                 Some(AnthropicThinking {
-                    r#type: "enabled".to_string(),
-                    budget_tokens: budget,
+                    r#type: "adaptive".to_string(),
+                    budget_tokens: None,
                 }),
-                None, // Anthropic requires temperature unset when thinking is enabled
-                effective_max,
+                Some(AnthropicOutputConfig { effort }),
+                None,
+                request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
             )
         } else {
             (
                 None,
-                request.temperature,
+                None,
+                temperature,
                 request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
             )
-        };
+        }
+    } else if let Some(budget) = request.thinking_budget {
+        let budget = budget.max(1024); // Anthropic requires budget_tokens >= 1024
+        let base_max = request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
+        // Ensure max_tokens > budget_tokens, with headroom for the response
+        let effective_max = base_max.max(budget + 4096);
+        (
+            Some(AnthropicThinking {
+                r#type: "enabled".to_string(),
+                budget_tokens: Some(budget),
+            }),
+            None,
+            None, // Anthropic requires temperature unset when thinking is enabled
+            effective_max,
+        )
+    } else {
+        (
+            None,
+            None,
+            temperature,
+            request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+        )
+    };
 
     let has_volatile_system_blocks = system.as_ref().is_some_and(|blocks| blocks.len() > 1);
     let anthropic_tools = request
@@ -531,6 +587,7 @@ fn build_request_body(
         stop_sequences: request.stop.clone(),
         stream: if stream { Some(true) } else { None },
         thinking,
+        output_config,
     }
 }
 
@@ -887,6 +944,87 @@ mod tests {
     }
 
     #[test]
+    fn opus_48_uses_adaptive_thinking_effort() {
+        let messages = vec![Message::text(Role::User, "solve it")];
+        let (_, api_messages) = convert_messages(&messages);
+        let mut request = request_with_messages(messages, None);
+        request.model = "claude-opus-4-8".to_string();
+        request.reasoning_effort = Some(ReasoningEffort::XHigh);
+
+        let body = build_request_body(&request, None, api_messages, false);
+        let body_json = serde_json::to_value(body).unwrap();
+
+        assert_eq!(
+            body_json["thinking"],
+            serde_json::json!({"type": "adaptive"})
+        );
+        assert_eq!(
+            body_json["output_config"],
+            serde_json::json!({"effort": "xhigh"})
+        );
+        assert!(body_json.get("temperature").is_none());
+        assert!(body_json["thinking"].get("budget_tokens").is_none());
+    }
+
+    #[test]
+    fn opus_48_prefers_adaptive_thinking_over_budget() {
+        let messages = vec![Message::text(Role::User, "solve it")];
+        let (_, api_messages) = convert_messages(&messages);
+        let mut request = request_with_messages(messages, None);
+        request.model = "claude-opus-4-8".to_string();
+        request.thinking_budget = Some(10_000);
+
+        let body = build_request_body(&request, None, api_messages, false);
+        let body_json = serde_json::to_value(body).unwrap();
+
+        assert_eq!(
+            body_json["thinking"],
+            serde_json::json!({"type": "adaptive"})
+        );
+        assert_eq!(
+            body_json["output_config"],
+            serde_json::json!({"effort": "high"})
+        );
+        assert!(body_json["thinking"].get("budget_tokens").is_none());
+        assert_eq!(body_json["max_tokens"], 1024);
+    }
+
+    #[test]
+    fn opus_48_omits_temperature_without_thinking() {
+        let messages = vec![Message::text(Role::User, "answer directly")];
+        let (_, api_messages) = convert_messages(&messages);
+        let mut request = request_with_messages(messages, None);
+        request.model = "claude-opus-4-8".to_string();
+
+        let body = build_request_body(&request, None, api_messages, false);
+        let body_json = serde_json::to_value(body).unwrap();
+
+        assert!(body_json.get("temperature").is_none());
+        assert!(body_json.get("thinking").is_none());
+        assert!(body_json.get("output_config").is_none());
+    }
+
+    #[test]
+    fn sonnet_45_uses_budget_thinking() {
+        let messages = vec![Message::text(Role::User, "solve it")];
+        let (_, api_messages) = convert_messages(&messages);
+        let mut request = request_with_messages(messages, None);
+        request.model = "claude-sonnet-4-5".to_string();
+        request.thinking_budget = Some(2_000);
+
+        let body = build_request_body(&request, None, api_messages, false);
+        let body_json = serde_json::to_value(body).unwrap();
+
+        assert_eq!(
+            body_json["thinking"],
+            serde_json::json!({"type": "enabled", "budget_tokens": 2000})
+        );
+        assert!(body_json.get("output_config").is_none());
+        assert!(body_json.get("temperature").is_none());
+        assert_eq!(body_json["max_tokens"], 6096);
+    }
+
+    #[test]
     fn anthropic_usage_deserializes_cache_tokens() {
         let usage: AnthropicUsage = serde_json::from_value(serde_json::json!({
             "input_tokens": 100,
@@ -911,6 +1049,13 @@ impl LlmProvider for AnthropicProvider {
         // Anthropic doesn't have a public list-models endpoint.
         // Return commonly available models.
         Ok(vec![
+            "claude-opus-4-8".to_string(),
+            "claude-opus-4-7".to_string(),
+            "claude-opus-4-6".to_string(),
+            "claude-sonnet-4-6".to_string(),
+            "claude-opus-4-5".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            "claude-haiku-4-5".to_string(),
             "claude-sonnet-4-20250514".to_string(),
             "claude-opus-4-20250514".to_string(),
             "claude-haiku-3-5-20241022".to_string(),

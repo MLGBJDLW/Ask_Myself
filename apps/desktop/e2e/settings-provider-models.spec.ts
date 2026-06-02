@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Locator, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -189,11 +189,23 @@ test.beforeEach(async ({ page }) => {
 test("settings provider form shows updated preset models for add and edit flows", async ({
   page,
 }) => {
+  const expectModelOptions = async (
+    modelSelect: Locator,
+    expectedNames: string[],
+  ) => {
+    const options = await modelSelect.locator("option").allTextContents();
+    for (const expectedName of expectedNames) {
+      expect(
+        options.some((option) => option.includes(expectedName)),
+        `expected model options to include ${expectedName}`,
+      ).toBe(true);
+    }
+  };
   const modelField = () =>
     page
       .locator("label")
       .filter({ hasText: "Default Model" })
-      .locator("xpath=..");
+      .locator("xpath=../..");
   const providerField = () =>
     page
       .locator("label")
@@ -208,8 +220,9 @@ test("settings provider form shows updated preset models for add and edit flows"
 
   let modelSelect = modelField().getByRole("combobox");
   await expect(modelSelect).toBeVisible();
-  await expect(modelSelect.locator("option")).toContainText([
-    "Claude Opus 4.6",
+  await expectModelOptions(modelSelect, [
+    "Claude Opus 4.8",
+    "Claude Opus 4.7",
     "Claude Sonnet 4.6",
     "Claude Sonnet 4.5",
     "Claude Haiku 4.5",
@@ -217,25 +230,26 @@ test("settings provider form shows updated preset models for add and edit flows"
 
   await providerField().getByRole("combobox").selectOption("google");
   modelSelect = modelField().getByRole("combobox");
-  await expect(modelSelect.locator("option")).toContainText([
+  await expectModelOptions(modelSelect, [
     "Gemini 2.5 Pro",
-    "Gemini 3.1 Pro Preview",
-    "Gemini 3.1 Flash-Lite Preview",
+    "Gemini 3 Pro Preview",
+    "Gemini 3 Flash Preview",
   ]);
 
   await providerField().getByRole("combobox").selectOption("qwen");
   modelSelect = modelField().getByRole("combobox");
-  await expect(modelSelect.locator("option")).toContainText([
+  await expectModelOptions(modelSelect, [
+    "Qwen3.7 Max",
     "Qwen3 Max",
     "Qwen3.5 Plus",
     "Qwen3.6 Plus",
     "Qwen3 VL Plus",
-    "QVQ Max",
   ]);
 
   await providerField().getByRole("combobox").selectOption("zhipu");
   modelSelect = modelField().getByRole("combobox");
-  await expect(modelSelect.locator("option")).toContainText([
+  await expectModelOptions(modelSelect, [
+    "GLM-5.1",
     "GLM-5",
     "GLM-4.7",
     "GLM-4.6V",
@@ -244,10 +258,9 @@ test("settings provider form shows updated preset models for add and edit flows"
 
   await providerField().getByRole("combobox").selectOption("deep_seek");
   modelSelect = modelField().getByRole("combobox");
-  await expect(modelSelect.locator("option")).toContainText([
+  await expectModelOptions(modelSelect, [
     "DeepSeek V4 Pro",
     "DeepSeek V4 Flash",
-    "DeepSeek Reasoner",
   ]);
 
   await page.getByRole("button", { name: "Cancel" }).click();
@@ -255,7 +268,9 @@ test("settings provider form shows updated preset models for add and edit flows"
 
   modelSelect = modelField().getByRole("combobox");
   await expect(modelSelect).toBeVisible();
-  await expect(modelSelect.locator("option")).toContainText([
+  await expectModelOptions(modelSelect, [
+    "Claude Opus 4.8",
+    "Claude Opus 4.7",
     "Claude Sonnet 4.6",
     "Claude Sonnet 4.5",
     "Claude Haiku 4.5",

@@ -5692,22 +5692,46 @@
     "baseUrl": "https://api.anthropic.com/v1",
     "requiresApiKey": true,
     "icon": "🧠",
-    "description": "Claude Opus 4.7/4.6, Sonnet 4.6/4.5, Haiku 4.5",
+    "description": "Claude Opus 4.8/4.7, Sonnet 4.6/4.5, Haiku 4.5",
     "capabilities": {
       "vision": true
     },
     "models": [
       {
-        "id": "claude-opus-4-7",
-        "name": "Claude Opus 4.7",
+        "id": "claude-opus-4-8",
+        "name": "Claude Opus 4.8",
         "tagKey": "providers.tagMostIntelligent",
         "capabilities": {
           "reasoning": {
+            "effortLevels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "defaultEffort": "high",
             "thinkingBudget": {
-              "enabled": true,
-              "defaultTokens": 10000,
-              "minTokens": 1024,
-              "step": 1024
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "claude-opus-4-7",
+        "name": "Claude Opus 4.7",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "defaultEffort": "high",
+            "thinkingBudget": {
+              "enabled": false
             }
           }
         }
@@ -5715,7 +5739,6 @@
       {
         "id": "claude-opus-4-6",
         "name": "Claude Opus 4.6",
-        "tagKey": "providers.tagLatest",
         "capabilities": {
           "reasoning": {
             "thinkingBudget": {
