@@ -831,12 +831,12 @@ export function ChatInput({
   }, [adjustHeight, persistDraft]);
 
   const modeSegment = (
-    <div className="flex items-center px-3 pt-2">
+    <div className="flex h-7 items-center pl-1">
       <div
-        className={`relative grid h-6 w-[8.25rem] shrink-0 grid-cols-[minmax(0,1fr)_0.75rem_minmax(0,1fr)] overflow-hidden rounded-full border p-px text-[10px] font-semibold shadow-inner transition-colors duration-200 ${
+        className={`relative grid h-7 w-[8.75rem] shrink-0 grid-cols-[minmax(0,1fr)_0.75rem_minmax(0,1fr)] overflow-hidden rounded-full border p-px text-[10px] font-semibold shadow-sm transition-colors duration-200 ${
           effectivePlanModeEnabled
-            ? "border-accent/30 bg-accent/10 text-text-secondary"
-            : "border-border/60 bg-surface-1/80 text-text-secondary"
+            ? "border-accent/35 bg-accent/10 text-text-secondary"
+            : "border-border/70 bg-surface-0/95 text-text-secondary"
         }`}
         role="group"
         aria-label="Message mode"
@@ -1112,11 +1112,14 @@ export function ChatInput({
         </div>
       )}
 
-      <div
-        className={`overflow-hidden rounded-xl border bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast focus-within:border-accent/55 focus-within:ring-accent/20 ${
-          effectivePlanModeEnabled ? "border-accent/35" : "border-border/80"
-        }`}
-      >
+      <div className="space-y-2">
+        {modeSegment}
+
+        <div
+          className={`overflow-hidden rounded-xl border bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast focus-within:border-accent/55 focus-within:ring-accent/20 ${
+            effectivePlanModeEnabled ? "border-accent/35" : "border-border/80"
+          }`}
+        >
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-2 border-b border-border/35 px-3 py-2.5">
             {attachments.map((att, i) => (
@@ -1156,8 +1159,6 @@ export function ChatInput({
           onChange={handleFileSelect}
         />
 
-        {modeSegment}
-
         <textarea
           data-testid="chat-input-textarea"
           ref={textareaRef}
@@ -1177,7 +1178,7 @@ export function ChatInput({
           placeholder={isCompacting ? `${t("chat.compacting")} (>_<)` : t("chat.placeholder")}
           disabled={inputLocked}
           rows={1}
-          className="block min-h-24 w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-2.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary outline-none disabled:pointer-events-none disabled:opacity-40"
+          className="block min-h-24 w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary outline-none disabled:pointer-events-none disabled:opacity-40"
         />
 
         <div className="flex min-h-11 items-center justify-between gap-3 border-t border-border/35 px-2.5 py-2">
@@ -1281,6 +1282,7 @@ export function ChatInput({
               <ArrowUp className="h-4 w-4" strokeWidth={2.4} />
             </button>
           </div>
+        </div>
         </div>
       </div>
     </div>
