@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.3...nexa-monorepo-v0.8.4) (2026-06-02)
+
+
+### Features
+
+* **anthropic:** add Claude Opus 4.8 support ([061453d](https://github.com/MLGBJDLW/Nexa/commit/061453dff94e83599c5a98947b01a5c56c56e094))
+
+
+### Bug Fixes
+
+* **agent:** stabilize DeepSeek prompt caching ([5941e71](https://github.com/MLGBJDLW/Nexa/commit/5941e71e8cea49a80ab164db3447f8c64b606ee0))
+* **chat:** prevent mode toggle overlapping input ([7ce6f4b](https://github.com/MLGBJDLW/Nexa/commit/7ce6f4b19bf74a8f1605115c457f100047d0640a))
+* **ci:** keep checks deterministic ([2276b08](https://github.com/MLGBJDLW/Nexa/commit/2276b0867655245a14980c9a46f7328bc5c9b7da))
+* **llm:** stabilize provider prompt caching ([afc966c](https://github.com/MLGBJDLW/Nexa/commit/afc966c8402a2eea3e88babb0a510459865361d7))
+
 ## [0.8.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.2...nexa-monorepo-v0.8.3) (2026-05-28)
 
 
