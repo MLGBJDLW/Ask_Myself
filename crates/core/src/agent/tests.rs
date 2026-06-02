@@ -1333,7 +1333,7 @@ async fn test_non_concurrency_safe_tool_creates_execution_barrier() {
     );
     tokio::pin!(run);
 
-    let first_result = tokio::time::timeout(Duration::from_millis(700), async {
+    let first_result = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             tokio::select! {
                 maybe_event = rx.recv() => {

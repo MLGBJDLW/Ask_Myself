@@ -38,7 +38,7 @@ pub(crate) fn openai_prompt_cache_key(
     let digest = blake3::hash(format!("{model}\n{stable_system}\n{tool_schema}").as_bytes());
     Some(clamp_openai_prompt_cache_key(&format!(
         "nexa-{}",
-        digest.to_hex()[..32].to_string()
+        &digest.to_hex()[..32]
     )))
 }
 
