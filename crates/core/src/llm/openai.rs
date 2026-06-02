@@ -224,6 +224,8 @@ struct OaiUsage {
     #[serde(default)]
     prompt_cache_hit_tokens: Option<u32>,
     #[serde(default)]
+    prompt_cache_miss_tokens: Option<u32>,
+    #[serde(default)]
     completion_tokens_details: Option<OaiCompletionTokensDetails>,
     #[serde(default)]
     prompt_tokens_details: Option<OaiPromptTokensDetails>,
@@ -259,6 +261,7 @@ fn usage_from_oai_usage(u: OaiUsage) -> Usage {
         total_tokens: u.total_tokens,
         thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
         cache_read_tokens,
+        cache_miss_tokens: u.prompt_cache_miss_tokens,
         cache_creation_tokens: prompt_details.and_then(|d| d.cache_write_tokens),
     }
 }
@@ -1842,13 +1845,15 @@ data: [DONE]
             "prompt_tokens": 100,
             "completion_tokens": 20,
             "total_tokens": 120,
-            "prompt_cache_hit_tokens": 48
+            "prompt_cache_hit_tokens": 48,
+            "prompt_cache_miss_tokens": 52
         }))
         .unwrap();
 
         let normalized = usage_from_oai_usage(usage);
 
         assert_eq!(normalized.cache_read_tokens, Some(48));
+        assert_eq!(normalized.cache_miss_tokens, Some(52));
     }
 
     #[test]
@@ -1950,6 +1955,7 @@ data: [DONE]
                 total_tokens: 7,
                 thinking_tokens: None,
                 cache_read_tokens: None,
+                cache_miss_tokens: None,
                 cache_creation_tokens: None,
             },
             thinking: Some("thinking".to_string()),

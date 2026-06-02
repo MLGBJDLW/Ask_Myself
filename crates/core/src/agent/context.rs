@@ -41,6 +41,47 @@ pub fn prepare_messages(
     loaded_skills: &[Skill],
     tool_definitions: &[ToolDefinition],
 ) -> Vec<Message> {
+    prepare_messages_with_options(
+        system_prompt,
+        history,
+        user_parts,
+        model,
+        max_tokens_response,
+        context_window_override,
+        skills,
+        loaded_skills,
+        tool_definitions,
+        PrepareMessagesOptions::default(),
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PrepareMessagesOptions {
+    pub include_skill_system_prompt: bool,
+}
+
+impl Default for PrepareMessagesOptions {
+    fn default() -> Self {
+        Self {
+            include_skill_system_prompt: true,
+        }
+    }
+}
+
+/// Build a complete message list with provider-aware prompt layout options.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_messages_with_options(
+    system_prompt: &str,
+    history: &[Message],
+    user_parts: &[ContentPart],
+    model: &str,
+    max_tokens_response: u32,
+    context_window_override: Option<u32>,
+    skills: &[Skill],
+    loaded_skills: &[Skill],
+    tool_definitions: &[ToolDefinition],
+    options: PrepareMessagesOptions,
+) -> Vec<Message> {
     let mut messages = Vec::with_capacity(history.len() + 3);
 
     let user_query = user_parts
@@ -62,17 +103,27 @@ pub fn prepare_messages(
         .saturating_sub(context_safety_buffer(max_context));
     let system_prompt_budget = system_prompt_char_budget(effective_context, max_tokens_response);
     let skill_budget = skill_prompt_char_budget(max_context, system_prompt_budget);
-    let loaded_skills_section = crate::skills::build_loaded_skills_section_with_budget(
-        loaded_skills,
-        loaded_skill_prompt_char_budget(skill_budget, !skills.is_empty()),
-    );
+    let loaded_skills_section = if options.include_skill_system_prompt {
+        crate::skills::build_loaded_skills_section_with_budget(
+            loaded_skills,
+            loaded_skill_prompt_char_budget(skill_budget, !skills.is_empty()),
+        )
+    } else {
+        String::new()
+    };
     let remaining_skill_budget = skill_budget.saturating_sub(loaded_skills_section.len());
-    let available_skills_section = crate::skills::build_skills_section_for_query_with_budget(
-        skills,
-        &user_query,
-        remaining_skill_budget,
-    );
-    let volatile_skill_budget = if skills.is_empty() && loaded_skills.is_empty() {
+    let available_skills_section = if options.include_skill_system_prompt {
+        crate::skills::build_skills_section_for_query_with_budget(
+            skills,
+            &user_query,
+            remaining_skill_budget,
+        )
+    } else {
+        String::new()
+    };
+    let volatile_skill_budget = if !options.include_skill_system_prompt
+        || (skills.is_empty() && loaded_skills.is_empty())
+    {
         0
     } else {
         skill_budget
@@ -900,6 +951,43 @@ mod tests {
         assert!(sys_text.contains("skill_id: skill-loaded"));
         assert!(sys_text.contains("Draft scenes with concrete stakes"));
         assert!(sys_text.contains("Available Skills"));
+    }
+
+    #[test]
+    fn test_prepare_messages_can_omit_skill_sections_for_implicit_prefix_cache() {
+        let skills = vec![skill(
+            "cache-sensitive",
+            "Cache Sensitive Skill",
+            "Use when testing cache-sensitive prompt layout",
+        )];
+
+        let result = prepare_messages_with_options(
+            "System prompt",
+            &[],
+            &[ContentPart::Text {
+                text: "Use a different current task".to_string(),
+            }],
+            "deepseek-v4-pro",
+            4096,
+            None,
+            &skills,
+            &skills,
+            &[],
+            PrepareMessagesOptions {
+                include_skill_system_prompt: false,
+            },
+        );
+
+        let sys_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(sys_text.contains("Runtime Context"));
+        assert!(!sys_text.contains("Available Skills"));
+        assert!(!sys_text.contains("Loaded Skills"));
+        assert!(!sys_text.contains("Cache Sensitive Skill"));
     }
 
     #[test]

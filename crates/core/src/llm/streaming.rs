@@ -91,6 +91,8 @@ struct SseUsage {
     #[serde(default)]
     prompt_cache_hit_tokens: Option<u32>,
     #[serde(default)]
+    prompt_cache_miss_tokens: Option<u32>,
+    #[serde(default)]
     completion_tokens_details: Option<SseCompletionTokensDetails>,
     #[serde(default)]
     prompt_tokens_details: Option<SsePromptTokensDetails>,
@@ -465,6 +467,7 @@ async fn process_sse_line(
                     total_tokens: u.total_tokens,
                     thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
                     cache_read_tokens,
+                    cache_miss_tokens: u.prompt_cache_miss_tokens,
                     cache_creation_tokens: prompt_details.and_then(|d| d.cache_write_tokens),
                 }
             });

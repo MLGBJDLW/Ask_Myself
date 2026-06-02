@@ -89,6 +89,7 @@ export interface UsageTotal {
   totalTokens: number;
   thinkingTokens?: number;
   cacheReadTokens?: number;
+  cacheMissTokens?: number;
   cacheCreationTokens?: number;
   lastPromptTokens?: number;
   contextBreakdown?: ContextUsageBreakdown;

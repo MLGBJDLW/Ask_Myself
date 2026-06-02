@@ -492,6 +492,7 @@ fn extract_response(
             total_tokens: u.total_token_count.unwrap_or(0),
             thinking_tokens: u.thoughts_token_count.map(|t| t.max(0) as u32),
             cache_read_tokens: None,
+            cache_miss_tokens: None,
             cache_creation_tokens: None,
         })
         .unwrap_or_default();

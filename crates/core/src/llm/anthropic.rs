@@ -768,6 +768,7 @@ async fn parse_anthropic_stream(
                             total_tokens: input_tokens + u.output_tokens,
                             thinking_tokens: estimated_thinking,
                             cache_read_tokens,
+                            cache_miss_tokens: None,
                             cache_creation_tokens,
                         }
                     });
@@ -1164,6 +1165,7 @@ impl LlmProvider for AnthropicProvider {
                 total_tokens: u.input_tokens + u.output_tokens,
                 thinking_tokens: estimated_thinking,
                 cache_read_tokens: u.cache_read_input_tokens,
+                cache_miss_tokens: None,
                 cache_creation_tokens: u.cache_creation_input_tokens,
             })
             .unwrap_or_default();

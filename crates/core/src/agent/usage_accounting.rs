@@ -64,6 +64,9 @@ impl AgentExecutor {
             if let Some(t) = u.cache_read_tokens {
                 *total_usage.cache_read_tokens.get_or_insert(0) += t;
             }
+            if let Some(t) = u.cache_miss_tokens {
+                *total_usage.cache_miss_tokens.get_or_insert(0) += t;
+            }
             if let Some(t) = u.cache_creation_tokens {
                 *total_usage.cache_creation_tokens.get_or_insert(0) += t;
             }
@@ -127,6 +130,9 @@ impl AgentExecutor {
                 cache_read_tokens: chunk_usage
                     .as_ref()
                     .and_then(|usage| usage.cache_read_tokens.map(u64::from)),
+                cache_miss_tokens: chunk_usage
+                    .as_ref()
+                    .and_then(|usage| usage.cache_miss_tokens.map(u64::from)),
                 cache_creation_tokens: chunk_usage
                     .as_ref()
                     .and_then(|usage| usage.cache_creation_tokens.map(u64::from)),
