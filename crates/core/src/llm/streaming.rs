@@ -89,6 +89,8 @@ struct SseUsage {
     completion_tokens: u32,
     total_tokens: u32,
     #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
     completion_tokens_details: Option<SseCompletionTokensDetails>,
     #[serde(default)]
     prompt_tokens_details: Option<SsePromptTokensDetails>,
@@ -453,12 +455,16 @@ async fn process_sse_line(
                 .map(parse_finish_reason);
             let usage = sse.usage.map(|u| {
                 let prompt_details = u.prompt_tokens_details;
+                let cache_read_tokens = super::prompt_cache::openai_compatible_cache_read_tokens(
+                    prompt_details.as_ref().and_then(|d| d.cached_tokens),
+                    u.prompt_cache_hit_tokens,
+                );
                 Usage {
                     prompt_tokens: u.prompt_tokens,
                     completion_tokens: u.completion_tokens,
                     total_tokens: u.total_tokens,
                     thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
-                    cache_read_tokens: prompt_details.as_ref().and_then(|d| d.cached_tokens),
+                    cache_read_tokens,
                     cache_creation_tokens: prompt_details.and_then(|d| d.cache_write_tokens),
                 }
             });

@@ -296,8 +296,9 @@ fn convert_messages(
 ) -> (Option<Vec<AnthropicSystemBlock>>, Vec<AnthropicMessage>) {
     let mut system_blocks: Vec<AnthropicSystemBlock> = Vec::new();
     let mut out: Vec<AnthropicMessage> = Vec::new();
+    let latest_user_index = super::prompt_cache::latest_user_message_index(messages);
 
-    for msg in messages {
+    for (index, msg) in messages.iter().enumerate() {
         match msg.role {
             Role::System => {
                 let text = msg.text_content();
@@ -330,15 +331,23 @@ fn convert_messages(
                             }
                         })
                         .collect();
-                    out.push(AnthropicMessage {
+                    let mut message = AnthropicMessage {
                         role: "user".to_string(),
                         content: AnthropicContent::Blocks(blocks),
-                    });
+                    };
+                    if Some(index) == latest_user_index {
+                        add_cache_control_to_message_content(&mut message);
+                    }
+                    out.push(message);
                 } else {
-                    out.push(AnthropicMessage {
+                    let mut message = AnthropicMessage {
                         role: "user".to_string(),
                         content: AnthropicContent::Text(msg.text_content()),
-                    });
+                    };
+                    if Some(index) == latest_user_index {
+                        add_cache_control_to_message_content(&mut message);
+                    }
+                    out.push(message);
                 }
             }
             Role::Assistant => {
@@ -417,23 +426,19 @@ fn convert_messages(
             r#type: "ephemeral".to_string(),
         });
     }
-    add_cache_control_to_last_user_message(&mut out);
     let system = (!system_blocks.is_empty()).then_some(system_blocks);
 
     (system, out)
 }
 
-fn add_cache_control_to_last_user_message(messages: &mut [AnthropicMessage]) {
-    let Some(last_user) = messages.iter_mut().rev().find(|msg| msg.role == "user") else {
-        return;
-    };
+fn add_cache_control_to_message_content(message: &mut AnthropicMessage) {
     let cache_control = CacheControl {
         r#type: "ephemeral".to_string(),
     };
-    match &mut last_user.content {
+    match &mut message.content {
         AnthropicContent::Text(text) => {
             let text = std::mem::take(text);
-            last_user.content = AnthropicContent::Blocks(vec![AnthropicContentBlock::Text {
+            message.content = AnthropicContent::Blocks(vec![AnthropicContentBlock::Text {
                 text,
                 cache_control: Some(cache_control),
             }]);
@@ -561,11 +566,7 @@ fn build_request_body(
         )
     };
 
-    let has_volatile_system_blocks = system.as_ref().is_some_and(|blocks| blocks.len() > 1);
-    let anthropic_tools = request
-        .tools
-        .as_ref()
-        .map(|t| convert_tools(t, !has_volatile_system_blocks));
+    let anthropic_tools = request.tools.as_ref().map(|t| convert_tools(t, true));
     let tool_choice = match anthropic_tools.as_ref() {
         Some(tools) if !tools.is_empty() && request.parallel_tool_calls => {
             Some(AnthropicToolChoice {
@@ -921,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_cache_control_is_skipped_when_system_has_volatile_blocks() {
+    fn tool_cache_control_is_kept_when_system_has_volatile_blocks() {
         let tool = ToolDefinition {
             name: "search".into(),
             description: "Search".into(),
@@ -940,7 +941,40 @@ mod tests {
             false,
         );
         let body_json = serde_json::to_value(body).unwrap();
-        assert!(body_json["tools"][0].get("cache_control").is_none());
+        assert_eq!(
+            body_json["tools"][0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+    }
+
+    #[test]
+    fn user_cache_control_stays_on_original_user_not_tool_result() {
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls = Some(vec![ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "search".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        }]);
+        let mut tool = Message::text(Role::Tool, "tool result");
+        tool.name = Some("call-1".to_string());
+        let messages = vec![
+            Message::text(Role::System, "stable prompt"),
+            Message::text(Role::User, "original request"),
+            assistant,
+            tool,
+        ];
+
+        let (_system, api_messages) = convert_messages(&messages);
+        let messages_json = serde_json::to_value(api_messages).unwrap();
+
+        assert_eq!(
+            messages_json[0]["content"][0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+        assert!(messages_json[2]["content"][0]
+            .get("cache_control")
+            .is_none());
     }
 
     #[test]
