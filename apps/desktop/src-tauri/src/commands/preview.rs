@@ -1,4 +1,7 @@
 use super::*;
+use nexa_core::execution_environment::{
+    ExecutionEnvironment, ExecutionRequest, LocalDetachedProcessExecutionEnvironment,
+};
 
 /// An image attachment prepared for LLM submission.
 ///
@@ -36,63 +39,97 @@ pub async fn prepare_image_attachment(path: String) -> Result<ImageAttachment, S
 
 // ── File Commands ───────────────────────────────────────────────────────
 
-#[tauri::command]
-pub fn open_file_in_default_app(path: String) -> Result<(), String> {
-    let p = std::path::Path::new(&path);
-    if !p.exists() {
-        return Err(format!("File not found: {path}"));
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PreviewLaunchCommand {
+    pub(super) program: String,
+    pub(super) args: Vec<String>,
+}
+
+impl PreviewLaunchCommand {
+    fn new(program: impl Into<String>, args: Vec<String>) -> Self {
+        Self {
+            program: program.into(),
+            args,
+        }
     }
 
+    pub(super) fn into_execution_request(self) -> ExecutionRequest {
+        ExecutionRequest::for_detached_local_tool(
+            self.program,
+            self.args,
+            "desktop_preview",
+            Vec::new(),
+            false,
+        )
+    }
+
+    async fn launch(self) -> Result<(), String> {
+        let environment = LocalDetachedProcessExecutionEnvironment;
+        let request = self.into_execution_request();
+        environment
+            .execute(request)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+pub(super) fn default_app_launch_command(path: &Path) -> PreviewLaunchCommand {
+    let target = path.to_string_lossy().to_string();
     #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd")
-        .args(["/c", "start", "", &path])
-        .spawn()
-        .map_err(|e| e.to_string())?;
-
+    {
+        PreviewLaunchCommand::new(
+            "rundll32.exe",
+            vec!["url.dll,FileProtocolHandler".to_string(), target],
+        )
+    }
     #[cfg(target_os = "macos")]
-    std::process::Command::new("open")
-        .arg(&path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-
+    {
+        PreviewLaunchCommand::new("open", vec![target])
+    }
     #[cfg(target_os = "linux")]
-    std::process::Command::new("xdg-open")
-        .arg(&path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    {
+        PreviewLaunchCommand::new("xdg-open", vec![target])
+    }
+}
 
-    Ok(())
+pub(super) fn file_explorer_launch_command(path: &Path) -> PreviewLaunchCommand {
+    #[cfg(target_os = "windows")]
+    {
+        PreviewLaunchCommand::new("explorer.exe", vec![format!("/select,{}", path.display())])
+    }
+    #[cfg(target_os = "macos")]
+    {
+        PreviewLaunchCommand::new(
+            "open",
+            vec!["-R".to_string(), path.to_string_lossy().to_string()],
+        )
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let parent = path.parent().unwrap_or(path);
+        PreviewLaunchCommand::new("xdg-open", vec![parent.to_string_lossy().to_string()])
+    }
 }
 
 #[tauri::command]
-pub fn show_in_file_explorer(path: String) -> Result<(), String> {
+pub async fn open_file_in_default_app(path: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
     if !p.exists() {
         return Err(format!("File not found: {path}"));
     }
 
-    #[cfg(target_os = "windows")]
-    std::process::Command::new("explorer")
-        .args(["/select,", &path])
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    default_app_launch_command(p).launch().await
+}
 
-    #[cfg(target_os = "macos")]
-    std::process::Command::new("open")
-        .args(["-R", &path])
-        .spawn()
-        .map_err(|e| e.to_string())?;
-
-    #[cfg(target_os = "linux")]
-    {
-        let parent = p.parent().unwrap_or(p).to_str().unwrap_or(&path);
-        std::process::Command::new("xdg-open")
-            .arg(parent)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+#[tauri::command]
+pub async fn show_in_file_explorer(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("File not found: {path}"));
     }
 
-    Ok(())
+    file_explorer_launch_command(p).launch().await
 }
 
 #[derive(Debug, Deserialize)]

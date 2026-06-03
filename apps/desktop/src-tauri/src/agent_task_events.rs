@@ -83,6 +83,15 @@ fn record_and_emit_task_event(
     }
 }
 
+pub(crate) fn persist_durable_run_event(db: &Database, run_event: &AgentRunEvent) {
+    if let Err(err) = db.save_agent_run_event(run_event) {
+        warn!(
+            "Failed to persist durable run event {}#{}: {err}",
+            run_event.run_id, run_event.event_seq
+        );
+    }
+}
+
 fn record_and_emit_agent_run_task_event(
     ctx: &TaskEventEmitContext<'_>,
     run_event: &AgentRunEvent,
@@ -91,10 +100,12 @@ fn record_and_emit_agent_run_task_event(
     status: Option<&str>,
     payload: Option<&serde_json::Value>,
 ) {
+    persist_durable_run_event(ctx.db, run_event);
     let payload = run_event.task_event_payload(payload);
     record_and_emit_task_event(ctx, event_type, label, status, Some(&payload));
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn record_agent_run_task_event(
     db: &Database,
     app_handle: &AppHandle,
@@ -122,6 +133,7 @@ pub(crate) fn record_agent_run_task_event(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn record_agent_run_status_task_event(
     db: &Database,
     app_handle: &AppHandle,
@@ -164,6 +176,7 @@ pub(crate) fn record_task_progress_for_agent_event(
     task_run_id: &str,
     run_event: &AgentRunEvent,
 ) {
+    persist_durable_run_event(db, run_event);
     match AgentTaskRuntime::new(db).apply_run_event(task_run_id, run_event) {
         Ok(task_event) => {
             emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);

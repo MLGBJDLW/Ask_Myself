@@ -5,10 +5,14 @@
 
 import type { AgentFrontendEvent } from '../types';
 import type {
+  AgentRunEvent,
   AgentTaskRun,
   AgentTaskRunEvent,
 } from '../types/conversation';
-import { applyDurableReplayToState, taskTimelineEventsFromReplaySource } from './streaming/durableReplay';
+import {
+  projectRunEventsToStreamState,
+  projectTaskEventsToStreamState,
+} from './streaming/durableReplay';
 import {
   isTaskLifecycleEventType,
   isTerminalEventType,
@@ -20,7 +24,6 @@ import { applyStreamEventOrdering } from './streaming/ordering';
 import {
   clearToolPreparingTimers,
   createDefaultState,
-  taskRunIsActive,
   type InternalStreamState,
 } from './streaming/state';
 import {
@@ -127,12 +130,34 @@ class StreamStoreImpl {
     if (existing) clearStreamWatchdog(existing);
     if (existing) clearToolPreparingTimers(existing);
 
-    const state = createDefaultState();
-    state.isStreaming = taskRunIsActive(taskRun);
-    state.taskRun = taskRun;
-    state.taskEvents = taskTimelineEventsFromReplaySource(taskEvents);
+    const state = projectTaskEventsToStreamState(taskRun, taskEvents);
 
-    applyDurableReplayToState(state, taskEvents);
+    this._streams[conversationId] = state;
+    if (state.isStreaming) {
+      this.resetTimeout(conversationId);
+    }
+    this.notify(conversationId);
+  }
+
+  /** Rebuild the visible stream preview directly from canonical durable Run Events. */
+  restoreFromRunEvents(
+    conversationId: string,
+    taskRun: AgentTaskRun,
+    runEvents: AgentRunEvent[],
+    taskEvents: AgentTaskRunEvent[] = [],
+  ): void {
+    const existing = this._streams[conversationId];
+    if (existing?.isStreaming && (
+      existing.traceEvents.length > 0 ||
+      existing.streamText.length > 0 ||
+      existing.streamRounds.length > 0
+    )) {
+      return;
+    }
+    if (existing) clearStreamWatchdog(existing);
+    if (existing) clearToolPreparingTimers(existing);
+
+    const state = projectRunEventsToStreamState(taskRun, runEvents, taskEvents);
 
     this._streams[conversationId] = state;
     if (state.isStreaming) {

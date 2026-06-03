@@ -1,4 +1,11 @@
 use super::*;
+use crate::desktop_agent_session::{
+    build_desktop_agent_session_dependencies, finalize_desktop_agent_stop,
+    finalize_desktop_agent_turn, run_desktop_agent_turn, DesktopAgentApprovalRuntime,
+    DesktopAgentSessionDependencyRequest, DesktopAgentStopFinalization,
+    DesktopAgentTurnFinalization, DesktopAgentTurnRequest, DesktopAgentTurnRuntime,
+    DesktopAgentTurnStream,
+};
 
 // ── Agent Chat Command (streaming) ──────────────────────────────────────
 
@@ -31,6 +38,80 @@ fn annotate_user_artifacts_with_execution_mode(
             "executionMode": marker,
         })),
     }
+}
+
+pub(super) struct DesktopAgentSessionConfigInput<'a> {
+    pub conversation_id: &'a str,
+    pub task_run_id: &'a str,
+    pub db_config: &'a DbAgentConfig,
+    pub app_cfg: &'a AppConfig,
+    pub source_scope_ids: &'a [String],
+    pub selected_skills: &'a [Skill],
+    pub auto_loaded_skills: &'a [Skill],
+    pub execution_mode: AgentExecutionMode,
+}
+
+pub(super) fn build_desktop_agent_session_config(
+    input: DesktopAgentSessionConfigInput<'_>,
+) -> nexa_core::runtime::AgentSessionConfig {
+    let mut config = nexa_core::runtime::AgentSessionConfig {
+        session_id: input.conversation_id.to_string(),
+        conversation_id: Some(input.conversation_id.to_string()),
+        task_run_id: Some(input.task_run_id.to_string()),
+        host_surface: nexa_core::runtime::RuntimeHostSurface::Desktop,
+        provider: Some(input.db_config.provider.clone()),
+        model: Some(input.db_config.model.clone()),
+        reasoning_enabled: input.db_config.reasoning_enabled,
+        thinking_budget: input.db_config.thinking_budget.map(|value| value as u32),
+        reasoning_effort: input.db_config.reasoning_effort.clone(),
+        source_scope: nexa_core::runtime::RuntimeSourceScope {
+            source_ids: input.source_scope_ids.to_vec(),
+            collection_id: None,
+            working_directory: None,
+        },
+        approval_mode: input.app_cfg.tool_approval_mode,
+        shell_access_mode: input.app_cfg.shell_access_mode,
+        execution_mode: input.execution_mode,
+        trace_enabled: input.app_cfg.trace_enabled,
+        skill_context: nexa_core::runtime::RuntimeSkillContext {
+            available_skill_ids: input
+                .selected_skills
+                .iter()
+                .map(|skill| skill.id.clone())
+                .collect(),
+            loaded_skill_ids: input
+                .auto_loaded_skills
+                .iter()
+                .map(|skill| skill.id.clone())
+                .collect(),
+            trust_state: None,
+        },
+        package_context: desktop_runtime_package_context(),
+        metadata: serde_json::json!({
+            "kind": "desktopAgentSessionConfig",
+            "agentConfigId": input.db_config.id,
+            "agentConfigName": input.db_config.name,
+        }),
+        ..Default::default()
+    };
+    config.apply_protocol_defaults();
+    config
+}
+
+pub(super) fn desktop_runtime_package_context() -> nexa_core::runtime::RuntimePackageContext {
+    let manifests = nexa_core::ecosystem::builtin_ecosystem_manifests();
+    let snapshot = nexa_core::package_host::package_host_snapshot_from_manifests(&manifests);
+    nexa_core::runtime::RuntimePackageContext::from_package_host_snapshot(&snapshot)
+}
+
+pub(super) fn runtime_session_config_artifact(
+    config: &nexa_core::runtime::AgentSessionConfig,
+) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "agentSessionConfig",
+        "version": 1,
+        "config": config,
+    })
 }
 
 #[tauri::command]
@@ -251,58 +332,6 @@ pub async fn agent_chat_cmd(
             }
         }
     }
-    let selected_skills = if pinned_skill_ids.is_empty() {
-        nexa_core::skills::get_available_skills_for_query(&state.db, &message)
-    } else {
-        nexa_core::skills::get_available_skills_for_query_with_pinned(
-            &state.db,
-            &message,
-            &pinned_skill_ids,
-        )
-    }
-    .unwrap_or_else(|err| {
-        warn!(
-            "Failed to select skills for task run {}: {err}",
-            task_run.id
-        );
-        Vec::new()
-    });
-    let max_loaded_skills = 3usize.max(pinned_skill_ids.len());
-    let auto_loaded_skills = if pinned_skill_ids.is_empty() {
-        nexa_core::skills::get_active_skills_for_query(&state.db, &message, max_loaded_skills)
-    } else {
-        nexa_core::skills::get_active_skills_for_query_with_pinned(
-            &state.db,
-            &message,
-            max_loaded_skills,
-            &pinned_skill_ids,
-        )
-    }
-    .unwrap_or_else(|err| {
-        warn!(
-            "Failed to auto-load skills for task run {}: {err}",
-            task_run.id
-        );
-        Vec::new()
-    });
-    let mut initial_task_artifacts = serde_json::json!({
-        "kind": "agentTaskArtifacts",
-        "version": 1,
-        "selectedSkills": build_selected_skills_artifact(&selected_skills),
-    });
-    if plan_mode {
-        initial_task_artifacts["executionMode"] = execution_mode_artifact(execution_mode);
-    }
-    let _ = state.db.update_agent_task_run_progress(
-        &task_run.id,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(&initial_task_artifacts),
-    );
-    emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
     let persona_section =
         nexa_core::persona::build_persona_prompt_section(persona_profile.as_ref());
     let current_turn_time_section = build_current_turn_time_section();
@@ -366,135 +395,7 @@ pub async fn agent_chat_cmd(
         execution_mode,
     };
 
-    // 6b. Build confirmation callback if enabled.
-    let confirmation_cb: Option<ConfirmationCallback> =
-        if app_cfg.confirm_destructive || app_cfg.shell_access_mode.requires_confirmation() {
-            let dialog_handle = app_handle.clone();
-            Some(Arc::new(move |message: String| {
-                let handle = dialog_handle.clone();
-                Box::pin(async move {
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    handle
-                        .dialog()
-                        .message(&message)
-                        .title("Confirm Tool Execution")
-                        .kind(MessageDialogKind::Warning)
-                        .buttons(MessageDialogButtons::OkCancelCustom(
-                            "Allow".into(),
-                            "Deny".into(),
-                        ))
-                        .show(move |confirmed| {
-                            let _ = tx.send(confirmed);
-                        });
-                    match tokio::time::timeout(Duration::from_secs(30), rx).await {
-                        Ok(Ok(confirmed)) => confirmed,
-                        _ => !message.starts_with("Run:"), // deny run_shell on timeout; allow others
-                    }
-                })
-            }))
-        } else {
-            None
-        };
-
-    // 6c. Build per-call approval callback (new GUI flow).
-    //
-    // Always wired — the callback itself checks the global
-    // `tool_approval_mode` and short-circuits for AllowAll/DenyAll. In
-    // `Ask` mode it consults persisted `never` policies, then the
-    // session allow-list, and finally emits an `ApprovalRequested`
-    // event and blocks on a oneshot from `approve_tool_call_cmd`.
-    let approval_cb: Option<ApprovalCallback> = {
-        let db_handle = state.db.clone();
-        let app_handle_cb = app_handle.clone();
-        let approval_event_seq = Arc::clone(&stream_event_seq);
-        let approval_task_run_id = task_run.id.clone();
-        let approval_turn_id = turn.id.clone();
-        let pending = approval_state.pending.clone();
-        let session_store = approval_state.session_store.clone();
-        let stream_conv_id = conversation_id.clone();
-        let approval_mode = app_cfg.tool_approval_mode;
-        Some(Arc::new(move |req: ApprovalRequest| {
-            let db = db_handle.clone();
-            let handle = app_handle_cb.clone();
-            let pending = pending.clone();
-            let store = session_store.clone();
-            let conv = stream_conv_id.clone();
-            let event_seq = Arc::clone(&approval_event_seq);
-            let task_run_id = approval_task_run_id.clone();
-            let turn_id = approval_turn_id.clone();
-            Box::pin(async move {
-                // 0. Global mode short-circuit.
-                if let Some(d) = approval_mode.short_circuit() {
-                    return d;
-                }
-                // 1. Persistent "never" policy. Prefer targeted rules and
-                // fall back to legacy per-tool policies created before the
-                // permission engine gained target keys.
-                if let Ok(Some(pol)) = db.get_tool_permission_policy(&req.permission_key) {
-                    if pol == "never" {
-                        return ApprovalDecision::Deny;
-                    }
-                }
-                let allow_legacy_tool_policy = req.tool_name != "project_tool";
-                if allow_legacy_tool_policy {
-                    if let Ok(Some(pol)) = db.get_tool_approval_policy(&req.tool_name) {
-                        if pol == "never" {
-                            return ApprovalDecision::Deny;
-                        }
-                    }
-                }
-                // 2. Session allow.
-                if matches!(
-                    store.get(&req.permission_key),
-                    Some(ApprovalDecision::AllowSession)
-                ) || (allow_legacy_tool_policy
-                    && matches!(
-                        store.get(&req.tool_name),
-                        Some(ApprovalDecision::AllowSession)
-                    ))
-                {
-                    return ApprovalDecision::AllowOnce;
-                }
-                // 3. Ask the UI — emit a synthetic frontend event
-                //    (the executor also emits one, but routing through
-                //    conversation_id makes the UI dispatcher simpler).
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                pending.lock().await.insert(req.id.clone(), tx);
-                emit_agent_frontend_event(
-                    &handle,
-                    &event_seq,
-                    &conv,
-                    &task_run_id,
-                    Some(&turn_id),
-                    AgentEvent::ApprovalRequested {
-                        request: req.clone(),
-                    },
-                );
-                // 4. Wait up to 60s for a decision; otherwise deny.
-                let decision = match tokio::time::timeout(Duration::from_secs(60), rx).await {
-                    Ok(Ok(d)) => d,
-                    _ => {
-                        pending.lock().await.remove(&req.id);
-                        ApprovalDecision::Deny
-                    }
-                };
-                // 5. Persist the decision according to scope.
-                match decision {
-                    ApprovalDecision::AllowSession => {
-                        store.set(&req.permission_key, ApprovalDecision::AllowSession);
-                    }
-                    ApprovalDecision::Never => {
-                        let key = ToolPermissionKey::from_request(&req);
-                        let _ = db.save_tool_permission_policy(&key, "never");
-                    }
-                    _ => {}
-                }
-                decision
-            })
-        }))
-    };
-
-    // 6d. Create a separate summarization provider if configured.
+    // 6b. Create a separate summarization provider if configured.
     let summarization_provider: Option<Box<dyn nexa_core::llm::LlmProvider>> =
         if let Some(ref summ_provider_name) = db_config.summarization_provider {
             let summ_config = ProviderConfig {
@@ -512,78 +413,59 @@ pub async fn agent_chat_cmd(
             None
         };
 
-    // 7. Create tool registry with built-in + MCP tools.
-    let mut tools = default_tool_registry();
-
-    // Register MCP tools from currently enabled servers.
-    emit_agent_frontend_event(
-        &app_handle,
-        &stream_event_seq,
-        &conversation_id,
-        &task_run.id,
-        Some(&turn.id),
-        AgentEvent::Status {
-            content: "Loading tools and MCP servers".to_string(),
-            tone: None,
-        },
-    );
-    {
-        let mut mcp_manager = mcp_state.manager.lock().await;
-        match sync_enabled_mcp_servers(&state.db, &mut mcp_manager).await {
-            Ok(errors) => {
-                for (server_id, error) in errors {
-                    warn!("Failed to sync MCP server {server_id}: {error}");
-                }
-            }
-            Err(error) => warn!("Failed to load enabled MCP servers: {error}"),
-        }
-        if let Err(e) = mcp_manager.register_tools(&mut tools).await {
-            warn!("Failed to register MCP tools: {e}");
-        }
-    }
-
     let cancel_token = CancellationToken::new();
     let cancel_token_clone = cancel_token.clone();
     let (steering_tx, steering_rx) = tokio::sync::mpsc::unbounded_channel::<AgentSteeringMessage>();
-
-    let delegation_runtime = DelegationRuntime::new(
-        provider_config.clone(),
-        executor_config.clone(),
-        db_config.subagent_allowed_tools.clone(),
-        db_config.subagent_allowed_skill_ids.clone(),
-        cancel_token.clone(),
-        Some(task_run.id.clone()),
-    );
-    tools.register(Box::new(SubagentTool::from_runtime(
-        delegation_runtime.clone(),
-    )));
-    tools.register(Box::new(SubagentBatchTool::from_runtime(
-        delegation_runtime.clone(),
-    )));
-    tools.register(Box::new(JudgeSubagentResultsTool::from_runtime(
-        delegation_runtime.clone(),
-    )));
-    delegation_runtime.set_tool_registry(tools.clone());
+    let session_dependencies =
+        build_desktop_agent_session_dependencies(DesktopAgentSessionDependencyRequest {
+            db: &state.db,
+            mcp_manager: &mcp_state.manager,
+            app_handle: &app_handle,
+            event_seq: &stream_event_seq,
+            conversation_id: &conversation_id,
+            task_run_id: &task_run.id,
+            turn_id: &turn.id,
+            message: &message,
+            pinned_skill_ids: &pinned_skill_ids,
+            provider_config: provider_config.clone(),
+            executor_config: executor_config.clone(),
+            subagent_allowed_tools: db_config.subagent_allowed_tools.clone(),
+            subagent_allowed_skill_ids: db_config.subagent_allowed_skill_ids.clone(),
+            cancel_token: cancel_token.clone(),
+            plan_mode,
+            mcp_call_timeout_secs: DEFAULT_MCP_CALL_TIMEOUT_SECS,
+        })
+        .await;
+    let runtime_session_config =
+        build_desktop_agent_session_config(DesktopAgentSessionConfigInput {
+            conversation_id: &conversation_id,
+            task_run_id: &task_run.id,
+            db_config: &db_config,
+            app_cfg: &app_cfg,
+            source_scope_ids: &source_scope_ids,
+            selected_skills: &session_dependencies.selected_skills,
+            auto_loaded_skills: &session_dependencies.auto_loaded_skills,
+            execution_mode,
+        });
+    let mut initial_task_artifacts = serde_json::json!({
+        "kind": "agentTaskArtifacts",
+        "version": 1,
+        "selectedSkills": build_selected_skills_artifact(&session_dependencies.selected_skills),
+        "runtimeSession": runtime_session_config_artifact(&runtime_session_config),
+    });
     if plan_mode {
-        let before_count = tools.tool_names().len();
-        tools = tools.plan_mode_filtered();
-        let after_count = tools.tool_names().len();
-        info!(
-            "Plan mode tool registry filtered from {before_count} to {after_count} read-only tools"
-        );
-        emit_agent_frontend_event(
-            &app_handle,
-            &stream_event_seq,
-            &conversation_id,
-            &task_run.id,
-            Some(&turn.id),
-            AgentEvent::Status {
-                content: "Plan mode active: write, execution, MCP, automation, and delegation tools are disabled."
-                    .to_string(),
-                tone: Some("info".to_string()),
-            },
-        );
+        initial_task_artifacts["executionMode"] = execution_mode_artifact(execution_mode);
     }
+    let _ = state.db.update_agent_task_run_progress(
+        &task_run.id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(&initial_task_artifacts),
+    );
+    emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
 
     // 7b. Build user content parts (text + optional attachments).
     let vision_supported = model_supports_vision(&provider_config.provider_type, &db_config.model);
@@ -772,9 +654,12 @@ pub async fn agent_chat_cmd(
     let handle = app_handle.clone();
     let assistant_sort_order = next_sort_order + 1;
     let db_config_for_extraction = db_config.clone();
-    let forwarder_event_seq = Arc::clone(&stream_event_seq);
-    let forwarder_terminal_emitted = Arc::clone(&terminal_emitted);
     let command_stream_event_seq = Arc::clone(&stream_event_seq);
+    let approval_runtime = DesktopAgentApprovalRuntime {
+        pending: approval_state.pending.clone(),
+        session_store: approval_state.session_store.clone(),
+        approval_mode: app_cfg.tool_approval_mode,
+    };
 
     let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(0) as u64;
 
@@ -799,101 +684,35 @@ pub async fn agent_chat_cmd(
     );
 
     let task = tokio::spawn(async move {
-        let cancel_token = cancel_token_clone;
-        let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
-
-        // Forward events to the frontend in a separate task.
-        let event_forwarder = tokio::spawn(
-            AgentStreamForwarder::new(
-                handle.clone(),
-                db.clone(),
-                conv_id.clone(),
-                task_run_id.clone(),
-                turn_id.clone(),
-                forwarder_event_seq,
-                forwarder_terminal_emitted,
-            )
-            .run(rx),
-        );
-
-        // Run the agent.  The executor now saves ALL messages (intermediate
-        // tool-call assistants, tool results, and the final answer) to the DB
-        // using incrementing sort_order starting at `assistant_sort_order`.
-        let executor_cancel_token = cancel_token.clone();
-        let mut executor = AgentExecutor::new(provider, tools, executor_config)
-            .with_cancel_token(executor_cancel_token)
-            .with_steering_receiver(steering_rx);
-        if let Some(cb) = confirmation_cb {
-            executor = executor.with_confirmation_callback(cb);
-        }
-        if let Some(cb) = approval_cb {
-            executor = executor.with_approval_callback(cb);
-        }
-        if let Some(summ_provider) = summarization_provider {
-            executor = executor.with_summarization_provider(summ_provider);
-        }
-        executor = executor
-            .with_skills_override(selected_skills)
-            .with_auto_loaded_skills_override(auto_loaded_skills);
-        let run_future = executor.run(
+        let outcome = run_desktop_agent_turn(DesktopAgentTurnRequest {
+            provider,
+            dependencies: session_dependencies,
+            executor_config,
+            cancel_token: cancel_token_clone,
+            steering_rx,
+            approval_runtime,
+            summarization_provider,
             history,
             user_parts,
-            &db,
-            Some(&conv_id),
-            Some(&turn_id),
-            tx,
+            db: db.clone(),
+            conversation_id: conv_id.clone(),
+            turn_id: turn_id.clone(),
             assistant_sort_order,
-        );
+            runtime: DesktopAgentTurnRuntime {
+                timeout_secs: turn_timeout_secs,
+                keepalive_interval_secs: STREAM_KEEPALIVE_INTERVAL_SECS,
+            },
+            stream: DesktopAgentTurnStream {
+                app_handle: handle.clone(),
+                task_run_id: task_run_id.clone(),
+                event_seq: Arc::clone(&stream_event_seq),
+                terminal_emitted: Arc::clone(&terminal_emitted),
+            },
+        })
+        .await;
+        let result = &outcome.result;
 
-        // Keep the frontend stream alive while the agent is still running but
-        // the upstream provider is temporarily silent (reasoning, tool work,
-        // or SSE gaps). A timeout of 0 disables the hard turn stop; users can
-        // still stop the run manually.
-        let mut run_future = Box::pin(run_future);
-        let mut turn_timeout = (turn_timeout_secs > 0)
-            .then(|| Box::pin(tokio::time::sleep(Duration::from_secs(turn_timeout_secs))));
-        let mut keepalive =
-            tokio::time::interval(Duration::from_secs(STREAM_KEEPALIVE_INTERVAL_SECS));
-        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        keepalive.tick().await;
-
-        let (result, timed_out) = loop {
-            tokio::select! {
-                run_result = &mut run_future => break (Some(run_result), false),
-                _ = async {
-                    if let Some(timeout) = turn_timeout.as_mut() {
-                        timeout.as_mut().await;
-                    } else {
-                        std::future::pending::<()>().await;
-                    }
-                } => break (None, true),
-                _ = keepalive.tick() => {
-                    emit_agent_frontend_event(
-                        &handle,
-                        &stream_event_seq,
-                        &conv_id,
-                        &task_run_id,
-                        Some(&turn_id),
-                        AgentEvent::Thinking {
-                            content: String::new(),
-                        },
-                    );
-                }
-            }
-        };
-
-        if timed_out {
-            cancel_token.cancel();
-        }
-
-        drop(run_future);
-        drop(turn_timeout);
-        drop(executor);
-
-        // Wait for event forwarder to finish.
-        let _ = event_forwarder.await;
-
-        match &result {
+        match result {
             Some(Ok(_)) => {}
             Some(Err(CoreError::Cancelled(message))) => {
                 warn!("Agent execution cancelled for conversation {conv_id}: {message}");
@@ -950,89 +769,18 @@ pub async fn agent_chat_cmd(
             }
         }
 
-        let turn_snapshot = db.get_conversation_turn(&turn_id).ok();
-        let trace_artifacts = serde_json::json!({
-            "turnId": &turn_id,
-            "turnStatus": turn_snapshot.as_ref().map(|turn| turn.status.clone()),
-            "routeKind": turn_snapshot.as_ref().and_then(|turn| turn.route_kind.clone()),
-            "trace": turn_snapshot.as_ref().and_then(|turn| turn.trace.clone()),
+        finalize_desktop_agent_turn(DesktopAgentTurnFinalization {
+            db: &db,
+            app_handle: &handle,
+            conversation_id: &conv_id,
+            task_run_id: &task_run_id,
+            turn_id: &turn_id,
+            event_seq: stream_event_seq.as_ref(),
+            outcome: &outcome,
         });
-        let previous_task_artifacts = db
-            .get_agent_task_run(&task_run_id)
-            .ok()
-            .and_then(|run| run.artifacts);
-        let subtask_runs = db
-            .list_agent_subtask_runs(&task_run_id)
-            .unwrap_or_else(|err| {
-                warn!("Failed to load subtask runs for {task_run_id}: {err}");
-                Vec::new()
-            });
-        let task_artifacts =
-            build_final_task_artifacts(previous_task_artifacts, trace_artifacts, &subtask_runs);
-        let verification_status = task_artifacts
-            .get("verification")
-            .and_then(|verification| verification.get("overallStatus"))
-            .and_then(|status| status.as_str());
-        let current_task_status = db
-            .get_agent_task_run(&task_run_id)
-            .ok()
-            .map(|run| run.status);
-        let (task_status, task_summary, task_error): (&str, &str, Option<String>) =
-            if current_task_status.as_deref() == Some("paused") {
-                ("paused", "Paused with a resumable checkpoint", None)
-            } else if timed_out {
-                (
-                    "timed_out",
-                    "Agent execution timed out",
-                    Some("Agent execution timed out.".to_string()),
-                )
-            } else if let Some(Err(CoreError::Cancelled(message))) = &result {
-                (
-                    "cancelled",
-                    "Agent execution cancelled",
-                    Some(message.clone()),
-                )
-            } else if let Some(Err(err)) = &result {
-                ("failed", "Agent execution failed", Some(err.to_string()))
-            } else {
-                match turn_snapshot.as_ref().map(|turn| turn.status.as_str()) {
-                    Some("cancelled") => ("cancelled", "Stopped by user", None),
-                    Some("error") => ("failed", "Agent execution failed", None),
-                    Some("cached") => ("completed", "Answered from cache", None),
-                    _ if verification_status.is_some_and(|status| status != "passed") => {
-                        ("completed", "Task completed with verification gap", None)
-                    }
-                    _ => ("completed", "Task completed", None),
-                }
-            };
-        let _ = db.finish_agent_task_run(
-            &task_run_id,
-            task_status,
-            Some(task_summary),
-            task_error.as_deref(),
-            Some(&task_artifacts),
-        );
-        record_agent_run_status_task_event(
-            &db,
-            &handle,
-            &conv_id,
-            &task_run_id,
-            Some(&turn_id),
-            &stream_event_seq,
-            AgentRunPhase::Done,
-            task_summary,
-            Some(task_status),
-            Some(&task_artifacts),
-        );
-        emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
-
-        // Repair orphaned tool_calls in DB after timeout or error.
-        if !matches!(&result, Some(Ok(_))) {
-            repair_orphaned_tool_calls(&db, &conv_id);
-        }
 
         // Auto memory extraction (background, best-effort).
-        if matches!(&result, Some(Ok(_))) {
+        if matches!(result, Some(Ok(_))) {
             let app_cfg = db.load_app_config().unwrap_or_default();
             if app_cfg.auto_memory_extraction {
                 // Determine the model: prefer summarization model, fall back to main.
@@ -1213,29 +961,16 @@ pub async fn agent_stop_cmd(
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if !abort_task.is_finished() {
                 abort_task.abort();
-                let artifacts = serde_json::json!({
-                    "reason": "aborted_after_cancel_timeout"
+                finalize_desktop_agent_stop(DesktopAgentStopFinalization {
+                    db: &db,
+                    app_handle: &handle,
+                    conversation_id: &conv_id,
+                    task_run_id: &task_run_id,
+                    turn_id: &turn_id,
+                    event_seq: stream_event_seq.as_ref(),
+                    reason: "aborted_after_cancel_timeout",
+                    summary: "Stopped by user",
                 });
-                let _ = db.finish_agent_task_run(
-                    &task_run_id,
-                    "cancelled",
-                    Some("Stopped by user"),
-                    None,
-                    Some(&artifacts),
-                );
-                record_agent_run_status_task_event(
-                    &db,
-                    &handle,
-                    &conv_id,
-                    &task_run_id,
-                    Some(&turn_id),
-                    stream_event_seq.as_ref(),
-                    AgentRunPhase::Done,
-                    "Stopped by user",
-                    Some("cancelled"),
-                    Some(&artifacts),
-                );
-                emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
             }
         });
     }

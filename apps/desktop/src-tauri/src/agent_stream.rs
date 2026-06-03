@@ -11,6 +11,7 @@ use serde::Serialize;
 use tauri::AppHandle;
 use uuid::Uuid;
 
+use crate::agent_task_events::persist_durable_run_event;
 use crate::app_events::emit_app_event;
 
 /// Envelope for agent stream events sent to frontend.
@@ -355,6 +356,7 @@ impl StreamBlockEmitter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn emit_block_delta(
         &mut self,
         conversation_id: &str,
@@ -384,6 +386,7 @@ impl StreamBlockEmitter {
                 conversation_id: conversation_id.to_string(),
                 run_event: run_event.clone(),
             };
+            persist_durable_run_event(db, &run_event);
             emit_app_event(handle, "agent:event", &payload);
 
             if let Err(err) = AgentTaskRuntime::new(db).apply_run_event(task_run_id, &run_event) {

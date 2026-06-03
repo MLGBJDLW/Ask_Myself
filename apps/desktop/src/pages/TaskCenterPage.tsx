@@ -28,13 +28,15 @@ import {
 import { toast } from 'sonner';
 import { useTranslation, type TranslationKey } from '../i18n';
 import * as api from '../lib/api';
-import { isDurableStreamEvent } from '../lib/streaming/legacyAdapter';
+import {
+  taskCenterHistoryFromEvents,
+  type TaskCenterHistoryItem,
+} from '../lib/streaming/taskCenterHistory';
 import type {
   AgentExecutionGraph,
   AgentTaskArtifact,
   AgentTaskArtifactSummary,
   AgentTaskArtifactVersion,
-  AgentTaskRunEvent,
   AgentTaskRunListItem,
   ApprovalPolicyList,
   ToolAccessInfo,
@@ -265,7 +267,7 @@ export function TaskCenterPage() {
   const copy = useMemo(() => createCopy(t), [t]);
   const [tasks, setTasks] = useState<AgentTaskRunListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [events, setEvents] = useState<AgentTaskRunEvent[]>([]);
+  const [events, setEvents] = useState<TaskCenterHistoryItem[]>([]);
   const [graph, setGraph] = useState<AgentExecutionGraph | null>(null);
   const [investigationGraph, setInvestigationGraph] = useState<InvestigationGraph | null>(null);
   const [resumeCheckpoints, setResumeCheckpoints] = useState<TaskResumeCheckpoint[]>([]);
@@ -343,6 +345,7 @@ export function TaskCenterPage() {
           nextMemories,
           nextCheckpoints,
           nextInvestigationGraph,
+          nextRunEvents,
         ] = await Promise.all([
           api.getAgentTaskRunEvents(selected.run.id),
           api.getAgentExecutionGraph(selected.run.id),
@@ -351,6 +354,7 @@ export function TaskCenterPage() {
           selected.projectId ? api.listProjectMemories(selected.projectId) : Promise.resolve([]),
           api.listTaskResumeCheckpoints(selected.run.id).catch(() => []),
           api.getInvestigationGraph(selected.run.id).catch(() => null),
+          api.getAgentRunEvents(selected.run.id).catch(() => []),
         ]);
         const versionPairs = await Promise.all(
           nextSavedArtifacts.slice(0, 12).map(async (artifact) => {
@@ -363,7 +367,7 @@ export function TaskCenterPage() {
           }),
         );
         if (cancelled) return;
-        setEvents(nextEvents.filter((event) => !isDurableStreamEvent(event)));
+        setEvents(taskCenterHistoryFromEvents(nextEvents, nextRunEvents));
         setGraph(nextGraph);
         setInvestigationGraph(nextInvestigationGraph);
         setResumeCheckpoints(nextCheckpoints);

@@ -804,10 +804,17 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         setTaskRunsForConversation(activeId, agentTaskRuns);
         const resumableRun = [...agentTaskRuns].reverse().find(taskRunCanResumeStream);
         if (resumableRun && !streamHasVisiblePreview(activeId)) {
-          api.getAgentTaskRunEvents(resumableRun.id)
-            .then((events) => {
+          Promise.all([
+            api.getAgentTaskRunEvents(resumableRun.id).catch(() => []),
+            api.getAgentRunEvents(resumableRun.id).catch(() => []),
+          ])
+            .then(([taskEvents, runEvents]) => {
               if (cancelled) return;
-              streamStore.restoreFromTaskEvents(activeId, resumableRun, events);
+              if (runEvents.length > 0) {
+                streamStore.restoreFromRunEvents(activeId, resumableRun, runEvents, taskEvents);
+              } else {
+                streamStore.restoreFromTaskEvents(activeId, resumableRun, taskEvents);
+              }
               streamingConversationRef.current = activeId;
               usageConversationRef.current = activeId;
             })

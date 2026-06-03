@@ -862,6 +862,48 @@ async fn test_native_filesystem_cat_cp_and_mv() {
 }
 
 #[tokio::test]
+async fn local_run_shell_environment_executes_native_filesystem_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut request = ExecutionRequest::for_run_shell(
+        "mkdir",
+        vec!["notes".to_string()],
+        ShellAccessMode::Restricted,
+        vec![tmp.path().to_string_lossy().to_string()],
+    );
+    request.cwd = Some(tmp.path().to_string_lossy().to_string());
+
+    let environment = LocalRunShellExecutionEnvironment;
+    let artifact = environment
+        .execute(request)
+        .await
+        .expect("environment should execute native filesystem command");
+
+    assert_eq!(environment.id(), "local_run_shell");
+    assert_eq!(artifact.decision.kind, ExecutionDecisionKind::Allowed);
+    assert_eq!(artifact.exit_status, Some(0));
+    assert!(!artifact.timed_out);
+    assert!(tmp.path().join("notes").is_dir());
+}
+
+#[tokio::test]
+async fn local_run_shell_environment_reviews_shell_policy_without_executing() {
+    let request = ExecutionRequest::for_run_shell(
+        "bash",
+        vec!["-lc".to_string(), "echo ok".to_string()],
+        ShellAccessMode::ConfirmAll,
+        Vec::new(),
+    );
+
+    let decision = LocalRunShellExecutionEnvironment
+        .review(&request)
+        .await
+        .expect("review should be deterministic");
+
+    assert_eq!(decision.kind, ExecutionDecisionKind::RequiresApproval);
+    assert!(decision.permission_key.starts_with("exec:run_shell"));
+}
+
+#[tokio::test]
 #[ignore = "requires python on PATH"]
 async fn test_python_hello() {
     let tmp = tempfile::tempdir().unwrap();

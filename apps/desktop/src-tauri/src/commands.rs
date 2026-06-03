@@ -12,17 +12,13 @@ use crate::agent_stream::{
     MAX_FRONTEND_TOOL_CONTENT_CHARS,
 };
 use crate::agent_stream::{emit_agent_frontend_event, emit_agent_run_frontend_event};
-use crate::agent_stream_bridge::AgentStreamForwarder;
 use crate::agent_task_events::{
     emit_agent_task_run_update, record_agent_run_status_task_event, record_agent_run_task_event,
 };
 use crate::app_events::emit_app_event;
-use crate::subagent_tool::{
-    DelegationRuntime, JudgeSubagentResultsTool, SubagentBatchTool, SubagentTool,
-};
 use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutionMode,
-    AgentExecutor, AgentSteeringMessage, CancellationToken, ConfirmationCallback,
+    AgentExecutor, AgentSteeringMessage, CancellationToken,
 };
 use nexa_core::agent_run::{AgentRunEvent, AgentRunPhase};
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
@@ -78,7 +74,6 @@ use nexa_core::watcher::{FileWatcher, WatcherEventKind};
 use nexa_core::workflow_catalog::{workflow_catalog, WorkflowCatalogTemplate};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
 
@@ -321,36 +316,6 @@ fn build_current_turn_time_section() -> String {
         now.format("%A"),
         now.format("%:z"),
     )
-}
-
-fn build_final_task_artifacts(
-    previous_artifacts: Option<serde_json::Value>,
-    trace_artifacts: serde_json::Value,
-    subtask_runs: &[AgentSubtaskRun],
-) -> serde_json::Value {
-    let mut merged = match previous_artifacts {
-        Some(serde_json::Value::Object(map)) => map,
-        Some(previous) => {
-            let mut map = serde_json::Map::new();
-            map.insert("previous".to_string(), previous);
-            map
-        }
-        None => serde_json::Map::new(),
-    };
-    merged.insert(
-        "kind".to_string(),
-        serde_json::Value::String("agentTaskArtifacts".to_string()),
-    );
-    merged.insert(
-        "version".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(1)),
-    );
-    merged.insert("trace".to_string(), trace_artifacts);
-    merged.insert(
-        "subtasks".to_string(),
-        serde_json::to_value(subtask_runs).unwrap_or_else(|_| serde_json::Value::Array(vec![])),
-    );
-    serde_json::Value::Object(merged)
 }
 
 fn build_selected_skills_artifact(skills: &[Skill]) -> serde_json::Value {
@@ -723,75 +688,17 @@ fn sanitize_tool_call_history(mut messages: Vec<Message>) -> Vec<Message> {
     messages
 }
 
-/// After an interrupted agent execution, check for assistant messages with
-/// `tool_calls` that lack corresponding tool response messages, and insert
-/// synthetic error responses so the conversation history remains valid.
-fn repair_orphaned_tool_calls(db: &Database, conversation_id: &str) {
-    let msgs = match db.get_messages(conversation_id) {
-        Ok(m) => m,
-        Err(e) => {
-            warn!("Failed to load messages for orphan repair: {e}");
-            return;
-        }
-    };
-
-    let mut i = 0;
-    while i < msgs.len() {
-        if msgs[i].role == Role::Assistant && !msgs[i].tool_calls.is_empty() {
-            let mut found_ids = HashSet::new();
-            let mut j = i + 1;
-            while j < msgs.len() && msgs[j].role == Role::Tool {
-                if let Some(ref tc_id) = msgs[j].tool_call_id {
-                    found_ids.insert(tc_id.as_str());
-                }
-                j += 1;
-            }
-
-            // Find the max sort_order among existing tool responses (or the assistant msg)
-            let base_sort = if j > i + 1 {
-                msgs[j - 1].sort_order
-            } else {
-                msgs[i].sort_order
-            };
-
-            let mut extra_sort = 1;
-            for tc in &msgs[i].tool_calls {
-                if !found_ids.contains(tc.id.as_str()) {
-                    warn!(
-                        "Inserting synthetic error response for orphaned tool_call {}",
-                        tc.id
-                    );
-                    let synthetic = ConversationMessage {
-                        id: Uuid::new_v4().to_string(),
-                        conversation_id: conversation_id.to_string(),
-                        role: Role::Tool,
-                        content: format!(
-                            "Error: tool '{}' was interrupted before completing (agent timeout or cancellation).",
-                            tc.name
-                        ),
-                        tool_call_id: Some(tc.id.clone()),
-                        tool_calls: vec![],
-                        artifacts: None,
-                        token_count: 20,
-                        created_at: String::new(),
-                        sort_order: base_sort + extra_sort,
-                        thinking: None,
-                        image_attachments: None,
-                    };
-                    if let Err(e) = db.add_message(&synthetic) {
-                        warn!("Failed to insert synthetic tool response: {e}");
-                    }
-                    extra_sort += 1;
-                }
-            }
-        }
-        i += 1;
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::preview::{append_preview_warning, build_file_preview, resolve_source_file};
+    use super::agent_chat::{
+        build_desktop_agent_session_config, desktop_runtime_package_context,
+        runtime_session_config_artifact, DesktopAgentSessionConfigInput,
+    };
+    use super::preview::{
+        append_preview_warning, build_file_preview, default_app_launch_command,
+        file_explorer_launch_command, resolve_source_file,
+    };
+    use super::workflows::workflow_due_runs_to_queue_items;
     use super::*;
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -810,6 +717,86 @@ mod tests {
         })
         .expect("add source");
         db
+    }
+
+    fn test_agent_config() -> DbAgentConfig {
+        DbAgentConfig {
+            id: "agent-config-1".to_string(),
+            name: "Primary".to_string(),
+            provider: "open_ai".to_string(),
+            api_key: "test-key".to_string(),
+            base_url: None,
+            model: "gpt-test".to_string(),
+            temperature: Some(0.2),
+            max_tokens: Some(1024),
+            context_window: Some(128_000),
+            is_default: true,
+            reasoning_enabled: Some(true),
+            thinking_budget: Some(4096),
+            reasoning_effort: Some("medium".to_string()),
+            max_iterations: Some(25),
+            summarization_model: None,
+            summarization_provider: None,
+            image_generation_model: None,
+            subagent_allowed_tools: None,
+            subagent_allowed_skill_ids: None,
+            subagent_max_parallel: None,
+            subagent_max_calls_per_turn: None,
+            subagent_token_budget: None,
+            tool_timeout_secs: None,
+            agent_timeout_secs: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    fn test_skill(id: &str) -> Skill {
+        Skill {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: "Use for tests".to_string(),
+            content: "Body".to_string(),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin: false,
+            interface: Default::default(),
+            dependencies: Default::default(),
+            policy: Default::default(),
+            source_path: None,
+            resources: Vec::new(),
+            resource_bundle: Vec::new(),
+        }
+    }
+
+    fn test_workflow_due_run() -> nexa_core::workflow_automation::WorkflowAutomationDueRun {
+        nexa_core::workflow_automation::WorkflowAutomationDueRun {
+            automation: nexa_core::workflow_automation::WorkflowAutomation {
+                id: "automation-1".to_string(),
+                name: "Daily report".to_string(),
+                description: "Summarize daily evidence.".to_string(),
+                workflow_template_id: "report_brief".to_string(),
+                prompt: "Summarize reports.".to_string(),
+                trigger_kind: "schedule".to_string(),
+                trigger: nexa_core::workflow_automation::WorkflowAutomationTrigger::Schedule {
+                    cron: "0 9 * * *".to_string(),
+                },
+                source_scope: vec!["source-1".to_string()],
+                approval_policy: nexa_core::workflow_automation::WorkflowAutomationApprovalPolicy {
+                    require_before_run: true,
+                    allowed_tools: vec!["search_knowledge_base".to_string()],
+                    risk_level: "medium".to_string(),
+                },
+                enabled: true,
+                status: "ready".to_string(),
+                last_run_at: None,
+                next_run_at: Some("2099-01-01T09:00:00Z".to_string()),
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            prompt: "Run the saved workflow.".to_string(),
+            due_reason: "schedule 0 9 * * *".to_string(),
+        }
     }
 
     fn write_minimal_docx(path: &Path) {
@@ -935,6 +922,205 @@ mod tests {
         push_u16(&mut out, 0);
 
         std::fs::write(path, out).expect("write zip");
+    }
+
+    #[test]
+    fn desktop_agent_session_config_projects_runtime_fields() {
+        let db_config = test_agent_config();
+        let mut app_cfg = AppConfig::default();
+        app_cfg.tool_approval_mode = ToolApprovalMode::DenyAll;
+        app_cfg.shell_access_mode = ShellAccessMode::Open;
+        app_cfg.trace_enabled = false;
+        let selected_skills = vec![test_skill("skill-a")];
+        let loaded_skills = vec![test_skill("skill-b")];
+
+        let config = build_desktop_agent_session_config(DesktopAgentSessionConfigInput {
+            conversation_id: "conversation-1",
+            task_run_id: "task-run-1",
+            db_config: &db_config,
+            app_cfg: &app_cfg,
+            source_scope_ids: &["source-1".to_string()],
+            selected_skills: &selected_skills,
+            auto_loaded_skills: &loaded_skills,
+            execution_mode: AgentExecutionMode::Plan,
+        });
+
+        assert_eq!(config.version, nexa_core::runtime::RUNTIME_PROTOCOL_VERSION);
+        assert_eq!(config.session_id, "conversation-1");
+        assert_eq!(config.conversation_id.as_deref(), Some("conversation-1"));
+        assert_eq!(config.task_run_id.as_deref(), Some("task-run-1"));
+        assert_eq!(
+            config.host_surface,
+            nexa_core::runtime::RuntimeHostSurface::Desktop
+        );
+        assert_eq!(config.provider.as_deref(), Some("open_ai"));
+        assert_eq!(config.model.as_deref(), Some("gpt-test"));
+        assert_eq!(config.reasoning_enabled, Some(true));
+        assert_eq!(config.thinking_budget, Some(4096));
+        assert_eq!(config.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(config.source_scope.source_ids, vec!["source-1".to_string()]);
+        assert_eq!(config.approval_mode, ToolApprovalMode::DenyAll);
+        assert_eq!(config.shell_access_mode, ShellAccessMode::Open);
+        assert_eq!(config.execution_mode, AgentExecutionMode::Plan);
+        assert!(!config.trace_enabled);
+        assert_eq!(
+            config.skill_context.available_skill_ids,
+            vec!["skill-a".to_string()]
+        );
+        assert_eq!(
+            config.skill_context.loaded_skill_ids,
+            vec!["skill-b".to_string()]
+        );
+        assert_eq!(
+            config.metadata["agentConfigId"].as_str(),
+            Some("agent-config-1")
+        );
+        assert!(config
+            .package_context
+            .enabled_package_ids
+            .contains(&"builtin-skills".to_string()));
+        assert!(config
+            .package_context
+            .enabled_package_ids
+            .contains(&"builtin-workflows".to_string()));
+        assert!(config
+            .package_context
+            .enabled_package_ids
+            .contains(&"mcp-connectors".to_string()));
+    }
+
+    #[test]
+    fn desktop_runtime_package_context_comes_from_package_host() {
+        let context = desktop_runtime_package_context();
+
+        assert!(context.disabled_package_ids.is_empty());
+        assert!(context
+            .enabled_package_ids
+            .contains(&"office-documents".to_string()));
+        assert!(context
+            .enabled_package_ids
+            .contains(&"desktop-automation".to_string()));
+    }
+
+    #[test]
+    fn due_workflow_adapter_returns_task_orchestrator_queue_items() {
+        let items = workflow_due_runs_to_queue_items(&[test_workflow_due_run()]);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].queue_id, "workflow_due:automation-1");
+        assert_eq!(
+            items[0].state,
+            nexa_core::task_orchestrator::TaskOrchestratorState::Queued
+        );
+        assert_eq!(
+            items[0].ownership.workflow_id.as_deref(),
+            Some("report_brief")
+        );
+    }
+
+    #[test]
+    fn runtime_session_config_artifact_wraps_protocol_config() {
+        let db_config = test_agent_config();
+        let app_cfg = AppConfig::default();
+        let config = build_desktop_agent_session_config(DesktopAgentSessionConfigInput {
+            conversation_id: "conversation-1",
+            task_run_id: "task-run-1",
+            db_config: &db_config,
+            app_cfg: &app_cfg,
+            source_scope_ids: &[],
+            selected_skills: &[],
+            auto_loaded_skills: &[],
+            execution_mode: AgentExecutionMode::Normal,
+        });
+
+        let artifact = runtime_session_config_artifact(&config);
+
+        assert_eq!(artifact["kind"].as_str(), Some("agentSessionConfig"));
+        assert_eq!(artifact["version"].as_u64(), Some(1));
+        assert_eq!(
+            artifact["config"]["conversationId"].as_str(),
+            Some("conversation-1")
+        );
+        assert_eq!(artifact["config"]["taskRunId"].as_str(), Some("task-run-1"));
+    }
+
+    #[test]
+    fn preview_default_app_launch_command_uses_platform_opener() {
+        let path = Path::new("workspace").join("note.txt");
+        let command = default_app_launch_command(&path);
+
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(command.program, "rundll32.exe");
+            assert_eq!(
+                command.args,
+                vec![
+                    "url.dll,FileProtocolHandler".to_string(),
+                    path.to_string_lossy().to_string()
+                ]
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(command.program, "open");
+            assert_eq!(command.args, vec![path.to_string_lossy().to_string()]);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(command.program, "xdg-open");
+            assert_eq!(command.args, vec![path.to_string_lossy().to_string()]);
+        }
+    }
+
+    #[test]
+    fn preview_file_explorer_launch_command_uses_platform_opener() {
+        let path = Path::new("workspace").join("note.txt");
+        let command = file_explorer_launch_command(&path);
+
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(command.program, "explorer.exe");
+            assert_eq!(command.args.len(), 1);
+            assert!(command.args[0].starts_with("/select,"));
+            assert!(command.args[0].contains("note.txt"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(command.program, "open");
+            assert_eq!(
+                command.args,
+                vec!["-R".to_string(), path.to_string_lossy().to_string()]
+            );
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(command.program, "xdg-open");
+            assert_eq!(command.args, vec!["workspace".to_string()]);
+        }
+    }
+
+    #[test]
+    fn preview_launch_request_uses_detached_execution_contract() {
+        let path = Path::new("workspace").join("note.txt");
+        let request = default_app_launch_command(&path).into_execution_request();
+        let decision = nexa_core::execution_environment::review_execution_policy(&request);
+
+        assert_eq!(request.caller.tool_name.as_deref(), Some("desktop_preview"));
+        assert_eq!(
+            request.sandbox.backend,
+            nexa_core::execution_environment::ExecutionBackendKind::LocalOpen
+        );
+        assert_eq!(
+            request.sandbox.allowed_programs,
+            vec![request.program.clone()]
+        );
+        assert!(!request.network_intent);
+        assert!(!request.sandbox.network_allowed);
+        assert!(!request.sandbox.capture_file_changes);
+        assert_eq!(
+            decision.kind,
+            nexa_core::execution_environment::ExecutionDecisionKind::Allowed
+        );
     }
 
     #[test]

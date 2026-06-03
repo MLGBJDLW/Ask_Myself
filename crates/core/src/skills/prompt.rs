@@ -1,3 +1,4 @@
+use super::catalog::render_skill_catalog_prompt_envelope;
 use super::model::Skill;
 
 const DEFAULT_MAX_SKILL_SECTION_CHARS: usize = 8_000;
@@ -197,66 +198,19 @@ pub fn build_skills_section_for_query_with_budget(
          - Respect each skill's policy; skills with implicit=false should only be used when \
          explicitly requested or pinned by persona.\n",
     );
+    if section.len() >= max_chars {
+        return cap_text_to_chars(&section, max_chars, "\n...[skills metadata truncated]");
+    }
 
-    let mut ordered_skills = skills.iter().collect::<Vec<_>>();
-    ordered_skills.sort_by(|a, b| {
-        a.builtin
-            .cmp(&b.builtin)
-            .then_with(|| a.created_at.cmp(&b.created_at))
-            .then_with(|| a.name.cmp(&b.name))
-            .then_with(|| a.id.cmp(&b.id))
-    });
-
-    for skill in ordered_skills {
-        let display_name = if skill.interface.display_name.trim().is_empty() {
-            skill.name.as_str()
-        } else {
-            skill.interface.display_name.as_str()
-        };
-        let short_description = if skill.interface.short_description.trim().is_empty() {
-            skill.description.as_str()
-        } else {
-            skill.interface.short_description.as_str()
-        };
-        let source = skill.source_path.as_deref().unwrap_or(if skill.builtin {
-            "bundled"
-        } else {
-            "user-defined"
-        });
-
-        section.push_str(&format!("\n### {display_name}\n"));
-        section.push_str(&format!("skill_id: {}\n", skill.id));
-        section.push_str(&format!("source: {source}\n"));
-        section.push_str(&format!(
-            "short_description: {}\n",
-            truncate_excerpt(short_description, MAX_SKILL_LINE_CHARS)
-        ));
-        if !skill.description.trim().is_empty() {
-            section.push_str(&format!(
-                "use_when: {}\n",
-                truncate_excerpt(&skill.description, MAX_SKILL_LINE_CHARS)
-            ));
-        }
-        if let Some(default_prompt) = skill.interface.default_prompt.as_deref() {
-            if !default_prompt.trim().is_empty() {
-                section.push_str(&format!(
-                    "default_prompt: {}\n",
-                    truncate_excerpt(default_prompt, MAX_SKILL_LINE_CHARS)
-                ));
-            }
-        }
-        section.push_str(&render_dependencies(skill));
-        section.push_str(&format!(
-            "policy: implicit={}\n",
-            skill.policy.allow_implicit_invocation
-        ));
-        section.push_str(&format!("resources: {}\n", render_resource_paths(skill)));
-
-        if section.len() >= max_chars {
-            section = truncate_excerpt(&section, max_chars);
-            section.push_str("\n...[skills metadata truncated]");
-            break;
-        }
+    section.push('\n');
+    let envelope_budget = max_chars.saturating_sub(section.len());
+    section.push_str(&render_skill_catalog_prompt_envelope(
+        skills,
+        envelope_budget,
+        true,
+    ));
+    if section.len() > max_chars {
+        return cap_text_to_chars(&section, max_chars, "\n...[skills metadata truncated]");
     }
 
     section

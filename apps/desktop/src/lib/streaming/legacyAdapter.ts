@@ -132,6 +132,22 @@ export interface ReplayStreamItem {
   frontendEvent?: AgentFrontendEvent;
 }
 
+function syntheticTaskEventFromRunEvent(runEvent: AgentRunEvent): AgentTaskRunEvent {
+  return {
+    id: `${runEvent.runId}:${runEvent.eventSeq}`,
+    runId: runEvent.runId,
+    eventType: runEvent.kind,
+    label: runEvent.label,
+    status: runEvent.status ?? null,
+    payload: { agentRun: runEvent },
+    createdAt: runEvent.createdAt ?? '',
+  };
+}
+
+export function replayItemFromRunEvent(runEvent: AgentRunEvent): ReplayStreamItem | null {
+  return replayItemFromTaskEvent(syntheticTaskEventFromRunEvent(runEvent));
+}
+
 export function replayItemFromTaskEvent(event: AgentTaskRunEvent): ReplayStreamItem | null {
   const payload = asRecord(event.payload);
   if (!payload) return null;

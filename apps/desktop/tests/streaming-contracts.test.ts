@@ -1,6 +1,8 @@
 import { adaptFrontendRunEvent } from '../src/lib/streaming/legacyAdapter';
 import {
+  durableReplayItemsFromRunEvents,
   durableReplayItemsFromTaskEvents,
+  projectRunEventsToStreamState,
   taskTimelineEventsFromReplaySource,
 } from '../src/lib/streaming/durableReplay';
 import { extractPersistedTraceItems } from '../src/lib/streaming/persistedTrace';
@@ -24,6 +26,7 @@ import {
   isTaskTimelineEvent,
   taskTimelinePayloadFromTaskEvent,
 } from '../src/lib/streaming/taskTimeline';
+import { taskCenterHistoryFromEvents } from '../src/lib/streaming/taskCenterHistory';
 import type {
   AgentFrontendEvent,
   ConversationTurn,
@@ -76,6 +79,7 @@ function runEvent(input: {
     label: input.label ?? input.kind,
     status: input.status ?? 'running',
     payload: input.payload ?? null,
+    createdAt: `2026-01-01T00:00:${String(input.eventSeq).padStart(2, '0')}.000Z`,
   };
 }
 
@@ -294,6 +298,43 @@ test('builds durable replay items from canonical and legacy task events in event
   assertEqual(replay[2].eventSeq, 3, 'third eventSeq');
 });
 
+test('builds durable replay items directly from canonical run events in eventSeq order', () => {
+  const replay = durableReplayItemsFromRunEvents([
+    runEvent({
+      eventSeq: 3,
+      kind: 'done',
+      phase: 'done',
+      label: 'Final answer produced',
+      status: 'completed',
+      payload: { message: 'done', usageTotal: { totalTokens: 4 } },
+    }),
+    runEvent({
+      eventSeq: 1,
+      kind: 'status',
+      phase: 'routing',
+      label: 'Task queued',
+      status: 'queued',
+      payload: { content: 'Task queued' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'outputDelta',
+      payload: {
+        blockId: 'canonical-block',
+        channel: 'answer',
+        offset: 0,
+        delta: 'hello',
+      },
+    }),
+  ]);
+
+  assertEqual(replay.length, 2, 'lifecycle status should not replay');
+  assertEqual(replay[0].eventSeq, 2, 'first replayed eventSeq');
+  assertEqual(replay[0].eventType, 'streamBlockDelta', 'first replay type');
+  assertEqual(replay[1].eventSeq, 3, 'terminal eventSeq');
+  assertEqual(replay[1].eventType, 'terminal', 'terminal replay type');
+});
+
 test('keeps non-stream task timeline events while filtering durable stream events', () => {
   const events = [
     taskEvent({
@@ -423,6 +464,128 @@ test('keeps typed task timeline events out of durable stream replay', () => {
   );
 });
 
+test('task center history prefers canonical run events and hides stream-only noise', () => {
+  const history = taskCenterHistoryFromEvents(
+    [
+      taskEvent({
+        id: 'legacy-status',
+        eventType: 'status',
+        eventSeq: 1,
+        label: 'Legacy queued',
+        status: 'queued',
+      }),
+      taskEvent({
+        id: 'subtask',
+        eventType: 'subtask',
+        eventSeq: 5,
+        label: 'Collect evidence',
+        status: 'completed',
+        payload: {
+          taskTimeline: {
+            version: 1,
+            kind: 'subtask',
+            label: 'Collect evidence',
+            status: 'completed',
+            payload: { subtaskRunId: 'subtask-1' },
+          },
+        },
+      }),
+    ],
+    [
+      runEvent({
+        eventSeq: 1,
+        kind: 'status',
+        phase: 'routing',
+        label: 'Task queued',
+        status: 'queued',
+        payload: { content: 'Task queued' },
+      }),
+      runEvent({
+        eventSeq: 2,
+        kind: 'outputDelta',
+        payload: { blockId: 'b', channel: 'answer', offset: 0, delta: 'hidden' },
+      }),
+      runEvent({
+        eventSeq: 3,
+        kind: 'toolCompleted',
+        phase: 'tooling',
+        label: 'search_knowledge_base',
+        status: 'completed',
+        payload: { toolName: 'search_knowledge_base' },
+      }),
+      runEvent({
+        eventSeq: 4,
+        kind: 'usageUpdated',
+        phase: 'accounting',
+        label: 'Usage updated',
+        status: null,
+        payload: { usageTotal: { totalTokens: 4 }, lastPromptTokens: 2 },
+      }),
+      runEvent({
+        eventSeq: 6,
+        kind: 'done',
+        phase: 'done',
+        label: 'Final answer produced',
+        status: 'completed',
+        payload: { message: 'done', usageTotal: { totalTokens: 4 } },
+      }),
+    ],
+  );
+
+  assertEqual(history.length, 4, 'visible history count');
+  assertEqual(history[0].source, 'agentRun', 'canonical source is preferred');
+  assertEqual(history[0].label, 'Task queued', 'canonical label');
+  assertEqual(history[1].label, 'search_knowledge_base', 'tool history is visible');
+  assertEqual(history[2].source, 'taskEvent', 'task timeline is preserved');
+  assertEqual(history[3].eventType, 'done', 'terminal history is visible');
+});
+
+test('task center history falls back to legacy task events when canonical events are absent', () => {
+  const history = taskCenterHistoryFromEvents(
+    [
+      taskEvent({
+        id: 'stream',
+        eventType: 'stream',
+        eventSeq: 1,
+        payload: {
+          agentRun: runEvent({
+            eventSeq: 1,
+            kind: 'outputDelta',
+            payload: { blockId: 'b', channel: 'answer', offset: 0, delta: 'x' },
+          }),
+        },
+      }),
+      taskEvent({
+        id: 'recovery',
+        eventType: 'status',
+        eventSeq: 2,
+        label: 'Retrying',
+        payload: {
+          agentRun: runEvent({
+            eventSeq: 2,
+            kind: 'recoveryAttempt',
+            label: 'Retrying',
+            payload: { reason: 'Retrying' },
+          }),
+        },
+      }),
+      taskEvent({
+        id: 'tool',
+        eventType: 'tool',
+        eventSeq: 3,
+        label: 'read_files',
+        status: 'completed',
+        payload: { toolName: 'read_files' },
+      }),
+    ],
+    [],
+  );
+
+  assertEqual(history.length, 2, 'legacy visible history count');
+  assertEqual(history[0].id, 'recovery', 'legacy recovery remains visible');
+  assertEqual(history[1].id, 'tool', 'legacy tool event remains visible');
+});
+
 test('projects canonical terminal errors as durable replay terminal items', () => {
   const replay = durableReplayItemsFromTaskEvents([
     taskEvent({
@@ -504,6 +667,115 @@ test('durable replay restores canonical tool run events through live projection'
     restored.traceEvents.some(event => event.kind === 'tool' && event.toolCall.callId === 'call-1'),
     'tool replay should restore trace tool event',
   );
+
+  streamStore.clearStream(conversationId);
+});
+
+test('durable replay restores direct canonical run events through live projection', () => {
+  const conversationId = 'conversation-run-event-replay';
+
+  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'outputDelta',
+      payload: { blockId: 'answer-block', channel: 'answer', offset: 0, delta: 'Checking' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'toolStarted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'running',
+      payload: { type: 'toolRunStarted', run: toolRun({ callId: 'call-1', status: 'running' }) },
+    }),
+    runEvent({
+      eventSeq: 3,
+      kind: 'toolCompleted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'completed',
+      payload: {
+        type: 'toolRunCompleted',
+        run: toolRun({ callId: 'call-1', status: 'completed', content: 'Found 2 notes' }),
+      },
+    }),
+    runEvent({
+      eventSeq: 4,
+      kind: 'done',
+      phase: 'done',
+      label: 'Final answer produced',
+      status: 'completed',
+      payload: { message: 'done', usageTotal: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } },
+    }),
+  ]);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'run event replay should create stream state');
+  assertEqual(restored.isStreaming, false, 'completed run should not remain streaming');
+  assertEqual(restored.toolCalls.length, 1, 'tool call count');
+  assertEqual(restored.toolCalls[0].status, 'done', 'tool status');
+  assertEqual(restored.toolCalls[0].content, 'Found 2 notes', 'tool content');
+  assertEqual(restored.streamRounds.length, 1, 'final answer round count');
+  assertEqual(restored.streamRounds[0].reply, 'Checking', 'streamed reply');
+
+  streamStore.clearStream(conversationId);
+});
+
+test('canonical run event projection matches live stream dispatch for render state', () => {
+  const conversationId = 'conversation-live-replay-equivalence';
+  const runEvents = [
+    runEvent({
+      eventSeq: 1,
+      kind: 'outputDelta',
+      payload: { blockId: 'answer-block', channel: 'answer', offset: 0, delta: 'Checking' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'toolStarted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'running',
+      payload: { type: 'toolRunStarted', run: toolRun({ callId: 'call-1', status: 'running' }) },
+    }),
+    runEvent({
+      eventSeq: 3,
+      kind: 'toolCompleted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'completed',
+      payload: {
+        type: 'toolRunCompleted',
+        run: toolRun({ callId: 'call-1', status: 'completed', content: 'Found 2 notes' }),
+      },
+    }),
+    runEvent({
+      eventSeq: 4,
+      kind: 'done',
+      phase: 'done',
+      label: 'Final answer produced',
+      status: 'completed',
+      payload: {
+        message: 'done',
+        usageTotal: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      },
+    }),
+  ];
+
+  const projected = projectRunEventsToStreamState(taskRun('completed'), runEvents);
+  streamStore.startStream(conversationId);
+  for (const event of runEvents) {
+    streamStore.dispatch(conversationId, frontendEvent(event));
+  }
+
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live dispatch should create stream state');
+  assertEqual(live.isStreaming, projected.isStreaming, 'streaming state equivalence');
+  assertEqual(live.streamRounds.length, projected.streamRounds.length, 'round count equivalence');
+  assertEqual(live.streamRounds[0].reply, projected.streamRounds[0].reply, 'reply equivalence');
+  assertEqual(live.toolCalls.length, projected.toolCalls.length, 'tool count equivalence');
+  assertEqual(live.toolCalls[0].status, projected.toolCalls[0].status, 'tool status equivalence');
+  assertEqual(live.toolCalls[0].content, projected.toolCalls[0].content, 'tool content equivalence');
+  assertEqual(live.lastUsage?.totalTokens, projected.lastUsage?.totalTokens, 'usage equivalence');
 
   streamStore.clearStream(conversationId);
 });

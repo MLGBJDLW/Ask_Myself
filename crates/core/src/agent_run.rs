@@ -35,6 +35,20 @@ impl AgentRunPhase {
             Self::Done => "done",
         }
     }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "routing" => Some(Self::Routing),
+            "planning" => Some(Self::Planning),
+            "responding" => Some(Self::Responding),
+            "tooling" => Some(Self::Tooling),
+            "approval" => Some(Self::Approval),
+            "compacting" => Some(Self::Compacting),
+            "accounting" => Some(Self::Accounting),
+            "done" => Some(Self::Done),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +73,25 @@ pub enum AgentRunEventKind {
 }
 
 impl AgentRunEventKind {
+    pub const ALL: [Self; 16] = [
+        Self::OutputDelta,
+        Self::StreamReset,
+        Self::Thinking,
+        Self::Status,
+        Self::PlanUpdated,
+        Self::ToolPreparing,
+        Self::ToolStarted,
+        Self::ToolProgress,
+        Self::ToolCompleted,
+        Self::ApprovalRequested,
+        Self::ApprovalResolved,
+        Self::RecoveryAttempt,
+        Self::UsageUpdated,
+        Self::AutoCompacted,
+        Self::Done,
+        Self::Error,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OutputDelta => "outputDelta",
@@ -77,6 +110,28 @@ impl AgentRunEventKind {
             Self::AutoCompacted => "autoCompacted",
             Self::Done => "done",
             Self::Error => "error",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "outputDelta" => Some(Self::OutputDelta),
+            "streamReset" => Some(Self::StreamReset),
+            "thinking" => Some(Self::Thinking),
+            "status" => Some(Self::Status),
+            "planUpdated" => Some(Self::PlanUpdated),
+            "toolPreparing" => Some(Self::ToolPreparing),
+            "toolStarted" => Some(Self::ToolStarted),
+            "toolProgress" => Some(Self::ToolProgress),
+            "toolCompleted" => Some(Self::ToolCompleted),
+            "approvalRequested" => Some(Self::ApprovalRequested),
+            "approvalResolved" => Some(Self::ApprovalResolved),
+            "recoveryAttempt" => Some(Self::RecoveryAttempt),
+            "usageUpdated" => Some(Self::UsageUpdated),
+            "autoCompacted" => Some(Self::AutoCompacted),
+            "done" => Some(Self::Done),
+            "error" => Some(Self::Error),
+            _ => None,
         }
     }
 
@@ -99,6 +154,117 @@ impl AgentRunEventKind {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRunEventKindContract {
+    pub kind: AgentRunEventKind,
+    pub required_payload_paths: &'static [&'static str],
+    pub alternative_payload_paths: &'static [&'static [&'static str]],
+}
+
+impl AgentRunEventKindContract {
+    pub fn for_kind(kind: AgentRunEventKind) -> Self {
+        match kind {
+            AgentRunEventKind::OutputDelta => Self {
+                kind,
+                required_payload_paths: &["delta"],
+                alternative_payload_paths: &[&["blockId", "channel", "offset", "delta"]],
+            },
+            AgentRunEventKind::StreamReset => Self {
+                kind,
+                required_payload_paths: &["reason"],
+                alternative_payload_paths: &[],
+            },
+            AgentRunEventKind::Thinking => Self {
+                kind,
+                required_payload_paths: &["content"],
+                alternative_payload_paths: &[],
+            },
+            AgentRunEventKind::Status => Self {
+                kind,
+                required_payload_paths: &["content"],
+                alternative_payload_paths: &[],
+            },
+            AgentRunEventKind::PlanUpdated => Self {
+                kind,
+                required_payload_paths: &["plan"],
+                alternative_payload_paths: &[],
+            },
+            AgentRunEventKind::ToolPreparing => Self {
+                kind,
+                required_payload_paths: &["toolName"],
+                alternative_payload_paths: &[&["run.toolName"]],
+            },
+            AgentRunEventKind::ToolStarted => Self {
+                kind,
+                required_payload_paths: &["toolName"],
+                alternative_payload_paths: &[&["run.toolName"]],
+            },
+            AgentRunEventKind::ToolProgress => Self {
+                kind,
+                required_payload_paths: &["note"],
+                alternative_payload_paths: &[&["run.toolName"]],
+            },
+            AgentRunEventKind::ToolCompleted => Self {
+                kind,
+                required_payload_paths: &["toolName"],
+                alternative_payload_paths: &[&["run.toolName"]],
+            },
+            AgentRunEventKind::ApprovalRequested => Self {
+                kind,
+                required_payload_paths: &["request"],
+                alternative_payload_paths: &[],
+            },
+            AgentRunEventKind::ApprovalResolved => Self {
+                kind,
+                required_payload_paths: &["requestId", "decision"],
+                alternative_payload_paths: &[],
+            },
+            AgentRunEventKind::RecoveryAttempt => Self {
+                kind,
+                required_payload_paths: &["reason"],
+                alternative_payload_paths: &[],
+            },
+            AgentRunEventKind::UsageUpdated => Self {
+                kind,
+                required_payload_paths: &["usageTotal", "lastPromptTokens"],
+                alternative_payload_paths: &[],
+            },
+            AgentRunEventKind::AutoCompacted => Self {
+                kind,
+                required_payload_paths: &["evictedCount"],
+                alternative_payload_paths: &[],
+            },
+            AgentRunEventKind::Done => Self {
+                kind,
+                required_payload_paths: &["message", "usageTotal"],
+                alternative_payload_paths: &[],
+            },
+            AgentRunEventKind::Error => Self {
+                kind,
+                required_payload_paths: &["message"],
+                alternative_payload_paths: &[],
+            },
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum AgentRunEventContractError {
+    #[error("unsupported event version {version}; expected {expected}")]
+    UnsupportedVersion { version: u16, expected: u16 },
+    #[error("durable event is missing run_id")]
+    MissingRunId,
+    #[error("durable event is missing turn_id")]
+    MissingTurnId,
+    #[error("durable event_seq must be greater than zero")]
+    MissingEventSequence,
+    #[error("{kind} event is missing payload field `{path}`")]
+    MissingPayloadField {
+        kind: &'static str,
+        path: &'static str,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRunEvent {
@@ -112,6 +278,8 @@ pub struct AgentRunEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     pub payload: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
 }
 
 impl AgentRunEvent {
@@ -268,6 +436,7 @@ impl AgentRunEvent {
             label,
             status,
             payload: serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({})),
+            created_at: None,
         }
     }
 
@@ -317,6 +486,7 @@ impl AgentRunEvent {
                 "offset": offset,
                 "delta": delta,
             }),
+            created_at: None,
         }
     }
 
@@ -331,6 +501,7 @@ impl AgentRunEvent {
             label: reason.to_string(),
             status: Some("running".to_string()),
             payload: serde_json::json!({ "reason": reason }),
+            created_at: None,
         }
     }
 
@@ -356,6 +527,7 @@ impl AgentRunEvent {
                 "attempt": attempt,
                 "mode": mode,
             }),
+            created_at: None,
         }
     }
 
@@ -368,6 +540,19 @@ impl AgentRunEvent {
         status: Option<&str>,
         payload: Option<&serde_json::Value>,
     ) -> Self {
+        let mut payload_map = match payload {
+            Some(serde_json::Value::Object(existing)) => existing.clone(),
+            Some(existing) => {
+                let mut map = serde_json::Map::new();
+                map.insert("data".to_string(), existing.clone());
+                map
+            }
+            None => serde_json::Map::new(),
+        };
+        payload_map
+            .entry("content".to_string())
+            .or_insert_with(|| serde_json::Value::String(label.to_string()));
+
         Self {
             version: AGENT_RUN_EVENT_VERSION,
             run_id: run_id.to_string(),
@@ -377,7 +562,8 @@ impl AgentRunEvent {
             phase,
             label: label.to_string(),
             status: status.map(str::to_string),
-            payload: payload.cloned().unwrap_or_else(|| serde_json::json!({})),
+            payload: serde_json::Value::Object(payload_map),
+            created_at: None,
         }
     }
 
@@ -421,6 +607,7 @@ impl AgentRunEvent {
             label: message.to_string(),
             status: Some(status.to_string()),
             payload: serde_json::Value::Object(payload_map),
+            created_at: None,
         }
     }
 
@@ -495,6 +682,72 @@ impl AgentRunEvent {
     pub fn is_terminal(&self) -> bool {
         self.kind.is_terminal()
     }
+
+    pub fn validate_durable_contract(&self) -> Result<(), AgentRunEventContractError> {
+        if self.version != AGENT_RUN_EVENT_VERSION {
+            return Err(AgentRunEventContractError::UnsupportedVersion {
+                version: self.version,
+                expected: AGENT_RUN_EVENT_VERSION,
+            });
+        }
+        if self.run_id.trim().is_empty() {
+            return Err(AgentRunEventContractError::MissingRunId);
+        }
+        if self.turn_id.trim().is_empty() {
+            return Err(AgentRunEventContractError::MissingTurnId);
+        }
+        if self.event_seq == 0 {
+            return Err(AgentRunEventContractError::MissingEventSequence);
+        }
+
+        let contract = AgentRunEventKindContract::for_kind(self.kind);
+        if payload_has_all_paths(&self.payload, contract.required_payload_paths)
+            || contract
+                .alternative_payload_paths
+                .iter()
+                .any(|paths| payload_has_all_paths(&self.payload, paths))
+        {
+            return Ok(());
+        }
+
+        let first_missing = contract
+            .required_payload_paths
+            .iter()
+            .copied()
+            .find(|path| !payload_has_path(&self.payload, path))
+            .unwrap_or_else(|| {
+                contract
+                    .required_payload_paths
+                    .first()
+                    .copied()
+                    .unwrap_or("")
+            });
+
+        Err(AgentRunEventContractError::MissingPayloadField {
+            kind: self.kind.as_str(),
+            path: first_missing,
+        })
+    }
+}
+
+fn payload_has_all_paths(payload: &serde_json::Value, paths: &[&str]) -> bool {
+    paths.iter().all(|path| payload_has_path(payload, path))
+}
+
+fn payload_has_path(payload: &serde_json::Value, path: &str) -> bool {
+    let mut current = payload;
+    for part in path.split('.') {
+        match current {
+            serde_json::Value::Object(map) => {
+                let Some(next) = map.get(part) else {
+                    return false;
+                };
+                current = next;
+            }
+            _ => return false,
+        }
+    }
+    !current.is_null()
 }
 
 fn recovery_metadata(reason: &str) -> (AgentRunEventKind, AgentRunPhase, String, Option<String>) {
@@ -542,6 +795,7 @@ fn plan_phase(phase: &str) -> AgentRunPhase {
 mod tests {
     use super::*;
     use crate::agent::{ToolRunItem, ToolRunStatus};
+    use crate::approval::{ApprovalDecision, ApprovalRequest, ApprovalRisk};
     use crate::llm::{Message, Role, Usage};
     use crate::tools::{
         ToolInputStreamingMode, ToolInterruptBehavior, ToolRenderKind, ToolRunCapabilities,
@@ -676,6 +930,31 @@ mod tests {
         assert_eq!(run_event.event_seq, 3);
         assert_eq!(run_event.status.as_deref(), Some("queued"));
         assert_eq!(run_event.payload["detail"], "queued");
+        assert_eq!(run_event.payload["content"], "Task queued");
+        run_event.validate_durable_contract().unwrap();
+    }
+
+    #[test]
+    fn parses_wire_values_for_storage_round_trips() {
+        for kind in AgentRunEventKind::ALL {
+            assert_eq!(AgentRunEventKind::from_wire(kind.as_str()), Some(kind));
+        }
+
+        for phase in [
+            AgentRunPhase::Routing,
+            AgentRunPhase::Planning,
+            AgentRunPhase::Responding,
+            AgentRunPhase::Tooling,
+            AgentRunPhase::Approval,
+            AgentRunPhase::Compacting,
+            AgentRunPhase::Accounting,
+            AgentRunPhase::Done,
+        ] {
+            assert_eq!(AgentRunPhase::from_wire(phase.as_str()), Some(phase));
+        }
+
+        assert_eq!(AgentRunEventKind::from_wire("missing"), None);
+        assert_eq!(AgentRunPhase::from_wire("missing"), None);
     }
 
     #[test]
@@ -720,5 +999,171 @@ mod tests {
         assert_eq!(payload["agentRun"]["version"], AGENT_RUN_EVENT_VERSION);
         assert_eq!(payload["agentRun"]["kind"], "outputDelta");
         assert_eq!(payload["agentRun"]["eventSeq"], 9);
+    }
+
+    #[test]
+    fn every_event_kind_has_a_durable_contract() {
+        for kind in AgentRunEventKind::ALL {
+            let contract = AgentRunEventKindContract::for_kind(kind);
+            assert_eq!(contract.kind, kind);
+            assert!(
+                !contract.required_payload_paths.is_empty(),
+                "{} should declare required payload fields",
+                kind.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn durable_contract_rejects_missing_context() {
+        let event = AgentRunEvent::from_agent_event(&AgentEvent::Status {
+            content: "working".to_string(),
+            tone: None,
+        });
+
+        assert_eq!(
+            event.validate_durable_contract().unwrap_err(),
+            AgentRunEventContractError::MissingRunId
+        );
+    }
+
+    #[test]
+    fn agent_event_variants_project_to_valid_durable_contracts() {
+        let approval_request = ApprovalRequest::new(
+            "approval-1",
+            "run_shell",
+            &serde_json::json!({ "command": "echo ok" }),
+            ApprovalRisk::High,
+            "test approval",
+        );
+        let events = vec![
+            AgentEvent::TextDelta {
+                delta: "a".to_string(),
+            },
+            AgentEvent::StreamBlockDelta {
+                block_id: "block-1".to_string(),
+                channel: StreamBlockChannel::Answer,
+                offset: 0,
+                delta: "b".to_string(),
+            },
+            AgentEvent::StreamReset {
+                reason: "provider stream reset".to_string(),
+            },
+            AgentEvent::StreamReset {
+                reason: "retry after provider disconnect".to_string(),
+            },
+            AgentEvent::ToolCallPreparing {
+                call_id: "call-1".to_string(),
+                tool_name: "search_knowledge_base".to_string(),
+                args_bytes: 12,
+                index: 0,
+            },
+            AgentEvent::ToolCallStart {
+                call_id: "call-1".to_string(),
+                tool_name: "search_knowledge_base".to_string(),
+                arguments: "{}".to_string(),
+            },
+            AgentEvent::ToolCallArgsDelta {
+                call_id: "call-1".to_string(),
+                tool_name: "search_knowledge_base".to_string(),
+                arguments_delta: "{\"q\"".to_string(),
+                index: 0,
+            },
+            AgentEvent::ToolCallProgress {
+                call_id: "call-1".to_string(),
+                note: "searching".to_string(),
+            },
+            AgentEvent::ToolCallResult {
+                call_id: "call-1".to_string(),
+                tool_name: "search_knowledge_base".to_string(),
+                content: "ok".to_string(),
+                is_error: false,
+                artifacts: None,
+            },
+            AgentEvent::ToolRunStarted {
+                run: sample_tool_run(ToolRunStatus::Running),
+            },
+            AgentEvent::ToolRunUpdated {
+                run: sample_tool_run(ToolRunStatus::Running),
+            },
+            AgentEvent::ToolRunCompleted {
+                run: sample_tool_run(ToolRunStatus::Completed),
+            },
+            AgentEvent::Thinking {
+                content: "thinking".to_string(),
+            },
+            AgentEvent::Status {
+                content: "Route selected: Direct".to_string(),
+                tone: None,
+            },
+            AgentEvent::PlanUpdated {
+                plan: serde_json::json!({ "items": [] }),
+                phase: Some("planning".to_string()),
+                summary: Some("planned".to_string()),
+            },
+            AgentEvent::Done {
+                message: Message::text(Role::Assistant, "done"),
+                usage_total: Usage::default(),
+                last_prompt_tokens: 0,
+                context_breakdown: None,
+                cached: false,
+                finish_reason: Some("stop".to_string()),
+            },
+            AgentEvent::UsageUpdate {
+                usage_total: Usage::default(),
+                last_prompt_tokens: 42,
+                context_breakdown: None,
+            },
+            AgentEvent::Error {
+                message: "failed".to_string(),
+            },
+            AgentEvent::AutoCompacted { evicted_count: 2 },
+            AgentEvent::ApprovalRequested {
+                request: approval_request.clone(),
+            },
+            AgentEvent::ApprovalResolved {
+                request_id: approval_request.id.clone(),
+                decision: ApprovalDecision::Deny,
+            },
+        ];
+
+        for (index, event) in events.into_iter().enumerate() {
+            let run_event = AgentRunEvent::from_agent_event(&event).with_context(
+                Some("run-1"),
+                Some("turn-1"),
+                Some(index as u64 + 1),
+            );
+            run_event.validate_durable_contract().unwrap_or_else(|err| {
+                panic!(
+                    "projected {:?} into invalid {:?}: {err}",
+                    event, run_event.kind
+                )
+            });
+        }
+    }
+
+    fn sample_tool_run(status: ToolRunStatus) -> ToolRunItem {
+        ToolRunItem {
+            call_id: "call-1".to_string(),
+            tool_name: "search_knowledge_base".to_string(),
+            plugin: crate::plugins::plugin_for_tool("search_knowledge_base"),
+            status,
+            arguments: Some("{}".to_string()),
+            render_kind: ToolRenderKind::Search,
+            capabilities: ToolRunCapabilities {
+                input_streaming: ToolInputStreamingMode::None,
+                render_kind: ToolRenderKind::Search,
+                read_only: true,
+                destructive: false,
+                concurrency_safe: true,
+                interrupt_behavior: ToolInterruptBehavior::Block,
+                resource_keys: vec!["source:notes".to_string()],
+            },
+            content: Some("ok".to_string()),
+            is_error: Some(false),
+            artifacts: None,
+            progress_note: Some("searching".to_string()),
+            duration_ms: Some(12),
+        }
     }
 }

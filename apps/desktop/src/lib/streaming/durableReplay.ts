@@ -1,8 +1,9 @@
-import type { AgentTaskRunEvent } from '../../types/conversation';
+import type { AgentRunEvent, AgentTaskRun, AgentTaskRunEvent } from '../../types/conversation';
 import { applyStreamBlockDelta } from './blockProjection';
 import { normalizeAgentEventType } from './eventTypes';
 import {
   isDurableStreamEvent,
+  replayItemFromRunEvent,
   replayItemFromTaskEvent,
   type ReplayStreamItem,
 } from './legacyAdapter';
@@ -12,7 +13,11 @@ import {
   applyStreamResetProjection,
   applyTerminalProjection,
 } from './terminalProjection';
-import type { InternalStreamState } from './state';
+import {
+  createDefaultState,
+  taskRunIsActive,
+  type InternalStreamState,
+} from './state';
 import { isTaskTimelineEvent } from './taskTimeline';
 import { createToolCall, insertPendingToolCall, type ToolPreparingPayload } from './toolProjection';
 
@@ -31,11 +36,18 @@ export function durableReplayItemsFromTaskEvents(events: AgentTaskRunEvent[]): R
     .sort((a, b) => a.eventSeq - b.eventSeq);
 }
 
-export function applyDurableReplayToState(
+export function durableReplayItemsFromRunEvents(events: AgentRunEvent[]): ReplayStreamItem[] {
+  return events
+    .map(replayItemFromRunEvent)
+    .filter((item): item is ReplayStreamItem => Boolean(item))
+    .sort((a, b) => a.eventSeq - b.eventSeq);
+}
+
+function applyDurableReplayItemsToState(
   state: DurableReplayProjectionState,
-  events: AgentTaskRunEvent[],
+  items: ReplayStreamItem[],
 ): void {
-  for (const item of durableReplayItemsFromTaskEvents(events)) {
+  for (const item of items) {
     if (item.eventSeq <= state._lastEventSeq) continue;
     state._lastEventSeq = item.eventSeq;
 
@@ -109,6 +121,45 @@ export function applyDurableReplayToState(
       );
     }
   }
+}
+
+export function applyDurableReplayToState(
+  state: DurableReplayProjectionState,
+  events: AgentTaskRunEvent[],
+): void {
+  applyDurableReplayItemsToState(state, durableReplayItemsFromTaskEvents(events));
+}
+
+export function applyDurableRunEventsToState(
+  state: DurableReplayProjectionState,
+  events: AgentRunEvent[],
+): void {
+  applyDurableReplayItemsToState(state, durableReplayItemsFromRunEvents(events));
+}
+
+export function projectTaskEventsToStreamState(
+  taskRun: AgentTaskRun,
+  taskEvents: AgentTaskRunEvent[],
+): DurableReplayProjectionState {
+  const state = createDefaultState();
+  state.isStreaming = taskRunIsActive(taskRun);
+  state.taskRun = taskRun;
+  state.taskEvents = taskTimelineEventsFromReplaySource(taskEvents);
+  applyDurableReplayToState(state, taskEvents);
+  return state;
+}
+
+export function projectRunEventsToStreamState(
+  taskRun: AgentTaskRun,
+  runEvents: AgentRunEvent[],
+  taskEvents: AgentTaskRunEvent[] = [],
+): DurableReplayProjectionState {
+  const state = createDefaultState();
+  state.isStreaming = taskRunIsActive(taskRun);
+  state.taskRun = taskRun;
+  state.taskEvents = taskTimelineEventsFromReplaySource(taskEvents);
+  applyDurableRunEventsToState(state, runEvents);
+  return state;
 }
 
 function applyToolPreparingReplay(

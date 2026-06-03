@@ -224,6 +224,17 @@ pub async fn get_agent_task_run_events_cmd(
 }
 
 #[tauri::command]
+pub async fn get_agent_run_events_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<AgentRunEvent>, String> {
+    state
+        .db
+        .list_agent_run_events(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_agent_subtask_runs_cmd(
     state: tauri::State<'_, AppState>,
     run_id: String,

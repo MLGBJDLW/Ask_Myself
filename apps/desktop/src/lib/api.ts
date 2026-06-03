@@ -26,6 +26,7 @@ import type {
   AgentTaskRun,
   AgentTaskRunListItem,
   AgentTaskRunEvent,
+  AgentRunEvent,
   AgentSubtaskRun,
   AgentExecutionGraph,
   AgentTaskArtifact,
@@ -59,8 +60,20 @@ import type {
   SkillProposalStatus,
   AppliedSkillChange,
 } from "../types/extensions";
-import type { TraceSummary, AgentTrace } from "../types/trace";
-import type { QualityEvalReport } from "../types/qualityEval";
+import type {
+  TraceSummary,
+  AgentTrace,
+  Trajectory,
+  TrajectoryRedactionProfile,
+  TrajectoryStoreSummary,
+  EvalPack,
+  EvalReport,
+  StoredTrajectoryEvalReport,
+  TrajectoryReplayRequest,
+  TrajectoryReplayReport,
+  TrajectoryReplayExecution,
+} from "../types/trace";
+import type { DeveloperEvalSmokeReport, QualityEvalReport } from "../types/qualityEval";
 import type {
   BrowserEvidenceCapture,
   InvestigationGraph,
@@ -617,6 +630,15 @@ export const recordWorkflowAutomationRun = (
   summary: summary ?? null,
 });
 
+export const exportWorkflowAutomationTrajectory = (
+  workflowRunId: string,
+  redactionProfile?: TrajectoryRedactionProfile,
+) =>
+  invoke<Trajectory>('export_workflow_automation_trajectory_cmd', {
+    workflowRunId,
+    redactionProfile,
+  });
+
 // ── Conversations ───────────────────────────────────────────────────────
 
 export const createConversation = (
@@ -666,6 +688,9 @@ export const listRecentAgentTaskRuns = (limit = 50) =>
 
 export const getAgentTaskRunEvents = (runId: string) =>
   invoke<AgentTaskRunEvent[]>('get_agent_task_run_events_cmd', { runId });
+
+export const getAgentRunEvents = (runId: string) =>
+  invoke<AgentRunEvent[]>('get_agent_run_events_cmd', { runId });
 
 export const getAgentSubtaskRuns = (runId: string) =>
   invoke<AgentSubtaskRun[]>('get_agent_subtask_runs_cmd', { runId });
@@ -1181,6 +1206,39 @@ export const getTraceSummary = () =>
 
 export const getRecentTraces = (limit?: number) =>
   invoke<AgentTrace[]>('get_recent_traces', { limit });
+
+export const exportAgentTaskTrajectory = (
+  runId: string,
+  redactionProfile?: TrajectoryRedactionProfile,
+) =>
+  invoke<Trajectory>('export_agent_task_trajectory_cmd', {
+    runId,
+    redactionProfile,
+  });
+
+export const saveAgentTrajectory = (trajectory: Trajectory) =>
+  invoke<TrajectoryStoreSummary>('save_agent_trajectory_cmd', { trajectory });
+
+export const loadAgentTrajectory = (trajectoryId: string) =>
+  invoke<Trajectory>('load_agent_trajectory_cmd', { trajectoryId });
+
+export const listAgentTrajectories = (limit?: number) =>
+  invoke<TrajectoryStoreSummary[]>('list_agent_trajectories_cmd', { limit });
+
+export const runTrajectoryEvalPack = (pack: EvalPack) =>
+  invoke<EvalReport>('run_trajectory_eval_pack_cmd', { pack });
+
+export const compareTrajectoryReplay = (request: TrajectoryReplayRequest) =>
+  invoke<TrajectoryReplayReport>('compare_trajectory_replay_cmd', { request });
+
+export const replayTrajectorySession = (trajectoryId: string) =>
+  invoke<TrajectoryReplayExecution>('replay_trajectory_session_cmd', { trajectoryId });
+
+export const runStoredTrajectorySmokeEval = (limit?: number) =>
+  invoke<StoredTrajectoryEvalReport>('run_stored_trajectory_smoke_eval_cmd', { limit });
+
+export const runDeveloperEvalSmokeWorkflow = (trajectoryLimit?: number) =>
+  invoke<DeveloperEvalSmokeReport>('run_developer_eval_smoke_workflow_cmd', { trajectoryLimit });
 
 export const runAgentQualityEval = () =>
   invoke<QualityEvalReport>('run_agent_quality_eval_cmd');

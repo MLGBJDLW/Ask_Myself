@@ -123,6 +123,7 @@ export interface AgentRunEvent {
   label: string;
   status?: string | null;
   payload: ArtifactPayload | null;
+  createdAt?: string | null;
 }
 
 export type TaskTimelineEventKind = 'subtask' | 'verification';

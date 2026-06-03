@@ -268,6 +268,408 @@ impl Database {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Durable agent run event persistence
+// ---------------------------------------------------------------------------
+
+impl Database {
+    /// Persist one durable agent run event after validating the protocol contract.
+    pub fn save_agent_run_event(
+        &self,
+        event: &crate::agent_run::AgentRunEvent,
+    ) -> Result<(), CoreError> {
+        event
+            .validate_durable_contract()
+            .map_err(|err| CoreError::InvalidInput(format!("invalid agent run event: {err}")))?;
+        let event_seq = agent_event_seq_to_i64(event.event_seq)?;
+        let payload_json = serde_json::to_string(&event.payload)?;
+
+        let conn = self.conn();
+        conn.execute(
+            "INSERT OR REPLACE INTO agent_run_events
+             (run_id, turn_id, event_seq, version, kind, phase, label, status, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                event.run_id,
+                event.turn_id,
+                event_seq,
+                event.version as i64,
+                event.kind.as_str(),
+                event.phase.as_str(),
+                event.label,
+                event.status,
+                payload_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Persist a batch of durable agent run events in one transaction.
+    pub fn save_agent_run_events(
+        &self,
+        events: &[crate::agent_run::AgentRunEvent],
+    ) -> Result<(), CoreError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        let mut prepared_events = Vec::with_capacity(events.len());
+        for event in events {
+            event.validate_durable_contract().map_err(|err| {
+                CoreError::InvalidInput(format!("invalid agent run event: {err}"))
+            })?;
+            prepared_events.push((
+                event,
+                agent_event_seq_to_i64(event.event_seq)?,
+                serde_json::to_string(&event.payload)?,
+            ));
+        }
+
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO agent_run_events
+                 (run_id, turn_id, event_seq, version, kind, phase, label, status, payload_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?;
+            for (event, event_seq, payload_json) in prepared_events {
+                stmt.execute(rusqlite::params![
+                    event.run_id,
+                    event.turn_id,
+                    event_seq,
+                    event.version as i64,
+                    event.kind.as_str(),
+                    event.phase.as_str(),
+                    event.label,
+                    event.status,
+                    payload_json,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Read durable agent run events for a run in event sequence order.
+    pub fn list_agent_run_events(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<crate::agent_run::AgentRunEvent>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT version, run_id, turn_id, event_seq, kind, phase, label, status, payload_json, created_at
+             FROM agent_run_events
+             WHERE run_id = ?1
+             ORDER BY event_seq ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![run_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+            ))
+        })?;
+
+        let mut events = Vec::new();
+        for row in rows {
+            let (
+                version,
+                run_id,
+                turn_id,
+                event_seq,
+                kind,
+                phase,
+                label,
+                status,
+                payload_json,
+                created_at,
+            ) = row?;
+            let event = crate::agent_run::AgentRunEvent {
+                version: u16::try_from(version).map_err(|_| {
+                    CoreError::Internal(format!(
+                        "stored agent run event has invalid version {version}"
+                    ))
+                })?,
+                run_id,
+                turn_id,
+                event_seq: u64::try_from(event_seq).map_err(|_| {
+                    CoreError::Internal(format!(
+                        "stored agent run event has invalid sequence {event_seq}"
+                    ))
+                })?,
+                kind: crate::agent_run::AgentRunEventKind::from_wire(&kind).ok_or_else(|| {
+                    CoreError::Internal(format!("stored agent run event has unknown kind '{kind}'"))
+                })?,
+                phase: crate::agent_run::AgentRunPhase::from_wire(&phase).ok_or_else(|| {
+                    CoreError::Internal(format!(
+                        "stored agent run event has unknown phase '{phase}'"
+                    ))
+                })?,
+                label,
+                status,
+                payload: serde_json::from_str(&payload_json)?,
+                created_at: Some(created_at),
+            };
+            event.validate_durable_contract().map_err(|err| {
+                CoreError::Internal(format!("stored agent run event violates contract: {err}"))
+            })?;
+            events.push(event);
+        }
+
+        Ok(events)
+    }
+}
+
+fn agent_event_seq_to_i64(event_seq: u64) -> Result<i64, CoreError> {
+    i64::try_from(event_seq).map_err(|_| {
+        CoreError::InvalidInput(format!(
+            "agent run event_seq {event_seq} exceeds SQLite integer range"
+        ))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Trajectory persistence
+// ---------------------------------------------------------------------------
+
+impl Database {
+    /// Save or import a versioned trajectory fixture with indexed summary fields.
+    pub fn save_agent_trajectory(
+        &self,
+        trajectory: &crate::trajectory::Trajectory,
+    ) -> Result<crate::trajectory::TrajectoryStoreSummary, CoreError> {
+        let mut trajectory = trajectory.clone();
+        validate_trajectory_for_storage(&mut trajectory)?;
+        let (source_kind, source_run_id) =
+            crate::trajectory::trajectory_source_identity(&trajectory.trajectory_id);
+        let redaction_profile = trajectory_redaction_profile_wire(trajectory.sanitization.profile)?;
+        let trajectory_json = serde_json::to_string(&trajectory)?;
+        let event_count = usize_to_i64(trajectory.metrics.event_count, "event_count")?;
+        let tool_call_count = usize_to_i64(trajectory.metrics.tool_call_count, "tool_call_count")?;
+        let approval_count = usize_to_i64(trajectory.metrics.approval_count, "approval_count")?;
+        let task_run_count = usize_to_i64(trajectory.metrics.task_run_count, "task_run_count")?;
+
+        let conn = self.conn();
+        conn.execute(
+            "INSERT OR REPLACE INTO agent_trajectories
+             (trajectory_id, schema_version, source_kind, source_run_id, user_input_summary,
+              outcome, event_count, tool_call_count, approval_count, task_run_count,
+              redaction_profile, trajectory_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'))",
+            rusqlite::params![
+                &trajectory.trajectory_id,
+                trajectory.schema_version as i64,
+                &source_kind,
+                &source_run_id,
+                &trajectory.user_input_summary,
+                &trajectory.outcome,
+                event_count,
+                tool_call_count,
+                approval_count,
+                task_run_count,
+                &redaction_profile,
+                &trajectory_json,
+                &trajectory.created_at,
+            ],
+        )?;
+        drop(conn);
+        self.get_agent_trajectory_summary(&trajectory.trajectory_id)
+    }
+
+    pub fn load_agent_trajectory(
+        &self,
+        trajectory_id: &str,
+    ) -> Result<crate::trajectory::Trajectory, CoreError> {
+        let conn = self.conn();
+        let trajectory_json = conn
+            .query_row(
+                "SELECT trajectory_json FROM agent_trajectories WHERE trajectory_id = ?1",
+                rusqlite::params![trajectory_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    CoreError::NotFound(format!("Trajectory {trajectory_id}"))
+                }
+                other => CoreError::Database(other),
+            })?;
+        let mut trajectory: crate::trajectory::Trajectory = serde_json::from_str(&trajectory_json)?;
+        validate_trajectory_for_storage(&mut trajectory)?;
+        Ok(trajectory)
+    }
+
+    pub fn get_agent_trajectory_summary(
+        &self,
+        trajectory_id: &str,
+    ) -> Result<crate::trajectory::TrajectoryStoreSummary, CoreError> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT trajectory_id, schema_version, source_kind, source_run_id,
+                    user_input_summary, outcome, event_count, tool_call_count,
+                    approval_count, task_run_count, redaction_profile, created_at, updated_at
+             FROM agent_trajectories
+             WHERE trajectory_id = ?1",
+            rusqlite::params![trajectory_id],
+            trajectory_summary_from_row,
+        )
+        .map_err(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("Trajectory {trajectory_id}"))
+            }
+            other => CoreError::Database(other),
+        })
+    }
+
+    pub fn list_agent_trajectory_summaries(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::trajectory::TrajectoryStoreSummary>, CoreError> {
+        let bounded_limit = i64::try_from(limit.clamp(1, 500)).unwrap_or(500);
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT trajectory_id, schema_version, source_kind, source_run_id,
+                    user_input_summary, outcome, event_count, tool_call_count,
+                    approval_count, task_run_count, redaction_profile, created_at, updated_at
+             FROM agent_trajectories
+             ORDER BY datetime(created_at) DESC, datetime(updated_at) DESC, trajectory_id DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![bounded_limit],
+            trajectory_summary_from_row,
+        )?;
+        let mut summaries = Vec::new();
+        for row in rows {
+            summaries.push(row?);
+        }
+        Ok(summaries)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::trajectory::TrajectoryStore for Database {
+    async fn save_trajectory(
+        &self,
+        trajectory: crate::trajectory::Trajectory,
+    ) -> Result<(), CoreError> {
+        self.save_agent_trajectory(&trajectory).map(|_| ())
+    }
+
+    async fn load_trajectory(
+        &self,
+        trajectory_id: &str,
+    ) -> Result<crate::trajectory::Trajectory, CoreError> {
+        self.load_agent_trajectory(trajectory_id)
+    }
+
+    async fn list_trajectory_summaries(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::trajectory::TrajectoryStoreSummary>, CoreError> {
+        self.list_agent_trajectory_summaries(limit)
+    }
+}
+
+fn validate_trajectory_for_storage(
+    trajectory: &mut crate::trajectory::Trajectory,
+) -> Result<(), CoreError> {
+    if trajectory.trajectory_id.trim().is_empty() {
+        return Err(CoreError::InvalidInput(
+            "trajectory_id must not be empty".to_string(),
+        ));
+    }
+    if trajectory.created_at.trim().is_empty() {
+        return Err(CoreError::InvalidInput(
+            "trajectory created_at must not be empty".to_string(),
+        ));
+    }
+    if trajectory.schema_version != crate::trajectory::TRAJECTORY_SCHEMA_VERSION {
+        return Err(CoreError::InvalidInput(format!(
+            "unsupported trajectory schema version {}",
+            trajectory.schema_version
+        )));
+    }
+    trajectory.refresh_metrics();
+    trajectory
+        .validate_run_events()
+        .map_err(|err| CoreError::InvalidInput(format!("invalid trajectory run event: {err}")))?;
+    Ok(())
+}
+
+fn trajectory_redaction_profile_wire(
+    profile: crate::trajectory::TrajectoryRedactionProfile,
+) -> Result<String, CoreError> {
+    let value = serde_json::to_value(profile)?;
+    value
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| CoreError::Internal("serialize trajectory redaction profile".to_string()))
+}
+
+fn trajectory_redaction_profile_from_wire(
+    value: &str,
+) -> Result<crate::trajectory::TrajectoryRedactionProfile, CoreError> {
+    serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(CoreError::from)
+}
+
+fn trajectory_summary_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<crate::trajectory::TrajectoryStoreSummary> {
+    let redaction_profile: String = row.get(10)?;
+    let redaction_profile =
+        trajectory_redaction_profile_from_wire(&redaction_profile).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(
+                10,
+                rusqlite::types::Type::Text,
+                Box::new(err),
+            )
+        })?;
+    Ok(crate::trajectory::TrajectoryStoreSummary {
+        trajectory_id: row.get(0)?,
+        schema_version: u16::try_from(row.get::<_, i64>(1)?).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Integer,
+                Box::new(err),
+            )
+        })?,
+        source_kind: row.get(2)?,
+        source_run_id: row.get(3)?,
+        user_input_summary: row.get(4)?,
+        outcome: row.get(5)?,
+        event_count: i64_to_usize(row.get(6)?, 6)?,
+        tool_call_count: i64_to_usize(row.get(7)?, 7)?,
+        approval_count: i64_to_usize(row.get(8)?, 8)?,
+        task_run_count: i64_to_usize(row.get(9)?, 9)?,
+        redaction_profile,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
+fn usize_to_i64(value: usize, field: &str) -> Result<i64, CoreError> {
+    i64::try_from(value)
+        .map_err(|_| CoreError::InvalidInput(format!("trajectory {field} exceeds SQLite integer")))
+}
+
+fn i64_to_usize(value: i64, column: usize) -> rusqlite::Result<usize> {
+    usize::try_from(value).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Integer,
+            Box::new(err),
+        )
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
@@ -734,6 +1136,130 @@ mod tests {
         assert_eq!(query_text, "how to deploy?");
         assert_eq!(result_count, 5);
         assert_eq!(duration, 42);
+    }
+
+    #[test]
+    fn test_agent_run_events_round_trip_in_sequence_order() {
+        let db = Database::open_memory().unwrap();
+        let finished = crate::agent_run::AgentRunEvent::terminal_error(
+            "run-db-1",
+            Some("turn-db-1"),
+            2,
+            "Agent execution timed out.",
+            "timed_out",
+            Some(&serde_json::json!({ "reason": "timeout" })),
+        );
+        let routed = crate::agent_run::AgentRunEvent::status_update(
+            "run-db-1",
+            Some("turn-db-1"),
+            1,
+            crate::agent_run::AgentRunPhase::Routing,
+            "Route selected: Direct",
+            Some("running"),
+            None,
+        );
+
+        db.save_agent_run_events(&[finished, routed])
+            .expect("save events");
+
+        let events = db
+            .list_agent_run_events("run-db-1")
+            .expect("list saved events");
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_seq, 1);
+        assert_eq!(events[0].kind, crate::agent_run::AgentRunEventKind::Status);
+        assert_eq!(events[0].payload["content"], "Route selected: Direct");
+        assert_eq!(events[1].event_seq, 2);
+        assert_eq!(events[1].kind, crate::agent_run::AgentRunEventKind::Error);
+        assert_eq!(events[1].status.as_deref(), Some("timed_out"));
+        assert_eq!(events[1].payload["reason"], "timeout");
+    }
+
+    #[test]
+    fn test_agent_run_events_reject_invalid_event_before_persisting_batch() {
+        let db = Database::open_memory().unwrap();
+        let valid = crate::agent_run::AgentRunEvent::status_update(
+            "run-db-2",
+            Some("turn-db-2"),
+            1,
+            crate::agent_run::AgentRunPhase::Routing,
+            "Route selected: Direct",
+            Some("running"),
+            None,
+        );
+        let invalid = crate::agent_run::AgentRunEvent::status_update(
+            "run-db-2",
+            Some("turn-db-2"),
+            0,
+            crate::agent_run::AgentRunPhase::Routing,
+            "Invalid sequence",
+            Some("running"),
+            None,
+        );
+
+        let err = db
+            .save_agent_run_events(&[valid, invalid])
+            .expect_err("invalid event should be rejected");
+
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+        assert!(
+            db.list_agent_run_events("run-db-2").unwrap().is_empty(),
+            "batch validation should reject before writing any event"
+        );
+    }
+
+    #[test]
+    fn test_agent_trajectory_store_round_trip_and_summary() {
+        let db = Database::open_memory().unwrap();
+        let mut trajectory = crate::trajectory::Trajectory::new(
+            "agent_task_run:run-store-1",
+            "2026-06-03T00:00:00Z",
+            crate::runtime::AgentSessionConfig::default(),
+        );
+        trajectory.user_input_summary = "Summarize the stored trajectory.".to_string();
+        trajectory.outcome = Some("success".to_string());
+        trajectory
+            .run_events
+            .push(crate::agent_run::AgentRunEvent::status_update(
+                "run-store-1",
+                Some("turn-store-1"),
+                1,
+                crate::agent_run::AgentRunPhase::Routing,
+                "Route selected: Direct",
+                Some("running"),
+                None,
+            ));
+        trajectory
+            .tool_calls
+            .push(serde_json::json!({ "toolName": "search" }));
+        trajectory
+            .approvals
+            .push(serde_json::json!({ "id": "approval-1" }));
+
+        let summary = db.save_agent_trajectory(&trajectory).unwrap();
+
+        assert_eq!(summary.trajectory_id, "agent_task_run:run-store-1");
+        assert_eq!(summary.source_kind, "agent_task_run");
+        assert_eq!(summary.source_run_id.as_deref(), Some("run-store-1"));
+        assert_eq!(summary.event_count, 1);
+        assert_eq!(summary.tool_call_count, 1);
+        assert_eq!(summary.approval_count, 1);
+        assert_eq!(
+            summary.redaction_profile,
+            crate::trajectory::TrajectoryRedactionProfile::FullLocalPrivate
+        );
+
+        let loaded = db
+            .load_agent_trajectory("agent_task_run:run-store-1")
+            .unwrap();
+        assert_eq!(loaded.trajectory_id, trajectory.trajectory_id);
+        assert_eq!(loaded.metrics.event_count, 1);
+        assert_eq!(loaded.metrics.tool_call_count, 1);
+
+        let listed = db.list_agent_trajectory_summaries(10).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].trajectory_id, "agent_task_run:run-store-1");
     }
 }
 

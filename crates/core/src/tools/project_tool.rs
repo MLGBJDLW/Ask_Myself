@@ -1,9 +1,7 @@
 //! ProjectTool - discover and run source-scoped project-local tool manifests.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -11,6 +9,9 @@ use serde_json::{json, Value};
 
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::execution_environment::{
+    ExecutionEnvironment, ExecutionRequest, LocalProcessExecutionEnvironment,
+};
 
 use super::{
     file_access_policy, scope_is_active, Tool, ToolCategory, ToolDef, ToolOutput, ToolResult,
@@ -365,35 +366,35 @@ async fn run_project_tool(
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
 
-    let mut process = tokio::process::Command::new(&command.program);
-    process
-        .args(&command_args)
-        .current_dir(&cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    let environment = LocalProcessExecutionEnvironment;
+    let mut execution_request = ExecutionRequest::for_project_tool(
+        command.program.clone(),
+        command_args.clone(),
+        vec![display_path(&record.source_root)],
+        record.manifest.access.network,
+        timeout_secs,
+    );
+    execution_request.cwd = Some(display_path(&cwd));
+    execution_request.expected_writes = if record.manifest.access.write {
+        vec![display_path(&record.source_root)]
+    } else {
+        Vec::new()
+    };
+    execution_request.sandbox.capture_file_changes = record.manifest.access.write;
+    let execution_artifact = environment.execute(execution_request).await?;
+    if execution_artifact.timed_out {
+        let output = ToolOutput::text(format!(
+            "Project tool '{name}' timed out after {timeout_secs}s."
+        ));
+        return Ok(ToolResult::from_output(call_id, true, output));
+    }
 
-    let output =
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output()).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(err)) => {
-                return Err(CoreError::Io(err));
-            }
-            Err(_) => {
-                let output = ToolOutput::text(format!(
-                    "Project tool '{name}' timed out after {timeout_secs}s."
-                ));
-                return Ok(ToolResult::from_output(call_id, true, output));
-            }
-        };
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = execution_artifact.stdout;
+    let stderr = execution_artifact.stderr;
     let (stdout, stdout_truncated) = truncate_output(stdout);
     let (stderr, stderr_truncated) = truncate_output(stderr);
-    let exit_code = output.status.code();
-    let success = output.status.success();
+    let exit_code = execution_artifact.exit_status;
+    let success = exit_code == Some(0);
     let command_display = format_command_display(&command.program, &command_args);
     let content = format_project_tool_run(
         name,
@@ -413,6 +414,7 @@ async fn run_project_tool(
             "cwd": display_path(&cwd),
             "timeoutSecs": timeout_secs,
         },
+        "executionEnvironment": environment.id(),
         "exitCode": exit_code,
         "success": success,
         "stdout": stdout,
@@ -968,5 +970,50 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("manifest changed"));
+    }
+
+    #[tokio::test]
+    async fn run_action_uses_execution_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            "cargo-version",
+            r#"{
+                "name": "cargo-version",
+                "description": "Report cargo version",
+                "command": {
+                    "program": "cargo",
+                    "args": ["--version"],
+                    "cwd": ".",
+                    "timeoutSecs": 30
+                },
+                "access": { "read": true, "write": false, "execute": true, "network": false }
+            }"#,
+        );
+        let db = setup_db_with_source(dir.path());
+        let manifest_hash = list_project_tool_catalog(&db, &[]).unwrap().tools[0]
+            .manifest_hash
+            .clone();
+        let tool = ProjectTool;
+        let args = json!({
+            "action": "run",
+            "name": "cargo-version",
+            "manifestHash": manifest_hash,
+        });
+
+        let result = tool
+            .execute("project-tools-run-env", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        let data = &result.artifacts.as_ref().unwrap()["data"];
+        assert_eq!(data["kind"], "projectToolRun");
+        assert_eq!(data["executionEnvironment"], "local_process");
+        assert_eq!(data["success"], true);
+        assert!(data["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cargo"));
     }
 }

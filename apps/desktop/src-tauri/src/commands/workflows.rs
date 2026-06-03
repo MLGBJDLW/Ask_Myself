@@ -1,10 +1,17 @@
 use super::*;
+use nexa_core::task_orchestrator::{workflow_due_run_queue_item, TaskOrchestratorQueueItem};
 use nexa_core::tools::{browser_evidence_tool::BrowserEvidenceCaptureTool, Tool};
 use nexa_core::workflow_automation::{
     BrowserEvidenceCapture, InvestigationGraph, LearningGovernanceSnapshot,
     SaveWorkflowAutomationInput, TaskResumeCheckpoint, TaskResumePrompt, WorkflowAutomation,
     WorkflowAutomationApprovalPolicy, WorkflowAutomationDueRun, WorkflowAutomationRun,
 };
+
+pub(super) fn workflow_due_runs_to_queue_items(
+    due_runs: &[WorkflowAutomationDueRun],
+) -> Vec<TaskOrchestratorQueueItem> {
+    due_runs.iter().map(workflow_due_run_queue_item).collect()
+}
 
 #[tauri::command]
 pub async fn save_workflow_automation_cmd(
@@ -81,6 +88,19 @@ pub async fn list_due_workflow_automations_cmd(
 }
 
 #[tauri::command]
+pub async fn list_due_task_orchestrator_queue_cmd(
+    state: tauri::State<'_, AppState>,
+    now: Option<String>,
+) -> Result<Vec<TaskOrchestratorQueueItem>, String> {
+    let now = now.unwrap_or_else(|| Utc::now().to_rfc3339());
+    let due_runs = state
+        .db
+        .list_due_workflow_automations(&now)
+        .map_err(|err| err.to_string())?;
+    Ok(workflow_due_runs_to_queue_items(&due_runs))
+}
+
+#[tauri::command]
 pub async fn preview_workflow_automation_prompt_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -108,6 +128,21 @@ pub async fn record_workflow_automation_run_cmd(
             summary.as_deref(),
         )
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn export_workflow_automation_trajectory_cmd(
+    state: tauri::State<'_, AppState>,
+    workflow_run_id: String,
+    redaction_profile: Option<nexa_core::trajectory::TrajectoryRedactionProfile>,
+) -> Result<nexa_core::trajectory::Trajectory, String> {
+    nexa_core::trajectory::export_workflow_automation_run_trajectory(
+        state.db.as_ref(),
+        &workflow_run_id,
+        redaction_profile
+            .unwrap_or(nexa_core::trajectory::TrajectoryRedactionProfile::FullLocalPrivate),
+    )
+    .map_err(|err| err.to_string())
 }
 
 #[tauri::command]

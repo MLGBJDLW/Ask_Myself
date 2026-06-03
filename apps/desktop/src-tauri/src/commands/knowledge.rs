@@ -21,6 +21,112 @@ pub fn get_recent_traces(
 }
 
 #[tauri::command]
+pub fn export_agent_task_trajectory_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+    redaction_profile: Option<nexa_core::trajectory::TrajectoryRedactionProfile>,
+) -> Result<nexa_core::trajectory::Trajectory, String> {
+    nexa_core::trajectory::export_agent_task_run_trajectory(
+        state.db.as_ref(),
+        &run_id,
+        redaction_profile
+            .unwrap_or(nexa_core::trajectory::TrajectoryRedactionProfile::FullLocalPrivate),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_agent_trajectory_cmd(
+    state: tauri::State<'_, AppState>,
+    trajectory: nexa_core::trajectory::Trajectory,
+) -> Result<nexa_core::trajectory::TrajectoryStoreSummary, String> {
+    state
+        .db
+        .save_agent_trajectory(&trajectory)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn load_agent_trajectory_cmd(
+    state: tauri::State<'_, AppState>,
+    trajectory_id: String,
+) -> Result<nexa_core::trajectory::Trajectory, String> {
+    state
+        .db
+        .load_agent_trajectory(&trajectory_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_agent_trajectories_cmd(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<nexa_core::trajectory::TrajectoryStoreSummary>, String> {
+    state
+        .db
+        .list_agent_trajectory_summaries(limit.unwrap_or(50))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn run_trajectory_eval_pack_cmd(
+    state: tauri::State<'_, AppState>,
+    pack: nexa_core::eval_harness::EvalPack,
+) -> Result<nexa_core::eval_harness::EvalReport, String> {
+    let db = state.db.clone();
+    nexa_core::eval_harness::evaluate_pack_from_store(db.as_ref(), &pack)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn compare_trajectory_replay_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::eval_harness::TrajectoryReplayRequest,
+) -> Result<nexa_core::eval_harness::TrajectoryReplayReport, String> {
+    let db = state.db.clone();
+    nexa_core::eval_harness::evaluate_replay_from_store(db.as_ref(), &request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn replay_trajectory_session_cmd(
+    state: tauri::State<'_, AppState>,
+    trajectory_id: String,
+) -> Result<nexa_core::eval_harness::TrajectoryReplayExecution, String> {
+    let db = state.db.clone();
+    nexa_core::eval_harness::replay_trajectory_from_store(db.as_ref(), &trajectory_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn run_stored_trajectory_smoke_eval_cmd(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<nexa_core::eval_harness::StoredTrajectoryEvalReport, String> {
+    let db = state.db.clone();
+    nexa_core::eval_harness::run_stored_trajectory_smoke_eval(db.as_ref(), limit.unwrap_or(50))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn run_developer_eval_smoke_workflow_cmd(
+    state: tauri::State<'_, AppState>,
+    trajectory_limit: Option<usize>,
+) -> Result<nexa_core::eval_harness::DeveloperEvalSmokeReport, String> {
+    let db = state.db.clone();
+    nexa_core::eval_harness::run_developer_eval_smoke_workflow(
+        db.as_ref(),
+        trajectory_limit.unwrap_or(50),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn run_agent_quality_eval_cmd() -> nexa_core::quality_eval::QualityEvalReport {
     nexa_core::quality_eval::run_agent_quality_eval()
 }

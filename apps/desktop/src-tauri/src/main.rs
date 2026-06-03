@@ -5,6 +5,7 @@ mod agent_stream_bridge;
 mod agent_task_events;
 mod app_events;
 mod commands;
+mod desktop_agent_session;
 mod subagent_tool;
 
 use std::collections::HashMap;
@@ -261,6 +262,7 @@ fn main() {
             commands::get_agent_task_runs_cmd,
             commands::list_recent_agent_task_runs_cmd,
             commands::get_agent_task_run_events_cmd,
+            commands::get_agent_run_events_cmd,
             commands::get_agent_subtask_runs_cmd,
             commands::get_agent_execution_graph_cmd,
             commands::get_agent_task_artifacts_cmd,
@@ -322,8 +324,10 @@ fn main() {
             commands::delete_workflow_automation_cmd,
             commands::set_workflow_automation_enabled_cmd,
             commands::list_due_workflow_automations_cmd,
+            commands::list_due_task_orchestrator_queue_cmd,
             commands::preview_workflow_automation_prompt_cmd,
             commands::record_workflow_automation_run_cmd,
+            commands::export_workflow_automation_trajectory_cmd,
             // Agent chat
             commands::agent_chat_cmd,
             commands::agent_steer_cmd,
@@ -395,6 +399,15 @@ fn main() {
             // Trace analytics
             commands::get_trace_summary,
             commands::get_recent_traces,
+            commands::export_agent_task_trajectory_cmd,
+            commands::save_agent_trajectory_cmd,
+            commands::load_agent_trajectory_cmd,
+            commands::list_agent_trajectories_cmd,
+            commands::run_trajectory_eval_pack_cmd,
+            commands::compare_trajectory_replay_cmd,
+            commands::replay_trajectory_session_cmd,
+            commands::run_stored_trajectory_smoke_eval_cmd,
+            commands::run_developer_eval_smoke_workflow_cmd,
             commands::run_agent_quality_eval_cmd,
             commands::get_learning_governance_snapshot_cmd,
             commands::capture_browser_evidence_cmd,

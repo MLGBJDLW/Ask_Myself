@@ -256,14 +256,29 @@ impl Tool for ManageSkillTool {
                 } else {
                     "skill"
                 };
+                let artifacts = if action == "activate_skill" {
+                    let activation = crate::skills::build_skill_activation_envelope(
+                        &skill,
+                        Some("manage_skill.activate_skill"),
+                        None,
+                        true,
+                    );
+                    serde_json::json!({
+                        "kind": artifact_kind,
+                        "skill": &skill,
+                        "activation": activation
+                    })
+                } else {
+                    serde_json::json!({
+                        "kind": artifact_kind,
+                        "skill": &skill
+                    })
+                };
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
                     content,
                     is_error: false,
-                    artifacts: Some(serde_json::json!({
-                        "kind": artifact_kind,
-                        "skill": skill
-                    })),
+                    artifacts: Some(artifacts),
                 })
             }
             "view_resource" => {
@@ -281,7 +296,10 @@ impl Tool for ManageSkillTool {
                             || skill.id.strip_prefix("builtin-") == Some(skill_id.as_str())
                     })
                     .ok_or_else(|| CoreError::NotFound(format!("Skill {skill_id}")))?;
-                let normalized_path = resource_path.trim().replace('\\', "/");
+                let normalized_path = crate::skills::normalize_skill_resource_path(&resource_path)
+                    .map_err(|err| {
+                        CoreError::InvalidInput(format!("Invalid skill resource path: {err}"))
+                    })?;
                 let resource = skill
                     .resource_bundle
                     .iter()
@@ -439,6 +457,14 @@ mod tests {
         assert_eq!(
             activated.artifacts.as_ref().unwrap()["kind"],
             "skillActivation"
+        );
+        assert_eq!(
+            activated.artifacts.as_ref().unwrap()["activation"]["skillId"],
+            "builtin-pptx-presentation-design"
+        );
+        assert_eq!(
+            activated.artifacts.as_ref().unwrap()["activation"]["version"],
+            crate::skills::SKILL_ACTIVATION_ENVELOPE_VERSION
         );
 
         let resource_args = serde_json::json!({

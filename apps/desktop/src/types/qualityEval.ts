@@ -1,3 +1,5 @@
+import type { StoredTrajectoryEvalReport } from './trace';
+
 export interface BehavioralEvalCaseResult {
   id: string;
   passed: boolean;
@@ -71,4 +73,13 @@ export interface QualityEvalReport {
   suites: QualityEvalSuiteReport[];
   behavioralEval: BehavioralEvalReport;
   gate: QualityGateReport;
+}
+
+export interface DeveloperEvalSmokeReport {
+  status: string;
+  total: number;
+  passed: number;
+  failed: number;
+  qualityEval: QualityEvalReport;
+  storedTrajectoryEval: StoredTrajectoryEvalReport;
 }
