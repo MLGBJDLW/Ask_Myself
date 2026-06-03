@@ -139,7 +139,10 @@ impl AgentExecutor {
         steering_texts: &[String],
         has_sources: bool,
     ) {
-        let layout = prompt_layout::PromptLayout::for_provider(self.config.provider_type);
+        let layout = prompt_layout::PromptLayout::for_request(
+            self.config.provider_type,
+            self.config.model.as_deref(),
+        );
         if !layout.effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility) {
             return;
         }

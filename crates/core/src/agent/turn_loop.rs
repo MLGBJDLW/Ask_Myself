@@ -176,7 +176,8 @@ impl AgentExecutor {
 
         debug!("Agent route selected: {:?}", route_plan.kind);
 
-        let layout = prompt_layout::PromptLayout::for_provider(self.config.provider_type);
+        let layout =
+            prompt_layout::PromptLayout::for_request(self.config.provider_type, Some(model));
         let effective_dynamic_tool_visibility =
             layout.effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility);
         let mut tool_defs = if effective_dynamic_tool_visibility {
@@ -191,6 +192,12 @@ impl AgentExecutor {
             t.task_plan = Some(task_plan_value.clone());
             t.tool_visibility_decision = Some(route_plan.visibility_decision.clone());
         }
+        let volatile_system_sections = self
+            .config
+            .volatile_system_sections
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
         let mut messages = context::prepare_messages_with_options(
             &self.config.system_prompt,
             &history,
@@ -203,6 +210,9 @@ impl AgentExecutor {
             &tool_defs,
             context::PrepareMessagesOptions {
                 include_skill_system_prompt: layout.include_skill_system_prompt,
+                volatile_system_sections: &volatile_system_sections,
+                append_volatile_system_prompt_to_tail: layout
+                    .append_volatile_system_prompt_to_tail,
             },
         );
         prompt_layout::insert_turn_scaffolding_system_prompts(

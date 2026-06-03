@@ -416,8 +416,8 @@ struct MessageBlock {
 
 /// Trim conversation history to fit within context window.
 ///
-/// Keeps the system prompt (first message if role == System) plus the
-/// newest messages that fit within `max_tokens - reserved_for_response`.
+/// Keeps the leading system prompt block plus the newest messages that fit
+/// within `max_tokens - reserved_for_response`.
 ///
 /// Tool-call pairs (an assistant message with `tool_calls` and its
 /// subsequent `Tool` result messages) are treated as atomic blocks and
@@ -435,18 +435,22 @@ pub fn trim_to_context_window(
     let mut result: Vec<Message> = Vec::new();
     let mut used: u32 = 0;
 
-    // Separate system messages from the rest.
-    let (system_msgs, conversation): (Vec<&Message>, Vec<&Message>) =
-        messages.iter().partition(|m| m.role == Role::System);
+    let leading_system_count = messages
+        .iter()
+        .take_while(|message| message.role == Role::System)
+        .count();
+    let leading_system = &messages[..leading_system_count];
+    let conversation: Vec<&Message> = messages[leading_system_count..].iter().collect();
 
-    // Always include system messages first — they are non-negotiable.
-    for msg in &system_msgs {
+    // Always include the leading system prefix first. Later system messages are
+    // timeline messages and must stay where they were appended.
+    for msg in leading_system {
         let cost = estimate_message_tokens(msg);
         used = used.saturating_add(cost);
-        result.push((*msg).clone());
+        result.push(msg.clone());
     }
 
-    // If system messages alone exceed budget, return just them.
+    // If the frozen system prefix alone exceeds budget, return just it.
     if used >= budget {
         return result;
     }
@@ -486,6 +490,16 @@ fn build_message_blocks(conversation: &[&Message]) -> Vec<MessageBlock> {
 
     while i < conversation.len() {
         let msg = conversation[i];
+
+        if msg.role == Role::System && !blocks.is_empty() {
+            let cost = estimate_message_tokens(msg);
+            if let Some(previous) = blocks.last_mut() {
+                previous.messages.push(msg.clone());
+                previous.token_cost = previous.token_cost.saturating_add(cost);
+            }
+            i += 1;
+            continue;
+        }
 
         // Check if this is an assistant message with tool calls
         if msg.role == Role::Assistant && msg.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty()) {
@@ -753,6 +767,47 @@ mod tests {
         assert_eq!(result[0].role, Role::System);
         // Last message should be present
         assert_eq!(result.last().unwrap().text_content(), "How are you?");
+    }
+
+    #[test]
+    fn test_trim_preserves_non_prefix_system_message_position() {
+        let messages = vec![
+            msg(Role::System, "stable prefix"),
+            msg(Role::User, "current request"),
+            msg(Role::System, "volatile tail context"),
+        ];
+
+        let result = trim_to_context_window(&messages, 1_000, 10);
+        let roles = result.iter().map(|message| &message.role).collect::<Vec<_>>();
+        let texts = result
+            .iter()
+            .map(Message::text_content)
+            .collect::<Vec<_>>();
+
+        assert_eq!(roles, vec![&Role::System, &Role::User, &Role::System]);
+        assert_eq!(
+            texts,
+            vec!["stable prefix", "current request", "volatile tail context"]
+        );
+    }
+
+    #[test]
+    fn test_trim_does_not_keep_tail_system_without_preceding_user() {
+        let messages = vec![
+            msg(Role::System, "stable prefix"),
+            msg(Role::User, "current request"),
+            msg(Role::System, "volatile tail context"),
+        ];
+        let budget_that_fits_tail_alone = estimate_message_tokens(&messages[0])
+            .saturating_add(estimate_message_tokens(&messages[2]));
+
+        let result = trim_to_context_window(&messages, budget_that_fits_tail_alone, 0);
+        let texts = result
+            .iter()
+            .map(Message::text_content)
+            .collect::<Vec<_>>();
+
+        assert_eq!(texts, vec!["stable prefix"]);
     }
 
     #[test]

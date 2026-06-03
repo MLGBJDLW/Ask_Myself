@@ -664,6 +664,7 @@ pub async fn compact_conversation_cmd(
     let executor_config = ExecutorConfig {
         max_iterations: 1,
         system_prompt: build_system_prompt(Some(&conv.system_prompt), &[]),
+        volatile_system_sections: Vec::new(),
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
         max_tokens: db_config.max_tokens.map(|t| t as u32),

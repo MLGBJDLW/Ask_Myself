@@ -311,27 +311,26 @@ pub async fn agent_chat_cmd(
     } else {
         ""
     };
-    let system_prompt = build_system_prompt(
-        Some(&conv.system_prompt),
-        &[
-            &current_turn_time_section,
-            plan_mode_section,
-            &persona_section,
-            &collection_context_section,
-            &source_scope_section,
-            &memory_section,
-            &project_memory_section,
-            &agent_memory_section,
-            &preference_section,
-            &learned_section,
-            &scratchpad_section,
-        ],
-    );
+    let system_prompt = build_system_prompt(Some(&conv.system_prompt), &[]);
+    let volatile_system_sections = vec![
+        current_turn_time_section,
+        plan_mode_section.to_string(),
+        persona_section,
+        collection_context_section,
+        source_scope_section,
+        memory_section,
+        project_memory_section,
+        agent_memory_section,
+        preference_section,
+        learned_section,
+        scratchpad_section,
+    ];
 
     // 6. Build executor config from DB config.
     let executor_config = ExecutorConfig {
         max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(25),
         system_prompt,
+        volatile_system_sections,
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
         max_tokens: db_config.max_tokens.map(|t| t as u32),
