@@ -446,6 +446,7 @@ impl AgentExecutor {
                 &task_plan,
                 iteration,
                 self.config.max_iterations,
+                layout.append_volatile_system_prompt_to_tail,
             );
             self.compact_before_model_step_if_needed(LongTaskCompactionContext {
                 tx: &tx,

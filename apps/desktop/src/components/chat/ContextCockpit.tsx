@@ -3,6 +3,7 @@ import { useTranslation } from '../../i18n';
 
 interface TokenUsage {
   promptTokens: number;
+  aggregatePromptTokens?: number;
   totalTokens: number;
   contextWindow: number;
   completionTokens: number;
@@ -10,8 +11,19 @@ interface TokenUsage {
   cacheReadTokens?: number;
   cacheMissTokens?: number;
   cacheCreationTokens?: number;
+  contextBreakdown?: ContextUsageBreakdown;
   isEstimated: boolean;
   source: 'live' | 'cached' | 'estimated';
+}
+
+interface ContextUsageSegment {
+  kind: string;
+  tokens: number;
+}
+
+interface ContextUsageBreakdown {
+  totalTokens: number;
+  segments: ContextUsageSegment[];
 }
 
 interface SourceSelectionSummary {
@@ -137,6 +149,10 @@ export function ContextCockpit({
   const cacheReadTokens = usage?.cacheReadTokens ?? 0;
   const cacheMissTokens = usage?.cacheMissTokens ?? 0;
   const cacheCreationTokens = usage?.cacheCreationTokens ?? 0;
+  const cacheHitDenominator = cacheReadTokens + cacheMissTokens;
+  const cacheHitRateLabel = cacheHitDenominator > 0
+    ? `${Math.round((cacheReadTokens / cacheHitDenominator) * 100)}%`
+    : null;
   const modelLabel = runtimeProfile
     ? `${runtimeProfile.provider} / ${runtimeProfile.model}`
     : t('chat.contextNoModel');
@@ -257,6 +273,7 @@ export function ContextCockpit({
                             write: formatTokens(cacheCreationTokens),
                           })
                           : t('chat.cacheRead', { read: formatTokens(cacheReadTokens) })}
+                      {cacheHitRateLabel ? ` (${cacheHitRateLabel})` : ''}
                     </div>
                   )}
                 </>

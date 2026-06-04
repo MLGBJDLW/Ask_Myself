@@ -783,6 +783,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             completionTokens: restored.completionTokens,
             totalTokens: restored.totalTokens,
             thinkingTokens: restored.thinkingTokens,
+            cacheReadTokens: restored.cacheReadTokens,
+            cacheMissTokens: restored.cacheMissTokens,
+            cacheCreationTokens: restored.cacheCreationTokens,
             lastPromptTokens: restored.lastPromptTokens,
             contextBreakdown: restored.contextBreakdown,
           }
@@ -1470,6 +1473,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           const promptTokens = usageForView.lastPromptTokens ?? usageForView.promptTokens;
           return {
             promptTokens,
+            aggregatePromptTokens: usageForView.promptTokens,
             totalTokens: usageForView.totalTokens,
             contextWindow,
             completionTokens: usageForView.completionTokens,

@@ -131,17 +131,15 @@ pub fn provider_type_from_key(key: &str) -> Option<ProviderType> {
 }
 
 pub fn provider_type_for_parts(provider: &str, base_url: Option<&str>) -> ProviderType {
-    let parsed = provider_type_from_key(provider).unwrap_or(ProviderType::Custom);
-    if parsed == ProviderType::Custom {
-        let base_url_lower = base_url.unwrap_or_default().to_ascii_lowercase();
-        if base_url_lower.contains("deepseek") {
-            return ProviderType::DeepSeek;
-        }
-        if base_url_lower.contains("openrouter.ai") {
-            return ProviderType::OpenRouter;
-        }
+    let base_url_lower = base_url.unwrap_or_default().to_ascii_lowercase();
+    if base_url_lower.contains("deepseek") {
+        return ProviderType::DeepSeek;
     }
-    parsed
+    if base_url_lower.contains("openrouter.ai") {
+        return ProviderType::OpenRouter;
+    }
+
+    provider_type_from_key(provider).unwrap_or(ProviderType::Custom)
 }
 
 pub fn provider_adapter_for_type(provider_type: ProviderType) -> ProviderAdapterKind {
@@ -172,11 +170,19 @@ mod tests {
             ProviderType::DeepSeek
         );
         assert_eq!(
+            provider_type_for_parts("open_ai", Some("https://api.deepseek.com")),
+            ProviderType::DeepSeek
+        );
+        assert_eq!(
             provider_type_from_key("open_router"),
             Some(ProviderType::OpenRouter)
         );
         assert_eq!(
             provider_type_for_parts("custom", Some("https://openrouter.ai/api/v1")),
+            ProviderType::OpenRouter
+        );
+        assert_eq!(
+            provider_type_for_parts("open_ai", Some("https://openrouter.ai/api/v1")),
             ProviderType::OpenRouter
         );
         assert_eq!(

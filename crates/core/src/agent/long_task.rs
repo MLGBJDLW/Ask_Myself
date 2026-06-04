@@ -34,16 +34,19 @@ impl LongTaskState {
         plan: &AgentTaskPlan,
         iteration: u32,
         max_iterations: u32,
+        preserve_prefix: bool,
     ) {
         if iteration == 0 {
             return;
         }
-        messages.retain(|message| {
-            message.role != Role::System
-                || !message
-                    .text_content()
-                    .starts_with(LONG_TASK_RECITATION_PREFIX)
-        });
+        if !preserve_prefix {
+            messages.retain(|message| {
+                message.role != Role::System
+                    || !message
+                        .text_content()
+                        .starts_with(LONG_TASK_RECITATION_PREFIX)
+            });
+        }
         messages.push(Message::text(
             Role::System,
             self.plan_recitation(plan, iteration, max_iterations),
@@ -252,8 +255,8 @@ mod tests {
         });
         let mut messages = vec![Message::text(Role::System, "root system")];
 
-        state.refresh_plan_recitation(&mut messages, &plan, 1, 10);
-        state.refresh_plan_recitation(&mut messages, &plan, 2, 10);
+        state.refresh_plan_recitation(&mut messages, &plan, 1, 10, false);
+        state.refresh_plan_recitation(&mut messages, &plan, 2, 10, false);
 
         let recitations = messages
             .iter()
@@ -267,6 +270,34 @@ mod tests {
         let recitation = recitations[0].text_content();
         assert!(recitation.contains("Iteration: 3/10"));
         assert!(recitation.contains(&plan.objective));
+    }
+
+    #[test]
+    fn recitation_can_preserve_prefix_by_appending() {
+        let state = LongTaskState::new();
+        let plan = build_task_plan(TaskPlanningInput {
+            user_query: "compare local notes",
+            route_kind: "FileOperation",
+            has_sources: true,
+            source_scope_count: 2,
+            collection_context: false,
+        });
+        let mut messages = vec![Message::text(Role::System, "root system")];
+
+        state.refresh_plan_recitation(&mut messages, &plan, 1, 10, true);
+        let first = messages
+            .iter()
+            .map(|message| (message.role.clone(), message.text_content()))
+            .collect::<Vec<_>>();
+        state.refresh_plan_recitation(&mut messages, &plan, 2, 10, true);
+        let prefix = messages
+            .iter()
+            .take(first.len())
+            .map(|message| (message.role.clone(), message.text_content()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(messages.len(), first.len() + 1);
+        assert_eq!(prefix, first);
     }
 
     #[test]
