@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.4...nexa-monorepo-v0.8.5) (2026-06-04)
+
+
+### Features
+
+* **agent:** add runtime architecture foundation ([5f3524e](https://github.com/MLGBJDLW/Nexa/commit/5f3524e0806f9041f2bda29ab6813dc82191a02d))
+* **agent:** deepen task orchestration architecture ([26c23eb](https://github.com/MLGBJDLW/Nexa/commit/26c23ebca9a6b4e970628c5ad1b01de46caeaaf0))
+
+
+### Bug Fixes
+
+* **agent:** preserve DeepSeek prompt cache prefix ([883dbb3](https://github.com/MLGBJDLW/Nexa/commit/883dbb3a41850c2839d28765d53b93264742cfb8))
+* **agent:** stabilize prefix cache layout ([79be184](https://github.com/MLGBJDLW/Nexa/commit/79be184cc89f2f3b0f5ac19219b4c507b0382ff8))
+* **ci:** satisfy clippy lints ([79805ea](https://github.com/MLGBJDLW/Nexa/commit/79805eafa231162be4e8aebc6927363ef47202c4))
+
 ## [0.8.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.3...nexa-monorepo-v0.8.4) (2026-06-02)
 
 
