@@ -88,7 +88,10 @@ impl AgentExecutor {
         let offered_tool_names: HashSet<String> =
             tool_defs.iter().map(|tool| tool.name.clone()).collect();
         let registered_tool_names: HashSet<String> = self.tools.tool_names().into_iter().collect();
-        let layout = prompt_layout::PromptLayout::for_provider(self.config.provider_type);
+        let layout = prompt_layout::PromptLayout::for_request(
+            self.config.provider_type,
+            self.config.model.as_deref(),
+        );
         let effective_dynamic_tool_visibility =
             layout.effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility);
         let tool_policy = ToolSchedulerPolicy::new(

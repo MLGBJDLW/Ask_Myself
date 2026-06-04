@@ -1,4 +1,8 @@
 use super::*;
+use crate::desktop_agent_session::filter_desktop_tool_names_by_package_host;
+use nexa_core::package_host::{
+    database_backed_builtin_package_host_snapshot, PackageHealthState, PackageHostSnapshot,
+};
 
 // ── Project Commands ────────────────────────────────────────────────────
 
@@ -224,6 +228,17 @@ pub async fn get_agent_task_run_events_cmd(
 }
 
 #[tauri::command]
+pub async fn get_agent_run_events_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<AgentRunEvent>, String> {
+    state
+        .db
+        .list_agent_run_events(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_agent_subtask_runs_cmd(
     state: tauri::State<'_, AppState>,
     run_id: String,
@@ -331,6 +346,7 @@ pub async fn list_tool_access_map_cmd(
         "spawn_subagent_batch".to_string(),
         "judge_subagent_results".to_string(),
     ]);
+    let names = filter_desktop_tool_names_by_package_host(state.db.as_ref(), names)?;
     Ok(nexa_core::tool_access::tool_access_map_for_names(names))
 }
 
@@ -359,6 +375,101 @@ pub fn list_builtin_plugins_cmd(
             office_runtime: office_runtime.as_ref(),
         },
     ))
+    .and_then(|manifests| {
+        filter_desktop_builtin_plugins_by_package_host(state.db.as_ref(), manifests)
+    })
+}
+
+pub(crate) fn filter_desktop_builtin_plugins_by_package_host(
+    db: &Database,
+    manifests: Vec<nexa_core::plugins::PluginManifest>,
+) -> Result<Vec<nexa_core::plugins::PluginManifest>, String> {
+    let snapshot = desktop_package_host_snapshot(db)?;
+    let visible_package_ids = snapshot
+        .records
+        .iter()
+        .filter(|record| record.is_runtime_visible())
+        .map(|record| record.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    Ok(manifests
+        .into_iter()
+        .filter(|manifest| visible_package_ids.contains(manifest.id.as_str()))
+        .collect())
+}
+
+pub(crate) fn desktop_package_host_snapshot(db: &Database) -> Result<PackageHostSnapshot, String> {
+    database_backed_builtin_package_host_snapshot(db).map_err(|e| e.to_string())
+}
+
+fn normalize_desktop_package_id(package_id: &str) -> Result<String, String> {
+    let package_id = package_id.trim();
+    if package_id.is_empty() {
+        return Err("package_id must not be empty".to_string());
+    }
+    Ok(package_id.to_string())
+}
+
+fn ensure_desktop_package_host_package(db: &Database, package_id: &str) -> Result<(), String> {
+    let package_id = normalize_desktop_package_id(package_id)?;
+    let snapshot = desktop_package_host_snapshot(db)?;
+    if snapshot
+        .records
+        .iter()
+        .any(|record| record.id == package_id)
+    {
+        Ok(())
+    } else {
+        Err(format!("Unknown package id {package_id}"))
+    }
+}
+
+pub(crate) fn set_desktop_package_host_package_enabled(
+    db: &Database,
+    package_id: &str,
+    enabled: bool,
+) -> Result<PackageHostSnapshot, String> {
+    let package_id = normalize_desktop_package_id(package_id)?;
+    ensure_desktop_package_host_package(db, &package_id)?;
+    db.set_package_host_package_enabled(&package_id, enabled)
+        .map_err(|e| e.to_string())?;
+    desktop_package_host_snapshot(db)
+}
+
+pub(crate) fn set_desktop_package_host_package_health(
+    db: &Database,
+    package_id: &str,
+    health_state: PackageHealthState,
+) -> Result<PackageHostSnapshot, String> {
+    let package_id = normalize_desktop_package_id(package_id)?;
+    ensure_desktop_package_host_package(db, &package_id)?;
+    db.set_package_host_package_health(&package_id, health_state)
+        .map_err(|e| e.to_string())?;
+    desktop_package_host_snapshot(db)
+}
+
+#[tauri::command]
+pub fn get_package_host_snapshot_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<PackageHostSnapshot, String> {
+    desktop_package_host_snapshot(state.db.as_ref())
+}
+
+#[tauri::command]
+pub fn set_package_host_package_enabled_cmd(
+    state: tauri::State<'_, AppState>,
+    package_id: String,
+    enabled: bool,
+) -> Result<PackageHostSnapshot, String> {
+    set_desktop_package_host_package_enabled(state.db.as_ref(), &package_id, enabled)
+}
+
+#[tauri::command]
+pub fn set_package_host_package_health_cmd(
+    state: tauri::State<'_, AppState>,
+    package_id: String,
+    health_state: PackageHealthState,
+) -> Result<PackageHostSnapshot, String> {
+    set_desktop_package_host_package_health(state.db.as_ref(), &package_id, health_state)
 }
 
 #[tauri::command]
@@ -664,6 +775,7 @@ pub async fn compact_conversation_cmd(
     let executor_config = ExecutorConfig {
         max_iterations: 1,
         system_prompt: build_system_prompt(Some(&conv.system_prompt), &[]),
+        volatile_system_sections: Vec::new(),
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
         max_tokens: db_config.max_tokens.map(|t| t as u32),

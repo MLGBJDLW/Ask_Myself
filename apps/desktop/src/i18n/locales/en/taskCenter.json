@@ -62,6 +62,7 @@
   "showInFolder": "Show in folder",
   "openFileError": "Failed to open file",
   "noArtifacts": "No structured artifacts recorded yet.",
+  "scheduler": "Scheduler",
   "savedArtifacts": "Saved Artifacts",
   "noSavedArtifacts": "No editable artifacts saved yet.",
   "saveEditable": "Save as editable",

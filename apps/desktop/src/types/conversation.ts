@@ -123,6 +123,7 @@ export interface AgentRunEvent {
   label: string;
   status?: string | null;
   payload: ArtifactPayload | null;
+  createdAt?: string | null;
 }
 
 export type TaskTimelineEventKind = 'subtask' | 'verification';
@@ -580,6 +581,50 @@ export interface PluginManifest extends ToolPluginInfo {
   settingsSchema?: PluginSettingsSchema | null;
   providerCatalogs?: PluginProviderCatalog[];
   runtimeChecks?: PluginRuntimeCheck[];
+}
+
+export type PackageSurfaceKind =
+  | 'capability'
+  | 'connector'
+  | 'skill'
+  | 'workflow'
+  | 'nativePlugin';
+
+export type PackageLifecycleState =
+  | 'discovered'
+  | 'validated'
+  | 'enabled'
+  | 'disabled'
+  | 'unhealthy'
+  | 'blocked';
+
+export type PackageHealthState = 'healthy' | 'warning' | 'unhealthy';
+
+export interface PackagePermission {
+  key: string;
+  description: string;
+}
+
+export interface PackageComponent {
+  id: string;
+  packageId: string;
+  kind: PackageSurfaceKind;
+  enabled: boolean;
+}
+
+export interface PackageHostRecord {
+  id: string;
+  version?: string | null;
+  state: PackageLifecycleState;
+  health: PackageHealthState;
+  dependencies: string[];
+  permissions: PackagePermission[];
+  components: PackageComponent[];
+}
+
+export interface PackageHostSnapshot {
+  version: number;
+  records: PackageHostRecord[];
 }
 
 export interface ToolAccessInfo {

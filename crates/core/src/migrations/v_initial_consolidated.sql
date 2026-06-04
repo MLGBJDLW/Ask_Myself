@@ -216,6 +216,53 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation
     ON conversation_turns(conversation_id, created_at);
 
+-- Durable agent run event stream.
+CREATE TABLE IF NOT EXISTS agent_run_events (
+    run_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    event_seq INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    status TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (run_id, event_seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_run_events_run
+    ON agent_run_events(run_id, event_seq);
+CREATE INDEX IF NOT EXISTS idx_agent_run_events_turn
+    ON agent_run_events(turn_id, event_seq);
+CREATE INDEX IF NOT EXISTS idx_agent_run_events_kind
+    ON agent_run_events(kind, created_at);
+
+-- Versioned trajectory fixtures and exports.
+CREATE TABLE IF NOT EXISTS agent_trajectories (
+    trajectory_id TEXT PRIMARY KEY NOT NULL,
+    schema_version INTEGER NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_run_id TEXT,
+    user_input_summary TEXT NOT NULL DEFAULT '',
+    outcome TEXT,
+    event_count INTEGER NOT NULL DEFAULT 0,
+    tool_call_count INTEGER NOT NULL DEFAULT 0,
+    approval_count INTEGER NOT NULL DEFAULT 0,
+    task_run_count INTEGER NOT NULL DEFAULT 0,
+    redaction_profile TEXT NOT NULL,
+    trajectory_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_trajectories_source
+    ON agent_trajectories(source_kind, source_run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_trajectories_created
+    ON agent_trajectories(created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_trajectories_outcome
+    ON agent_trajectories(outcome, created_at);
+
 -- Agent configs (v007 base + v008/v010/v012/v014 columns folded in)
 CREATE TABLE IF NOT EXISTS agent_configs (
     id          TEXT PRIMARY KEY,

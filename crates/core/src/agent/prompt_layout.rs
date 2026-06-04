@@ -7,15 +7,22 @@ pub(super) struct PromptLayout {
     pub(super) include_skill_system_prompt: bool,
     pub(super) include_turn_scaffolding_system_prompts: bool,
     pub(super) allow_dynamic_tool_visibility: bool,
+    pub(super) append_volatile_system_prompt_to_tail: bool,
 }
 
 impl PromptLayout {
+    #[cfg(test)]
     pub(super) fn for_provider(provider_type: Option<ProviderType>) -> Self {
-        if uses_implicit_prefix_cache(provider_type) {
+        Self::for_request(provider_type, None)
+    }
+
+    pub(super) fn for_request(provider_type: Option<ProviderType>, model: Option<&str>) -> Self {
+        if uses_implicit_prefix_cache(provider_type, model) {
             return Self {
                 include_skill_system_prompt: false,
                 include_turn_scaffolding_system_prompts: false,
                 allow_dynamic_tool_visibility: false,
+                append_volatile_system_prompt_to_tail: true,
             };
         }
 
@@ -23,6 +30,7 @@ impl PromptLayout {
             include_skill_system_prompt: true,
             include_turn_scaffolding_system_prompts: true,
             allow_dynamic_tool_visibility: true,
+            append_volatile_system_prompt_to_tail: false,
         }
     }
 
@@ -31,8 +39,19 @@ impl PromptLayout {
     }
 }
 
-fn uses_implicit_prefix_cache(provider_type: Option<ProviderType>) -> bool {
-    matches!(provider_type, Some(ProviderType::DeepSeek))
+fn uses_implicit_prefix_cache(provider_type: Option<ProviderType>, model: Option<&str>) -> bool {
+    matches!(
+        provider_type,
+        Some(
+            ProviderType::OpenAi
+                | ProviderType::AzureOpenAi
+                | ProviderType::Qwen
+                | ProviderType::OpenRouter
+                | ProviderType::DeepSeek
+        )
+    ) || model
+        .map(|model| model.to_ascii_lowercase().contains("deepseek"))
+        .unwrap_or(false)
 }
 
 pub(super) fn insert_turn_scaffolding_system_prompts(
@@ -94,17 +113,46 @@ mod tests {
         assert!(!layout.include_skill_system_prompt);
         assert!(!layout.include_turn_scaffolding_system_prompts);
         assert!(!layout.allow_dynamic_tool_visibility);
+        assert!(layout.append_volatile_system_prompt_to_tail);
         assert!(!layout.effective_dynamic_tool_visibility(true));
     }
 
     #[test]
-    fn default_layout_keeps_turn_scaffolding() {
-        let layout = PromptLayout::for_provider(Some(ProviderType::OpenAi));
+    fn exact_prefix_cache_layout_omits_non_persistent_turn_scaffolding() {
+        for provider_type in [
+            ProviderType::OpenAi,
+            ProviderType::AzureOpenAi,
+            ProviderType::Qwen,
+            ProviderType::OpenRouter,
+        ] {
+            let layout = PromptLayout::for_provider(Some(provider_type));
+
+            assert!(!layout.include_skill_system_prompt);
+            assert!(!layout.include_turn_scaffolding_system_prompts);
+            assert!(!layout.allow_dynamic_tool_visibility);
+            assert!(layout.append_volatile_system_prompt_to_tail);
+            assert!(!layout.effective_dynamic_tool_visibility(true));
+        }
+    }
+
+    #[test]
+    fn default_layout_keeps_turn_scaffolding_for_custom_providers() {
+        let layout = PromptLayout::for_provider(Some(ProviderType::Custom));
 
         assert!(layout.include_skill_system_prompt);
         assert!(layout.include_turn_scaffolding_system_prompts);
         assert!(layout.allow_dynamic_tool_visibility);
+        assert!(!layout.append_volatile_system_prompt_to_tail);
         assert!(layout.effective_dynamic_tool_visibility(true));
+    }
+
+    #[test]
+    fn deepseek_model_name_uses_prefix_cache_layout_for_compatible_routes() {
+        let layout = PromptLayout::for_request(Some(ProviderType::OpenRouter), Some("deepseek/v3"));
+
+        assert!(!layout.include_skill_system_prompt);
+        assert!(!layout.allow_dynamic_tool_visibility);
+        assert!(layout.append_volatile_system_prompt_to_tail);
     }
 
     #[test]
@@ -144,7 +192,7 @@ mod tests {
             "## Active Routing Plan\nroute",
             &plan(),
             true,
-            PromptLayout::for_provider(Some(ProviderType::OpenAi)),
+            PromptLayout::for_provider(Some(ProviderType::Custom)),
         );
 
         assert!(messages[1].text_content().contains("Active Routing Plan"));

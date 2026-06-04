@@ -1,6 +1,9 @@
 import { adaptFrontendRunEvent } from '../src/lib/streaming/legacyAdapter';
 import {
+  durableReplayItemsFromRunEvents,
   durableReplayItemsFromTaskEvents,
+  projectHistoricalEventsToStreamState,
+  projectRunEventsToStreamState,
   taskTimelineEventsFromReplaySource,
 } from '../src/lib/streaming/durableReplay';
 import { extractPersistedTraceItems } from '../src/lib/streaming/persistedTrace';
@@ -24,6 +27,11 @@ import {
   isTaskTimelineEvent,
   taskTimelinePayloadFromTaskEvent,
 } from '../src/lib/streaming/taskTimeline';
+import {
+  legacyTaskCenterHistoryFromTaskEvents,
+  taskCenterHistoryFromEvents,
+  taskCenterHistoryFromRunEvents,
+} from '../src/lib/streaming/taskCenterHistory';
 import type {
   AgentFrontendEvent,
   ConversationTurn,
@@ -39,6 +47,7 @@ import type {
   ToolCallEvent,
   TraceEvent,
 } from '../src/lib/streaming/protocol';
+import type { WorkflowAutomationSchedulerEvent } from '../src/types/workflows';
 
 type TestFn = () => void | Promise<void>;
 
@@ -76,6 +85,7 @@ function runEvent(input: {
     label: input.label ?? input.kind,
     status: input.status ?? 'running',
     payload: input.payload ?? null,
+    createdAt: `2026-01-01T00:00:${String(input.eventSeq).padStart(2, '0')}.000Z`,
   };
 }
 
@@ -103,6 +113,25 @@ function taskEvent(input: {
     status: input.status ?? null,
     payload: input.payload ?? null,
     createdAt: `2026-01-01T00:00:0${input.eventSeq ?? 0}.000Z`,
+  };
+}
+
+function schedulerEvent(input: {
+  id: string;
+  eventType: string;
+  status?: string | null;
+  summary?: string;
+  createdAt?: string;
+}): WorkflowAutomationSchedulerEvent {
+  return {
+    id: input.id,
+    automationId: 'automation-1',
+    runId: 'workflow-run-1',
+    eventType: input.eventType,
+    status: input.status ?? null,
+    summary: input.summary ?? input.eventType,
+    payload: { queueId: 'workflow_due:automation-1' },
+    createdAt: input.createdAt ?? '2026-01-01T00:00:04.500Z',
   };
 }
 
@@ -151,6 +180,19 @@ function toolRun(input: {
     isError: input.status === 'failed',
     progressNote: input.progressNote,
     durationMs: input.status === 'completed' ? 42 : undefined,
+  };
+}
+
+function approvalRequest(id = 'approval-1'): NonNullable<AgentFrontendEvent['request']> {
+  return {
+    id,
+    toolName: 'write_file',
+    permissionKey: 'file:write',
+    targetKind: 'file',
+    targetValue: 'README.md',
+    argumentsPreview: '{}',
+    riskLevel: 'high',
+    reason: 'Writes to workspace',
   };
 }
 
@@ -220,6 +262,65 @@ test('adapts recoveryAttempt into a muted status update', () => {
   assertEqual(event.eventSeq, 8, 'eventSeq');
   assertEqual(event.content, 'Retrying stream', 'content');
   assertEqual(event.tone, 'muted', 'tone');
+});
+
+test('adapts canonical approval events without a legacy envelope type', () => {
+  const request = approvalRequest();
+  const requested = adaptFrontendRunEvent(frontendEvent(runEvent({
+    eventSeq: 9,
+    kind: 'approvalRequested',
+    phase: 'approval',
+    label: 'write_file',
+    status: 'pending',
+    payload: { request },
+  })));
+  const resolved = adaptFrontendRunEvent(frontendEvent(runEvent({
+    eventSeq: 10,
+    kind: 'approvalResolved',
+    phase: 'approval',
+    label: 'Approval resolved',
+    status: 'denied',
+    payload: { requestId: request.id, decision: 'deny' },
+  })));
+
+  assertEqual(requested.type, 'approvalRequested', 'requested event type');
+  assertEqual(requested.request?.id, request.id, 'requested approval id');
+  assertEqual(resolved.type, 'approvalResolved', 'resolved event type');
+  assertEqual(resolved.requestId, request.id, 'resolved approval id');
+  assertEqual(resolved.decision, 'deny', 'resolved decision');
+});
+
+test('adapts canonical tool run events without a legacy envelope type', () => {
+  const startedRun = toolRun({ callId: 'call-approval', status: 'approvalPending' });
+  const declinedRun = toolRun({
+    callId: 'call-approval',
+    status: 'declined',
+    content: 'Denied by user',
+  });
+  const started = adaptFrontendRunEvent(frontendEvent(runEvent({
+    eventSeq: 11,
+    kind: 'toolStarted',
+    phase: 'tooling',
+    label: 'search_knowledge_base',
+    status: 'approval_pending',
+    payload: { run: startedRun },
+  })));
+  const completed = adaptFrontendRunEvent(frontendEvent(runEvent({
+    eventSeq: 12,
+    kind: 'toolCompleted',
+    phase: 'tooling',
+    label: 'search_knowledge_base',
+    status: 'declined',
+    payload: { run: declinedRun },
+  })));
+
+  assertEqual(started.type, 'toolRunStarted', 'started event type');
+  assertEqual(started.run?.callId, 'call-approval', 'started tool run call id');
+  assertEqual(started.run?.status, 'approvalPending', 'started tool run status');
+  assertEqual(completed.type, 'toolRunCompleted', 'completed event type');
+  assertEqual(completed.run?.callId, 'call-approval', 'completed tool run call id');
+  assertEqual(completed.run?.status, 'declined', 'completed tool run status');
+  assertEqual(completed.run?.content, 'Denied by user', 'completed tool run content');
 });
 
 test('adapts canonical terminal events without a legacy envelope type', () => {
@@ -292,6 +393,99 @@ test('builds durable replay items from canonical and legacy task events in event
   assertEqual(replay[1].eventSeq, 2, 'second eventSeq');
   assertEqual(replay[1].eventType, 'status', 'second event type');
   assertEqual(replay[2].eventSeq, 3, 'third eventSeq');
+});
+
+test('builds durable replay items directly from canonical run events in eventSeq order', () => {
+  const replay = durableReplayItemsFromRunEvents([
+    runEvent({
+      eventSeq: 3,
+      kind: 'done',
+      phase: 'done',
+      label: 'Final answer produced',
+      status: 'completed',
+      payload: { message: 'done', usageTotal: { totalTokens: 4 } },
+    }),
+    runEvent({
+      eventSeq: 1,
+      kind: 'status',
+      phase: 'routing',
+      label: 'Task queued',
+      status: 'queued',
+      payload: { content: 'Task queued' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'outputDelta',
+      payload: {
+        blockId: 'canonical-block',
+        channel: 'answer',
+        offset: 0,
+        delta: 'hello',
+      },
+    }),
+  ]);
+
+  assertEqual(replay.length, 2, 'lifecycle status should not replay');
+  assertEqual(replay[0].eventSeq, 2, 'first replayed eventSeq');
+  assertEqual(replay[0].eventType, 'streamBlockDelta', 'first replay type');
+  assertEqual(replay[1].eventSeq, 3, 'terminal eventSeq');
+  assertEqual(replay[1].eventType, 'terminal', 'terminal replay type');
+});
+
+test('historical stream projection prefers canonical run events over legacy task event replay', () => {
+  const projected = projectHistoricalEventsToStreamState(
+    taskRun('completed'),
+    [
+      taskEvent({
+        id: 'legacy-output',
+        eventType: 'stream',
+        eventSeq: 1,
+        payload: {
+          agentRun: runEvent({
+            eventSeq: 1,
+            kind: 'outputDelta',
+            payload: {
+              blockId: 'legacy-block',
+              channel: 'answer',
+              offset: 0,
+              delta: 'legacy',
+            },
+          }),
+        },
+      }),
+      taskEvent({
+        id: 'timeline',
+        eventType: 'status',
+        eventSeq: 2,
+        label: 'Timeline status',
+        status: 'running',
+      }),
+    ],
+    [
+      runEvent({
+        eventSeq: 1,
+        kind: 'outputDelta',
+        payload: {
+          blockId: 'canonical-block',
+          channel: 'answer',
+          offset: 0,
+          delta: 'canonical',
+        },
+      }),
+      runEvent({
+        eventSeq: 2,
+        kind: 'done',
+        phase: 'done',
+        label: 'Final answer produced',
+        status: 'completed',
+        payload: { message: 'done', usageTotal: { totalTokens: 4 } },
+      }),
+    ],
+  );
+
+  assertEqual(projected.streamRounds[0]?.reply, 'canonical', 'canonical output should win');
+  assertEqual(projected.taskEvents.length, 1, 'timeline task event remains available');
+  assertEqual(projected.taskEvents[0].id, 'timeline', 'timeline task event id');
 });
 
 test('keeps non-stream task timeline events while filtering durable stream events', () => {
@@ -423,6 +617,201 @@ test('keeps typed task timeline events out of durable stream replay', () => {
   );
 });
 
+test('task center history consumes canonical run events and hides stream-only noise', () => {
+  const history = taskCenterHistoryFromRunEvents(
+    [
+      runEvent({
+        eventSeq: 1,
+        kind: 'status',
+        phase: 'routing',
+        label: 'Task queued',
+        status: 'queued',
+        payload: { content: 'Task queued' },
+      }),
+      runEvent({
+        eventSeq: 2,
+        kind: 'outputDelta',
+        payload: { blockId: 'b', channel: 'answer', offset: 0, delta: 'hidden' },
+      }),
+      runEvent({
+        eventSeq: 3,
+        kind: 'toolCompleted',
+        phase: 'tooling',
+        label: 'search_knowledge_base',
+        status: 'completed',
+        payload: { toolName: 'search_knowledge_base' },
+      }),
+      runEvent({
+        eventSeq: 4,
+        kind: 'usageUpdated',
+        phase: 'accounting',
+        label: 'Usage updated',
+        status: null,
+        payload: { usageTotal: { totalTokens: 4 }, lastPromptTokens: 2 },
+      }),
+      runEvent({
+        eventSeq: 6,
+        kind: 'done',
+        phase: 'done',
+        label: 'Final answer produced',
+        status: 'completed',
+        payload: { message: 'done', usageTotal: { totalTokens: 4 } },
+      }),
+    ],
+    [
+      taskEvent({
+        id: 'legacy-status',
+        eventType: 'status',
+        eventSeq: 1,
+        label: 'Legacy queued',
+        status: 'queued',
+      }),
+      taskEvent({
+        id: 'subtask',
+        eventType: 'subtask',
+        eventSeq: 5,
+        label: 'Collect evidence',
+        status: 'completed',
+        payload: {
+          taskTimeline: {
+            version: 1,
+            kind: 'subtask',
+            label: 'Collect evidence',
+            status: 'completed',
+            payload: { subtaskRunId: 'subtask-1' },
+          },
+        },
+      }),
+    ],
+  );
+
+  assertEqual(history.length, 4, 'visible history count');
+  assertEqual(history[0].source, 'agentRun', 'canonical source is preferred');
+  assertEqual(history[0].label, 'Task queued', 'canonical label');
+  assertEqual(history[1].label, 'search_knowledge_base', 'tool history is visible');
+  assertEqual(history[2].source, 'taskEvent', 'task timeline is preserved');
+  assertEqual(history[3].eventType, 'done', 'terminal history is visible');
+});
+
+test('task center history surfaces scheduler events beside run and timeline events', () => {
+  const history = taskCenterHistoryFromRunEvents(
+    [
+      runEvent({
+        eventSeq: 1,
+        kind: 'status',
+        phase: 'routing',
+        label: 'Task queued',
+        status: 'queued',
+        payload: { content: 'Task queued' },
+      }),
+      runEvent({
+        eventSeq: 4,
+        kind: 'done',
+        phase: 'done',
+        label: 'Final answer produced',
+        status: 'completed',
+        payload: { message: 'done' },
+      }),
+    ],
+    [
+      taskEvent({
+        id: 'subtask',
+        eventType: 'subtask',
+        eventSeq: 3,
+        label: 'Collect evidence',
+        status: 'completed',
+        payload: {
+          taskTimeline: {
+            version: 1,
+            kind: 'subtask',
+            label: 'Collect evidence',
+            status: 'completed',
+            payload: { subtaskRunId: 'subtask-1' },
+          },
+        },
+      }),
+    ],
+    [
+      schedulerEvent({
+        id: 'scheduler-claimed',
+        eventType: 'claimed',
+        status: 'queued',
+        summary: 'Scheduler claimed due workflow',
+        createdAt: '2026-01-01T00:00:02.500Z',
+      }),
+    ],
+  );
+
+  assertEqual(history.length, 4, 'visible history count');
+  assertEqual(history[0].source, 'agentRun', 'canonical source');
+  assertEqual(history[1].source, 'schedulerEvent', 'scheduler source');
+  assertEqual(history[1].eventType, 'claimed', 'scheduler event type');
+  assertEqual(history[1].label, 'Scheduler claimed due workflow', 'scheduler label');
+  assertEqual(history[2].source, 'taskEvent', 'timeline source');
+  assertEqual(history[3].eventType, 'done', 'terminal history');
+});
+
+test('task center history falls back to legacy task events when canonical events are absent', () => {
+  const legacyEvents = [
+    taskEvent({
+      id: 'stream',
+      eventType: 'stream',
+      eventSeq: 1,
+      payload: {
+        agentRun: runEvent({
+          eventSeq: 1,
+          kind: 'outputDelta',
+          payload: { blockId: 'b', channel: 'answer', offset: 0, delta: 'x' },
+        }),
+      },
+    }),
+    taskEvent({
+      id: 'recovery',
+      eventType: 'status',
+      eventSeq: 2,
+      label: 'Retrying',
+      payload: {
+        agentRun: runEvent({
+          eventSeq: 2,
+          kind: 'recoveryAttempt',
+          label: 'Retrying',
+          payload: { reason: 'Retrying' },
+        }),
+      },
+    }),
+    taskEvent({
+      id: 'tool',
+      eventType: 'tool',
+      eventSeq: 3,
+      label: 'read_files',
+      status: 'completed',
+      payload: { toolName: 'read_files' },
+    }),
+  ];
+  const directLegacy = legacyTaskCenterHistoryFromTaskEvents(legacyEvents);
+  const history = taskCenterHistoryFromEvents(
+    [
+      ...legacyEvents,
+    ],
+    [],
+    [
+      schedulerEvent({
+        id: 'scheduler-launch-failed',
+        eventType: 'launch_failed',
+        status: 'failed',
+        summary: 'Scheduler failed to launch due workflow',
+        createdAt: '2026-01-01T00:00:04.000Z',
+      }),
+    ],
+  );
+
+  assertEqual(history.length, 3, 'legacy visible history count');
+  assertEqual(history[0].id, 'recovery', 'legacy recovery remains visible');
+  assertEqual(history[1].id, 'tool', 'legacy tool event remains visible');
+  assertEqual(history[2].source, 'schedulerEvent', 'scheduler event remains visible');
+  assertEqual(directLegacy.length, 2, 'legacy adapter keeps task-only history');
+});
+
 test('projects canonical terminal errors as durable replay terminal items', () => {
   const replay = durableReplayItemsFromTaskEvents([
     taskEvent({
@@ -504,6 +893,431 @@ test('durable replay restores canonical tool run events through live projection'
     restored.traceEvents.some(event => event.kind === 'tool' && event.toolCall.callId === 'call-1'),
     'tool replay should restore trace tool event',
   );
+
+  streamStore.clearStream(conversationId);
+});
+
+test('durable replay restores direct canonical run events through live projection', () => {
+  const conversationId = 'conversation-run-event-replay';
+
+  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'outputDelta',
+      payload: { blockId: 'answer-block', channel: 'answer', offset: 0, delta: 'Checking' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'toolStarted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'running',
+      payload: { type: 'toolRunStarted', run: toolRun({ callId: 'call-1', status: 'running' }) },
+    }),
+    runEvent({
+      eventSeq: 3,
+      kind: 'toolCompleted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'completed',
+      payload: {
+        type: 'toolRunCompleted',
+        run: toolRun({ callId: 'call-1', status: 'completed', content: 'Found 2 notes' }),
+      },
+    }),
+    runEvent({
+      eventSeq: 4,
+      kind: 'done',
+      phase: 'done',
+      label: 'Final answer produced',
+      status: 'completed',
+      payload: { message: 'done', usageTotal: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } },
+    }),
+  ]);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'run event replay should create stream state');
+  assertEqual(restored.isStreaming, false, 'completed run should not remain streaming');
+  assertEqual(restored.toolCalls.length, 1, 'tool call count');
+  assertEqual(restored.toolCalls[0].status, 'done', 'tool status');
+  assertEqual(restored.toolCalls[0].content, 'Found 2 notes', 'tool content');
+  assertEqual(restored.streamRounds.length, 1, 'final answer round count');
+  assertEqual(restored.streamRounds[0].reply, 'Checking', 'streamed reply');
+
+  streamStore.clearStream(conversationId);
+});
+
+test('canonical run event projection matches live stream dispatch for render state', () => {
+  const conversationId = 'conversation-live-replay-equivalence';
+  const runEvents = [
+    runEvent({
+      eventSeq: 1,
+      kind: 'outputDelta',
+      payload: { blockId: 'answer-block', channel: 'answer', offset: 0, delta: 'Checking' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'toolStarted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'running',
+      payload: { type: 'toolRunStarted', run: toolRun({ callId: 'call-1', status: 'running' }) },
+    }),
+    runEvent({
+      eventSeq: 3,
+      kind: 'toolCompleted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'completed',
+      payload: {
+        type: 'toolRunCompleted',
+        run: toolRun({ callId: 'call-1', status: 'completed', content: 'Found 2 notes' }),
+      },
+    }),
+    runEvent({
+      eventSeq: 4,
+      kind: 'done',
+      phase: 'done',
+      label: 'Final answer produced',
+      status: 'completed',
+      payload: {
+        message: 'done',
+        usageTotal: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      },
+    }),
+  ];
+
+  const projected = projectRunEventsToStreamState(taskRun('completed'), runEvents);
+  streamStore.startStream(conversationId);
+  for (const event of runEvents) {
+    streamStore.dispatch(conversationId, frontendEvent(event));
+  }
+
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live dispatch should create stream state');
+  assertEqual(live.isStreaming, projected.isStreaming, 'streaming state equivalence');
+  assertEqual(live.streamRounds.length, projected.streamRounds.length, 'round count equivalence');
+  assertEqual(live.streamRounds[0].reply, projected.streamRounds[0].reply, 'reply equivalence');
+  assertEqual(live.toolCalls.length, projected.toolCalls.length, 'tool count equivalence');
+  assertEqual(live.toolCalls[0].status, projected.toolCalls[0].status, 'tool status equivalence');
+  assertEqual(live.toolCalls[0].content, projected.toolCalls[0].content, 'tool content equivalence');
+  assertEqual(live.lastUsage?.totalTokens, projected.lastUsage?.totalTokens, 'usage equivalence');
+
+  streamStore.clearStream(conversationId);
+});
+
+test('canonical auto-compaction projection matches live stream dispatch summary', () => {
+  const conversationId = 'conversation-auto-compaction-equivalence';
+  const runEvents = [
+    runEvent({
+      eventSeq: 1,
+      kind: 'autoCompacted',
+      phase: 'compacting',
+      label: 'Context compacted',
+      payload: { summary: 'Earlier turns were summarized.' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'done',
+      phase: 'done',
+      label: 'Final answer produced',
+      status: 'completed',
+      payload: { message: 'done' },
+    }),
+  ];
+
+  const projected = projectRunEventsToStreamState(taskRun('completed'), runEvents);
+  streamStore.startStream(conversationId);
+  for (const event of runEvents) {
+    streamStore.dispatch(conversationId, frontendEvent(event));
+  }
+
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live dispatch should create stream state');
+  assertEqual(projected.autoCompacted?.summary, 'Earlier turns were summarized.', 'projected auto compact summary');
+  assertEqual(live.autoCompacted?.summary, projected.autoCompacted?.summary, 'auto compact summary equivalence');
+  assertEqual(live.isStreaming, projected.isStreaming, 'streaming state equivalence');
+
+  streamStore.clearStream(conversationId);
+});
+
+test('canonical approval and recovery projection matches live stream dispatch state', () => {
+  const conversationId = 'conversation-approval-recovery-equivalence';
+  const request = approvalRequest();
+  const runEvents = [
+    runEvent({
+      eventSeq: 1,
+      kind: 'recoveryAttempt',
+      phase: 'responding',
+      label: 'Retrying stream',
+      status: 'recovering',
+      payload: { reason: 'Retrying stream' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'approvalRequested',
+      phase: 'approval',
+      label: 'write_file',
+      status: 'pending',
+      payload: { request },
+    }),
+  ];
+
+  const projected = projectRunEventsToStreamState(taskRun('waiting_approval'), runEvents);
+  streamStore.startStream(conversationId);
+  for (const event of runEvents) {
+    streamStore.dispatch(conversationId, frontendEvent(event));
+  }
+
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live dispatch should create stream state');
+  assertEqual(projected.pendingApprovals.length, 1, 'projected pending approval count');
+  assertEqual(live.pendingApprovals.length, projected.pendingApprovals.length, 'pending approval count equivalence');
+  assertEqual(live.pendingApprovals[0].id, projected.pendingApprovals[0].id, 'pending approval id equivalence');
+  assertEqual(live.pendingApprovals[0].toolName, projected.pendingApprovals[0].toolName, 'pending approval tool equivalence');
+  assert(
+    projected.traceEvents.some(event => event.kind === 'status' && event.text === 'Retrying stream'),
+    'projected recovery status should be visible',
+  );
+  assert(
+    live.traceEvents.some(event => event.kind === 'status' && event.text === 'Retrying stream'),
+    'live recovery status should be visible',
+  );
+  assertEqual(live.isStreaming, projected.isStreaming, 'streaming state equivalence');
+
+  streamStore.clearStream(conversationId);
+});
+
+test('canonical stream reset projection matches live stream dispatch recovered state', () => {
+  const conversationId = 'conversation-stream-reset-equivalence';
+  const runEvents = [
+    runEvent({
+      eventSeq: 1,
+      kind: 'outputDelta',
+      payload: { blockId: 'answer-before-reset', channel: 'answer', offset: 0, delta: 'Checking' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'toolStarted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'running',
+      payload: { run: toolRun({ callId: 'call-reset', status: 'running' }) },
+    }),
+    runEvent({
+      eventSeq: 3,
+      kind: 'streamReset',
+      phase: 'responding',
+      label: 'Stream interrupted; retrying without streaming.',
+      status: 'running',
+      payload: { reason: 'Stream interrupted; retrying without streaming.' },
+    }),
+    runEvent({
+      eventSeq: 4,
+      kind: 'outputDelta',
+      payload: { blockId: 'answer-after-reset', channel: 'answer', offset: 0, delta: 'Recovered' },
+    }),
+    runEvent({
+      eventSeq: 5,
+      kind: 'done',
+      phase: 'done',
+      label: 'Final answer produced',
+      status: 'completed',
+      payload: { message: 'done' },
+    }),
+  ];
+
+  const projected = projectRunEventsToStreamState(taskRun('completed'), runEvents);
+  streamStore.startStream(conversationId);
+  for (const event of runEvents) {
+    streamStore.dispatch(conversationId, frontendEvent(event));
+  }
+
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live dispatch should create stream state');
+  assertEqual(projected.toolCalls.length, 0, 'projected stream reset clears stale tools');
+  assertEqual(live.toolCalls.length, projected.toolCalls.length, 'tool reset equivalence');
+  assertEqual(live.streamRounds.length, projected.streamRounds.length, 'recovered round count equivalence');
+  assertEqual(live.streamRounds[0].reply, projected.streamRounds[0].reply, 'recovered reply equivalence');
+  assertEqual(live.streamRounds[0].reply, 'Recovered', 'recovered reply should replace pre-reset output');
+  assert(
+    projected.traceEvents.some(event =>
+      event.kind === 'status' && event.text === 'Stream interrupted; retrying without streaming.'),
+    'projected stream reset status should be visible',
+  );
+  assert(
+    live.traceEvents.some(event =>
+      event.kind === 'status' && event.text === 'Stream interrupted; retrying without streaming.'),
+    'live stream reset status should be visible',
+  );
+  assertEqual(live.isStreaming, projected.isStreaming, 'streaming state equivalence');
+
+  streamStore.clearStream(conversationId);
+});
+
+test('canonical cancellation projection matches live stream dispatch terminal state', () => {
+  const conversationId = 'conversation-cancellation-equivalence';
+  const runEvents = [
+    runEvent({
+      eventSeq: 1,
+      kind: 'outputDelta',
+      payload: { blockId: 'answer-block', channel: 'answer', offset: 0, delta: 'Working' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'error',
+      phase: 'done',
+      label: 'Agent execution cancelled.',
+      status: 'cancelled',
+      payload: { message: 'Agent execution cancelled.' },
+    }),
+  ];
+
+  const projected = projectRunEventsToStreamState(taskRun('cancelled'), runEvents);
+  streamStore.startStream(conversationId);
+  for (const event of runEvents) {
+    streamStore.dispatch(conversationId, frontendEvent(event));
+  }
+
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live dispatch should create stream state');
+  assertEqual(projected.isStreaming, false, 'projected cancellation stops streaming');
+  assertEqual(live.isStreaming, projected.isStreaming, 'streaming state equivalence');
+  assertEqual(live.streamText, projected.streamText, 'partial output equivalence');
+  assertEqual(live.error, projected.error, 'cancelled terminal error equivalence');
+  assertEqual(live.error, null, 'cancelled terminal should not surface failed state');
+  assert(
+    projected.traceEvents.some(event => event.kind === 'status' && event.text === 'Agent execution cancelled.'),
+    'projected cancellation status should be visible',
+  );
+  assert(
+    live.traceEvents.some(event => event.kind === 'status' && event.text === 'Agent execution cancelled.'),
+    'live cancellation status should be visible',
+  );
+
+  streamStore.clearStream(conversationId);
+});
+
+test('canonical tool execution cancellation projection matches live stream dispatch state', () => {
+  const conversationId = 'conversation-tool-cancellation-equivalence';
+  const runEvents = [
+    runEvent({
+      eventSeq: 1,
+      kind: 'outputDelta',
+      payload: { blockId: 'answer-block', channel: 'answer', offset: 0, delta: 'Working' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'toolStarted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'running',
+      payload: { run: toolRun({ callId: 'call-cancel', status: 'running' }) },
+    }),
+    runEvent({
+      eventSeq: 3,
+      kind: 'done',
+      phase: 'done',
+      label: 'Request cancelled by user.',
+      status: 'cancelled',
+      payload: { finishReason: 'cancelled' },
+    }),
+  ];
+
+  const projected = projectRunEventsToStreamState(taskRun('cancelled'), runEvents);
+  streamStore.startStream(conversationId);
+  for (const event of runEvents) {
+    streamStore.dispatch(conversationId, frontendEvent(event));
+  }
+
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live dispatch should create stream state');
+  assertEqual(projected.toolCalls.length, 1, 'projected tool call count');
+  assertEqual(live.toolCalls.length, projected.toolCalls.length, 'tool call count equivalence');
+  assertEqual(live.toolCalls[0].status, projected.toolCalls[0].status, 'cancelled tool status equivalence');
+  assertEqual(live.toolCalls[0].status, 'cancelled', 'cancelled terminal should cancel running tool');
+  assertEqual(live.toolCalls[0].content, projected.toolCalls[0].content, 'cancelled tool content equivalence');
+  assertEqual(live.toolCalls[0].content, 'Cancelled', 'cancelled tool should receive fallback content');
+  assertEqual(live.streamRounds.length, projected.streamRounds.length, 'round count equivalence');
+  assertEqual(live.streamRounds[0].toolCalls[0].status, projected.streamRounds[0].toolCalls[0].status, 'round tool status equivalence');
+  assertEqual(live.error, projected.error, 'cancelled terminal error equivalence');
+  assertEqual(live.error, null, 'cancelled tool execution should not surface failed state');
+  assertEqual(live.finishReason, projected.finishReason, 'finish reason equivalence');
+  assertEqual(live.finishReason, 'cancelled', 'finish reason should be preserved');
+  assertEqual(live.isStreaming, projected.isStreaming, 'streaming state equivalence');
+
+  streamStore.clearStream(conversationId);
+});
+
+test('canonical approval denial projection matches live stream dispatch declined tool state', () => {
+  const conversationId = 'conversation-approval-denial-equivalence';
+  const request = approvalRequest();
+  const runEvents = [
+    runEvent({
+      eventSeq: 1,
+      kind: 'toolStarted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'approval_pending',
+      payload: { run: toolRun({ callId: 'call-approval', status: 'approvalPending' }) },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'approvalRequested',
+      phase: 'approval',
+      label: 'search_knowledge_base',
+      status: 'pending',
+      payload: { request },
+    }),
+    runEvent({
+      eventSeq: 3,
+      kind: 'approvalResolved',
+      phase: 'approval',
+      label: 'Approval resolved',
+      status: 'denied',
+      payload: { requestId: request.id, decision: 'deny' },
+    }),
+    runEvent({
+      eventSeq: 4,
+      kind: 'toolCompleted',
+      phase: 'tooling',
+      label: 'search_knowledge_base',
+      status: 'declined',
+      payload: {
+        run: toolRun({
+          callId: 'call-approval',
+          status: 'declined',
+          content: 'Denied by user',
+        }),
+      },
+    }),
+    runEvent({
+      eventSeq: 5,
+      kind: 'error',
+      phase: 'done',
+      label: 'Tool approval denied.',
+      status: 'failed',
+      payload: { message: 'Tool approval denied.' },
+    }),
+  ];
+
+  const projected = projectRunEventsToStreamState(taskRun('failed'), runEvents);
+  streamStore.startStream(conversationId);
+  for (const event of runEvents) {
+    streamStore.dispatch(conversationId, frontendEvent(event));
+  }
+
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live dispatch should create stream state');
+  assertEqual(projected.pendingApprovals.length, 0, 'projected pending approval cleared');
+  assertEqual(live.pendingApprovals.length, projected.pendingApprovals.length, 'pending approval count equivalence');
+  assertEqual(projected.toolCalls.length, 1, 'projected tool call count');
+  assertEqual(live.toolCalls.length, projected.toolCalls.length, 'tool call count equivalence');
+  assertEqual(live.toolCalls[0].status, projected.toolCalls[0].status, 'declined tool status equivalence');
+  assertEqual(live.toolCalls[0].status, 'declined', 'denied approval should decline tool run');
+  assertEqual(live.toolCalls[0].content, projected.toolCalls[0].content, 'declined tool content equivalence');
+  assertEqual(live.error, projected.error, 'terminal error equivalence');
+  assertEqual(live.isStreaming, projected.isStreaming, 'streaming state equivalence');
 
   streamStore.clearStream(conversationId);
 });

@@ -1,13 +1,20 @@
 //! ManageSkillTool - controlled skill self-evolution.
 
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use serde::Deserialize;
 
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::evolution::{CreateSkillChangeProposalInput, SkillChangeAction, SkillProposalStatus};
+use crate::execution_environment::{
+    LocalProcessExecutionEnvironment, SkillResourceHelperExecutionRequest,
+};
+use crate::skills::{Skill, SkillResourceEncoding, SkillResourceFile, SkillResourceKind};
 
 use super::{Tool, ToolCategory, ToolDef, ToolResult};
 
@@ -25,6 +32,12 @@ struct ManageSkillArgs {
     skill_id: Option<String>,
     #[serde(default)]
     resource_path: Option<String>,
+    #[serde(default)]
+    helper_args: Vec<String>,
+    #[serde(default)]
+    stdin: Option<String>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -49,6 +62,90 @@ fn missing(field: &str, action: &str) -> CoreError {
     ))
 }
 
+fn load_skill_for_action(db: &Database, skill_id: &str) -> Result<Skill, CoreError> {
+    let mut skills = crate::skills::load_builtin_skills();
+    skills.extend(db.list_skills()?);
+    skills
+        .into_iter()
+        .find(|skill| {
+            skill.id == skill_id
+                || skill.name == skill_id
+                || skill.id.strip_prefix("builtin-") == Some(skill_id)
+        })
+        .ok_or_else(|| CoreError::NotFound(format!("Skill {skill_id}")))
+}
+
+fn find_skill_resource<'a>(
+    skill: &'a Skill,
+    resource_path: &str,
+) -> Result<(&'a SkillResourceFile, String), CoreError> {
+    let normalized_path = crate::skills::normalize_skill_resource_path(resource_path)
+        .map_err(|err| CoreError::InvalidInput(format!("Invalid skill resource path: {err}")))?;
+    let resource = skill
+        .resource_bundle
+        .iter()
+        .find(|resource| resource.path == normalized_path)
+        .ok_or_else(|| {
+            CoreError::NotFound(format!(
+                "Skill resource {} in {}",
+                normalized_path, skill.id
+            ))
+        })?;
+    Ok((resource, normalized_path))
+}
+
+fn program_for_skill_script(path: &str) -> Result<&'static str, CoreError> {
+    match Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("py") => Ok("python"),
+        Some("js" | "mjs" | "cjs") => Ok("node"),
+        _ => Err(CoreError::InvalidInput(format!(
+            "Skill resource helper only supports script resources ending in .py, .js, .mjs, or .cjs: {path}"
+        ))),
+    }
+}
+
+fn write_skill_resource_bundle(
+    root: &Path,
+    resources: &[SkillResourceFile],
+) -> Result<(), CoreError> {
+    for resource in resources {
+        let normalized =
+            crate::skills::normalize_skill_resource_path(&resource.path).map_err(|err| {
+                CoreError::InvalidInput(format!("Invalid skill resource path: {err}"))
+            })?;
+        let target = root.join(&normalized);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let bytes = match resource.encoding {
+            SkillResourceEncoding::Utf8 => resource.content.as_bytes().to_vec(),
+            SkillResourceEncoding::Base64 => base64::engine::general_purpose::STANDARD
+                .decode(&resource.content)
+                .map_err(|err| {
+                    CoreError::InvalidInput(format!(
+                        "Invalid base64 skill resource {}: {err}",
+                        resource.path
+                    ))
+                })?,
+        };
+        fs::write(target, bytes)?;
+    }
+    Ok(())
+}
+
+fn helper_temp_dir(skill_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "nexa-skill-helper-{}-{}",
+        skill_id.replace(|ch: char| !ch.is_ascii_alphanumeric(), "-"),
+        uuid::Uuid::new_v4()
+    ))
+}
+
 #[async_trait]
 impl Tool for ManageSkillTool {
     fn name(&self) -> &str {
@@ -70,21 +167,36 @@ impl Tool for ManageSkillTool {
     fn requires_confirmation(&self, args: &serde_json::Value) -> bool {
         args.get("action")
             .and_then(|v| v.as_str())
-            .is_some_and(|action| action == "apply_proposal")
+            .is_some_and(|action| action == "apply_proposal" || action == "run_resource_helper")
     }
 
     fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
         let action = args.get("action")?.as_str()?;
-        if action != "apply_proposal" {
-            return None;
+        match action {
+            "apply_proposal" => {
+                let id = args
+                    .get("proposal_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<missing>");
+                Some(format!(
+                    "Apply skill change proposal {id}. This will create or update an active user skill."
+                ))
+            }
+            "run_resource_helper" => {
+                let skill_id = args
+                    .get("skill_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<missing>");
+                let resource_path = args
+                    .get("resource_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<missing>");
+                Some(format!(
+                    "Run skill resource helper {resource_path} from {skill_id}. This executes a bundled script with network access disabled."
+                ))
+            }
+            _ => None,
         }
-        let id = args
-            .get("proposal_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<missing>");
-        Some(format!(
-            "Apply skill change proposal {id}. This will create or update an active user skill."
-        ))
     }
 
     async fn execute(
@@ -92,7 +204,7 @@ impl Tool for ManageSkillTool {
         call_id: &str,
         arguments: &str,
         db: &Database,
-        _source_scope: &[String],
+        source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
         let args: ManageSkillArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid manage_skill arguments: {e}")))?;
@@ -256,14 +368,29 @@ impl Tool for ManageSkillTool {
                 } else {
                     "skill"
                 };
+                let artifacts = if action == "activate_skill" {
+                    let activation = crate::skills::build_skill_activation_envelope(
+                        &skill,
+                        Some("manage_skill.activate_skill"),
+                        None,
+                        true,
+                    );
+                    serde_json::json!({
+                        "kind": artifact_kind,
+                        "skill": &skill,
+                        "activation": activation
+                    })
+                } else {
+                    serde_json::json!({
+                        "kind": artifact_kind,
+                        "skill": &skill
+                    })
+                };
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
                     content,
                     is_error: false,
-                    artifacts: Some(serde_json::json!({
-                        "kind": artifact_kind,
-                        "skill": skill
-                    })),
+                    artifacts: Some(artifacts),
                 })
             }
             "view_resource" => {
@@ -271,27 +398,8 @@ impl Tool for ManageSkillTool {
                 let resource_path = args
                     .resource_path
                     .ok_or_else(|| missing("resource_path", action))?;
-                let mut skills = crate::skills::load_builtin_skills();
-                skills.extend(db.list_skills()?);
-                let skill = skills
-                    .into_iter()
-                    .find(|skill| {
-                        skill.id == skill_id
-                            || skill.name == skill_id
-                            || skill.id.strip_prefix("builtin-") == Some(skill_id.as_str())
-                    })
-                    .ok_or_else(|| CoreError::NotFound(format!("Skill {skill_id}")))?;
-                let normalized_path = resource_path.trim().replace('\\', "/");
-                let resource = skill
-                    .resource_bundle
-                    .iter()
-                    .find(|resource| resource.path == normalized_path)
-                    .ok_or_else(|| {
-                        CoreError::NotFound(format!(
-                            "Skill resource {} in {}",
-                            normalized_path, skill.id
-                        ))
-                    })?;
+                let skill = load_skill_for_action(db, &skill_id)?;
+                let (resource, _) = find_skill_resource(&skill, &resource_path)?;
                 let content = match resource.encoding {
                     crate::skills::SkillResourceEncoding::Utf8 => format!(
                         "Skill resource: {} ({})\nKind: {:?}\nEncoding: utf8\n\n{}",
@@ -314,6 +422,95 @@ impl Tool for ManageSkillTool {
                             "kind": &resource.kind,
                             "encoding": &resource.encoding
                         }
+                    })),
+                })
+            }
+            "run_resource_helper" => {
+                let skill_id = args.skill_id.ok_or_else(|| missing("skill_id", action))?;
+                let resource_path = args
+                    .resource_path
+                    .ok_or_else(|| missing("resource_path", action))?;
+                let skill = load_skill_for_action(db, &skill_id)?;
+                let (resource, normalized_path) = find_skill_resource(&skill, &resource_path)?;
+                let resource_kind = resource.kind.clone();
+                let resource_encoding = resource.encoding.clone();
+                if resource.kind != SkillResourceKind::Script {
+                    return Err(CoreError::InvalidInput(format!(
+                        "Skill resource helper can only execute script resources: {} is {:?}",
+                        resource.path, resource.kind
+                    )));
+                }
+                if resource.encoding != SkillResourceEncoding::Utf8 {
+                    return Err(CoreError::InvalidInput(format!(
+                        "Skill resource helper requires utf8 script resources: {}",
+                        resource.path
+                    )));
+                }
+
+                let program = program_for_skill_script(&normalized_path)?;
+                let temp_dir = helper_temp_dir(&skill.id);
+                fs::create_dir_all(&temp_dir)?;
+                let helper_result = async {
+                    write_skill_resource_bundle(&temp_dir, &skill.resource_bundle)?;
+                    let script_path = temp_dir.join(&normalized_path);
+                    let mut helper_args = vec![script_path.display().to_string()];
+                    helper_args.extend(args.helper_args.clone());
+                    let environment = LocalProcessExecutionEnvironment;
+                    environment
+                        .execute_skill_resource_helper(SkillResourceHelperExecutionRequest {
+                            program: program.to_string(),
+                            args: helper_args,
+                            cwd: temp_dir.clone(),
+                            skill_id: skill.id.clone(),
+                            source_scope: source_scope.to_vec(),
+                            timeout_secs: args.timeout_secs.unwrap_or(30),
+                            stdin: args.stdin.clone(),
+                            environment: Vec::new(),
+                            expected_writes: Vec::new(),
+                        })
+                        .await
+                }
+                .await;
+                let cleanup_result = fs::remove_dir_all(&temp_dir);
+                let artifact = helper_result?;
+                if let Err(err) = cleanup_result {
+                    return Err(CoreError::Io(err));
+                }
+                let status = artifact
+                    .exit_status
+                    .map(|status| status.to_string())
+                    .unwrap_or_else(|| {
+                        if artifact.timed_out {
+                            "timed_out".to_string()
+                        } else {
+                            "unknown".to_string()
+                        }
+                    });
+                let mut content = format!(
+                    "Skill resource helper: {} ({})\nProgram: {}\nExit: {}\n",
+                    normalized_path, skill.id, program, status
+                );
+                if !artifact.stdout.is_empty() {
+                    content.push_str("\nstdout:\n");
+                    content.push_str(&artifact.stdout);
+                }
+                if !artifact.stderr.is_empty() {
+                    content.push_str("\nstderr:\n");
+                    content.push_str(&artifact.stderr);
+                }
+                Ok(ToolResult {
+                    call_id: call_id.to_string(),
+                    content,
+                    is_error: artifact.timed_out || artifact.exit_status != Some(0),
+                    artifacts: Some(serde_json::json!({
+                        "kind": "skillResourceHelperExecution",
+                        "skillId": &skill.id,
+                        "resource": {
+                            "path": normalized_path,
+                            "kind": resource_kind,
+                            "encoding": resource_encoding
+                        },
+                        "execution": artifact
                     })),
                 })
             }
@@ -440,6 +637,14 @@ mod tests {
             activated.artifacts.as_ref().unwrap()["kind"],
             "skillActivation"
         );
+        assert_eq!(
+            activated.artifacts.as_ref().unwrap()["activation"]["skillId"],
+            "builtin-pptx-presentation-design"
+        );
+        assert_eq!(
+            activated.artifacts.as_ref().unwrap()["activation"]["version"],
+            crate::skills::SKILL_ACTIVATION_ENVELOPE_VERSION
+        );
 
         let resource_args = serde_json::json!({
             "action": "view_resource",
@@ -467,6 +672,56 @@ mod tests {
             .unwrap();
         assert!(!slug_viewed.is_error);
         assert!(slug_viewed.content.contains("builtin-doc-script-editor"));
+    }
+
+    #[tokio::test]
+    async fn run_resource_helper_executes_script_resource_through_execution_environment() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let saved = db
+            .save_skill(&crate::skills::SaveSkillInput {
+                id: None,
+                name: "Helper skill".into(),
+                description: "Runs a bundled helper script.".into(),
+                content: "Use scripts/helper.js when helper execution is required.".into(),
+                enabled: true,
+                resource_bundle: vec![crate::skills::SkillResourceFile {
+                    path: "scripts/helper.js".into(),
+                    kind: crate::skills::SkillResourceKind::Script,
+                    encoding: crate::skills::SkillResourceEncoding::Utf8,
+                    content: "const fs = require('fs');\nconst stdin = fs.readFileSync(0, 'utf8').trim();\nconsole.log(`helper:${process.argv.slice(2).join(',')}:${stdin}`);\n".into(),
+                }],
+            })
+            .unwrap();
+        let tool = ManageSkillTool;
+        let args = serde_json::json!({
+            "action": "run_resource_helper",
+            "skill_id": saved.id,
+            "resource_path": "scripts/helper.js",
+            "helper_args": ["alpha"],
+            "stdin": "payload"
+        });
+
+        assert!(tool.requires_confirmation(&args));
+        let result = tool
+            .execute("call-helper", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "helper failed: {}", result.content);
+        assert!(result.content.contains("helper:alpha:payload"));
+        let artifacts = result.artifacts.as_ref().unwrap();
+        assert_eq!(artifacts["kind"], "skillResourceHelperExecution");
+        assert_eq!(artifacts["resource"]["path"], "scripts/helper.js");
+        assert_eq!(artifacts["execution"]["decision"]["kind"], "allowed");
+        assert!(artifacts["execution"]["decision"]["permissionKey"]
+            .as_str()
+            .unwrap()
+            .contains("exec:skill_resource_helper:-:"));
+        assert!(artifacts["execution"]["decision"]["permissionKey"]
+            .as_str()
+            .unwrap()
+            .ends_with(":node"));
     }
 
     #[tokio::test]

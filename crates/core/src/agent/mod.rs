@@ -202,6 +202,9 @@ pub struct AgentConfig {
     pub max_iterations: u32,
     /// System prompt prepended to every request.
     pub system_prompt: String,
+    /// Per-turn context that must not be mixed into the frozen system prompt.
+    #[serde(default)]
+    pub volatile_system_sections: Vec<String>,
     /// Override model name (provider default used when `None`).
     pub model: Option<String>,
     /// Sampling temperature.
@@ -309,6 +312,7 @@ impl Default for AgentConfig {
         Self {
             max_iterations: 25,
             system_prompt: default_system_prompt(),
+            volatile_system_sections: Vec::new(),
             model: None,
             temperature: Some(0.3),
             max_tokens: Some(4096),
@@ -341,8 +345,12 @@ const DEFAULT_MODEL: &str = "gpt-4o-mini";
 /// Build the effective system prompt for a request.
 ///
 /// The core prompt is always preserved. Conversation-level custom prompt text
-/// is appended as lower-priority instructions, followed by any dynamic sections
-/// such as memory or preference summaries.
+/// is appended as lower-priority instructions.
+///
+/// `dynamic_sections` is retained for stable, session-level extensions. New
+/// per-turn context such as time, retrieved memory, source scope, skills, or
+/// scratchpad state should use [`AgentConfig::volatile_system_sections`] so
+/// provider-specific layouts can keep prefix caches intact.
 pub fn build_system_prompt(conversation_prompt: Option<&str>, dynamic_sections: &[&str]) -> String {
     let mut prompt = default_system_prompt();
 

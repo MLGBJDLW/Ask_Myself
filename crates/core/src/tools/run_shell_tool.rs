@@ -6,6 +6,7 @@
 //! that affects prompts, schema, recoverable errors, or validation in the
 //! contract module first, then consume it here.
 
+mod environment;
 mod file_tracking;
 mod native_fs;
 mod parser;
@@ -32,7 +33,11 @@ use crate::app_settings::ShellAccessMode;
 #[cfg(test)]
 use crate::db::Database;
 #[cfg(test)]
+use crate::execution_environment::{ExecutionDecisionKind, ExecutionEnvironment, ExecutionRequest};
+#[cfg(test)]
 use crate::models::Source;
+#[cfg(test)]
+use environment::LocalRunShellExecutionEnvironment;
 #[cfg(test)]
 use native_fs::execute_native_filesystem;
 #[cfg(test)]

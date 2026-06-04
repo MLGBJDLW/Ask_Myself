@@ -1803,6 +1803,7 @@ export function SettingsPage() {
             }
           }}
           onMarkAppConfigDirty={() => setExtensionsAppConfigDirty(true)}
+          onPackageStateChange={loadSkills}
         />
       )}
 

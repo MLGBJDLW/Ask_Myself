@@ -541,13 +541,33 @@ fn add_cache_control_to_text_content(message: &mut OaiMessage) -> bool {
     }
 }
 
-fn add_openai_compatible_cache_control(messages: &mut [OaiMessage]) {
+fn should_add_latest_user_cache_control(model: &str, provider_type: Option<&ProviderType>) -> bool {
+    if provider_type == Some(&ProviderType::Qwen) {
+        return false;
+    }
+
+    !model.to_ascii_lowercase().contains("qwen/")
+}
+
+fn add_openai_compatible_cache_control(messages: &mut [OaiMessage], mark_latest_user: bool) {
     if let Some(system) = messages.iter_mut().find(|msg| msg.role == "system") {
         add_cache_control_to_text_content(system);
     }
-    if let Some(last_user) = messages.iter_mut().rev().find(|msg| msg.role == "user") {
-        add_cache_control_to_text_content(last_user);
+    if mark_latest_user {
+        if let Some(last_user) = messages.iter_mut().rev().find(|msg| msg.role == "user") {
+            add_cache_control_to_text_content(last_user);
+        }
     }
+}
+
+fn add_openai_compatible_cache_control_for_request(
+    request: &CompletionRequest,
+    messages: &mut [OaiMessage],
+) {
+    add_openai_compatible_cache_control(
+        messages,
+        should_add_latest_user_cache_control(&request.model, request.provider_type.as_ref()),
+    );
 }
 
 fn parsed_tool_arguments(raw: &str) -> Option<serde_json::Value> {
@@ -735,7 +755,7 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
         })
         .collect();
     if add_cache_control {
-        add_openai_compatible_cache_control(&mut messages);
+        add_openai_compatible_cache_control_for_request(request, &mut messages);
     }
 
     OaiRequest {
@@ -1674,7 +1694,7 @@ data: [DONE]
     }
 
     #[test]
-    fn qwen_requests_add_explicit_prompt_cache_markers() {
+    fn qwen_requests_add_stable_prompt_cache_markers() {
         let request = CompletionRequest {
             model: "qwen3.7-max".to_string(),
             messages: vec![
@@ -1702,10 +1722,7 @@ data: [DONE]
             serde_json::json!({"type": "ephemeral"})
         );
         assert!(body["messages"][1]["content"].is_string());
-        assert_eq!(
-            body["messages"][2]["content"][0]["cache_control"],
-            serde_json::json!({"type": "ephemeral"})
-        );
+        assert!(body["messages"][2]["content"].is_string());
         assert_eq!(
             body["tools"][0]["cache_control"],
             serde_json::json!({"type": "ephemeral"})
@@ -1713,7 +1730,7 @@ data: [DONE]
     }
 
     #[test]
-    fn qwen_cache_marker_stays_on_latest_user_not_tool_loop_tail() {
+    fn qwen_cache_marker_does_not_target_dynamic_latest_user() {
         let mut assistant = Message::text(Role::Assistant, "");
         assistant.tool_calls = Some(vec![ToolCallRequest {
             id: "call-1".to_string(),
@@ -1743,10 +1760,10 @@ data: [DONE]
 
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
 
-        assert_eq!(
-            body["messages"][1]["content"][0]["cache_control"],
-            serde_json::json!({"type": "ephemeral"})
-        );
+        assert!(body["messages"][0]["content"][0]
+            .get("cache_control")
+            .is_some());
+        assert!(body["messages"][1]["content"].is_string());
         assert!(body["messages"][2].get("cache_control").is_none());
         assert!(body["messages"][3].get("cache_control").is_none());
     }

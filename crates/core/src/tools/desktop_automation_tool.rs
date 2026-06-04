@@ -6,7 +6,6 @@
 //! source-scoped files, and bounded waits inside a larger workflow.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -16,6 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::execution_environment::{
+    ExecutionEnvironment, ExecutionRequest, LocalDetachedProcessExecutionEnvironment,
+};
 
 use super::path_utils::{resolve_path_in_sources, PathKind};
 use super::{scoped_sources, Tool, ToolCategory, ToolDef, ToolResult};
@@ -49,9 +51,40 @@ struct DesktopAutomationArtifact {
     reason: Option<String>,
     launched: bool,
     source_scoped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_environment: Option<&'static str>,
 }
 
 pub struct DesktopAutomationTool;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopLaunchCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+impl DesktopLaunchCommand {
+    fn new(program: impl Into<String>, args: Vec<String>) -> Self {
+        Self {
+            program: program.into(),
+            args,
+        }
+    }
+
+    fn into_execution_request(
+        self,
+        source_scope: &[String],
+        network_intent: bool,
+    ) -> ExecutionRequest {
+        ExecutionRequest::for_detached_local_tool(
+            self.program,
+            self.args,
+            "desktop_automation",
+            source_scope.to_vec(),
+            network_intent,
+        )
+    }
+}
 
 fn normalize_nonempty(value: Option<String>) -> Option<String> {
     value
@@ -104,54 +137,54 @@ fn validate_http_url(raw: &str) -> Result<String, CoreError> {
     }
 }
 
-fn launcher_command(target: &str) -> Command {
+fn launcher_command(target: &str) -> DesktopLaunchCommand {
     #[cfg(windows)]
     {
-        let mut cmd = Command::new("rundll32.exe");
-        cmd.arg("url.dll,FileProtocolHandler").arg(target);
-        cmd
+        DesktopLaunchCommand::new(
+            "rundll32.exe",
+            vec![
+                "url.dll,FileProtocolHandler".to_string(),
+                target.to_string(),
+            ],
+        )
     }
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = Command::new("open");
-        cmd.arg(target);
-        cmd
+        DesktopLaunchCommand::new("open", vec![target.to_string()])
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let mut cmd = Command::new("xdg-open");
-        cmd.arg(target);
-        cmd
+        DesktopLaunchCommand::new("xdg-open", vec![target.to_string()])
     }
 }
 
-fn reveal_command(path: &Path) -> Command {
+fn reveal_command(path: &Path) -> DesktopLaunchCommand {
     #[cfg(windows)]
     {
-        let mut cmd = Command::new("explorer.exe");
-        cmd.arg(format!("/select,{}", path.display()));
-        cmd
+        DesktopLaunchCommand::new("explorer.exe", vec![format!("/select,{}", path.display())])
     }
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = Command::new("open");
-        cmd.arg("-R").arg(path);
-        cmd
+        DesktopLaunchCommand::new(
+            "open",
+            vec!["-R".to_string(), path.to_string_lossy().to_string()],
+        )
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let parent = path.parent().unwrap_or(path);
-        let mut cmd = Command::new("xdg-open");
-        cmd.arg(parent);
-        cmd
+        DesktopLaunchCommand::new("xdg-open", vec![parent.to_string_lossy().to_string()])
     }
 }
 
-fn spawn_detached(mut command: Command) -> Result<(), CoreError> {
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| CoreError::Internal(format!("Failed to launch desktop action: {e}")))
+async fn spawn_detached(
+    command: DesktopLaunchCommand,
+    source_scope: &[String],
+    network_intent: bool,
+) -> Result<(), CoreError> {
+    let environment = LocalDetachedProcessExecutionEnvironment;
+    let request = command.into_execution_request(source_scope, network_intent);
+    environment.execute(request).await.map(|_| ())
 }
 
 fn resolve_source_path(
@@ -182,6 +215,7 @@ fn artifact(
         reason: args.reason.clone(),
         launched,
         source_scoped,
+        execution_environment: launched.then_some("local_detached_process"),
     })
     .unwrap_or_else(|_| serde_json::json!({ "kind": "desktopAutomation" }))
 }
@@ -251,11 +285,7 @@ impl Tool for DesktopAutomationTool {
                 })?;
                 let url = validate_http_url(raw)?;
                 let target = url.clone();
-                tokio::task::spawn_blocking(move || spawn_detached(launcher_command(&target)))
-                    .await
-                    .map_err(|e| {
-                        CoreError::Internal(format!("desktop launch task failed: {e}"))
-                    })??;
+                spawn_detached(launcher_command(&target), source_scope, true).await?;
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
                     content: format!("Opened URL in the default browser: {url}"),
@@ -269,11 +299,7 @@ impl Tool for DesktopAutomationTool {
                 })?;
                 let url = build_search_url(args.engine.as_deref(), query)?;
                 let target = url.clone();
-                tokio::task::spawn_blocking(move || spawn_detached(launcher_command(&target)))
-                    .await
-                    .map_err(|e| {
-                        CoreError::Internal(format!("desktop launch task failed: {e}"))
-                    })??;
+                spawn_detached(launcher_command(&target), source_scope, true).await?;
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
                     content: format!("Opened browser search for: {query}"),
@@ -288,11 +314,7 @@ impl Tool for DesktopAutomationTool {
                 let canonical = resolve_source_path(db, source_scope, path)?;
                 let target = canonical.to_string_lossy().to_string();
                 let launch_target = target.clone();
-                tokio::task::spawn_blocking(move || {
-                    spawn_detached(launcher_command(&launch_target))
-                })
-                .await
-                .map_err(|e| CoreError::Internal(format!("desktop launch task failed: {e}")))??;
+                spawn_detached(launcher_command(&launch_target), source_scope, false).await?;
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
                     content: format!("Opened local path: {}", canonical.display()),
@@ -307,11 +329,7 @@ impl Tool for DesktopAutomationTool {
                 let canonical = resolve_source_path(db, source_scope, path)?;
                 let target = canonical.to_string_lossy().to_string();
                 let reveal_target = canonical.clone();
-                tokio::task::spawn_blocking(move || spawn_detached(reveal_command(&reveal_target)))
-                    .await
-                    .map_err(|e| {
-                        CoreError::Internal(format!("desktop launch task failed: {e}"))
-                    })??;
+                spawn_detached(reveal_command(&reveal_target), source_scope, false).await?;
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
                     content: format!("Revealed local path: {}", canonical.display()),
@@ -352,6 +370,91 @@ mod tests {
     fn rejects_non_http_urls() {
         let err = validate_http_url("file:///etc/passwd").unwrap_err();
         assert!(err.to_string().contains("http/https"));
+    }
+
+    #[test]
+    fn launcher_command_builds_platform_opener() {
+        let command = launcher_command("https://example.com/path");
+
+        #[cfg(windows)]
+        {
+            assert_eq!(command.program, "rundll32.exe");
+            assert_eq!(
+                command.args,
+                vec![
+                    "url.dll,FileProtocolHandler".to_string(),
+                    "https://example.com/path".to_string()
+                ]
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(command.program, "open");
+            assert_eq!(command.args, vec!["https://example.com/path".to_string()]);
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            assert_eq!(command.program, "xdg-open");
+            assert_eq!(command.args, vec!["https://example.com/path".to_string()]);
+        }
+    }
+
+    #[test]
+    fn reveal_command_builds_platform_opener() {
+        let path = Path::new("workspace").join("note.txt");
+        let command = reveal_command(&path);
+
+        #[cfg(windows)]
+        {
+            assert_eq!(command.program, "explorer.exe");
+            assert_eq!(command.args.len(), 1);
+            assert!(command.args[0].starts_with("/select,"));
+            assert!(command.args[0].contains("note.txt"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(command.program, "open");
+            assert_eq!(
+                command.args,
+                vec!["-R".to_string(), path.to_string_lossy().to_string()]
+            );
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            assert_eq!(command.program, "xdg-open");
+            assert_eq!(command.args, vec!["workspace".to_string()]);
+        }
+    }
+
+    #[tokio::test]
+    async fn detached_execution_request_carries_desktop_policy() {
+        let source_scope = vec!["source-1".to_string()];
+        let request = launcher_command("https://example.com/path")
+            .into_execution_request(&source_scope, true);
+        let environment = LocalDetachedProcessExecutionEnvironment;
+        let decision = environment.review(&request).await.unwrap();
+
+        assert_eq!(environment.id(), "local_detached_process");
+        assert_eq!(
+            request.caller.tool_name.as_deref(),
+            Some("desktop_automation")
+        );
+        assert_eq!(
+            request.sandbox.backend,
+            crate::execution_environment::ExecutionBackendKind::LocalOpen
+        );
+        assert_eq!(request.sandbox.source_scope, source_scope);
+        assert_eq!(
+            request.sandbox.allowed_programs,
+            vec![request.program.clone()]
+        );
+        assert!(request.network_intent);
+        assert!(request.sandbox.network_allowed);
+        assert!(!request.sandbox.capture_file_changes);
+        assert_eq!(
+            decision.kind,
+            crate::execution_environment::ExecutionDecisionKind::Allowed
+        );
     }
 
     #[tokio::test]

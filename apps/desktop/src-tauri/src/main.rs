@@ -5,6 +5,7 @@ mod agent_stream_bridge;
 mod agent_task_events;
 mod app_events;
 mod commands;
+mod desktop_agent_session;
 mod subagent_tool;
 
 use std::collections::HashMap;
@@ -12,7 +13,10 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use commands::{AgentState, AppState, ApprovalState, DownloadCancelFlag, McpManagerState};
+use commands::{
+    AgentState, AppState, ApprovalState, DownloadCancelFlag, McpManagerState,
+    TaskOrchestratorSchedulerState,
+};
 use nexa_core::db::Database;
 use tauri::Manager;
 use tokio::sync::Mutex as TokioMutex;
@@ -162,6 +166,7 @@ fn main() {
             let handle = app.handle().clone();
             let app_state: tauri::State<'_, AppState> = app.state();
             commands::init_watcher(handle, &app_state.db);
+            commands::init_task_orchestrator_scheduler(app.handle().clone());
 
             Ok(())
         })
@@ -261,6 +266,7 @@ fn main() {
             commands::get_agent_task_runs_cmd,
             commands::list_recent_agent_task_runs_cmd,
             commands::get_agent_task_run_events_cmd,
+            commands::get_agent_run_events_cmd,
             commands::get_agent_subtask_runs_cmd,
             commands::get_agent_execution_graph_cmd,
             commands::get_agent_task_artifacts_cmd,
@@ -274,6 +280,9 @@ fn main() {
             commands::get_investigation_graph_cmd,
             commands::list_tool_access_map_cmd,
             commands::list_builtin_plugins_cmd,
+            commands::get_package_host_snapshot_cmd,
+            commands::set_package_host_package_enabled_cmd,
+            commands::set_package_host_package_health_cmd,
             commands::list_project_tools_cmd,
             commands::update_conversation_collection_context_cmd,
             commands::update_conversation_persona_cmd,
@@ -322,8 +331,17 @@ fn main() {
             commands::delete_workflow_automation_cmd,
             commands::set_workflow_automation_enabled_cmd,
             commands::list_due_workflow_automations_cmd,
+            commands::list_due_task_orchestrator_queue_cmd,
             commands::preview_workflow_automation_prompt_cmd,
+            commands::prepare_workflow_automation_delivery_cmd,
+            commands::prepare_due_workflow_automation_delivery_cmd,
+            commands::queue_workflow_automation_delivery_cmd,
+            commands::queue_due_workflow_automation_delivery_cmd,
+            commands::start_due_workflow_automation_run_cmd,
             commands::record_workflow_automation_run_cmd,
+            commands::list_workflow_automation_scheduler_events_cmd,
+            commands::list_workflow_automation_scheduler_events_for_task_run_cmd,
+            commands::export_workflow_automation_trajectory_cmd,
             // Agent chat
             commands::agent_chat_cmd,
             commands::agent_steer_cmd,
@@ -395,6 +413,16 @@ fn main() {
             // Trace analytics
             commands::get_trace_summary,
             commands::get_recent_traces,
+            commands::export_agent_task_trajectory_cmd,
+            commands::save_agent_trajectory_cmd,
+            commands::load_agent_trajectory_cmd,
+            commands::list_agent_trajectories_cmd,
+            commands::run_trajectory_eval_pack_cmd,
+            commands::compare_trajectory_replay_cmd,
+            commands::replay_trajectory_session_cmd,
+            commands::run_stored_trajectory_smoke_eval_cmd,
+            commands::run_developer_eval_smoke_workflow_cmd,
+            commands::run_developer_eval_nightly_workflow_cmd,
             commands::run_agent_quality_eval_cmd,
             commands::get_learning_governance_snapshot_cmd,
             commands::capture_browser_evidence_cmd,
@@ -424,6 +452,10 @@ fn main() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
+            if let Some(scheduler_state) = app_handle.try_state::<TaskOrchestratorSchedulerState>()
+            {
+                commands::shutdown_task_orchestrator_scheduler(&scheduler_state);
+            }
             // Shutdown MCP manager: kill all managed processes
             if let Some(mcp_state) = app_handle.try_state::<McpManagerState>() {
                 tauri::async_runtime::block_on(async {

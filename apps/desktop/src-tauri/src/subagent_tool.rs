@@ -1445,10 +1445,7 @@ fn normalize_spawn_args(mut args: SpawnSubagentArgs) -> Result<SpawnSubagentArgs
         ));
     }
 
-    args.role_id = match trim_optional(args.role_id) {
-        Some(role_id) => Some(normalize_role_id(&role_id)),
-        None => None,
-    };
+    args.role_id = trim_optional(args.role_id).map(|role_id| normalize_role_id(&role_id));
     resolve_role_profile(args.role_id.as_deref(), args.role.as_deref())?;
     args.role = trim_optional(args.role);
     args.task_id = trim_optional(args.task_id);

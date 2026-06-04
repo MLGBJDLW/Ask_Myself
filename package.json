@@ -2,7 +2,9 @@
   "name": "nexa-monorepo",
   "private": true,
   "scripts": {
-    "tauri": "npm run tauri --prefix apps/desktop --"
+    "tauri": "npm run tauri --prefix apps/desktop --",
+    "eval:smoke": "cargo test -p nexa-core developer_eval_smoke_workflow",
+    "eval:nightly": "cargo test -p nexa-core developer_eval_nightly_workflow"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",

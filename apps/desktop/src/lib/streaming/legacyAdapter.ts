@@ -102,6 +102,70 @@ export function adaptFrontendRunEvent(event: AgentFrontendEvent): AgentFrontendE
     };
   }
 
+  if (runEvent.kind === 'autoCompacted') {
+    return {
+      ...base,
+      type: 'autoCompacted',
+      summary: stringValue(payload.summary) ?? event.summary,
+    };
+  }
+
+  if (runEvent.kind === 'toolStarted') {
+    return {
+      ...base,
+      type: 'toolRunStarted',
+      run: (payload.run as AgentFrontendEvent['run'] | undefined) ?? event.run,
+    };
+  }
+
+  if (runEvent.kind === 'toolProgress') {
+    return {
+      ...base,
+      type: 'toolRunUpdated',
+      run: (payload.run as AgentFrontendEvent['run'] | undefined) ?? event.run,
+    };
+  }
+
+  if (runEvent.kind === 'toolCompleted') {
+    return {
+      ...base,
+      type: 'toolRunCompleted',
+      run: (payload.run as AgentFrontendEvent['run'] | undefined) ?? event.run,
+    };
+  }
+
+  if (runEvent.kind === 'approvalRequested') {
+    return {
+      ...base,
+      type: 'approvalRequested',
+      request: (payload.request as AgentFrontendEvent['request'] | undefined) ?? event.request,
+    };
+  }
+
+  if (runEvent.kind === 'approvalResolved') {
+    return {
+      ...base,
+      type: 'approvalResolved',
+      requestId: stringValue(payload.requestId) ?? event.requestId,
+      decision: (payload.decision as AgentFrontendEvent['decision'] | undefined) ?? event.decision,
+    };
+  }
+
+  if (runEvent.kind === 'done') {
+    return {
+      ...base,
+      type: 'done',
+      message: (payload.message as AgentFrontendEvent['message'] | undefined) ?? event.message ?? runEvent.label,
+      usageTotal: (payload.usageTotal as AgentFrontendEvent['usageTotal'] | undefined) ?? event.usageTotal,
+      contextBreakdown: (
+        payload.contextBreakdown as AgentFrontendEvent['contextBreakdown'] | undefined
+      ) ?? event.contextBreakdown,
+      lastPromptTokens: payload.lastPromptTokens,
+      cached: payload.cached,
+      finishReason: stringValue(payload.finishReason),
+    } as AgentFrontendEvent;
+  }
+
   if (legacyType) {
     return {
       ...payload,
@@ -130,6 +194,22 @@ export interface ReplayStreamItem {
   payload: PayloadRecord;
   eventSeq: number;
   frontendEvent?: AgentFrontendEvent;
+}
+
+function syntheticTaskEventFromRunEvent(runEvent: AgentRunEvent): AgentTaskRunEvent {
+  return {
+    id: `${runEvent.runId}:${runEvent.eventSeq}`,
+    runId: runEvent.runId,
+    eventType: runEvent.kind,
+    label: runEvent.label,
+    status: runEvent.status ?? null,
+    payload: { agentRun: runEvent },
+    createdAt: runEvent.createdAt ?? '',
+  };
+}
+
+export function replayItemFromRunEvent(runEvent: AgentRunEvent): ReplayStreamItem | null {
+  return replayItemFromTaskEvent(syntheticTaskEventFromRunEvent(runEvent));
 }
 
 export function replayItemFromTaskEvent(event: AgentTaskRunEvent): ReplayStreamItem | null {
@@ -185,6 +265,10 @@ export function replayItemFromTaskEvent(event: AgentTaskRunEvent): ReplayStreamI
           kind: runEvent.kind,
           status: runEvent.status,
           message: stringValue(runPayload.message) ?? runEvent.label,
+          usageTotal: runPayload.usageTotal,
+          lastPromptTokens: runPayload.lastPromptTokens,
+          contextBreakdown: runPayload.contextBreakdown,
+          cached: runPayload.cached,
           finishReason: stringValue(runPayload.finishReason),
         },
         eventSeq: runEvent.eventSeq,

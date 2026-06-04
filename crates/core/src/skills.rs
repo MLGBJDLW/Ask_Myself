@@ -7,14 +7,27 @@
 
 pub mod package;
 
+mod activation;
+mod catalog;
 mod importer;
 mod model;
 mod prompt;
 mod registry;
+mod resource_access;
 mod scanner;
 mod selector;
+mod spec;
 mod storage;
+mod trust_policy;
 
+pub use activation::{
+    build_skill_activation_envelope, SkillActivationEnvelope, SKILL_ACTIVATION_ENVELOPE_VERSION,
+};
+pub use catalog::{
+    build_skill_catalog_entry, build_skill_catalog_envelope, escape_prompt_xml,
+    render_skill_catalog_prompt_envelope, SkillCatalogEntry, SkillCatalogEnvelope,
+    SKILL_CATALOG_ENVELOPE_VERSION,
+};
 pub use importer::{discover_skills_in_directory, import_skills_from_directory};
 pub use model::{
     DiscoveredSkillBundle, SaveSkillInput, Skill, SkillDependencies, SkillFrontmatter,
@@ -26,6 +39,10 @@ pub use prompt::{
     build_skills_section_for_query_with_budget, export_skill_to_md,
 };
 pub use registry::{load_builtin_skills, parse_skill_file};
+pub use resource_access::{
+    find_skill_resource, normalize_resource_metadata, normalize_skill_resource_path,
+    resource_summary_for_skill, SkillResourceAccessError, SkillResourceSummary,
+};
 pub use scanner::scan_skill_content;
 pub use selector::{
     get_active_skills_for_query, get_active_skills_for_query_with_pinned,
@@ -33,9 +50,17 @@ pub use selector::{
     select_available_skills_from_pool, select_available_skills_from_pool_with_pinned,
     select_skills_from_pool, select_skills_from_pool_with_pinned,
 };
+pub use spec::{
+    validate_skill_spec, SkillSpecIssue, SkillSpecReport, MAX_SKILL_DESCRIPTION_CHARS,
+    MAX_SKILL_NAME_CHARS, NEXA_SKILL_SPEC_VERSION,
+};
 pub use storage::{
     builtin_skill_dir, materialize_skills_to_disk, materialize_user_skill_to_disk,
     materialize_user_skills_to_disk, remove_materialized_user_skill, user_skill_dir,
+};
+pub use trust_policy::{
+    classify_skill_source, evaluate_skill_trust_policy, trust_state_for_skill, SkillSourceKind,
+    SkillTrustAction, SkillTrustDecision, SkillTrustPolicyInput, SkillTrustState,
 };
 
 #[cfg(test)]
@@ -164,8 +189,9 @@ mod tests {
         }];
         let section = build_skills_section(&skills);
         assert!(section.contains("## Available Skills"));
-        assert!(section.contains("### Concise"));
-        assert!(section.contains("skill_id: 1"));
+        assert!(section.contains("<skill_catalog version=\"1\""));
+        assert!(section.contains("<skill id=\"1\" name=\"Concise\""));
+        assert!(!section.contains("Be brief."));
     }
 
     #[test]
@@ -824,7 +850,7 @@ mod tests {
 
         let section =
             build_skills_section_for_query(&[pptx_skill], "make a slide deck for q3 metrics");
-        assert!(section.contains("resources:"));
+        assert!(section.contains("<resources>"));
         assert!(section.contains("pptx-playbook.md"));
     }
 

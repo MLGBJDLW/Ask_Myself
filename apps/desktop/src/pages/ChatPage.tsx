@@ -420,6 +420,7 @@ export function ChatPage() {
               skillIds: inputOptions?.skillIds,
               userArtifacts: userArtifacts ?? null,
               executionMode: inputOptions?.executionMode,
+              taskOrchestratorRunId: inputOptions?.taskOrchestratorRunId,
             }
           : undefined,
       );
@@ -523,6 +524,9 @@ export function ChatPage() {
   const initialSystemPrompt = (
     (location.state as { systemPrompt?: string } | null)?.systemPrompt ?? ''
   ).trim();
+  const initialTaskOrchestratorRunId = (
+    (location.state as { taskOrchestratorRunId?: string | null } | null)?.taskOrchestratorRunId ?? ''
+  ).trim();
   const initialSourceScopeKey = initialSourceIds.join(',');
   const initialCollectionKey = collectionContext ? JSON.stringify(collectionContext) : '';
 
@@ -531,7 +535,7 @@ export function ChatPage() {
     if (!initialMessage || chat.loadingConfig || !chat.agentConfig || chat.isStreaming) {
       return;
     }
-    const key = `${location.key}:${initialMessage}:${initialSystemPrompt}:${initialSourceScopeKey}:${initialCollectionKey}`;
+    const key = `${location.key}:${initialMessage}:${initialSystemPrompt}:${initialSourceScopeKey}:${initialCollectionKey}:${initialTaskOrchestratorRunId}`;
     if (sentInitialRef.current === key) {
       return;
     }
@@ -543,7 +547,14 @@ export function ChatPage() {
       if (conversationId && initialCollectionContext) {
         await api.updateConversationCollectionContext(conversationId, initialCollectionContext).catch(() => undefined);
       }
-      await chat.send(initialMessage);
+      await chat.send(
+        initialMessage,
+        undefined,
+        undefined,
+        initialTaskOrchestratorRunId
+          ? { taskOrchestratorRunId: initialTaskOrchestratorRunId }
+          : undefined,
+      );
     })();
 
     const cleanPath = conversationId ? `/chat/${conversationId}` : '/chat';
@@ -551,6 +562,7 @@ export function ChatPage() {
   }, [
     initialMessage,
     initialSystemPrompt,
+    initialTaskOrchestratorRunId,
     initialCollectionContext,
     initialCollectionKey,
     initialSourceIds,

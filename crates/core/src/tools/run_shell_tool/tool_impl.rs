@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::execution_environment::{ExecutionEnvironment, ExecutionRequest};
 use async_trait::async_trait;
 
 use super::super::path_utils::resolve_existing_directory_in_sources;
@@ -10,15 +11,15 @@ use super::super::run_shell_contract::{
     tool_description as run_shell_tool_description, DEFAULT_TIMEOUT_SECS, TOOL_NAME,
 };
 use super::super::{scoped_sources, tool_contract_error_result, Tool, ToolCategory, ToolResult};
+use super::environment::LocalRunShellExecutionEnvironment;
 use super::file_tracking::{build_run_shell_file_changes, capture_file_snapshot};
-use super::native_fs::{execute_native_filesystem, is_native_filesystem_program};
 use super::parser::parse_run_shell_args;
 use super::policy::{
     normalize_run_shell_invocation, validate_args, validate_scoped_args, validate_stdin,
 };
 use super::shell_adapter::{
-    clamp_timeout, execute_inner, format_confirmation, format_output, format_shell_confirmation,
-    parse_shell_selector, resolve_program,
+    clamp_timeout, format_confirmation, format_output, format_shell_confirmation,
+    parse_shell_selector, RunShellOutput,
 };
 
 pub struct RunShellTool;
@@ -143,8 +144,6 @@ impl Tool for RunShellTool {
                 Err(msg) => return Ok(error_result(call_id, msg)),
             };
 
-        let resolved_program = resolve_program(&canonical_program);
-
         if let Err(msg) = validate_args(shell_access_mode, &canonical_program, &normalized_args) {
             return Ok(error_result(call_id, msg));
         }
@@ -204,30 +203,29 @@ impl Tool for RunShellTool {
                 .await
                 .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?;
 
-        let output = if is_native_filesystem_program(&canonical_program) {
-            if parsed.stdin.is_some() {
-                return Ok(error_result(
-                    call_id,
-                    "stdin is only supported for external programs, not native filesystem commands",
-                ));
-            }
-            match execute_native_filesystem(&canonical_program, &normalized_args, &cwd_path).await {
-                Ok(o) => o,
-                Err(msg) => return Ok(error_result(call_id, msg)),
-            }
-        } else {
-            match execute_inner(
-                &resolved_program,
-                &normalized_args,
-                &cwd_path,
-                timeout,
-                parsed.stdin.as_deref(),
-            )
-            .await
-            {
-                Ok(o) => o,
-                Err(msg) => return Ok(error_result(call_id, msg)),
-            }
+        let environment = LocalRunShellExecutionEnvironment;
+        let mut execution_request = ExecutionRequest::for_run_shell(
+            canonical_program.clone(),
+            normalized_args.clone(),
+            shell_access_mode,
+            source_scope.to_vec(),
+        );
+        execution_request.cwd = Some(cwd_path.display().to_string());
+        execution_request.stdin = parsed.stdin.clone();
+        execution_request.sandbox.timeout_ms = Some(timeout.saturating_mul(1000));
+        let execution_artifact = match environment.execute(execution_request).await {
+            Ok(artifact) => artifact,
+            Err(CoreError::InvalidInput(msg)) => return Ok(error_result(call_id, msg)),
+            Err(err) => return Err(err),
+        };
+        let output = RunShellOutput {
+            exit_code: execution_artifact.exit_status,
+            stdout: execution_artifact.stdout,
+            stderr: execution_artifact.stderr,
+            duration_ms: execution_artifact.duration_ms as u128,
+            truncated_stdout: execution_artifact.stdout_truncated,
+            truncated_stderr: execution_artifact.stderr_truncated,
+            killed_by_timeout: execution_artifact.timed_out,
         };
 
         let after_root = cwd_path.clone();
@@ -241,6 +239,7 @@ impl Tool for RunShellTool {
         tracing::info!(
             target: "tool.run_shell",
             program = canonical_program,
+            execution_environment = environment.id(),
             args_count = normalized_args.len(),
             cwd = %cwd_path.display(),
             exit_code = ?output.exit_code,

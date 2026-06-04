@@ -212,11 +212,16 @@ export function WorkflowsPage() {
     void load();
   }, [load]);
 
-  const runPrompt = useCallback((prompt: string, sourceScope?: string[]) => {
+  const runPrompt = useCallback((
+    prompt: string,
+    sourceScope?: string[],
+    taskOrchestratorRunId?: string | null,
+  ) => {
     navigate('/chat', {
       state: {
         initialMessage: prompt,
         sourceIds: sourceScope ?? [],
+        taskOrchestratorRunId: taskOrchestratorRunId ?? null,
       },
     });
   }, [navigate]);
@@ -228,15 +233,28 @@ export function WorkflowsPage() {
   const runAutomation = useCallback(async (automation: WorkflowAutomation) => {
     setBusy(automation.id);
     try {
-      const prompt = await api.previewWorkflowAutomationPrompt(automation.id);
-      await api.recordWorkflowAutomationRun(automation.id, 'queued', null, tr('queuedFromWorkbench')).catch(() => undefined);
-      runPrompt(prompt, automation.sourceScope);
+      const ticket = await api.queueWorkflowAutomationDelivery(automation.id, tr('queuedFromWorkbench'));
+      const delivery = ticket.delivery;
+      runPrompt(delivery.prompt, delivery.queueItem.ownership.sourceScope, ticket.run.runId);
     } catch (error) {
       toast.error(String(error));
     } finally {
       setBusy(null);
     }
   }, [runPrompt, tr]);
+
+  const runDueAutomation = useCallback(async (item: WorkflowAutomationDueRun) => {
+    setBusy(item.automation.id);
+    try {
+      const ticket = await api.queueDueWorkflowAutomationDelivery(item.automation.id);
+      const delivery = ticket.delivery;
+      runPrompt(delivery.prompt, delivery.queueItem.ownership.sourceScope, ticket.run.runId);
+    } catch (error) {
+      toast.error(String(error));
+    } finally {
+      setBusy(null);
+    }
+  }, [runPrompt]);
 
   const editAutomation = useCallback((automation: WorkflowAutomation) => {
     setForm({
@@ -391,7 +409,7 @@ export function WorkflowsPage() {
                     <button
                       key={item.automation.id}
                       type="button"
-                      onClick={() => void runAutomation(item.automation)}
+                      onClick={() => void runDueAutomation(item)}
                       className="block w-full rounded-md border border-border/70 bg-surface-0 p-3 text-left transition-colors hover:border-accent/60 hover:bg-accent-subtle/30"
                     >
                       <div className="text-sm font-medium text-text-primary">{item.automation.name}</div>

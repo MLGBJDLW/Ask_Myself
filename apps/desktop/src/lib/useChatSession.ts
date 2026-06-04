@@ -407,6 +407,7 @@ export interface ChatSendOptions {
   userArtifacts?: ArtifactPayload | null;
   skillIds?: string[];
   executionMode?: AgentExecutionMode;
+  taskOrchestratorRunId?: string | null;
 }
 
 export interface UseChatSessionReturn {
@@ -782,6 +783,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             completionTokens: restored.completionTokens,
             totalTokens: restored.totalTokens,
             thinkingTokens: restored.thinkingTokens,
+            cacheReadTokens: restored.cacheReadTokens,
+            cacheMissTokens: restored.cacheMissTokens,
+            cacheCreationTokens: restored.cacheCreationTokens,
             lastPromptTokens: restored.lastPromptTokens,
             contextBreakdown: restored.contextBreakdown,
           }
@@ -804,10 +808,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         setTaskRunsForConversation(activeId, agentTaskRuns);
         const resumableRun = [...agentTaskRuns].reverse().find(taskRunCanResumeStream);
         if (resumableRun && !streamHasVisiblePreview(activeId)) {
-          api.getAgentTaskRunEvents(resumableRun.id)
-            .then((events) => {
+          Promise.all([
+            api.getAgentTaskRunEvents(resumableRun.id).catch(() => []),
+            api.getAgentRunEvents(resumableRun.id).catch(() => []),
+          ])
+            .then(([taskEvents, runEvents]) => {
               if (cancelled) return;
-              streamStore.restoreFromTaskEvents(activeId, resumableRun, events);
+              streamStore.restoreFromHistoricalEvents(activeId, resumableRun, taskEvents, runEvents);
               streamingConversationRef.current = activeId;
               usageConversationRef.current = activeId;
             })
@@ -1288,6 +1295,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         options?.skillIds,
         options?.executionMode,
         options?.userArtifacts,
+        options?.taskOrchestratorRunId,
       );
     },
     [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, isStreaming, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
@@ -1349,6 +1357,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       options?.skillIds,
       options?.executionMode,
       options?.userArtifacts,
+      null,
     );
   }, [activeId, activePersonaId, messages, setMessagesForConversation, setTurnsForConversation, streamSend, turns]);
 
@@ -1464,6 +1473,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           const promptTokens = usageForView.lastPromptTokens ?? usageForView.promptTokens;
           return {
             promptTokens,
+            aggregatePromptTokens: usageForView.promptTokens,
             totalTokens: usageForView.totalTokens,
             contextWindow,
             completionTokens: usageForView.completionTokens,

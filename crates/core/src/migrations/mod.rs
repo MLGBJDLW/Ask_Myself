@@ -989,6 +989,83 @@ Every answer that uses knowledge base search results.
          WHERE e.first_seen_doc IS NOT NULL
            AND TRIM(e.first_seen_doc) <> '';",
     ),
+    (
+        "v065_agent_run_events",
+        "CREATE TABLE IF NOT EXISTS agent_run_events (
+            run_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            event_seq INTEGER NOT NULL,
+            version INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            status TEXT,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (run_id, event_seq)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_run_events_run
+            ON agent_run_events(run_id, event_seq);
+        CREATE INDEX IF NOT EXISTS idx_agent_run_events_turn
+            ON agent_run_events(turn_id, event_seq);
+        CREATE INDEX IF NOT EXISTS idx_agent_run_events_kind
+            ON agent_run_events(kind, created_at);",
+    ),
+    (
+        "v066_agent_trajectories",
+        "CREATE TABLE IF NOT EXISTS agent_trajectories (
+            trajectory_id TEXT PRIMARY KEY NOT NULL,
+            schema_version INTEGER NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_run_id TEXT,
+            user_input_summary TEXT NOT NULL DEFAULT '',
+            outcome TEXT,
+            event_count INTEGER NOT NULL DEFAULT 0,
+            tool_call_count INTEGER NOT NULL DEFAULT 0,
+            approval_count INTEGER NOT NULL DEFAULT 0,
+            task_run_count INTEGER NOT NULL DEFAULT 0,
+            redaction_profile TEXT NOT NULL,
+            trajectory_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_trajectories_source
+            ON agent_trajectories(source_kind, source_run_id);
+        CREATE INDEX IF NOT EXISTS idx_agent_trajectories_created
+            ON agent_trajectories(created_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_trajectories_outcome
+            ON agent_trajectories(outcome, created_at);",
+    ),
+    (
+        "v067_package_host_state",
+        "CREATE TABLE IF NOT EXISTS package_host_state (
+            package_id TEXT PRIMARY KEY NOT NULL,
+            lifecycle_state TEXT NOT NULL,
+            health_state TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_package_host_state_lifecycle
+            ON package_host_state(lifecycle_state, health_state);",
+    ),
+    (
+        "v068_workflow_automation_scheduler_events",
+        "CREATE TABLE IF NOT EXISTS workflow_automation_scheduler_events (
+            id TEXT PRIMARY KEY NOT NULL,
+            automation_id TEXT REFERENCES workflow_automations(id) ON DELETE CASCADE,
+            run_id TEXT REFERENCES workflow_automation_runs(id) ON DELETE SET NULL,
+            event_type TEXT NOT NULL,
+            status TEXT,
+            summary TEXT NOT NULL DEFAULT '',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_scheduler_events_automation
+            ON workflow_automation_scheduler_events(automation_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_workflow_scheduler_events_run
+            ON workflow_automation_scheduler_events(run_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_workflow_scheduler_events_type
+            ON workflow_automation_scheduler_events(event_type, created_at);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1120,10 +1197,13 @@ mod tests {
         assert!(tables.contains(&"personas".to_string()));
         assert!(tables.contains(&"workflow_automations".to_string()));
         assert!(tables.contains(&"workflow_automation_runs".to_string()));
+        assert!(tables.contains(&"workflow_automation_scheduler_events".to_string()));
         assert!(tables.contains(&"task_resume_checkpoints".to_string()));
         assert!(tables.contains(&"skill_usage_events".to_string()));
         assert!(tables.contains(&"memory_injection_events".to_string()));
         assert!(tables.contains(&"browser_evidence_captures".to_string()));
+        assert!(tables.contains(&"agent_run_events".to_string()));
+        assert!(tables.contains(&"agent_trajectories".to_string()));
     }
 
     #[test]

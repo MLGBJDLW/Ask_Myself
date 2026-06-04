@@ -56,14 +56,18 @@ pub fn prepare_messages(
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PrepareMessagesOptions {
+pub struct PrepareMessagesOptions<'a> {
     pub include_skill_system_prompt: bool,
+    pub volatile_system_sections: &'a [&'a str],
+    pub append_volatile_system_prompt_to_tail: bool,
 }
 
-impl Default for PrepareMessagesOptions {
+impl Default for PrepareMessagesOptions<'static> {
     fn default() -> Self {
         Self {
             include_skill_system_prompt: true,
+            volatile_system_sections: &[],
+            append_volatile_system_prompt_to_tail: false,
         }
     }
 }
@@ -80,7 +84,7 @@ pub fn prepare_messages_with_options(
     skills: &[Skill],
     loaded_skills: &[Skill],
     tool_definitions: &[ToolDefinition],
-    options: PrepareMessagesOptions,
+    options: PrepareMessagesOptions<'_>,
 ) -> Vec<Message> {
     let mut messages = Vec::with_capacity(history.len() + 3);
 
@@ -141,9 +145,14 @@ pub fn prepare_messages_with_options(
     );
     let volatile_skills_section =
         combine_prompt_sections(available_skills_section, loaded_skills_section);
-    let volatile_system_prompt = combine_prompt_sections(runtime_section, volatile_skills_section);
-    if !volatile_system_prompt.trim().is_empty() {
-        messages.push(Message::text(Role::System, volatile_system_prompt));
+    let volatile_system_prompt = combine_prompt_section_parts(
+        std::iter::once(runtime_section.as_str())
+            .chain(options.volatile_system_sections.iter().copied())
+            .chain(std::iter::once(volatile_skills_section.as_str())),
+    );
+    let has_volatile_system_prompt = !volatile_system_prompt.trim().is_empty();
+    if !options.append_volatile_system_prompt_to_tail && has_volatile_system_prompt {
+        messages.push(Message::text(Role::System, volatile_system_prompt.clone()));
     }
 
     // Prior conversation turns.
@@ -157,6 +166,9 @@ pub fn prepare_messages_with_options(
         tool_calls: None,
         reasoning_content: None,
     });
+    if options.append_volatile_system_prompt_to_tail && has_volatile_system_prompt {
+        messages.push(Message::text(Role::System, volatile_system_prompt));
+    }
 
     // Trim to fit context window, accounting for tool definition overhead.
     let mut trimmed = trim_to_context_window(&messages, effective_context, max_tokens_response);
@@ -611,6 +623,21 @@ fn combine_prompt_sections(first: String, second: String) -> String {
     }
 }
 
+fn combine_prompt_section_parts<'a>(sections: impl IntoIterator<Item = &'a str>) -> String {
+    let mut combined = String::new();
+    for section in sections {
+        let section = section.trim();
+        if section.is_empty() {
+            continue;
+        }
+        if !combined.is_empty() {
+            combined.push_str("\n\n");
+        }
+        combined.push_str(section);
+    }
+    combined
+}
+
 /// Enforce `MAX_SYSTEM_PROMPT_CHARS` on the system prompt.
 ///
 /// If the prompt exceeds the limit it is truncated on a word boundary and
@@ -975,6 +1002,7 @@ mod tests {
             &[],
             PrepareMessagesOptions {
                 include_skill_system_prompt: false,
+                ..PrepareMessagesOptions::default()
             },
         );
 
@@ -988,6 +1016,90 @@ mod tests {
         assert!(!sys_text.contains("Available Skills"));
         assert!(!sys_text.contains("Loaded Skills"));
         assert!(!sys_text.contains("Cache Sensitive Skill"));
+    }
+
+    #[test]
+    fn test_prepare_messages_can_append_volatile_system_prompt_to_tail() {
+        let volatile_sections = ["## Current Turn Time\nLocal time: 12:34:56"];
+        let result = prepare_messages_with_options(
+            "Stable system prompt",
+            &[],
+            &[ContentPart::Text {
+                text: "Inspect this repo".to_string(),
+            }],
+            "deepseek-v4-pro",
+            4096,
+            None,
+            &[],
+            &[],
+            &[],
+            PrepareMessagesOptions {
+                include_skill_system_prompt: false,
+                volatile_system_sections: &volatile_sections,
+                append_volatile_system_prompt_to_tail: true,
+            },
+        );
+
+        assert_eq!(result[0].role, Role::System);
+        assert_eq!(result[0].text_content(), "Stable system prompt");
+        assert_eq!(result[1].role, Role::User);
+        assert_eq!(result[1].text_content(), "Inspect this repo");
+        assert_eq!(result[2].role, Role::System);
+        assert!(result[2].text_content().contains("Runtime Context"));
+        assert!(result[2].text_content().contains("Current Turn Time"));
+    }
+
+    #[test]
+    fn test_tail_volatile_context_keeps_previous_user_turn_as_prefix() {
+        let first_volatile = ["## Current Turn Time\nLocal time: 12:00:00"];
+        let first = prepare_messages_with_options(
+            "Stable system prompt",
+            &[],
+            &[ContentPart::Text {
+                text: "First question".to_string(),
+            }],
+            "deepseek-v4-pro",
+            4096,
+            None,
+            &[],
+            &[],
+            &[],
+            PrepareMessagesOptions {
+                include_skill_system_prompt: false,
+                volatile_system_sections: &first_volatile,
+                append_volatile_system_prompt_to_tail: true,
+            },
+        );
+
+        let history = vec![
+            Message::text(Role::User, "First question"),
+            Message::text(Role::Assistant, "First answer"),
+        ];
+        let second_volatile = ["## Current Turn Time\nLocal time: 12:01:00"];
+        let second = prepare_messages_with_options(
+            "Stable system prompt",
+            &history,
+            &[ContentPart::Text {
+                text: "Second question".to_string(),
+            }],
+            "deepseek-v4-pro",
+            4096,
+            None,
+            &[],
+            &[],
+            &[],
+            PrepareMessagesOptions {
+                include_skill_system_prompt: false,
+                volatile_system_sections: &second_volatile,
+                append_volatile_system_prompt_to_tail: true,
+            },
+        );
+
+        assert_eq!(first[0].role, second[0].role);
+        assert_eq!(first[0].text_content(), second[0].text_content());
+        assert_eq!(first[1].role, second[1].role);
+        assert_eq!(first[1].text_content(), second[1].text_content());
+        assert_eq!(second[2].role, Role::Assistant);
     }
 
     #[test]

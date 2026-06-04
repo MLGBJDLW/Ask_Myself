@@ -28,13 +28,15 @@ import {
 import { toast } from 'sonner';
 import { useTranslation, type TranslationKey } from '../i18n';
 import * as api from '../lib/api';
-import { isDurableStreamEvent } from '../lib/streaming/legacyAdapter';
+import {
+  taskCenterHistoryFromEvents,
+  type TaskCenterHistoryItem,
+} from '../lib/streaming/taskCenterHistory';
 import type {
   AgentExecutionGraph,
   AgentTaskArtifact,
   AgentTaskArtifactSummary,
   AgentTaskArtifactVersion,
-  AgentTaskRunEvent,
   AgentTaskRunListItem,
   ApprovalPolicyList,
   ToolAccessInfo,
@@ -42,6 +44,7 @@ import type {
 import type {
   InvestigationGraph,
   TaskResumeCheckpoint,
+  WorkflowAutomationSchedulerEvent,
 } from '../types/workflows';
 
 const COPY_KEYS = {
@@ -108,6 +111,7 @@ const COPY_KEYS = {
   showInFolder: 'taskCenter.showInFolder',
   openFileError: 'taskCenter.openFileError',
   noArtifacts: 'taskCenter.noArtifacts',
+  scheduler: 'taskCenter.scheduler',
   savedArtifacts: 'taskCenter.savedArtifacts',
   noSavedArtifacts: 'taskCenter.noSavedArtifacts',
   saveEditable: 'taskCenter.saveEditable',
@@ -238,6 +242,44 @@ function RiskPill({ children }: { children: ReactNode }) {
   );
 }
 
+function SchedulerHistoryPanel({
+  events,
+  copy,
+}: {
+  events: TaskCenterHistoryItem[];
+  copy: Copy;
+}) {
+  if (events.length === 0) return null;
+  return (
+    <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+          <History className="h-4 w-4 text-accent" />
+          {copy.scheduler}
+        </div>
+        <span className="rounded-md border border-border/60 bg-surface-0 px-1.5 py-0.5 text-[10px] text-text-tertiary">
+          {events.length}
+        </span>
+      </div>
+      <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+        {events.slice().reverse().map((event) => (
+          <div key={event.id} className="rounded-md border border-border/60 bg-surface-0/75 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs text-text-primary">
+              <span className="line-clamp-2">{event.label}</span>
+              {event.status && <span className="text-text-tertiary">{event.status}</span>}
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-text-tertiary">
+              <RiskPill>{event.eventType}</RiskPill>
+              {event.runId && <RiskPill>{event.runId}</RiskPill>}
+              <RiskPill>{formatTime(event.createdAt)}</RiskPill>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 type ArtifactDraft = {
   title: string;
   summary: string;
@@ -265,7 +307,8 @@ export function TaskCenterPage() {
   const copy = useMemo(() => createCopy(t), [t]);
   const [tasks, setTasks] = useState<AgentTaskRunListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [events, setEvents] = useState<AgentTaskRunEvent[]>([]);
+  const [events, setEvents] = useState<TaskCenterHistoryItem[]>([]);
+  const [schedulerEvents, setSchedulerEvents] = useState<TaskCenterHistoryItem[]>([]);
   const [graph, setGraph] = useState<AgentExecutionGraph | null>(null);
   const [investigationGraph, setInvestigationGraph] = useState<InvestigationGraph | null>(null);
   const [resumeCheckpoints, setResumeCheckpoints] = useState<TaskResumeCheckpoint[]>([]);
@@ -293,14 +336,16 @@ export function TaskCenterPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [recentTasks, accessMap, policies] = await Promise.all([
+      const [recentTasks, accessMap, policies, recentSchedulerEvents] = await Promise.all([
         api.listRecentAgentTaskRuns(80),
         api.listToolAccessMap(),
         api.listToolApprovalPolicies().catch(() => ({ persisted: [], session: [] })),
+        api.listWorkflowAutomationSchedulerEvents(null, 50).catch((): WorkflowAutomationSchedulerEvent[] => []),
       ]);
       setTasks(recentTasks);
       setToolAccess(accessMap);
       setApprovalPolicies(policies);
+      setSchedulerEvents(taskCenterHistoryFromEvents([], [], recentSchedulerEvents));
       setSelectedId((current) =>
         current && recentTasks.some((task) => task.run.id === current)
           ? current
@@ -343,6 +388,8 @@ export function TaskCenterPage() {
           nextMemories,
           nextCheckpoints,
           nextInvestigationGraph,
+          nextRunEvents,
+          nextSchedulerEvents,
         ] = await Promise.all([
           api.getAgentTaskRunEvents(selected.run.id),
           api.getAgentExecutionGraph(selected.run.id),
@@ -351,6 +398,8 @@ export function TaskCenterPage() {
           selected.projectId ? api.listProjectMemories(selected.projectId) : Promise.resolve([]),
           api.listTaskResumeCheckpoints(selected.run.id).catch(() => []),
           api.getInvestigationGraph(selected.run.id).catch(() => null),
+          api.getAgentRunEvents(selected.run.id).catch(() => []),
+          api.listWorkflowAutomationSchedulerEventsForTaskRun(selected.run.id).catch(() => []),
         ]);
         const versionPairs = await Promise.all(
           nextSavedArtifacts.slice(0, 12).map(async (artifact) => {
@@ -363,7 +412,7 @@ export function TaskCenterPage() {
           }),
         );
         if (cancelled) return;
-        setEvents(nextEvents.filter((event) => !isDurableStreamEvent(event)));
+        setEvents(taskCenterHistoryFromEvents(nextEvents, nextRunEvents, nextSchedulerEvents));
         setGraph(nextGraph);
         setInvestigationGraph(nextInvestigationGraph);
         setResumeCheckpoints(nextCheckpoints);
@@ -682,8 +731,11 @@ export function TaskCenterPage() {
 
         <section className="min-h-0 overflow-y-auto p-4">
           {!selected ? (
-            <div className="rounded-lg border border-dashed border-border px-4 py-12 text-center text-sm text-text-tertiary">
-              {copy.emptyBody}
+            <div className="space-y-4">
+              <div className="rounded-lg border border-dashed border-border px-4 py-12 text-center text-sm text-text-tertiary">
+                {copy.emptyBody}
+              </div>
+              <SchedulerHistoryPanel events={schedulerEvents} copy={copy} />
             </div>
           ) : (
             <div className="space-y-4">
@@ -1107,6 +1159,8 @@ export function TaskCenterPage() {
                 </div>
 
                 <div className="space-y-4">
+                  <SchedulerHistoryPanel events={schedulerEvents} copy={copy} />
+
                   <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
                     <div className="mb-3 flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
