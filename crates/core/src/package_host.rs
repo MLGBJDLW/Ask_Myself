@@ -54,7 +54,7 @@ impl PackageLifecycleState {
         }
     }
 
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn from_wire(value: &str) -> Option<Self> {
         match value.trim() {
             "discovered" => Some(Self::Discovered),
             "validated" => Some(Self::Validated),
@@ -84,7 +84,7 @@ impl PackageHealthState {
         }
     }
 
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn from_wire(value: &str) -> Option<Self> {
         match value.trim() {
             "healthy" => Some(Self::Healthy),
             "warning" => Some(Self::Warning),
@@ -497,14 +497,14 @@ fn package_host_state_from_row(
 ) -> Result<PackageHostStateRecord, rusqlite::Error> {
     let lifecycle_wire = row.get::<_, String>(1)?;
     let health_wire = row.get::<_, String>(2)?;
-    let lifecycle_state = PackageLifecycleState::from_str(&lifecycle_wire).ok_or_else(|| {
+    let lifecycle_state = PackageLifecycleState::from_wire(&lifecycle_wire).ok_or_else(|| {
         rusqlite::Error::InvalidColumnType(
             1,
             "lifecycle_state".to_string(),
             rusqlite::types::Type::Text,
         )
     })?;
-    let health_state = PackageHealthState::from_str(&health_wire).ok_or_else(|| {
+    let health_state = PackageHealthState::from_wire(&health_wire).ok_or_else(|| {
         rusqlite::Error::InvalidColumnType(
             2,
             "health_state".to_string(),

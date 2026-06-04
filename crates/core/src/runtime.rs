@@ -395,11 +395,10 @@ pub fn validate_runtime_turn_events(
         });
     }
 
-    let mut expected_seq = first.event_seq;
     let mut terminal_indexes = Vec::new();
     let mut approval_denied = false;
 
-    for (index, event) in events.iter().enumerate() {
+    for (expected_seq, (index, event)) in (first.event_seq..).zip(events.iter().enumerate()) {
         if event.version != AGENT_RUN_EVENT_VERSION {
             return Err(RuntimeProtocolError::UnsupportedRunEventVersion {
                 event_seq: event.event_seq,
@@ -418,8 +417,6 @@ pub fn validate_runtime_turn_events(
                 actual: event.event_seq,
             });
         }
-        expected_seq += 1;
-
         if event.is_terminal() {
             terminal_indexes.push(index);
         }
