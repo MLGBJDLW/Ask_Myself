@@ -1,6 +1,6 @@
 {
   "name": "manage_skill",
-  "description": "List, load, activate, or inspect available skills and their bundled resources, and create, inspect, apply, or reject controlled skill change proposals. When a skill from the Available Skills metadata index clearly matches the user task, call activate_skill before answering or following that workflow. Use view_skill only to inspect a skill without committing to its workflow. Use list_skills when no relevant indexed skill is shown but the user asks for a reusable skill. Use view_resource when a loaded skill references a bundled file. Use proposals for self-evolution when a repeated workflow lesson should become a reusable skill. Proposals are safety-scanned; applying a proposal mutates active user skills and requires confirmation.",
+  "description": "List, load, activate, inspect available skills and their bundled resources, execute a declared script resource helper through the skill resource helper sandbox, and create, inspect, apply, or reject controlled skill change proposals. When a skill from the Available Skills metadata index clearly matches the user task, call activate_skill before answering or following that workflow. Use view_skill only to inspect a skill without committing to its workflow. Use list_skills when no relevant indexed skill is shown but the user asks for a reusable skill. Use view_resource when a loaded skill references a bundled file. Use run_resource_helper only when a loaded skill explicitly instructs you to run one of its script resources. Use proposals for self-evolution when a repeated workflow lesson should become a reusable skill. Proposals are safety-scanned; applying a proposal mutates active user skills and requires confirmation.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -11,6 +11,7 @@
           "view_skill",
           "activate_skill",
           "view_resource",
+          "run_resource_helper",
           "propose_create",
           "propose_patch",
           "list_proposals",
@@ -18,7 +19,7 @@
           "apply_proposal",
           "reject_proposal"
         ],
-        "description": "Skill inspection, activation, resource loading, or evolution action to perform."
+        "description": "Skill inspection, activation, resource loading/helper execution, or evolution action to perform."
       },
       "proposal_id": {
         "type": "string",
@@ -26,11 +27,26 @@
       },
       "skill_id": {
         "type": "string",
-        "description": "Skill id for view_skill, activate_skill, view_resource, or existing user skill id for propose_patch. Built-in skill ids are read-only for patching."
+        "description": "Skill id for view_skill, activate_skill, view_resource, run_resource_helper, or existing user skill id for propose_patch. Built-in skill ids are read-only for patching."
       },
       "resource_path": {
         "type": "string",
-        "description": "Bundled resource path for view_resource, for example references/playbook.md or scripts/helper.py."
+        "description": "Bundled resource path for view_resource or run_resource_helper, for example references/playbook.md or scripts/helper.py. run_resource_helper only supports script resources ending in .py, .js, .mjs, or .cjs."
+      },
+      "helper_args": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Arguments passed to the skill resource helper script after the script path when action is run_resource_helper."
+      },
+      "stdin": {
+        "type": "string",
+        "description": "Optional stdin payload for run_resource_helper. Use this for large input instead of stuffing it into helper_args."
+      },
+      "timeout_secs": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300,
+        "description": "Optional run_resource_helper timeout in seconds. Defaults to 30."
       },
       "name": {
         "type": "string",

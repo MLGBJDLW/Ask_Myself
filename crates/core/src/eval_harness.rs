@@ -2,8 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent_run::AgentRunEventKind;
+use crate::agent::AgentEvent;
+use crate::agent_run::{AgentRunEvent, AgentRunEventKind, AgentRunPhase};
+use crate::approval::{ApprovalDecision, ApprovalRequest, ApprovalRisk};
 use crate::error::CoreError;
+use crate::llm::{Message, Role, Usage};
 use crate::runtime::{
     validate_runtime_turn_events, AgentSession, AgentSessionConfig, AgentTurnHandle,
     AgentTurnInput, AgentTurnState, RuntimeProtocolError, RuntimeTerminalStatus,
@@ -11,6 +14,24 @@ use crate::runtime::{
 use crate::trajectory::{Trajectory, TrajectoryStore, TrajectoryStoreSummary};
 
 pub const EVAL_HARNESS_CONTRACT_VERSION: u16 = 1;
+pub const DEVELOPER_EVAL_SMOKE_TRAJECTORY_LIMIT: usize = 50;
+pub const DEVELOPER_EVAL_NIGHTLY_TRAJECTORY_LIMIT: usize = 500;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeveloperEvalWorkflowProfile {
+    Smoke,
+    Nightly,
+}
+
+impl DeveloperEvalWorkflowProfile {
+    fn default_trajectory_limit(self) -> usize {
+        match self {
+            Self::Smoke => DEVELOPER_EVAL_SMOKE_TRAJECTORY_LIMIT,
+            Self::Nightly => DEVELOPER_EVAL_NIGHTLY_TRAJECTORY_LIMIT,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +123,8 @@ pub struct StoredTrajectoryEvalReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeveloperEvalSmokeReport {
+    pub profile: DeveloperEvalWorkflowProfile,
+    pub trajectory_limit: usize,
     pub status: String,
     pub total: usize,
     pub passed: usize,
@@ -164,10 +187,18 @@ pub struct TrajectoryReplayReport {
     pub mismatches: Vec<TrajectoryReplayMismatch>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrajectoryReplayRuntimeMode {
+    RecordedEvents,
+    MockRuntime,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrajectoryReplayExecution {
     pub trajectory_id: String,
+    pub runtime_mode: TrajectoryReplayRuntimeMode,
     pub run_id: String,
     pub turn_id: String,
     pub terminal_status: RuntimeTerminalStatus,
@@ -178,23 +209,82 @@ pub struct TrajectoryReplayExecution {
     pub events: Vec<crate::agent_run::AgentRunEvent>,
 }
 
+pub trait ReplayRuntimeAdapter: Send + Sync {
+    fn mode(&self) -> TrajectoryReplayRuntimeMode;
+
+    fn build_events(
+        &self,
+        trajectory: &Trajectory,
+        input: &AgentTurnInput,
+    ) -> Result<Vec<AgentRunEvent>, CoreError>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RecordedReplayRuntimeAdapter;
+
+impl ReplayRuntimeAdapter for RecordedReplayRuntimeAdapter {
+    fn mode(&self) -> TrajectoryReplayRuntimeMode {
+        TrajectoryReplayRuntimeMode::RecordedEvents
+    }
+
+    fn build_events(
+        &self,
+        trajectory: &Trajectory,
+        _input: &AgentTurnInput,
+    ) -> Result<Vec<AgentRunEvent>, CoreError> {
+        Ok(trajectory.run_events.clone())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MockReplayRuntimeAdapter;
+
+impl ReplayRuntimeAdapter for MockReplayRuntimeAdapter {
+    fn mode(&self) -> TrajectoryReplayRuntimeMode {
+        TrajectoryReplayRuntimeMode::MockRuntime
+    }
+
+    fn build_events(
+        &self,
+        trajectory: &Trajectory,
+        input: &AgentTurnInput,
+    ) -> Result<Vec<AgentRunEvent>, CoreError> {
+        Ok(mock_replay_events(trajectory, input))
+    }
+}
+
 pub struct ReplayAgentSession {
     config: AgentSessionConfig,
     trajectory: Trajectory,
+    runtime_adapter: Box<dyn ReplayRuntimeAdapter>,
     consumed: bool,
     handle: Option<AgentTurnHandle>,
+    events: Vec<AgentRunEvent>,
 }
 
 impl ReplayAgentSession {
     pub fn new(trajectory: Trajectory) -> Self {
+        Self::with_runtime_adapter(trajectory, RecordedReplayRuntimeAdapter)
+    }
+
+    pub fn with_runtime_adapter<A>(trajectory: Trajectory, runtime_adapter: A) -> Self
+    where
+        A: ReplayRuntimeAdapter + 'static,
+    {
         let mut config = trajectory.session_config.clone();
         config.apply_protocol_defaults();
         Self {
             config,
             trajectory,
+            runtime_adapter: Box::new(runtime_adapter),
             consumed: false,
             handle: None,
+            events: Vec::new(),
         }
+    }
+
+    pub fn mock_runtime(trajectory: Trajectory) -> Self {
+        Self::with_runtime_adapter(trajectory, MockReplayRuntimeAdapter)
     }
 }
 
@@ -225,7 +315,10 @@ impl AgentSession for ReplayAgentSession {
             }
         }
 
-        let report = validate_runtime_turn_events(&self.trajectory.run_events)
+        let events = self
+            .runtime_adapter
+            .build_events(&self.trajectory, &input)?;
+        let report = validate_runtime_turn_events(&events)
             .map_err(|err| CoreError::Agent(format!("Replay trajectory contract failed: {err}")))?;
         let handle = AgentTurnHandle {
             session_id: self.config.session_id.clone(),
@@ -234,6 +327,7 @@ impl AgentSession for ReplayAgentSession {
             state: AgentTurnState::Terminal(report.terminal_status),
         };
         self.consumed = true;
+        self.events = events;
         self.handle = Some(handle.clone());
         Ok(handle)
     }
@@ -272,7 +366,7 @@ impl AgentSession for ReplayAgentSession {
         if handle.run_id != run_id {
             return Err(CoreError::NotFound(format!("replay events for {run_id}")));
         }
-        Ok(self.trajectory.run_events.clone())
+        Ok(self.events.clone())
     }
 
     async fn close(&mut self) -> Result<(), CoreError> {
@@ -330,11 +424,14 @@ pub fn evaluate_trajectory_contract(
                 }
             }
             EvalAssertionKind::TaskOrchestration => {
-                if trajectory.task_queue_items.is_empty() && trajectory.task_runs.is_empty() {
+                if trajectory.task_queue_items.is_empty()
+                    && trajectory.task_runs.is_empty()
+                    && trajectory.scheduler_events.is_empty()
+                {
                     failures.push(failure(
                         &case.id,
                         assertion.kind,
-                        "expected task orchestration queue or run context",
+                        "expected task orchestration queue, run, or scheduler event context",
                     ));
                 }
             }
@@ -469,6 +566,32 @@ pub async fn run_developer_eval_smoke_workflow<S>(
 where
     S: TrajectoryStore + ?Sized,
 {
+    run_developer_eval_workflow(
+        store,
+        DeveloperEvalWorkflowProfile::Smoke,
+        Some(trajectory_limit),
+    )
+    .await
+}
+
+pub async fn run_developer_eval_nightly_workflow<S>(
+    store: &S,
+) -> Result<DeveloperEvalSmokeReport, CoreError>
+where
+    S: TrajectoryStore + ?Sized,
+{
+    run_developer_eval_workflow(store, DeveloperEvalWorkflowProfile::Nightly, None).await
+}
+
+pub async fn run_developer_eval_workflow<S>(
+    store: &S,
+    profile: DeveloperEvalWorkflowProfile,
+    trajectory_limit: Option<usize>,
+) -> Result<DeveloperEvalSmokeReport, CoreError>
+where
+    S: TrajectoryStore + ?Sized,
+{
+    let trajectory_limit = trajectory_limit.unwrap_or(profile.default_trajectory_limit());
     let quality_eval = crate::quality_eval::run_agent_quality_eval();
     let stored_trajectory_eval = run_stored_trajectory_smoke_eval(store, trajectory_limit).await?;
     let total = quality_eval.total + stored_trajectory_eval.total;
@@ -477,6 +600,8 @@ where
     let status = if failed == 0 { "passed" } else { "failed" };
 
     Ok(DeveloperEvalSmokeReport {
+        profile,
+        trajectory_limit,
         status: status.to_string(),
         total,
         passed,
@@ -565,17 +690,57 @@ pub async fn replay_trajectory_from_store<S>(
 where
     S: TrajectoryStore + ?Sized,
 {
+    replay_trajectory_from_store_with_runtime_mode(
+        store,
+        trajectory_id,
+        TrajectoryReplayRuntimeMode::RecordedEvents,
+    )
+    .await
+}
+
+pub async fn replay_trajectory_from_store_with_runtime_mode<S>(
+    store: &S,
+    trajectory_id: &str,
+    runtime_mode: TrajectoryReplayRuntimeMode,
+) -> Result<TrajectoryReplayExecution, CoreError>
+where
+    S: TrajectoryStore + ?Sized,
+{
     let trajectory = store.load_trajectory(trajectory_id.trim()).await?;
-    replay_trajectory_through_session(trajectory).await
+    match runtime_mode {
+        TrajectoryReplayRuntimeMode::RecordedEvents => {
+            replay_trajectory_through_session(trajectory).await
+        }
+        TrajectoryReplayRuntimeMode::MockRuntime => {
+            replay_trajectory_through_mock_runtime(trajectory).await
+        }
+    }
 }
 
 pub async fn replay_trajectory_through_session(
     trajectory: Trajectory,
 ) -> Result<TrajectoryReplayExecution, CoreError> {
+    replay_trajectory_with_runtime_adapter(trajectory, RecordedReplayRuntimeAdapter).await
+}
+
+pub async fn replay_trajectory_through_mock_runtime(
+    trajectory: Trajectory,
+) -> Result<TrajectoryReplayExecution, CoreError> {
+    replay_trajectory_with_runtime_adapter(trajectory, MockReplayRuntimeAdapter).await
+}
+
+async fn replay_trajectory_with_runtime_adapter<A>(
+    trajectory: Trajectory,
+    runtime_adapter: A,
+) -> Result<TrajectoryReplayExecution, CoreError>
+where
+    A: ReplayRuntimeAdapter + 'static,
+{
     let trajectory_id = trajectory.trajectory_id.clone();
     let input = AgentTurnInput::text(replay_input_text(&trajectory));
     let final_message = trajectory.final_answer.clone();
-    let mut session = ReplayAgentSession::new(trajectory);
+    let runtime_mode = runtime_adapter.mode();
+    let mut session = ReplayAgentSession::with_runtime_adapter(trajectory, runtime_adapter);
     let handle = session.start_turn(input).await?;
     let events = session.read_events(&handle.run_id).await?;
     let terminal_status = match handle.state {
@@ -585,6 +750,7 @@ pub async fn replay_trajectory_through_session(
 
     Ok(TrajectoryReplayExecution {
         trajectory_id,
+        runtime_mode,
         run_id: handle.run_id,
         turn_id: handle.turn_id,
         terminal_status,
@@ -592,6 +758,183 @@ pub async fn replay_trajectory_through_session(
         final_message,
         events,
     })
+}
+
+fn mock_replay_events(trajectory: &Trajectory, input: &AgentTurnInput) -> Vec<AgentRunEvent> {
+    let run_id = replay_runtime_identifier("mock-run", &trajectory.trajectory_id);
+    let turn_id = replay_runtime_identifier("mock-turn", &trajectory.trajectory_id);
+    let mut event_seq = 1;
+    let mut events = Vec::new();
+    let routing_payload = serde_json::json!({
+        "mode": "mock_runtime",
+        "trajectoryId": &trajectory.trajectory_id,
+        "userInput": &input.user_text,
+    });
+
+    events.push(AgentRunEvent::status_update(
+        &run_id,
+        Some(&turn_id),
+        event_seq,
+        AgentRunPhase::Routing,
+        "Mock replay runtime started",
+        Some("running"),
+        Some(&routing_payload),
+    ));
+    event_seq += 1;
+
+    let step_count = trajectory.tool_calls.len().max(trajectory.approvals.len());
+    for index in 0..step_count {
+        if let Some(approval) = trajectory.approvals.get(index) {
+            let tool_name = tool_name_from_value(approval)
+                .or_else(|| {
+                    trajectory
+                        .tool_calls
+                        .get(index)
+                        .and_then(tool_name_from_value)
+                })
+                .unwrap_or_else(|| "mock_tool".to_string());
+            let request_id = approval_request_id_from_value(approval, index);
+            let arguments = approval_arguments_from_value(approval);
+            let request = ApprovalRequest::new(
+                request_id.clone(),
+                tool_name,
+                &arguments,
+                approval_risk_from_value(approval),
+                "Mock replay approval",
+            );
+            push_mock_agent_event(
+                &mut events,
+                AgentEvent::ApprovalRequested { request },
+                &run_id,
+                &turn_id,
+                &mut event_seq,
+            );
+            push_mock_agent_event(
+                &mut events,
+                AgentEvent::ApprovalResolved {
+                    request_id,
+                    decision: approval_decision_from_value(approval),
+                },
+                &run_id,
+                &turn_id,
+                &mut event_seq,
+            );
+        }
+
+        if let Some(tool_call) = trajectory.tool_calls.get(index) {
+            let tool_name = tool_name_from_value(tool_call)
+                .unwrap_or_else(|| format!("mock_tool_{}", index + 1));
+            let call_id = tool_call_id_from_value(tool_call, index);
+            push_mock_agent_event(
+                &mut events,
+                AgentEvent::ToolCallStart {
+                    call_id: call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    arguments: tool_arguments_from_value(tool_call),
+                },
+                &run_id,
+                &turn_id,
+                &mut event_seq,
+            );
+            push_mock_agent_event(
+                &mut events,
+                AgentEvent::ToolCallResult {
+                    call_id,
+                    tool_name: tool_name.clone(),
+                    content: tool_result_content_from_value(tool_call, &tool_name),
+                    is_error: tool_call_is_error(tool_call),
+                    artifacts: tool_artifacts_from_value(tool_call),
+                },
+                &run_id,
+                &turn_id,
+                &mut event_seq,
+            );
+        }
+    }
+
+    match mock_terminal_status_from_trajectory(trajectory) {
+        RuntimeTerminalStatus::Failed => {
+            let message = trajectory
+                .final_answer
+                .as_deref()
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or("Mock replay failed.");
+            let payload = serde_json::json!({
+                "mode": "mock_runtime",
+                "trajectoryId": &trajectory.trajectory_id,
+            });
+            events.push(AgentRunEvent::terminal_error(
+                &run_id,
+                Some(&turn_id),
+                event_seq,
+                message,
+                "failed",
+                Some(&payload),
+            ));
+        }
+        status => {
+            let finish_reason = match status {
+                RuntimeTerminalStatus::Cancelled => "cancelled",
+                RuntimeTerminalStatus::TimedOut => "timed_out",
+                _ => "stop",
+            };
+            let message = trajectory
+                .final_answer
+                .clone()
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or_else(|| "Mock replay completed.".to_string());
+            push_mock_agent_event(
+                &mut events,
+                AgentEvent::Done {
+                    message: Message::text(Role::Assistant, message),
+                    usage_total: Usage::default(),
+                    last_prompt_tokens: 0,
+                    context_breakdown: None,
+                    cached: false,
+                    finish_reason: Some(finish_reason.to_string()),
+                },
+                &run_id,
+                &turn_id,
+                &mut event_seq,
+            );
+        }
+    }
+
+    events
+}
+
+fn push_mock_agent_event(
+    events: &mut Vec<AgentRunEvent>,
+    event: AgentEvent,
+    run_id: &str,
+    turn_id: &str,
+    event_seq: &mut u64,
+) {
+    events.push(AgentRunEvent::from_agent_event(&event).with_context(
+        Some(run_id),
+        Some(turn_id),
+        Some(*event_seq),
+    ));
+    *event_seq += 1;
+}
+
+fn replay_runtime_identifier(prefix: &str, trajectory_id: &str) -> String {
+    let slug = trajectory_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}-{slug}")
+    }
 }
 
 pub fn compare_trajectory_replay(
@@ -798,6 +1141,14 @@ fn task_orchestration_signature(trajectory: &Trajectory) -> serde_json::Value {
                 "rawStatus": run.status.raw_status,
             })
         }).collect::<Vec<_>>(),
+        "schedulerEvents": trajectory.scheduler_events.iter().map(|event| {
+            serde_json::json!({
+                "automationId": event.automation_id,
+                "runId": event.run_id,
+                "eventType": event.event_type,
+                "status": event.status,
+            })
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -817,6 +1168,124 @@ fn tool_name_from_value(value: &serde_json::Value) -> Option<String> {
     first_string_field(value, &["toolName", "name"])
         .or_else(|| nested_string_field(value, &["run", "toolName"]))
         .or_else(|| nested_string_field(value, &["function", "name"]))
+        .or_else(|| nested_string_field(value, &["payload", "toolName"]))
+        .or_else(|| nested_string_field(value, &["payload", "run", "toolName"]))
+}
+
+fn tool_call_id_from_value(value: &serde_json::Value, index: usize) -> String {
+    first_string_field(value, &["callId", "id"])
+        .or_else(|| nested_string_field(value, &["run", "callId"]))
+        .or_else(|| nested_string_field(value, &["payload", "callId"]))
+        .or_else(|| nested_string_field(value, &["payload", "run", "callId"]))
+        .unwrap_or_else(|| format!("mock-call-{}", index + 1))
+}
+
+fn tool_arguments_from_value(value: &serde_json::Value) -> String {
+    first_string_field(value, &["arguments", "argumentsPreview"])
+        .or_else(|| nested_string_field(value, &["payload", "arguments"]))
+        .or_else(|| nested_string_field(value, &["payload", "request", "argumentsPreview"]))
+        .or_else(|| nested_string_field(value, &["run", "arguments"]))
+        .unwrap_or_else(|| {
+            first_value_field(value, &["args"])
+                .or_else(|| nested_value(value, &["payload", "args"]))
+                .and_then(|args| serde_json::to_string(args).ok())
+                .unwrap_or_else(|| "{}".to_string())
+        })
+}
+
+fn tool_result_content_from_value(value: &serde_json::Value, tool_name: &str) -> String {
+    first_string_field(value, &["content", "result", "output"])
+        .or_else(|| nested_string_field(value, &["payload", "content"]))
+        .or_else(|| nested_string_field(value, &["run", "content"]))
+        .or_else(|| nested_string_field(value, &["payload", "run", "content"]))
+        .unwrap_or_else(|| format!("mock result for {tool_name}"))
+}
+
+fn tool_artifacts_from_value(value: &serde_json::Value) -> Option<serde_json::Value> {
+    first_value_field(value, &["artifacts"])
+        .or_else(|| nested_value(value, &["payload", "artifacts"]))
+        .or_else(|| nested_value(value, &["run", "artifacts"]))
+        .or_else(|| nested_value(value, &["payload", "run", "artifacts"]))
+        .cloned()
+}
+
+fn tool_call_is_error(value: &serde_json::Value) -> bool {
+    first_bool_field(value, &["isError"])
+        .or_else(|| nested_bool_field(value, &["payload", "isError"]))
+        .or_else(|| nested_bool_field(value, &["run", "isError"]))
+        .or_else(|| nested_bool_field(value, &["payload", "run", "isError"]))
+        .unwrap_or_else(|| {
+            first_string_field(value, &["status"])
+                .or_else(|| nested_string_field(value, &["payload", "status"]))
+                .or_else(|| nested_string_field(value, &["run", "status"]))
+                .or_else(|| nested_string_field(value, &["payload", "run", "status"]))
+                .map(|status| matches!(status.to_ascii_lowercase().as_str(), "failed" | "error"))
+                .unwrap_or(false)
+        })
+}
+
+fn approval_request_id_from_value(value: &serde_json::Value, index: usize) -> String {
+    first_string_field(value, &["requestId", "id"])
+        .or_else(|| nested_string_field(value, &["request", "id"]))
+        .or_else(|| nested_string_field(value, &["payload", "requestId"]))
+        .or_else(|| nested_string_field(value, &["payload", "request", "id"]))
+        .unwrap_or_else(|| format!("mock-approval-{}", index + 1))
+}
+
+fn approval_arguments_from_value(value: &serde_json::Value) -> serde_json::Value {
+    first_value_field(value, &["arguments", "args"])
+        .or_else(|| nested_value(value, &["request", "arguments"]))
+        .or_else(|| nested_value(value, &["payload", "arguments"]))
+        .or_else(|| nested_value(value, &["payload", "request", "arguments"]))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({ "source": "trajectoryReplay" }))
+}
+
+fn approval_decision_from_value(value: &serde_json::Value) -> ApprovalDecision {
+    let decision = first_string_field(value, &["decision", "status"])
+        .or_else(|| nested_string_field(value, &["payload", "decision"]))
+        .or_else(|| nested_string_field(value, &["payload", "status"]))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    match decision.as_str() {
+        "allow_session" => ApprovalDecision::AllowSession,
+        "never" => ApprovalDecision::Never,
+        "deny" | "denied" | "declined" | "rejected" => ApprovalDecision::Deny,
+        "allow_once" | "allow" | "allowed" | "approved" | "approval" | "completed" => {
+            ApprovalDecision::AllowOnce
+        }
+        _ => ApprovalDecision::AllowOnce,
+    }
+}
+
+fn approval_risk_from_value(value: &serde_json::Value) -> ApprovalRisk {
+    let risk = first_string_field(value, &["riskLevel", "risk"])
+        .or_else(|| nested_string_field(value, &["request", "riskLevel"]))
+        .or_else(|| nested_string_field(value, &["payload", "request", "riskLevel"]))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    match risk.as_str() {
+        "low" => ApprovalRisk::Low,
+        "high" => ApprovalRisk::High,
+        _ => ApprovalRisk::Medium,
+    }
+}
+
+fn mock_terminal_status_from_trajectory(trajectory: &Trajectory) -> RuntimeTerminalStatus {
+    let outcome = trajectory
+        .outcome
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    match outcome.as_str() {
+        "failed" | "failure" | "error" => RuntimeTerminalStatus::Failed,
+        "cancelled" | "canceled" => RuntimeTerminalStatus::Cancelled,
+        "timed_out" | "timeout" | "timedout" => RuntimeTerminalStatus::TimedOut,
+        _ => RuntimeTerminalStatus::Completed,
+    }
 }
 
 fn first_string_field(value: &serde_json::Value, fields: &[&str]) -> Option<String> {
@@ -825,6 +1294,32 @@ fn first_string_field(value: &serde_json::Value, fields: &[&str]) -> Option<Stri
         .filter_map(|field| value.get(*field)?.as_str())
         .find(|value| !value.trim().is_empty())
         .map(str::to_string)
+}
+
+fn first_bool_field(value: &serde_json::Value, fields: &[&str]) -> Option<bool> {
+    fields
+        .iter()
+        .filter_map(|field| value.get(*field)?.as_bool())
+        .next()
+}
+
+fn first_value_field<'a>(
+    value: &'a serde_json::Value,
+    fields: &[&str],
+) -> Option<&'a serde_json::Value> {
+    fields.iter().filter_map(|field| value.get(*field)).next()
+}
+
+fn nested_bool_field(value: &serde_json::Value, path: &[&str]) -> Option<bool> {
+    nested_value(value, path)?.as_bool()
+}
+
+fn nested_value<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
 }
 
 fn nested_string_field(value: &serde_json::Value, path: &[&str]) -> Option<String> {
@@ -868,7 +1363,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::agent::AgentEvent;
-    use crate::agent_run::{AgentRunEvent, AgentRunPhase};
+    use crate::agent_run::{AgentRunEvent, AgentRunEventKind, AgentRunPhase};
     use crate::error::CoreError;
     use crate::llm::{Message, Role, Usage};
     use crate::runtime::{
@@ -878,6 +1373,7 @@ mod tests {
         TaskOrchestratorQueueItem, TaskOrchestratorState, TASK_ORCHESTRATOR_CONTRACT_VERSION,
     };
     use crate::trajectory::{Trajectory, TrajectoryRedactionProfile, TrajectoryStoreSummary};
+    use crate::workflow_automation::WorkflowAutomationSchedulerEvent;
 
     fn queue_item() -> TaskOrchestratorQueueItem {
         TaskOrchestratorQueueItem {
@@ -1098,9 +1594,24 @@ mod tests {
             EvalAssertionKind::TaskOrchestration
         );
 
+        trajectory
+            .scheduler_events
+            .push(WorkflowAutomationSchedulerEvent {
+                id: "scheduler-event-1".to_string(),
+                automation_id: Some("automation-1".to_string()),
+                run_id: Some("workflow-run-1".to_string()),
+                event_type: "launch_succeeded".to_string(),
+                status: Some("running".to_string()),
+                summary: "Scheduler launched due workflow".to_string(),
+                payload: serde_json::json!({ "queueId": "workflow_due:automation-1" }),
+                created_at: "2026-06-03T00:00:00Z".to_string(),
+            });
+        let scheduler_context = evaluate_trajectory_contract(&pack, &case, &trajectory);
+        assert!(scheduler_context.passed, "{:?}", scheduler_context.failures);
+
         trajectory.task_queue_items.push(queue_item());
-        let present = evaluate_trajectory_contract(&pack, &case, &trajectory);
-        assert!(present.passed, "{:?}", present.failures);
+        let queue_context = evaluate_trajectory_contract(&pack, &case, &trajectory);
+        assert!(queue_context.passed, "{:?}", queue_context.failures);
     }
 
     #[tokio::test]
@@ -1245,6 +1756,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replay_agent_session_executes_mock_runtime_adapter_from_stable_signals() {
+        let mut trajectory = replay_trajectory("traj-1");
+        trajectory.raw_user_input = Some("hello".to_string());
+        trajectory.run_events.clear();
+        let mut session = ReplayAgentSession::mock_runtime(trajectory);
+
+        let handle = session
+            .start_turn(AgentTurnInput::text("hello"))
+            .await
+            .unwrap();
+        let events = session.read_events(&handle.run_id).await.unwrap();
+        let report = validate_runtime_turn_events(&events).unwrap();
+
+        assert_eq!(handle.run_id, "mock-run-traj-1");
+        assert_eq!(handle.turn_id, "mock-turn-traj-1");
+        assert_eq!(
+            handle.state,
+            AgentTurnState::Terminal(RuntimeTerminalStatus::Completed)
+        );
+        assert_eq!(report.terminal_status, RuntimeTerminalStatus::Completed);
+        assert_eq!(
+            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            vec![
+                AgentRunEventKind::Status,
+                AgentRunEventKind::ApprovalRequested,
+                AgentRunEventKind::ApprovalResolved,
+                AgentRunEventKind::ToolStarted,
+                AgentRunEventKind::ToolCompleted,
+                AgentRunEventKind::Done,
+            ]
+        );
+        assert_eq!(
+            events[4]
+                .payload
+                .get("toolName")
+                .and_then(|value| value.as_str()),
+            Some("search")
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_agent_session_mock_runtime_projects_failed_outcomes() {
+        let mut trajectory = replay_trajectory("failed-traj");
+        trajectory.raw_user_input = Some("hello".to_string());
+        trajectory.run_events.clear();
+        trajectory.approvals.clear();
+        trajectory.tool_calls = vec![serde_json::json!({
+            "toolName": "search",
+            "status": "Failed"
+        })];
+        trajectory.final_answer = Some("tool failed".to_string());
+        trajectory.outcome = Some("failed".to_string());
+        trajectory.refresh_metrics();
+        let mut session = ReplayAgentSession::mock_runtime(trajectory);
+
+        let handle = session
+            .start_turn(AgentTurnInput::text("hello"))
+            .await
+            .unwrap();
+        let events = session.read_events(&handle.run_id).await.unwrap();
+        let report = validate_runtime_turn_events(&events).unwrap();
+
+        assert_eq!(
+            handle.state,
+            AgentTurnState::Terminal(RuntimeTerminalStatus::Failed)
+        );
+        assert_eq!(report.terminal_status, RuntimeTerminalStatus::Failed);
+        assert_eq!(
+            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            vec![
+                AgentRunEventKind::Status,
+                AgentRunEventKind::ToolStarted,
+                AgentRunEventKind::ToolCompleted,
+                AgentRunEventKind::Error,
+            ]
+        );
+        assert_eq!(
+            events[2]
+                .payload
+                .get("isError")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
     async fn replay_agent_session_rejects_mismatched_raw_user_input() {
         let mut trajectory = replay_trajectory("traj-1");
         trajectory.raw_user_input = Some("hello".to_string());
@@ -1273,9 +1870,44 @@ mod tests {
         assert_eq!(execution.trajectory_id, "traj-1");
         assert_eq!(execution.run_id, "run-1");
         assert_eq!(execution.turn_id, "turn-1");
+        assert_eq!(
+            execution.runtime_mode,
+            TrajectoryReplayRuntimeMode::RecordedEvents
+        );
         assert_eq!(execution.terminal_status, RuntimeTerminalStatus::Completed);
         assert_eq!(execution.event_count, 2);
         assert_eq!(execution.final_message.as_deref(), Some("done"));
+    }
+
+    #[tokio::test]
+    async fn replay_trajectory_from_store_can_use_mock_runtime_adapter() {
+        let mut trajectory = replay_trajectory("traj-1");
+        trajectory.raw_user_input = Some("hello".to_string());
+        trajectory.run_events.clear();
+        trajectory.refresh_metrics();
+        let store = MemoryTrajectoryStore {
+            trajectories: HashMap::from([("traj-1".to_string(), trajectory)]),
+        };
+
+        let execution = replay_trajectory_from_store_with_runtime_mode(
+            &store,
+            "traj-1",
+            TrajectoryReplayRuntimeMode::MockRuntime,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(execution.trajectory_id, "traj-1");
+        assert_eq!(
+            execution.runtime_mode,
+            TrajectoryReplayRuntimeMode::MockRuntime
+        );
+        assert_eq!(execution.run_id, "mock-run-traj-1");
+        assert_eq!(execution.turn_id, "mock-turn-traj-1");
+        assert_eq!(execution.terminal_status, RuntimeTerminalStatus::Completed);
+        assert_eq!(execution.event_count, 6);
+        assert_eq!(execution.final_message.as_deref(), Some("done"));
+        validate_runtime_turn_events(&execution.events).unwrap();
     }
 
     #[tokio::test]
@@ -1337,10 +1969,31 @@ mod tests {
 
         let report = run_developer_eval_smoke_workflow(&store, 10).await.unwrap();
 
+        assert_eq!(report.profile, DeveloperEvalWorkflowProfile::Smoke);
+        assert_eq!(report.trajectory_limit, 10);
         assert_eq!(report.status, "passed");
         assert_eq!(report.failed, 0);
         assert!(report.quality_eval.gate.passed);
         assert_eq!(report.stored_trajectory_eval.status, "passed");
+        assert_eq!(report.stored_trajectory_eval.total, 1);
+    }
+
+    #[tokio::test]
+    async fn developer_eval_nightly_workflow_uses_nightly_profile_limit() {
+        let trajectory = replay_trajectory("developer-nightly-trajectory");
+        let store = MemoryTrajectoryStore {
+            trajectories: HashMap::from([("developer-nightly-trajectory".to_string(), trajectory)]),
+        };
+
+        let report = run_developer_eval_nightly_workflow(&store).await.unwrap();
+
+        assert_eq!(report.profile, DeveloperEvalWorkflowProfile::Nightly);
+        assert_eq!(
+            report.trajectory_limit,
+            DEVELOPER_EVAL_NIGHTLY_TRAJECTORY_LIMIT
+        );
+        assert_eq!(report.status, "passed");
+        assert_eq!(report.failed, 0);
         assert_eq!(report.stored_trajectory_eval.total, 1);
     }
 }

@@ -63,7 +63,7 @@ impl RuntimePackageContext {
         let mut enabled_package_ids = Vec::new();
         let mut disabled_package_ids = Vec::new();
         for record in &snapshot.records {
-            if record.state.is_runtime_visible() {
+            if record.is_runtime_visible() {
                 enabled_package_ids.push(record.id.clone());
             } else {
                 disabled_package_ids.push(record.id.clone());
@@ -521,6 +521,15 @@ mod tests {
                 permissions: Vec::new(),
                 components: Vec::new(),
             },
+            crate::package_host::PackageHostRecord {
+                id: "pkg-unhealthy".to_string(),
+                version: None,
+                state: crate::package_host::PackageLifecycleState::Enabled,
+                health: crate::package_host::PackageHealthState::Unhealthy,
+                dependencies: Vec::new(),
+                permissions: Vec::new(),
+                components: Vec::new(),
+            },
         ]);
 
         let context = RuntimePackageContext::from_package_host_snapshot(&snapshot);
@@ -528,7 +537,7 @@ mod tests {
         assert_eq!(context.enabled_package_ids, vec!["pkg-enabled".to_string()]);
         assert_eq!(
             context.disabled_package_ids,
-            vec!["pkg-disabled".to_string()]
+            vec!["pkg-disabled".to_string(), "pkg-unhealthy".to_string()]
         );
     }
 

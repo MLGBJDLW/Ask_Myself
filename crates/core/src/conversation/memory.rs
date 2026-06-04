@@ -778,11 +778,11 @@ mod tests {
         ];
 
         let result = trim_to_context_window(&messages, 1_000, 10);
-        let roles = result.iter().map(|message| &message.role).collect::<Vec<_>>();
-        let texts = result
+        let roles = result
             .iter()
-            .map(Message::text_content)
+            .map(|message| &message.role)
             .collect::<Vec<_>>();
+        let texts = result.iter().map(Message::text_content).collect::<Vec<_>>();
 
         assert_eq!(roles, vec![&Role::System, &Role::User, &Role::System]);
         assert_eq!(
@@ -802,10 +802,7 @@ mod tests {
             .saturating_add(estimate_message_tokens(&messages[2]));
 
         let result = trim_to_context_window(&messages, budget_that_fits_tail_alone, 0);
-        let texts = result
-            .iter()
-            .map(Message::text_content)
-            .collect::<Vec<_>>();
+        let texts = result.iter().map(Message::text_content).collect::<Vec<_>>();
 
         assert_eq!(texts, vec!["stable prefix"]);
     }

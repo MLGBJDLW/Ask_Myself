@@ -122,6 +122,61 @@ impl SandboxPolicy {
         }
     }
 
+    pub fn for_workflow_action(
+        source_scope: Vec<String>,
+        network_allowed: bool,
+        timeout_secs: u64,
+    ) -> Self {
+        Self {
+            backend: ExecutionBackendKind::LocalRestricted,
+            source_scope,
+            network_allowed,
+            shell_access_mode: ShellAccessMode::Restricted,
+            allowed_programs: Vec::new(),
+            denied_programs: Vec::new(),
+            timeout_ms: Some(timeout_secs.saturating_mul(1000)),
+            output_limit_bytes: Some(128 * 1024),
+            capture_file_changes: true,
+        }
+    }
+
+    pub fn for_connector_helper(
+        source_scope: Vec<String>,
+        network_allowed: bool,
+        timeout_secs: u64,
+        allowed_program: String,
+    ) -> Self {
+        Self {
+            backend: ExecutionBackendKind::LocalRestricted,
+            source_scope,
+            network_allowed,
+            shell_access_mode: ShellAccessMode::Restricted,
+            allowed_programs: vec![allowed_program],
+            denied_programs: Vec::new(),
+            timeout_ms: Some(timeout_secs.saturating_mul(1000)),
+            output_limit_bytes: Some(128 * 1024),
+            capture_file_changes: false,
+        }
+    }
+
+    pub fn for_skill_resource_helper(
+        source_scope: Vec<String>,
+        timeout_secs: u64,
+        allowed_program: String,
+    ) -> Self {
+        Self {
+            backend: ExecutionBackendKind::LocalRestricted,
+            source_scope,
+            network_allowed: false,
+            shell_access_mode: ShellAccessMode::Restricted,
+            allowed_programs: vec![allowed_program],
+            denied_programs: Vec::new(),
+            timeout_ms: Some(timeout_secs.saturating_mul(1000)),
+            output_limit_bytes: Some(128 * 1024),
+            capture_file_changes: false,
+        }
+    }
+
     pub fn for_detached_local_tool(
         source_scope: Vec<String>,
         network_allowed: bool,
@@ -243,6 +298,70 @@ impl ExecutionRequest {
         request.network_intent = network_intent;
         request
     }
+
+    pub fn for_workflow_action(
+        program: impl Into<String>,
+        args: Vec<String>,
+        workflow_id: impl Into<String>,
+        package_id: Option<String>,
+        source_scope: Vec<String>,
+        network_intent: bool,
+        timeout_secs: u64,
+    ) -> Self {
+        let mut request = Self::local_tool_with_policy(
+            program,
+            args,
+            "workflow_action",
+            SandboxPolicy::for_workflow_action(source_scope, network_intent, timeout_secs),
+        );
+        request.caller.workflow_id = Some(workflow_id.into());
+        request.caller.package_id = package_id;
+        request.network_intent = network_intent;
+        request
+    }
+
+    pub fn for_connector_helper(
+        program: impl Into<String>,
+        args: Vec<String>,
+        package_id: impl Into<String>,
+        source_scope: Vec<String>,
+        network_intent: bool,
+        timeout_secs: u64,
+    ) -> Self {
+        let program = program.into();
+        let mut request = Self::local_tool_with_policy(
+            program.clone(),
+            args,
+            "connector_helper",
+            SandboxPolicy::for_connector_helper(
+                source_scope,
+                network_intent,
+                timeout_secs,
+                program,
+            ),
+        );
+        request.caller.package_id = Some(package_id.into());
+        request.network_intent = network_intent;
+        request
+    }
+
+    pub fn for_skill_resource_helper(
+        program: impl Into<String>,
+        args: Vec<String>,
+        skill_id: impl Into<String>,
+        source_scope: Vec<String>,
+        timeout_secs: u64,
+    ) -> Self {
+        let program = program.into();
+        let mut request = Self::local_tool_with_policy(
+            program.clone(),
+            args,
+            "skill_resource_helper",
+            SandboxPolicy::for_skill_resource_helper(source_scope, timeout_secs, program),
+        );
+        request.caller.skill_id = Some(skill_id.into());
+        request
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,8 +413,149 @@ pub trait ExecutionEnvironment: Send + Sync {
     async fn execute(&self, request: ExecutionRequest) -> Result<ExecutionArtifact, CoreError>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowActionExecutionRequest {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub workflow_id: String,
+    pub package_id: Option<String>,
+    pub source_scope: Vec<String>,
+    pub network_intent: bool,
+    pub timeout_secs: u64,
+    pub stdin: Option<String>,
+    pub environment: Vec<(String, String)>,
+    pub expected_writes: Vec<String>,
+}
+
+impl WorkflowActionExecutionRequest {
+    pub fn into_execution_request(self) -> ExecutionRequest {
+        let mut request = ExecutionRequest::for_workflow_action(
+            self.program,
+            self.args,
+            self.workflow_id,
+            self.package_id,
+            self.source_scope,
+            self.network_intent,
+            self.timeout_secs,
+        );
+        apply_local_process_fields(
+            &mut request,
+            self.cwd,
+            self.stdin,
+            self.environment,
+            self.expected_writes,
+        );
+        request
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectorHelperExecutionRequest {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub package_id: String,
+    pub source_scope: Vec<String>,
+    pub network_intent: bool,
+    pub timeout_secs: u64,
+    pub stdin: Option<String>,
+    pub environment: Vec<(String, String)>,
+    pub expected_writes: Vec<String>,
+}
+
+impl ConnectorHelperExecutionRequest {
+    pub fn into_execution_request(self) -> ExecutionRequest {
+        let mut request = ExecutionRequest::for_connector_helper(
+            self.program,
+            self.args,
+            self.package_id,
+            self.source_scope,
+            self.network_intent,
+            self.timeout_secs,
+        );
+        apply_local_process_fields(
+            &mut request,
+            self.cwd,
+            self.stdin,
+            self.environment,
+            self.expected_writes,
+        );
+        request
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillResourceHelperExecutionRequest {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub skill_id: String,
+    pub source_scope: Vec<String>,
+    pub timeout_secs: u64,
+    pub stdin: Option<String>,
+    pub environment: Vec<(String, String)>,
+    pub expected_writes: Vec<String>,
+}
+
+impl SkillResourceHelperExecutionRequest {
+    pub fn into_execution_request(self) -> ExecutionRequest {
+        let mut request = ExecutionRequest::for_skill_resource_helper(
+            self.program,
+            self.args,
+            self.skill_id,
+            self.source_scope,
+            self.timeout_secs,
+        );
+        apply_local_process_fields(
+            &mut request,
+            self.cwd,
+            self.stdin,
+            self.environment,
+            self.expected_writes,
+        );
+        request
+    }
+}
+
+fn apply_local_process_fields(
+    request: &mut ExecutionRequest,
+    cwd: PathBuf,
+    stdin: Option<String>,
+    environment: Vec<(String, String)>,
+    expected_writes: Vec<String>,
+) {
+    request.cwd = Some(cwd.display().to_string());
+    request.stdin = stdin;
+    request.environment = environment;
+    request.expected_writes = expected_writes;
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalProcessExecutionEnvironment;
+
+impl LocalProcessExecutionEnvironment {
+    pub async fn execute_workflow_action(
+        &self,
+        request: WorkflowActionExecutionRequest,
+    ) -> Result<ExecutionArtifact, CoreError> {
+        self.execute(request.into_execution_request()).await
+    }
+
+    pub async fn execute_connector_helper(
+        &self,
+        request: ConnectorHelperExecutionRequest,
+    ) -> Result<ExecutionArtifact, CoreError> {
+        self.execute(request.into_execution_request()).await
+    }
+
+    pub async fn execute_skill_resource_helper(
+        &self,
+        request: SkillResourceHelperExecutionRequest,
+    ) -> Result<ExecutionArtifact, CoreError> {
+        self.execute(request.into_execution_request()).await
+    }
+}
 
 #[async_trait]
 impl ExecutionEnvironment for LocalProcessExecutionEnvironment {
@@ -579,6 +839,21 @@ fn default_true() -> bool {
 mod tests {
     use super::*;
 
+    fn current_test_program() -> String {
+        std::env::current_exe()
+            .expect("current test executable")
+            .display()
+            .to_string()
+    }
+
+    fn test_helper_args() -> Vec<String> {
+        vec!["--help".to_string()]
+    }
+
+    fn display_temp_scope(dir: &tempfile::TempDir) -> Vec<String> {
+        vec![dir.path().display().to_string()]
+    }
+
     #[test]
     fn permission_key_includes_caller_identity() {
         let mut request =
@@ -692,5 +967,192 @@ mod tests {
             review_execution_policy(&request).kind,
             ExecutionDecisionKind::Allowed
         );
+    }
+
+    #[test]
+    fn workflow_action_policy_carries_workflow_package_and_timeout() {
+        let request = ExecutionRequest::for_workflow_action(
+            "python",
+            vec!["workflow.py".to_string()],
+            "workflow-1",
+            Some("pkg-workflows".to_string()),
+            vec!["source-1".to_string()],
+            false,
+            90,
+        );
+
+        assert_eq!(request.caller.tool_name.as_deref(), Some("workflow_action"));
+        assert_eq!(request.caller.workflow_id.as_deref(), Some("workflow-1"));
+        assert_eq!(request.caller.package_id.as_deref(), Some("pkg-workflows"));
+        assert_eq!(request.sandbox.source_scope, vec!["source-1".to_string()]);
+        assert!(!request.network_intent);
+        assert!(!request.sandbox.network_allowed);
+        assert_eq!(request.sandbox.timeout_ms, Some(90_000));
+        assert!(request.sandbox.capture_file_changes);
+        assert_eq!(
+            deterministic_execution_permission_key(&request),
+            "exec:workflow_action:pkg-workflows:-:workflow-1:python"
+        );
+        assert_eq!(
+            review_execution_policy(&request).kind,
+            ExecutionDecisionKind::Allowed
+        );
+    }
+
+    #[test]
+    fn connector_helper_policy_scopes_network_and_program() {
+        let mut request = ExecutionRequest::for_connector_helper(
+            "node",
+            vec!["helper.js".to_string()],
+            "pkg-connector",
+            vec!["source-1".to_string()],
+            true,
+            30,
+        );
+
+        assert_eq!(
+            request.caller.tool_name.as_deref(),
+            Some("connector_helper")
+        );
+        assert_eq!(request.caller.package_id.as_deref(), Some("pkg-connector"));
+        assert_eq!(request.sandbox.allowed_programs, vec!["node".to_string()]);
+        assert!(request.network_intent);
+        assert!(request.sandbox.network_allowed);
+        assert_eq!(request.sandbox.timeout_ms, Some(30_000));
+        assert_eq!(
+            review_execution_policy(&request).kind,
+            ExecutionDecisionKind::Allowed
+        );
+
+        request.program = "python".to_string();
+        assert_eq!(
+            review_execution_policy(&request).kind,
+            ExecutionDecisionKind::Denied
+        );
+    }
+
+    #[test]
+    fn skill_resource_helper_policy_is_program_scoped_and_network_closed() {
+        let mut request = ExecutionRequest::for_skill_resource_helper(
+            "python",
+            vec!["render_asset.py".to_string()],
+            "skill-1",
+            vec!["source-1".to_string()],
+            20,
+        );
+
+        assert_eq!(
+            request.caller.tool_name.as_deref(),
+            Some("skill_resource_helper")
+        );
+        assert_eq!(request.caller.skill_id.as_deref(), Some("skill-1"));
+        assert_eq!(request.sandbox.allowed_programs, vec!["python".to_string()]);
+        assert!(!request.network_intent);
+        assert!(!request.sandbox.network_allowed);
+        assert!(!request.sandbox.capture_file_changes);
+        assert_eq!(request.sandbox.timeout_ms, Some(20_000));
+        assert_eq!(
+            review_execution_policy(&request).kind,
+            ExecutionDecisionKind::Allowed
+        );
+
+        request.network_intent = true;
+        assert_eq!(
+            review_execution_policy(&request).kind,
+            ExecutionDecisionKind::RequiresApproval
+        );
+    }
+
+    #[tokio::test]
+    async fn local_process_executes_workflow_action_adapter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let environment = LocalProcessExecutionEnvironment;
+        let artifact = environment
+            .execute_workflow_action(WorkflowActionExecutionRequest {
+                program: current_test_program(),
+                args: test_helper_args(),
+                cwd: dir.path().to_path_buf(),
+                workflow_id: "workflow-1".to_string(),
+                package_id: Some("pkg-workflows".to_string()),
+                source_scope: display_temp_scope(&dir),
+                network_intent: false,
+                timeout_secs: 5,
+                stdin: None,
+                environment: vec![("NEXA_EXEC_TEST".to_string(), "workflow".to_string())],
+                expected_writes: vec![dir.path().display().to_string()],
+            })
+            .await
+            .expect("execute workflow action");
+
+        assert_eq!(artifact.decision.kind, ExecutionDecisionKind::Allowed);
+        assert_eq!(artifact.exit_status, Some(0));
+        assert!(artifact
+            .decision
+            .permission_key
+            .contains("exec:workflow_action:pkg-workflows:-:workflow-1:"));
+    }
+
+    #[tokio::test]
+    async fn local_process_executes_connector_helper_adapter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let environment = LocalProcessExecutionEnvironment;
+        let artifact = environment
+            .execute_connector_helper(ConnectorHelperExecutionRequest {
+                program: current_test_program(),
+                args: test_helper_args(),
+                cwd: dir.path().to_path_buf(),
+                package_id: "pkg-connector".to_string(),
+                source_scope: display_temp_scope(&dir),
+                network_intent: true,
+                timeout_secs: 5,
+                stdin: None,
+                environment: Vec::new(),
+                expected_writes: Vec::new(),
+            })
+            .await
+            .expect("execute connector helper");
+
+        assert_eq!(artifact.decision.kind, ExecutionDecisionKind::Allowed);
+        assert_eq!(artifact.exit_status, Some(0));
+        assert!(artifact
+            .decision
+            .permission_key
+            .contains("exec:connector_helper:pkg-connector:-:-:"));
+    }
+
+    #[tokio::test]
+    async fn local_process_executes_skill_resource_helper_adapter_with_closed_network() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let helper_request = SkillResourceHelperExecutionRequest {
+            program: current_test_program(),
+            args: test_helper_args(),
+            cwd: dir.path().to_path_buf(),
+            skill_id: "skill-1".to_string(),
+            source_scope: display_temp_scope(&dir),
+            timeout_secs: 5,
+            stdin: None,
+            environment: Vec::new(),
+            expected_writes: Vec::new(),
+        };
+        let execution_request = helper_request.clone().into_execution_request();
+        assert!(!execution_request.network_intent);
+        assert!(!execution_request.sandbox.network_allowed);
+        assert_eq!(
+            execution_request.caller.tool_name.as_deref(),
+            Some("skill_resource_helper")
+        );
+
+        let environment = LocalProcessExecutionEnvironment;
+        let artifact = environment
+            .execute_skill_resource_helper(helper_request)
+            .await
+            .expect("execute skill resource helper");
+
+        assert_eq!(artifact.decision.kind, ExecutionDecisionKind::Allowed);
+        assert_eq!(artifact.exit_status, Some(0));
+        assert!(artifact
+            .decision
+            .permission_key
+            .contains("exec:skill_resource_helper:-:skill-1:-:"));
     }
 }

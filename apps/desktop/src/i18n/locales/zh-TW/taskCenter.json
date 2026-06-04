@@ -62,6 +62,7 @@
   "showInFolder": "在文件夹中显示",
   "openFileError": "打开文件失败",
   "noArtifacts": "还没有结构化产物。",
+  "scheduler": "排程器",
   "savedArtifacts": "已保存产物",
   "noSavedArtifacts": "还没有可编辑产物。",
   "saveEditable": "保存为可编辑产物",

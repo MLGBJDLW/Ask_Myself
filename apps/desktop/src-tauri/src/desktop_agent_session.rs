@@ -9,21 +9,33 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
+use chrono::{Local, SecondsFormat, Utc};
 use log::{info, warn};
 use nexa_core::agent::{
-    AgentConfig, AgentEvent, AgentExecutor, AgentSteeringMessage, CancellationToken,
-    ConfirmationCallback,
+    build_system_prompt, AgentConfig, AgentEvent, AgentExecutionMode, AgentExecutor,
+    AgentSteeringMessage, CancellationToken, ConfirmationCallback,
 };
 use nexa_core::agent_run::AgentRunPhase;
+use nexa_core::app_settings::AppConfig;
 use nexa_core::approval::{
     ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
     ToolPermissionKey,
 };
-use nexa_core::conversation::{AgentSubtaskRun, ConversationMessage};
+use nexa_core::conversation::{
+    AgentConfig as DbAgentConfig, AgentSubtaskRun, Conversation, ConversationMessage,
+    ImageAttachment,
+};
 use nexa_core::db::Database;
 use nexa_core::error::CoreError;
-use nexa_core::llm::{ContentPart, LlmProvider, Message, ProviderConfig, Role};
+use nexa_core::llm::{
+    create_provider, model_supports_vision, ContentPart, LlmProvider, Message, ProviderConfig,
+    ProviderType, ReasoningEffort, Role,
+};
 use nexa_core::mcp::McpManager;
+use nexa_core::ocr::extract_text_from_image;
+use nexa_core::package_host::PackageSurfaceKind;
+use nexa_core::provider_registry::provider_type_for_parts;
 use nexa_core::skills::Skill;
 use nexa_core::tools::{default_tool_registry, ToolRegistry};
 use tauri::AppHandle;
@@ -33,10 +45,16 @@ use uuid::Uuid;
 
 use crate::agent_stream::emit_agent_frontend_event;
 use crate::agent_stream_bridge::AgentStreamForwarder;
-use crate::agent_task_events::{emit_agent_task_run_update, record_agent_run_status_task_event};
+use crate::agent_task_events::{
+    emit_agent_task_run_update, record_agent_run_status_task_event, record_agent_run_task_event,
+};
+use crate::app_events::emit_app_event;
 use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, SubagentBatchTool, SubagentTool,
 };
+
+const UNLIMITED_EXECUTOR_TIMEOUT_SECS: u32 = 0;
+const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 
 pub struct DesktopAgentTurnRuntime {
     pub timeout_secs: u64,
@@ -61,6 +79,51 @@ pub struct DesktopAgentSessionDependencies {
     pub tools: ToolRegistry,
     pub selected_skills: Vec<Skill>,
     pub auto_loaded_skills: Vec<Skill>,
+}
+
+pub struct DesktopAgentTurnConfigRequest<'a> {
+    pub db: &'a Database,
+    pub conversation: &'a Conversation,
+    pub turn_id: &'a str,
+    pub message: &'a str,
+    pub persona_id: Option<&'a str>,
+    pub explicit_skill_ids: &'a [String],
+    pub db_config: &'a DbAgentConfig,
+    pub app_cfg: &'a AppConfig,
+    pub execution_mode: AgentExecutionMode,
+}
+
+pub struct DesktopAgentTurnConfig {
+    pub executor_config: AgentConfig,
+    pub source_scope_ids: Vec<String>,
+    pub pinned_skill_ids: Vec<String>,
+}
+
+pub struct DesktopAgentUserContentRequest<'a> {
+    pub db: &'a Database,
+    pub app_handle: Option<&'a AppHandle>,
+    pub provider_config: &'a ProviderConfig,
+    pub db_config: &'a DbAgentConfig,
+    pub message: &'a str,
+    pub attachments: Option<&'a [ImageAttachment]>,
+}
+
+pub struct DesktopAgentPostSuccessLearningRequest {
+    pub db: Arc<Database>,
+    pub conversation_id: String,
+    pub db_config: DbAgentConfig,
+}
+
+pub struct DesktopAgentSessionConfigInput<'a> {
+    pub db: &'a Database,
+    pub conversation_id: &'a str,
+    pub task_run_id: &'a str,
+    pub db_config: &'a DbAgentConfig,
+    pub app_cfg: &'a AppConfig,
+    pub source_scope_ids: &'a [String],
+    pub selected_skills: &'a [Skill],
+    pub auto_loaded_skills: &'a [Skill],
+    pub execution_mode: AgentExecutionMode,
 }
 
 pub struct DesktopAgentSessionDependencyRequest<'a> {
@@ -92,6 +155,7 @@ pub struct DesktopAgentTurnFinalization<'a> {
     pub app_handle: &'a AppHandle,
     pub conversation_id: &'a str,
     pub task_run_id: &'a str,
+    pub task_orchestrator_run_id: Option<&'a str>,
     pub turn_id: &'a str,
     pub event_seq: &'a AtomicU64,
     pub outcome: &'a DesktopAgentTurnOutcome,
@@ -102,6 +166,7 @@ pub struct DesktopAgentStopFinalization<'a> {
     pub app_handle: &'a AppHandle,
     pub conversation_id: &'a str,
     pub task_run_id: &'a str,
+    pub task_orchestrator_run_id: Option<&'a str>,
     pub turn_id: &'a str,
     pub event_seq: &'a AtomicU64,
     pub reason: &'a str,
@@ -126,6 +191,32 @@ pub struct DesktopAgentTurnRequest {
     pub stream: DesktopAgentTurnStream,
 }
 
+pub struct DesktopRunningAgentTask {
+    pub cancel_token: CancellationToken,
+    pub task: tokio::task::JoinHandle<()>,
+    pub steering_tx: mpsc::UnboundedSender<AgentSteeringMessage>,
+    pub task_run_id: String,
+    pub task_orchestrator_run_id: Option<String>,
+    pub turn_id: String,
+    pub stream_event_seq: Arc<AtomicU64>,
+}
+
+pub struct DesktopRunningAgentTaskRequest {
+    pub cancel_token: CancellationToken,
+    pub task: tokio::task::JoinHandle<()>,
+    pub steering_tx: mpsc::UnboundedSender<AgentSteeringMessage>,
+    pub task_run_id: String,
+    pub task_orchestrator_run_id: Option<String>,
+    pub turn_id: String,
+    pub stream_event_seq: Arc<AtomicU64>,
+}
+
+pub struct DesktopRunningAgentStopRequest {
+    pub db: Arc<Database>,
+    pub app_handle: AppHandle,
+    pub conversation_id: String,
+}
+
 struct DesktopApprovalCallbackInput {
     db: Arc<Database>,
     app_handle: AppHandle,
@@ -134,6 +225,826 @@ struct DesktopApprovalCallbackInput {
     turn_id: String,
     event_seq: Arc<AtomicU64>,
     approval_runtime: DesktopAgentApprovalRuntime,
+}
+
+pub fn execution_mode_artifact(execution_mode: AgentExecutionMode) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "executionMode",
+        "version": 1,
+        "mode": execution_mode.as_str(),
+    })
+}
+
+pub fn build_desktop_running_agent_task(
+    request: DesktopRunningAgentTaskRequest,
+) -> DesktopRunningAgentTask {
+    DesktopRunningAgentTask {
+        cancel_token: request.cancel_token,
+        task: request.task,
+        steering_tx: request.steering_tx,
+        task_run_id: request.task_run_id,
+        task_orchestrator_run_id: request.task_orchestrator_run_id,
+        turn_id: request.turn_id,
+        stream_event_seq: request.stream_event_seq,
+    }
+}
+
+pub fn replace_desktop_running_agent_task(
+    running: &mut HashMap<String, DesktopRunningAgentTask>,
+    conversation_id: String,
+    task: DesktopRunningAgentTask,
+) {
+    if let Some(previous) = running.remove(&conversation_id) {
+        previous.cancel_token.cancel();
+        previous.task.abort();
+    }
+    running.insert(conversation_id, task);
+}
+
+pub fn steer_desktop_running_agent_task(
+    running: &mut HashMap<String, DesktopRunningAgentTask>,
+    conversation_id: &str,
+    message: &str,
+) -> Result<(), String> {
+    let Some(task) = running.get(conversation_id) else {
+        return Err("No running agent for this conversation.".to_string());
+    };
+
+    if task.task.is_finished() {
+        running.remove(conversation_id);
+        return Err("No running agent for this conversation.".to_string());
+    }
+
+    task.steering_tx
+        .send(AgentSteeringMessage::text(message.to_string()))
+        .map_err(|_| "Running agent is no longer accepting steering messages.".to_string())
+}
+
+pub fn request_desktop_running_agent_stop(
+    running: &mut HashMap<String, DesktopRunningAgentTask>,
+    request: DesktopRunningAgentStopRequest,
+) -> bool {
+    let DesktopRunningAgentStopRequest {
+        db,
+        app_handle,
+        conversation_id,
+    } = request;
+    let Some(task_state) = running.remove(&conversation_id) else {
+        return false;
+    };
+
+    let task_run_id = task_state.task_run_id.clone();
+    let task_orchestrator_run_id = task_state.task_orchestrator_run_id.clone();
+    let turn_id = task_state.turn_id.clone();
+    let stream_event_seq = Arc::clone(&task_state.stream_event_seq);
+    let _ = db.update_agent_task_run_progress(
+        &task_run_id,
+        Some("cancelling"),
+        Some("cancelling"),
+        None,
+        Some("Stop requested"),
+        None,
+        None,
+    );
+    let run_event = emit_agent_frontend_event(
+        &app_handle,
+        stream_event_seq.as_ref(),
+        &conversation_id,
+        &task_run_id,
+        Some(&turn_id),
+        AgentEvent::Status {
+            content: "Stop requested".to_string(),
+            tone: Some("muted".to_string()),
+        },
+    );
+    record_agent_run_task_event(
+        &db,
+        &app_handle,
+        &conversation_id,
+        &task_run_id,
+        &run_event,
+        run_event.task_event_type(),
+        "Stop requested",
+        Some("cancelling"),
+        None,
+    );
+    emit_agent_task_run_update(&db, &app_handle, &conversation_id, &task_run_id);
+
+    task_state.cancel_token.cancel();
+    let abort_task = task_state.task;
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if !abort_task.is_finished() {
+            abort_task.abort();
+            finalize_desktop_agent_stop(DesktopAgentStopFinalization {
+                db: &db,
+                app_handle: &app_handle,
+                conversation_id: &conversation_id,
+                task_run_id: &task_run_id,
+                task_orchestrator_run_id: task_orchestrator_run_id.as_deref(),
+                turn_id: &turn_id,
+                event_seq: stream_event_seq.as_ref(),
+                reason: "aborted_after_cancel_timeout",
+                summary: "Stopped by user",
+            });
+        }
+    });
+    true
+}
+
+pub fn annotate_user_artifacts_with_execution_mode(
+    artifacts: Option<serde_json::Value>,
+    execution_mode: AgentExecutionMode,
+) -> Option<serde_json::Value> {
+    if !execution_mode.is_plan() {
+        return artifacts;
+    }
+
+    let marker = execution_mode_artifact(execution_mode);
+    match artifacts {
+        None => Some(marker),
+        Some(serde_json::Value::Object(mut map)) => {
+            map.insert("executionMode".to_string(), marker);
+            Some(serde_json::Value::Object(map))
+        }
+        Some(value) => Some(serde_json::json!({
+            "kind": "chatSendContext",
+            "userArtifacts": value,
+            "executionMode": marker,
+        })),
+    }
+}
+
+fn build_current_turn_time_section() -> String {
+    let now = Local::now();
+    let utc_now = now.with_timezone(&Utc);
+    format!(
+        "## Current Turn Time\n\n\
+         The current time at the start of this user turn is:\n\
+         - Local timestamp: {}\n\
+         - UTC timestamp: {}\n\
+         - Local date: {}\n\
+         - Local time: {}\n\
+         - Weekday: {}\n\
+         - UTC offset: {}\n\n\
+         Use this as the reference point for relative dates such as today, yesterday, tomorrow, last week, and latest. For time-sensitive facts, schedules, prices, laws, releases, or other information that may have changed, prefer fresh retrieval/tool evidence instead of relying only on memory.",
+        now.to_rfc3339_opts(SecondsFormat::Secs, false),
+        utc_now.to_rfc3339_opts(SecondsFormat::Secs, true),
+        now.format("%Y-%m-%d"),
+        now.format("%H:%M:%S"),
+        now.format("%A"),
+        now.format("%:z"),
+    )
+}
+
+fn provider_type_for_config(config: &DbAgentConfig) -> ProviderType {
+    provider_type_for_parts(&config.provider, config.base_url.as_deref())
+}
+
+fn build_selected_skills_artifact(skills: &[Skill]) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "selectedSkills",
+        "version": 1,
+        "skills": skills
+            .iter()
+            .map(|skill| {
+                serde_json::json!({
+                    "id": &skill.id,
+                    "name": &skill.name,
+                    "description": &skill.description,
+                    "shortDescription": &skill.interface.short_description,
+                    "enabled": skill.enabled,
+                    "builtin": skill.builtin,
+                    "sourcePath": &skill.source_path,
+                    "implicit": skill.policy.allow_implicit_invocation,
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// Map a MIME type to a file extension for temp-file parsing.
+fn mime_to_extension(mime: &str) -> &'static str {
+    match mime {
+        "application/pdf" => "pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => "pptx",
+        "application/msword" => "doc",
+        "application/vnd.ms-excel" => "xls",
+        "application/vnd.ms-powerpoint" => "ppt",
+        "text/plain" => "txt",
+        "text/markdown" | "text/x-markdown" => "md",
+        "text/csv" => "csv",
+        "text/html" => "html",
+        "application/json" => "json",
+        "application/epub+zip" => "epub",
+        _ if mime.starts_with("text/") => "txt",
+        _ => "bin",
+    }
+}
+
+fn emit_user_content_event(
+    app_handle: Option<&AppHandle>,
+    event_name: &str,
+    payload: &serde_json::Value,
+) {
+    if let Some(app_handle) = app_handle {
+        emit_app_event(app_handle, event_name, payload);
+    }
+}
+
+pub fn desktop_summarization_provider_config(db_config: &DbAgentConfig) -> Option<ProviderConfig> {
+    db_config
+        .summarization_provider
+        .as_ref()
+        .map(|provider_name| ProviderConfig {
+            provider_type: provider_type_for_parts(provider_name, None),
+            api_key: Some(db_config.api_key.clone()),
+            base_url: db_config.base_url.clone(),
+            org_id: None,
+            timeout_secs: None,
+        })
+}
+
+pub fn build_desktop_summarization_provider(
+    db_config: &DbAgentConfig,
+) -> Option<Box<dyn LlmProvider>> {
+    desktop_summarization_provider_config(db_config).and_then(|config| create_provider(config).ok())
+}
+
+pub fn desktop_memory_extraction_model(db_config: &DbAgentConfig) -> &str {
+    db_config
+        .summarization_model
+        .as_deref()
+        .unwrap_or(&db_config.model)
+}
+
+pub fn desktop_memory_extraction_provider_config(db_config: &DbAgentConfig) -> ProviderConfig {
+    if let Some(ref provider_name) = db_config.summarization_provider {
+        ProviderConfig {
+            provider_type: provider_type_for_parts(provider_name, None),
+            api_key: Some(db_config.api_key.clone()),
+            base_url: db_config.base_url.clone(),
+            org_id: None,
+            timeout_secs: None,
+        }
+    } else {
+        ProviderConfig {
+            provider_type: provider_type_for_config(db_config),
+            api_key: Some(db_config.api_key.clone()),
+            base_url: db_config.base_url.clone(),
+            org_id: None,
+            timeout_secs: None,
+        }
+    }
+}
+
+pub async fn run_desktop_agent_post_success_learning(
+    request: DesktopAgentPostSuccessLearningRequest,
+) {
+    let DesktopAgentPostSuccessLearningRequest {
+        db,
+        conversation_id,
+        db_config,
+    } = request;
+
+    let app_cfg = db.load_app_config().unwrap_or_default();
+    if app_cfg.auto_memory_extraction {
+        let extract_model = desktop_memory_extraction_model(&db_config).to_string();
+        let extract_provider_config = desktop_memory_extraction_provider_config(&db_config);
+        if let Ok(extract_llm) = create_provider(extract_provider_config) {
+            match nexa_core::personalization::auto_extract_and_save(
+                &db,
+                &conversation_id,
+                extract_llm.as_ref(),
+                &extract_model,
+            )
+            .await
+            {
+                Ok(n) if n > 0 => {
+                    info!("Auto-extracted {n} memories from conversation {conversation_id}");
+                }
+                Err(e) => {
+                    warn!("Auto memory extraction failed for {conversation_id}: {e}");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if app_cfg.auto_skill_learning {
+        match nexa_core::evolution::review_recent_traces_for_evolution(&db, 5) {
+            Ok(review) if review.events_created > 0 => {
+                info!(
+                    "Agent evolution review created {} event(s) for conversation {}",
+                    review.events_created, conversation_id
+                );
+            }
+            Err(e) => warn!("Agent evolution review failed for {conversation_id}: {e}"),
+            _ => {}
+        }
+    }
+}
+
+pub fn build_desktop_agent_user_content_parts(
+    request: DesktopAgentUserContentRequest<'_>,
+) -> Result<Vec<ContentPart>, String> {
+    let DesktopAgentUserContentRequest {
+        db,
+        app_handle,
+        provider_config,
+        db_config,
+        message,
+        attachments,
+    } = request;
+
+    let vision_supported = model_supports_vision(&provider_config.provider_type, &db_config.model);
+    info!(
+        "Attachment check: provider={}, model={}, provider_type={:?}, vision_supported={}, has_attachments={}",
+        db_config.provider,
+        db_config.model,
+        provider_config.provider_type,
+        vision_supported,
+        attachments.is_some_and(|items| !items.is_empty())
+    );
+
+    let mut user_parts = vec![ContentPart::Text {
+        text: message.to_string(),
+    }];
+    let Some(attachments) = attachments else {
+        return Ok(user_parts);
+    };
+
+    for attachment in attachments {
+        if attachment.media_type.starts_with("image/") {
+            if vision_supported {
+                user_parts.push(ContentPart::Image {
+                    media_type: attachment.media_type.clone(),
+                    data: attachment.base64_data.clone(),
+                });
+            } else {
+                warn!(
+                    "Model '{}' (provider {:?}) does not support vision. Using OCR fallback for image '{}'.",
+                    db_config.model, provider_config.provider_type, attachment.original_name
+                );
+                emit_user_content_event(
+                    app_handle,
+                    "image:ocr-fallback",
+                    &serde_json::json!({
+                        "image_name": attachment.original_name,
+                        "model": db_config.model,
+                        "reason": "Model does not support native image inputs"
+                    }),
+                );
+                let ocr_config = db.load_ocr_config().unwrap_or_default();
+                let image_bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&attachment.base64_data)
+                    .map_err(|e| format!("Failed to decode image: {e}"))?;
+                let ocr_result = extract_text_from_image(
+                    &image_bytes,
+                    &attachment.media_type,
+                    &ocr_config,
+                    None,
+                );
+                info!(
+                    "OCR fallback result for non-vision model: success={}, text_len={}",
+                    ocr_result.is_ok(),
+                    ocr_result.as_ref().map(|r| r.full_text.len()).unwrap_or(0)
+                );
+                match ocr_result {
+                    Ok(result) if !result.full_text.is_empty() => {
+                        user_parts.push(ContentPart::Text {
+                            text: format!(
+                                "[Image \"{}\" — processed via OCR (model does not support native vision)]:\n{}",
+                                attachment.original_name, result.full_text
+                            ),
+                        });
+                    }
+                    _ => {
+                        warn!(
+                            "OCR fallback also failed for image '{}'. Install OCR model or use a vision-capable model.",
+                            attachment.original_name
+                        );
+                        emit_user_content_event(
+                            app_handle,
+                            "image:ocr-failed",
+                            &serde_json::json!({
+                                "image_name": attachment.original_name,
+                                "model": db_config.model,
+                                "hint": "Install OCR model in Settings or switch to a vision-capable model"
+                            }),
+                        );
+                        user_parts.push(ContentPart::Text {
+                            text: format!(
+                                "[Image \"{}\" attached but could not be processed — this model does not support image inputs and OCR is not available. Install the OCR model in Settings or use a vision-capable model.]",
+                                attachment.original_name
+                            ),
+                        });
+                    }
+                }
+            }
+            continue;
+        }
+
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&attachment.base64_data)
+            .map_err(|e| format!("Failed to decode attachment: {e}"))?;
+        if bytes.len() > MAX_ATTACHMENT_BYTES {
+            warn!(
+                "Attachment '{}' is too large ({} bytes, limit {}). Skipping.",
+                attachment.original_name,
+                bytes.len(),
+                MAX_ATTACHMENT_BYTES
+            );
+            user_parts.push(ContentPart::Text {
+                text: format!(
+                    "[Attached file \"{}\" skipped — file too large ({:.1} MB, limit 10 MB)]",
+                    attachment.original_name,
+                    bytes.len() as f64 / (1024.0 * 1024.0)
+                ),
+            });
+            continue;
+        }
+
+        let ext = mime_to_extension(&attachment.media_type);
+        let temp_path =
+            std::env::temp_dir().join(format!("nexa-attach-{}.{}", Uuid::new_v4(), ext));
+        if let Err(e) = std::fs::write(&temp_path, &bytes) {
+            warn!(
+                "Failed to write temp file for attachment '{}': {}",
+                attachment.original_name, e
+            );
+            user_parts.push(ContentPart::Text {
+                text: format!(
+                    "[Attached file \"{}\" — could not process: {}]",
+                    attachment.original_name, e
+                ),
+            });
+            continue;
+        }
+
+        let parse_result = nexa_core::parse::parse_file(
+            &temp_path,
+            None,
+            #[cfg(feature = "video")]
+            None,
+            None,
+            None,
+            None,
+        );
+        let _ = std::fs::remove_file(&temp_path);
+        match parse_result {
+            Ok(parsed) => {
+                let text: String = parsed
+                    .chunks
+                    .iter()
+                    .map(|c| c.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                let visual_text = parsed
+                    .visual_artifacts
+                    .iter()
+                    .map(|artifact| artifact.to_chunk_content())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                let combined_text = [text.as_str(), visual_text.as_str()]
+                    .into_iter()
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                if combined_text.trim().is_empty() {
+                    user_parts.push(ContentPart::Text {
+                        text: format!(
+                            "[Attached file \"{}\" — no text content could be extracted]",
+                            attachment.original_name
+                        ),
+                    });
+                } else {
+                    info!(
+                        "Parsed document attachment '{}': {} chars",
+                        attachment.original_name,
+                        combined_text.len()
+                    );
+                    user_parts.push(ContentPart::Text {
+                        text: format!(
+                            "[Attached file: {}]\n\n{}",
+                            attachment.original_name, combined_text
+                        ),
+                    });
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to parse attachment '{}': {}",
+                    attachment.original_name, e
+                );
+                user_parts.push(ContentPart::Text {
+                    text: format!(
+                        "[Attached file \"{}\" — could not extract content: {}]",
+                        attachment.original_name, e
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(user_parts)
+}
+
+pub fn build_desktop_agent_turn_config(
+    request: DesktopAgentTurnConfigRequest<'_>,
+) -> DesktopAgentTurnConfig {
+    let DesktopAgentTurnConfigRequest {
+        db,
+        conversation,
+        turn_id,
+        message,
+        persona_id,
+        explicit_skill_ids,
+        db_config,
+        app_cfg,
+        execution_mode,
+    } = request;
+
+    let source_scope_ids = db
+        .get_effective_conversation_source_scope(&conversation.id)
+        .unwrap_or_default();
+    let source_scope_section =
+        nexa_core::conversation::build_source_scope_prompt_section(db, &source_scope_ids)
+            .unwrap_or_default();
+    let collection_context_section =
+        nexa_core::conversation::build_collection_context_prompt_section(
+            conversation.collection_context.as_ref(),
+        );
+    let memory_section =
+        nexa_core::personalization::build_memory_summary_for_query(db, Some(message))
+            .unwrap_or_default();
+    let project_memory_section = nexa_core::project_memory::build_project_memory_summary_for_query(
+        db,
+        conversation.project_id.as_deref(),
+        Some(message),
+    )
+    .unwrap_or_default();
+    let agent_memory_section =
+        nexa_core::evolution::build_agent_procedural_memory_summary_for_query(db, Some(message))
+            .unwrap_or_default();
+    if !agent_memory_section.is_empty() {
+        let memory_hits = db
+            .search_agent_procedural_memories(message, 3)
+            .or_else(|_| db.list_agent_procedural_memories(2))
+            .unwrap_or_default();
+        for memory in memory_hits {
+            let _ = db.record_memory_injection_event(
+                &memory.id,
+                Some(&conversation.id),
+                Some(turn_id),
+                message,
+                "agent_procedural_memory_prompt",
+                Some(memory.confidence),
+            );
+        }
+    }
+    let preference_section =
+        nexa_core::personalization::build_preference_summary_for_query(db, Some(message))
+            .unwrap_or_default();
+    let learned_section = {
+        let cfg = db.get_embedder_config().ok();
+        let embedding = cfg.and_then(|c| match nexa_core::embed::create_embedder(&c) {
+            Ok(embedder) if embedder.dimensions() > 0 => embedder.embed(message).ok(),
+            _ => None,
+        });
+        match embedding {
+            Some(vec) if !vec.iter().all(|&v| v == 0.0) => {
+                match nexa_core::learning::retrieve_similar_successes(db, &vec, 3) {
+                    Ok(hits) => nexa_core::learning::build_learned_successes_section(&hits),
+                    Err(_) => String::new(),
+                }
+            }
+            _ => String::new(),
+        }
+    };
+    let scratchpad_section = nexa_core::agent::scratchpad::build_agent_scratchpad_prompt_section(
+        db,
+        Some(&conversation.id),
+    );
+    let requested_persona_id = persona_id
+        .or(conversation.persona_id.as_deref())
+        .unwrap_or("default");
+    let persona_profile = match nexa_core::persona::enabled_persona_by_id(db, requested_persona_id)
+    {
+        Ok(persona) => persona,
+        Err(err) => {
+            warn!("Failed to load persona '{requested_persona_id}': {err}");
+            None
+        }
+    };
+    let effective_persona_id = persona_profile
+        .as_ref()
+        .map(|persona| persona.id.as_str())
+        .unwrap_or("default");
+    if conversation.persona_id.as_deref().unwrap_or("default") != effective_persona_id {
+        let _ = db.update_conversation_persona(
+            &conversation.id,
+            if effective_persona_id == "default" {
+                None
+            } else {
+                Some(effective_persona_id)
+            },
+        );
+    }
+    let persona_default_skill_ids = persona_profile
+        .as_ref()
+        .map(|persona| persona.default_skill_ids.clone())
+        .unwrap_or_default();
+    let mut pinned_skill_ids = persona_default_skill_ids;
+    for id in explicit_skill_ids {
+        let trimmed = id.trim();
+        if !trimmed.is_empty() && !pinned_skill_ids.iter().any(|existing| existing == trimmed) {
+            pinned_skill_ids.push(trimmed.to_string());
+        }
+    }
+    let persona_section =
+        nexa_core::persona::build_persona_prompt_section(persona_profile.as_ref());
+    let current_turn_time_section = build_current_turn_time_section();
+    let plan_mode_section = if execution_mode.is_plan() {
+        nexa_core::agent::plan_mode_prompt_section()
+    } else {
+        ""
+    };
+    let system_prompt = build_system_prompt(Some(&conversation.system_prompt), &[]);
+    let volatile_system_sections = vec![
+        current_turn_time_section,
+        plan_mode_section.to_string(),
+        persona_section,
+        collection_context_section,
+        source_scope_section,
+        memory_section,
+        project_memory_section,
+        agent_memory_section,
+        preference_section,
+        learned_section,
+        scratchpad_section,
+    ];
+
+    let executor_config = AgentConfig {
+        max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(25),
+        system_prompt,
+        volatile_system_sections,
+        model: Some(db_config.model.clone()),
+        temperature: db_config.temperature.map(|t| t as f32),
+        max_tokens: db_config.max_tokens.map(|t| t as u32),
+        context_window: db_config.context_window.map(|w| w as u32),
+        reasoning_enabled: db_config.reasoning_enabled,
+        thinking_budget: db_config.thinking_budget.map(|v| v as u32),
+        reasoning_effort: db_config
+            .reasoning_effort
+            .as_ref()
+            .and_then(|s| match s.as_str() {
+                "none" => Some(ReasoningEffort::None),
+                "minimal" => Some(ReasoningEffort::Minimal),
+                "low" => Some(ReasoningEffort::Low),
+                "medium" => Some(ReasoningEffort::Medium),
+                "high" => Some(ReasoningEffort::High),
+                "max" => Some(ReasoningEffort::Max),
+                "xhigh" => Some(ReasoningEffort::XHigh),
+                _ => None,
+            }),
+        provider_type: Some(provider_type_for_config(db_config)),
+        summarization_model: db_config.summarization_model.clone(),
+        subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
+        subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
+        subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
+        tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
+        agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
+        cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
+        dynamic_tool_visibility: app_cfg.dynamic_tool_visibility,
+        trace_enabled: app_cfg.trace_enabled,
+        require_tool_confirmation: app_cfg.confirm_destructive,
+        shell_access_mode: app_cfg.shell_access_mode,
+        tool_approval_mode: app_cfg.tool_approval_mode,
+        execution_mode,
+    };
+
+    DesktopAgentTurnConfig {
+        executor_config,
+        source_scope_ids,
+        pinned_skill_ids,
+    }
+}
+
+pub fn build_desktop_agent_session_config(
+    input: DesktopAgentSessionConfigInput<'_>,
+) -> nexa_core::runtime::AgentSessionConfig {
+    let mut config = nexa_core::runtime::AgentSessionConfig {
+        session_id: input.conversation_id.to_string(),
+        conversation_id: Some(input.conversation_id.to_string()),
+        task_run_id: Some(input.task_run_id.to_string()),
+        host_surface: nexa_core::runtime::RuntimeHostSurface::Desktop,
+        provider: Some(input.db_config.provider.clone()),
+        model: Some(input.db_config.model.clone()),
+        reasoning_enabled: input.db_config.reasoning_enabled,
+        thinking_budget: input.db_config.thinking_budget.map(|value| value as u32),
+        reasoning_effort: input.db_config.reasoning_effort.clone(),
+        source_scope: nexa_core::runtime::RuntimeSourceScope {
+            source_ids: input.source_scope_ids.to_vec(),
+            collection_id: None,
+            working_directory: None,
+        },
+        approval_mode: input.app_cfg.tool_approval_mode,
+        shell_access_mode: input.app_cfg.shell_access_mode,
+        execution_mode: input.execution_mode,
+        trace_enabled: input.app_cfg.trace_enabled,
+        skill_context: nexa_core::runtime::RuntimeSkillContext {
+            available_skill_ids: input
+                .selected_skills
+                .iter()
+                .map(|skill| skill.id.clone())
+                .collect(),
+            loaded_skill_ids: input
+                .auto_loaded_skills
+                .iter()
+                .map(|skill| skill.id.clone())
+                .collect(),
+            trust_state: None,
+        },
+        package_context: desktop_runtime_package_context(input.db),
+        metadata: serde_json::json!({
+            "kind": "desktopAgentSessionConfig",
+            "agentConfigId": input.db_config.id,
+            "agentConfigName": input.db_config.name,
+        }),
+        ..Default::default()
+    };
+    config.apply_protocol_defaults();
+    config
+}
+
+pub fn desktop_runtime_package_context(db: &Database) -> nexa_core::runtime::RuntimePackageContext {
+    nexa_core::package_host::database_backed_builtin_runtime_package_context(db)
+        .expect("database-backed builtin Package Host snapshot is valid")
+}
+
+pub fn filter_desktop_tool_names_by_package_host(
+    db: &Database,
+    names: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let snapshot = nexa_core::package_host::database_backed_builtin_package_host_snapshot(db)
+        .map_err(|error| error.to_string())?;
+    let visible_tool_ids = snapshot
+        .runtime_components()
+        .into_iter()
+        .filter(|component| component.kind == PackageSurfaceKind::Capability)
+        .map(|component| component.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mcp_visible = snapshot
+        .records
+        .iter()
+        .any(|record| record.id == "mcp-connectors" && record.is_runtime_visible());
+
+    Ok(names
+        .into_iter()
+        .filter(|name| {
+            visible_tool_ids.contains(name.as_str())
+                || (mcp_visible && (name == "mcp_tool" || name.starts_with("mcp__")))
+        })
+        .collect())
+}
+
+pub fn filter_desktop_tool_registry_by_package_host(
+    db: &Database,
+    tools: ToolRegistry,
+) -> Result<ToolRegistry, String> {
+    let allowed_names = filter_desktop_tool_names_by_package_host(db, tools.tool_names())?;
+    Ok(tools.filtered(&allowed_names))
+}
+
+pub fn runtime_session_config_artifact(
+    config: &nexa_core::runtime::AgentSessionConfig,
+) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "agentSessionConfig",
+        "version": 1,
+        "config": config,
+    })
+}
+
+pub fn build_desktop_agent_initial_task_artifacts(
+    selected_skills: &[Skill],
+    runtime_session_config: &nexa_core::runtime::AgentSessionConfig,
+    execution_mode: AgentExecutionMode,
+) -> serde_json::Value {
+    let mut artifacts = serde_json::json!({
+        "kind": "agentTaskArtifacts",
+        "version": 1,
+        "selectedSkills": build_selected_skills_artifact(selected_skills),
+        "runtimeSession": runtime_session_config_artifact(runtime_session_config),
+    });
+    if execution_mode.is_plan() {
+        artifacts["executionMode"] = execution_mode_artifact(execution_mode);
+    }
+    artifacts
 }
 
 async fn sync_enabled_desktop_mcp_servers(
@@ -239,6 +1150,24 @@ pub async fn build_desktop_agent_session_dependencies(
     tools.register(Box::new(JudgeSubagentResultsTool::from_runtime(
         delegation_runtime.clone(),
     )));
+    let before_package_filter_count = tools.tool_names().len();
+    tools = match filter_desktop_tool_registry_by_package_host(db, tools) {
+        Ok(filtered) => {
+            let after_package_filter_count = filtered.tool_names().len();
+            if before_package_filter_count != after_package_filter_count {
+                info!(
+                    "Package Host filtered tool registry from {before_package_filter_count} to {after_package_filter_count} tools"
+                );
+            }
+            filtered
+        }
+        Err(error) => {
+            warn!(
+                "Failed to filter tool registry through Package Host for task run {task_run_id}: {error}"
+            );
+            ToolRegistry::new()
+        }
+    };
     delegation_runtime.set_tool_registry(tools.clone());
 
     if plan_mode {
@@ -517,6 +1446,7 @@ pub fn finalize_desktop_agent_turn(finalization: DesktopAgentTurnFinalization<'_
         app_handle,
         conversation_id,
         task_run_id,
+        task_orchestrator_run_id,
         turn_id,
         event_seq,
         outcome,
@@ -585,6 +1515,13 @@ pub fn finalize_desktop_agent_turn(finalization: DesktopAgentTurnFinalization<'_
         task_error.as_deref(),
         Some(&task_artifacts),
     );
+    if let Some(run_id) = task_orchestrator_run_id {
+        if let Err(err) =
+            db.transition_workflow_automation_run(run_id, task_status, Some(task_summary))
+        {
+            warn!("Failed to transition Task Orchestrator run {run_id}: {err}");
+        }
+    }
     record_agent_run_status_task_event(
         db,
         app_handle,
@@ -610,6 +1547,7 @@ pub fn finalize_desktop_agent_stop(finalization: DesktopAgentStopFinalization<'_
         app_handle,
         conversation_id,
         task_run_id,
+        task_orchestrator_run_id,
         turn_id,
         event_seq,
         reason,
@@ -624,6 +1562,12 @@ pub fn finalize_desktop_agent_stop(finalization: DesktopAgentStopFinalization<'_
         None,
         Some(&artifacts),
     );
+    if let Some(run_id) = task_orchestrator_run_id {
+        if let Err(err) = db.transition_workflow_automation_run(run_id, "cancelled", Some(summary))
+        {
+            warn!("Failed to cancel Task Orchestrator run {run_id}: {err}");
+        }
+    }
     record_agent_run_status_task_event(
         db,
         app_handle,
@@ -728,5 +1672,319 @@ fn repair_orphaned_tool_calls(db: &Database, conversation_id: &str) {
             }
         }
         i += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nexa_core::app_settings::ShellAccessMode;
+    use nexa_core::approval::ToolApprovalMode;
+    use nexa_core::conversation::{CollectionContext, CreateConversationInput, ImageAttachment};
+    use nexa_core::llm::ProviderType;
+    use nexa_core::sources::CreateSourceInput;
+
+    fn test_agent_config() -> DbAgentConfig {
+        DbAgentConfig {
+            id: "agent-config-1".to_string(),
+            name: "Primary".to_string(),
+            provider: "open_ai".to_string(),
+            api_key: "test-key".to_string(),
+            base_url: None,
+            model: "gpt-test".to_string(),
+            temperature: Some(0.2),
+            max_tokens: Some(1024),
+            context_window: Some(128_000),
+            is_default: true,
+            reasoning_enabled: Some(true),
+            thinking_budget: Some(4096),
+            reasoning_effort: Some("medium".to_string()),
+            max_iterations: Some(7),
+            summarization_model: Some("gpt-summary".to_string()),
+            summarization_provider: None,
+            image_generation_model: None,
+            subagent_allowed_tools: None,
+            subagent_allowed_skill_ids: None,
+            subagent_max_parallel: Some(2),
+            subagent_max_calls_per_turn: Some(3),
+            subagent_token_budget: Some(4096),
+            tool_timeout_secs: None,
+            agent_timeout_secs: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    fn test_provider_config(provider_type: ProviderType) -> ProviderConfig {
+        ProviderConfig {
+            provider_type,
+            api_key: Some("test-key".to_string()),
+            base_url: None,
+            org_id: None,
+            timeout_secs: None,
+        }
+    }
+
+    #[test]
+    fn desktop_agent_user_content_parts_project_attachments() {
+        let db = Database::open_memory().expect("open memory db");
+        let mut db_config = test_agent_config();
+        db_config.model = "gpt-4o".to_string();
+        let attachments = vec![
+            ImageAttachment {
+                base64_data: "image-data".to_string(),
+                media_type: "image/png".to_string(),
+                original_name: "diagram.png".to_string(),
+            },
+            ImageAttachment {
+                base64_data: base64::engine::general_purpose::STANDARD
+                    .encode("hello from attachment. ".repeat(8)),
+                media_type: "text/plain".to_string(),
+                original_name: "notes.txt".to_string(),
+            },
+        ];
+
+        let parts = build_desktop_agent_user_content_parts(DesktopAgentUserContentRequest {
+            db: &db,
+            app_handle: None,
+            provider_config: &test_provider_config(ProviderType::OpenAi),
+            db_config: &db_config,
+            message: "Read these",
+            attachments: Some(&attachments),
+        })
+        .expect("build user content parts");
+
+        assert_eq!(parts.len(), 3);
+        match &parts[0] {
+            ContentPart::Text { text } => assert_eq!(text, "Read these"),
+            other => panic!("unexpected first part: {other:?}"),
+        }
+        match &parts[1] {
+            ContentPart::Image { media_type, data } => {
+                assert_eq!(media_type, "image/png");
+                assert_eq!(data, "image-data");
+            }
+            other => panic!("unexpected image part: {other:?}"),
+        }
+        match &parts[2] {
+            ContentPart::Text { text } => {
+                assert!(text.contains("[Attached file: notes.txt]"));
+                assert!(text.contains("hello from attachment"));
+            }
+            other => panic!("unexpected attachment part: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn desktop_agent_user_content_parts_return_decode_errors() {
+        let db = Database::open_memory().expect("open memory db");
+        let attachment = ImageAttachment {
+            base64_data: "%not-base64".to_string(),
+            media_type: "text/plain".to_string(),
+            original_name: "broken.txt".to_string(),
+        };
+
+        let err = build_desktop_agent_user_content_parts(DesktopAgentUserContentRequest {
+            db: &db,
+            app_handle: None,
+            provider_config: &test_provider_config(ProviderType::OpenAi),
+            db_config: &test_agent_config(),
+            message: "Read this",
+            attachments: Some(&[attachment]),
+        })
+        .expect_err("invalid base64 should fail");
+
+        assert!(err.contains("Failed to decode attachment"));
+    }
+
+    #[test]
+    fn desktop_summarization_provider_config_requires_provider_override() {
+        let db_config = test_agent_config();
+
+        assert!(desktop_summarization_provider_config(&db_config).is_none());
+
+        let mut with_provider = db_config;
+        with_provider.summarization_provider = Some("open_ai".to_string());
+        with_provider.base_url = Some("https://example.test/v1".to_string());
+
+        let config =
+            desktop_summarization_provider_config(&with_provider).expect("provider override");
+
+        assert_eq!(config.provider_type, ProviderType::OpenAi);
+        assert_eq!(config.api_key.as_deref(), Some("test-key"));
+        assert_eq!(config.base_url.as_deref(), Some("https://example.test/v1"));
+        assert_eq!(config.timeout_secs, None);
+    }
+
+    #[test]
+    fn desktop_memory_extraction_provider_config_uses_summary_overrides() {
+        let mut db_config = test_agent_config();
+        db_config.provider = "ollama".to_string();
+        db_config.model = "llama3".to_string();
+        db_config.summarization_model = Some("gpt-summary".to_string());
+
+        let fallback = desktop_memory_extraction_provider_config(&db_config);
+        assert_eq!(desktop_memory_extraction_model(&db_config), "gpt-summary");
+        assert_eq!(fallback.provider_type, ProviderType::Ollama);
+
+        db_config.summarization_provider = Some("open_ai".to_string());
+        let override_config = desktop_memory_extraction_provider_config(&db_config);
+
+        assert_eq!(override_config.provider_type, ProviderType::OpenAi);
+        assert_eq!(override_config.api_key.as_deref(), Some("test-key"));
+    }
+
+    #[test]
+    fn desktop_running_agent_task_replaces_and_steers() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        let (first_tx, mut first_rx) = mpsc::unbounded_channel();
+        let (second_tx, mut second_rx) = mpsc::unbounded_channel();
+        let first_task = build_desktop_running_agent_task(DesktopRunningAgentTaskRequest {
+            cancel_token: CancellationToken::new(),
+            task: runtime.spawn(async {
+                std::future::pending::<()>().await;
+            }),
+            steering_tx: first_tx,
+            task_run_id: "task-run-1".to_string(),
+            task_orchestrator_run_id: None,
+            turn_id: "turn-1".to_string(),
+            stream_event_seq: Arc::new(AtomicU64::new(0)),
+        });
+        let second_task = build_desktop_running_agent_task(DesktopRunningAgentTaskRequest {
+            cancel_token: CancellationToken::new(),
+            task: runtime.spawn(async {
+                std::future::pending::<()>().await;
+            }),
+            steering_tx: second_tx,
+            task_run_id: "task-run-2".to_string(),
+            task_orchestrator_run_id: None,
+            turn_id: "turn-2".to_string(),
+            stream_event_seq: Arc::new(AtomicU64::new(0)),
+        });
+        let mut running = HashMap::new();
+
+        replace_desktop_running_agent_task(&mut running, "conversation-1".to_string(), first_task);
+        replace_desktop_running_agent_task(&mut running, "conversation-1".to_string(), second_task);
+        steer_desktop_running_agent_task(&mut running, "conversation-1", "keep going")
+            .expect("send steering");
+
+        assert_eq!(running.len(), 1);
+        assert!(first_rx.try_recv().is_err());
+        assert_eq!(
+            second_rx.try_recv().expect("steering message").content,
+            "keep going"
+        );
+
+        if let Some(task) = running.remove("conversation-1") {
+            task.cancel_token.cancel();
+            task.task.abort();
+        }
+    }
+
+    #[test]
+    fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
+        let db = Database::open_memory().expect("open memory db");
+        let root = std::env::temp_dir().join(format!("nexa-turn-config-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("create source root");
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: root.to_string_lossy().to_string(),
+                include_globs: vec![],
+                exclude_globs: vec![],
+                watch_enabled: false,
+            })
+            .expect("add source");
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "open_ai".to_string(),
+                model: "gpt-test".to_string(),
+                system_prompt: Some("System base".to_string()),
+                collection_context: Some(CollectionContext {
+                    title: "Research Set".to_string(),
+                    description: Some("Scoped notes".to_string()),
+                    query_text: Some("agent runtime".to_string()),
+                    source_ids: vec![source.id.clone()],
+                }),
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        db.set_conversation_sources(&conversation.id, &[source.id.clone()])
+            .expect("set source scope");
+
+        let mut app_cfg = AppConfig::default();
+        app_cfg.tool_approval_mode = ToolApprovalMode::DenyAll;
+        app_cfg.shell_access_mode = ShellAccessMode::Open;
+        app_cfg.cache_ttl_hours = 9;
+        app_cfg.dynamic_tool_visibility = false;
+        app_cfg.trace_enabled = false;
+        app_cfg.confirm_destructive = true;
+
+        let explicit_skill_ids = vec![
+            "builtin-evidence-first".to_string(),
+            "explicit-skill".to_string(),
+        ];
+        let turn_config = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
+            db: &db,
+            conversation: &conversation,
+            turn_id: "turn-1",
+            message: "Summarize runtime evidence",
+            persona_id: None,
+            explicit_skill_ids: &explicit_skill_ids,
+            db_config: &test_agent_config(),
+            app_cfg: &app_cfg,
+            execution_mode: AgentExecutionMode::Plan,
+        });
+
+        assert_eq!(turn_config.source_scope_ids, vec![source.id.clone()]);
+        assert!(turn_config
+            .pinned_skill_ids
+            .contains(&"builtin-evidence-first".to_string()));
+        assert!(turn_config
+            .pinned_skill_ids
+            .contains(&"builtin-visual-explanations".to_string()));
+        assert!(turn_config
+            .pinned_skill_ids
+            .contains(&"explicit-skill".to_string()));
+        assert_eq!(
+            turn_config
+                .pinned_skill_ids
+                .iter()
+                .filter(|id| id.as_str() == "builtin-evidence-first")
+                .count(),
+            1
+        );
+
+        let executor = turn_config.executor_config;
+        assert_eq!(executor.max_iterations, 7);
+        assert_eq!(executor.model.as_deref(), Some("gpt-test"));
+        assert_eq!(executor.temperature, Some(0.2));
+        assert_eq!(executor.max_tokens, Some(1024));
+        assert_eq!(executor.context_window, Some(128_000));
+        assert_eq!(executor.reasoning_enabled, Some(true));
+        assert_eq!(executor.thinking_budget, Some(4096));
+        assert_eq!(executor.provider_type, Some(ProviderType::OpenAi));
+        assert_eq!(executor.summarization_model.as_deref(), Some("gpt-summary"));
+        assert_eq!(executor.subagent_max_parallel, Some(2));
+        assert_eq!(executor.subagent_max_calls_per_turn, Some(3));
+        assert_eq!(executor.subagent_token_budget, Some(4096));
+        assert_eq!(executor.cache_ttl_hours, Some(9));
+        assert!(!executor.dynamic_tool_visibility);
+        assert!(!executor.trace_enabled);
+        assert!(executor.require_tool_confirmation);
+        assert_eq!(executor.shell_access_mode, ShellAccessMode::Open);
+        assert_eq!(executor.tool_approval_mode, ToolApprovalMode::DenyAll);
+        assert_eq!(executor.execution_mode, AgentExecutionMode::Plan);
+
+        let prompt_sections = executor.volatile_system_sections.join("\n");
+        assert!(prompt_sections.contains("## Current Turn Time"));
+        assert!(prompt_sections.contains("## Active Source Scope"));
+        assert!(prompt_sections.contains(root.to_string_lossy().as_ref()));
+        assert!(prompt_sections.contains("Research Set"));
+        assert!(prompt_sections.contains("Plan Mode"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

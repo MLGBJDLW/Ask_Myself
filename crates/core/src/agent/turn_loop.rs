@@ -211,8 +211,7 @@ impl AgentExecutor {
             context::PrepareMessagesOptions {
                 include_skill_system_prompt: layout.include_skill_system_prompt,
                 volatile_system_sections: &volatile_system_sections,
-                append_volatile_system_prompt_to_tail: layout
-                    .append_volatile_system_prompt_to_tail,
+                append_volatile_system_prompt_to_tail: layout.append_volatile_system_prompt_to_tail,
             },
         );
         prompt_layout::insert_turn_scaffolding_system_prompts(

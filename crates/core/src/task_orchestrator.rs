@@ -88,6 +88,22 @@ pub struct TaskOrchestratorQueueItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TaskOrchestratorDeliveryEnvelope {
+    pub version: u16,
+    pub queue_item: TaskOrchestratorQueueItem,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskOrchestratorExecutionTicket {
+    pub version: u16,
+    pub delivery: TaskOrchestratorDeliveryEnvelope,
+    pub run: TaskOrchestratorRun,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskOrchestratorRun {
     pub version: u16,
     pub run_id: String,
@@ -133,6 +149,15 @@ pub enum TaskOrchestratorError {
     TerminalTransition { to: TaskOrchestratorState },
     #[error("unknown task status {status}")]
     UnknownStatus { status: String },
+    #[error("execution ticket requires queued run state, got {state:?}")]
+    ExecutionTicketState { state: TaskOrchestratorState },
+    #[error(
+        "execution ticket queue task definition {queue_task_definition_id} does not match run task definition {run_task_definition_id}"
+    )]
+    MismatchedExecutionTicket {
+        queue_task_definition_id: String,
+        run_task_definition_id: String,
+    },
 }
 
 pub fn project_task_status(status: &str) -> Result<TaskStatusProjection, TaskOrchestratorError> {
@@ -201,15 +226,95 @@ pub fn apply_task_transition(
 
 pub fn workflow_due_run_queue_item(due: &WorkflowAutomationDueRun) -> TaskOrchestratorQueueItem {
     let automation = &due.automation;
+    workflow_queue_item(
+        &format!("workflow_due:{}", automation.id),
+        automation,
+        due.prompt.clone(),
+        due.due_reason.clone(),
+    )
+}
+
+pub fn workflow_due_run_delivery_envelope(
+    due: &WorkflowAutomationDueRun,
+) -> TaskOrchestratorDeliveryEnvelope {
+    TaskOrchestratorDeliveryEnvelope {
+        version: TASK_ORCHESTRATOR_CONTRACT_VERSION,
+        queue_item: workflow_due_run_queue_item(due),
+        prompt: due.prompt.clone(),
+    }
+}
+
+pub fn workflow_automation_delivery_envelope(
+    automation: &WorkflowAutomation,
+    prompt: impl Into<String>,
+    due_reason: impl Into<String>,
+) -> TaskOrchestratorDeliveryEnvelope {
+    let prompt = prompt.into();
+    TaskOrchestratorDeliveryEnvelope {
+        version: TASK_ORCHESTRATOR_CONTRACT_VERSION,
+        queue_item: workflow_queue_item(
+            &format!("workflow_delivery:{}", automation.id),
+            automation,
+            prompt.clone(),
+            due_reason.into(),
+        ),
+        prompt,
+    }
+}
+
+pub fn workflow_automation_execution_ticket(
+    automation: &WorkflowAutomation,
+    run: &WorkflowAutomationRun,
+    delivery: TaskOrchestratorDeliveryEnvelope,
+) -> Result<TaskOrchestratorExecutionTicket, TaskOrchestratorError> {
+    let projected_run = workflow_automation_run_projection(automation, run)?;
+    if projected_run.status.state != TaskOrchestratorState::Queued {
+        return Err(TaskOrchestratorError::ExecutionTicketState {
+            state: projected_run.status.state,
+        });
+    }
+
+    let run_task_definition_id = projected_run.task_definition_id.clone().unwrap_or_default();
+    if delivery.queue_item.task_definition_id != run_task_definition_id {
+        return Err(TaskOrchestratorError::MismatchedExecutionTicket {
+            queue_task_definition_id: delivery.queue_item.task_definition_id,
+            run_task_definition_id,
+        });
+    }
+
+    Ok(TaskOrchestratorExecutionTicket {
+        version: TASK_ORCHESTRATOR_CONTRACT_VERSION,
+        delivery,
+        run: projected_run,
+    })
+}
+
+pub fn workflow_due_run_execution_ticket(
+    due: &WorkflowAutomationDueRun,
+    run: &WorkflowAutomationRun,
+) -> Result<TaskOrchestratorExecutionTicket, TaskOrchestratorError> {
+    workflow_automation_execution_ticket(
+        &due.automation,
+        run,
+        workflow_due_run_delivery_envelope(due),
+    )
+}
+
+fn workflow_queue_item(
+    queue_id: &str,
+    automation: &WorkflowAutomation,
+    prompt: String,
+    due_reason: String,
+) -> TaskOrchestratorQueueItem {
     TaskOrchestratorQueueItem {
         version: TASK_ORCHESTRATOR_CONTRACT_VERSION,
-        queue_id: format!("workflow_due:{}", automation.id),
+        queue_id: queue_id.to_string(),
         task_definition_id: automation.id.clone(),
         state: TaskOrchestratorState::Queued,
         ownership: workflow_automation_ownership(automation),
         trigger_kind: automation.trigger_kind.clone(),
-        due_reason: due.due_reason.clone(),
-        prompt: due.prompt.clone(),
+        due_reason,
+        prompt,
         approval_required: automation.approval_policy.require_before_run,
         allowed_tools: automation.approval_policy.allowed_tools.clone(),
         risk_level: Some(automation.approval_policy.risk_level.clone()),
@@ -420,6 +525,130 @@ mod tests {
             vec!["search_knowledge_base".to_string()]
         );
         assert_eq!(item.risk_level.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn due_workflow_delivery_envelope_preserves_due_prompt_and_reason() {
+        let automation = workflow_automation(true);
+        let due = WorkflowAutomationDueRun {
+            automation,
+            prompt: "Run the scheduled workflow.".to_string(),
+            due_reason: "schedule 0 9 * * *".to_string(),
+        };
+
+        let envelope = workflow_due_run_delivery_envelope(&due);
+
+        assert_eq!(envelope.version, TASK_ORCHESTRATOR_CONTRACT_VERSION);
+        assert_eq!(envelope.prompt, "Run the scheduled workflow.");
+        assert_eq!(envelope.queue_item.queue_id, "workflow_due:automation-1");
+        assert_eq!(envelope.queue_item.prompt, "Run the scheduled workflow.");
+        assert_eq!(envelope.queue_item.due_reason, "schedule 0 9 * * *");
+        assert_eq!(
+            envelope.queue_item.ownership.workflow_id.as_deref(),
+            Some("report_brief")
+        );
+    }
+
+    #[test]
+    fn workflow_delivery_envelope_carries_prompt_and_queue_item() {
+        let automation = workflow_automation(true);
+
+        let envelope = workflow_automation_delivery_envelope(
+            &automation,
+            "Run the saved workflow.",
+            "manual run requested",
+        );
+
+        assert_eq!(envelope.version, TASK_ORCHESTRATOR_CONTRACT_VERSION);
+        assert_eq!(envelope.prompt, "Run the saved workflow.");
+        assert_eq!(
+            envelope.queue_item.queue_id,
+            "workflow_delivery:automation-1"
+        );
+        assert_eq!(envelope.queue_item.state, TaskOrchestratorState::Queued);
+        assert_eq!(envelope.queue_item.due_reason, "manual run requested");
+        assert_eq!(
+            envelope.queue_item.ownership.workflow_id.as_deref(),
+            Some("report_brief")
+        );
+        assert_eq!(
+            envelope.queue_item.ownership.source_scope,
+            vec!["source-1".to_string()]
+        );
+        assert!(envelope.queue_item.approval_required);
+    }
+
+    #[test]
+    fn workflow_execution_ticket_binds_delivery_to_queued_run_projection() {
+        let automation = workflow_automation(true);
+        let run = workflow_run("queued");
+        let envelope = workflow_automation_delivery_envelope(
+            &automation,
+            "Run the saved workflow.",
+            "manual run requested",
+        );
+
+        let ticket = workflow_automation_execution_ticket(&automation, &run, envelope).unwrap();
+
+        assert_eq!(ticket.version, TASK_ORCHESTRATOR_CONTRACT_VERSION);
+        assert_eq!(
+            ticket.delivery.queue_item.queue_id,
+            "workflow_delivery:automation-1"
+        );
+        assert_eq!(ticket.run.run_id, "workflow-run-1");
+        assert_eq!(ticket.run.status.state, TaskOrchestratorState::Queued);
+        assert_eq!(
+            ticket.run.task_definition_id.as_deref(),
+            Some("automation-1")
+        );
+        assert_eq!(
+            ticket.run.ownership.workflow_id.as_deref(),
+            Some("report_brief")
+        );
+    }
+
+    #[test]
+    fn due_workflow_execution_ticket_binds_claimed_run_to_due_delivery() {
+        let automation = workflow_automation(true);
+        let due = WorkflowAutomationDueRun {
+            automation,
+            prompt: "Run the scheduled workflow.".to_string(),
+            due_reason: "schedule 0 9 * * *".to_string(),
+        };
+        let run = workflow_run("queued");
+
+        let ticket = workflow_due_run_execution_ticket(&due, &run).unwrap();
+
+        assert_eq!(ticket.version, TASK_ORCHESTRATOR_CONTRACT_VERSION);
+        assert_eq!(
+            ticket.delivery.queue_item.queue_id,
+            "workflow_due:automation-1"
+        );
+        assert_eq!(ticket.delivery.prompt, "Run the scheduled workflow.");
+        assert_eq!(ticket.run.run_id, "workflow-run-1");
+        assert_eq!(ticket.run.status.state, TaskOrchestratorState::Queued);
+        assert_eq!(
+            ticket.run.task_definition_id.as_deref(),
+            Some("automation-1")
+        );
+    }
+
+    #[test]
+    fn workflow_execution_ticket_requires_queued_run_projection() {
+        let automation = workflow_automation(true);
+        let run = workflow_run("running");
+        let envelope = workflow_automation_delivery_envelope(
+            &automation,
+            "Run the saved workflow.",
+            "manual run requested",
+        );
+
+        assert_eq!(
+            workflow_automation_execution_ticket(&automation, &run, envelope).unwrap_err(),
+            TaskOrchestratorError::ExecutionTicketState {
+                state: TaskOrchestratorState::Running
+            }
+        );
     }
 
     #[test]

@@ -1,4 +1,6 @@
+use super::conversation::desktop_package_host_snapshot;
 use super::*;
+use nexa_core::package_host::PackageSurfaceKind;
 
 // ── Skills Commands ─────────────────────────────────────────────────
 
@@ -87,9 +89,37 @@ pub async fn toggle_skill_cmd(
     }
 }
 
+pub(crate) fn filter_desktop_builtin_skills_by_package_host(
+    db: &Database,
+    skills: Vec<Skill>,
+) -> Result<Vec<Skill>, String> {
+    let snapshot = desktop_package_host_snapshot(db)?;
+    let visible_skill_ids = snapshot
+        .runtime_components()
+        .into_iter()
+        .filter(|component| component.kind == PackageSurfaceKind::Skill)
+        .map(|component| component.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    Ok(skills
+        .into_iter()
+        .filter(|skill| {
+            visible_skill_ids.contains(skill.id.as_str())
+                || skill
+                    .id
+                    .strip_prefix("builtin-")
+                    .is_some_and(|slug| visible_skill_ids.contains(slug))
+        })
+        .collect())
+}
+
 #[tauri::command]
-pub async fn list_builtin_skills_cmd() -> Result<Vec<Skill>, String> {
-    Ok(nexa_core::skills::load_builtin_skills())
+pub async fn list_builtin_skills_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<Skill>, String> {
+    filter_desktop_builtin_skills_by_package_host(
+        state.db.as_ref(),
+        nexa_core::skills::load_builtin_skills(),
+    )
 }
 
 #[tauri::command]

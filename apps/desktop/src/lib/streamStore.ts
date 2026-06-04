@@ -10,6 +10,7 @@ import type {
   AgentTaskRunEvent,
 } from '../types/conversation';
 import {
+  projectHistoricalEventsToStreamState,
   projectRunEventsToStreamState,
   projectTaskEventsToStreamState,
 } from './streaming/durableReplay';
@@ -158,6 +159,33 @@ class StreamStoreImpl {
     if (existing) clearToolPreparingTimers(existing);
 
     const state = projectRunEventsToStreamState(taskRun, runEvents, taskEvents);
+
+    this._streams[conversationId] = state;
+    if (state.isStreaming) {
+      this.resetTimeout(conversationId);
+    }
+    this.notify(conversationId);
+  }
+
+  /** Rebuild historical stream preview, preferring canonical Run Events over legacy task events. */
+  restoreFromHistoricalEvents(
+    conversationId: string,
+    taskRun: AgentTaskRun,
+    taskEvents: AgentTaskRunEvent[],
+    runEvents: AgentRunEvent[],
+  ): void {
+    const existing = this._streams[conversationId];
+    if (existing?.isStreaming && (
+      existing.traceEvents.length > 0 ||
+      existing.streamText.length > 0 ||
+      existing.streamRounds.length > 0
+    )) {
+      return;
+    }
+    if (existing) clearStreamWatchdog(existing);
+    if (existing) clearToolPreparingTimers(existing);
+
+    const state = projectHistoricalEventsToStreamState(taskRun, taskEvents, runEvents);
 
     this._streams[conversationId] = state;
     if (state.isStreaming) {

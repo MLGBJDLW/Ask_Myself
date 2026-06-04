@@ -11,6 +11,7 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { McpServerForm } from './McpServerForm';
+import { PackageHostSettingsPanel } from './PackageHostSettingsPanel';
 import { ProjectToolsPanel } from './ProjectToolsPanel';
 import { Section } from './SettingsSection';
 import { SkillEditor } from './SkillEditor';
@@ -79,6 +80,7 @@ interface ExtensionsSettingsTabProps {
   onAppConfigChange: (config: AppConfig) => void;
   onAppConfigSave: () => void;
   onMarkAppConfigDirty: () => void;
+  onPackageStateChange?: () => void;
 }
 
 interface PersonaCopy {
@@ -444,6 +446,7 @@ export function ExtensionsSettingsTab({
   onAppConfigChange,
   onAppConfigSave,
   onMarkAppConfigDirty,
+  onPackageStateChange,
 }: ExtensionsSettingsTabProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -495,6 +498,8 @@ export function ExtensionsSettingsTab({
 
   return (
     <>
+      <PackageHostSettingsPanel onPackageStateChange={onPackageStateChange} />
+
       {appConfig && (
         <WebSearchSettingsPanel
           appConfig={appConfig}

@@ -1,4 +1,5 @@
 import type { AgentTaskRun } from './conversation';
+import type { TaskOrchestratorQueueItem, TaskOrchestratorRun } from './trace';
 
 export type WorkflowAutomationTrigger =
   | { kind: 'manual' }
@@ -55,6 +56,36 @@ export interface WorkflowAutomationRun {
   summary?: string | null;
   createdAt: string;
   finishedAt?: string | null;
+}
+
+export interface WorkflowAutomationSchedulerEvent {
+  id: string;
+  automationId?: string | null;
+  runId?: string | null;
+  eventType: string;
+  status?: string | null;
+  summary: string;
+  payload: Record<string, unknown> | unknown[] | null;
+  createdAt: string;
+}
+
+export interface TaskOrchestratorDeliveryEnvelope {
+  version: number;
+  queueItem: TaskOrchestratorQueueItem;
+  prompt: string;
+}
+
+export interface TaskOrchestratorExecutionTicket {
+  version: number;
+  delivery: TaskOrchestratorDeliveryEnvelope;
+  run: TaskOrchestratorRun;
+}
+
+export interface TaskOrchestratorWorkflowLaunch {
+  ticket: TaskOrchestratorExecutionTicket;
+  conversationId: string;
+  taskRunId: string;
+  taskOrchestratorRunId: string;
 }
 
 export interface TaskResumeCheckpoint {

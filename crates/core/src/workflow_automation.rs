@@ -24,6 +24,9 @@ const AUTOMATION_NAME_MAX_CHARS: usize = 160;
 const AUTOMATION_DESCRIPTION_MAX_CHARS: usize = 2_000;
 const AUTOMATION_PROMPT_MAX_CHARS: usize = 12_000;
 const RESUME_PROMPT_MAX_STATE_CHARS: usize = 7_000;
+const SCHEDULER_RETRY_EVENT_LOOKBACK_LIMIT: usize = 50;
+const SCHEDULER_RETRY_BACKOFF_SECONDS: [i64; 4] = [300, 900, 3_600, 14_400];
+const SCHEDULER_RETRY_MAX_ATTEMPTS: usize = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -116,6 +119,13 @@ pub struct WorkflowAutomationDueRun {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkflowAutomationDueRunClaim {
+    pub due_run: WorkflowAutomationDueRun,
+    pub run: WorkflowAutomationRun,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkflowAutomationRun {
     pub id: String,
     pub automation_id: String,
@@ -124,6 +134,33 @@ pub struct WorkflowAutomationRun {
     pub summary: Option<String>,
     pub created_at: String,
     pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowAutomationSchedulerEvent {
+    pub id: String,
+    pub automation_id: Option<String>,
+    pub run_id: Option<String>,
+    pub event_type: String,
+    pub status: Option<String>,
+    pub summary: String,
+    pub payload: Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowAutomationSchedulerRetryDecision {
+    pub allowed: bool,
+    pub max_attempts: usize,
+    pub attempts_exhausted: bool,
+    pub retryable_failure_count: usize,
+    pub last_retryable_event_type: Option<String>,
+    pub last_retryable_event_at: Option<String>,
+    pub backoff_seconds: Option<i64>,
+    pub backoff_until: Option<String>,
+    pub retry_after_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -329,6 +366,23 @@ fn browser_evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Browse
     })
 }
 
+fn workflow_scheduler_event_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<WorkflowAutomationSchedulerEvent> {
+    let payload_json: String = row.get(6)?;
+    Ok(WorkflowAutomationSchedulerEvent {
+        id: row.get(0)?,
+        automation_id: row.get(1)?,
+        run_id: row.get(2)?,
+        event_type: row.get(3)?,
+        status: row.get(4)?,
+        summary: row.get(5)?,
+        payload: serde_json::from_str::<Value>(&payload_json)
+            .unwrap_or_else(|_| serde_json::json!({})),
+        created_at: row.get(7)?,
+    })
+}
+
 fn next_run_for_trigger(trigger: &WorkflowAutomationTrigger, enabled: bool) -> Option<String> {
     if !enabled {
         return None;
@@ -348,6 +402,130 @@ fn parse_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
                 .ok()
                 .map(|value| DateTime::<Utc>::from_naive_utc_and_offset(value, Utc))
         })
+}
+
+fn scheduler_event_is_retryable_failure(event_type: &str) -> bool {
+    matches!(event_type, "claim_failed" | "launch_failed")
+}
+
+fn scheduler_event_is_retry_audit_only(event_type: &str) -> bool {
+    matches!(event_type, "skipped_backoff" | "skipped_retry_limit")
+}
+
+fn scheduler_retry_backoff_seconds(failure_count: usize) -> Option<i64> {
+    if failure_count == 0 {
+        return None;
+    }
+    SCHEDULER_RETRY_BACKOFF_SECONDS
+        .get(failure_count.saturating_sub(1))
+        .copied()
+        .or_else(|| SCHEDULER_RETRY_BACKOFF_SECONDS.last().copied())
+}
+
+pub fn workflow_automation_scheduler_retry_decision_from_events(
+    events: &[WorkflowAutomationSchedulerEvent],
+    now_rfc3339: &str,
+) -> Result<WorkflowAutomationSchedulerRetryDecision, CoreError> {
+    let now = parse_utc_timestamp(now_rfc3339).ok_or_else(|| {
+        CoreError::InvalidInput(format!(
+            "Invalid scheduler retry decision timestamp '{now_rfc3339}'"
+        ))
+    })?;
+    let mut ordered = Vec::with_capacity(events.len());
+    for event in events {
+        let created_at = parse_utc_timestamp(&event.created_at).ok_or_else(|| {
+            CoreError::InvalidInput(format!(
+                "Invalid scheduler event timestamp '{}'",
+                event.created_at
+            ))
+        })?;
+        ordered.push((created_at, event));
+    }
+    ordered.sort_by(|(left_time, left), (right_time, right)| {
+        right_time
+            .cmp(left_time)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+
+    let mut retryable_failure_count = 0usize;
+    let mut last_retryable_event_type = None;
+    let mut last_retryable_event_at = None;
+    let mut last_retryable_event_time = None;
+
+    for (created_at, event) in ordered {
+        let event_type = event.event_type.trim();
+        if scheduler_event_is_retry_audit_only(event_type) {
+            continue;
+        }
+        if !scheduler_event_is_retryable_failure(event_type) {
+            break;
+        }
+        retryable_failure_count += 1;
+        if last_retryable_event_type.is_none() {
+            last_retryable_event_type = Some(event_type.to_string());
+            last_retryable_event_at = Some(event.created_at.clone());
+            last_retryable_event_time = Some(created_at);
+        }
+    }
+
+    let Some(backoff_seconds) = scheduler_retry_backoff_seconds(retryable_failure_count) else {
+        return Ok(WorkflowAutomationSchedulerRetryDecision {
+            allowed: true,
+            max_attempts: SCHEDULER_RETRY_MAX_ATTEMPTS,
+            attempts_exhausted: false,
+            retryable_failure_count,
+            last_retryable_event_type,
+            last_retryable_event_at,
+            backoff_seconds: None,
+            backoff_until: None,
+            retry_after_seconds: None,
+        });
+    };
+    let Some(last_failure_time) = last_retryable_event_time else {
+        return Ok(WorkflowAutomationSchedulerRetryDecision {
+            allowed: true,
+            max_attempts: SCHEDULER_RETRY_MAX_ATTEMPTS,
+            attempts_exhausted: false,
+            retryable_failure_count: 0,
+            last_retryable_event_type: None,
+            last_retryable_event_at: None,
+            backoff_seconds: None,
+            backoff_until: None,
+            retry_after_seconds: None,
+        });
+    };
+    let attempts_exhausted = retryable_failure_count >= SCHEDULER_RETRY_MAX_ATTEMPTS;
+    if attempts_exhausted {
+        return Ok(WorkflowAutomationSchedulerRetryDecision {
+            allowed: false,
+            max_attempts: SCHEDULER_RETRY_MAX_ATTEMPTS,
+            attempts_exhausted,
+            retryable_failure_count,
+            last_retryable_event_type,
+            last_retryable_event_at,
+            backoff_seconds: Some(backoff_seconds),
+            backoff_until: None,
+            retry_after_seconds: None,
+        });
+    }
+    let backoff_until = last_failure_time + Duration::seconds(backoff_seconds);
+    let retry_after_seconds = if now < backoff_until {
+        Some((backoff_until - now).num_seconds().max(1))
+    } else {
+        None
+    };
+
+    Ok(WorkflowAutomationSchedulerRetryDecision {
+        allowed: retry_after_seconds.is_none(),
+        max_attempts: SCHEDULER_RETRY_MAX_ATTEMPTS,
+        attempts_exhausted,
+        retryable_failure_count,
+        last_retryable_event_type,
+        last_retryable_event_at,
+        backoff_seconds: Some(backoff_seconds),
+        backoff_until: Some(backoff_until.to_rfc3339()),
+        retry_after_seconds,
+    })
 }
 
 fn folder_trigger_due(
@@ -767,6 +945,38 @@ impl Database {
         Ok(out)
     }
 
+    pub fn claim_workflow_automation_due_run(
+        &self,
+        due_run: WorkflowAutomationDueRun,
+        summary: Option<&str>,
+    ) -> Result<WorkflowAutomationDueRunClaim, CoreError> {
+        let run = self.record_workflow_automation_run(
+            &due_run.automation.id,
+            None,
+            "queued",
+            summary.or(Some(due_run.due_reason.as_str())),
+        )?;
+        Ok(WorkflowAutomationDueRunClaim { due_run, run })
+    }
+
+    pub fn claim_due_workflow_automation_run(
+        &self,
+        automation_id: &str,
+        now_rfc3339: &str,
+        summary: Option<&str>,
+    ) -> Result<WorkflowAutomationDueRunClaim, CoreError> {
+        let due_run = self
+            .list_due_workflow_automations(now_rfc3339)?
+            .into_iter()
+            .find(|due| due.automation.id == automation_id)
+            .ok_or_else(|| {
+                CoreError::InvalidInput(format!(
+                    "Workflow automation '{automation_id}' is not currently due."
+                ))
+            })?;
+        self.claim_workflow_automation_due_run(due_run, summary)
+    }
+
     pub fn preview_workflow_automation_prompt(&self, id: &str) -> Result<String, CoreError> {
         let automation = self.get_workflow_automation(id)?;
         Ok(automation_prompt(&automation))
@@ -785,7 +995,7 @@ impl Database {
         conn.execute(
             "INSERT INTO workflow_automation_runs
              (id, automation_id, task_run_id, status, summary, finished_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, CASE WHEN ?4 IN ('completed', 'failed', 'cancelled') THEN datetime('now') ELSE NULL END)",
+             VALUES (?1, ?2, ?3, ?4, ?5, CASE WHEN ?4 IN ('completed', 'failed', 'cancelled', 'timed_out', 'disabled') THEN datetime('now') ELSE NULL END)",
             rusqlite::params![&id, automation_id, task_run_id, status, summary],
         )?;
         let next_run_at = next_run_for_trigger(&automation.trigger, automation.enabled);
@@ -800,6 +1010,103 @@ impl Database {
         )?;
         drop(conn);
         self.get_workflow_automation_run(&id)
+    }
+
+    pub fn start_workflow_automation_run(
+        &self,
+        run_id: &str,
+        task_run_id: &str,
+        summary: Option<&str>,
+    ) -> Result<WorkflowAutomationRun, CoreError> {
+        let run = self.get_workflow_automation_run(run_id)?;
+        let current_state = crate::task_orchestrator::project_task_status(&run.status)
+            .map_err(|err| CoreError::InvalidInput(err.to_string()))?
+            .state;
+        crate::task_orchestrator::validate_task_transition(
+            current_state,
+            crate::task_orchestrator::TaskOrchestratorState::Running,
+        )
+        .map_err(|err| CoreError::InvalidInput(err.to_string()))?;
+        if let Some(existing_task_run_id) = run.task_run_id.as_deref() {
+            if existing_task_run_id != task_run_id {
+                return Err(CoreError::InvalidInput(format!(
+                    "Workflow automation run {run_id} is already bound to task run {existing_task_run_id}"
+                )));
+            }
+        }
+        self.get_agent_task_run(task_run_id)?;
+
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE workflow_automation_runs
+             SET task_run_id = ?2,
+                 status = 'running',
+                 summary = COALESCE(?3, summary),
+                 finished_at = NULL
+             WHERE id = ?1",
+            rusqlite::params![run_id, task_run_id, summary],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!(
+                "Workflow automation run {run_id}"
+            )));
+        }
+        conn.execute(
+            "UPDATE workflow_automations
+             SET status = 'running',
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![run.automation_id],
+        )?;
+        drop(conn);
+        self.get_workflow_automation_run(run_id)
+    }
+
+    pub fn transition_workflow_automation_run(
+        &self,
+        run_id: &str,
+        status: &str,
+        summary: Option<&str>,
+    ) -> Result<WorkflowAutomationRun, CoreError> {
+        let run = self.get_workflow_automation_run(run_id)?;
+        let current_state = crate::task_orchestrator::project_task_status(&run.status)
+            .map_err(|err| CoreError::InvalidInput(err.to_string()))?
+            .state;
+        let target_state = crate::task_orchestrator::project_task_status(status)
+            .map_err(|err| CoreError::InvalidInput(err.to_string()))?
+            .state;
+        if current_state != target_state {
+            crate::task_orchestrator::validate_task_transition(current_state, target_state)
+                .map_err(|err| CoreError::InvalidInput(err.to_string()))?;
+        }
+
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE workflow_automation_runs
+             SET status = ?2,
+                 summary = COALESCE(?3, summary),
+                 finished_at = CASE
+                     WHEN ?2 IN ('completed', 'failed', 'cancelled', 'timed_out', 'disabled')
+                     THEN COALESCE(finished_at, datetime('now'))
+                     ELSE NULL
+                 END
+             WHERE id = ?1",
+            rusqlite::params![run_id, status, summary],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!(
+                "Workflow automation run {run_id}"
+            )));
+        }
+        conn.execute(
+            "UPDATE workflow_automations
+             SET status = ?2,
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![run.automation_id, status],
+        )?;
+        drop(conn);
+        self.get_workflow_automation_run(run_id)
     }
 
     pub fn get_workflow_automation_run(
@@ -829,6 +1136,178 @@ impl Database {
             }
             other => CoreError::Database(other),
         })
+    }
+
+    pub fn record_workflow_automation_scheduler_event(
+        &self,
+        automation_id: Option<&str>,
+        run_id: Option<&str>,
+        event_type: &str,
+        status: Option<&str>,
+        summary: &str,
+        payload: Option<&Value>,
+    ) -> Result<WorkflowAutomationSchedulerEvent, CoreError> {
+        let event_type = normalize_required(event_type, "Scheduler event type", 120)?;
+        let summary = normalize_optional(summary, 2_000)?;
+        let status = status
+            .map(|value| normalize_optional(value, 120))
+            .transpose()?
+            .filter(|value| !value.is_empty());
+        let payload = payload.cloned().unwrap_or_else(|| serde_json::json!({}));
+        let payload_json = serde_json::to_string(&payload)?;
+        let id = new_id();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO workflow_automation_scheduler_events
+             (id, automation_id, run_id, event_type, status, summary, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                &id,
+                automation_id,
+                run_id,
+                &event_type,
+                status.as_deref(),
+                &summary,
+                &payload_json
+            ],
+        )?;
+        drop(conn);
+        self.get_workflow_automation_scheduler_event(&id)
+    }
+
+    pub fn get_workflow_automation_scheduler_event(
+        &self,
+        id: &str,
+    ) -> Result<WorkflowAutomationSchedulerEvent, CoreError> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT id, automation_id, run_id, event_type, status, summary, payload_json, created_at
+             FROM workflow_automation_scheduler_events WHERE id = ?1",
+            rusqlite::params![id],
+            workflow_scheduler_event_from_row,
+        )
+        .map_err(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("Workflow automation scheduler event {id}"))
+            }
+            other => CoreError::Database(other),
+        })
+    }
+
+    pub fn list_workflow_automation_scheduler_events(
+        &self,
+        automation_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<WorkflowAutomationSchedulerEvent>, CoreError> {
+        let limit = limit.clamp(1, 500) as i64;
+        let conn = self.conn();
+        let mut out = Vec::new();
+        if let Some(automation_id) = automation_id {
+            let mut stmt = conn.prepare(
+                "SELECT id, automation_id, run_id, event_type, status, summary, payload_json, created_at
+                 FROM workflow_automation_scheduler_events
+                 WHERE automation_id = ?1
+                 ORDER BY datetime(created_at) DESC, id DESC
+                 LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(
+                rusqlite::params![automation_id, limit],
+                workflow_scheduler_event_from_row,
+            )?;
+            for row in rows {
+                out.push(row?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT id, automation_id, run_id, event_type, status, summary, payload_json, created_at
+                 FROM workflow_automation_scheduler_events
+                 ORDER BY datetime(created_at) DESC, id DESC
+                 LIMIT ?1",
+            )?;
+            let rows =
+                stmt.query_map(rusqlite::params![limit], workflow_scheduler_event_from_row)?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn workflow_automation_scheduler_retry_decision(
+        &self,
+        automation_id: &str,
+        now_rfc3339: &str,
+    ) -> Result<WorkflowAutomationSchedulerRetryDecision, CoreError> {
+        let automation_id = automation_id.trim();
+        if automation_id.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "Workflow automation id is required for scheduler retry decision".to_string(),
+            ));
+        }
+        let events = self.list_workflow_automation_scheduler_events(
+            Some(automation_id),
+            SCHEDULER_RETRY_EVENT_LOOKBACK_LIMIT,
+        )?;
+        workflow_automation_scheduler_retry_decision_from_events(&events, now_rfc3339)
+    }
+
+    pub fn list_workflow_automation_scheduler_events_for_run(
+        &self,
+        run_id: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkflowAutomationSchedulerEvent>, CoreError> {
+        let run_id = run_id.trim();
+        if run_id.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.clamp(1, 500) as i64;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, automation_id, run_id, event_type, status, summary, payload_json, created_at
+             FROM workflow_automation_scheduler_events
+             WHERE run_id = ?1
+             ORDER BY datetime(created_at) ASC, id ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![run_id, limit],
+            workflow_scheduler_event_from_row,
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn list_workflow_automation_scheduler_events_for_task_run(
+        &self,
+        task_run_id: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkflowAutomationSchedulerEvent>, CoreError> {
+        let task_run_id = task_run_id.trim();
+        if task_run_id.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.clamp(1, 500) as i64;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.automation_id, e.run_id, e.event_type, e.status, e.summary, e.payload_json, e.created_at
+             FROM workflow_automation_scheduler_events e
+             INNER JOIN workflow_automation_runs r ON r.id = e.run_id
+             WHERE r.task_run_id = ?1
+             ORDER BY datetime(e.created_at) ASC, e.id ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![task_run_id, limit],
+            workflow_scheduler_event_from_row,
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     pub fn create_task_resume_checkpoint(
@@ -1385,6 +1864,9 @@ mod tests {
     use crate::conversation::{ConversationMessage, CreateConversationInput};
     use crate::db::Database;
     use crate::llm::Role;
+    use crate::workflow_automation::{
+        workflow_automation_scheduler_retry_decision_from_events, WorkflowAutomationSchedulerEvent,
+    };
 
     fn add_user_message(
         db: &Database,
@@ -1407,6 +1889,125 @@ mod tests {
         };
         db.add_message(&message).unwrap();
         message
+    }
+
+    fn scheduler_event(
+        id: &str,
+        event_type: &str,
+        created_at: &str,
+    ) -> WorkflowAutomationSchedulerEvent {
+        WorkflowAutomationSchedulerEvent {
+            id: id.to_string(),
+            automation_id: Some("automation-1".to_string()),
+            run_id: None,
+            event_type: event_type.to_string(),
+            status: None,
+            summary: event_type.to_string(),
+            payload: serde_json::json!({}),
+            created_at: created_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn workflow_scheduler_retry_decision_backs_off_consecutive_retryable_failures() {
+        let events = vec![
+            scheduler_event("event-3", "skipped_backoff", "2026-06-04T09:03:00Z"),
+            scheduler_event("event-2", "launch_failed", "2026-06-04T09:00:00Z"),
+            scheduler_event("event-1", "claim_failed", "2026-06-04T08:40:00Z"),
+        ];
+
+        let decision = workflow_automation_scheduler_retry_decision_from_events(
+            &events,
+            "2026-06-04T09:10:00Z",
+        )
+        .unwrap();
+
+        assert!(!decision.allowed);
+        assert_eq!(decision.max_attempts, 4);
+        assert!(!decision.attempts_exhausted);
+        assert_eq!(decision.retryable_failure_count, 2);
+        assert_eq!(
+            decision.last_retryable_event_type.as_deref(),
+            Some("launch_failed")
+        );
+        assert_eq!(decision.backoff_seconds, Some(900));
+        assert_eq!(
+            decision.backoff_until.as_deref(),
+            Some("2026-06-04T09:15:00+00:00")
+        );
+        assert_eq!(decision.retry_after_seconds, Some(300));
+
+        let elapsed = workflow_automation_scheduler_retry_decision_from_events(
+            &events,
+            "2026-06-04T09:15:00Z",
+        )
+        .unwrap();
+        assert!(elapsed.allowed);
+        assert!(!elapsed.attempts_exhausted);
+        assert_eq!(elapsed.retryable_failure_count, 2);
+        assert_eq!(elapsed.retry_after_seconds, None);
+    }
+
+    #[test]
+    fn workflow_scheduler_retry_decision_blocks_after_max_attempts() {
+        let events = vec![
+            scheduler_event("event-5", "skipped_retry_limit", "2026-06-04T10:00:00Z"),
+            scheduler_event("event-4", "launch_failed", "2026-06-04T09:00:00Z"),
+            scheduler_event("event-3", "claim_failed", "2026-06-04T08:00:00Z"),
+            scheduler_event("event-2", "launch_failed", "2026-06-04T07:00:00Z"),
+            scheduler_event("event-1", "claim_failed", "2026-06-04T06:00:00Z"),
+        ];
+
+        let decision = workflow_automation_scheduler_retry_decision_from_events(
+            &events,
+            "2026-06-04T20:00:00Z",
+        )
+        .unwrap();
+
+        assert!(!decision.allowed);
+        assert_eq!(decision.max_attempts, 4);
+        assert!(decision.attempts_exhausted);
+        assert_eq!(decision.retryable_failure_count, 4);
+        assert_eq!(
+            decision.last_retryable_event_type.as_deref(),
+            Some("launch_failed")
+        );
+        assert_eq!(decision.backoff_seconds, Some(14_400));
+        assert_eq!(decision.backoff_until, None);
+        assert_eq!(decision.retry_after_seconds, None);
+    }
+
+    #[test]
+    fn workflow_scheduler_retry_decision_resets_after_progress_or_non_retry_gate() {
+        let after_progress = workflow_automation_scheduler_retry_decision_from_events(
+            &[
+                scheduler_event("event-3", "launch_succeeded", "2026-06-04T09:05:00Z"),
+                scheduler_event("event-2", "launch_failed", "2026-06-04T09:00:00Z"),
+                scheduler_event("event-1", "claim_failed", "2026-06-04T08:55:00Z"),
+            ],
+            "2026-06-04T09:06:00Z",
+        )
+        .unwrap();
+        assert!(after_progress.allowed);
+        assert!(!after_progress.attempts_exhausted);
+        assert_eq!(after_progress.retryable_failure_count, 0);
+        assert_eq!(after_progress.backoff_until, None);
+
+        let after_approval_gate = workflow_automation_scheduler_retry_decision_from_events(
+            &[
+                scheduler_event(
+                    "event-3",
+                    "skipped_pre_run_approval",
+                    "2026-06-04T09:05:00Z",
+                ),
+                scheduler_event("event-2", "launch_failed", "2026-06-04T09:00:00Z"),
+            ],
+            "2026-06-04T09:06:00Z",
+        )
+        .unwrap();
+        assert!(after_approval_gate.allowed);
+        assert!(!after_approval_gate.attempts_exhausted);
+        assert_eq!(after_approval_gate.retryable_failure_count, 0);
     }
 
     #[test]
@@ -1487,6 +2088,238 @@ mod tests {
             .list_due_workflow_automations("2099-01-01T09:00:00Z")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn due_workflow_claim_creates_queued_run_and_advances_folder_trigger() {
+        let db = Database::open_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let saved = db
+            .save_workflow_automation(&crate::workflow_automation::SaveWorkflowAutomationInput {
+                id: None,
+                name: "Claim PDFs".into(),
+                description: "Claim new PDFs for processing.".into(),
+                workflow_template_id: "document_compare".into(),
+                prompt: "Review new PDFs.".into(),
+                trigger: crate::workflow_automation::WorkflowAutomationTrigger::Folder {
+                    path: dir.path().display().to_string(),
+                    pattern: "*.pdf".into(),
+                },
+                source_scope: vec!["source-a".into()],
+                approval_policy: crate::workflow_automation::WorkflowAutomationApprovalPolicy {
+                    require_before_run: true,
+                    allowed_tools: vec!["read_file".into()],
+                    risk_level: "medium".into(),
+                },
+                enabled: true,
+            })
+            .unwrap();
+        std::fs::write(dir.path().join("incoming.pdf"), b"%PDF-1.4").unwrap();
+
+        let claim = db
+            .claim_due_workflow_automation_run(&saved.id, "2099-01-01T09:00:00Z", None)
+            .unwrap();
+
+        assert_eq!(claim.due_run.automation.id, saved.id);
+        assert_eq!(claim.run.automation_id, saved.id);
+        assert_eq!(claim.run.status, "queued");
+        assert_eq!(
+            claim.run.summary.as_deref(),
+            Some(claim.due_run.due_reason.as_str())
+        );
+        assert_eq!(
+            db.get_workflow_automation(&saved.id).unwrap().status,
+            "queued"
+        );
+        assert!(db
+            .list_due_workflow_automations("2099-01-01T09:00:00Z")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn workflow_automation_run_binds_to_agent_task_run_and_transitions() {
+        let db = Database::open_memory().unwrap();
+        let automation = db
+            .save_workflow_automation(&crate::workflow_automation::SaveWorkflowAutomationInput {
+                id: None,
+                name: "Manual brief".into(),
+                description: "Run a scoped brief on demand.".into(),
+                workflow_template_id: "report_brief".into(),
+                prompt: "Summarize this source scope.".into(),
+                trigger: crate::workflow_automation::WorkflowAutomationTrigger::Manual,
+                source_scope: vec!["source-a".into()],
+                approval_policy: crate::workflow_automation::WorkflowAutomationApprovalPolicy {
+                    require_before_run: false,
+                    allowed_tools: vec![],
+                    risk_level: "low".into(),
+                },
+                enabled: true,
+            })
+            .unwrap();
+        let queued_run = db
+            .record_workflow_automation_run(&automation.id, None, "queued", Some("queued"))
+            .unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-5".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let user = add_user_message(&db, &conversation.id, "Run the brief");
+        let turn = db
+            .create_conversation_turn(&conversation.id, &user.id, Some("workflow"))
+            .unwrap();
+        let task_run = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &user.id,
+                "Manual brief",
+                Some("openai"),
+                Some("gpt-5"),
+            )
+            .unwrap();
+
+        let running = db
+            .start_workflow_automation_run(
+                &queued_run.id,
+                &task_run.id,
+                Some("Agent session started"),
+            )
+            .unwrap();
+
+        assert_eq!(running.status, "running");
+        assert_eq!(running.task_run_id.as_deref(), Some(task_run.id.as_str()));
+        assert_eq!(running.summary.as_deref(), Some("Agent session started"));
+        assert_eq!(
+            db.get_workflow_automation(&automation.id).unwrap().status,
+            "running"
+        );
+
+        let completed = db
+            .transition_workflow_automation_run(&queued_run.id, "completed", Some("done"))
+            .unwrap();
+
+        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.summary.as_deref(), Some("done"));
+        assert!(completed.finished_at.is_some());
+        assert_eq!(
+            db.get_workflow_automation(&automation.id).unwrap().status,
+            "completed"
+        );
+
+        let restart_err = db
+            .start_workflow_automation_run(&queued_run.id, &task_run.id, None)
+            .unwrap_err();
+        assert!(restart_err.to_string().contains("terminal task state"));
+    }
+
+    #[test]
+    fn workflow_scheduler_events_persist_payload_and_filter_by_automation() {
+        let db = Database::open_memory().unwrap();
+        let automation = db
+            .save_workflow_automation(&crate::workflow_automation::SaveWorkflowAutomationInput {
+                id: None,
+                name: "Scheduler audit".into(),
+                description: "Audit scheduler decisions.".into(),
+                workflow_template_id: "report_brief".into(),
+                prompt: "Summarize due work.".into(),
+                trigger: crate::workflow_automation::WorkflowAutomationTrigger::Manual,
+                source_scope: vec![],
+                approval_policy: Default::default(),
+                enabled: true,
+            })
+            .unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-5".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let user = add_user_message(&db, &conversation.id, "Run the scheduler audit");
+        let turn = db
+            .create_conversation_turn(&conversation.id, &user.id, Some("workflow"))
+            .unwrap();
+        let task_run = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &user.id,
+                "Scheduler audit",
+                Some("openai"),
+                Some("gpt-5"),
+            )
+            .unwrap();
+        let run = db
+            .record_workflow_automation_run(
+                &automation.id,
+                Some(&task_run.id),
+                "queued",
+                Some("queued"),
+            )
+            .unwrap();
+
+        let event = db
+            .record_workflow_automation_scheduler_event(
+                Some(&automation.id),
+                Some(&run.id),
+                "launch_succeeded",
+                Some("running"),
+                "Scheduler launched workflow",
+                Some(&serde_json::json!({
+                    "queueId": format!("workflow_due:{}", automation.id),
+                    "delivery": "scheduler"
+                })),
+            )
+            .unwrap();
+
+        assert_eq!(event.automation_id.as_deref(), Some(automation.id.as_str()));
+        assert_eq!(event.run_id.as_deref(), Some(run.id.as_str()));
+        assert_eq!(event.event_type, "launch_succeeded");
+        assert_eq!(event.status.as_deref(), Some("running"));
+        assert_eq!(event.payload["delivery"], "scheduler");
+
+        let events = db
+            .list_workflow_automation_scheduler_events(Some(&automation.id), 10)
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, event.id);
+
+        let all_events = db
+            .list_workflow_automation_scheduler_events(None, 10)
+            .unwrap();
+        assert_eq!(all_events.len(), 1);
+
+        let run_events = db
+            .list_workflow_automation_scheduler_events_for_run(&run.id, 10)
+            .unwrap();
+        assert_eq!(run_events.len(), 1);
+        assert_eq!(run_events[0].id, event.id);
+
+        let unrelated_run_events = db
+            .list_workflow_automation_scheduler_events_for_run("missing-run", 10)
+            .unwrap();
+        assert!(unrelated_run_events.is_empty());
+
+        let task_run_events = db
+            .list_workflow_automation_scheduler_events_for_task_run(&task_run.id, 10)
+            .unwrap();
+        assert_eq!(task_run_events.len(), 1);
+        assert_eq!(task_run_events[0].id, event.id);
+
+        let unrelated_task_run_events = db
+            .list_workflow_automation_scheduler_events_for_task_run("missing-task-run", 10)
+            .unwrap();
+        assert!(unrelated_task_run_events.is_empty());
     }
 
     #[test]

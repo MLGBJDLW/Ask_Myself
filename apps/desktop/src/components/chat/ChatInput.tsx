@@ -100,6 +100,7 @@ export interface ChatInputSendOptions {
   skillIds?: string[];
   userArtifacts?: ArtifactPayload | null;
   executionMode?: AgentExecutionMode;
+  taskOrchestratorRunId?: string | null;
 }
 
 interface ChatInputProps {

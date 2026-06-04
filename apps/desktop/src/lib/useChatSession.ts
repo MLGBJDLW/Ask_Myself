@@ -407,6 +407,7 @@ export interface ChatSendOptions {
   userArtifacts?: ArtifactPayload | null;
   skillIds?: string[];
   executionMode?: AgentExecutionMode;
+  taskOrchestratorRunId?: string | null;
 }
 
 export interface UseChatSessionReturn {
@@ -810,11 +811,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           ])
             .then(([taskEvents, runEvents]) => {
               if (cancelled) return;
-              if (runEvents.length > 0) {
-                streamStore.restoreFromRunEvents(activeId, resumableRun, runEvents, taskEvents);
-              } else {
-                streamStore.restoreFromTaskEvents(activeId, resumableRun, taskEvents);
-              }
+              streamStore.restoreFromHistoricalEvents(activeId, resumableRun, taskEvents, runEvents);
               streamingConversationRef.current = activeId;
               usageConversationRef.current = activeId;
             })
@@ -1295,6 +1292,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         options?.skillIds,
         options?.executionMode,
         options?.userArtifacts,
+        options?.taskOrchestratorRunId,
       );
     },
     [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, isStreaming, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
@@ -1356,6 +1354,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       options?.skillIds,
       options?.executionMode,
       options?.userArtifacts,
+      null,
     );
   }, [activeId, activePersonaId, messages, setMessagesForConversation, setTurnsForConversation, streamSend, turns]);
 

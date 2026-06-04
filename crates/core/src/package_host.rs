@@ -5,12 +5,15 @@
 //! session. Host surfaces should consume assembled registries, not rediscover
 //! package state independently.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::capability_package::{CapabilityPackageManifest, CapabilityPackagePermissions};
+use crate::db::Database;
 use crate::ecosystem::EcosystemSurfaceKind;
+use crate::error::CoreError;
 
 pub const PACKAGE_HOST_CONTRACT_VERSION: u16 = 1;
 
@@ -39,6 +42,29 @@ impl PackageLifecycleState {
     pub fn is_runtime_visible(self) -> bool {
         matches!(self, Self::Enabled)
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Discovered => "discovered",
+            Self::Validated => "validated",
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+            Self::Unhealthy => "unhealthy",
+            Self::Blocked => "blocked",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim() {
+            "discovered" => Some(Self::Discovered),
+            "validated" => Some(Self::Validated),
+            "enabled" => Some(Self::Enabled),
+            "disabled" => Some(Self::Disabled),
+            "unhealthy" => Some(Self::Unhealthy),
+            "blocked" => Some(Self::Blocked),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +73,25 @@ pub enum PackageHealthState {
     Healthy,
     Warning,
     Unhealthy,
+}
+
+impl PackageHealthState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Warning => "warning",
+            Self::Unhealthy => "unhealthy",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim() {
+            "healthy" => Some(Self::Healthy),
+            "warning" => Some(Self::Warning),
+            "unhealthy" => Some(Self::Unhealthy),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,12 +128,27 @@ pub struct PackageHostRecord {
     pub components: Vec<PackageComponent>,
 }
 
+impl PackageHostRecord {
+    pub fn is_runtime_visible(&self) -> bool {
+        self.state.is_runtime_visible() && self.health != PackageHealthState::Unhealthy
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageHostSnapshot {
     pub version: u16,
     #[serde(default)]
     pub records: Vec<PackageHostRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageHostStateRecord {
+    pub package_id: String,
+    pub lifecycle_state: PackageLifecycleState,
+    pub health_state: PackageHealthState,
+    pub updated_at: String,
 }
 
 impl PackageHostSnapshot {
@@ -102,7 +162,7 @@ impl PackageHostSnapshot {
     pub fn runtime_components(&self) -> Vec<&PackageComponent> {
         self.records
             .iter()
-            .filter(|record| record.state.is_runtime_visible())
+            .filter(|record| record.is_runtime_visible())
             .flat_map(|record| record.components.iter())
             .filter(|component| component.enabled)
             .collect()
@@ -150,6 +210,103 @@ impl PackageHostSnapshot {
         }
 
         Ok(())
+    }
+}
+
+pub trait PackageHost: Send + Sync {
+    fn snapshot(&self) -> Result<PackageHostSnapshot, PackageHostContractError>;
+
+    fn runtime_package_context(
+        &self,
+    ) -> Result<crate::runtime::RuntimePackageContext, PackageHostContractError> {
+        let snapshot = self.snapshot()?;
+        Ok(crate::runtime::RuntimePackageContext::from_package_host_snapshot(&snapshot))
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BuiltinPackageHost;
+
+impl PackageHost for BuiltinPackageHost {
+    fn snapshot(&self) -> Result<PackageHostSnapshot, PackageHostContractError> {
+        let manifests = crate::ecosystem::builtin_ecosystem_manifests();
+        let snapshot = package_host_snapshot_from_manifests(&manifests);
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+}
+
+pub struct DatabasePackageHost<'a, H = BuiltinPackageHost> {
+    db: &'a Database,
+    base: H,
+}
+
+impl<'a> DatabasePackageHost<'a, BuiltinPackageHost> {
+    pub fn builtin(db: &'a Database) -> Self {
+        Self {
+            db,
+            base: BuiltinPackageHost,
+        }
+    }
+}
+
+impl<'a, H> DatabasePackageHost<'a, H> {
+    pub fn new(db: &'a Database, base: H) -> Self {
+        Self { db, base }
+    }
+}
+
+impl<H> PackageHost for DatabasePackageHost<'_, H>
+where
+    H: PackageHost,
+{
+    fn snapshot(&self) -> Result<PackageHostSnapshot, PackageHostContractError> {
+        let mut snapshot = self.base.snapshot()?;
+        let states = self.db.list_package_host_states().map_err(|err| {
+            PackageHostContractError::StateStore {
+                message: err.to_string(),
+            }
+        })?;
+        apply_package_host_state(&mut snapshot, &states);
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+}
+
+pub fn builtin_package_host_snapshot() -> Result<PackageHostSnapshot, PackageHostContractError> {
+    BuiltinPackageHost.snapshot()
+}
+
+pub fn builtin_runtime_package_context(
+) -> Result<crate::runtime::RuntimePackageContext, PackageHostContractError> {
+    BuiltinPackageHost.runtime_package_context()
+}
+
+pub fn database_backed_builtin_package_host_snapshot(
+    db: &Database,
+) -> Result<PackageHostSnapshot, PackageHostContractError> {
+    DatabasePackageHost::builtin(db).snapshot()
+}
+
+pub fn database_backed_builtin_runtime_package_context(
+    db: &Database,
+) -> Result<crate::runtime::RuntimePackageContext, PackageHostContractError> {
+    DatabasePackageHost::builtin(db).runtime_package_context()
+}
+
+pub fn apply_package_host_state(
+    snapshot: &mut PackageHostSnapshot,
+    states: &[PackageHostStateRecord],
+) {
+    let states = states
+        .iter()
+        .map(|state| (state.package_id.as_str(), state))
+        .collect::<HashMap<_, _>>();
+    for record in &mut snapshot.records {
+        if let Some(state) = states.get(record.id.as_str()) {
+            record.state = state.lifecycle_state;
+            record.health = state.health_state;
+        }
     }
 }
 
@@ -235,6 +392,133 @@ fn package_components_from_manifest(manifest: &CapabilityPackageManifest) -> Vec
     components
 }
 
+impl Database {
+    pub fn upsert_package_host_state(
+        &self,
+        package_id: &str,
+        lifecycle_state: PackageLifecycleState,
+        health_state: PackageHealthState,
+    ) -> Result<PackageHostStateRecord, CoreError> {
+        let package_id = package_id.trim();
+        if package_id.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "package_id must not be empty".to_string(),
+            ));
+        }
+
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO package_host_state
+             (package_id, lifecycle_state, health_state, updated_at)
+             VALUES (?1, ?2, ?3, datetime('now'))
+             ON CONFLICT(package_id) DO UPDATE SET
+                lifecycle_state = excluded.lifecycle_state,
+                health_state = excluded.health_state,
+                updated_at = datetime('now')",
+            rusqlite::params![package_id, lifecycle_state.as_str(), health_state.as_str()],
+        )?;
+        drop(conn);
+        self.get_package_host_state(package_id)?
+            .ok_or_else(|| CoreError::NotFound(format!("Package host state {package_id}")))
+    }
+
+    pub fn set_package_host_package_enabled(
+        &self,
+        package_id: &str,
+        enabled: bool,
+    ) -> Result<PackageHostStateRecord, CoreError> {
+        let existing = self.get_package_host_state(package_id)?;
+        let health_state = existing
+            .as_ref()
+            .map(|state| state.health_state)
+            .unwrap_or(PackageHealthState::Healthy);
+        let lifecycle_state = match (enabled, health_state) {
+            (false, _) => PackageLifecycleState::Disabled,
+            (true, PackageHealthState::Unhealthy) => PackageLifecycleState::Unhealthy,
+            (true, _) => PackageLifecycleState::Enabled,
+        };
+        self.upsert_package_host_state(package_id, lifecycle_state, health_state)
+    }
+
+    pub fn set_package_host_package_health(
+        &self,
+        package_id: &str,
+        health_state: PackageHealthState,
+    ) -> Result<PackageHostStateRecord, CoreError> {
+        let existing = self.get_package_host_state(package_id)?;
+        let lifecycle_state = match (
+            existing.as_ref().map(|state| state.lifecycle_state),
+            health_state,
+        ) {
+            (Some(PackageLifecycleState::Disabled), _) => PackageLifecycleState::Disabled,
+            (Some(PackageLifecycleState::Blocked), _) => PackageLifecycleState::Blocked,
+            (_, PackageHealthState::Unhealthy) => PackageLifecycleState::Unhealthy,
+            (Some(PackageLifecycleState::Unhealthy), _) => PackageLifecycleState::Enabled,
+            (Some(state), _) => state,
+            (None, _) => PackageLifecycleState::Enabled,
+        };
+        self.upsert_package_host_state(package_id, lifecycle_state, health_state)
+    }
+
+    pub fn get_package_host_state(
+        &self,
+        package_id: &str,
+    ) -> Result<Option<PackageHostStateRecord>, CoreError> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT package_id, lifecycle_state, health_state, updated_at
+             FROM package_host_state
+             WHERE package_id = ?1",
+            rusqlite::params![package_id.trim()],
+            package_host_state_from_row,
+        )
+        .optional()
+        .map_err(CoreError::Database)
+    }
+
+    pub fn list_package_host_states(&self) -> Result<Vec<PackageHostStateRecord>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT package_id, lifecycle_state, health_state, updated_at
+             FROM package_host_state
+             ORDER BY package_id",
+        )?;
+        let rows = stmt.query_map([], package_host_state_from_row)?;
+        let mut states = Vec::new();
+        for row in rows {
+            states.push(row?);
+        }
+        Ok(states)
+    }
+}
+
+fn package_host_state_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<PackageHostStateRecord, rusqlite::Error> {
+    let lifecycle_wire = row.get::<_, String>(1)?;
+    let health_wire = row.get::<_, String>(2)?;
+    let lifecycle_state = PackageLifecycleState::from_str(&lifecycle_wire).ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(
+            1,
+            "lifecycle_state".to_string(),
+            rusqlite::types::Type::Text,
+        )
+    })?;
+    let health_state = PackageHealthState::from_str(&health_wire).ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(
+            2,
+            "health_state".to_string(),
+            rusqlite::types::Type::Text,
+        )
+    })?;
+    Ok(PackageHostStateRecord {
+        package_id: row.get(0)?,
+        lifecycle_state,
+        health_state,
+        updated_at: row.get(3)?,
+    })
+}
+
 fn package_component(id: &str, package_id: &str, kind: PackageSurfaceKind) -> PackageComponent {
     PackageComponent {
         id: id.to_string(),
@@ -275,6 +559,8 @@ pub enum PackageHostContractError {
         package_id: String,
         dependency_id: String,
     },
+    #[error("package host state store error: {message}")]
+    StateStore { message: String },
 }
 
 fn default_true() -> bool {
@@ -333,6 +619,27 @@ mod tests {
     }
 
     #[test]
+    fn unhealthy_packages_disappear_from_runtime_components() {
+        let snapshot = PackageHostSnapshot::new(vec![PackageHostRecord {
+            id: "pkg-unhealthy".to_string(),
+            version: Some("1.0.0".to_string()),
+            state: PackageLifecycleState::Enabled,
+            health: PackageHealthState::Unhealthy,
+            dependencies: Vec::new(),
+            permissions: Vec::new(),
+            components: vec![component(
+                "workflow-b",
+                "pkg-unhealthy",
+                PackageSurfaceKind::Workflow,
+            )],
+        }]);
+
+        snapshot.validate().unwrap();
+
+        assert!(snapshot.runtime_components().is_empty());
+    }
+
+    #[test]
     fn validation_rejects_missing_dependencies() {
         let snapshot = PackageHostSnapshot::new(vec![PackageHostRecord {
             id: "pkg-a".to_string(),
@@ -375,5 +682,129 @@ mod tests {
         assert!(snapshot.runtime_components().iter().any(|component| {
             component.package_id == "office-documents" && component.id == "compile_document"
         }));
+    }
+
+    #[test]
+    fn builtin_package_host_adapter_validates_snapshot() {
+        let host = BuiltinPackageHost;
+        let snapshot = host.snapshot().unwrap();
+
+        assert!(snapshot.records.iter().any(|record| {
+            record.id == "builtin-workflows" && record.state == PackageLifecycleState::Enabled
+        }));
+        assert!(snapshot.runtime_components().iter().any(|component| {
+            component.package_id == "mcp-connectors"
+                && component.kind == PackageSurfaceKind::Connector
+        }));
+    }
+
+    #[test]
+    fn builtin_package_host_adapter_projects_runtime_context() {
+        let context = builtin_runtime_package_context().unwrap();
+
+        assert!(context.disabled_package_ids.is_empty());
+        assert!(context
+            .enabled_package_ids
+            .contains(&"builtin-skills".to_string()));
+        assert!(context
+            .enabled_package_ids
+            .contains(&"builtin-workflows".to_string()));
+        assert!(context
+            .enabled_package_ids
+            .contains(&"mcp-connectors".to_string()));
+    }
+
+    #[test]
+    fn package_host_state_round_trips_through_database() {
+        let db = Database::open_memory().unwrap();
+
+        let saved = db
+            .upsert_package_host_state(
+                "office-documents",
+                PackageLifecycleState::Disabled,
+                PackageHealthState::Warning,
+            )
+            .unwrap();
+        let loaded = db
+            .get_package_host_state("office-documents")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(saved.package_id, "office-documents");
+        assert_eq!(loaded.lifecycle_state, PackageLifecycleState::Disabled);
+        assert_eq!(loaded.health_state, PackageHealthState::Warning);
+        assert!(!loaded.updated_at.trim().is_empty());
+    }
+
+    #[test]
+    fn database_package_host_applies_disabled_state_to_runtime_context() {
+        let db = Database::open_memory().unwrap();
+        db.set_package_host_package_enabled("office-documents", false)
+            .unwrap();
+
+        let context = database_backed_builtin_runtime_package_context(&db).unwrap();
+
+        assert!(context
+            .disabled_package_ids
+            .contains(&"office-documents".to_string()));
+        assert!(!context
+            .enabled_package_ids
+            .contains(&"office-documents".to_string()));
+    }
+
+    #[test]
+    fn database_package_host_applies_unhealthy_state_to_snapshot() {
+        let db = Database::open_memory().unwrap();
+        db.set_package_host_package_health("mcp-connectors", PackageHealthState::Unhealthy)
+            .unwrap();
+
+        let snapshot = database_backed_builtin_package_host_snapshot(&db).unwrap();
+        let record = snapshot
+            .records
+            .iter()
+            .find(|record| record.id == "mcp-connectors")
+            .unwrap();
+
+        assert_eq!(record.state, PackageLifecycleState::Unhealthy);
+        assert_eq!(record.health, PackageHealthState::Unhealthy);
+        assert!(!snapshot.runtime_components().iter().any(|component| {
+            component.package_id == "mcp-connectors"
+                && component.kind == PackageSurfaceKind::Connector
+        }));
+    }
+
+    #[test]
+    fn package_host_health_update_does_not_reenable_disabled_package() {
+        let db = Database::open_memory().unwrap();
+        db.set_package_host_package_enabled("office-documents", false)
+            .unwrap();
+        db.set_package_host_package_health("office-documents", PackageHealthState::Healthy)
+            .unwrap();
+
+        let record = db
+            .get_package_host_state("office-documents")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(record.lifecycle_state, PackageLifecycleState::Disabled);
+        assert_eq!(record.health_state, PackageHealthState::Healthy);
+    }
+
+    #[test]
+    fn package_host_enable_does_not_restore_unhealthy_package() {
+        let db = Database::open_memory().unwrap();
+        db.set_package_host_package_health("mcp-connectors", PackageHealthState::Unhealthy)
+            .unwrap();
+        db.set_package_host_package_enabled("mcp-connectors", true)
+            .unwrap();
+
+        let context = database_backed_builtin_runtime_package_context(&db).unwrap();
+
+        assert!(context
+            .disabled_package_ids
+            .contains(&"mcp-connectors".to_string()));
+        assert!(!context
+            .enabled_package_ids
+            .contains(&"mcp-connectors".to_string()));
     }
 }

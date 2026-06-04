@@ -15,6 +15,7 @@ use crate::task_orchestrator::{
     TaskOrchestratorRun,
 };
 use crate::trace::AgentTrace;
+use crate::workflow_automation::WorkflowAutomationSchedulerEvent;
 
 pub const TRAJECTORY_SCHEMA_VERSION: u16 = 1;
 
@@ -48,6 +49,8 @@ pub struct TrajectoryMetrics {
     pub task_queue_item_count: usize,
     #[serde(default)]
     pub task_run_count: usize,
+    #[serde(default)]
+    pub scheduler_event_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,6 +78,8 @@ pub struct Trajectory {
     pub task_queue_items: Vec<TaskOrchestratorQueueItem>,
     #[serde(default)]
     pub task_runs: Vec<TaskOrchestratorRun>,
+    #[serde(default)]
+    pub scheduler_events: Vec<WorkflowAutomationSchedulerEvent>,
     #[serde(default)]
     pub run_events: Vec<AgentRunEvent>,
     #[serde(default)]
@@ -129,6 +134,7 @@ impl Trajectory {
             approvals: Vec::new(),
             task_queue_items: Vec::new(),
             task_runs: Vec::new(),
+            scheduler_events: Vec::new(),
             run_events: Vec::new(),
             tool_calls: Vec::new(),
             retrieved_evidence: Vec::new(),
@@ -148,6 +154,7 @@ impl Trajectory {
         self.metrics.approval_count = self.approvals.len();
         self.metrics.task_queue_item_count = self.task_queue_items.len();
         self.metrics.task_run_count = self.task_runs.len();
+        self.metrics.scheduler_event_count = self.scheduler_events.len();
     }
 
     pub fn validate_run_events(&self) -> Result<(), AgentRunEventContractError> {
@@ -188,6 +195,23 @@ impl Trajectory {
                         item.prompt.clear();
                     }
                     redacted.push("taskQueueItems.prompt".to_string());
+                }
+                if !self.scheduler_events.is_empty()
+                    && self.scheduler_events.iter().any(|event| {
+                        !event.summary.is_empty()
+                            || event
+                                .payload
+                                .as_object()
+                                .map(|payload| !payload.is_empty())
+                                .unwrap_or(true)
+                    })
+                {
+                    for event in &mut self.scheduler_events {
+                        event.summary.clear();
+                        event.payload = serde_json::json!({});
+                    }
+                    redacted.push("schedulerEvents.summary".to_string());
+                    redacted.push("schedulerEvents.payload".to_string());
                 }
             }
         }
@@ -308,7 +332,11 @@ pub fn export_workflow_automation_run_trajectory(
         .map_err(|err| CoreError::Internal(format!("project workflow automation run: {err}")))?;
 
     let mut trajectory = match workflow_run.task_run_id.as_deref() {
-        Some(task_run_id) => export_agent_task_run_trajectory(db, task_run_id, redaction_profile)?,
+        Some(task_run_id) => export_agent_task_run_trajectory(
+            db,
+            task_run_id,
+            TrajectoryRedactionProfile::FullLocalPrivate,
+        )?,
         None => {
             let mut config = AgentSessionConfig::default();
             config.source_scope.source_ids = automation.source_scope.clone();
@@ -328,7 +356,7 @@ pub fn export_workflow_automation_run_trajectory(
                 .clone()
                 .unwrap_or_else(|| summarize_workflow_automation(&automation));
             trajectory.outcome = Some(workflow_run.status.clone());
-            trajectory.sanitized(redaction_profile)
+            trajectory
         }
     };
 
@@ -342,8 +370,10 @@ pub fn export_workflow_automation_run_trajectory(
     {
         trajectory.task_runs.insert(0, workflow_projection);
     }
+    trajectory.scheduler_events =
+        db.list_workflow_automation_scheduler_events_for_run(&workflow_run.id, 200)?;
     trajectory.refresh_metrics();
-    Ok(trajectory)
+    Ok(trajectory.sanitized(redaction_profile))
 }
 
 fn summarize_workflow_automation(
@@ -671,6 +701,18 @@ mod tests {
             .approvals
             .push(serde_json::json!({ "id": "approval-1" }));
         trajectory.task_queue_items.push(queue_item());
+        trajectory
+            .scheduler_events
+            .push(WorkflowAutomationSchedulerEvent {
+                id: "scheduler-event-1".to_string(),
+                automation_id: Some("automation-1".to_string()),
+                run_id: Some("workflow-run-1".to_string()),
+                event_type: "launch_succeeded".to_string(),
+                status: Some("running".to_string()),
+                summary: "Scheduler launched due workflow".to_string(),
+                payload: serde_json::json!({ "taskRunId": "task-run-1" }),
+                created_at: "2026-06-03T00:00:00Z".to_string(),
+            });
 
         trajectory.refresh_metrics();
 
@@ -678,6 +720,7 @@ mod tests {
         assert_eq!(trajectory.metrics.tool_call_count, 1);
         assert_eq!(trajectory.metrics.approval_count, 1);
         assert_eq!(trajectory.metrics.task_queue_item_count, 1);
+        assert_eq!(trajectory.metrics.scheduler_event_count, 1);
     }
 
     #[test]
@@ -691,6 +734,16 @@ mod tests {
         trajectory.final_answer = Some("private answer".to_string());
         trajectory.retrieved_evidence = vec![serde_json::json!({ "path": "private.md" })];
         trajectory.task_queue_items = vec![queue_item()];
+        trajectory.scheduler_events = vec![WorkflowAutomationSchedulerEvent {
+            id: "scheduler-event-1".to_string(),
+            automation_id: Some("automation-1".to_string()),
+            run_id: Some("workflow-run-1".to_string()),
+            event_type: "launch_failed".to_string(),
+            status: Some("failed".to_string()),
+            summary: "Launch failed for private workspace path".to_string(),
+            payload: serde_json::json!({ "error": "D:/private/project failed" }),
+            created_at: "2026-06-03T00:00:00Z".to_string(),
+        }];
 
         let redacted = trajectory.sanitized(TrajectoryRedactionProfile::ShareableMinimal);
 
@@ -698,6 +751,8 @@ mod tests {
         assert!(redacted.final_answer.is_none());
         assert!(redacted.retrieved_evidence.is_empty());
         assert_eq!(redacted.task_queue_items[0].prompt, "");
+        assert_eq!(redacted.scheduler_events[0].summary, "");
+        assert_eq!(redacted.scheduler_events[0].payload, serde_json::json!({}));
         assert!(redacted
             .sanitization
             .redacted_fields
@@ -706,6 +761,10 @@ mod tests {
             .sanitization
             .redacted_fields
             .contains(&"taskQueueItems.prompt".to_string()));
+        assert!(redacted
+            .sanitization
+            .redacted_fields
+            .contains(&"schedulerEvents.payload".to_string()));
     }
 
     #[test]
@@ -1016,6 +1075,28 @@ mod tests {
                 Some("Workflow is running"),
             )
             .unwrap();
+        let scheduler_event = db
+            .record_workflow_automation_scheduler_event(
+                Some(&automation.id),
+                Some(&workflow_run.id),
+                "launch_succeeded",
+                Some("running"),
+                "Scheduler launched due workflow",
+                Some(&serde_json::json!({
+                    "queueId": format!("workflow_due:{}", automation.id),
+                    "taskRunId": task_run.id,
+                })),
+            )
+            .unwrap();
+        db.record_workflow_automation_scheduler_event(
+            Some(&automation.id),
+            None,
+            "skipped_active",
+            Some("running"),
+            "Unrelated automation-level skip",
+            Some(&serde_json::json!({ "reason": "already active" })),
+        )
+        .unwrap();
 
         let trajectory = export_workflow_automation_run_trajectory(
             &db,
@@ -1034,6 +1115,13 @@ mod tests {
         );
         assert_eq!(trajectory.outcome.as_deref(), Some("running"));
         assert_eq!(trajectory.metrics.task_run_count, 2);
+        assert_eq!(trajectory.metrics.scheduler_event_count, 1);
+        assert_eq!(trajectory.scheduler_events.len(), 1);
+        assert_eq!(trajectory.scheduler_events[0].id, scheduler_event.id);
+        assert_eq!(
+            trajectory.scheduler_events[0].event_type,
+            "launch_succeeded"
+        );
         assert_eq!(
             trajectory.task_runs[0].kind,
             TaskOrchestratorRunKind::WorkflowAutomation

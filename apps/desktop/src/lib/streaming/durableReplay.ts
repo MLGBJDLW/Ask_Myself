@@ -1,4 +1,9 @@
-import type { AgentRunEvent, AgentTaskRun, AgentTaskRunEvent } from '../../types/conversation';
+import type {
+  AgentFrontendEvent,
+  AgentRunEvent,
+  AgentTaskRun,
+  AgentTaskRunEvent,
+} from '../../types/conversation';
 import { applyStreamBlockDelta } from './blockProjection';
 import { normalizeAgentEventType } from './eventTypes';
 import {
@@ -8,6 +13,7 @@ import {
   type ReplayStreamItem,
 } from './legacyAdapter';
 import { applyLiveStreamEvent } from './liveEventReducer';
+import { applyDoneEvent } from './liveProjection';
 import {
   appendStatusTraceEvent,
   applyStreamResetProjection,
@@ -63,7 +69,7 @@ function applyDurableReplayItemsToState(
       const reason = typeof item.payload.reason === 'string'
         ? item.payload.reason
         : 'Stream restarted.';
-      applyStreamResetProjection(state, reason);
+      applyStreamResetProjection(state, reason, { clearTools: true });
       continue;
     }
 
@@ -73,6 +79,22 @@ function applyDurableReplayItemsToState(
       const message = typeof item.payload.message === 'string'
         ? item.payload.message
         : (isError ? 'Request failed' : 'Task completed');
+      if (!isError) {
+        const rawDone = {
+          conversationId: '',
+          type: 'done',
+          eventSeq: item.eventSeq,
+          status,
+          message,
+          usageTotal: item.payload.usageTotal,
+          lastPromptTokens: item.payload.lastPromptTokens,
+          contextBreakdown: item.payload.contextBreakdown,
+          cached: item.payload.cached,
+          finishReason: item.payload.finishReason,
+        } as AgentFrontendEvent & Record<string, unknown>;
+        applyDoneEvent(state, rawDone, rawDone);
+        continue;
+      }
       applyTerminalProjection(state, {
         toolStatus: status === 'cancelled'
           ? 'cancelled'
@@ -160,6 +182,18 @@ export function projectRunEventsToStreamState(
   state.taskEvents = taskTimelineEventsFromReplaySource(taskEvents);
   applyDurableRunEventsToState(state, runEvents);
   return state;
+}
+
+export function projectHistoricalEventsToStreamState(
+  taskRun: AgentTaskRun,
+  taskEvents: AgentTaskRunEvent[],
+  runEvents: AgentRunEvent[],
+): DurableReplayProjectionState {
+  if (runEvents.length > 0) {
+    return projectRunEventsToStreamState(taskRun, runEvents, taskEvents);
+  }
+
+  return projectTaskEventsToStreamState(taskRun, taskEvents);
 }
 
 function applyToolPreparingReplay(

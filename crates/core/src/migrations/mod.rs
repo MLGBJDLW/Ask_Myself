@@ -1036,6 +1036,36 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_agent_trajectories_outcome
             ON agent_trajectories(outcome, created_at);",
     ),
+    (
+        "v067_package_host_state",
+        "CREATE TABLE IF NOT EXISTS package_host_state (
+            package_id TEXT PRIMARY KEY NOT NULL,
+            lifecycle_state TEXT NOT NULL,
+            health_state TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_package_host_state_lifecycle
+            ON package_host_state(lifecycle_state, health_state);",
+    ),
+    (
+        "v068_workflow_automation_scheduler_events",
+        "CREATE TABLE IF NOT EXISTS workflow_automation_scheduler_events (
+            id TEXT PRIMARY KEY NOT NULL,
+            automation_id TEXT REFERENCES workflow_automations(id) ON DELETE CASCADE,
+            run_id TEXT REFERENCES workflow_automation_runs(id) ON DELETE SET NULL,
+            event_type TEXT NOT NULL,
+            status TEXT,
+            summary TEXT NOT NULL DEFAULT '',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_scheduler_events_automation
+            ON workflow_automation_scheduler_events(automation_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_workflow_scheduler_events_run
+            ON workflow_automation_scheduler_events(run_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_workflow_scheduler_events_type
+            ON workflow_automation_scheduler_events(event_type, created_at);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1167,6 +1197,7 @@ mod tests {
         assert!(tables.contains(&"personas".to_string()));
         assert!(tables.contains(&"workflow_automations".to_string()));
         assert!(tables.contains(&"workflow_automation_runs".to_string()));
+        assert!(tables.contains(&"workflow_automation_scheduler_events".to_string()));
         assert!(tables.contains(&"task_resume_checkpoints".to_string()));
         assert!(tables.contains(&"skill_usage_events".to_string()));
         assert!(tables.contains(&"memory_injection_events".to_string()));

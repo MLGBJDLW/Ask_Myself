@@ -1,4 +1,5 @@
 import type { AgentRunEvent, AgentTaskRunEvent } from '../../types/conversation';
+import type { WorkflowAutomationSchedulerEvent } from '../../types/workflows';
 import { isDurableStreamEvent } from './legacyAdapter';
 import { isTaskTimelineEvent } from './taskTimeline';
 
@@ -10,7 +11,7 @@ export interface TaskCenterHistoryItem {
   status?: string | null;
   createdAt: string;
   eventSeq?: number;
-  source: 'agentRun' | 'taskEvent';
+  source: 'agentRun' | 'taskEvent' | 'schedulerEvent';
 }
 
 const HIDDEN_RUN_EVENT_KINDS = new Set<AgentRunEvent['kind']>([
@@ -84,23 +85,52 @@ function itemFromTaskEvent(event: AgentTaskRunEvent): TaskCenterHistoryItem {
   };
 }
 
+function itemFromSchedulerEvent(event: WorkflowAutomationSchedulerEvent): TaskCenterHistoryItem {
+  return {
+    id: event.id,
+    runId: event.runId ?? event.automationId ?? event.id,
+    eventType: event.eventType,
+    label: event.summary || `Scheduler ${event.eventType.replace(/_/g, ' ')}`,
+    status: event.status ?? null,
+    createdAt: event.createdAt,
+    source: 'schedulerEvent',
+  };
+}
+
 export function taskCenterHistoryFromEvents(
   taskEvents: AgentTaskRunEvent[],
   runEvents: AgentRunEvent[],
+  schedulerEvents: WorkflowAutomationSchedulerEvent[] = [],
 ): TaskCenterHistoryItem[] {
   if (runEvents.length > 0) {
-    const canonicalItems = runEvents
-      .map(itemFromRunEvent)
-      .filter((item): item is TaskCenterHistoryItem => Boolean(item));
-    const timelineItems = taskEvents
-      .filter(isTaskTimelineEvent)
-      .map(itemFromTaskEvent);
-    return [...canonicalItems, ...timelineItems].sort(compareHistory).slice(-50);
+    return taskCenterHistoryFromRunEvents(runEvents, taskEvents, schedulerEvents);
   }
 
-  return taskEvents
+  return legacyTaskCenterHistoryFromTaskEvents(taskEvents, schedulerEvents);
+}
+
+export function taskCenterHistoryFromRunEvents(
+  runEvents: AgentRunEvent[],
+  taskEvents: AgentTaskRunEvent[] = [],
+  schedulerEvents: WorkflowAutomationSchedulerEvent[] = [],
+): TaskCenterHistoryItem[] {
+  const canonicalItems = runEvents
+    .map(itemFromRunEvent)
+    .filter((item): item is TaskCenterHistoryItem => Boolean(item));
+  const timelineItems = taskEvents
+    .filter(isTaskTimelineEvent)
+    .map(itemFromTaskEvent);
+  const schedulerItems = schedulerEvents.map(itemFromSchedulerEvent);
+  return [...canonicalItems, ...timelineItems, ...schedulerItems].sort(compareHistory).slice(-50);
+}
+
+export function legacyTaskCenterHistoryFromTaskEvents(
+  taskEvents: AgentTaskRunEvent[],
+  schedulerEvents: WorkflowAutomationSchedulerEvent[] = [],
+): TaskCenterHistoryItem[] {
+  const taskItems = taskEvents
     .filter(event => isTaskTimelineEvent(event) || !isDurableStreamEvent(event))
-    .map(itemFromTaskEvent)
-    .sort(compareHistory)
-    .slice(-50);
+    .map(itemFromTaskEvent);
+  const schedulerItems = schedulerEvents.map(itemFromSchedulerEvent);
+  return [...taskItems, ...schedulerItems].sort(compareHistory).slice(-50);
 }

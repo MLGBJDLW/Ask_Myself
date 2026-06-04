@@ -76,6 +76,8 @@ export interface QualityEvalReport {
 }
 
 export interface DeveloperEvalSmokeReport {
+  profile: 'smoke' | 'nightly';
+  trajectoryLimit: number;
   status: string;
   total: number;
   passed: number;

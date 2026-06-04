@@ -35,6 +35,8 @@ import type {
   CreateAgentTaskArtifactInput,
   UpdateAgentTaskArtifactInput,
   PluginManifest,
+  PackageHealthState,
+  PackageHostSnapshot,
   ToolAccessInfo,
   ConversationStats,
   ConversationSearchResult,
@@ -72,6 +74,7 @@ import type {
   TrajectoryReplayRequest,
   TrajectoryReplayReport,
   TrajectoryReplayExecution,
+  TrajectoryReplayRuntimeMode,
 } from "../types/trace";
 import type { DeveloperEvalSmokeReport, QualityEvalReport } from "../types/qualityEval";
 import type {
@@ -79,11 +82,15 @@ import type {
   InvestigationGraph,
   LearningGovernanceSnapshot,
   SaveWorkflowAutomationInput,
+  TaskOrchestratorDeliveryEnvelope,
+  TaskOrchestratorExecutionTicket,
+  TaskOrchestratorWorkflowLaunch,
   TaskResumeCheckpoint,
   TaskResumePrompt,
   WorkflowAutomation,
   WorkflowAutomationDueRun,
   WorkflowAutomationRun,
+  WorkflowAutomationSchedulerEvent,
 } from "../types/workflows";
 import type { ProviderPreset } from "./providerPresets";
 
@@ -618,6 +625,53 @@ export const listDueWorkflowAutomations = (now?: string | null) =>
 export const previewWorkflowAutomationPrompt = (id: string) =>
   invoke<string>('preview_workflow_automation_prompt_cmd', { id });
 
+export const prepareWorkflowAutomationDelivery = (id: string) =>
+  invoke<TaskOrchestratorDeliveryEnvelope>('prepare_workflow_automation_delivery_cmd', { id });
+
+export const prepareDueWorkflowAutomationDelivery = (id: string, now?: string | null) =>
+  invoke<TaskOrchestratorDeliveryEnvelope>('prepare_due_workflow_automation_delivery_cmd', {
+    id,
+    now: now ?? null,
+  });
+
+export const queueWorkflowAutomationDelivery = (id: string, summary?: string | null) =>
+  invoke<TaskOrchestratorExecutionTicket>('queue_workflow_automation_delivery_cmd', {
+    id,
+    summary: summary ?? null,
+  });
+
+export const queueDueWorkflowAutomationDelivery = (
+  id: string,
+  now?: string | null,
+  summary?: string | null,
+) =>
+  invoke<TaskOrchestratorExecutionTicket>('queue_due_workflow_automation_delivery_cmd', {
+    id,
+    now: now ?? null,
+    summary: summary ?? null,
+  });
+
+export const startDueWorkflowAutomationRun = (
+  id: string,
+  now?: string | null,
+  conversationId?: string | null,
+  agentConfigId?: string | null,
+  personaId?: string | null,
+  skillIds?: string[] | null,
+  executionMode?: AgentExecutionMode | null,
+  summary?: string | null,
+) =>
+  invoke<TaskOrchestratorWorkflowLaunch>('start_due_workflow_automation_run_cmd', {
+    id,
+    now: now ?? null,
+    conversationId: conversationId ?? null,
+    agentConfigId: agentConfigId ?? null,
+    personaId: personaId ?? null,
+    skillIds: skillIds && skillIds.length > 0 ? skillIds : null,
+    executionMode: executionMode ?? null,
+    summary: summary ?? null,
+  });
+
 export const recordWorkflowAutomationRun = (
   automationId: string,
   status: string,
@@ -629,6 +683,24 @@ export const recordWorkflowAutomationRun = (
   status,
   summary: summary ?? null,
 });
+
+export const listWorkflowAutomationSchedulerEvents = (
+  automationId?: string | null,
+  limit?: number | null,
+) =>
+  invoke<WorkflowAutomationSchedulerEvent[]>('list_workflow_automation_scheduler_events_cmd', {
+    automationId: automationId ?? null,
+    limit: limit ?? null,
+  });
+
+export const listWorkflowAutomationSchedulerEventsForTaskRun = (
+  taskRunId: string,
+  limit?: number | null,
+) =>
+  invoke<WorkflowAutomationSchedulerEvent[]>('list_workflow_automation_scheduler_events_for_task_run_cmd', {
+    taskRunId,
+    limit: limit ?? null,
+  });
 
 export const exportWorkflowAutomationTrajectory = (
   workflowRunId: string,
@@ -745,6 +817,20 @@ export const listBuiltinPlugins = (options?: { includeRuntimeChecks?: boolean })
   invoke<PluginManifest[]>('list_builtin_plugins_cmd', {
     includeRuntimeChecks: options?.includeRuntimeChecks ?? false,
   });
+
+export const getPackageHostSnapshot = () =>
+  invoke<PackageHostSnapshot>('get_package_host_snapshot_cmd');
+
+export const setPackageHostPackageEnabled = (packageId: string, enabled: boolean) =>
+  invoke<PackageHostSnapshot>('set_package_host_package_enabled_cmd', { packageId, enabled });
+
+export const setPackageHostPackageHealth = (
+  packageId: string,
+  healthState: PackageHealthState,
+) => invoke<PackageHostSnapshot>('set_package_host_package_health_cmd', {
+  packageId,
+  healthState,
+});
 
 export const listProjectTools = (sourceScope?: string[] | null) =>
   invoke<import('../types/project-tool').ProjectToolCatalog>('list_project_tools_cmd', {
@@ -865,6 +951,7 @@ export const agentChat = (
   skillIds?: string[],
   executionMode?: AgentExecutionMode | null,
   userArtifacts?: ArtifactPayload | null,
+  taskOrchestratorRunId?: string | null,
 ) =>
   invoke<void>('agent_chat_cmd', {
     conversationId,
@@ -875,6 +962,7 @@ export const agentChat = (
     skillIds: skillIds && skillIds.length > 0 ? skillIds : null,
     executionMode: executionMode ?? null,
     userArtifacts: userArtifacts ?? null,
+    taskOrchestratorRunId: taskOrchestratorRunId ?? null,
   });
 
 export const agentSteer = (conversationId: string, message: string) =>
@@ -1231,14 +1319,23 @@ export const runTrajectoryEvalPack = (pack: EvalPack) =>
 export const compareTrajectoryReplay = (request: TrajectoryReplayRequest) =>
   invoke<TrajectoryReplayReport>('compare_trajectory_replay_cmd', { request });
 
-export const replayTrajectorySession = (trajectoryId: string) =>
-  invoke<TrajectoryReplayExecution>('replay_trajectory_session_cmd', { trajectoryId });
+export const replayTrajectorySession = (
+  trajectoryId: string,
+  runtimeMode?: TrajectoryReplayRuntimeMode,
+) =>
+  invoke<TrajectoryReplayExecution>('replay_trajectory_session_cmd', {
+    trajectoryId,
+    runtimeMode,
+  });
 
 export const runStoredTrajectorySmokeEval = (limit?: number) =>
   invoke<StoredTrajectoryEvalReport>('run_stored_trajectory_smoke_eval_cmd', { limit });
 
 export const runDeveloperEvalSmokeWorkflow = (trajectoryLimit?: number) =>
   invoke<DeveloperEvalSmokeReport>('run_developer_eval_smoke_workflow_cmd', { trajectoryLimit });
+
+export const runDeveloperEvalNightlyWorkflow = () =>
+  invoke<DeveloperEvalSmokeReport>('run_developer_eval_nightly_workflow_cmd');
 
 export const runAgentQualityEval = () =>
   invoke<QualityEvalReport>('run_agent_quality_eval_cmd');

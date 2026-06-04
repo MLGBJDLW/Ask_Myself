@@ -583,6 +583,50 @@ export interface PluginManifest extends ToolPluginInfo {
   runtimeChecks?: PluginRuntimeCheck[];
 }
 
+export type PackageSurfaceKind =
+  | 'capability'
+  | 'connector'
+  | 'skill'
+  | 'workflow'
+  | 'nativePlugin';
+
+export type PackageLifecycleState =
+  | 'discovered'
+  | 'validated'
+  | 'enabled'
+  | 'disabled'
+  | 'unhealthy'
+  | 'blocked';
+
+export type PackageHealthState = 'healthy' | 'warning' | 'unhealthy';
+
+export interface PackagePermission {
+  key: string;
+  description: string;
+}
+
+export interface PackageComponent {
+  id: string;
+  packageId: string;
+  kind: PackageSurfaceKind;
+  enabled: boolean;
+}
+
+export interface PackageHostRecord {
+  id: string;
+  version?: string | null;
+  state: PackageLifecycleState;
+  health: PackageHealthState;
+  dependencies: string[];
+  permissions: PackagePermission[];
+  components: PackageComponent[];
+}
+
+export interface PackageHostSnapshot {
+  version: number;
+  records: PackageHostRecord[];
+}
+
 export interface ToolAccessInfo {
   name: string;
   plugin: ToolPluginInfo;

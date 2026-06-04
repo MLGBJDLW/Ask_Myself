@@ -140,12 +140,24 @@ export interface TaskOrchestratorRun {
   finishedAt?: string | null;
 }
 
+export interface TaskOrchestratorSchedulerEvent {
+  id: string;
+  automationId?: string | null;
+  runId?: string | null;
+  eventType: string;
+  status?: string | null;
+  summary: string;
+  payload: unknown;
+  createdAt: string;
+}
+
 export interface TrajectoryMetrics {
   eventCount: number;
   toolCallCount: number;
   approvalCount: number;
   taskQueueItemCount: number;
   taskRunCount: number;
+  schedulerEventCount: number;
 }
 
 export interface TrajectorySanitizationReport {
@@ -167,6 +179,7 @@ export interface Trajectory {
   approvals: unknown[];
   taskQueueItems: TaskOrchestratorQueueItem[];
   taskRuns: TaskOrchestratorRun[];
+  schedulerEvents: TaskOrchestratorSchedulerEvent[];
   runEvents: AgentRunEvent[];
   toolCalls: unknown[];
   retrievedEvidence: unknown[];
@@ -283,9 +296,11 @@ export interface TrajectoryReplayReport {
 }
 
 export type RuntimeTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'timed_out';
+export type TrajectoryReplayRuntimeMode = 'recorded_events' | 'mock_runtime';
 
 export interface TrajectoryReplayExecution {
   trajectoryId: string;
+  runtimeMode: TrajectoryReplayRuntimeMode;
   runId: string;
   turnId: string;
   terminalStatus: RuntimeTerminalStatus;

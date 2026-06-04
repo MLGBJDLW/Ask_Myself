@@ -94,11 +94,17 @@ pub async fn compare_trajectory_replay_cmd(
 pub async fn replay_trajectory_session_cmd(
     state: tauri::State<'_, AppState>,
     trajectory_id: String,
+    runtime_mode: Option<nexa_core::eval_harness::TrajectoryReplayRuntimeMode>,
 ) -> Result<nexa_core::eval_harness::TrajectoryReplayExecution, String> {
     let db = state.db.clone();
-    nexa_core::eval_harness::replay_trajectory_from_store(db.as_ref(), &trajectory_id)
-        .await
-        .map_err(|e| e.to_string())
+    nexa_core::eval_harness::replay_trajectory_from_store_with_runtime_mode(
+        db.as_ref(),
+        &trajectory_id,
+        runtime_mode
+            .unwrap_or(nexa_core::eval_harness::TrajectoryReplayRuntimeMode::RecordedEvents),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -124,6 +130,16 @@ pub async fn run_developer_eval_smoke_workflow_cmd(
     )
     .await
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn run_developer_eval_nightly_workflow_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<nexa_core::eval_harness::DeveloperEvalSmokeReport, String> {
+    let db = state.db.clone();
+    nexa_core::eval_harness::run_developer_eval_nightly_workflow(db.as_ref())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
