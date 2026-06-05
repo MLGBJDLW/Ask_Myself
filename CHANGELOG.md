@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.6...nexa-monorepo-v0.8.7) (2026-06-05)
+
+
+### Features
+
+* **chat:** add hierarchical model picker ([03a3a39](https://github.com/MLGBJDLW/Nexa/commit/03a3a39eeb48c9937e9e89fd4c89f89759c10c85))
+* **chat:** add hierarchical model picker ([09d9bd5](https://github.com/MLGBJDLW/Nexa/commit/09d9bd5e30538084ea3b954ec748578f6c027f81))
+
 ## [0.8.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.5...nexa-monorepo-v0.8.6) (2026-06-05)
 
 
