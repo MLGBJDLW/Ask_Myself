@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.5...nexa-monorepo-v0.8.6) (2026-06-05)
+
+
+### Bug Fixes
+
+* **agent:** preserve llm prompt cache continuity ([643c00f](https://github.com/MLGBJDLW/Nexa/commit/643c00f276780133f6e753bf9455170e0a8ef0d7))
+* **agent:** stabilize llm prompt cache architecture ([4d30230](https://github.com/MLGBJDLW/Nexa/commit/4d302309f8def26a8589a7cf18d7b90501dbb1c9))
+
 ## [0.8.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.4...nexa-monorepo-v0.8.5) (2026-06-04)
 
 
