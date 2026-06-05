@@ -918,14 +918,14 @@ export function ChatInput({
       {slashMenuOpen && slashTrigger && (
         <div
           data-testid="slash-command-menu"
-          className="absolute bottom-full left-4 right-4 z-40 mb-2 overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-2xl shadow-black/30 ring-1 ring-white/[0.04]"
+          className="absolute bottom-full left-4 z-40 mb-2 w-[min(34rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-2xl shadow-black/30 ring-1 ring-white/[0.04]"
         >
-          <div className="border-b border-border/60 px-3 py-2">
-            <div className="flex min-h-8 items-center gap-2">
-              <Command className="h-4 w-4 shrink-0 text-accent" />
+          <div className="border-b border-border/60 px-2.5 py-1.5">
+            <div className="flex min-h-7 items-center gap-2">
+              <Command className="h-3.5 w-3.5 shrink-0 text-accent" />
               <div className="min-w-0">
-                <div className="text-sm font-medium text-text-primary">{t("chat.slashCommands")}</div>
-                <div className="truncate text-xs text-text-tertiary">/{slashTrigger.query}</div>
+                <div className="text-xs font-medium text-text-primary">{t("chat.slashCommands")}</div>
+                <div className="truncate text-[10px] text-text-tertiary">/{slashTrigger.query}</div>
               </div>
               <div
                 className="ml-auto rounded-md border border-border/60 bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase text-text-tertiary"
@@ -935,7 +935,7 @@ export function ChatInput({
               </div>
             </div>
 
-            <div className="mt-2 grid grid-cols-4 gap-1 rounded-md border border-border/50 bg-surface-1 p-1" role="tablist">
+            <div className="mt-1.5 grid grid-cols-4 gap-1 rounded-md border border-border/50 bg-surface-1 p-0.5" role="tablist">
               {SLASH_COMMAND_TABS.map((tab) => {
                 const selected = tab === slashActiveTab;
                 const count = slashTabCounts[tab];
@@ -953,7 +953,7 @@ export function ChatInput({
                       setSlashActiveTab(tab);
                       setSlashSelectedIndex(0);
                     }}
-                    className={`flex min-w-0 items-center justify-center gap-1 rounded px-1.5 py-1 text-[11px] font-medium transition-colors ${
+                    className={`flex min-w-0 items-center justify-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
                       selected
                         ? "bg-surface-0 text-text-primary shadow-sm ring-1 ring-border/60"
                         : "text-text-tertiary hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-35"
@@ -971,7 +971,7 @@ export function ChatInput({
             <>
               <div
                 data-testid="slash-command-list"
-                className="max-h-64 overflow-y-auto p-1"
+                className="max-h-52 overflow-y-auto p-1"
                 role="listbox"
                 aria-label={t("chat.slashCommands")}
               >
@@ -992,14 +992,14 @@ export function ChatInput({
                     data-testid={`slash-command-option-${option.name}`}
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => applySlashOption(option)}
-                    className={`grid w-full grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
+                    className={`grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors ${
                       active
                         ? "bg-accent-subtle text-text-primary ring-1 ring-accent/25"
                         : "text-text-secondary hover:bg-surface-1 hover:text-text-primary"
                     }`}
                   >
                     <span
-                      className={`flex h-7 w-7 items-center justify-center rounded-md border ${
+                      className={`flex h-6 w-6 items-center justify-center rounded-md border ${
                         active
                           ? "border-accent/35 bg-accent/10 text-accent"
                           : "border-border/60 bg-surface-1 text-text-tertiary"
@@ -1009,14 +1009,14 @@ export function ChatInput({
                     </span>
                     <span className="min-w-0">
                       <span className="flex min-w-0 items-baseline gap-2">
-                        <span className="shrink-0 font-mono text-[13px] text-accent">/{option.name}</span>
-                        <span className="truncate text-sm font-medium text-text-primary">{optionTitle}</span>
+                        <span className="shrink-0 font-mono text-[12px] text-accent">/{option.name}</span>
+                        <span className="truncate text-xs font-medium text-text-primary">{optionTitle}</span>
                       </span>
-                      <span className="mt-0.5 block truncate text-[11px] leading-4 text-text-tertiary">
+                      <span className="mt-0.5 block truncate text-[10px] leading-3 text-text-tertiary">
                         {optionDescription}
                       </span>
                     </span>
-                    <span className="hidden max-w-28 truncate rounded-md border border-border/50 bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-tertiary sm:block">
+                    <span className="hidden max-w-24 truncate rounded-md border border-border/50 bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-tertiary sm:block">
                       {getSlashSourceLabel(option)}
                     </span>
                   </button>
@@ -1025,8 +1025,8 @@ export function ChatInput({
               </div>
 
               {activeSlashOption && (
-                <div className="hidden border-t border-border/60 px-3 py-2 sm:block">
-                  <div className="flex min-w-0 items-center gap-2 text-xs">
+                <div className="hidden border-t border-border/60 px-2.5 py-1.5 sm:block">
+                  <div className="flex min-w-0 items-center gap-2 text-[11px]">
                     <span className="shrink-0 font-mono text-accent">/{activeSlashOption.name}</span>
                     <span className="shrink-0 rounded border border-border/50 bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-tertiary">
                       {getSlashSourceLabel(activeSlashOption)}
@@ -1035,14 +1035,14 @@ export function ChatInput({
                       {getSlashOptionTitle(activeSlashOption)}
                     </span>
                   </div>
-                  <div className="mt-1 truncate text-xs text-text-tertiary">
+                  <div className="mt-0.5 truncate text-[11px] text-text-tertiary">
                     {getSlashOptionDescription(activeSlashOption)}
                   </div>
                 </div>
               )}
             </>
           ) : (
-            <div className="px-3 py-5 text-center text-sm text-text-tertiary">
+            <div className="px-3 py-4 text-center text-xs text-text-tertiary">
               {t("chat.slashCommandNoResults")}
             </div>
           )}

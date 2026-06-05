@@ -1,11 +1,11 @@
 import { useCallback, useState, useEffect, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Check, ChevronDown, Cpu, Network, Settings, PanelLeftClose, PanelLeftOpen, UserRound, X } from 'lucide-react';
+import { Check, ChevronDown, Network, Settings, PanelLeftClose, PanelLeftOpen, UserRound, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
-import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, type ChatInputSendOptions } from '../components/chat';
+import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, AgentModelPicker, type AgentModelSelection, type ChatInputSendOptions } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
 import { ChatMessages } from '../features/chat';
 import { useApprovalQueue } from '../lib/useApprovalQueue';
@@ -16,8 +16,7 @@ import { useChatSession } from '../lib/useChatSession';
 import { useResizablePanel } from '../lib/useResizablePanel';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
-import { ProviderIcon } from '../lib/providerIcons';
-import type { AgentConfig, Conversation, ImageAttachment } from '../types/conversation';
+import type { AgentConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
 import { formatUserError } from '../lib/userError';
 import {
   GRAPH_AGENT_CONTEXT_EVENT,
@@ -72,6 +71,39 @@ function buildApprovedPlanPrompt(planMarkdown: string): string {
     planMarkdown.trim(),
     '</approved_plan>',
   ].join('\n');
+}
+
+function agentConfigToSaveInput(
+  config: AgentConfig,
+  patch: Pick<AgentModelSelection, 'model' | 'reasoningEnabled' | 'thinkingBudget' | 'reasoningEffort'>,
+): SaveAgentConfigInput {
+  return {
+    id: config.id,
+    name: config.name,
+    provider: config.provider,
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    model: patch.model,
+    temperature: config.temperature,
+    maxTokens: config.maxTokens,
+    contextWindow: config.contextWindow,
+    isDefault: true,
+    reasoningEnabled: patch.reasoningEnabled,
+    thinkingBudget: patch.thinkingBudget,
+    reasoningEffort: patch.reasoningEffort,
+    maxIterations: config.maxIterations,
+    summarizationModel: config.summarizationModel,
+    summarizationProvider: config.summarizationProvider,
+    imageGenerationModel: config.imageGenerationModel,
+    subagentAllowedTools: config.subagentAllowedTools,
+    subagentAllowedSkillIds: config.subagentAllowedSkillIds,
+    subagentMaxParallel: config.subagentMaxParallel,
+    subagentMaxCallsPerTurn: config.subagentMaxCallsPerTurn,
+    subagentTokenBudget: config.subagentTokenBudget,
+    dynamicToolVisibility: config.dynamicToolVisibility,
+    traceEnabled: config.traceEnabled,
+    requireToolConfirmation: config.requireToolConfirmation,
+  };
 }
 
 const CHAT_SIDEBAR_WIDTH_KEY = 'chat-sidebar-width';
@@ -460,38 +492,45 @@ export function ChatPage() {
   }, []);
   const selectedAgentConfig =
     agentConfigs.find((config) => config.id === chat.agentConfig?.id) ?? chat.agentConfig;
-  const selectedAgentLabel = selectedAgentConfig?.name?.trim() || selectedAgentConfig?.model || '';
-  const selectedAgentDetail = selectedAgentConfig
-    ? selectedAgentConfig.name?.trim()
-      ? `${selectedAgentConfig.provider} / ${selectedAgentConfig.model}`
-      : selectedAgentConfig.provider
-    : '';
   const selectedPersona = personas.find((persona) => persona.id === activePersonaId);
   const selectedPersonaLabel = selectedPersona?.name || activePersonaId;
   const selectedPersonaDetail = selectedPersona?.description || activePersonaId;
+  const handleAgentModelSelection = useCallback(
+    async (selection: AgentModelSelection) => {
+      const config = selection.config;
+      const unchanged =
+        config.model === selection.model &&
+        config.reasoningEnabled === selection.reasoningEnabled &&
+        config.thinkingBudget === selection.thinkingBudget &&
+        config.reasoningEffort === selection.reasoningEffort;
+
+      try {
+        let nextConfig = config;
+        if (!unchanged) {
+          nextConfig = await api.saveAgentConfig(agentConfigToSaveInput(config, selection));
+        }
+
+        await chat.switchAgentConfig(nextConfig);
+        setAgentConfigs((current) =>
+          current.map((candidate) =>
+            candidate.id === nextConfig.id
+              ? { ...nextConfig, isDefault: true }
+              : { ...candidate, isDefault: false },
+          ),
+        );
+      } catch (error) {
+        toast.error(formatUserError(t('settings.defaultModel'), error));
+      }
+    },
+    [chat, t],
+  );
   const sessionControls = (chat.agentConfig && agentConfigs.length > 0) || personas.length > 0 ? (
     <div className="flex shrink-0 items-center gap-1.5">
-      {chat.agentConfig && agentConfigs.length > 0 && (
-        <SessionSelect
-          icon={<Cpu className="h-3.5 w-3.5" />}
-          label={t('settings.provider')}
-          value={selectedAgentLabel}
-          detail={selectedAgentDetail}
-          selectValue={chat.agentConfig.id}
-          ariaLabel={t('settings.defaultModel')}
-          title={selectedAgentConfig ? `${selectedAgentConfig.provider} / ${selectedAgentConfig.model}` : t('settings.defaultModel')}
-          onChange={async (value) => {
-            const selected = agentConfigs.find((config) => config.id === value);
-            if (selected) await chat.switchAgentConfig(selected);
-          }}
-          options={agentConfigs.map((config) => ({
-            value: config.id,
-            label: config.name || `${config.provider}/${config.model}`,
-            detail: config.name?.trim()
-              ? `${config.provider} / ${config.model}`
-              : config.model,
-            icon: <ProviderIcon provider={config.provider} size="sm" />,
-          }))}
+      {chat.agentConfig && agentConfigs.length > 0 && selectedAgentConfig && (
+        <AgentModelPicker
+          agentConfigs={agentConfigs}
+          selectedConfig={selectedAgentConfig}
+          onSelect={handleAgentModelSelection}
         />
       )}
       {personas.length > 0 && (

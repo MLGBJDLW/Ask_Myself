@@ -86,6 +86,8 @@ test.beforeEach(async ({ page }) => {
         updatedAt: nowIso,
       },
     ];
+    const savedAgentConfigInputs: Array<Record<string, unknown>> = [];
+    (window as unknown as { __savedAgentConfigInputs?: Array<Record<string, unknown>> }).__savedAgentConfigInputs = savedAgentConfigInputs;
 
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handlerId: number }>();
@@ -117,6 +119,25 @@ test.beforeEach(async ({ page }) => {
             isDefault: config.id === id,
           }));
           return null;
+        }
+        case 'save_agent_config_cmd': {
+          const input = clone((args.config ?? {}) as Record<string, unknown>);
+          savedAgentConfigInputs.push(input);
+          const id = String(input.id ?? '');
+          const existing = configs.find((config) => config.id === id) ?? configs[0];
+          const next = {
+            ...existing,
+            ...input,
+            id: id || existing.id,
+            createdAt: existing.createdAt,
+            updatedAt: new Date().toISOString(),
+          };
+          configs = configs.map((config) =>
+            config.id === next.id
+              ? { ...next, isDefault: true }
+              : { ...config, isDefault: false },
+          );
+          return clone(next);
         }
         case 'update_conversation_model_cmd': {
           const id = String(args.id ?? '');
@@ -188,12 +209,14 @@ test('model selector and context usage follow the active chat model', async ({ p
   await page.goto('/chat/conv-model-switch');
 
   await expect(page.getByText('61% context used').first()).toBeVisible();
-  const modelSelect = page.getByLabel('Default Model');
-  await expect(modelSelect).toHaveValue('cfg-tiny');
+  const modelSelect = page.getByTestId('agent-model-picker-trigger');
+  await expect(modelSelect).toContainText('Tiny Context');
 
-  await modelSelect.selectOption('cfg-large');
+  await modelSelect.click();
+  await page.getByTestId('agent-model-provider-cfg-large').click();
+  await page.getByTestId('agent-model-option-cfg-large-large-context').click();
+  await page.getByTestId('agent-model-apply').click();
 
-  await expect(modelSelect).toHaveValue('cfg-large');
   await expect(modelSelect).toHaveAttribute('title', 'open_ai / large-context');
   await expect(page.getByText('1% context used').first()).toBeVisible();
   await expect(page.getByText('61% context used')).toHaveCount(0);
@@ -207,4 +230,27 @@ test('model selector and context usage follow the active chat model', async ({ p
         .__lastAgentChatArgs?.agentConfigId,
     ),
   ).toBe('cfg-large');
+});
+
+test('model selector saves model and reasoning changes to the agent config', async ({ page }) => {
+  await page.goto('/chat/conv-model-switch');
+
+  const modelSelect = page.getByTestId('agent-model-picker-trigger');
+  await modelSelect.click();
+  await page.getByTestId('agent-model-provider-cfg-tiny').click();
+  await page.getByTestId('agent-model-option-cfg-tiny-gpt-5.5').click();
+  await page.getByTestId('agent-model-reasoning-high').click();
+
+  await expect(modelSelect).toHaveAttribute('title', 'open_ai / gpt-5.5');
+  const savedInput = await page.evaluate(() =>
+    (window as unknown as { __savedAgentConfigInputs?: Array<Record<string, unknown>> })
+      .__savedAgentConfigInputs?.at(-1),
+  );
+  expect(savedInput).toMatchObject({
+    id: 'cfg-tiny',
+    model: 'gpt-5.5',
+    reasoningEnabled: true,
+    thinkingBudget: null,
+    reasoningEffort: 'high',
+  });
 });

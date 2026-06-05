@@ -345,7 +345,12 @@ export function ImageGenerationSettingsPanel({
               ))}
             </select>
             <div className="flex items-center gap-2 text-xs text-text-tertiary">
-              <ProviderIcon provider={activePreset.provider} size="sm" />
+              <ProviderIcon
+                provider={activePreset.provider}
+                providerId={activePreset.id}
+                baseUrl={activePreset.baseUrl}
+                size="sm"
+              />
               <span className="truncate">{activePreset.name}</span>
             </div>
           </div>

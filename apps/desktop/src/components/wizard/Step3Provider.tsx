@@ -140,7 +140,7 @@ export function Step3Provider({
             }`}
           >
             <span className="inline-flex items-center gap-2">
-              <ProviderIcon provider={p.provider} size="sm" />
+              <ProviderIcon provider={p.provider} providerId={p.id} baseUrl={p.baseUrl} size="sm" />
               {p.name}
             </span>
           </button>
