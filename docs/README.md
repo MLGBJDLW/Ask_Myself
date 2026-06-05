@@ -38,8 +38,3 @@ This folder captures the durable product and engineering memory for Nexa, which 
   satisfy.
 - [TOOLS.md](./TOOLS.md)
   Reference for built-in agent tools and their intended routing.
-
-## Historical Notes
-
-- [pre/prd.md](./pre/prd.md)
-  Early product thinking and exploratory notes. Useful as background, but not the active source of truth.
