@@ -72,9 +72,15 @@ impl AgentExecutor {
             .as_deref()
             .unwrap_or(self.provider.as_ref());
         let summ_model = self.config.summarization_model.as_deref().unwrap_or(model);
+        let summ_provider_type = if self.summarization_provider.is_some() {
+            self.config.summarization_provider_type
+        } else {
+            self.config.provider_type
+        };
         let summary = summarizer::summarize_evicted_messages(
             summ_provider,
             summ_model,
+            summ_provider_type,
             evicted,
             &extractive_fallback,
         )
@@ -178,9 +184,15 @@ impl AgentExecutor {
             .as_deref()
             .unwrap_or(self.provider.as_ref());
         let summ_model = self.config.summarization_model.as_deref().unwrap_or(model);
+        let summ_provider_type = if self.summarization_provider.is_some() {
+            self.config.summarization_provider_type
+        } else {
+            self.config.provider_type
+        };
         let summary = summarizer::summarize_evicted_messages(
             summ_provider,
             summ_model,
+            summ_provider_type,
             evicted,
             &extractive_fallback,
         )
@@ -289,9 +301,15 @@ impl AgentExecutor {
             .as_deref()
             .unwrap_or(self.provider.as_ref());
         let summ_model = self.config.summarization_model.as_deref().unwrap_or(model);
+        let summ_provider_type = if self.summarization_provider.is_some() {
+            self.config.summarization_provider_type
+        } else {
+            self.config.provider_type
+        };
         let summary = summarizer::summarize_evicted_messages(
             summ_provider,
             summ_model,
+            summ_provider_type,
             evicted,
             &extractive_fallback,
         )

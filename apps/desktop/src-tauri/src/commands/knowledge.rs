@@ -160,6 +160,7 @@ pub async fn compile_document_cmd(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No default agent config set.".to_string())?;
     let provider_config = db_config_to_provider_config(&db_config, None);
+    let provider_type = provider_config.provider_type;
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
     let result = nexa_core::compile::compile_document(
@@ -167,6 +168,7 @@ pub async fn compile_document_cmd(
         &doc_id,
         provider.as_ref(),
         &db_config.model,
+        Some(provider_type),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -186,12 +188,14 @@ pub async fn compile_pending_documents_cmd(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No default agent config set.".to_string())?;
     let provider_config = db_config_to_provider_config(&db_config, None);
+    let provider_type = provider_config.provider_type;
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
     let results = nexa_core::compile::compile_pending_with_progress(
         &state.db,
         provider.as_ref(),
         &db_config.model,
+        Some(provider_type),
         limit.unwrap_or(10),
         |progress| {
             emit_app_event(&app_handle, "compile:progress", progress);
@@ -274,13 +278,19 @@ pub async fn compile_after_scan_cmd(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No default agent config set.".to_string())?;
     let provider_config = db_config_to_provider_config(&db_config, None);
+    let provider_type = provider_config.provider_type;
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
     let cap = limit.unwrap_or(10);
-    let results =
-        nexa_core::compile::compile_pending(&state.db, provider.as_ref(), &db_config.model, cap)
-            .await
-            .map_err(|e| e.to_string())?;
+    let results = nexa_core::compile::compile_pending(
+        &state.db,
+        provider.as_ref(),
+        &db_config.model,
+        Some(provider_type),
+        cap,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     // Notify frontend of compilation progress
     emit_app_event(

@@ -198,6 +198,16 @@ impl AgentExecutor {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
+        let controller_state_sections_owned = prompt_layout::turn_scaffolding_sections(
+            &route_plan.prompt_section,
+            &task_plan,
+            effective_dynamic_tool_visibility && self.tools.contains("tool_search"),
+            layout,
+        );
+        let controller_state_sections = controller_state_sections_owned
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
         let mut messages = context::prepare_messages_with_options(
             &self.config.system_prompt,
             &history,
@@ -211,15 +221,10 @@ impl AgentExecutor {
             context::PrepareMessagesOptions {
                 include_skill_system_prompt: layout.include_skill_system_prompt,
                 volatile_system_sections: &volatile_system_sections,
+                evidence_sections: &[],
+                controller_state_sections: &controller_state_sections,
                 append_volatile_system_prompt_to_tail: layout.append_volatile_system_prompt_to_tail,
             },
-        );
-        prompt_layout::insert_turn_scaffolding_system_prompts(
-            &mut messages,
-            &route_plan.prompt_section,
-            &task_plan,
-            effective_dynamic_tool_visibility && self.tools.contains("tool_search"),
-            layout,
         );
 
         // --- 2. Privacy redaction on outgoing user content --------------------
@@ -244,6 +249,7 @@ impl AgentExecutor {
         let mut last_iteration_content = String::new();
         let mut last_finish_reason: Option<String> = None;
         let mut persisted_trace_items: Vec<PersistedTraceItem> = Vec::new();
+        let mut persisted_replayable_system_contents: Vec<String> = Vec::new();
         for event in loop_recorder.events().iter().cloned() {
             append_persisted_trace_loop_event(&mut persisted_trace_items, event);
         }
@@ -252,6 +258,7 @@ impl AgentExecutor {
             &route_plan.visibility_decision,
         );
         append_persisted_trace_loaded_skills(&mut persisted_trace_items, &auto_loaded_skills);
+        self.seed_prompt_cache_from_previous_turn(db, conversation_id, turn_id);
 
         // --- 3c. Extract user query text and build cache key -----------------
         let user_query_text = &user_query_text_for_tools;
@@ -364,6 +371,10 @@ impl AgentExecutor {
             db,
             &source_scope,
             &tx,
+            conversation_id,
+            model,
+            &mut sort_order,
+            &mut persisted_replayable_system_contents,
             &mut messages,
             &mut persisted_trace_items,
             &mut task_plan,
@@ -436,8 +447,8 @@ impl AgentExecutor {
                 } else {
                     String::new()
                 };
-                if !budget_hint.is_empty() {
-                    messages.push(Message::text(Role::System, budget_hint));
+                if let Some(message) = prompt_ir::controller_state_message(budget_hint) {
+                    messages.push(message);
                 }
             }
 
@@ -459,6 +470,15 @@ impl AgentExecutor {
                 persisted_trace_items: &mut persisted_trace_items,
             })
             .await;
+            self.persist_unpersisted_replayable_system_messages(
+                db,
+                conversation_id,
+                model,
+                layout,
+                &messages,
+                &mut sort_order,
+                &mut persisted_replayable_system_contents,
+            );
 
             let model_step = self
                 .run_model_step(model_step::ModelStepContext {
@@ -489,33 +509,43 @@ impl AgentExecutor {
                 last_finish_reason: step_finish_reason,
                 mut started_call_ids,
                 mut tool_run_started_ids,
+                prompt_cache_observation,
             } = match model_step {
                 model_step::ModelStepOutcome::Completed(output) => *output,
                 model_step::ModelStepOutcome::Restart => continue 'react_loop,
             };
             last_finish_reason = step_finish_reason;
             // -- 4b. Accumulate usage ------------------------------------------
-            self.record_model_step_usage(
-                usage_accounting::UsageAccountingContext {
-                    tx: &tx,
-                    model,
-                    messages: &mut messages,
-                    context_pipeline,
-                    tool_defs: &tool_defs,
-                    turn_state: &mut turn_state,
-                    loop_recorder: &mut loop_recorder,
-                    persisted_trace_items: &mut persisted_trace_items,
-                    trace: &mut trace,
-                    total_usage: &mut total_usage,
-                    last_prompt_tokens: &mut last_prompt_tokens,
-                    last_context_breakdown: &mut last_context_breakdown,
-                },
-                iteration,
-                tool_calls.len(),
-                last_finish_reason.clone(),
-                chunk_usage,
-            )
-            .await;
+            let usage_report = self
+                .record_model_step_usage(
+                    usage_accounting::UsageAccountingContext {
+                        tx: &tx,
+                        model,
+                        messages: &mut messages,
+                        context_pipeline,
+                        tool_defs: &tool_defs,
+                        turn_state: &mut turn_state,
+                        loop_recorder: &mut loop_recorder,
+                        persisted_trace_items: &mut persisted_trace_items,
+                        trace: &mut trace,
+                        total_usage: &mut total_usage,
+                        last_prompt_tokens: &mut last_prompt_tokens,
+                        last_context_breakdown: &mut last_context_breakdown,
+                    },
+                    iteration,
+                    tool_calls.len(),
+                    last_finish_reason.clone(),
+                    chunk_usage,
+                )
+                .await;
+            if let Some(observation) = prompt_cache_observation {
+                if let Some(value) = prompt_cache::prompt_cache_observation_to_value(
+                    &observation,
+                    usage_report.was_compacted,
+                ) {
+                    append_persisted_trace_prompt_cache(&mut persisted_trace_items, value);
+                }
+            }
 
             if !full_content.trim().is_empty() {
                 last_iteration_content = full_content.clone();
@@ -568,23 +598,33 @@ impl AgentExecutor {
                                 tone: Some("warning".to_string()),
                             })
                             .await;
-                        messages.push(Message::text(Role::System, intervention.prompt.clone()));
+                        self.persist_loop_guard_assistant_draft(
+                            assistant_turn::AssistantTurnPersistenceContext {
+                                db,
+                                conversation_id,
+                                turn_id,
+                                model,
+                                route_kind: route_plan.kind,
+                                persisted_trace_items: &mut persisted_trace_items,
+                                sort_order: &mut sort_order,
+                            },
+                            &assistant_msg,
+                            assistant_reasoning_content.clone(),
+                            &iteration_thinking,
+                        );
+                        if let Some(message) =
+                            prompt_ir::controller_state_message(intervention.prompt.clone())
+                        {
+                            messages.push(message);
+                        }
                         continue;
                     }
                 }
-                let steering_texts = {
-                    let mut steering_ctx = SteeringDrainContext {
-                        db,
-                        conversation_id,
-                        tx: &tx,
-                        model,
-                        sort_order: &mut sort_order,
-                        privacy_cfg: &privacy_cfg,
-                    };
-                    self.drain_steering_messages(&mut messages, &mut steering_ctx)
-                        .await
-                };
-                if !steering_texts.is_empty() {
+                let steering_messages = self.collect_steering_messages(None).await;
+                let has_effective_steering = steering_messages
+                    .iter()
+                    .any(Self::steering_message_has_effective_content);
+                if has_effective_steering {
                     self.persist_steered_assistant_draft(
                         assistant_turn::AssistantTurnPersistenceContext {
                             db,
@@ -599,6 +639,24 @@ impl AgentExecutor {
                         assistant_reasoning_content.clone(),
                         &iteration_thinking,
                     );
+                }
+                let steering_texts = {
+                    let mut steering_ctx = SteeringDrainContext {
+                        db,
+                        conversation_id,
+                        tx: &tx,
+                        model,
+                        sort_order: &mut sort_order,
+                        privacy_cfg: &privacy_cfg,
+                    };
+                    self.apply_steering_messages(
+                        &mut messages,
+                        &mut steering_ctx,
+                        steering_messages,
+                    )
+                    .await
+                };
+                if !steering_texts.is_empty() {
                     self.expand_tool_defs_for_steering(
                         &mut tool_defs,
                         &steering_texts,
@@ -826,5 +884,79 @@ impl AgentExecutor {
             .await;
         turn_state.finish(TurnOutcome::MaxIterations);
         Ok(final_msg)
+    }
+}
+
+impl AgentExecutor {
+    fn persist_unpersisted_replayable_system_messages(
+        &self,
+        db: &Database,
+        conversation_id: Option<&str>,
+        model: &str,
+        layout: prompt_layout::PromptLayout,
+        messages: &[Message],
+        sort_order: &mut i64,
+        persisted_contents: &mut Vec<String>,
+    ) {
+        if !layout.append_volatile_system_prompt_to_tail {
+            return;
+        }
+        let Some(conversation_id) = conversation_id else {
+            return;
+        };
+        let Some(current_user_index) = messages
+            .iter()
+            .rposition(|message| message.role == Role::User)
+        else {
+            return;
+        };
+
+        let mut seen_in_request: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for message in messages.iter().skip(current_user_index + 1) {
+            if message.role != Role::System {
+                continue;
+            }
+            let content = message.text_content();
+            if content.trim().is_empty() {
+                continue;
+            }
+            let seen_count = seen_in_request.entry(content.clone()).or_insert(0);
+            let persisted_count = persisted_contents
+                .iter()
+                .filter(|persisted| *persisted == &content)
+                .count();
+            if *seen_count < persisted_count {
+                *seen_count += 1;
+                continue;
+            }
+
+            let conv_msg = ConversationMessage {
+                id: Uuid::new_v4().to_string(),
+                conversation_id: conversation_id.to_string(),
+                role: Role::System,
+                content: content.clone(),
+                tool_call_id: None,
+                tool_calls: vec![],
+                artifacts: Some(serde_json::json!({
+                    "kind": "replayableRuntimeContext",
+                    "version": 1,
+                    "cachePurpose": "preserve exact-prefix provider prompt continuity across turns",
+                })),
+                token_count: estimate_message_tokens_for_model(model, message),
+                created_at: String::new(),
+                sort_order: *sort_order,
+                thinking: None,
+                image_attachments: None,
+            };
+            if let Err(err) = db.add_message(&conv_msg) {
+                warn!("Failed to persist replayable runtime context: {err}");
+                *seen_count += 1;
+                continue;
+            }
+            persisted_contents.push(content);
+            *sort_order += 1;
+            *seen_count += 1;
+        }
     }
 }

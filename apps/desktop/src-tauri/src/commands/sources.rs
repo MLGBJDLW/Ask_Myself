@@ -569,14 +569,17 @@ fn spawn_learned_success_capture(
     // Try to build a dedicated summarization provider from the default
     // agent config. Falls back to char-truncation distillation if the
     // config is missing or the provider can't be constructed.
-    let (summ_provider, summ_model): (
+    let (summ_provider, summ_model, summ_provider_type): (
         Option<Box<dyn nexa_core::llm::LlmProvider>>,
         Option<String>,
+        Option<ProviderType>,
     ) = match db.get_default_agent_config() {
         Ok(Some(db_config)) => {
             if let Some(ref summ_provider_name) = db_config.summarization_provider {
+                let provider_type =
+                    provider_type_for_parts(summ_provider_name, db_config.base_url.as_deref());
                 let summ_config = ProviderConfig {
-                    provider_type: provider_type_for_parts(summ_provider_name, None),
+                    provider_type,
                     api_key: Some(db_config.api_key.clone()),
                     base_url: db_config.base_url.clone(),
                     org_id: None,
@@ -588,23 +591,23 @@ fn spawn_learned_success_capture(
                             .summarization_model
                             .clone()
                             .unwrap_or_else(|| db_config.model.clone());
-                        (Some(p), Some(model))
+                        (Some(p), Some(model), Some(provider_type))
                     }
                     Err(e) => {
                         warn!(
                             "learned_success: summarization provider unavailable ({e}); using char truncation"
                         );
-                        (None, None)
+                        (None, None, None)
                     }
                 }
             } else {
-                (None, None)
+                (None, None, None)
             }
         }
-        Ok(None) => (None, None),
+        Ok(None) => (None, None, None),
         Err(e) => {
             warn!("learned_success: failed to load agent config ({e}); using char truncation");
-            (None, None)
+            (None, None, None)
         }
     };
 
@@ -624,6 +627,7 @@ fn spawn_learned_success_capture(
             &assistant_message_id_bg,
             summ_provider.as_deref(),
             summ_model.as_deref(),
+            summ_provider_type,
         )
         .await
         {

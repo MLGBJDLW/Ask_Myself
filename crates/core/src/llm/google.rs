@@ -207,7 +207,7 @@ fn parse_finish_reason(s: &str) -> FinishReason {
 }
 
 /// Convert unified messages to Gemini format.
-/// System messages are extracted as top-level systemInstruction.
+/// Only the leading system prefix is extracted as top-level systemInstruction.
 fn convert_messages(
     messages: &[Message],
 ) -> (Option<GeminiSystemInstructionV2>, Vec<GeminiContentV2>) {
@@ -215,12 +215,22 @@ fn convert_messages(
     let mut contents: Vec<GeminiContentV2> = Vec::new();
     let mut tool_id_to_name: HashMap<String, String> = HashMap::new();
 
-    for msg in messages {
+    for (index, msg) in messages.iter().enumerate() {
         match msg.role {
             Role::System => {
-                system_parts.push(GeminiPartV2::Text {
-                    text: msg.text_content(),
-                });
+                let text = msg.text_content();
+                if messages
+                    .iter()
+                    .take(index)
+                    .all(|message| message.role == Role::System)
+                {
+                    system_parts.push(GeminiPartV2::Text { text });
+                } else if !text.is_empty() {
+                    contents.push(GeminiContentV2 {
+                        role: "user".to_string(),
+                        parts: vec![GeminiPartV2::Text { text }],
+                    });
+                }
             }
             Role::User => {
                 let parts: Vec<GeminiPartV2> = msg
@@ -966,6 +976,31 @@ impl LlmProvider for GeminiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_convert_messages_keeps_only_leading_system_as_system_instruction() {
+        let messages = vec![
+            Message::text(Role::System, "stable prompt"),
+            Message::text(Role::User, "question"),
+            Message::text(Role::System, "runtime tail"),
+        ];
+
+        let (system, contents) = convert_messages(&messages);
+
+        let system = system.expect("system instruction");
+        assert_eq!(system.parts.len(), 1);
+        match &system.parts[0] {
+            GeminiPartV2::Text { text } => assert_eq!(text, "stable prompt"),
+            _ => panic!("expected text system part"),
+        }
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[0].role, "user");
+        assert_eq!(contents[1].role, "user");
+        match &contents[1].parts[0] {
+            GeminiPartV2::Text { text } => assert_eq!(text, "runtime tail"),
+            _ => panic!("expected text context part"),
+        }
+    }
 
     #[test]
     fn test_convert_messages_maps_tool_call_id_to_function_name() {

@@ -771,11 +771,13 @@ impl AgentExecutor {
 
         for completed in completed_for_context.into_iter().flatten() {
             let tc = completed.call;
-            let content = completed.content;
+            let content = compact_tool_result_for_context(&tc.name, &completed.content);
             let duration_ms = completed.duration_ms;
             let tool_artifacts = completed.artifacts;
 
-            // Save tool result message to DB.
+            // Save the same canonical LLM-context tool result that is pushed
+            // into the current provider request so later history replay does
+            // not diverge at tool-result boundaries.
             if let Some(cid) = conversation_id {
                 let tool_conv_msg = ConversationMessage {
                     id: Uuid::new_v4().to_string(),
@@ -797,20 +799,13 @@ impl AgentExecutor {
                 *sort_order += 1;
             }
 
-            // Truncate large tool results for LLM context to prevent
-            // crowding out conversation history.
-            let context_content = compact_tool_result_for_context(&tc.name, &content);
-
-            messages.push(Message::text_with_name(
-                Role::Tool,
-                context_content,
-                tc.id.clone(),
-            ));
+            messages.push(Message::text_with_name(Role::Tool, content, tc.id.clone()));
 
             // Trace: record tool execution step
             if let Some(ref mut t) = trace {
                 t.add_step(TraceStep {
                     iteration,
+                    request_kind: self.config.request_kind.as_str().to_string(),
                     tool_name: Some(tc.name.clone()),
                     tool_duration_ms: Some(duration_ms),
                     input_tokens: 0,
@@ -824,7 +819,9 @@ impl AgentExecutor {
             }
         }
         if let Some(prompt) = post_tool_loop_guard_prompt {
-            messages.push(Message::text(Role::System, prompt));
+            if let Some(message) = prompt_ir::controller_state_message(prompt) {
+                messages.push(message);
+            }
         }
     }
 }

@@ -2,18 +2,32 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use super::*;
 use crate::conversation::memory::estimate_message_tokens_for_model;
+use crate::db::Database;
 
 const MIN_CACHE_BREAK_TOKEN_DROP: u32 = 1_000;
 const MAX_STABLE_CACHE_READ_RATIO: f32 = 0.95;
 const PREFIX_HASH_TOKEN_WINDOWS: [u32; 3] = [1_024, 4_096, 16_384];
+const DEEPSEEK_CACHE_SETTLE_RISK_MS: u64 = 2_000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PromptCacheSnapshot {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PromptCacheMessageFingerprint {
+    role: String,
+    text_hash: u64,
+    tool_calls_hash: u64,
+    reasoning_hash: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PromptCacheSnapshot {
     provider_type: Option<ProviderType>,
     model: String,
     stable_system_hash: u64,
@@ -21,6 +35,7 @@ struct PromptCacheSnapshot {
     tool_count: usize,
     tool_names: Vec<String>,
     message_hashes: Vec<u64>,
+    message_fingerprints: Vec<PromptCacheMessageFingerprint>,
     prefix_hashes: [u64; 3],
     system_message_positions: Vec<usize>,
     system_message_hashes: Vec<u64>,
@@ -28,11 +43,53 @@ struct PromptCacheSnapshot {
     tool_result_tokens: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct PromptCacheSnapshotSource {
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PromptCacheTraceObservation {
+    version: u32,
+    request_kind: String,
+    snapshot: PromptCacheSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_snapshot_source: Option<PromptCacheSnapshotSource>,
+    changes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_read_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_miss_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_creation_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    was_compacted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_step_interval_ms: Option<u64>,
+    fast_cache_settle_risk: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PendingPromptCacheObservation {
+    request_kind: String,
+    snapshot: PromptCacheSnapshot,
+    previous_snapshot_source: Option<PromptCacheSnapshotSource>,
+    changes: Vec<String>,
+    model_step_interval_ms: Option<u64>,
+    fast_cache_settle_risk: bool,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct PromptCacheTracker {
     previous_snapshot: Option<PromptCacheSnapshot>,
+    previous_snapshot_source: Option<PromptCacheSnapshotSource>,
     previous_cache_read_tokens: Option<u32>,
-    pending_changes: Vec<String>,
+    pending_observation: Option<PendingPromptCacheObservation>,
+    previous_begin_at: Option<Instant>,
 }
 
 fn hash_text(value: &str) -> u64 {
@@ -77,6 +134,15 @@ fn serialized_message_for_hash(message: &Message) -> String {
 
 fn message_hash(message: &Message) -> u64 {
     hash_text(&serialized_message_for_hash(message))
+}
+
+fn message_fingerprint(message: &Message) -> PromptCacheMessageFingerprint {
+    PromptCacheMessageFingerprint {
+        role: role_label(&message.role).to_string(),
+        text_hash: hash_text(&message.text_content()),
+        tool_calls_hash: hash_text(&serde_json::to_string(&message.tool_calls).unwrap_or_default()),
+        reasoning_hash: hash_text(message.reasoning_content.as_deref().unwrap_or_default()),
+    }
 }
 
 fn prefix_hash_for_token_budget(model: &str, messages: &[Message], token_budget: u32) -> u64 {
@@ -156,6 +222,7 @@ fn snapshot_for(
         tool_count: tools.len(),
         tool_names: tools.iter().map(|tool| tool.name.clone()).collect(),
         message_hashes: messages.iter().map(message_hash).collect(),
+        message_fingerprints: messages.iter().map(message_fingerprint).collect(),
         prefix_hashes: PREFIX_HASH_TOKEN_WINDOWS
             .map(|window| prefix_hash_for_token_budget(model, messages, window)),
         system_message_positions: system_message_positions(messages),
@@ -195,6 +262,25 @@ fn diff_snapshots(previous: &PromptCacheSnapshot, next: &PromptCacheSnapshot) ->
     if let Some(index) = first_changed_message_index(&previous.message_hashes, &next.message_hashes)
     {
         changes.push(format!("first changed message index {index}"));
+        match (
+            previous.message_fingerprints.get(index),
+            next.message_fingerprints.get(index),
+        ) {
+            (Some(previous), Some(next)) => {
+                if previous.text_hash != next.text_hash {
+                    changes.push(format!("message {index} text hash changed"));
+                }
+                if previous.tool_calls_hash != next.tool_calls_hash {
+                    changes.push(format!("message {index} tool calls hash changed"));
+                }
+                if previous.reasoning_hash != next.reasoning_hash {
+                    changes.push(format!("message {index} reasoning hash changed"));
+                }
+            }
+            (None, Some(_)) => changes.push(format!("message {index} was added")),
+            (Some(_), None) => changes.push(format!("message {index} was removed")),
+            (None, None) => {}
+        }
     }
     if previous.prefix_hashes != next.prefix_hashes {
         let changed = PREFIX_HASH_TOKEN_WINDOWS
@@ -234,25 +320,57 @@ fn diff_snapshots(previous: &PromptCacheSnapshot, next: &PromptCacheSnapshot) ->
 impl PromptCacheTracker {
     fn begin(
         &mut self,
+        request_kind: &str,
         provider_type: Option<ProviderType>,
         model: &str,
         messages: &[Message],
         tools: &[ToolDefinition],
     ) {
+        let now = Instant::now();
+        let model_step_interval_ms = self.previous_begin_at.map(|previous| {
+            u64::try_from(now.duration_since(previous).as_millis()).unwrap_or(u64::MAX)
+        });
+        self.previous_begin_at = Some(now);
         let next = snapshot_for(provider_type, model, messages, tools);
-        self.pending_changes = self
+        let changes = self
             .previous_snapshot
             .as_ref()
             .map(|previous| diff_snapshots(previous, &next))
             .unwrap_or_default();
+        let previous_snapshot_source = self.previous_snapshot_source.clone();
+        let fast_cache_settle_risk = matches!(provider_type, Some(ProviderType::DeepSeek))
+            && model_step_interval_ms
+                .is_some_and(|elapsed| elapsed < DEEPSEEK_CACHE_SETTLE_RISK_MS);
+        self.pending_observation = Some(PendingPromptCacheObservation {
+            request_kind: request_kind.to_string(),
+            snapshot: next.clone(),
+            previous_snapshot_source,
+            changes,
+            model_step_interval_ms,
+            fast_cache_settle_risk,
+        });
         self.previous_snapshot = Some(next);
+        self.previous_snapshot_source = Some(PromptCacheSnapshotSource {
+            kind: "currentTurnPreviousStep".to_string(),
+            turn_id: None,
+        });
     }
 
-    fn complete(&mut self, cache_read_tokens: Option<u32>, cache_creation_tokens: Option<u32>) {
-        let Some(cache_read_tokens) = cache_read_tokens else {
-            self.pending_changes.clear();
-            return;
-        };
+    fn seed_previous_turn_snapshot(&mut self, turn_id: String, snapshot: PromptCacheSnapshot) {
+        self.previous_snapshot = Some(snapshot);
+        self.previous_snapshot_source = Some(PromptCacheSnapshotSource {
+            kind: "previousConversationTurn".to_string(),
+            turn_id: Some(turn_id),
+        });
+        self.previous_cache_read_tokens = None;
+        self.pending_observation = None;
+    }
+
+    fn complete(
+        &mut self,
+        usage: Option<&Usage>,
+        was_compacted: Option<bool>,
+    ) -> Option<PromptCacheTraceObservation> {
         let provider_type = self
             .previous_snapshot
             .as_ref()
@@ -262,44 +380,103 @@ impl PromptCacheTracker {
             .as_ref()
             .map(|snapshot| snapshot.model.as_str())
             .unwrap_or_default();
-        let previous = self.previous_cache_read_tokens;
-        self.previous_cache_read_tokens = Some(cache_read_tokens);
-        let Some(previous_cache_read_tokens) = previous else {
-            debug!(
-                ?provider_type,
-                model, cache_read_tokens, cache_creation_tokens, "prompt cache baseline recorded"
-            );
-            self.pending_changes.clear();
-            return;
-        };
 
-        let token_drop = previous_cache_read_tokens.saturating_sub(cache_read_tokens);
-        let ratio = if previous_cache_read_tokens == 0 {
-            1.0
-        } else {
-            cache_read_tokens as f32 / previous_cache_read_tokens as f32
-        };
-        if token_drop >= MIN_CACHE_BREAK_TOKEN_DROP && ratio < MAX_STABLE_CACHE_READ_RATIO {
-            let reason = if self.pending_changes.is_empty() {
-                "prompt unchanged; likely provider-side TTL/routing/eviction".to_string()
+        let cache_read_tokens = usage.and_then(|usage| usage.cache_read_tokens);
+        let cache_miss_tokens = usage.and_then(|usage| usage.cache_miss_tokens);
+        let cache_creation_tokens = usage.and_then(|usage| usage.cache_creation_tokens);
+        if let Some(cache_read_tokens) = cache_read_tokens {
+            let previous = self.previous_cache_read_tokens;
+            self.previous_cache_read_tokens = Some(cache_read_tokens);
+            if let Some(previous_cache_read_tokens) = previous {
+                let token_drop = previous_cache_read_tokens.saturating_sub(cache_read_tokens);
+                let ratio = if previous_cache_read_tokens == 0 {
+                    1.0
+                } else {
+                    cache_read_tokens as f32 / previous_cache_read_tokens as f32
+                };
+                if token_drop >= MIN_CACHE_BREAK_TOKEN_DROP && ratio < MAX_STABLE_CACHE_READ_RATIO {
+                    let changes = self
+                        .pending_observation
+                        .as_ref()
+                        .map(|pending| pending.changes.as_slice())
+                        .unwrap_or_default();
+                    let reason = if changes.is_empty() {
+                        "prompt unchanged; likely provider-side TTL/routing/eviction".to_string()
+                    } else {
+                        changes.join(", ")
+                    };
+                    warn!(
+                        ?provider_type,
+                        model,
+                        previous_cache_read_tokens,
+                        cache_read_tokens,
+                        cache_creation_tokens,
+                        reason,
+                        "provider prompt cache read dropped"
+                    );
+                }
             } else {
-                self.pending_changes.join(", ")
-            };
-            warn!(
-                ?provider_type,
-                model,
-                previous_cache_read_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
-                reason,
-                "provider prompt cache read dropped"
-            );
+                debug!(
+                    ?provider_type,
+                    model,
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                    "prompt cache baseline recorded"
+                );
+            }
         }
-        self.pending_changes.clear();
+
+        self.pending_observation
+            .take()
+            .map(|pending| PromptCacheTraceObservation {
+                version: 1,
+                request_kind: pending.request_kind,
+                snapshot: pending.snapshot,
+                previous_snapshot_source: pending.previous_snapshot_source,
+                changes: pending.changes,
+                cache_read_tokens,
+                cache_miss_tokens,
+                cache_creation_tokens,
+                was_compacted,
+                model_step_interval_ms: pending.model_step_interval_ms,
+                fast_cache_settle_risk: pending.fast_cache_settle_risk,
+            })
     }
 }
 
 impl AgentExecutor {
+    pub(super) fn seed_prompt_cache_from_previous_turn(
+        &self,
+        db: &Database,
+        conversation_id: Option<&str>,
+        current_turn_id: Option<&str>,
+    ) {
+        let Some(conversation_id) = conversation_id else {
+            return;
+        };
+        let Ok(turns) = db.get_conversation_turns(conversation_id) else {
+            return;
+        };
+        let Some(previous) = turns
+            .iter()
+            .rev()
+            .filter(|turn| Some(turn.id.as_str()) != current_turn_id)
+            .find(|turn| turn.finished_at.is_some())
+        else {
+            return;
+        };
+        let Some(snapshot) = previous
+            .trace
+            .as_ref()
+            .and_then(prompt_cache_snapshot_from_turn_trace)
+        else {
+            return;
+        };
+        if let Ok(mut tracker) = self.prompt_cache_tracker.lock() {
+            tracker.seed_previous_turn_snapshot(previous.id.clone(), snapshot);
+        }
+    }
+
     pub(super) fn begin_prompt_cache_observation(
         &self,
         model: &str,
@@ -307,18 +484,46 @@ impl AgentExecutor {
         tools: &[ToolDefinition],
     ) {
         if let Ok(mut tracker) = self.prompt_cache_tracker.lock() {
-            tracker.begin(self.config.provider_type, model, messages, tools);
+            tracker.begin(
+                self.config.request_kind.as_str(),
+                self.config.provider_type,
+                model,
+                messages,
+                tools,
+            );
         }
     }
 
-    pub(super) fn complete_prompt_cache_observation(&self, usage: Option<&Usage>) {
-        let Some(usage) = usage else {
-            return;
-        };
+    pub(super) fn complete_prompt_cache_observation(
+        &self,
+        usage: Option<&Usage>,
+        was_compacted: Option<bool>,
+    ) -> Option<PromptCacheTraceObservation> {
         if let Ok(mut tracker) = self.prompt_cache_tracker.lock() {
-            tracker.complete(usage.cache_read_tokens, usage.cache_creation_tokens);
+            return tracker.complete(usage, was_compacted);
         }
+        None
     }
+}
+
+pub(super) fn prompt_cache_observation_to_value(
+    observation: &PromptCacheTraceObservation,
+    was_compacted: bool,
+) -> Option<serde_json::Value> {
+    let mut observation = observation.clone();
+    observation.was_compacted = Some(was_compacted);
+    serde_json::to_value(observation).ok()
+}
+
+fn prompt_cache_snapshot_from_turn_trace(trace: &serde_json::Value) -> Option<PromptCacheSnapshot> {
+    let items = trace.get("items")?.as_array()?;
+    items
+        .iter()
+        .rev()
+        .filter(|item| item.get("kind").and_then(serde_json::Value::as_str) == Some("promptCache"))
+        .filter_map(|item| item.get("observation"))
+        .filter_map(|observation| observation.get("snapshot"))
+        .find_map(|snapshot| serde_json::from_value(snapshot.clone()).ok())
 }
 
 #[cfg(test)]
@@ -403,5 +608,69 @@ mod tests {
             diff_snapshots(&previous, &next),
             vec!["provider type changed (Some(OpenAi) -> Some(DeepSeek))"]
         );
+    }
+
+    #[test]
+    fn snapshot_diff_reports_reasoning_hash_changes() {
+        let mut previous_message = msg(Role::Assistant, "same answer");
+        previous_message.reasoning_content = Some("first reasoning".to_string());
+        let mut next_message = msg(Role::Assistant, "same answer");
+        next_message.reasoning_content = Some("second reasoning".to_string());
+        let previous = snapshot_for(None, "m", &[previous_message], &[]);
+        let next = snapshot_for(None, "m", &[next_message], &[]);
+
+        let diff = diff_snapshots(&previous, &next);
+
+        assert!(diff
+            .iter()
+            .any(|change| change == "message 0 reasoning hash changed"));
+    }
+
+    #[test]
+    fn tracker_records_deepseek_fast_cache_settle_risk_bucket() {
+        let mut tracker = PromptCacheTracker::default();
+        tracker.begin(
+            "mainAgentStep",
+            Some(ProviderType::DeepSeek),
+            "deepseek-chat",
+            &[msg(Role::System, "stable"), msg(Role::User, "first")],
+            &[],
+        );
+        let first = tracker
+            .complete(None, Some(false))
+            .expect("first observation");
+        assert_eq!(first.model_step_interval_ms, None);
+        assert!(!first.fast_cache_settle_risk);
+
+        tracker.begin(
+            "mainAgentStep",
+            Some(ProviderType::DeepSeek),
+            "deepseek-chat",
+            &[
+                msg(Role::System, "stable"),
+                msg(Role::User, "first"),
+                msg(Role::Assistant, "answer"),
+            ],
+            &[],
+        );
+        let second = tracker
+            .complete(None, Some(false))
+            .expect("second observation");
+        assert!(second
+            .model_step_interval_ms
+            .is_some_and(|elapsed| elapsed < DEEPSEEK_CACHE_SETTLE_RISK_MS));
+        assert!(second.fast_cache_settle_risk);
+    }
+
+    #[test]
+    fn tracker_records_request_kind() {
+        let mut tracker = PromptCacheTracker::default();
+        tracker.begin("subagentWorker", None, "m", &[msg(Role::User, "work")], &[]);
+
+        let observation = tracker
+            .complete(None, Some(false))
+            .expect("prompt cache observation");
+
+        assert_eq!(observation.request_kind, "subagentWorker");
     }
 }

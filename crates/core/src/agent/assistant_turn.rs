@@ -20,6 +20,61 @@ impl AgentExecutor {
         assistant_reasoning_content: Option<String>,
         iteration_thinking: &str,
     ) {
+        self.persist_replayable_assistant_draft(
+            ctx,
+            assistant_msg,
+            assistant_reasoning_content,
+            iteration_thinking,
+            Some("Applied user steering after an assistant draft and continued the turn."),
+            "steered assistant draft",
+        );
+    }
+
+    pub(super) fn persist_stream_interrupted_assistant_draft(
+        &self,
+        ctx: AssistantTurnPersistenceContext<'_>,
+        assistant_msg: &Message,
+        assistant_reasoning_content: Option<String>,
+        iteration_thinking: &str,
+    ) {
+        self.persist_replayable_assistant_draft(
+            ctx,
+            assistant_msg,
+            assistant_reasoning_content,
+            iteration_thinking,
+            None,
+            "stream-interrupted assistant draft",
+        );
+    }
+
+    pub(super) fn persist_loop_guard_assistant_draft(
+        &self,
+        ctx: AssistantTurnPersistenceContext<'_>,
+        assistant_msg: &Message,
+        assistant_reasoning_content: Option<String>,
+        iteration_thinking: &str,
+    ) {
+        self.persist_replayable_assistant_draft(
+            ctx,
+            assistant_msg,
+            assistant_reasoning_content,
+            iteration_thinking,
+            Some(
+                "Loop guard requested a strategy change after an assistant draft and continued the turn.",
+            ),
+            "loop-guard assistant draft",
+        );
+    }
+
+    fn persist_replayable_assistant_draft(
+        &self,
+        ctx: AssistantTurnPersistenceContext<'_>,
+        assistant_msg: &Message,
+        assistant_reasoning_content: Option<String>,
+        iteration_thinking: &str,
+        status_message: Option<&str>,
+        warning_label: &str,
+    ) {
         let AssistantTurnPersistenceContext {
             db,
             conversation_id,
@@ -31,11 +86,9 @@ impl AgentExecutor {
         } = ctx;
 
         append_persisted_trace_thinking(persisted_trace_items, iteration_thinking);
-        append_persisted_trace_status(
-            persisted_trace_items,
-            "Applied user steering after an assistant draft and continued the turn.",
-            "info",
-        );
+        if let Some(status_message) = status_message {
+            append_persisted_trace_status(persisted_trace_items, status_message, "info");
+        }
         if let Some(cid) = conversation_id {
             let conv_msg = ConversationMessage {
                 id: Uuid::new_v4().to_string(),
@@ -52,7 +105,7 @@ impl AgentExecutor {
                 image_attachments: None,
             };
             if let Err(e) = db.add_message(&conv_msg) {
-                warn!("Failed to save steered assistant draft: {e}");
+                warn!("Failed to save {warning_label}: {e}");
             } else {
                 *sort_order += 1;
             }

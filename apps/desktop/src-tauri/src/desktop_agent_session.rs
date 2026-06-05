@@ -14,7 +14,7 @@ use chrono::{Local, SecondsFormat, Utc};
 use log::{info, warn};
 use nexa_core::agent::{
     build_system_prompt, AgentConfig, AgentEvent, AgentExecutionMode, AgentExecutor,
-    AgentSteeringMessage, CancellationToken, ConfirmationCallback,
+    AgentRequestKind, AgentSteeringMessage, CancellationToken, ConfirmationCallback,
 };
 use nexa_core::agent_run::AgentRunPhase;
 use nexa_core::app_settings::AppConfig;
@@ -459,7 +459,7 @@ pub fn desktop_summarization_provider_config(db_config: &DbAgentConfig) -> Optio
         .summarization_provider
         .as_ref()
         .map(|provider_name| ProviderConfig {
-            provider_type: provider_type_for_parts(provider_name, None),
+            provider_type: provider_type_for_parts(provider_name, db_config.base_url.as_deref()),
             api_key: Some(db_config.api_key.clone()),
             base_url: db_config.base_url.clone(),
             org_id: None,
@@ -483,7 +483,7 @@ pub fn desktop_memory_extraction_model(db_config: &DbAgentConfig) -> &str {
 pub fn desktop_memory_extraction_provider_config(db_config: &DbAgentConfig) -> ProviderConfig {
     if let Some(ref provider_name) = db_config.summarization_provider {
         ProviderConfig {
-            provider_type: provider_type_for_parts(provider_name, None),
+            provider_type: provider_type_for_parts(provider_name, db_config.base_url.as_deref()),
             api_key: Some(db_config.api_key.clone()),
             base_url: db_config.base_url.clone(),
             org_id: None,
@@ -513,12 +513,14 @@ pub async fn run_desktop_agent_post_success_learning(
     if app_cfg.auto_memory_extraction {
         let extract_model = desktop_memory_extraction_model(&db_config).to_string();
         let extract_provider_config = desktop_memory_extraction_provider_config(&db_config);
+        let extract_provider_type = extract_provider_config.provider_type;
         if let Ok(extract_llm) = create_provider(extract_provider_config) {
             match nexa_core::personalization::auto_extract_and_save(
                 &db,
                 &conversation_id,
                 extract_llm.as_ref(),
                 &extract_model,
+                Some(extract_provider_type),
             )
             .await
             {
@@ -912,7 +914,10 @@ pub fn build_desktop_agent_turn_config(
                 _ => None,
             }),
         provider_type: Some(provider_type_for_config(db_config)),
+        request_kind: AgentRequestKind::MainAgentStep,
         summarization_model: db_config.summarization_model.clone(),
+        summarization_provider_type: desktop_summarization_provider_config(db_config)
+            .map(|config| config.provider_type),
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
@@ -1817,6 +1822,17 @@ mod tests {
     }
 
     #[test]
+    fn desktop_summarization_provider_config_sniffs_actual_base_url() {
+        let mut db_config = test_agent_config();
+        db_config.summarization_provider = Some("open_ai".to_string());
+        db_config.base_url = Some("https://api.deepseek.com".to_string());
+
+        let config = desktop_summarization_provider_config(&db_config).expect("provider override");
+
+        assert_eq!(config.provider_type, ProviderType::DeepSeek);
+    }
+
+    #[test]
     fn desktop_memory_extraction_provider_config_uses_summary_overrides() {
         let mut db_config = test_agent_config();
         db_config.provider = "ollama".to_string();
@@ -1832,6 +1848,11 @@ mod tests {
 
         assert_eq!(override_config.provider_type, ProviderType::OpenAi);
         assert_eq!(override_config.api_key.as_deref(), Some("test-key"));
+
+        db_config.base_url = Some("https://api.deepseek.com/v1".to_string());
+        let sniffed_config = desktop_memory_extraction_provider_config(&db_config);
+
+        assert_eq!(sniffed_config.provider_type, ProviderType::DeepSeek);
     }
 
     #[test]

@@ -14,6 +14,10 @@ impl AgentExecutor {
         db: &Database,
         source_scope: &[String],
         tx: &mpsc::Sender<AgentEvent>,
+        conversation_id: Option<&str>,
+        model: &str,
+        sort_order: &mut i64,
+        persisted_replayable_system_contents: &mut Vec<String>,
         messages: &mut Vec<Message>,
         persisted_trace_items: &mut Vec<PersistedTraceItem>,
         task_plan: &mut AgentTaskPlan,
@@ -134,7 +138,39 @@ impl AgentExecutor {
             }
         }
 
-        append_prefetched_contexts_to_latest_user(messages, prefetched_contexts);
+        let evidence_message =
+            append_prefetched_contexts_as_evidence(messages, prefetched_contexts);
+        if let (Some(conversation_id), Some(evidence_message)) =
+            (conversation_id, evidence_message.as_ref())
+        {
+            let content = evidence_message.text_content();
+            let conv_msg = ConversationMessage {
+                id: Uuid::new_v4().to_string(),
+                conversation_id: conversation_id.to_string(),
+                role: Role::System,
+                content: content.clone(),
+                tool_call_id: None,
+                tool_calls: vec![],
+                artifacts: Some(serde_json::json!({
+                    "kind": "replayableRetrievedEvidence",
+                    "version": 1,
+                    "promptLayer": "evidence",
+                    "cachePurpose": "preserve pre-search evidence across provider prompt replay",
+                })),
+                token_count: estimate_message_tokens_for_model(model, evidence_message),
+                created_at: String::new(),
+                sort_order: *sort_order,
+                thinking: None,
+                image_attachments: None,
+            };
+            match db.add_message(&conv_msg) {
+                Ok(()) => {
+                    persisted_replayable_system_contents.push(content);
+                    *sort_order += 1;
+                }
+                Err(err) => warn!("Failed to persist pre-search evidence context: {err}"),
+            }
+        }
     }
 }
 
@@ -147,24 +183,25 @@ fn prefetched_context_text(contexts: Vec<String>) -> String {
     )
 }
 
-fn append_prefetched_contexts_to_latest_user(messages: &mut Vec<Message>, contexts: Vec<String>) {
+fn append_prefetched_contexts_as_evidence(
+    messages: &mut Vec<Message>,
+    contexts: Vec<String>,
+) -> Option<Message> {
     if contexts.is_empty() {
-        return;
+        return None;
     }
 
     let context = prefetched_context_text(contexts);
-    if let Some(user_message) = messages
-        .iter_mut()
-        .rev()
-        .find(|message| message.role == Role::User)
+    let message = prompt_ir::evidence_message(context)?;
+    if let Some(user_index) = messages
+        .iter()
+        .rposition(|message| message.role == Role::User)
     {
-        user_message
-            .parts
-            .insert(0, ContentPart::Text { text: context });
-        return;
+        messages.insert(user_index + 1, message.clone());
+    } else {
+        messages.push(message.clone());
     }
-
-    messages.push(Message::text(Role::User, context));
+    Some(message)
 }
 
 fn graph_guided_search_args(
@@ -313,20 +350,25 @@ mod tests {
     }
 
     #[test]
-    fn prefetched_context_is_user_observation_not_system_prompt() {
+    fn prefetched_context_is_evidence_not_user_mutation() {
         let mut messages = vec![
             Message::text(Role::System, "stable"),
             Message::text(Role::User, "answer this"),
         ];
 
-        append_prefetched_contexts_to_latest_user(&mut messages, vec!["evidence".to_string()]);
+        let evidence =
+            append_prefetched_contexts_as_evidence(&mut messages, vec!["evidence".to_string()])
+                .expect("evidence message");
 
-        assert_eq!(messages.len(), 2);
+        assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].role, Role::System);
         assert_eq!(messages[1].role, Role::User);
-        assert!(messages[1].text_content().contains("Retrieved Context"));
-        assert!(messages[1].text_content().contains("evidence"));
-        assert!(messages[1].text_content().contains("not instructions"));
-        assert!(messages[1].text_content().contains("answer this"));
+        assert_eq!(messages[1].text_content(), "answer this");
+        assert_eq!(messages[2].role, Role::System);
+        assert_eq!(messages[2].text_content(), evidence.text_content());
+        assert!(messages[2].text_content().contains("Retrieved Context"));
+        assert!(messages[2].text_content().contains("evidence"));
+        assert!(messages[2].text_content().contains("not instructions"));
+        assert!(!messages[2].text_content().contains("answer this"));
     }
 }

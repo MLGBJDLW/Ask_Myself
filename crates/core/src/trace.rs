@@ -73,6 +73,8 @@ pub enum TraceOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceStep {
     pub iteration: u32,
+    #[serde(default = "default_trace_step_request_kind")]
+    pub request_kind: String,
     pub tool_name: Option<String>,
     pub tool_duration_ms: Option<u64>,
     pub input_tokens: u64,
@@ -85,6 +87,10 @@ pub struct TraceStep {
     pub cache_creation_tokens: Option<u64>,
     pub context_usage_pct: f32,
     pub was_compacted: bool,
+}
+
+fn default_trace_step_request_kind() -> String {
+    "mainAgentStep".to_string()
 }
 
 impl AgentTrace {
@@ -188,8 +194,23 @@ pub struct TraceSummary {
     pub cache_hit_rate: f64,
     /// Most-used tools with their call counts.
     pub top_tools: Vec<(String, u64)>,
+    /// Prompt-cache buckets split by request kind and compaction state.
+    #[serde(default)]
+    pub cache_buckets: Vec<TraceCacheBucket>,
     pub sessions_last_7_days: u64,
     pub tokens_last_7_days: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceCacheBucket {
+    pub request_kind: String,
+    pub was_compacted: bool,
+    pub step_count: u64,
+    pub cache_read_tokens: u64,
+    pub cache_miss_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub hit_rate: f64,
 }
 
 impl std::str::FromStr for TraceOutcome {

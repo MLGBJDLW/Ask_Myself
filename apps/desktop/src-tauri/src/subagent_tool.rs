@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 
 use nexa_core::agent::context::estimate_tool_tokens_for_model;
-use nexa_core::agent::{AgentConfig, AgentEvent, AgentExecutor, CancellationToken};
+use nexa_core::agent::{
+    AgentConfig, AgentEvent, AgentExecutor, AgentRequestKind, CancellationToken,
+};
 use nexa_core::conversation::memory::estimate_tokens_for_model;
 use nexa_core::db::Database;
 use nexa_core::error::CoreError;
@@ -1532,6 +1534,7 @@ async fn run_subagent_once(
     );
     let timeout_secs = estimate_subagent_timeout_secs(&runtime, &args, role_profile);
     config.agent_timeout_secs = Some(timeout_secs as u32);
+    config.request_kind = AgentRequestKind::SubagentWorker;
     config.system_prompt =
         build_subagent_system_prompt(&config.system_prompt, args.role.as_deref(), role_profile);
 

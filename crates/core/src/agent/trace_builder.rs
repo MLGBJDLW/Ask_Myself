@@ -73,6 +73,7 @@ pub(super) enum PersistedTraceItem {
     Status { text: String, tone: String },
     Loop { event: TurnLoopEvent },
     ToolVisibility { decision: ToolVisibilityDecision },
+    PromptCache { observation: serde_json::Value },
 }
 
 pub(super) fn append_persisted_trace_thinking(items: &mut Vec<PersistedTraceItem>, text: &str) {
@@ -178,6 +179,13 @@ pub(super) fn append_persisted_trace_visibility(
     items.push(PersistedTraceItem::ToolVisibility {
         decision: decision.clone(),
     });
+}
+
+pub(super) fn append_persisted_trace_prompt_cache(
+    items: &mut Vec<PersistedTraceItem>,
+    observation: serde_json::Value,
+) {
+    items.push(PersistedTraceItem::PromptCache { observation });
 }
 
 pub(super) fn build_trace_artifacts(items: &[PersistedTraceItem]) -> Option<serde_json::Value> {

@@ -19,9 +19,9 @@ impl PromptLayout {
     pub(super) fn for_request(provider_type: Option<ProviderType>, model: Option<&str>) -> Self {
         if uses_implicit_prefix_cache(provider_type, model) {
             return Self {
-                include_skill_system_prompt: false,
-                include_turn_scaffolding_system_prompts: false,
-                allow_dynamic_tool_visibility: false,
+                include_skill_system_prompt: true,
+                include_turn_scaffolding_system_prompts: true,
+                allow_dynamic_tool_visibility: true,
                 append_volatile_system_prompt_to_tail: true,
             };
         }
@@ -54,41 +54,26 @@ fn uses_implicit_prefix_cache(provider_type: Option<ProviderType>, model: Option
         .unwrap_or(false)
 }
 
-pub(super) fn insert_turn_scaffolding_system_prompts(
-    messages: &mut Vec<Message>,
+pub(super) fn turn_scaffolding_sections(
     route_prompt_section: &str,
     task_plan: &AgentTaskPlan,
     include_dynamic_tool_discovery: bool,
     layout: PromptLayout,
-) {
+) -> Vec<String> {
     if !layout.include_turn_scaffolding_system_prompts {
-        return;
+        return Vec::new();
     }
 
+    let mut sections = Vec::new();
     if !route_prompt_section.trim().is_empty() {
-        let insert_at = messages.len().min(1);
-        messages.insert(
-            insert_at,
-            Message::text(Role::System, route_prompt_section.to_string()),
-        );
+        sections.push(route_prompt_section.to_string());
     }
 
-    let plan_insert_at = messages.len().min(2);
-    messages.insert(
-        plan_insert_at,
-        Message::text(Role::System, task_plan.to_prompt_section()),
-    );
-
+    sections.push(task_plan.to_prompt_section());
     if include_dynamic_tool_discovery {
-        let discovery_insert_at = messages.len().min(3);
-        messages.insert(
-            discovery_insert_at,
-            Message::text(
-                Role::System,
-                tool_discovery::dynamic_tool_visibility_prompt().to_string(),
-            ),
-        );
+        sections.push(tool_discovery::dynamic_tool_visibility_prompt().to_string());
     }
+    sections
 }
 
 #[cfg(test)]
@@ -107,18 +92,18 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_layout_omits_non_persistent_turn_scaffolding() {
+    fn deepseek_layout_keeps_replayable_tail_context() {
         let layout = PromptLayout::for_provider(Some(ProviderType::DeepSeek));
 
-        assert!(!layout.include_skill_system_prompt);
-        assert!(!layout.include_turn_scaffolding_system_prompts);
-        assert!(!layout.allow_dynamic_tool_visibility);
+        assert!(layout.include_skill_system_prompt);
+        assert!(layout.include_turn_scaffolding_system_prompts);
+        assert!(layout.allow_dynamic_tool_visibility);
         assert!(layout.append_volatile_system_prompt_to_tail);
-        assert!(!layout.effective_dynamic_tool_visibility(true));
+        assert!(layout.effective_dynamic_tool_visibility(true));
     }
 
     #[test]
-    fn exact_prefix_cache_layout_omits_non_persistent_turn_scaffolding() {
+    fn exact_prefix_cache_layout_keeps_replayable_tail_context() {
         for provider_type in [
             ProviderType::OpenAi,
             ProviderType::AzureOpenAi,
@@ -127,11 +112,11 @@ mod tests {
         ] {
             let layout = PromptLayout::for_provider(Some(provider_type));
 
-            assert!(!layout.include_skill_system_prompt);
-            assert!(!layout.include_turn_scaffolding_system_prompts);
-            assert!(!layout.allow_dynamic_tool_visibility);
+            assert!(layout.include_skill_system_prompt);
+            assert!(layout.include_turn_scaffolding_system_prompts);
+            assert!(layout.allow_dynamic_tool_visibility);
             assert!(layout.append_volatile_system_prompt_to_tail);
-            assert!(!layout.effective_dynamic_tool_visibility(true));
+            assert!(layout.effective_dynamic_tool_visibility(true));
         }
     }
 
@@ -150,106 +135,49 @@ mod tests {
     fn deepseek_model_name_uses_prefix_cache_layout_for_compatible_routes() {
         let layout = PromptLayout::for_request(Some(ProviderType::OpenRouter), Some("deepseek/v3"));
 
-        assert!(!layout.include_skill_system_prompt);
-        assert!(!layout.allow_dynamic_tool_visibility);
+        assert!(layout.include_skill_system_prompt);
+        assert!(layout.allow_dynamic_tool_visibility);
         assert!(layout.append_volatile_system_prompt_to_tail);
     }
 
     #[test]
-    fn deepseek_scaffolding_insertion_is_noop_for_prefix_stability() {
-        let mut messages = vec![
-            Message::text(Role::System, "stable system"),
-            Message::text(Role::User, "user"),
-        ];
-
-        insert_turn_scaffolding_system_prompts(
-            &mut messages,
+    fn deepseek_scaffolding_sections_are_controller_state() {
+        let sections = turn_scaffolding_sections(
             "## Active Routing Plan\nroute",
             &plan(),
             true,
             PromptLayout::for_provider(Some(ProviderType::DeepSeek)),
         );
 
-        assert_eq!(messages.len(), 2);
-        assert!(!messages
-            .iter()
-            .any(|message| message.text_content().contains("Active Task Plan")));
-        assert!(!messages
-            .iter()
-            .any(|message| message.text_content().contains("Active Routing Plan")));
+        assert_eq!(sections.len(), 3);
+        assert!(sections[0].contains("Active Routing Plan"));
+        assert!(sections[1].contains("Active Task Plan"));
+        assert!(sections[2].contains("Dynamic Tool Discovery"));
     }
 
     #[test]
-    fn default_scaffolding_insertion_preserves_existing_prompt_order() {
-        let mut messages = vec![
-            Message::text(Role::System, "stable system"),
-            Message::text(Role::System, "runtime"),
-            Message::text(Role::User, "user"),
-        ];
-
-        insert_turn_scaffolding_system_prompts(
-            &mut messages,
+    fn default_scaffolding_sections_are_controller_state() {
+        let sections = turn_scaffolding_sections(
             "## Active Routing Plan\nroute",
             &plan(),
             true,
             PromptLayout::for_provider(Some(ProviderType::Custom)),
         );
 
-        assert!(messages[1].text_content().contains("Active Routing Plan"));
-        assert!(messages[2].text_content().contains("Active Task Plan"));
-        assert!(messages[3]
-            .text_content()
-            .contains("Dynamic Tool Discovery"));
-        assert_eq!(messages[4].text_content(), "runtime");
+        assert_eq!(sections.len(), 3);
+        assert!(sections[0].contains("Active Routing Plan"));
+        assert!(sections[1].contains("Active Task Plan"));
+        assert!(sections[2].contains("Dynamic Tool Discovery"));
     }
 
     #[test]
-    fn deepseek_second_turn_replays_first_turn_prefix_without_scaffolding() {
-        let layout = PromptLayout::for_provider(Some(ProviderType::DeepSeek));
-        let mut first_turn = vec![
-            Message::text(Role::System, "stable system"),
-            Message::text(
-                Role::System,
-                "## Runtime Context\nCurrent date: 2026-06-02 (UTC)",
-            ),
-            Message::text(Role::User, "first question"),
-        ];
-        insert_turn_scaffolding_system_prompts(
-            &mut first_turn,
-            "## Active Routing Plan\nfirst route",
-            &plan(),
-            false,
-            layout,
-        );
+    fn turn_scaffolding_sections_can_be_disabled_by_layout() {
+        let mut layout = PromptLayout::for_provider(Some(ProviderType::Custom));
+        layout.include_turn_scaffolding_system_prompts = false;
 
-        let mut second_turn = vec![
-            Message::text(Role::System, "stable system"),
-            Message::text(
-                Role::System,
-                "## Runtime Context\nCurrent date: 2026-06-02 (UTC)",
-            ),
-            Message::text(Role::User, "first question"),
-            Message::text(Role::Assistant, "first answer"),
-            Message::text(Role::User, "second question"),
-        ];
-        insert_turn_scaffolding_system_prompts(
-            &mut second_turn,
-            "## Active Routing Plan\nsecond route",
-            &plan(),
-            false,
-            layout,
-        );
+        let sections =
+            turn_scaffolding_sections("## Active Routing Plan\nroute", &plan(), true, layout);
 
-        let first_prefix = first_turn
-            .iter()
-            .map(|message| (message.role.clone(), message.text_content()))
-            .collect::<Vec<_>>();
-        let second_prefix = second_turn
-            .iter()
-            .take(first_turn.len())
-            .map(|message| (message.role.clone(), message.text_content()))
-            .collect::<Vec<_>>();
-
-        assert_eq!(first_prefix, second_prefix);
+        assert!(sections.is_empty());
     }
 }

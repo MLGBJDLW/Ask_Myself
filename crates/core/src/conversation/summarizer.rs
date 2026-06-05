@@ -6,7 +6,7 @@
 //! solely on the extractive (truncation-based) recap.
 
 use crate::error::CoreError;
-use crate::llm::{CompletionRequest, LlmProvider, Message, Role};
+use crate::llm::{CompletionRequest, LlmProvider, Message, ProviderType, Role};
 use tracing::warn;
 
 use super::memory::estimate_tokens;
@@ -78,6 +78,7 @@ fn truncate_middle_to_char_budget(text: &str, max_len: usize) -> String {
 pub async fn summarize_evicted_messages(
     provider: &dyn LlmProvider,
     model: &str,
+    provider_type: Option<ProviderType>,
     evicted_messages: &[Message],
     extractive_fallback: &str,
 ) -> String {
@@ -105,7 +106,7 @@ pub async fn summarize_evicted_messages(
         stop: None,
         thinking_budget: None,
         reasoning_effort: None,
-        provider_type: None,
+        provider_type,
         parallel_tool_calls: true,
     };
 

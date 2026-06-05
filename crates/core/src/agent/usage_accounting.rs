@@ -19,6 +19,11 @@ pub(super) struct UsageAccountingContext<'a> {
     pub(super) last_context_breakdown: &'a mut Option<context::ContextUsageBreakdown>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ModelStepUsageReport {
+    pub(super) was_compacted: bool,
+}
+
 impl AgentExecutor {
     pub(super) async fn record_model_step_usage(
         &self,
@@ -27,7 +32,7 @@ impl AgentExecutor {
         tool_call_count: usize,
         finish_reason: Option<String>,
         chunk_usage: Option<Usage>,
-    ) {
+    ) -> ModelStepUsageReport {
         let UsageAccountingContext {
             tx,
             model,
@@ -123,6 +128,7 @@ impl AgentExecutor {
         if let Some(ref mut t) = trace {
             t.add_step(TraceStep {
                 iteration,
+                request_kind: self.config.request_kind.as_str().to_string(),
                 tool_name: None,
                 tool_duration_ms: None,
                 input_tokens: prompt_tokens as u64,
@@ -139,6 +145,10 @@ impl AgentExecutor {
                 context_usage_pct: iteration_context_pct,
                 was_compacted: iteration_compacted,
             });
+        }
+
+        ModelStepUsageReport {
+            was_compacted: iteration_compacted,
         }
     }
 }

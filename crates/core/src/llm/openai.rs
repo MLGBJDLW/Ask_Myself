@@ -497,6 +497,16 @@ fn role_str(role: &Role) -> &'static str {
     }
 }
 
+fn is_leading_system_message(messages: &[Message], index: usize) -> bool {
+    messages
+        .get(index)
+        .is_some_and(|message| message.role == Role::System)
+        && messages
+            .iter()
+            .take(index)
+            .all(|message| message.role == Role::System)
+}
+
 fn parse_finish_reason(s: &str) -> FinishReason {
     match s {
         "stop" => FinishReason::Stop,
@@ -595,6 +605,7 @@ fn serialize_tool_arguments_for_history(raw: &str, raw_tool_args: bool) -> serde
 
 fn convert_message(
     msg: &Message,
+    wire_role: &str,
     include_reasoning_content: bool,
     synthesize_missing_reasoning_content: bool,
     raw_tool_args: bool,
@@ -634,7 +645,7 @@ fn convert_message(
     };
 
     let mut oai = OaiMessage {
-        role: role_str(&msg.role).to_string(),
+        role: wire_role.to_string(),
         content,
         tool_calls: None,
         tool_call_id: None,
@@ -745,9 +756,17 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     let mut messages: Vec<OaiMessage> = request
         .messages
         .iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(index, m)| {
+            let wire_role =
+                if m.role == Role::System && !is_leading_system_message(&request.messages, index) {
+                    "user"
+                } else {
+                    role_str(&m.role)
+                };
             convert_message(
                 m,
+                wire_role,
                 include_reasoning_content,
                 synthesize_missing_reasoning_content,
                 raw_tool_args,
@@ -1766,6 +1785,33 @@ data: [DONE]
         assert!(body["messages"][1]["content"].is_string());
         assert!(body["messages"][2].get("cache_control").is_none());
         assert!(body["messages"][3].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn non_leading_system_messages_are_sent_as_user_context() {
+        let request = CompletionRequest {
+            model: "gpt-5.1".to_string(),
+            messages: vec![
+                Message::text(Role::System, "stable system"),
+                Message::text(Role::User, "question"),
+                Message::text(Role::System, "runtime tail"),
+            ],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::OpenAi),
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][2]["role"], "user");
+        assert_eq!(body["messages"][2]["content"], "runtime tail");
     }
 
     #[test]

@@ -303,11 +303,22 @@ fn convert_messages(
             Role::System => {
                 let text = msg.text_content();
                 if !text.is_empty() {
-                    system_blocks.push(AnthropicSystemBlock {
-                        r#type: "text".to_string(),
-                        text,
-                        cache_control: None,
-                    });
+                    if messages
+                        .iter()
+                        .take(index)
+                        .all(|message| message.role == Role::System)
+                    {
+                        system_blocks.push(AnthropicSystemBlock {
+                            r#type: "text".to_string(),
+                            text,
+                            cache_control: None,
+                        });
+                    } else {
+                        out.push(AnthropicMessage {
+                            role: "user".to_string(),
+                            content: AnthropicContent::Text(text),
+                        });
+                    }
                 }
             }
             Role::User => {
@@ -946,6 +957,26 @@ mod tests {
             body_json["tools"][0]["cache_control"],
             serde_json::json!({"type": "ephemeral"})
         );
+    }
+
+    #[test]
+    fn non_leading_system_messages_are_user_context_not_top_level_system() {
+        let messages = vec![
+            Message::text(Role::System, "stable prompt"),
+            Message::text(Role::User, "question"),
+            Message::text(Role::System, "runtime tail"),
+        ];
+
+        let (system, api_messages) = convert_messages(&messages);
+        let system_json = serde_json::to_value(system.unwrap()).unwrap();
+        let messages_json = serde_json::to_value(api_messages).unwrap();
+
+        assert_eq!(system_json.as_array().expect("system blocks").len(), 1);
+        assert_eq!(system_json[0]["text"], "stable prompt");
+        assert_eq!(messages_json[0]["role"], "user");
+        assert_eq!(messages_json[0]["content"][0]["text"], "question");
+        assert_eq!(messages_json[1]["role"], "user");
+        assert_eq!(messages_json[1]["content"], "runtime tail");
     }
 
     #[test]

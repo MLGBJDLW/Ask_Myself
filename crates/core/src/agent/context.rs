@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use super::prompt_ir::{
+    AgentPrompt, PromptBlock, PromptCompileOptions, PromptLayer, RuntimePlacement, ToolSurface,
+};
 use crate::conversation::memory::{
     context_safety_buffer, estimate_message_tokens_for_model, estimate_tokens_for_model,
     model_context_window, trim_to_context_window,
@@ -59,6 +62,8 @@ pub fn prepare_messages(
 pub struct PrepareMessagesOptions<'a> {
     pub include_skill_system_prompt: bool,
     pub volatile_system_sections: &'a [&'a str],
+    pub evidence_sections: &'a [&'a str],
+    pub controller_state_sections: &'a [&'a str],
     pub append_volatile_system_prompt_to_tail: bool,
 }
 
@@ -67,6 +72,8 @@ impl Default for PrepareMessagesOptions<'static> {
         Self {
             include_skill_system_prompt: true,
             volatile_system_sections: &[],
+            evidence_sections: &[],
+            controller_state_sections: &[],
             append_volatile_system_prompt_to_tail: false,
         }
     }
@@ -86,8 +93,6 @@ pub fn prepare_messages_with_options(
     tool_definitions: &[ToolDefinition],
     options: PrepareMessagesOptions<'_>,
 ) -> Vec<Message> {
-    let mut messages = Vec::with_capacity(history.len() + 3);
-
     let user_query = user_parts
         .iter()
         .filter_map(|part| match part {
@@ -137,8 +142,6 @@ pub fn prepare_messages_with_options(
         stable_system_prompt_char_budget(system_prompt_budget, volatile_skill_budget),
         "\n...[truncated]",
     );
-    messages.push(Message::text(Role::System, stable_system_prompt));
-
     let runtime_section = format!(
         "## Runtime Context\nCurrent date: {} (UTC)",
         Utc::now().format("%Y-%m-%d")
@@ -150,25 +153,44 @@ pub fn prepare_messages_with_options(
             .chain(options.volatile_system_sections.iter().copied())
             .chain(std::iter::once(volatile_skills_section.as_str())),
     );
-    let has_volatile_system_prompt = !volatile_system_prompt.trim().is_empty();
-    if !options.append_volatile_system_prompt_to_tail && has_volatile_system_prompt {
-        messages.push(Message::text(Role::System, volatile_system_prompt.clone()));
-    }
-
-    // Prior conversation turns.
-    messages.extend_from_slice(history);
-
-    // New user input (may include image parts for multimodal messages).
-    messages.push(Message {
+    let current_user = Message {
         role: Role::User,
         parts: user_parts.to_vec(),
         name: None,
         tool_calls: None,
         reasoning_content: None,
+    };
+    let prompt = AgentPrompt {
+        policy: PromptBlock::new(PromptLayer::Policy, stable_system_prompt)
+            .into_iter()
+            .collect(),
+        runtime: PromptBlock::new(PromptLayer::Runtime, volatile_system_prompt)
+            .into_iter()
+            .collect(),
+        evidence: options
+            .evidence_sections
+            .iter()
+            .filter_map(|section| PromptBlock::new(PromptLayer::Evidence, *section))
+            .collect(),
+        transcript: history.to_vec(),
+        current_user: Some(current_user),
+        controller_state: options
+            .controller_state_sections
+            .iter()
+            .filter_map(|section| PromptBlock::new(PromptLayer::ControllerState, *section))
+            .collect(),
+        tools: ToolSurface {
+            definitions: tool_definitions.to_vec(),
+        },
+        ..AgentPrompt::default()
+    };
+    let messages = prompt.compile_to_messages(PromptCompileOptions {
+        runtime_placement: if options.append_volatile_system_prompt_to_tail {
+            RuntimePlacement::Tail
+        } else {
+            RuntimePlacement::AfterPolicy
+        },
     });
-    if options.append_volatile_system_prompt_to_tail && has_volatile_system_prompt {
-        messages.push(Message::text(Role::System, volatile_system_prompt));
-    }
 
     // Trim to fit context window, accounting for tool definition overhead.
     let mut trimmed = trim_to_context_window(&messages, effective_context, max_tokens_response);
@@ -1037,6 +1059,7 @@ mod tests {
                 include_skill_system_prompt: false,
                 volatile_system_sections: &volatile_sections,
                 append_volatile_system_prompt_to_tail: true,
+                ..PrepareMessagesOptions::default()
             },
         );
 
@@ -1047,6 +1070,48 @@ mod tests {
         assert_eq!(result[2].role, Role::System);
         assert!(result[2].text_content().contains("Runtime Context"));
         assert!(result[2].text_content().contains("Current Turn Time"));
+    }
+
+    #[test]
+    fn test_prepare_messages_keeps_evidence_and_controller_state_in_context_layer() {
+        let evidence_sections = ["## Retrieved Evidence\nSource-backed context"];
+        let controller_state_sections = [
+            "## Active Routing Plan\nUse codebase route",
+            "## Active Task Plan\n1. Inspect\n2. Verify",
+        ];
+        let result = prepare_messages_with_options(
+            "Stable system prompt",
+            &[],
+            &[ContentPart::Text {
+                text: "Inspect this repo".to_string(),
+            }],
+            "deepseek-v4-pro",
+            4096,
+            None,
+            &[],
+            &[],
+            &[],
+            PrepareMessagesOptions {
+                include_skill_system_prompt: false,
+                evidence_sections: &evidence_sections,
+                controller_state_sections: &controller_state_sections,
+                append_volatile_system_prompt_to_tail: true,
+                ..PrepareMessagesOptions::default()
+            },
+        );
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].role, Role::System);
+        assert_eq!(result[0].text_content(), "Stable system prompt");
+        assert_eq!(result[1].role, Role::User);
+        assert_eq!(result[2].role, Role::System);
+        let context_text = result[2].text_content();
+        assert!(context_text.contains("Runtime Context"));
+        assert!(context_text.contains("Retrieved Evidence"));
+        assert!(context_text.contains("Active Routing Plan"));
+        assert!(context_text.contains("Active Task Plan"));
+        assert!(!result[0].text_content().contains("Retrieved Evidence"));
+        assert!(!result[0].text_content().contains("Active Routing Plan"));
     }
 
     #[test]
@@ -1068,6 +1133,7 @@ mod tests {
                 include_skill_system_prompt: false,
                 volatile_system_sections: &first_volatile,
                 append_volatile_system_prompt_to_tail: true,
+                ..PrepareMessagesOptions::default()
             },
         );
 
@@ -1092,6 +1158,7 @@ mod tests {
                 include_skill_system_prompt: false,
                 volatile_system_sections: &second_volatile,
                 append_volatile_system_prompt_to_tail: true,
+                ..PrepareMessagesOptions::default()
             },
         );
 

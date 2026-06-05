@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::llm::{CompletionRequest, LlmProvider, Message, Role};
+use crate::llm::{CompletionRequest, LlmProvider, Message, ProviderType, Role};
 
 // ── Types ──
 
@@ -103,6 +103,7 @@ pub async fn compile_document(
     doc_id: &str,
     provider: &dyn LlmProvider,
     model: &str,
+    provider_type: Option<ProviderType>,
 ) -> Result<CompileResult, CoreError> {
     // 1. Get document content (join chunks)
     let content = db.get_document_full_text(doc_id)?;
@@ -128,7 +129,7 @@ pub async fn compile_document(
         stop: None,
         thinking_budget: None,
         reasoning_effort: None,
-        provider_type: None,
+        provider_type,
         parallel_tool_calls: true,
     };
 
@@ -257,9 +258,10 @@ pub async fn compile_pending(
     db: &Database,
     provider: &dyn LlmProvider,
     model: &str,
+    provider_type: Option<ProviderType>,
     limit: usize,
 ) -> Result<Vec<CompileResult>, CoreError> {
-    compile_pending_with_progress(db, provider, model, limit, |_| {}).await
+    compile_pending_with_progress(db, provider, model, provider_type, limit, |_| {}).await
 }
 
 /// Compile all documents that haven't been compiled yet, with progress reporting.
@@ -267,6 +269,7 @@ pub async fn compile_pending_with_progress<F>(
     db: &Database,
     provider: &dyn LlmProvider,
     model: &str,
+    provider_type: Option<ProviderType>,
     limit: usize,
     on_progress: F,
 ) -> Result<Vec<CompileResult>, CoreError>
@@ -287,7 +290,7 @@ where
             phase: "compiling".to_string(),
         });
 
-        match compile_document(db, doc_id, provider, model).await {
+        match compile_document(db, doc_id, provider, model, provider_type).await {
             Ok(result) => results.push(result),
             Err(e) => {
                 tracing::warn!("compile doc {doc_id}: {e}");
@@ -760,7 +763,7 @@ mod tests {
             .to_string(),
         };
 
-        let result = compile_document(&db, &doc_id, &provider, "test-model")
+        let result = compile_document(&db, &doc_id, &provider, "test-model", None)
             .await
             .expect("compile document");
 

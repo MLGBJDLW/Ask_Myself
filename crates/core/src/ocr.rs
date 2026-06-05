@@ -704,6 +704,22 @@ pub fn extract_text_from_image(
     config: &OcrConfig,
     llm_provider: Option<&dyn crate::llm::LlmProvider>,
 ) -> Result<OcrResult, CoreError> {
+    extract_text_from_image_with_llm_provider_type(
+        image_bytes,
+        mime_type,
+        config,
+        llm_provider,
+        None,
+    )
+}
+
+pub fn extract_text_from_image_with_llm_provider_type(
+    image_bytes: &[u8],
+    mime_type: &str,
+    config: &OcrConfig,
+    llm_provider: Option<&dyn crate::llm::LlmProvider>,
+    llm_provider_type: Option<crate::llm::ProviderType>,
+) -> Result<OcrResult, CoreError> {
     if !config.enabled {
         return Ok(OcrResult {
             regions: vec![],
@@ -740,11 +756,14 @@ pub fn extract_text_from_image(
                 if let Some(provider) = llm_provider {
                     match tokio::runtime::Handle::try_current() {
                         Ok(handle) => {
-                            match handle.block_on(extract_text_via_llm_vision(
-                                image_bytes,
-                                mime_type,
-                                provider,
-                            )) {
+                            match handle.block_on(
+                                extract_text_via_llm_vision_with_llm_provider_type(
+                                    image_bytes,
+                                    mime_type,
+                                    provider,
+                                    llm_provider_type,
+                                ),
+                            ) {
                                 Ok(llm_result) => return Ok(llm_result),
                                 Err(e) => {
                                     tracing::warn!("LLM vision fallback failed: {e}");
@@ -766,11 +785,14 @@ pub fn extract_text_from_image(
             if config.llm_fallback_enabled {
                 if let Some(provider) = llm_provider {
                     if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                        return handle.block_on(extract_text_via_llm_vision(
-                            image_bytes,
-                            mime_type,
-                            provider,
-                        ));
+                        return handle.block_on(
+                            extract_text_via_llm_vision_with_llm_provider_type(
+                                image_bytes,
+                                mime_type,
+                                provider,
+                                llm_provider_type,
+                            ),
+                        );
                     }
                 }
             }
@@ -790,6 +812,15 @@ pub async fn extract_text_via_llm_vision(
     image_bytes: &[u8],
     mime_type: &str,
     provider: &dyn crate::llm::LlmProvider,
+) -> Result<OcrResult, CoreError> {
+    extract_text_via_llm_vision_with_llm_provider_type(image_bytes, mime_type, provider, None).await
+}
+
+pub async fn extract_text_via_llm_vision_with_llm_provider_type(
+    image_bytes: &[u8],
+    mime_type: &str,
+    provider: &dyn crate::llm::LlmProvider,
+    provider_type: Option<crate::llm::ProviderType>,
 ) -> Result<OcrResult, CoreError> {
     use crate::llm::{CompletionRequest, ContentPart, Message, Role};
     use crate::media::prepare_image_for_llm;
@@ -824,7 +855,7 @@ pub async fn extract_text_via_llm_vision(
         stop: None,
         thinking_budget: None,
         reasoning_effort: None,
-        provider_type: None,
+        provider_type,
         parallel_tool_calls: true,
     };
 
@@ -863,6 +894,15 @@ pub fn ocr_pdf(
     config: &OcrConfig,
     llm_provider: Option<&dyn crate::llm::LlmProvider>,
 ) -> Result<String, CoreError> {
+    ocr_pdf_with_llm_provider_type(pdf_bytes, config, llm_provider, None)
+}
+
+pub fn ocr_pdf_with_llm_provider_type(
+    pdf_bytes: &[u8],
+    config: &OcrConfig,
+    llm_provider: Option<&dyn crate::llm::LlmProvider>,
+    llm_provider_type: Option<crate::llm::ProviderType>,
+) -> Result<String, CoreError> {
     let doc = lopdf::Document::load_mem(pdf_bytes)
         .map_err(|e| CoreError::Parse(format!("PDF load: {e}")))?;
 
@@ -885,7 +925,13 @@ pub fn ocr_pdf(
                 continue;
             }
 
-            match extract_text_from_image(&buf.into_inner(), "image/png", config, llm_provider) {
+            match extract_text_from_image_with_llm_provider_type(
+                &buf.into_inner(),
+                "image/png",
+                config,
+                llm_provider,
+                llm_provider_type,
+            ) {
                 Ok(result) if !result.full_text.is_empty() => {
                     if !all_text.is_empty() {
                         all_text.push_str("\n\n--- Page Break ---\n\n");

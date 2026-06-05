@@ -26,13 +26,21 @@ impl AgentExecutor {
         ctx: &mut SteeringDrainContext<'_>,
         initial: Option<AgentSteeringMessage>,
     ) -> Vec<String> {
+        let drained = self.collect_steering_messages(initial).await;
+        self.apply_steering_messages(messages, ctx, drained).await
+    }
+
+    pub(super) async fn collect_steering_messages(
+        &self,
+        initial: Option<AgentSteeringMessage>,
+    ) -> Vec<AgentSteeringMessage> {
         let mut drained = Vec::new();
         if let Some(message) = initial {
             drained.push(message);
         }
 
         let Some(rx) = &self.steering_rx else {
-            return self.apply_steering_messages(messages, ctx, drained).await;
+            return drained;
         };
 
         {
@@ -42,7 +50,11 @@ impl AgentExecutor {
             }
         }
 
-        self.apply_steering_messages(messages, ctx, drained).await
+        drained
+    }
+
+    pub(super) fn steering_message_has_effective_content(message: &AgentSteeringMessage) -> bool {
+        !message.content.trim().is_empty() || !message.parts.is_empty()
     }
 
     pub(super) async fn wait_for_steering_message(&self) -> Option<AgentSteeringMessage> {
