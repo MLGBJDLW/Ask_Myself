@@ -249,5 +249,5 @@ test('slash command menu uses localized chrome and built-in command labels', asy
   await expect(menu).toBeVisible();
   await expect(menu).toContainText('斜杠命令');
   await expect(menu).toContainText('规划');
-  await expect(menu).toContainText('将目标拆成有范围的实现计划');
+  await expect(menu).toContainText('进入只读规划模式，生成可审批的实现计划。');
 });

@@ -1,6 +1,7 @@
 export { ChatSidebar } from './ChatSidebar';
 export { ChatMessages } from './ChatMessages';
 export { ChatInput, type ChatInputSendOptions } from './ChatInput';
+export { AgentModelPicker, type AgentModelSelection } from './AgentModelPicker';
 export { ToolCallCard } from './ToolCallCard';
 export { ThinkingBlock } from './ThinkingBlock';
 export { SourceSelector } from './SourceSelector';

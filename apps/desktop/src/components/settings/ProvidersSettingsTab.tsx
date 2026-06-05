@@ -105,7 +105,7 @@ export function ProvidersSettingsTab({
                 onClick={() => { onSelectedPresetChange(preset); onProviderViewChange('form'); }}
                 className="flex items-start gap-3 rounded-lg border border-border bg-surface-2 p-4 text-left transition-colors duration-fast hover:border-accent hover:bg-surface-3/50 cursor-pointer"
               >
-                <ProviderIcon provider={preset.provider} size="lg" />
+                <ProviderIcon provider={preset.provider} providerId={preset.id} baseUrl={preset.baseUrl} size="lg" />
                 <div>
                   <div className="font-medium text-text-primary">{preset.name}</div>
                   <div className="text-sm text-text-tertiary">{preset.description}</div>
@@ -160,7 +160,11 @@ export function ProvidersSettingsTab({
                       className="flex items-center justify-between rounded-lg border border-border bg-surface-2 p-4 transition-colors hover:bg-surface-3/50"
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <ProviderIcon provider={config.provider} />
+                        <ProviderIcon
+                          provider={config.provider}
+                          baseUrl={config.baseUrl}
+                          label={`${config.name} ${config.model}`}
+                        />
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <p className="text-sm font-medium text-text-primary truncate">{config.name}</p>
