@@ -1451,6 +1451,7 @@ mod tests {
         let mut trace = AgentTrace::begin(&conv.id, "hard task", "test", 1000);
         trace.add_step(TraceStep {
             iteration: 0,
+            request_kind: "mainAgentStep".to_string(),
             tool_name: Some("search_knowledge_base".to_string()),
             tool_duration_ms: Some(10),
             input_tokens: 900,
@@ -1494,6 +1495,7 @@ mod tests {
         {
             trace.add_step(TraceStep {
                 iteration: iteration as u32,
+                request_kind: "mainAgentStep".to_string(),
                 tool_name: Some(tool_name.to_string()),
                 tool_duration_ms: Some(10),
                 input_tokens: 100,

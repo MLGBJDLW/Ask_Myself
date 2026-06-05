@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::llm::{CompletionRequest, LlmProvider, Message, Role};
+use crate::llm::{CompletionRequest, LlmProvider, Message, ProviderType, Role};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -282,6 +282,7 @@ pub async fn check_contradictions(
     entity_id: &str,
     provider: &dyn LlmProvider,
     model: &str,
+    provider_type: Option<ProviderType>,
 ) -> Result<Vec<HealthIssue>, CoreError> {
     let entity = db.get_entity_by_id(entity_id)?;
     let docs = db.get_entities_for_document_reverse(entity_id)?;
@@ -324,7 +325,7 @@ pub async fn check_contradictions(
         stop: None,
         thinking_budget: None,
         reasoning_effort: None,
-        provider_type: None,
+        provider_type,
         parallel_tool_calls: true,
     };
 

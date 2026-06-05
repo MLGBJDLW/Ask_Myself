@@ -878,6 +878,7 @@ mod tests {
             AgentTrace::begin(&conversation.id, &user_message.content, "gpt-4o", 128_000);
         trace.add_step(TraceStep {
             iteration: 0,
+            request_kind: "mainAgentStep".to_string(),
             tool_name: Some("retrieve_evidence".to_string()),
             tool_duration_ms: Some(24),
             input_tokens: 10,

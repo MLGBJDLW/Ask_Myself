@@ -47,10 +47,13 @@ impl LongTaskState {
                         .starts_with(LONG_TASK_RECITATION_PREFIX)
             });
         }
-        messages.push(Message::text(
-            Role::System,
-            self.plan_recitation(plan, iteration, max_iterations),
-        ));
+        if let Some(message) = prompt_ir::controller_state_message(self.plan_recitation(
+            plan,
+            iteration,
+            max_iterations,
+        )) {
+            messages.push(message);
+        }
     }
 
     pub(super) fn should_checkpoint_after_tool_round(&self, iteration: u32) -> bool {

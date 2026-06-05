@@ -182,13 +182,40 @@ pub fn parse_file(
     #[allow(unused_variables)] progress_callback: Option<&dyn Fn(f32)>,
     max_chunk_chars: Option<usize>,
 ) -> Result<ParsedDocument, CoreError> {
+    parse_file_with_llm_provider_type(
+        path,
+        ocr_config,
+        #[cfg(feature = "video")]
+        video_config,
+        llm_provider,
+        None,
+        progress_callback,
+        max_chunk_chars,
+    )
+}
+
+pub fn parse_file_with_llm_provider_type(
+    path: &Path,
+    ocr_config: Option<&crate::ocr::OcrConfig>,
+    #[cfg(feature = "video")] video_config: Option<&crate::video::VideoConfig>,
+    llm_provider: Option<&dyn crate::llm::LlmProvider>,
+    llm_provider_type: Option<crate::llm::ProviderType>,
+    #[allow(unused_variables)] progress_callback: Option<&dyn Fn(f32)>,
+    max_chunk_chars: Option<usize>,
+) -> Result<ParsedDocument, CoreError> {
     let max_chars = max_chunk_chars.unwrap_or(DEFAULT_MAX_CHUNK_CHARS);
     let mime_type = detect_mime_type(path);
 
     // Binary / Office files — use dedicated extractors.
     if mime_type == "application/pdf" {
         let ocr_cfg = ocr_config.cloned().unwrap_or_default();
-        return parse_pdf(path, &ocr_cfg, llm_provider, max_chars);
+        return parse_pdf_with_llm_provider_type(
+            path,
+            &ocr_cfg,
+            llm_provider,
+            llm_provider_type,
+            max_chars,
+        );
     }
     if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
         return parse_docx(path, max_chars);
@@ -218,7 +245,14 @@ pub fn parse_file(
     // Image files — extract text via OCR when available, otherwise metadata stub.
     if mime_type.starts_with("image/") {
         let ocr_cfg = ocr_config.cloned().unwrap_or_default();
-        return parse_image(path, &mime_type, &ocr_cfg, llm_provider, max_chars);
+        return parse_image_with_llm_provider_type(
+            path,
+            &mime_type,
+            &ocr_cfg,
+            llm_provider,
+            llm_provider_type,
+            max_chars,
+        );
     }
 
     // Audio files — transcribe via Whisper (no frame extraction).
@@ -342,6 +376,16 @@ pub fn parse_pdf(
     llm_provider: Option<&dyn crate::llm::LlmProvider>,
     max_chunk_chars: usize,
 ) -> Result<ParsedDocument, CoreError> {
+    parse_pdf_with_llm_provider_type(path, ocr_config, llm_provider, None, max_chunk_chars)
+}
+
+pub fn parse_pdf_with_llm_provider_type(
+    path: &Path,
+    ocr_config: &crate::ocr::OcrConfig,
+    llm_provider: Option<&dyn crate::llm::LlmProvider>,
+    llm_provider_type: Option<crate::llm::ProviderType>,
+    max_chunk_chars: usize,
+) -> Result<ParsedDocument, CoreError> {
     let bytes = std::fs::read(path)?;
     let file_size = bytes.len() as i64;
     let content_hash = blake3::hash(&bytes).to_hex().to_string();
@@ -352,7 +396,13 @@ pub fn parse_pdf(
         _ => {
             // Native extraction failed or returned empty — scanned PDF.
             tracing::info!("PDF has no text layer, attempting OCR: {}", path.display());
-            crate::ocr::ocr_pdf(&bytes, ocr_config, llm_provider).unwrap_or_default()
+            crate::ocr::ocr_pdf_with_llm_provider_type(
+                &bytes,
+                ocr_config,
+                llm_provider,
+                llm_provider_type,
+            )
+            .unwrap_or_default()
         }
     };
 
@@ -361,7 +411,12 @@ pub fn parse_pdf(
 
     let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
     let visual_artifacts =
-        crate::visual_document::extract_pdf_visual_artifacts(&bytes, ocr_config, llm_provider);
+        crate::visual_document::extract_pdf_visual_artifacts_with_llm_provider_type(
+            &bytes,
+            ocr_config,
+            llm_provider,
+            llm_provider_type,
+        );
 
     let file_name = path
         .file_name()
@@ -706,6 +761,24 @@ pub fn parse_image(
     llm_provider: Option<&dyn crate::llm::LlmProvider>,
     max_chunk_chars: usize,
 ) -> Result<ParsedDocument, CoreError> {
+    parse_image_with_llm_provider_type(
+        path,
+        mime_type,
+        ocr_config,
+        llm_provider,
+        None,
+        max_chunk_chars,
+    )
+}
+
+pub fn parse_image_with_llm_provider_type(
+    path: &Path,
+    mime_type: &str,
+    ocr_config: &crate::ocr::OcrConfig,
+    llm_provider: Option<&dyn crate::llm::LlmProvider>,
+    llm_provider_type: Option<crate::llm::ProviderType>,
+    max_chunk_chars: usize,
+) -> Result<ParsedDocument, CoreError> {
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len() as i64;
     let bytes = std::fs::read(path)?;
@@ -719,7 +792,13 @@ pub fn parse_image(
 
     // ── Try OCR ──
     let (text_content, ocr_source, ocr_confidence) =
-        match crate::ocr::extract_text_from_image(&bytes, mime_type, ocr_config, llm_provider) {
+        match crate::ocr::extract_text_from_image_with_llm_provider_type(
+            &bytes,
+            mime_type,
+            ocr_config,
+            llm_provider,
+            llm_provider_type,
+        ) {
             Ok(result) if !result.full_text.is_empty() => {
                 (result.full_text, result.source, result.avg_confidence)
             }

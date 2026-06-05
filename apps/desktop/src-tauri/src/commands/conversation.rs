@@ -624,14 +624,13 @@ pub async fn generate_title_cmd(
     // 3. Build the provider + model pair for title generation.
     //    Prefer the agent's configured summarization provider/model; fall back
     //    to the default agent's primary provider/model.
-    let (provider, title_model) = if let Some(summ_provider_name) =
+    let (provider, title_model, title_provider_type) = if let Some(summ_provider_name) =
         db_config.summarization_provider.as_deref()
     {
+        let summ_provider_type =
+            provider_type_for_parts(summ_provider_name, db_config.base_url.as_deref());
         let summ_config = ProviderConfig {
-            provider_type: provider_type_for_parts(
-                summ_provider_name,
-                db_config.base_url.as_deref(),
-            ),
+            provider_type: summ_provider_type,
             api_key: Some(db_config.api_key.clone()),
             base_url: db_config.base_url.clone(),
             org_id: None,
@@ -643,34 +642,37 @@ pub async fn generate_title_cmd(
                     .summarization_model
                     .clone()
                     .unwrap_or_else(|| fallback_model.clone());
-                (p, model)
+                (p, model, summ_provider_type)
             }
             Err(e) => {
                 warn!(
                     "summarization provider '{summ_provider_name}' unavailable ({e}); falling back to default agent"
                 );
+                let provider_type = provider_type_for_config(&db_config);
                 let provider_config = db_config_to_provider_config(&db_config, None);
                 let p = create_provider(provider_config).map_err(|e| e.to_string())?;
                 let model = db_config
                     .summarization_model
                     .clone()
                     .unwrap_or(fallback_model);
-                (p, model)
+                (p, model, provider_type)
             }
         }
     } else {
+        let provider_type = provider_type_for_config(&db_config);
         let provider_config = db_config_to_provider_config(&db_config, None);
         let p = create_provider(provider_config).map_err(|e| e.to_string())?;
         let model = db_config
             .summarization_model
             .clone()
             .unwrap_or(fallback_model);
-        (p, model)
+        (p, model, provider_type)
     };
 
     let title = nexa_core::conversation::generate_title(
         provider.as_ref(),
         &title_model,
+        Some(title_provider_type),
         &user_content,
         assistant_content,
     )
@@ -774,6 +776,10 @@ pub async fn compact_conversation_cmd(
     let app_cfg = state.db.load_app_config().unwrap_or_default();
     let provider_config = db_config_to_provider_config(&db_config, None);
     let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
+    let summarization_provider_type = db_config
+        .summarization_provider
+        .as_deref()
+        .map(|name| provider_type_for_parts(name, db_config.base_url.as_deref()));
 
     let executor_config = ExecutorConfig {
         max_iterations: 1,
@@ -787,7 +793,9 @@ pub async fn compact_conversation_cmd(
         thinking_budget: None,
         reasoning_effort: None,
         provider_type: Some(provider_type_for_config(&db_config)),
+        request_kind: AgentRequestKind::MainAgentStep,
         summarization_model: db_config.summarization_model.clone(),
+        summarization_provider_type,
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),

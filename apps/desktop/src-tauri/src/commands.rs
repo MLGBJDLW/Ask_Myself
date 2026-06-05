@@ -19,7 +19,7 @@ use crate::app_events::emit_app_event;
 use crate::desktop_agent_session::DesktopRunningAgentTask;
 use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutionMode,
-    AgentExecutor, AgentSteeringMessage, CancellationToken,
+    AgentExecutor, AgentRequestKind, AgentSteeringMessage, CancellationToken,
 };
 use nexa_core::agent_run::{AgentRunEvent, AgentRunPhase};
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};

@@ -3169,6 +3169,7 @@ Use the same language as the user's message.";
 pub async fn generate_title(
     provider: &dyn crate::llm::LlmProvider,
     model: &str,
+    provider_type: Option<crate::llm::ProviderType>,
     user_message: &str,
     assistant_reply: Option<&str>,
 ) -> String {
@@ -3195,7 +3196,7 @@ pub async fn generate_title(
         stop: None,
         thinking_budget: None,
         reasoning_effort: None,
-        provider_type: None,
+        provider_type,
         parallel_tool_calls: true,
     };
 

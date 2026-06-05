@@ -198,6 +198,16 @@ impl AgentExecutor {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
+        let controller_state_sections_owned = prompt_layout::turn_scaffolding_sections(
+            &route_plan.prompt_section,
+            &task_plan,
+            effective_dynamic_tool_visibility && self.tools.contains("tool_search"),
+            layout,
+        );
+        let controller_state_sections = controller_state_sections_owned
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
         let mut messages = context::prepare_messages_with_options(
             &self.config.system_prompt,
             &history,
@@ -211,15 +221,10 @@ impl AgentExecutor {
             context::PrepareMessagesOptions {
                 include_skill_system_prompt: layout.include_skill_system_prompt,
                 volatile_system_sections: &volatile_system_sections,
+                evidence_sections: &[],
+                controller_state_sections: &controller_state_sections,
                 append_volatile_system_prompt_to_tail: layout.append_volatile_system_prompt_to_tail,
             },
-        );
-        prompt_layout::insert_turn_scaffolding_system_prompts(
-            &mut messages,
-            &route_plan.prompt_section,
-            &task_plan,
-            effective_dynamic_tool_visibility && self.tools.contains("tool_search"),
-            layout,
         );
 
         // --- 2. Privacy redaction on outgoing user content --------------------
@@ -244,6 +249,7 @@ impl AgentExecutor {
         let mut last_iteration_content = String::new();
         let mut last_finish_reason: Option<String> = None;
         let mut persisted_trace_items: Vec<PersistedTraceItem> = Vec::new();
+        let mut persisted_replayable_system_contents: Vec<String> = Vec::new();
         for event in loop_recorder.events().iter().cloned() {
             append_persisted_trace_loop_event(&mut persisted_trace_items, event);
         }
@@ -365,7 +371,10 @@ impl AgentExecutor {
             db,
             &source_scope,
             &tx,
-            turn_id,
+            conversation_id,
+            model,
+            &mut sort_order,
+            &mut persisted_replayable_system_contents,
             &mut messages,
             &mut persisted_trace_items,
             &mut task_plan,
@@ -380,7 +389,6 @@ impl AgentExecutor {
         let mut loop_guard = AgentLoopGuard::new();
         let mut long_task_state = LongTaskState::new();
         let mut force_non_streaming_llm = llm_streaming_disabled_by_env();
-        let mut persisted_replayable_system_contents: Vec<String> = Vec::new();
         'react_loop: for iteration in 0..self.config.max_iterations {
             turn_state.start_iteration(iteration);
             let step_started = TurnLoopEvent::StepStarted {
@@ -439,8 +447,8 @@ impl AgentExecutor {
                 } else {
                     String::new()
                 };
-                if !budget_hint.is_empty() {
-                    messages.push(Message::text(Role::System, budget_hint));
+                if let Some(message) = prompt_ir::controller_state_message(budget_hint) {
+                    messages.push(message);
                 }
             }
 
@@ -604,7 +612,11 @@ impl AgentExecutor {
                             assistant_reasoning_content.clone(),
                             &iteration_thinking,
                         );
-                        messages.push(Message::text(Role::System, intervention.prompt.clone()));
+                        if let Some(message) =
+                            prompt_ir::controller_state_message(intervention.prompt.clone())
+                        {
+                            messages.push(message);
+                        }
                         continue;
                     }
                 }

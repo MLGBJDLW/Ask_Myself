@@ -128,6 +128,7 @@ impl AgentExecutor {
         if let Some(ref mut t) = trace {
             t.add_step(TraceStep {
                 iteration,
+                request_kind: self.config.request_kind.as_str().to_string(),
                 tool_name: None,
                 tool_duration_ms: None,
                 input_tokens: prompt_tokens as u64,

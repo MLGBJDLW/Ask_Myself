@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::embed::{blob_to_vector, cosine_similarity, vector_to_blob};
 use crate::error::CoreError;
-use crate::llm::{CompletionRequest, LlmProvider, Message, Role};
+use crate::llm::{CompletionRequest, LlmProvider, Message, ProviderType, Role};
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -102,6 +102,7 @@ fn cap_to_max_chars(text: &str, max_chars: usize) -> String {
 pub async fn distill_text_llm(
     provider: &dyn LlmProvider,
     model: &str,
+    provider_type: Option<ProviderType>,
     text: &str,
     max_chars: usize,
 ) -> String {
@@ -132,7 +133,7 @@ pub async fn distill_text_llm(
         stop: None,
         thinking_budget: None,
         reasoning_effort: None,
-        provider_type: None,
+        provider_type,
         parallel_tool_calls: true,
     };
 
@@ -198,11 +199,19 @@ pub async fn insert_learned_success_with_llm(
     source_message_id: &str,
     provider: Option<&dyn LlmProvider>,
     model: Option<&str>,
+    provider_type: Option<ProviderType>,
 ) -> Result<String, CoreError> {
     let user_query_distilled = distill_text(user_query, LEARNED_TEXT_MAX_CHARS);
     let response_summary = match (provider, model) {
         (Some(p), Some(m)) if !m.is_empty() => {
-            distill_text_llm(p, m, response_content, LEARNED_TEXT_MAX_CHARS).await
+            distill_text_llm(
+                p,
+                m,
+                provider_type,
+                response_content,
+                LEARNED_TEXT_MAX_CHARS,
+            )
+            .await
         }
         _ => distill_text(response_content, LEARNED_TEXT_MAX_CHARS),
     };
@@ -698,7 +707,7 @@ mod tests {
     async fn distill_text_llm_uses_model_output_when_successful() {
         let long_input = "x".repeat(1000);
         let provider = MockDistillProvider::ok("  concise summary with keywords  ");
-        let out = distill_text_llm(&provider, "mock-model", &long_input, 500).await;
+        let out = distill_text_llm(&provider, "mock-model", None, &long_input, 500).await;
         assert_eq!(out, "concise summary with keywords");
     }
 
@@ -707,7 +716,7 @@ mod tests {
         let long_input = "x".repeat(1000);
         let overlong = "y".repeat(800);
         let provider = MockDistillProvider::ok(overlong);
-        let out = distill_text_llm(&provider, "mock-model", &long_input, 50).await;
+        let out = distill_text_llm(&provider, "mock-model", None, &long_input, 50).await;
         // 50 chars + single ellipsis char.
         assert!(out.chars().count() <= 51);
         assert!(out.ends_with('…'));
@@ -717,7 +726,7 @@ mod tests {
     async fn distill_text_llm_falls_back_on_error() {
         let long_input = "a".repeat(1000);
         let provider = MockDistillProvider::err(|| CoreError::Llm("boom".to_string()));
-        let out = distill_text_llm(&provider, "mock-model", &long_input, 50).await;
+        let out = distill_text_llm(&provider, "mock-model", None, &long_input, 50).await;
         // Fallback path: distill_text(a*1000, 50) == 50 'a's + '…'
         let expected = distill_text(&long_input, 50);
         assert_eq!(out, expected);
@@ -727,7 +736,7 @@ mod tests {
     async fn distill_text_llm_falls_back_on_empty_response() {
         let long_input = "b".repeat(1000);
         let provider = MockDistillProvider::ok("   ");
-        let out = distill_text_llm(&provider, "mock-model", &long_input, 50).await;
+        let out = distill_text_llm(&provider, "mock-model", None, &long_input, 50).await;
         assert_eq!(out, distill_text(&long_input, 50));
     }
 
@@ -735,7 +744,7 @@ mod tests {
     async fn distill_text_llm_skips_call_for_short_input() {
         let provider = MockDistillProvider::ok("SHOULD NOT BE USED");
         let calls = provider.call_count.clone();
-        let out = distill_text_llm(&provider, "mock-model", "already short", 500).await;
+        let out = distill_text_llm(&provider, "mock-model", None, "already short", 500).await;
         assert_eq!(out, "already short");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
@@ -752,6 +761,7 @@ mod tests {
             &asst_id,
             Some(&provider),
             Some("mock-model"),
+            None,
         )
         .await
         .unwrap();
@@ -784,6 +794,7 @@ mod tests {
             &asst_id,
             Some(&provider),
             Some("mock-model"),
+            None,
         )
         .await
         .unwrap();
@@ -804,9 +815,10 @@ mod tests {
     async fn insert_learned_success_with_llm_uses_cheap_path_without_provider() {
         let (db, _c, _u, asst_id) = open_db_with_conv_and_msgs();
         let long_response = "m".repeat(1000);
-        let id = insert_learned_success_with_llm(&db, "q", &long_response, &asst_id, None, None)
-            .await
-            .unwrap();
+        let id =
+            insert_learned_success_with_llm(&db, "q", &long_response, &asst_id, None, None, None)
+                .await
+                .unwrap();
 
         let conn = db.conn();
         let stored: String = conn

@@ -805,6 +805,7 @@ impl AgentExecutor {
             if let Some(ref mut t) = trace {
                 t.add_step(TraceStep {
                     iteration,
+                    request_kind: self.config.request_kind.as_str().to_string(),
                     tool_name: Some(tc.name.clone()),
                     tool_duration_ms: Some(duration_ms),
                     input_tokens: 0,
@@ -818,7 +819,9 @@ impl AgentExecutor {
             }
         }
         if let Some(prompt) = post_tool_loop_guard_prompt {
-            messages.push(Message::text(Role::System, prompt));
+            if let Some(message) = prompt_ir::controller_state_message(prompt) {
+                messages.push(message);
+            }
         }
     }
 }

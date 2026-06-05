@@ -3,7 +3,7 @@
 use crate::conversation::memory::estimate_tokens;
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::llm::{CompletionRequest, LlmProvider, Message, Role};
+use crate::llm::{CompletionRequest, LlmProvider, Message, ProviderType, Role};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tracing::warn;
@@ -670,6 +670,7 @@ pub async fn extract_memories_from_conversation(
     existing_memories: &[UserMemory],
     llm: &dyn LlmProvider,
     model: &str,
+    provider_type: Option<ProviderType>,
 ) -> Result<Vec<String>, CoreError> {
     // Only consider user + assistant messages.
     let relevant: Vec<_> = messages
@@ -738,7 +739,7 @@ pub async fn extract_memories_from_conversation(
         stop: None,
         thinking_budget: None,
         reasoning_effort: None,
-        provider_type: None,
+        provider_type,
         parallel_tool_calls: true,
     };
 
@@ -782,6 +783,7 @@ pub async fn auto_extract_and_save(
     conversation_id: &str,
     llm: &dyn LlmProvider,
     model: &str,
+    provider_type: Option<ProviderType>,
 ) -> Result<usize, CoreError> {
     // Load conversation messages.
     let messages = db.get_messages(conversation_id)?;
@@ -802,7 +804,8 @@ pub async fn auto_extract_and_save(
     }
 
     let existing = db.list_user_memories()?;
-    let extracted = extract_memories_from_conversation(&messages, &existing, llm, model).await?;
+    let extracted =
+        extract_memories_from_conversation(&messages, &existing, llm, model, provider_type).await?;
 
     let mut saved = 0usize;
     for memory_text in extracted {

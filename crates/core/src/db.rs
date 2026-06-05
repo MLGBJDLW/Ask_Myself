@@ -1261,6 +1261,64 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].trajectory_id, "agent_task_run:run-store-1");
     }
+
+    #[test]
+    fn trace_summary_buckets_cache_by_request_kind_and_compaction() {
+        let db = Database::open_memory().unwrap();
+        let mut trace =
+            crate::trace::AgentTrace::begin("conv-cache", "hello", "deepseek-chat", 64_000);
+        trace.add_step(crate::trace::TraceStep {
+            iteration: 0,
+            request_kind: "mainAgentStep".to_string(),
+            tool_name: None,
+            tool_duration_ms: None,
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_read_tokens: Some(80),
+            cache_miss_tokens: Some(20),
+            cache_creation_tokens: Some(20),
+            context_usage_pct: 10.0,
+            was_compacted: false,
+        });
+        trace.add_step(crate::trace::TraceStep {
+            iteration: 1,
+            request_kind: "subagentWorker".to_string(),
+            tool_name: None,
+            tool_duration_ms: None,
+            input_tokens: 200,
+            output_tokens: 30,
+            cache_read_tokens: Some(25),
+            cache_miss_tokens: Some(75),
+            cache_creation_tokens: Some(75),
+            context_usage_pct: 20.0,
+            was_compacted: true,
+        });
+        trace.finish(crate::trace::TraceOutcome::Success, None);
+        db.save_agent_trace(&trace).unwrap();
+
+        let summary = db.get_trace_summary().unwrap();
+        let main = summary
+            .cache_buckets
+            .iter()
+            .find(|bucket| bucket.request_kind == "mainAgentStep" && !bucket.was_compacted)
+            .expect("main non-compacted bucket");
+        assert_eq!(main.step_count, 1);
+        assert_eq!(main.cache_read_tokens, 80);
+        assert_eq!(main.cache_miss_tokens, 20);
+        assert_eq!(main.cache_creation_tokens, 20);
+        assert!((main.hit_rate - 0.8).abs() < f64::EPSILON);
+
+        let subagent = summary
+            .cache_buckets
+            .iter()
+            .find(|bucket| bucket.request_kind == "subagentWorker" && bucket.was_compacted)
+            .expect("subagent compacted bucket");
+        assert_eq!(subagent.step_count, 1);
+        assert_eq!(subagent.cache_read_tokens, 25);
+        assert_eq!(subagent.cache_miss_tokens, 75);
+        assert_eq!(subagent.cache_creation_tokens, 75);
+        assert!((subagent.hit_rate - 0.25).abs() < f64::EPSILON);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1406,6 +1464,10 @@ impl Database {
         // Top tools: extract from trace_json steps (limit scan to 200 most recent).
         let mut tool_counts: std::collections::HashMap<String, u64> =
             std::collections::HashMap::new();
+        let mut cache_buckets: std::collections::BTreeMap<
+            (String, bool),
+            crate::trace::TraceCacheBucket,
+        > = std::collections::BTreeMap::new();
         let mut stmt2 =
             conn.prepare("SELECT trace_json FROM agent_traces ORDER BY created_at DESC LIMIT 200")?;
         let rows2 = stmt2.query_map([], |row| row.get::<_, String>(0))?;
@@ -1416,12 +1478,38 @@ impl Database {
                     if let Some(ref name) = step.tool_name {
                         *tool_counts.entry(name.clone()).or_insert(0) += 1;
                     }
+                    let key = (step.request_kind.clone(), step.was_compacted);
+                    let bucket = cache_buckets.entry(key).or_insert_with(|| {
+                        crate::trace::TraceCacheBucket {
+                            request_kind: step.request_kind.clone(),
+                            was_compacted: step.was_compacted,
+                            step_count: 0,
+                            cache_read_tokens: 0,
+                            cache_miss_tokens: 0,
+                            cache_creation_tokens: 0,
+                            hit_rate: 0.0,
+                        }
+                    });
+                    bucket.step_count += 1;
+                    bucket.cache_read_tokens += step.cache_read_tokens.unwrap_or(0);
+                    bucket.cache_miss_tokens += step.cache_miss_tokens.unwrap_or(0);
+                    bucket.cache_creation_tokens += step.cache_creation_tokens.unwrap_or(0);
                 }
             }
         }
         let mut top_tools: Vec<(String, u64)> = tool_counts.into_iter().collect();
         top_tools.sort_by_key(|tool| std::cmp::Reverse(tool.1));
         top_tools.truncate(10);
+        let mut cache_buckets: Vec<crate::trace::TraceCacheBucket> =
+            cache_buckets.into_values().collect();
+        for bucket in &mut cache_buckets {
+            let denominator = bucket.cache_read_tokens + bucket.cache_miss_tokens;
+            bucket.hit_rate = if denominator == 0 {
+                0.0
+            } else {
+                bucket.cache_read_tokens as f64 / denominator as f64
+            };
+        }
 
         Ok(crate::trace::TraceSummary {
             total_sessions,
@@ -1434,6 +1522,7 @@ impl Database {
             success_rate,
             cache_hit_rate,
             top_tools,
+            cache_buckets,
             sessions_last_7_days: sessions_7d,
             tokens_last_7_days: tokens_7d,
         })

@@ -228,12 +228,37 @@ fn test_build_system_prompt_preserves_core_rules() {
         "dynamic sections should follow custom text"
     );
     assert!(prompt.contains("Prefer terse answers."));
+    assert!(!prompt.contains("## Tool Contract: run_shell"));
+    assert!(prompt.len() < 8_000);
 }
 
 #[test]
 fn test_build_system_prompt_skips_blank_sections() {
     let prompt = build_system_prompt(Some("   "), &["", "  ", "\n\n"]);
     assert_eq!(prompt, default_system_prompt());
+}
+
+#[test]
+fn test_route_pack_injects_run_shell_contract_only_for_codebase_work() {
+    let code_route = route_user_turn(
+        "为什么主agent没有办法调用run_shell？请仔细排查并全面修复。",
+        "",
+        false,
+    );
+
+    assert_eq!(code_route.kind, AgentRouteKind::CodebaseOperation);
+    assert!(code_route
+        .prompt_section
+        .contains("## Route Pack: Codebase"));
+    assert!(code_route
+        .prompt_section
+        .contains("## Tool Contract: run_shell"));
+
+    let direct_route = route_user_turn("Say hello in one sentence.", "", false);
+    assert_eq!(direct_route.kind, AgentRouteKind::DirectResponse);
+    assert!(!direct_route
+        .prompt_section
+        .contains("## Tool Contract: run_shell"));
 }
 
 #[test]
@@ -2020,6 +2045,7 @@ async fn test_exact_prefix_runtime_tail_is_persisted_for_next_turn_replay() {
             include_skill_system_prompt: false,
             volatile_system_sections: &["## Current Turn Time\nLocal time: 12:01:00"],
             append_volatile_system_prompt_to_tail: true,
+            ..context::PrepareMessagesOptions::default()
         },
     )
     .into_iter()
@@ -2201,6 +2227,11 @@ async fn test_prompt_cache_trace_compares_previous_turn_snapshot_with_new_execut
         .get("observation")
         .expect("prompt-cache observation");
     assert_eq!(observation["requestKind"], "mainAgentStep");
+    assert!(observation["snapshot"]["messageFingerprints"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item.get("reasoningHash").is_some())));
+    assert_eq!(observation["fastCacheSettleRisk"], false);
+    assert!(observation.get("modelStepIntervalMs").is_none());
     assert_eq!(
         observation["previousSnapshotSource"]["kind"],
         "previousConversationTurn"
@@ -2439,6 +2470,7 @@ async fn test_exact_prefix_tool_loop_system_state_is_persisted_for_replay() {
             include_skill_system_prompt: false,
             volatile_system_sections: &["## Current Turn Time\nLocal time: 12:01:00"],
             append_volatile_system_prompt_to_tail: true,
+            ..context::PrepareMessagesOptions::default()
         },
     )
     .into_iter()
@@ -2580,6 +2612,7 @@ async fn test_loop_guard_change_strategy_persists_assistant_draft_before_retry()
             include_skill_system_prompt: false,
             volatile_system_sections: &[],
             append_volatile_system_prompt_to_tail: true,
+            ..context::PrepareMessagesOptions::default()
         },
     )
     .into_iter()
@@ -3035,6 +3068,7 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
             include_skill_system_prompt: false,
             volatile_system_sections: &[],
             append_volatile_system_prompt_to_tail: true,
+            ..context::PrepareMessagesOptions::default()
         },
     )
     .into_iter()

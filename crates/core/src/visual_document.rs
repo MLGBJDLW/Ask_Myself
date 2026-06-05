@@ -290,6 +290,15 @@ pub fn extract_pdf_visual_artifacts(
     ocr_config: &crate::ocr::OcrConfig,
     llm_provider: Option<&dyn crate::llm::LlmProvider>,
 ) -> Vec<ParsedVisualArtifact> {
+    extract_pdf_visual_artifacts_with_llm_provider_type(pdf_bytes, ocr_config, llm_provider, None)
+}
+
+pub fn extract_pdf_visual_artifacts_with_llm_provider_type(
+    pdf_bytes: &[u8],
+    ocr_config: &crate::ocr::OcrConfig,
+    llm_provider: Option<&dyn crate::llm::LlmProvider>,
+    llm_provider_type: Option<crate::llm::ProviderType>,
+) -> Vec<ParsedVisualArtifact> {
     let mut artifacts = Vec::new();
     let doc = match lopdf::Document::load_mem(pdf_bytes) {
         Ok(doc) => doc,
@@ -313,11 +322,12 @@ pub fn extract_pdf_visual_artifacts(
             let height = image.height();
             let mut png = Cursor::new(Vec::new());
             let ocr_result = if image.write_to(&mut png, image::ImageFormat::Png).is_ok() {
-                crate::ocr::extract_text_from_image(
+                crate::ocr::extract_text_from_image_with_llm_provider_type(
                     png.get_ref(),
                     "image/png",
                     ocr_config,
                     llm_provider,
+                    llm_provider_type,
                 )
                 .ok()
             } else {
