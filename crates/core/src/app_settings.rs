@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 const APP_CONFIG_KEY: &str = "app_config";
 const WIZARD_STATE_KEY: &str = "wizard_state";
 const CURRENT_TIMEOUT_DEFAULTS_VERSION: u32 = 1;
-const CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION: u32 = 2;
+const CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION: u32 = 3;
 const LEGACY_DEFAULT_TOOL_TIMEOUT_SECS: i64 = 30;
 const LEGACY_DEFAULT_AGENT_TIMEOUT_SECS: i64 = 180;
 
@@ -362,7 +362,7 @@ fn default_mcp_call_timeout_secs() -> u64 {
     300
 }
 fn default_dynamic_tool_visibility() -> bool {
-    false
+    true
 }
 fn default_trace_enabled() -> bool {
     true
@@ -467,10 +467,10 @@ fn migrate_tool_visibility_defaults(mut config: AppConfig) -> (AppConfig, bool) 
         return (config, false);
     }
 
-    // Dynamic visibility changes the tool schema prefix between model steps and
-    // turns. Keep it opt-in so default agent runs prefer reliability and prompt
-    // cache reuse. Users can still re-enable it after this one-time migration.
-    config.dynamic_tool_visibility = false;
+    // Keep the default tool surface task-local. Exact-prefix providers now
+    // persist replayable turn scaffolding, so the old full-registry default is
+    // no longer needed for prompt-cache continuity and bloats most requests.
+    config.dynamic_tool_visibility = true;
     config.tool_visibility_defaults_version = CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION;
     (config, true)
 }
@@ -611,7 +611,7 @@ mod tests {
             config.timeout_defaults_version,
             CURRENT_TIMEOUT_DEFAULTS_VERSION
         );
-        assert!(!config.dynamic_tool_visibility);
+        assert!(config.dynamic_tool_visibility);
         assert_eq!(
             config.tool_visibility_defaults_version,
             CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION
@@ -662,7 +662,7 @@ mod tests {
             migrated.timeout_defaults_version,
             CURRENT_TIMEOUT_DEFAULTS_VERSION
         );
-        assert!(!migrated.dynamic_tool_visibility);
+        assert!(migrated.dynamic_tool_visibility);
         assert_eq!(
             migrated.tool_visibility_defaults_version,
             CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION

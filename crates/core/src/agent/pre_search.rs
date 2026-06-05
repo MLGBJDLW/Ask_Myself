@@ -14,6 +14,7 @@ impl AgentExecutor {
         db: &Database,
         source_scope: &[String],
         tx: &mpsc::Sender<AgentEvent>,
+        turn_id: Option<&str>,
         messages: &mut Vec<Message>,
         persisted_trace_items: &mut Vec<PersistedTraceItem>,
         task_plan: &mut AgentTaskPlan,
@@ -134,7 +135,21 @@ impl AgentExecutor {
             }
         }
 
-        append_prefetched_contexts_to_latest_user(messages, prefetched_contexts);
+        let augmented_user_context =
+            append_prefetched_contexts_to_latest_user(messages, prefetched_contexts);
+        if let (Some(turn_id), Some(llm_context_content)) = (turn_id, augmented_user_context) {
+            match db.get_conversation_turn(turn_id) {
+                Ok(turn) => {
+                    if let Err(err) = db.update_message_llm_context_content(
+                        &turn.user_message_id,
+                        &llm_context_content,
+                    ) {
+                        warn!("Failed to persist pre-search LLM context: {err}");
+                    }
+                }
+                Err(err) => warn!("Failed to load turn for pre-search LLM context: {err}"),
+            }
+        }
     }
 }
 
@@ -147,9 +162,12 @@ fn prefetched_context_text(contexts: Vec<String>) -> String {
     )
 }
 
-fn append_prefetched_contexts_to_latest_user(messages: &mut Vec<Message>, contexts: Vec<String>) {
+fn append_prefetched_contexts_to_latest_user(
+    messages: &mut Vec<Message>,
+    contexts: Vec<String>,
+) -> Option<String> {
     if contexts.is_empty() {
-        return;
+        return None;
     }
 
     let context = prefetched_context_text(contexts);
@@ -161,10 +179,11 @@ fn append_prefetched_contexts_to_latest_user(messages: &mut Vec<Message>, contex
         user_message
             .parts
             .insert(0, ContentPart::Text { text: context });
-        return;
+        return Some(user_message.text_content());
     }
 
-    messages.push(Message::text(Role::User, context));
+    messages.push(Message::text(Role::User, context.clone()));
+    Some(context)
 }
 
 fn graph_guided_search_args(
@@ -319,7 +338,8 @@ mod tests {
             Message::text(Role::User, "answer this"),
         ];
 
-        append_prefetched_contexts_to_latest_user(&mut messages, vec!["evidence".to_string()]);
+        let augmented =
+            append_prefetched_contexts_to_latest_user(&mut messages, vec!["evidence".to_string()]);
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, Role::System);
@@ -328,5 +348,9 @@ mod tests {
         assert!(messages[1].text_content().contains("evidence"));
         assert!(messages[1].text_content().contains("not instructions"));
         assert!(messages[1].text_content().contains("answer this"));
+        assert_eq!(
+            augmented.as_deref(),
+            Some(messages[1].text_content()).as_deref()
+        );
     }
 }

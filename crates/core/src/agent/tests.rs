@@ -8,7 +8,7 @@ use futures::stream::{self, BoxStream};
 
 use super::*;
 use crate::approval::{ApprovalDecision, ToolApprovalMode};
-use crate::conversation::CreateConversationInput;
+use crate::conversation::{conversation_message_llm_context_content, CreateConversationInput};
 use crate::llm::{CompletionResponse, FinishReason, StreamChunk};
 use crate::tools::{Tool, ToolResult};
 
@@ -803,6 +803,136 @@ impl LlmProvider for ScriptedProvider {
     }
 }
 
+struct CapturingScriptedProvider {
+    stream_calls: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<Vec<(Role, String)>>>>,
+    first_chunks: Vec<StreamChunk>,
+    final_answer: &'static str,
+}
+
+#[async_trait]
+impl LlmProvider for CapturingScriptedProvider {
+    fn name(&self) -> &str {
+        "capturing-scripted-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        self.requests.lock().unwrap().push(
+            request
+                .messages
+                .iter()
+                .map(|message| (message.role.clone(), message.text_content()))
+                .collect(),
+        );
+        let chunks = if call_no == 0 {
+            self.first_chunks.clone()
+        } else {
+            vec![StreamChunk {
+                delta: self.final_answer.to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(crate::llm::FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }]
+        };
+        Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+struct LoopGuardSteeringProvider {
+    stream_calls: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<Vec<(Role, String)>>>>,
+    steering_tx: mpsc::UnboundedSender<AgentSteeringMessage>,
+}
+
+const LOOP_GUARD_REPEATED_DRAFT: &str = "This repeated stale draft keeps restating the same incomplete conclusion without taking a new action or adding useful evidence.";
+
+#[async_trait]
+impl LlmProvider for LoopGuardSteeringProvider {
+    fn name(&self) -> &str {
+        "loop-guard-steering-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["deepseek-chat".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        self.requests.lock().unwrap().push(
+            request
+                .messages
+                .iter()
+                .map(|message| (message.role.clone(), message.text_content()))
+                .collect(),
+        );
+
+        let delta = if call_no < 3 {
+            LOOP_GUARD_REPEATED_DRAFT
+        } else {
+            "fresh final answer"
+        };
+        let steering_tx = self.steering_tx.clone();
+        let steering_text =
+            (call_no < 2).then(|| format!("steering note {}", call_no.saturating_add(1)));
+        Ok(Box::pin(stream::unfold(
+            (0u8, Some(delta.to_string()), steering_text, steering_tx),
+            |(state, delta, steering_text, steering_tx)| async move {
+                if state == 0 {
+                    return Some((
+                        Ok(StreamChunk {
+                            delta: delta.expect("first stream state should carry delta"),
+                            tool_call_delta: None,
+                            finish_reason: Some(crate::llm::FinishReason::Stop),
+                            usage: None,
+                            thinking_delta: None,
+                        }),
+                        (1, None, steering_text, steering_tx),
+                    ));
+                }
+
+                if let Some(text) = steering_text {
+                    let _ = steering_tx.send(AgentSteeringMessage::text(text));
+                }
+                None
+            },
+        )))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
 struct DelayTool {
     name: &'static str,
     delay_ms: u64,
@@ -840,6 +970,55 @@ impl Tool for DelayTool {
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: format!("{}-ok", self.name),
+            is_error: false,
+            artifacts: None,
+        })
+    }
+}
+
+fn large_read_file_content() -> String {
+    (0..260)
+        .map(|index| {
+            format!(
+                "line-{index:03} {}",
+                "abcdefghijklmnopqrstuvwxyz0123456789".repeat(8)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+struct LargeReadFileTool;
+
+#[async_trait]
+impl Tool for LargeReadFileTool {
+    fn name(&self) -> &str {
+        "read_file"
+    }
+
+    fn description(&self) -> &str {
+        "Read a large file"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" }
+            }
+        })
+    }
+
+    async fn execute(
+        &self,
+        call_id: &str,
+        _arguments: &str,
+        _db: &Database,
+        _source_scope: &[String],
+    ) -> Result<ToolResult, CoreError> {
+        Ok(ToolResult {
+            call_id: call_id.to_string(),
+            content: large_read_file_content(),
             is_error: false,
             artifacts: None,
         })
@@ -1720,6 +1899,701 @@ async fn test_run_persists_typed_task_plan_on_task_run() {
 }
 
 #[tokio::test]
+async fn test_exact_prefix_runtime_tail_is_persisted_for_next_turn_replay() {
+    let registry = ToolRegistry::new();
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = CapturingScriptedProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        requests: Arc::clone(&requests),
+        first_chunks: vec![StreamChunk {
+            delta: "first answer".to_string(),
+            tool_call_delta: None,
+            finish_reason: Some(crate::llm::FinishReason::Stop),
+            usage: None,
+            thinking_delta: None,
+        }],
+        final_answer: "unused",
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            volatile_system_sections: vec!["## Current Turn Time\nLocal time: 12:00:00".to_string()],
+            model: Some("deepseek-chat".to_string()),
+            provider_type: Some(ProviderType::DeepSeek),
+            ..AgentConfig::default()
+        },
+    );
+
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "deep_seek".to_string(),
+            model: "deepseek-chat".to_string(),
+            system_prompt: Some("stable system".to_string()),
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+    let user_msg = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "first question".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 2,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_msg).unwrap();
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_msg.id, None)
+        .unwrap();
+    let (tx, _rx) = mpsc::channel(32);
+
+    executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_msg.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect("run should succeed");
+
+    let persisted = db.get_messages(&conversation.id).expect("messages");
+    assert_eq!(persisted[0].role, Role::User);
+    assert_eq!(persisted[1].role, Role::System);
+    assert!(persisted[1].content.contains("Runtime Context"));
+    assert!(persisted[1].content.contains("Current Turn Time"));
+    assert!(persisted
+        .iter()
+        .any(|message| message.role == Role::System
+            && message.content.contains("Active Routing Plan")));
+    assert!(persisted.iter().any(
+        |message| message.role == Role::System && message.content.contains("Active Task Plan")
+    ));
+    assert_eq!(persisted.last().unwrap().role, Role::Assistant);
+
+    let first_request = requests.lock().unwrap()[0].clone();
+    let replay_history = persisted
+        .iter()
+        .map(|message| {
+            let mut replay = Message::text(
+                message.role.clone(),
+                conversation_message_llm_context_content(message),
+            );
+            replay.name = message.tool_call_id.clone();
+            replay.tool_calls = if message.tool_calls.is_empty() {
+                None
+            } else {
+                Some(message.tool_calls.clone())
+            };
+            replay
+        })
+        .collect::<Vec<_>>();
+    let second_request = context::prepare_messages_with_options(
+        "stable system",
+        &replay_history,
+        &[ContentPart::Text {
+            text: "second question".to_string(),
+        }],
+        "deepseek-chat",
+        4096,
+        None,
+        &[],
+        &[],
+        &[],
+        context::PrepareMessagesOptions {
+            include_skill_system_prompt: false,
+            volatile_system_sections: &["## Current Turn Time\nLocal time: 12:01:00"],
+            append_volatile_system_prompt_to_tail: true,
+        },
+    )
+    .into_iter()
+    .map(|message| {
+        let text = message.text_content();
+        (message.role, text)
+    })
+    .take(first_request.len())
+    .collect::<Vec<_>>();
+
+    assert_eq!(first_request, second_request);
+}
+
+#[tokio::test]
+async fn test_prompt_cache_trace_compares_previous_turn_snapshot_with_new_executor() {
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "deep_seek".to_string(),
+            model: "deepseek-chat".to_string(),
+            system_prompt: Some("stable system".to_string()),
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+
+    let first_user = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "first question".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 2,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&first_user).unwrap();
+    let first_turn = db
+        .create_conversation_turn(&conversation.id, &first_user.id, None)
+        .unwrap();
+    let first_provider = CapturingScriptedProvider {
+        stream_calls: Arc::new(AtomicUsize::new(0)),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        first_chunks: vec![StreamChunk {
+            delta: "first answer".to_string(),
+            tool_call_delta: None,
+            finish_reason: Some(crate::llm::FinishReason::Stop),
+            usage: None,
+            thinking_delta: None,
+        }],
+        final_answer: "unused",
+    };
+    let first_executor = AgentExecutor::new(
+        Box::new(first_provider),
+        ToolRegistry::new(),
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("deepseek-chat".to_string()),
+            provider_type: Some(ProviderType::DeepSeek),
+            ..AgentConfig::default()
+        },
+    );
+    let (tx, _rx) = mpsc::channel(32);
+    first_executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: first_user.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&first_turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect("first turn should succeed");
+
+    let first_trace = db
+        .get_conversation_turn(&first_turn.id)
+        .unwrap()
+        .trace
+        .expect("first turn trace");
+    assert!(first_trace["items"].as_array().unwrap().iter().any(|item| {
+        item.get("kind").and_then(serde_json::Value::as_str) == Some("promptCache")
+    }));
+
+    let history = db
+        .get_messages(&conversation.id)
+        .unwrap()
+        .into_iter()
+        .map(|message| {
+            let mut replay = Message::text(
+                message.role.clone(),
+                conversation_message_llm_context_content(&message),
+            );
+            replay.name = message.tool_call_id.clone();
+            replay.tool_calls = if message.tool_calls.is_empty() {
+                None
+            } else {
+                Some(message.tool_calls.clone())
+            };
+            replay
+        })
+        .collect::<Vec<_>>();
+    let second_user = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "second question".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 2,
+        created_at: String::new(),
+        sort_order: 100,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&second_user).unwrap();
+    let second_turn = db
+        .create_conversation_turn(&conversation.id, &second_user.id, None)
+        .unwrap();
+    let second_provider = CapturingScriptedProvider {
+        stream_calls: Arc::new(AtomicUsize::new(0)),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        first_chunks: vec![StreamChunk {
+            delta: "second answer".to_string(),
+            tool_call_delta: None,
+            finish_reason: Some(crate::llm::FinishReason::Stop),
+            usage: None,
+            thinking_delta: None,
+        }],
+        final_answer: "unused",
+    };
+    let second_executor = AgentExecutor::new(
+        Box::new(second_provider),
+        ToolRegistry::new(),
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("deepseek-chat".to_string()),
+            provider_type: Some(ProviderType::DeepSeek),
+            ..AgentConfig::default()
+        },
+    );
+    let (tx, _rx) = mpsc::channel(32);
+    second_executor
+        .run(
+            history,
+            vec![ContentPart::Text {
+                text: second_user.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&second_turn.id),
+            tx,
+            101,
+        )
+        .await
+        .expect("second turn should succeed");
+
+    let second_trace = db
+        .get_conversation_turn(&second_turn.id)
+        .unwrap()
+        .trace
+        .expect("second turn trace");
+    let first_prompt_cache = second_trace["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item.get("kind").and_then(serde_json::Value::as_str) == Some("promptCache"))
+        .expect("second turn should persist prompt-cache observation");
+    let observation = first_prompt_cache
+        .get("observation")
+        .expect("prompt-cache observation");
+    assert_eq!(observation["requestKind"], "mainAgentStep");
+    assert_eq!(
+        observation["previousSnapshotSource"]["kind"],
+        "previousConversationTurn"
+    );
+    assert_eq!(
+        observation["previousSnapshotSource"]["turnId"],
+        first_turn.id
+    );
+    assert!(observation["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|change| change
+            .as_str()
+            .is_some_and(|text| text.starts_with("first changed message index"))));
+}
+
+#[tokio::test]
+async fn test_tool_result_replay_matches_current_llm_context() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(LargeReadFileTool));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = CapturingScriptedProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        requests: Arc::clone(&requests),
+        first_chunks: vec![StreamChunk {
+            delta: String::new(),
+            tool_call_delta: Some(ToolCallDelta {
+                id: "read_call".to_string(),
+                name: Some("read_file".to_string()),
+                arguments_delta: r#"{"path":"large.txt"}"#.to_string(),
+                index: Some(0),
+                thought_signature: None,
+            }),
+            finish_reason: Some(crate::llm::FinishReason::Stop),
+            usage: None,
+            thinking_delta: None,
+        }],
+        final_answer: "done",
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "mock".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: Some("stable system".to_string()),
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+    let user_msg = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "read a large file".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 4,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_msg).unwrap();
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_msg.id, None)
+        .unwrap();
+    let (tx, _rx) = mpsc::channel(32);
+
+    executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_msg.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect("run should succeed");
+
+    let request_log = requests.lock().unwrap().clone();
+    assert_eq!(request_log.len(), 2);
+    let current_context_tool_result = request_log[1]
+        .iter()
+        .find(|(role, _)| *role == Role::Tool)
+        .map(|(_, text)| text.clone())
+        .expect("second request should include tool result");
+    let persisted_tool = db
+        .get_messages(&conversation.id)
+        .unwrap()
+        .into_iter()
+        .find(|message| message.role == Role::Tool)
+        .expect("tool message should be persisted");
+
+    assert_eq!(persisted_tool.content, current_context_tool_result);
+    assert!(persisted_tool.content.len() < large_read_file_content().len());
+}
+
+#[tokio::test]
+async fn test_exact_prefix_tool_loop_system_state_is_persisted_for_replay() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = CapturingScriptedProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        requests: Arc::clone(&requests),
+        first_chunks: vec![StreamChunk {
+            delta: String::new(),
+            tool_call_delta: Some(ToolCallDelta {
+                id: "mock_call".to_string(),
+                name: Some("mock_tool".to_string()),
+                arguments_delta: r#"{"value":"ok"}"#.to_string(),
+                index: Some(0),
+                thought_signature: None,
+            }),
+            finish_reason: Some(crate::llm::FinishReason::Stop),
+            usage: None,
+            thinking_delta: None,
+        }],
+        final_answer: "final answer",
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            volatile_system_sections: vec!["## Current Turn Time\nLocal time: 12:00:00".to_string()],
+            model: Some("deepseek-chat".to_string()),
+            provider_type: Some(ProviderType::DeepSeek),
+            ..AgentConfig::default()
+        },
+    );
+
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "deep_seek".to_string(),
+            model: "deepseek-chat".to_string(),
+            system_prompt: Some("stable system".to_string()),
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+    let user_msg = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "use a tool".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 3,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_msg).unwrap();
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_msg.id, None)
+        .unwrap();
+    let (tx, _rx) = mpsc::channel(32);
+
+    executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_msg.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect("run should succeed");
+
+    let request_log = requests.lock().unwrap().clone();
+    assert_eq!(request_log.len(), 2);
+    assert!(request_log[1]
+        .iter()
+        .any(|(role, text)| *role == Role::System && text.contains("Long Task Control State")));
+
+    let persisted = db.get_messages(&conversation.id).expect("messages");
+    assert!(persisted.iter().any(|message| message.role == Role::System
+        && message.content.contains("Long Task Control State")));
+    let replay_history = persisted
+        .iter()
+        .map(|message| {
+            let mut replay = Message::text(
+                message.role.clone(),
+                conversation_message_llm_context_content(message),
+            );
+            replay.name = message.tool_call_id.clone();
+            replay.tool_calls = if message.tool_calls.is_empty() {
+                None
+            } else {
+                Some(message.tool_calls.clone())
+            };
+            replay
+        })
+        .collect::<Vec<_>>();
+    let second_turn = context::prepare_messages_with_options(
+        "stable system",
+        &replay_history,
+        &[ContentPart::Text {
+            text: "next question".to_string(),
+        }],
+        "deepseek-chat",
+        4096,
+        None,
+        &[],
+        &[],
+        &[],
+        context::PrepareMessagesOptions {
+            include_skill_system_prompt: false,
+            volatile_system_sections: &["## Current Turn Time\nLocal time: 12:01:00"],
+            append_volatile_system_prompt_to_tail: true,
+        },
+    )
+    .into_iter()
+    .map(|message| {
+        let text = message.text_content();
+        (message.role, text)
+    })
+    .take(request_log[1].len())
+    .collect::<Vec<_>>();
+
+    assert_eq!(request_log[1], second_turn);
+}
+
+#[tokio::test]
+async fn test_loop_guard_change_strategy_persists_assistant_draft_before_retry() {
+    let registry = ToolRegistry::new();
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (steering_tx, steering_rx) = mpsc::unbounded_channel();
+    let provider = LoopGuardSteeringProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        requests: Arc::clone(&requests),
+        steering_tx,
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("deepseek-chat".to_string()),
+            provider_type: Some(ProviderType::DeepSeek),
+            max_iterations: 5,
+            ..AgentConfig::default()
+        },
+    )
+    .with_steering_receiver(steering_rx);
+
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "deep_seek".to_string(),
+            model: "deepseek-chat".to_string(),
+            system_prompt: Some("stable system".to_string()),
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+    let user_msg = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "start".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 1,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_msg).unwrap();
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_msg.id, None)
+        .unwrap();
+    let (tx, _rx) = mpsc::channel(64);
+
+    executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_msg.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect("run should succeed");
+
+    let request_log = requests.lock().unwrap().clone();
+    assert_eq!(request_log.len(), 4);
+    assert!(request_log[3]
+        .iter()
+        .any(|(role, text)| *role == Role::System && text.contains("Loop Guard")));
+
+    let persisted = db.get_messages(&conversation.id).expect("messages");
+    let repeated_draft_count = persisted
+        .iter()
+        .filter(|message| {
+            message.role == Role::Assistant && message.content == LOOP_GUARD_REPEATED_DRAFT
+        })
+        .count();
+    assert_eq!(repeated_draft_count, 3);
+    let third_draft_index = persisted
+        .iter()
+        .rposition(|message| {
+            message.role == Role::Assistant && message.content == LOOP_GUARD_REPEATED_DRAFT
+        })
+        .expect("third repeated draft should be persisted");
+    let loop_guard_index = persisted
+        .iter()
+        .position(|message| message.role == Role::System && message.content.contains("Loop Guard"))
+        .expect("loop guard prompt should be persisted");
+    assert!(third_draft_index < loop_guard_index);
+
+    let replay_history = persisted
+        .iter()
+        .map(|message| {
+            let mut replay = Message::text(
+                message.role.clone(),
+                conversation_message_llm_context_content(message),
+            );
+            replay.name = message.tool_call_id.clone();
+            replay.tool_calls = if message.tool_calls.is_empty() {
+                None
+            } else {
+                Some(message.tool_calls.clone())
+            };
+            replay
+        })
+        .collect::<Vec<_>>();
+    let replay_prefix = context::prepare_messages_with_options(
+        "stable system",
+        &replay_history,
+        &[ContentPart::Text {
+            text: "next turn".to_string(),
+        }],
+        "deepseek-chat",
+        4096,
+        None,
+        &[],
+        &[],
+        &[],
+        context::PrepareMessagesOptions {
+            include_skill_system_prompt: false,
+            volatile_system_sections: &[],
+            append_volatile_system_prompt_to_tail: true,
+        },
+    )
+    .into_iter()
+    .map(|message| {
+        let text = message.text_content();
+        (message.role, text)
+    })
+    .take(request_log[3].len())
+    .collect::<Vec<_>>();
+
+    assert_eq!(request_log[3], replay_prefix);
+}
+
+#[tokio::test]
 async fn test_persists_only_final_iteration_thinking_on_final_assistant() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(MockTool));
@@ -1802,12 +2676,20 @@ async fn test_persists_only_final_iteration_thinking_on_final_assistant() {
             .any(|item| item.get("kind").and_then(|v| v.as_str()) == Some("loop")),
         "trace timeline should include first-class loop events"
     );
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| item.get("kind").and_then(|v| v.as_str()) == Some("promptCache"))
+            .count(),
+        2,
+        "trace timeline should include prompt-cache diagnostics for each model step"
+    );
     let non_loop_items = items
         .iter()
         .filter(|item| {
             !matches!(
                 item.get("kind").and_then(|v| v.as_str()),
-                Some("loop") | Some("skillSelection")
+                Some("loop") | Some("skillSelection") | Some("promptCache")
             )
         })
         .collect::<Vec<_>>();
@@ -1985,7 +2867,9 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
         Box::new(provider),
         registry,
         AgentConfig {
-            model: Some("mock-model".to_string()),
+            system_prompt: "stable system".to_string(),
+            model: Some("deepseek-chat".to_string()),
+            provider_type: Some(ProviderType::DeepSeek),
             max_iterations: 3,
             ..AgentConfig::default()
         },
@@ -1993,20 +2877,50 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
     .with_steering_receiver(steering_rx);
 
     let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "deep_seek".to_string(),
+            model: "deepseek-chat".to_string(),
+            system_prompt: Some("stable system".to_string()),
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+    let user_msg = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "start broad".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 2,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_msg).unwrap();
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_msg.id, None)
+        .unwrap();
     let (tx, mut rx) = mpsc::channel(64);
+    let run_db = db.clone();
+    let conversation_id = conversation.id.clone();
+    let turn_id = turn.id.clone();
+    let user_content = user_msg.content.clone();
 
     let run = tokio::spawn(async move {
         executor
             .run(
                 vec![],
-                vec![ContentPart::Text {
-                    text: "start broad".to_string(),
-                }],
-                &db,
-                None,
-                None,
+                vec![ContentPart::Text { text: user_content }],
+                &run_db,
+                Some(&conversation_id),
+                Some(&turn_id),
                 tx,
-                0,
+                1,
             )
             .await
     });
@@ -2063,6 +2977,24 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
     assert_eq!(final_msg.text_content(), "steered answer");
     assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
 
+    let persisted = db.get_messages(&conversation.id).expect("messages");
+    let obsolete_draft_index = persisted
+        .iter()
+        .position(|message| {
+            message.role == Role::Assistant && message.content.trim() == "obsolete draft"
+        })
+        .expect("interrupted assistant draft should be persisted");
+    let steering_index = persisted
+        .iter()
+        .position(|message| {
+            message.role == Role::User
+                && message.artifacts.as_ref().is_some_and(|artifacts| {
+                    artifacts.get("kind").and_then(serde_json::Value::as_str) == Some("steering")
+                })
+        })
+        .expect("steering user message should be persisted");
+    assert!(obsolete_draft_index < steering_index);
+
     let requests = request_texts.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(
@@ -2071,4 +3003,43 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
             .any(|message| message.contains("focus on edge cases instead")),
         "second LLM request should include steering text"
     );
+    let replay_history = persisted
+        .iter()
+        .map(|message| {
+            let mut replay = Message::text(
+                message.role.clone(),
+                conversation_message_llm_context_content(message),
+            );
+            replay.name = message.tool_call_id.clone();
+            replay.tool_calls = if message.tool_calls.is_empty() {
+                None
+            } else {
+                Some(message.tool_calls.clone())
+            };
+            replay
+        })
+        .collect::<Vec<_>>();
+    let replay_prefix = context::prepare_messages_with_options(
+        "stable system",
+        &replay_history,
+        &[ContentPart::Text {
+            text: "next turn".to_string(),
+        }],
+        "deepseek-chat",
+        4096,
+        None,
+        &[],
+        &[],
+        &[],
+        context::PrepareMessagesOptions {
+            include_skill_system_prompt: false,
+            volatile_system_sections: &[],
+            append_volatile_system_prompt_to_tail: true,
+        },
+    )
+    .into_iter()
+    .map(|message| format!("{:?}:{}", message.role, message.text_content()))
+    .take(requests[1].len())
+    .collect::<Vec<_>>();
+    assert_eq!(requests[1], replay_prefix);
 }

@@ -5,6 +5,7 @@ pub mod summarizer;
 
 use std::collections::{BTreeSet, HashSet};
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -79,6 +80,19 @@ pub struct ConversationMessage {
     /// legacy rows (pre-`v040`) and non-user messages will be `None`.
     #[serde(default)]
     pub image_attachments: Option<Vec<ImageAttachment>>,
+}
+
+/// Artifact key used when the text shown in the UI differs from the canonical
+/// content that should be replayed to the LLM on later turns.
+pub const LLM_CONTEXT_CONTENT_ARTIFACT_KEY: &str = "llmContextContent";
+
+pub fn conversation_message_llm_context_content(message: &ConversationMessage) -> &str {
+    message
+        .artifacts
+        .as_ref()
+        .and_then(|artifacts| artifacts.get(LLM_CONTEXT_CONTENT_ARTIFACT_KEY))
+        .and_then(|value| value.as_str())
+        .unwrap_or(&message.content)
 }
 
 /// Saved LLM provider configuration.
@@ -2267,6 +2281,69 @@ impl Database {
         Ok(())
     }
 
+    /// Persist the canonical LLM replay content for an existing message while
+    /// leaving its display content untouched.
+    pub fn update_message_llm_context_content(
+        &self,
+        message_id: &str,
+        llm_context_content: &str,
+    ) -> Result<(), CoreError> {
+        let conn = self.conn();
+        let artifacts_json: Option<String> = conn
+            .query_row(
+                "SELECT artifacts_json FROM messages WHERE id = ?1",
+                rusqlite::params![message_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound(format!("Message {message_id}")))?;
+
+        let mut artifacts = match artifacts_json {
+            Some(json) => serde_json::from_str::<serde_json::Value>(&json)?,
+            None => serde_json::json!({}),
+        };
+
+        match artifacts {
+            serde_json::Value::Object(ref mut map) => {
+                map.insert(
+                    LLM_CONTEXT_CONTENT_ARTIFACT_KEY.to_string(),
+                    serde_json::Value::String(llm_context_content.to_string()),
+                );
+                map.insert(
+                    "llmContextVersion".to_string(),
+                    serde_json::Value::Number(1.into()),
+                );
+            }
+            value => {
+                let mut map = serde_json::Map::new();
+                map.insert(
+                    "kind".to_string(),
+                    serde_json::Value::String("messageContextChannels".to_string()),
+                );
+                map.insert("displayArtifacts".to_string(), value);
+                map.insert(
+                    LLM_CONTEXT_CONTENT_ARTIFACT_KEY.to_string(),
+                    serde_json::Value::String(llm_context_content.to_string()),
+                );
+                map.insert(
+                    "llmContextVersion".to_string(),
+                    serde_json::Value::Number(1.into()),
+                );
+                artifacts = serde_json::Value::Object(map);
+            }
+        }
+
+        let artifacts_json = serde_json::to_string(&artifacts)?;
+        let affected = conn.execute(
+            "UPDATE messages SET artifacts_json = ?2 WHERE id = ?1",
+            rusqlite::params![message_id, artifacts_json],
+        )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!("Message {message_id}")));
+        }
+        Ok(())
+    }
+
     /// Get all messages for a conversation, ordered by `sort_order` ASC.
     pub fn get_messages(
         &self,
@@ -3927,6 +4004,55 @@ mod tests {
         assert_eq!(messages[1].tool_calls.len(), 1);
         assert_eq!(messages[1].tool_calls[0].name, "search");
         assert_eq!(messages[1].artifacts.as_ref().unwrap()["kind"], "plan");
+    }
+
+    #[test]
+    fn test_message_llm_context_content_roundtrip_preserves_display_content() {
+        let db = Database::open_memory().unwrap();
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+
+        let msg = ConversationMessage {
+            id: "msg-llm-context".to_string(),
+            conversation_id: conv.id.clone(),
+            role: Role::User,
+            content: "visible user text".to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: Some(serde_json::json!({
+                "kind": "chatSendContext",
+                "source": "test"
+            })),
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&msg).unwrap();
+
+        db.update_message_llm_context_content(&msg.id, "retrieved context\n\nvisible user text")
+            .unwrap();
+
+        let saved = db.get_messages(&conv.id).unwrap().remove(0);
+
+        assert_eq!(saved.content, "visible user text");
+        assert_eq!(
+            conversation_message_llm_context_content(&saved),
+            "retrieved context\n\nvisible user text"
+        );
+        assert_eq!(
+            saved.artifacts.as_ref().unwrap()["kind"].as_str(),
+            Some("chatSendContext")
+        );
     }
 
     #[test]

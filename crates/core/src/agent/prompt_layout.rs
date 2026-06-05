@@ -19,9 +19,9 @@ impl PromptLayout {
     pub(super) fn for_request(provider_type: Option<ProviderType>, model: Option<&str>) -> Self {
         if uses_implicit_prefix_cache(provider_type, model) {
             return Self {
-                include_skill_system_prompt: false,
-                include_turn_scaffolding_system_prompts: false,
-                allow_dynamic_tool_visibility: false,
+                include_skill_system_prompt: true,
+                include_turn_scaffolding_system_prompts: true,
+                allow_dynamic_tool_visibility: true,
                 append_volatile_system_prompt_to_tail: true,
             };
         }
@@ -62,6 +62,23 @@ pub(super) fn insert_turn_scaffolding_system_prompts(
     layout: PromptLayout,
 ) {
     if !layout.include_turn_scaffolding_system_prompts {
+        return;
+    }
+
+    if layout.append_volatile_system_prompt_to_tail {
+        if !route_prompt_section.trim().is_empty() {
+            messages.push(Message::text(
+                Role::System,
+                route_prompt_section.to_string(),
+            ));
+        }
+        messages.push(Message::text(Role::System, task_plan.to_prompt_section()));
+        if include_dynamic_tool_discovery {
+            messages.push(Message::text(
+                Role::System,
+                tool_discovery::dynamic_tool_visibility_prompt().to_string(),
+            ));
+        }
         return;
     }
 
@@ -107,18 +124,18 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_layout_omits_non_persistent_turn_scaffolding() {
+    fn deepseek_layout_keeps_replayable_tail_context() {
         let layout = PromptLayout::for_provider(Some(ProviderType::DeepSeek));
 
-        assert!(!layout.include_skill_system_prompt);
-        assert!(!layout.include_turn_scaffolding_system_prompts);
-        assert!(!layout.allow_dynamic_tool_visibility);
+        assert!(layout.include_skill_system_prompt);
+        assert!(layout.include_turn_scaffolding_system_prompts);
+        assert!(layout.allow_dynamic_tool_visibility);
         assert!(layout.append_volatile_system_prompt_to_tail);
-        assert!(!layout.effective_dynamic_tool_visibility(true));
+        assert!(layout.effective_dynamic_tool_visibility(true));
     }
 
     #[test]
-    fn exact_prefix_cache_layout_omits_non_persistent_turn_scaffolding() {
+    fn exact_prefix_cache_layout_keeps_replayable_tail_context() {
         for provider_type in [
             ProviderType::OpenAi,
             ProviderType::AzureOpenAi,
@@ -127,11 +144,11 @@ mod tests {
         ] {
             let layout = PromptLayout::for_provider(Some(provider_type));
 
-            assert!(!layout.include_skill_system_prompt);
-            assert!(!layout.include_turn_scaffolding_system_prompts);
-            assert!(!layout.allow_dynamic_tool_visibility);
+            assert!(layout.include_skill_system_prompt);
+            assert!(layout.include_turn_scaffolding_system_prompts);
+            assert!(layout.allow_dynamic_tool_visibility);
             assert!(layout.append_volatile_system_prompt_to_tail);
-            assert!(!layout.effective_dynamic_tool_visibility(true));
+            assert!(layout.effective_dynamic_tool_visibility(true));
         }
     }
 
@@ -150,13 +167,13 @@ mod tests {
     fn deepseek_model_name_uses_prefix_cache_layout_for_compatible_routes() {
         let layout = PromptLayout::for_request(Some(ProviderType::OpenRouter), Some("deepseek/v3"));
 
-        assert!(!layout.include_skill_system_prompt);
-        assert!(!layout.allow_dynamic_tool_visibility);
+        assert!(layout.include_skill_system_prompt);
+        assert!(layout.allow_dynamic_tool_visibility);
         assert!(layout.append_volatile_system_prompt_to_tail);
     }
 
     #[test]
-    fn deepseek_scaffolding_insertion_is_noop_for_prefix_stability() {
+    fn deepseek_scaffolding_insertion_appends_to_replayable_tail() {
         let mut messages = vec![
             Message::text(Role::System, "stable system"),
             Message::text(Role::User, "user"),
@@ -170,13 +187,14 @@ mod tests {
             PromptLayout::for_provider(Some(ProviderType::DeepSeek)),
         );
 
-        assert_eq!(messages.len(), 2);
-        assert!(!messages
-            .iter()
-            .any(|message| message.text_content().contains("Active Task Plan")));
-        assert!(!messages
-            .iter()
-            .any(|message| message.text_content().contains("Active Routing Plan")));
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[0].text_content(), "stable system");
+        assert_eq!(messages[1].text_content(), "user");
+        assert!(messages[2].text_content().contains("Active Routing Plan"));
+        assert!(messages[3].text_content().contains("Active Task Plan"));
+        assert!(messages[4]
+            .text_content()
+            .contains("Dynamic Tool Discovery"));
     }
 
     #[test]
@@ -204,14 +222,10 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_second_turn_replays_first_turn_prefix_without_scaffolding() {
+    fn deepseek_second_turn_replays_first_turn_prefix_with_tail_scaffolding() {
         let layout = PromptLayout::for_provider(Some(ProviderType::DeepSeek));
         let mut first_turn = vec![
             Message::text(Role::System, "stable system"),
-            Message::text(
-                Role::System,
-                "## Runtime Context\nCurrent date: 2026-06-02 (UTC)",
-            ),
             Message::text(Role::User, "first question"),
         ];
         insert_turn_scaffolding_system_prompts(
@@ -224,11 +238,9 @@ mod tests {
 
         let mut second_turn = vec![
             Message::text(Role::System, "stable system"),
-            Message::text(
-                Role::System,
-                "## Runtime Context\nCurrent date: 2026-06-02 (UTC)",
-            ),
             Message::text(Role::User, "first question"),
+            Message::text(Role::System, "## Active Routing Plan\nfirst route"),
+            Message::text(Role::System, plan().to_prompt_section()),
             Message::text(Role::Assistant, "first answer"),
             Message::text(Role::User, "second question"),
         ];

@@ -29,11 +29,12 @@ use nexa_core::approval::{
 };
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
-    AgentConfig as DbAgentConfig, AgentExecutionGraph, AgentSubtaskRun, AgentTaskArtifact,
-    AgentTaskArtifactSummary, AgentTaskArtifactVersion, AgentTaskRun, AgentTaskRunEvent,
-    AgentTaskRunListItem, CheckpointBranch, CollectionContext, Conversation, ConversationMessage,
-    ConversationStats, ConversationTurn, CreateAgentTaskArtifactInput, CreateConversationInput,
-    ImageAttachment, SaveAgentConfigInput, UpdateAgentTaskArtifactInput,
+    conversation_message_llm_context_content, AgentConfig as DbAgentConfig, AgentExecutionGraph,
+    AgentSubtaskRun, AgentTaskArtifact, AgentTaskArtifactSummary, AgentTaskArtifactVersion,
+    AgentTaskRun, AgentTaskRunEvent, AgentTaskRunListItem, CheckpointBranch, CollectionContext,
+    Conversation, ConversationMessage, ConversationStats, ConversationTurn,
+    CreateAgentTaskArtifactInput, CreateConversationInput, ImageAttachment, SaveAgentConfigInput,
+    UpdateAgentTaskArtifactInput,
 };
 use nexa_core::db::Database;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
@@ -517,7 +518,10 @@ fn build_connection_probe_request(config: &SaveAgentConfigInput) -> CompletionRe
 
 /// Convert a DB [`ConversationMessage`] to an LLM [`Message`].
 fn conv_message_to_llm(msg: &ConversationMessage) -> Message {
-    let mut m = Message::text(msg.role.clone(), &msg.content);
+    let mut m = Message::text(
+        msg.role.clone(),
+        conversation_message_llm_context_content(msg),
+    );
     m.name = msg.tool_call_id.clone();
     m.tool_calls = if msg.tool_calls.is_empty() {
         None
@@ -703,6 +707,33 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         }
+    }
+
+    #[test]
+    fn conv_message_to_llm_prefers_llm_context_content_artifact() {
+        let msg = ConversationMessage {
+            id: "msg-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            role: Role::User,
+            content: "visible user text".to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: Some(serde_json::json!({
+                "llmContextContent": "retrieved context\n\nvisible user text"
+            })),
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+
+        let llm_message = conv_message_to_llm(&msg);
+
+        assert_eq!(
+            llm_message.text_content(),
+            "retrieved context\n\nvisible user text"
+        );
     }
 
     fn save_test_agent_config(

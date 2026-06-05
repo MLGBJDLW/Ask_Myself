@@ -3,17 +3,20 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use super::*;
 use crate::conversation::memory::estimate_message_tokens_for_model;
+use crate::db::Database;
 
 const MIN_CACHE_BREAK_TOKEN_DROP: u32 = 1_000;
 const MAX_STABLE_CACHE_READ_RATIO: f32 = 0.95;
 const PREFIX_HASH_TOKEN_WINDOWS: [u32; 3] = [1_024, 4_096, 16_384];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PromptCacheSnapshot {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PromptCacheSnapshot {
     provider_type: Option<ProviderType>,
     model: String,
     stable_system_hash: u64,
@@ -28,11 +31,46 @@ struct PromptCacheSnapshot {
     tool_result_tokens: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct PromptCacheSnapshotSource {
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PromptCacheTraceObservation {
+    version: u32,
+    request_kind: String,
+    snapshot: PromptCacheSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_snapshot_source: Option<PromptCacheSnapshotSource>,
+    changes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_read_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_miss_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_creation_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    was_compacted: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingPromptCacheObservation {
+    snapshot: PromptCacheSnapshot,
+    previous_snapshot_source: Option<PromptCacheSnapshotSource>,
+    changes: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct PromptCacheTracker {
     previous_snapshot: Option<PromptCacheSnapshot>,
+    previous_snapshot_source: Option<PromptCacheSnapshotSource>,
     previous_cache_read_tokens: Option<u32>,
-    pending_changes: Vec<String>,
+    pending_observation: Option<PendingPromptCacheObservation>,
 }
 
 fn hash_text(value: &str) -> u64 {
@@ -240,19 +278,39 @@ impl PromptCacheTracker {
         tools: &[ToolDefinition],
     ) {
         let next = snapshot_for(provider_type, model, messages, tools);
-        self.pending_changes = self
+        let changes = self
             .previous_snapshot
             .as_ref()
             .map(|previous| diff_snapshots(previous, &next))
             .unwrap_or_default();
+        let previous_snapshot_source = self.previous_snapshot_source.clone();
+        self.pending_observation = Some(PendingPromptCacheObservation {
+            snapshot: next.clone(),
+            previous_snapshot_source,
+            changes,
+        });
         self.previous_snapshot = Some(next);
+        self.previous_snapshot_source = Some(PromptCacheSnapshotSource {
+            kind: "currentTurnPreviousStep".to_string(),
+            turn_id: None,
+        });
     }
 
-    fn complete(&mut self, cache_read_tokens: Option<u32>, cache_creation_tokens: Option<u32>) {
-        let Some(cache_read_tokens) = cache_read_tokens else {
-            self.pending_changes.clear();
-            return;
-        };
+    fn seed_previous_turn_snapshot(&mut self, turn_id: String, snapshot: PromptCacheSnapshot) {
+        self.previous_snapshot = Some(snapshot);
+        self.previous_snapshot_source = Some(PromptCacheSnapshotSource {
+            kind: "previousConversationTurn".to_string(),
+            turn_id: Some(turn_id),
+        });
+        self.previous_cache_read_tokens = None;
+        self.pending_observation = None;
+    }
+
+    fn complete(
+        &mut self,
+        usage: Option<&Usage>,
+        was_compacted: Option<bool>,
+    ) -> Option<PromptCacheTraceObservation> {
         let provider_type = self
             .previous_snapshot
             .as_ref()
@@ -262,44 +320,101 @@ impl PromptCacheTracker {
             .as_ref()
             .map(|snapshot| snapshot.model.as_str())
             .unwrap_or_default();
-        let previous = self.previous_cache_read_tokens;
-        self.previous_cache_read_tokens = Some(cache_read_tokens);
-        let Some(previous_cache_read_tokens) = previous else {
-            debug!(
-                ?provider_type,
-                model, cache_read_tokens, cache_creation_tokens, "prompt cache baseline recorded"
-            );
-            self.pending_changes.clear();
-            return;
-        };
 
-        let token_drop = previous_cache_read_tokens.saturating_sub(cache_read_tokens);
-        let ratio = if previous_cache_read_tokens == 0 {
-            1.0
-        } else {
-            cache_read_tokens as f32 / previous_cache_read_tokens as f32
-        };
-        if token_drop >= MIN_CACHE_BREAK_TOKEN_DROP && ratio < MAX_STABLE_CACHE_READ_RATIO {
-            let reason = if self.pending_changes.is_empty() {
-                "prompt unchanged; likely provider-side TTL/routing/eviction".to_string()
+        let cache_read_tokens = usage.and_then(|usage| usage.cache_read_tokens);
+        let cache_miss_tokens = usage.and_then(|usage| usage.cache_miss_tokens);
+        let cache_creation_tokens = usage.and_then(|usage| usage.cache_creation_tokens);
+        if let Some(cache_read_tokens) = cache_read_tokens {
+            let previous = self.previous_cache_read_tokens;
+            self.previous_cache_read_tokens = Some(cache_read_tokens);
+            if let Some(previous_cache_read_tokens) = previous {
+                let token_drop = previous_cache_read_tokens.saturating_sub(cache_read_tokens);
+                let ratio = if previous_cache_read_tokens == 0 {
+                    1.0
+                } else {
+                    cache_read_tokens as f32 / previous_cache_read_tokens as f32
+                };
+                if token_drop >= MIN_CACHE_BREAK_TOKEN_DROP && ratio < MAX_STABLE_CACHE_READ_RATIO {
+                    let changes = self
+                        .pending_observation
+                        .as_ref()
+                        .map(|pending| pending.changes.as_slice())
+                        .unwrap_or_default();
+                    let reason = if changes.is_empty() {
+                        "prompt unchanged; likely provider-side TTL/routing/eviction".to_string()
+                    } else {
+                        changes.join(", ")
+                    };
+                    warn!(
+                        ?provider_type,
+                        model,
+                        previous_cache_read_tokens,
+                        cache_read_tokens,
+                        cache_creation_tokens,
+                        reason,
+                        "provider prompt cache read dropped"
+                    );
+                }
             } else {
-                self.pending_changes.join(", ")
-            };
-            warn!(
-                ?provider_type,
-                model,
-                previous_cache_read_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
-                reason,
-                "provider prompt cache read dropped"
-            );
+                debug!(
+                    ?provider_type,
+                    model,
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                    "prompt cache baseline recorded"
+                );
+            }
         }
-        self.pending_changes.clear();
+
+        self.pending_observation
+            .take()
+            .map(|pending| PromptCacheTraceObservation {
+                version: 1,
+                request_kind: "mainAgentStep".to_string(),
+                snapshot: pending.snapshot,
+                previous_snapshot_source: pending.previous_snapshot_source,
+                changes: pending.changes,
+                cache_read_tokens,
+                cache_miss_tokens,
+                cache_creation_tokens,
+                was_compacted,
+            })
     }
 }
 
 impl AgentExecutor {
+    pub(super) fn seed_prompt_cache_from_previous_turn(
+        &self,
+        db: &Database,
+        conversation_id: Option<&str>,
+        current_turn_id: Option<&str>,
+    ) {
+        let Some(conversation_id) = conversation_id else {
+            return;
+        };
+        let Ok(turns) = db.get_conversation_turns(conversation_id) else {
+            return;
+        };
+        let Some(previous) = turns
+            .iter()
+            .rev()
+            .filter(|turn| Some(turn.id.as_str()) != current_turn_id)
+            .find(|turn| turn.finished_at.is_some())
+        else {
+            return;
+        };
+        let Some(snapshot) = previous
+            .trace
+            .as_ref()
+            .and_then(prompt_cache_snapshot_from_turn_trace)
+        else {
+            return;
+        };
+        if let Ok(mut tracker) = self.prompt_cache_tracker.lock() {
+            tracker.seed_previous_turn_snapshot(previous.id.clone(), snapshot);
+        }
+    }
+
     pub(super) fn begin_prompt_cache_observation(
         &self,
         model: &str,
@@ -311,14 +426,36 @@ impl AgentExecutor {
         }
     }
 
-    pub(super) fn complete_prompt_cache_observation(&self, usage: Option<&Usage>) {
-        let Some(usage) = usage else {
-            return;
-        };
+    pub(super) fn complete_prompt_cache_observation(
+        &self,
+        usage: Option<&Usage>,
+        was_compacted: Option<bool>,
+    ) -> Option<PromptCacheTraceObservation> {
         if let Ok(mut tracker) = self.prompt_cache_tracker.lock() {
-            tracker.complete(usage.cache_read_tokens, usage.cache_creation_tokens);
+            return tracker.complete(usage, was_compacted);
         }
+        None
     }
+}
+
+pub(super) fn prompt_cache_observation_to_value(
+    observation: &PromptCacheTraceObservation,
+    was_compacted: bool,
+) -> Option<serde_json::Value> {
+    let mut observation = observation.clone();
+    observation.was_compacted = Some(was_compacted);
+    serde_json::to_value(observation).ok()
+}
+
+fn prompt_cache_snapshot_from_turn_trace(trace: &serde_json::Value) -> Option<PromptCacheSnapshot> {
+    let items = trace.get("items")?.as_array()?;
+    items
+        .iter()
+        .rev()
+        .filter(|item| item.get("kind").and_then(serde_json::Value::as_str) == Some("promptCache"))
+        .filter_map(|item| item.get("observation"))
+        .filter_map(|observation| observation.get("snapshot"))
+        .find_map(|snapshot| serde_json::from_value(snapshot.clone()).ok())
 }
 
 #[cfg(test)]

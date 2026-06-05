@@ -36,6 +36,7 @@ pub(super) struct ModelStepOutput {
     pub(super) last_finish_reason: Option<String>,
     pub(super) started_call_ids: HashSet<String>,
     pub(super) tool_run_started_ids: HashSet<String>,
+    pub(super) prompt_cache_observation: Option<prompt_cache::PromptCacheTraceObservation>,
 }
 
 impl AgentExecutor {
@@ -497,18 +498,39 @@ impl AgentExecutor {
             );
 
             if let Some(steering) = stream_interrupted_by_steering {
+                let steering_messages = self.collect_steering_messages(Some(steering)).await;
+                let has_effective_steering = steering_messages
+                    .iter()
+                    .any(Self::steering_message_has_effective_content);
                 if !full_content.trim().is_empty() {
                     let draft_reasoning =
                         self.reasoning_content_for_iteration(&iteration_thinking, false);
-                    messages.push(Message {
+                    let draft_message = Message {
                         role: Role::Assistant,
                         parts: vec![ContentPart::Text {
                             text: full_content.clone(),
                         }],
                         name: None,
                         tool_calls: None,
-                        reasoning_content: draft_reasoning,
-                    });
+                        reasoning_content: draft_reasoning.clone(),
+                    };
+                    messages.push(draft_message.clone());
+                    if has_effective_steering {
+                        self.persist_stream_interrupted_assistant_draft(
+                            assistant_turn::AssistantTurnPersistenceContext {
+                                db,
+                                conversation_id,
+                                turn_id,
+                                model,
+                                route_kind,
+                                persisted_trace_items: &mut *persisted_trace_items,
+                                sort_order: &mut *sort_order,
+                            },
+                            &draft_message,
+                            draft_reasoning,
+                            &iteration_thinking,
+                        );
+                    }
                 }
                 let steering_texts = {
                     let mut steering_ctx = SteeringDrainContext {
@@ -519,7 +541,7 @@ impl AgentExecutor {
                         sort_order,
                         privacy_cfg,
                     };
-                    self.drain_steering_messages_from(messages, &mut steering_ctx, Some(steering))
+                    self.apply_steering_messages(messages, &mut steering_ctx, steering_messages)
                         .await
                 };
                 if steering_texts.is_empty() {
@@ -662,7 +684,8 @@ impl AgentExecutor {
             break;
         }
 
-        self.complete_prompt_cache_observation(chunk_usage.as_ref());
+        let prompt_cache_observation =
+            self.complete_prompt_cache_observation(chunk_usage.as_ref(), None);
 
         Ok(ModelStepOutcome::Completed(Box::new(ModelStepOutput {
             full_content,
@@ -672,6 +695,7 @@ impl AgentExecutor {
             last_finish_reason,
             started_call_ids,
             tool_run_started_ids,
+            prompt_cache_observation,
         })))
     }
 }

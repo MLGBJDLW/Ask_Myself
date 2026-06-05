@@ -459,7 +459,7 @@ pub fn desktop_summarization_provider_config(db_config: &DbAgentConfig) -> Optio
         .summarization_provider
         .as_ref()
         .map(|provider_name| ProviderConfig {
-            provider_type: provider_type_for_parts(provider_name, None),
+            provider_type: provider_type_for_parts(provider_name, db_config.base_url.as_deref()),
             api_key: Some(db_config.api_key.clone()),
             base_url: db_config.base_url.clone(),
             org_id: None,
@@ -483,7 +483,7 @@ pub fn desktop_memory_extraction_model(db_config: &DbAgentConfig) -> &str {
 pub fn desktop_memory_extraction_provider_config(db_config: &DbAgentConfig) -> ProviderConfig {
     if let Some(ref provider_name) = db_config.summarization_provider {
         ProviderConfig {
-            provider_type: provider_type_for_parts(provider_name, None),
+            provider_type: provider_type_for_parts(provider_name, db_config.base_url.as_deref()),
             api_key: Some(db_config.api_key.clone()),
             base_url: db_config.base_url.clone(),
             org_id: None,
@@ -1817,6 +1817,17 @@ mod tests {
     }
 
     #[test]
+    fn desktop_summarization_provider_config_sniffs_actual_base_url() {
+        let mut db_config = test_agent_config();
+        db_config.summarization_provider = Some("open_ai".to_string());
+        db_config.base_url = Some("https://api.deepseek.com".to_string());
+
+        let config = desktop_summarization_provider_config(&db_config).expect("provider override");
+
+        assert_eq!(config.provider_type, ProviderType::DeepSeek);
+    }
+
+    #[test]
     fn desktop_memory_extraction_provider_config_uses_summary_overrides() {
         let mut db_config = test_agent_config();
         db_config.provider = "ollama".to_string();
@@ -1832,6 +1843,11 @@ mod tests {
 
         assert_eq!(override_config.provider_type, ProviderType::OpenAi);
         assert_eq!(override_config.api_key.as_deref(), Some("test-key"));
+
+        db_config.base_url = Some("https://api.deepseek.com/v1".to_string());
+        let sniffed_config = desktop_memory_extraction_provider_config(&db_config);
+
+        assert_eq!(sniffed_config.provider_type, ProviderType::DeepSeek);
     }
 
     #[test]
