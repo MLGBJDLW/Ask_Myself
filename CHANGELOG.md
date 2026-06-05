@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.7...nexa-monorepo-v0.8.8) (2026-06-05)
+
+
+### Bug Fixes
+
+* **docs:** remove historical notes section from documentation ([6fc39b9](https://github.com/MLGBJDLW/Nexa/commit/6fc39b93ea1d21c9d5a02623669e49184871dff7))
+* **docs:** remove historical notes section from documentation ([a4d8005](https://github.com/MLGBJDLW/Nexa/commit/a4d80050be4ab4b2b516c6ef8a8c6383c30f7f91))
+
 ## [0.8.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.6...nexa-monorepo-v0.8.7) (2026-06-05)
 
 
