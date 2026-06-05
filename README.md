@@ -2,6 +2,12 @@
 
 > A local-first desktop assistant and personal knowledge workspace.
 
+[![CI](https://github.com/MLGBJDLW/Nexa/actions/workflows/ci.yml/badge.svg)](https://github.com/MLGBJDLW/Nexa/actions/workflows/ci.yml)
+[![Release](https://github.com/MLGBJDLW/Nexa/actions/workflows/release.yml/badge.svg)](https://github.com/MLGBJDLW/Nexa/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/MLGBJDLW/Nexa)](https://github.com/MLGBJDLW/Nexa/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+
 Nexa is a local desktop assistant built around your own files and knowledge base. Point it at folders containing notes, PDFs, logs, spreadsheets, presentations, and other documents; it indexes everything locally, lets you search in natural language, grounds answers in evidence from your own data, and helps with everyday desktop work such as investigation, summarization, document creation, comparison, and office-style assistance.
 
 Unlike cloud-native note tools, the core data path stays on your machine. Indexing, parsing, embedding, OCR, search, collections, and chat persistence all run locally. External LLM providers can be used for generation, but the app sends scoped context rather than your full document store.
@@ -78,7 +84,12 @@ Supported formats include:
 - Consumer-friendly investigation workspace in the Chat UI
 - Recall Mode entry in Search for vague memory lookup
 - Office-style document assistance through document and file tools
-- Configurable providers: OpenAI, Anthropic, Google Gemini, Ollama, and other OpenAI-compatible endpoints already supported by the codebase
+- Configurable model providers across four built-in adapters — OpenAI-compatible, Anthropic, Google Gemini, and Ollama — with bundled presets for OpenAI, OpenRouter, Anthropic, Gemini, DeepSeek, Qwen, Zhipu, Moonshot, Doubao, Baichuan, Yi, LM Studio, Azure OpenAI, and any other OpenAI-compatible endpoint
+- Hierarchical model picker for switching providers, presets, and models
+- Switchable agent personas and a slash-command palette for quick actions
+- Durable agent, user, and project memory tools
+- Markdown answers with LaTeX math and Mermaid diagram rendering
+- Read-only plan mode and dynamic tool discovery via `tool_search`
 - Custom per-conversation system prompts
 - Answer caching and personalization signals from feedback
 
@@ -130,6 +141,7 @@ See:
 - [docs/SKILL_PACKAGES.md](docs/SKILL_PACKAGES.md)
 - [docs/WORKFLOW_PACKAGES.md](docs/WORKFLOW_PACKAGES.md)
 - [docs/PROTOCOL_EXITS.md](docs/PROTOCOL_EXITS.md)
+- [docs/NATIVE_PLUGIN_RUNTIME.md](docs/NATIVE_PLUGIN_RUNTIME.md)
 
 ## Current Architectural Highlights
 
@@ -161,6 +173,7 @@ See:
 | Embeddings | ONNX Runtime, tokenizers, optional API embeddings |
 | OCR | PaddleOCR ONNX models |
 | Routing | React Router 7 |
+| Markdown/Math/Diagrams | react-markdown, KaTeX, Mermaid |
 | Build tooling | Vite 6, Cargo |
 
 ## Built-In Agent Tools
@@ -183,8 +196,8 @@ See [docs/TOOLS.md](docs/TOOLS.md) for the tool reference.
 
 ### Prerequisites
 
-- Rust 1.75+
-- Node.js 18+
+- Rust 1.75+ (stable toolchain; pinned in `rust-toolchain.toml`)
+- Node.js 20+ (CI builds on Node 24)
 - Tauri 2 system dependencies
 
 ### Install
@@ -217,8 +230,8 @@ The `nexa-core` crate uses Cargo features to gate heavier functionality:
 
 | Feature | Default | Notes |
 | --- | --- | --- |
-| `ocr` | Yes | OCR support for images and scanned PDFs |
-| `video` | No | Video/audio tooling; requires LLVM / libclang |
+| `ocr` | Yes | OCR for images and scanned PDFs (PaddleOCR ONNX models) |
+| `video` | No | Video/audio analysis: FFmpeg audio extraction + Whisper speech-to-text (Candle). Requires `ffmpeg`/`ffprobe` on PATH and pulls in extra model dependencies |
 
 Examples:
 
