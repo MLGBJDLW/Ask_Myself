@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.8...nexa-monorepo-v0.9.0) (2026-06-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* upgrade dreaming system
+
+### Features
+
+* upgrade dreaming system ([638d6bb](https://github.com/MLGBJDLW/Nexa/commit/638d6bb004ea37d75a199221bc0bf469a19ddf44))
+* **web-search:** render JavaScript-heavy fetches ([6206198](https://github.com/MLGBJDLW/Nexa/commit/62061980469d603e7d0e0e3e2e3ac842378d4aa6))
+
 ## [0.8.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.7...nexa-monorepo-v0.8.8) (2026-06-05)
 
 
