@@ -542,7 +542,7 @@ At least one of `path` or `source_id` should be provided.
 
 ### `fetch_url`
 
-Fetch and extract readable text from a public web page with SSRF and redirect-hop validation. Use after `web_search` or when the user shares a URL and web content needs referencing. HTML pages use a Readability-style article extractor first, then `article`/`main`/`body` fallback, then metadata fallback for JavaScript-heavy pages.
+Fetch and extract readable text from a public web page with SSRF and redirect-hop validation. Use after `web_search` or when the user shares a URL and web content needs referencing. HTML pages use a Readability-style article extractor first, then `article`/`main`/`body` fallback. JavaScript-heavy pages are detected and browser-rendered on demand before falling back to metadata.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -550,8 +550,9 @@ Fetch and extract readable text from a public web page with SSRF and redirect-ho
 | `max_length` | integer | no | Max characters to return (default 5000) |
 | `mode` | string | no | `auto`, `readability`, `text`, `metadata`, or `assets` |
 | `include_assets` | boolean | no | Include image candidates from metadata, `picture/source`, `srcset`, and `img` tags (default true) |
+| `render_js` | string | no | `auto`, `never`, or `always`; default `auto` renders only likely app shells or JavaScript-required pages |
 
-`fetch_url` is text-first. It reports image candidates in artifacts but does not write binary files. If the user wants a candidate image saved, use `download_asset`.
+`fetch_url` is text-first. It reports image candidates in artifacts but does not write binary files. If the user wants a candidate image saved, use `download_asset`. Browser rendering keeps the same public URL validation boundary; blocked subrequests are reported in the `jsRender` artifact.
 
 > **Example:** Fetch a Stack Overflow answer the user linked to and incorporate it into the conversation.
 
