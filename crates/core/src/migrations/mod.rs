@@ -1066,6 +1066,64 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_workflow_scheduler_events_type
             ON workflow_automation_scheduler_events(event_type, created_at);",
     ),
+    (
+        "v069_dreaming_review_artifacts",
+        "CREATE TABLE IF NOT EXISTS dream_runs (
+            id TEXT PRIMARY KEY,
+            trigger_kind TEXT NOT NULL,
+            scope_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            phase TEXT,
+            summary TEXT,
+            stats_json TEXT NOT NULL DEFAULT '{}',
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            started_at TEXT,
+            finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_dream_runs_status
+            ON dream_runs(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_dream_runs_trigger
+            ON dream_runs(trigger_kind, created_at);
+
+        CREATE TABLE IF NOT EXISTS dream_run_events (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES dream_runs(id) ON DELETE CASCADE,
+            event_type TEXT NOT NULL,
+            status TEXT,
+            summary TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_dream_run_events_run
+            ON dream_run_events(run_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_dream_run_events_type
+            ON dream_run_events(event_type, created_at);
+
+        CREATE TABLE IF NOT EXISTS dream_artifacts (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES dream_runs(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            application_json TEXT NOT NULL DEFAULT '{}',
+            confidence REAL NOT NULL,
+            review_required INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            applied_at TEXT,
+            rejected_at TEXT,
+            undone_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_dream_artifacts_run
+            ON dream_artifacts(run_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_dream_artifacts_status
+            ON dream_artifacts(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_dream_artifacts_kind
+            ON dream_artifacts(kind, status, created_at);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1204,6 +1262,9 @@ mod tests {
         assert!(tables.contains(&"browser_evidence_captures".to_string()));
         assert!(tables.contains(&"agent_run_events".to_string()));
         assert!(tables.contains(&"agent_trajectories".to_string()));
+        assert!(tables.contains(&"dream_runs".to_string()));
+        assert!(tables.contains(&"dream_run_events".to_string()));
+        assert!(tables.contains(&"dream_artifacts".to_string()));
     }
 
     #[test]

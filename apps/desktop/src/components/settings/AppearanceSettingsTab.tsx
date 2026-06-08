@@ -1,7 +1,11 @@
 import { RotateCcw, Save, Settings2, Star } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useTranslation, type Locale } from '../../i18n';
+import * as api from '../../lib/api';
 import { useUpdater } from '../../lib/useUpdater';
+import type { Source } from '../../types';
 import type { AppConfig } from '../../types/conversation';
+import type { Project } from '../../types/project';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { ThemeSwitcher } from '../ui/ThemeSwitcher';
@@ -26,6 +30,14 @@ interface AppearanceSettingsTabProps {
   onRerunWizard: () => void;
 }
 
+function toggleId(ids: string[], id: string): string[] {
+  return ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id];
+}
+
+function compactPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path;
+}
+
 export function AppearanceSettingsTab({
   locale,
   setLocale,
@@ -41,6 +53,58 @@ export function AppearanceSettingsTab({
   onRerunWizard,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation();
+  const [dreamSources, setDreamSources] = useState<Source[]>([]);
+  const [dreamProjects, setDreamProjects] = useState<Project[]>([]);
+  const dreamingConfig = appConfig?.dreaming ?? {
+    enabled: true,
+    idle: false,
+    afterScan: false,
+    afterSuccessfulTurn: false,
+    schedule: false,
+    idleIntervalMinutes: 180,
+    scheduleIntervalMinutes: 720,
+    maxArtifactsPerRun: 24,
+    maxRunsPerDay: 12,
+    localOnly: true,
+    sourceIds: [],
+    projectIds: [],
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([
+      api.listSources().catch(() => [] as Source[]),
+      api.listProjects().catch(() => [] as Project[]),
+    ]).then(([sources, projects]) => {
+      if (cancelled) return;
+      setDreamSources(sources);
+      setDreamProjects(projects.filter((project) => !project.archived));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const updateDreamingConfig = (patch: Partial<typeof dreamingConfig>) => {
+    if (!appConfig) return;
+    onAppConfigChange({
+      ...appConfig,
+      dreaming: {
+        ...dreamingConfig,
+        ...patch,
+      },
+    });
+  };
+  const toggleDreamSource = (sourceId: string) => {
+    updateDreamingConfig({
+      sourceIds: toggleId(dreamingConfig.sourceIds ?? [], sourceId),
+    });
+  };
+  const toggleDreamProject = (projectId: string) => {
+    updateDreamingConfig({
+      projectIds: toggleId(dreamingConfig.projectIds ?? [], projectId),
+    });
+  };
 
   return (
     <Section icon={<Star size={20} />} title={t('settings.appearance')} delay={0.03}>
@@ -239,6 +303,218 @@ export function AppearanceSettingsTab({
                   <span className="text-sm font-medium text-text-primary">{t('settings.autoSkillLearning')}</span>
                 </label>
                 <p className="text-xs text-text-tertiary ml-6">{t('settings.autoSkillLearningDesc')}</p>
+
+                <div className="rounded-lg border border-border bg-surface-1 p-3 space-y-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={dreamingConfig.enabled}
+                      onChange={(e) => updateDreamingConfig({ enabled: e.target.checked })}
+                      className="rounded border-border"
+                    />
+                    <span className="text-sm font-medium text-text-primary">{t('settings.dreamingEnabled')}</span>
+                  </label>
+                  <p className="text-xs text-text-tertiary ml-6">{t('settings.dreamingEnabledDesc')}</p>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={dreamingConfig.idle}
+                          disabled={!dreamingConfig.enabled}
+                          onChange={(e) => updateDreamingConfig({ idle: e.target.checked })}
+                          className="rounded border-border"
+                        />
+                        <span className="text-sm text-text-primary">{t('settings.dreamingIdle')}</span>
+                      </label>
+                      <p className="mt-1 text-xs text-text-tertiary ml-6">{t('settings.dreamingIdleDesc')}</p>
+                    </div>
+                    <div>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={dreamingConfig.afterScan}
+                          disabled={!dreamingConfig.enabled}
+                          onChange={(e) => updateDreamingConfig({ afterScan: e.target.checked })}
+                          className="rounded border-border"
+                        />
+                        <span className="text-sm text-text-primary">{t('settings.dreamingAfterScan')}</span>
+                      </label>
+                      <p className="mt-1 text-xs text-text-tertiary ml-6">{t('settings.dreamingAfterScanDesc')}</p>
+                    </div>
+                    <div>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={dreamingConfig.afterSuccessfulTurn}
+                          disabled={!dreamingConfig.enabled}
+                          onChange={(e) => updateDreamingConfig({ afterSuccessfulTurn: e.target.checked })}
+                          className="rounded border-border"
+                        />
+                        <span className="text-sm text-text-primary">{t('settings.dreamingAfterTurn')}</span>
+                      </label>
+                      <p className="mt-1 text-xs text-text-tertiary ml-6">{t('settings.dreamingAfterTurnDesc')}</p>
+                    </div>
+                    <div>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={dreamingConfig.schedule}
+                          disabled={!dreamingConfig.enabled}
+                          onChange={(e) => updateDreamingConfig({ schedule: e.target.checked })}
+                          className="rounded border-border"
+                        />
+                        <span className="text-sm text-text-primary">{t('settings.dreamingSchedule')}</span>
+                      </label>
+                      <p className="mt-1 text-xs text-text-tertiary ml-6">{t('settings.dreamingScheduleDesc')}</p>
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-text-primary">{t('settings.dreamingIdleInterval')}</label>
+                      <Input
+                        type="number"
+                        value={dreamingConfig.idleIntervalMinutes}
+                        onChange={(e) => updateDreamingConfig({
+                          idleIntervalMinutes: Math.max(15, Math.min(1440, parseInt(e.target.value) || 180)),
+                        })}
+                        min={15}
+                        max={1440}
+                        disabled={!dreamingConfig.enabled || !dreamingConfig.idle}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-text-primary">{t('settings.dreamingScheduleInterval')}</label>
+                      <Input
+                        type="number"
+                        value={dreamingConfig.scheduleIntervalMinutes}
+                        onChange={(e) => updateDreamingConfig({
+                          scheduleIntervalMinutes: Math.max(30, Math.min(10080, parseInt(e.target.value) || 720)),
+                        })}
+                        min={30}
+                        max={10080}
+                        disabled={!dreamingConfig.enabled || !dreamingConfig.schedule}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-text-primary">{t('settings.dreamingMaxArtifacts')}</label>
+                      <Input
+                        type="number"
+                        value={dreamingConfig.maxArtifactsPerRun}
+                        onChange={(e) => updateDreamingConfig({
+                          maxArtifactsPerRun: Math.max(1, Math.min(100, parseInt(e.target.value) || 24)),
+                        })}
+                        min={1}
+                        max={100}
+                        disabled={!dreamingConfig.enabled}
+                      />
+                      <p className="mt-1 text-xs text-text-tertiary">{t('settings.dreamingMaxArtifactsDesc')}</p>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-text-primary">{t('settings.dreamingMaxRuns')}</label>
+                      <Input
+                        type="number"
+                        value={dreamingConfig.maxRunsPerDay}
+                        onChange={(e) => updateDreamingConfig({
+                          maxRunsPerDay: Math.max(0, Math.min(96, parseInt(e.target.value) || 0)),
+                        })}
+                        min={0}
+                        max={96}
+                        disabled={!dreamingConfig.enabled}
+                      />
+                      <p className="mt-1 text-xs text-text-tertiary">{t('settings.dreamingMaxRunsDesc')}</p>
+                    </div>
+                  </div>
+
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={dreamingConfig.localOnly}
+                      disabled={!dreamingConfig.enabled}
+                      onChange={(e) => updateDreamingConfig({ localOnly: e.target.checked })}
+                      className="rounded border-border"
+                    />
+                    <span className="text-sm font-medium text-text-primary">{t('settings.dreamingLocalOnly')}</span>
+                  </label>
+                  <p className="text-xs text-text-tertiary ml-6">{t('settings.dreamingLocalOnlyDesc')}</p>
+
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <div className="rounded-md border border-border bg-surface-0 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <div className="text-sm font-medium text-text-primary">{t('settings.dreamingSources')}</div>
+                          <p className="mt-1 text-xs text-text-tertiary">{t('settings.dreamingSourcesDesc')}</p>
+                        </div>
+                        {(dreamingConfig.sourceIds?.length ?? 0) > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => updateDreamingConfig({ sourceIds: [] })}
+                            disabled={!dreamingConfig.enabled}
+                          >
+                            {t('settings.dreamingAll')}
+                          </Button>
+                        )}
+                      </div>
+                      <div className="mt-3 max-h-40 space-y-2 overflow-y-auto">
+                        {dreamSources.length === 0 ? (
+                          <p className="text-xs text-text-tertiary">{t('settings.dreamingNoSources')}</p>
+                        ) : dreamSources.map((source) => (
+                          <label key={source.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-surface-2">
+                            <input
+                              type="checkbox"
+                              checked={(dreamingConfig.sourceIds ?? []).includes(source.id)}
+                              disabled={!dreamingConfig.enabled}
+                              onChange={() => toggleDreamSource(source.id)}
+                              className="rounded border-border"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-sm text-text-primary" title={source.rootPath}>
+                              {compactPath(source.rootPath)}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-md border border-border bg-surface-0 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <div className="text-sm font-medium text-text-primary">{t('settings.dreamingProjects')}</div>
+                          <p className="mt-1 text-xs text-text-tertiary">{t('settings.dreamingProjectsDesc')}</p>
+                        </div>
+                        {(dreamingConfig.projectIds?.length ?? 0) > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => updateDreamingConfig({ projectIds: [] })}
+                            disabled={!dreamingConfig.enabled}
+                          >
+                            {t('settings.dreamingAll')}
+                          </Button>
+                        )}
+                      </div>
+                      <div className="mt-3 max-h-40 space-y-2 overflow-y-auto">
+                        {dreamProjects.length === 0 ? (
+                          <p className="text-xs text-text-tertiary">{t('settings.dreamingNoProjects')}</p>
+                        ) : dreamProjects.map((project) => (
+                          <label key={project.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-surface-2">
+                            <input
+                              type="checkbox"
+                              checked={(dreamingConfig.projectIds ?? []).includes(project.id)}
+                              disabled={!dreamingConfig.enabled}
+                              onChange={() => toggleDreamProject(project.id)}
+                              className="rounded border-border"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-sm text-text-primary" title={project.name}>
+                              {project.name}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
 
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input

@@ -9,6 +9,16 @@ use super::turn_state::{TurnOutcome, TurnPhase, TurnStateMachine};
 use super::usage_accounting;
 use super::*;
 
+struct ReplayableSystemPersistenceContext<'a> {
+    db: &'a Database,
+    conversation_id: Option<&'a str>,
+    model: &'a str,
+    layout: prompt_layout::PromptLayout,
+    messages: &'a [Message],
+    sort_order: &'a mut i64,
+    persisted_contents: &'a mut Vec<String>,
+}
+
 impl AgentExecutor {
     /// Run the agent loop for a single user turn.
     ///
@@ -471,13 +481,15 @@ impl AgentExecutor {
             })
             .await;
             self.persist_unpersisted_replayable_system_messages(
-                db,
-                conversation_id,
-                model,
-                layout,
-                &messages,
-                &mut sort_order,
-                &mut persisted_replayable_system_contents,
+                ReplayableSystemPersistenceContext {
+                    db,
+                    conversation_id,
+                    model,
+                    layout,
+                    messages: &messages,
+                    sort_order: &mut sort_order,
+                    persisted_contents: &mut persisted_replayable_system_contents,
+                },
             );
 
             let model_step = self
@@ -890,14 +902,18 @@ impl AgentExecutor {
 impl AgentExecutor {
     fn persist_unpersisted_replayable_system_messages(
         &self,
-        db: &Database,
-        conversation_id: Option<&str>,
-        model: &str,
-        layout: prompt_layout::PromptLayout,
-        messages: &[Message],
-        sort_order: &mut i64,
-        persisted_contents: &mut Vec<String>,
+        ctx: ReplayableSystemPersistenceContext<'_>,
     ) {
+        let ReplayableSystemPersistenceContext {
+            db,
+            conversation_id,
+            model,
+            layout,
+            messages,
+            sort_order,
+            persisted_contents,
+        } = ctx;
+
         if !layout.append_volatile_system_prompt_to_tail {
             return;
         }

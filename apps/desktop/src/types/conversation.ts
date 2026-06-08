@@ -360,6 +360,22 @@ export interface AppConfig {
   ghproxyBaseUrl?: string;
   imageGeneration?: ImageGenerationConfig;
   webSearch?: WebSearchConfig;
+  dreaming?: DreamingConfig;
+}
+
+export interface DreamingConfig {
+  enabled: boolean;
+  idle: boolean;
+  afterScan: boolean;
+  afterSuccessfulTurn: boolean;
+  schedule: boolean;
+  idleIntervalMinutes: number;
+  scheduleIntervalMinutes: number;
+  maxArtifactsPerRun: number;
+  maxRunsPerDay: number;
+  localOnly: boolean;
+  sourceIds: string[];
+  projectIds: string[];
 }
 
 export type WebSearchProviderProfile = 'default' | 'free' | 'free_verified' | 'max_evidence';
@@ -813,7 +829,7 @@ export interface FileCheckpointRestore {
 export interface UserMemory {
   id: string;
   content: string;
-  source?: 'manual' | 'auto_extracted';
+  source?: 'manual' | 'auto_extracted' | 'dream' | 'imported';
   createdAt: string;
   updatedAt: string;
 }

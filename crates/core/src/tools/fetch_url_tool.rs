@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::IpAddr;
-use std::sync::{Mutex, OnceLock};
+use std::net::ToSocketAddrs;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -29,6 +31,8 @@ const MAX_REDIRECTS: usize = 5;
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 const MAX_IMAGE_ASSETS: usize = 25;
+const JS_RENDER_SETTLE_MS: u64 = 1500;
+const JS_RENDER_TIMEOUT_SECS: u64 = 10;
 static FETCH_BODY_CACHE: OnceLock<Mutex<HashMap<String, CachedFetchBody>>> = OnceLock::new();
 
 /// Tool that fetches a public URL and returns readable text plus provenance.
@@ -43,6 +47,8 @@ struct FetchUrlArgs {
     mode: FetchMode,
     #[serde(default = "default_include_assets")]
     include_assets: bool,
+    #[serde(default)]
+    render_js: FetchRenderPolicy,
 }
 
 fn default_max_length() -> usize {
@@ -62,6 +68,25 @@ enum FetchMode {
     Text,
     Metadata,
     Assets,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum FetchRenderPolicy {
+    #[default]
+    Auto,
+    Never,
+    Always,
+}
+
+impl FetchRenderPolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Never => "never",
+            Self::Always => "always",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +157,12 @@ struct HtmlExtraction {
     title: Option<String>,
     method: &'static str,
     metadata: PageMetadata,
+}
+
+struct BrowserRenderedHtml {
+    final_url: reqwest::Url,
+    html: String,
+    blocked_requests: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -245,9 +276,42 @@ async fn validate_resolved_host(url: &reqwest::Url) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_resolved_host_blocking(url: &reqwest::Url) -> Result<(), String> {
+    let host = url.host_str().ok_or("URL has no host")?;
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+    let port = url
+        .port_or_known_default()
+        .ok_or("URL scheme has no known default port")?;
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("DNS lookup failed for {host}: {e}"))?;
+    let mut resolved_any = false;
+    for addr in addrs {
+        resolved_any = true;
+        let ip = addr.ip();
+        if is_private_ip(&ip) {
+            return Err(format!(
+                "Access to host {host} is not allowed because it resolves to private IP {ip}"
+            ));
+        }
+    }
+    if !resolved_any {
+        return Err(format!("DNS lookup for {host} returned no addresses"));
+    }
+    Ok(())
+}
+
 pub(crate) async fn validate_url_for_fetch(url: &str) -> Result<reqwest::Url, String> {
     let parsed = validate_url(url)?;
     validate_resolved_host(&parsed).await?;
+    Ok(parsed)
+}
+
+fn validate_url_for_fetch_blocking(url: &str) -> Result<reqwest::Url, String> {
+    let parsed = validate_url(url)?;
+    validate_resolved_host_blocking(&parsed)?;
     Ok(parsed)
 }
 
@@ -596,6 +660,10 @@ fn collapse_whitespace(input: &str) -> String {
     }
 
     out.trim().to_string()
+}
+
+fn contains_any(value: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| value.contains(needle))
 }
 
 fn extract_title(html: &str) -> Option<String> {
@@ -1054,6 +1122,227 @@ fn extract_html_text(
     }
 }
 
+fn html_render_reason(
+    html: &str,
+    extraction: &HtmlExtraction,
+    mode: FetchMode,
+    policy: FetchRenderPolicy,
+) -> Option<&'static str> {
+    if matches!(mode, FetchMode::Metadata | FetchMode::Assets) {
+        return None;
+    }
+    match policy {
+        FetchRenderPolicy::Never => None,
+        FetchRenderPolicy::Always => Some("requested"),
+        FetchRenderPolicy::Auto => html_needs_browser_render(html, extraction),
+    }
+}
+
+fn html_needs_browser_render(html: &str, extraction: &HtmlExtraction) -> Option<&'static str> {
+    let lower = html.to_ascii_lowercase();
+    if contains_any(
+        &lower,
+        &[
+            "enable javascript",
+            "enable js",
+            "javascript is disabled",
+            "requires javascript",
+            "require javascript",
+            "please enable javascript",
+            "please turn on javascript",
+            "请启用 javascript",
+            "请开启 javascript",
+            "需要启用 javascript",
+            "请启用js",
+            "请开启js",
+        ],
+    ) {
+        return Some("javascript_required_message");
+    }
+
+    let extracted_len = extraction.text.chars().count();
+    if extraction.method != "metadata" && extracted_len >= 120 {
+        return None;
+    }
+
+    let document = Html::parse_document(html);
+    let script_count = selector("script")
+        .map(|selector| document.select(&selector).count())
+        .unwrap_or(0);
+    let has_mount = [
+        "#root",
+        "#app",
+        "#__next",
+        "#___gatsby",
+        r#"[data-reactroot]"#,
+        r#"[ng-version]"#,
+    ]
+    .iter()
+    .any(|css| {
+        selector(css)
+            .map(|selector| document.select(&selector).next().is_some())
+            .unwrap_or(false)
+    });
+
+    if has_mount && script_count > 0 && extracted_len < 160 {
+        return Some("app_shell");
+    }
+
+    if script_count >= 4
+        && extracted_len < 120
+        && contains_any(
+            &lower,
+            &[
+                "__next_data__",
+                "__nuxt__",
+                "__initial_state__",
+                "webpack",
+                "vite",
+                "react",
+                "vue",
+                "angular",
+            ],
+        )
+    {
+        return Some("script_heavy_shell");
+    }
+
+    None
+}
+
+fn rendered_html_is_better(
+    policy: FetchRenderPolicy,
+    static_extraction: &HtmlExtraction,
+    rendered_extraction: &HtmlExtraction,
+) -> bool {
+    let rendered_len = rendered_extraction.text.chars().count();
+    if rendered_len < 80 {
+        return false;
+    }
+    let static_len = static_extraction.text.chars().count();
+    policy == FetchRenderPolicy::Always
+        || static_extraction.method == "metadata"
+        || rendered_len > static_len.saturating_add(80)
+}
+
+fn truncate_note(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let cutoff = value
+        .char_indices()
+        .nth(max_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(value.len());
+    let mut out = value[..cutoff].trim_end().to_string();
+    out.push_str("...");
+    out
+}
+
+fn browser_internal_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower == "about:blank"
+        || lower.starts_with("data:")
+        || lower.starts_with("blob:")
+        || lower.starts_with("chrome-error://")
+}
+
+fn browser_request_allowed(url: &str, cache: &Mutex<HashMap<String, bool>>) -> bool {
+    if browser_internal_url(url) {
+        return true;
+    }
+    if let Ok(cache) = cache.lock() {
+        if let Some(allowed) = cache.get(url) {
+            return *allowed;
+        }
+    }
+
+    let allowed = validate_url_for_fetch_blocking(url).is_ok();
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(url.to_string(), allowed);
+    }
+    allowed
+}
+
+async fn render_html_with_browser(url: reqwest::Url) -> Result<BrowserRenderedHtml, String> {
+    tokio::task::spawn_blocking(move || render_html_with_browser_blocking(url))
+        .await
+        .map_err(|e| format!("browser render task failed: {e}"))?
+}
+
+fn render_html_with_browser_blocking(url: reqwest::Url) -> Result<BrowserRenderedHtml, String> {
+    use headless_chrome::browser::tab::RequestPausedDecision;
+    use headless_chrome::protocol::cdp::Fetch::{
+        events::RequestPausedEvent, FailRequest, RequestPattern, RequestStage,
+    };
+    use headless_chrome::protocol::cdp::Network;
+    use headless_chrome::Browser;
+
+    let browser = Browser::default().map_err(|e| format!("failed to launch browser: {e}"))?;
+    let tab = browser
+        .new_tab()
+        .map_err(|e| format!("failed to open browser tab: {e}"))?;
+    tab.set_default_timeout(Duration::from_secs(JS_RENDER_TIMEOUT_SECS));
+    let _ = tab.set_user_agent(
+        "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Nexa/0.8 browser-renderer",
+        Some("zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"),
+        None,
+    );
+
+    let blocked_requests = Arc::new(AtomicUsize::new(0));
+    let request_cache = Arc::new(Mutex::new(HashMap::<String, bool>::new()));
+    let blocked_for_interceptor = Arc::clone(&blocked_requests);
+    let cache_for_interceptor = Arc::clone(&request_cache);
+    tab.enable_fetch(
+        Some(&[RequestPattern {
+            url_pattern: None,
+            resource_Type: None,
+            request_stage: Some(RequestStage::Request),
+        }]),
+        None,
+    )
+    .map_err(|e| format!("failed to enable browser request validation: {e}"))?;
+    tab.enable_request_interception(Arc::new(
+        move |_transport, _session_id, intercepted: RequestPausedEvent| {
+            if browser_request_allowed(
+                &intercepted.params.request.url,
+                cache_for_interceptor.as_ref(),
+            ) {
+                RequestPausedDecision::Continue(None)
+            } else {
+                blocked_for_interceptor.fetch_add(1, Ordering::Relaxed);
+                RequestPausedDecision::Fail(FailRequest {
+                    request_id: intercepted.params.request_id,
+                    error_reason: Network::ErrorReason::BlockedByClient,
+                })
+            }
+        },
+    ))
+    .map_err(|e| format!("failed to install browser request validator: {e}"))?;
+
+    tab.navigate_to(url.as_str())
+        .map_err(|e| format!("browser navigation failed: {e}"))?;
+    std::thread::sleep(Duration::from_millis(JS_RENDER_SETTLE_MS));
+
+    let final_url = validate_url_for_fetch_blocking(&tab.get_url())?;
+    let mut html = tab
+        .get_content()
+        .map_err(|e| format!("failed to read rendered HTML: {e}"))?;
+    if html.len() > MAX_BODY_BYTES {
+        let mut cutoff = MAX_BODY_BYTES;
+        while cutoff > 0 && !html.is_char_boundary(cutoff) {
+            cutoff -= 1;
+        }
+        html.truncate(cutoff);
+    }
+
+    Ok(BrowserRenderedHtml {
+        final_url,
+        html,
+        blocked_requests: blocked_requests.load(Ordering::Relaxed),
+    })
+}
+
 fn truncate_text_for_output(text: &mut String, max_chars: usize) -> bool {
     if text.chars().count() <= max_chars {
         return false;
@@ -1072,14 +1361,14 @@ fn truncate_text_for_output(text: &mut String, max_chars: usize) -> bool {
     true
 }
 
-fn render_fetch_payload(
+async fn render_fetch_payload(
     call_id: &str,
     args: &FetchUrlArgs,
     max_length: usize,
     payload: FetchBodyPayload,
 ) -> Result<ToolResult, CoreError> {
     let FetchBodyPayload {
-        final_url,
+        mut final_url,
         content_type,
         body_bytes,
         body_truncated,
@@ -1090,18 +1379,75 @@ fn render_fetch_payload(
     let body = decode_body(&body_bytes, content_type.as_deref());
     let mut metadata = PageMetadata::default();
     let mut assets: Vec<ImageAsset> = Vec::new();
+    let mut js_render_attempted = false;
+    let mut js_render_used = false;
+    let mut js_render_reason: Option<&'static str> = None;
+    let mut js_render_error: Option<String> = None;
+    let mut js_render_blocked_requests = 0usize;
     let (mut text, title, extraction_method) = match body_kind {
         BodyKind::Html => {
             metadata = extract_page_metadata(&body, &final_url);
-            let extraction = extract_html_text(&body, &final_url, args.mode, &metadata);
-            metadata = extraction.metadata.clone();
-            if args.include_assets || args.mode == FetchMode::Assets {
+            let mut extraction = extract_html_text(&body, &final_url, args.mode, &metadata);
+            if let Some(reason) = html_render_reason(&body, &extraction, args.mode, args.render_js)
+            {
+                js_render_attempted = true;
+                js_render_reason = Some(reason);
+                match render_html_with_browser(final_url.clone()).await {
+                    Ok(rendered) => {
+                        js_render_blocked_requests = rendered.blocked_requests;
+                        let rendered_metadata =
+                            extract_page_metadata(&rendered.html, &rendered.final_url);
+                        let rendered_extraction = extract_html_text(
+                            &rendered.html,
+                            &rendered.final_url,
+                            args.mode,
+                            &rendered_metadata,
+                        );
+                        if rendered_html_is_better(
+                            args.render_js,
+                            &extraction,
+                            &rendered_extraction,
+                        ) {
+                            final_url = rendered.final_url;
+                            metadata = rendered_extraction.metadata.clone();
+                            extraction = HtmlExtraction {
+                                method: rendered_extraction.method,
+                                ..rendered_extraction
+                            };
+                            js_render_used = true;
+                            if args.include_assets || args.mode == FetchMode::Assets {
+                                assets = extract_image_assets(
+                                    &rendered.html,
+                                    &final_url,
+                                    metadata.image.as_deref(),
+                                );
+                            }
+                        } else {
+                            js_render_error = Some(
+                                "browser-rendered page did not expose more readable text"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        js_render_error = Some(truncate_note(&error, 240));
+                    }
+                }
+            }
+            if !js_render_used {
+                metadata = extraction.metadata.clone();
+            }
+            if (args.include_assets || args.mode == FetchMode::Assets) && assets.is_empty() {
                 assets = extract_image_assets(&body, &final_url, metadata.image.as_deref());
             }
             (
                 extraction.text,
                 extraction.title.or_else(|| metadata.title.clone()),
-                extraction.method,
+                if js_render_used {
+                    format!("browser_{}", extraction.method)
+                } else {
+                    extraction.method.to_string()
+                },
             )
         }
         BodyKind::Json => {
@@ -1109,7 +1455,7 @@ fn render_fetch_payload(
                 .ok()
                 .and_then(|value| serde_json::to_string_pretty(&value).ok())
                 .unwrap_or_else(|| collapse_whitespace(&body));
-            (pretty, None, "json")
+            (pretty, None, "json".to_string())
         }
         BodyKind::Text => {
             let method = if content_type
@@ -1121,7 +1467,7 @@ fn render_fetch_payload(
             } else {
                 "plain_text"
             };
-            (collapse_whitespace(&body), None, method)
+            (collapse_whitespace(&body), None, method.to_string())
         }
         BodyKind::UnsupportedBinary => {
             return Ok(ToolResult {
@@ -1171,6 +1517,19 @@ fn render_fetch_payload(
         title.as_deref().unwrap_or("web page"),
         text
     );
+    if js_render_attempted && !js_render_used {
+        content.push_str("\n\nFetch note: This page appears to require JavaScript rendering");
+        if let Some(reason) = js_render_reason {
+            content.push_str(&format!(" ({reason})"));
+        }
+        if let Some(error) = &js_render_error {
+            content.push_str(&format!(
+                ", but browser rendering did not provide usable text: {error}"
+            ));
+        } else {
+            content.push_str(", but browser rendering did not provide usable text.");
+        }
+    }
     if !assets.is_empty() {
         content.push_str("\n\nImage candidates:\n");
         for asset in assets.iter().take(8) {
@@ -1199,6 +1558,14 @@ fn render_fetch_payload(
             "redirectCount": redirect_count,
             "extractionMethod": extraction_method,
             "blockedReason": null,
+            "jsRender": {
+                "policy": args.render_js.as_str(),
+                "attempted": js_render_attempted,
+                "used": js_render_used,
+                "reason": js_render_reason,
+                "error": js_render_error,
+                "blockedRequests": js_render_blocked_requests,
+            },
             "cacheStatus": cache_status,
         })),
     })
@@ -1305,7 +1672,7 @@ impl Tool for FetchUrlTool {
                     })),
                 });
             };
-            return render_fetch_payload(call_id, &args, max_length, payload);
+            return render_fetch_payload(call_id, &args, max_length, payload).await;
         }
         if !status.is_success() {
             let (error_bytes, error_truncated) = read_limited_body(response, MAX_ERROR_BODY_BYTES)
@@ -1405,6 +1772,7 @@ impl Tool for FetchUrlTool {
                 cache_status: "miss",
             },
         )
+        .await
     }
 }
 
@@ -1422,6 +1790,16 @@ mod tests {
     fn validate_url_rejects_private_ip_literal() {
         let err = validate_url("http://127.0.0.1/admin").unwrap_err();
         assert!(err.contains("localhost") || err.contains("private IP"));
+    }
+
+    #[test]
+    fn browser_request_validation_allows_internal_urls_but_blocks_private_networks() {
+        let cache = Mutex::new(HashMap::new());
+
+        assert!(browser_request_allowed("about:blank", &cache));
+        assert!(browser_request_allowed("data:text/plain,hello", &cache));
+        assert!(!browser_request_allowed("http://localhost/app.js", &cache));
+        assert!(!browser_request_allowed("http://127.0.0.1/app.js", &cache));
     }
 
     #[test]
@@ -1491,6 +1869,82 @@ mod tests {
         assert!(extracted.text.contains("研究面板"));
         assert!(extracted.text.contains("整理网页证据"));
         assert_eq!(metadata.lang.as_deref(), Some("zh-CN"));
+    }
+
+    #[test]
+    fn spa_shell_requests_browser_render_in_auto_mode() {
+        let url = reqwest::Url::parse("https://example.com/app").unwrap();
+        let html = r#"
+            <html>
+              <head><title>Dashboard</title></head>
+              <body>
+                <div id="root"></div>
+                <script src="/assets/app.js"></script>
+              </body>
+            </html>
+        "#;
+        let metadata = extract_page_metadata(html, &url);
+        let extracted = extract_html_text(html, &url, FetchMode::Auto, &metadata);
+
+        assert_eq!(
+            html_render_reason(html, &extracted, FetchMode::Auto, FetchRenderPolicy::Auto),
+            Some("app_shell")
+        );
+        assert_eq!(
+            html_render_reason(html, &extracted, FetchMode::Auto, FetchRenderPolicy::Never),
+            None
+        );
+        assert_eq!(
+            html_render_reason(
+                html,
+                &extracted,
+                FetchMode::Metadata,
+                FetchRenderPolicy::Always
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_javascript_required_message_requests_browser_render() {
+        let url = reqwest::Url::parse("https://example.com/report").unwrap();
+        let html = r#"
+            <html>
+              <head><title>Report</title></head>
+              <body>
+                <noscript>Please enable JavaScript to view this page.</noscript>
+                <div id="app"></div>
+              </body>
+            </html>
+        "#;
+        let metadata = extract_page_metadata(html, &url);
+        let extracted = extract_html_text(html, &url, FetchMode::Auto, &metadata);
+
+        assert_eq!(
+            html_needs_browser_render(html, &extracted),
+            Some("javascript_required_message")
+        );
+    }
+
+    #[test]
+    fn article_html_does_not_request_browser_render() {
+        let url = reqwest::Url::parse("https://example.com/story").unwrap();
+        let html = r#"
+            <html>
+              <head><title>Story</title></head>
+              <body>
+                <article>
+                  <h1>Static pages still work</h1>
+                  <p>This static article has enough readable text to be extracted without browser rendering or additional fallback work.</p>
+                  <p>The second paragraph makes the body long enough that the JavaScript-render heuristic should stay quiet.</p>
+                </article>
+              </body>
+            </html>
+        "#;
+        let metadata = extract_page_metadata(html, &url);
+        let extracted = extract_html_text(html, &url, FetchMode::Auto, &metadata);
+
+        assert_eq!(html_needs_browser_render(html, &extracted), None);
     }
 
     #[test]

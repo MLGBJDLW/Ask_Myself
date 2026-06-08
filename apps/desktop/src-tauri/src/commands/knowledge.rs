@@ -302,6 +302,29 @@ pub async fn compile_after_scan_cmd(
         }),
     );
 
+    if let Ok(app_config) = state.db.load_app_config() {
+        if app_config.dreaming.enabled && app_config.dreaming.after_scan {
+            match start_dream_run_with_config(
+                state.db.as_ref(),
+                &app_config,
+                "after_scan",
+                serde_json::json!({
+                        "surface": "compile_after_scan",
+                        "compiled": results.len(),
+                        "limit": cap
+                }),
+                None,
+            ) {
+                Ok(run) => emit_app_event(&app_handle, "dreaming:complete", &run),
+                Err(err) => emit_app_event(
+                    &app_handle,
+                    "dreaming:error",
+                    &serde_json::json!({ "triggerKind": "after_scan", "error": err }),
+                ),
+            }
+        }
+    }
+
     serde_json::to_value(&results).map_err(|e| e.to_string())
 }
 
@@ -365,6 +388,410 @@ pub fn suggest_explorations_cmd(
         .suggest_explorations(limit.unwrap_or(10))
         .map_err(|e| e.to_string())?;
     serde_json::to_value(&suggestions).map_err(|e| e.to_string())
+}
+
+// ── Dreaming / Insights ─────────────────────────────────────────────
+
+fn start_dream_run_with_config(
+    db: &Database,
+    app_config: &AppConfig,
+    trigger_kind: &str,
+    base_scope: serde_json::Value,
+    max_artifacts: Option<usize>,
+) -> Result<nexa_core::dreaming::DreamRun, String> {
+    if trigger_kind != "manual" && !background_dream_budget_available(db, app_config)? {
+        return Err("Dreaming daily background budget has been reached.".to_string());
+    }
+    db.start_dream_run(nexa_core::dreaming::StartDreamInput {
+        trigger_kind: Some(trigger_kind.to_string()),
+        scope_json: Some(merge_configured_dream_scope(app_config, base_scope)),
+        max_artifacts: Some(max_artifacts.unwrap_or(app_config.dreaming.max_artifacts_per_run)),
+    })
+    .map_err(|e| e.to_string())
+}
+
+fn background_dream_budget_available(
+    db: &Database,
+    app_config: &AppConfig,
+) -> Result<bool, String> {
+    let max_runs = app_config.dreaming.max_runs_per_day;
+    if max_runs == 0 {
+        return Ok(false);
+    }
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let runs = db.list_dream_runs(200).map_err(|e| e.to_string())?;
+    let used = runs
+        .iter()
+        .filter(|run| run.trigger_kind != "manual" && run.created_at.starts_with(&today))
+        .count();
+    Ok(used < max_runs)
+}
+
+fn merge_configured_dream_scope(
+    app_config: &AppConfig,
+    base_scope: serde_json::Value,
+) -> serde_json::Value {
+    let mut scope = match base_scope {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    let source_ids = constrained_scope_ids(
+        &scope,
+        "sourceIds",
+        "sourceId",
+        &app_config.dreaming.source_ids,
+    );
+    let project_ids = constrained_scope_ids(
+        &scope,
+        "projectIds",
+        "projectId",
+        &app_config.dreaming.project_ids,
+    );
+    scope.insert(
+        "dreamingLocalOnly".to_string(),
+        serde_json::json!(app_config.dreaming.local_only),
+    );
+    scope.insert(
+        "dreamingMaxRunsPerDay".to_string(),
+        serde_json::json!(app_config.dreaming.max_runs_per_day),
+    );
+    if !source_ids.is_empty() {
+        scope.insert("sourceIds".to_string(), serde_json::json!(source_ids));
+    }
+    if !project_ids.is_empty() {
+        scope.insert("projectIds".to_string(), serde_json::json!(project_ids));
+    }
+    serde_json::Value::Object(scope)
+}
+
+fn constrained_scope_ids(
+    scope: &serde_json::Map<String, serde_json::Value>,
+    array_key: &str,
+    single_key: &str,
+    configured_ids: &[String],
+) -> Vec<String> {
+    let requested = scope_ids(scope, array_key, single_key);
+    if configured_ids.is_empty() {
+        return requested;
+    }
+    if requested.is_empty() {
+        return configured_ids.to_vec();
+    }
+    requested
+        .into_iter()
+        .filter(|id| configured_ids.iter().any(|configured| configured == id))
+        .collect()
+}
+
+fn scope_ids(
+    scope: &serde_json::Map<String, serde_json::Value>,
+    array_key: &str,
+    single_key: &str,
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(single) = scope.get(single_key).and_then(serde_json::Value::as_str) {
+        let trimmed = single.trim();
+        if !trimmed.is_empty() {
+            ids.push(trimmed.to_string());
+        }
+    }
+    if let Some(items) = scope.get(array_key).and_then(serde_json::Value::as_array) {
+        for item in items {
+            let Some(raw) = item.as_str() else {
+                continue;
+            };
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || ids.iter().any(|id| id == trimmed) {
+                continue;
+            }
+            ids.push(trimmed.to_string());
+        }
+    }
+    ids
+}
+
+pub struct DreamingSchedulerState {
+    pub shutdown: Arc<AtomicBool>,
+    pub tick_lock: TokioMutex<()>,
+    pub poll_interval_secs: u64,
+    pub last_idle_run_secs: AtomicU64,
+    pub last_scheduled_run_secs: AtomicU64,
+}
+
+pub fn init_dreaming_scheduler(app_handle: AppHandle) {
+    if app_handle.try_state::<DreamingSchedulerState>().is_some() {
+        return;
+    }
+
+    let scheduler_state = DreamingSchedulerState {
+        shutdown: Arc::new(AtomicBool::new(false)),
+        tick_lock: TokioMutex::new(()),
+        poll_interval_secs: 60,
+        last_idle_run_secs: AtomicU64::new(0),
+        last_scheduled_run_secs: AtomicU64::new(0),
+    };
+    let shutdown = Arc::clone(&scheduler_state.shutdown);
+    let poll_interval_secs = scheduler_state.poll_interval_secs;
+    app_handle.manage(scheduler_state);
+
+    let handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let mut interval = tokio::time::interval(Duration::from_secs(poll_interval_secs.max(5)));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+
+        loop {
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            if let Err(err) = run_dreaming_scheduler_tick(handle.clone()).await {
+                warn!("Dreaming scheduler tick failed: {err}");
+            }
+            interval.tick().await;
+        }
+    });
+}
+
+pub fn shutdown_dreaming_scheduler(state: &DreamingSchedulerState) {
+    state.shutdown.store(true, Ordering::SeqCst);
+}
+
+pub async fn run_dreaming_scheduler_tick(
+    app_handle: AppHandle,
+) -> Result<Vec<nexa_core::dreaming::DreamRun>, String> {
+    let scheduler_state = app_handle
+        .try_state::<DreamingSchedulerState>()
+        .ok_or_else(|| "Dreaming scheduler state is not initialized.".to_string())?;
+    if scheduler_state.shutdown.load(Ordering::SeqCst) {
+        return Ok(Vec::new());
+    }
+    let _tick_guard = match scheduler_state.tick_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let app_state = app_handle
+        .try_state::<AppState>()
+        .ok_or_else(|| "App state is not initialized.".to_string())?;
+    let app_config = app_state.db.load_app_config().map_err(|e| e.to_string())?;
+    if !app_config.dreaming.enabled {
+        return Ok(Vec::new());
+    }
+
+    let now_secs = current_unix_secs();
+    let mut runs = Vec::new();
+    if app_config.dreaming.schedule
+        && interval_due(
+            &scheduler_state.last_scheduled_run_secs,
+            now_secs,
+            app_config.dreaming.schedule_interval_minutes,
+        )
+    {
+        match start_dream_run_with_config(
+            app_state.db.as_ref(),
+            &app_config,
+            "schedule",
+            serde_json::json!({
+                    "surface": "dreaming_scheduler",
+                    "intervalMinutes": app_config.dreaming.schedule_interval_minutes
+            }),
+            None,
+        ) {
+            Ok(run) => {
+                scheduler_state
+                    .last_scheduled_run_secs
+                    .store(now_secs, Ordering::SeqCst);
+                emit_app_event(&app_handle, "dreaming:complete", &run);
+                runs.push(run);
+            }
+            Err(err) => {
+                scheduler_state
+                    .last_scheduled_run_secs
+                    .store(now_secs, Ordering::SeqCst);
+                emit_app_event(
+                    &app_handle,
+                    "dreaming:error",
+                    &serde_json::json!({ "triggerKind": "schedule", "error": err }),
+                );
+            }
+        }
+    }
+
+    if app_config.dreaming.idle
+        && app_is_idle(&app_handle)
+        && interval_due(
+            &scheduler_state.last_idle_run_secs,
+            now_secs,
+            app_config.dreaming.idle_interval_minutes,
+        )
+    {
+        match start_dream_run_with_config(
+            app_state.db.as_ref(),
+            &app_config,
+            "idle",
+            serde_json::json!({
+                    "surface": "dreaming_scheduler",
+                    "intervalMinutes": app_config.dreaming.idle_interval_minutes
+            }),
+            None,
+        ) {
+            Ok(run) => {
+                scheduler_state
+                    .last_idle_run_secs
+                    .store(now_secs, Ordering::SeqCst);
+                emit_app_event(&app_handle, "dreaming:complete", &run);
+                runs.push(run);
+            }
+            Err(err) => {
+                scheduler_state
+                    .last_idle_run_secs
+                    .store(now_secs, Ordering::SeqCst);
+                emit_app_event(
+                    &app_handle,
+                    "dreaming:error",
+                    &serde_json::json!({ "triggerKind": "idle", "error": err }),
+                );
+            }
+        }
+    }
+
+    Ok(runs)
+}
+
+fn app_is_idle(app_handle: &AppHandle) -> bool {
+    let Some(app_state) = app_handle.try_state::<AppState>() else {
+        return false;
+    };
+    if app_state.scan_lock.try_lock().is_err() {
+        return false;
+    }
+    let Some(agent_state) = app_handle.try_state::<AgentState>() else {
+        return true;
+    };
+    let is_idle = match agent_state.running.try_lock() {
+        Ok(running) => running.is_empty(),
+        Err(_) => false,
+    };
+    is_idle
+}
+
+fn interval_due(last_run_secs: &AtomicU64, now_secs: u64, interval_minutes: usize) -> bool {
+    let last = last_run_secs.load(Ordering::SeqCst);
+    let interval_secs = (interval_minutes.max(1) as u64).saturating_mul(60);
+    last == 0 || now_secs.saturating_sub(last) >= interval_secs
+}
+
+fn current_unix_secs() -> u64 {
+    UNIX_EPOCH
+        .elapsed()
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+pub fn start_dream_cmd(
+    state: tauri::State<'_, AppState>,
+    input: Option<nexa_core::dreaming::StartDreamInput>,
+) -> Result<nexa_core::dreaming::DreamRun, String> {
+    let app_config = state.db.load_app_config().map_err(|e| e.to_string())?;
+    let input = input.unwrap_or_default();
+    let trigger_kind = input
+        .trigger_kind
+        .as_deref()
+        .unwrap_or("manual")
+        .trim()
+        .to_ascii_lowercase();
+    if trigger_kind != "manual" && !app_config.dreaming.enabled {
+        return Err("Dreaming background consolidation is disabled.".to_string());
+    }
+    start_dream_run_with_config(
+        state.db.as_ref(),
+        &app_config,
+        &trigger_kind,
+        input.scope_json.unwrap_or_else(|| serde_json::json!({})),
+        input.max_artifacts,
+    )
+}
+
+#[tauri::command]
+pub fn list_dream_runs_cmd(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<nexa_core::dreaming::DreamRun>, String> {
+    state
+        .db
+        .list_dream_runs(limit.unwrap_or(20))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_dream_run_events_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<nexa_core::dreaming::DreamRunEvent>, String> {
+    state
+        .db
+        .list_dream_run_events(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_dream_artifacts_cmd(
+    state: tauri::State<'_, AppState>,
+    status: Option<String>,
+    kind: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<nexa_core::dreaming::DreamArtifact>, String> {
+    state
+        .db
+        .list_dream_artifacts(status.as_deref(), kind.as_deref(), limit.unwrap_or(50))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn apply_dream_artifact_cmd(
+    state: tauri::State<'_, AppState>,
+    artifact_id: String,
+) -> Result<nexa_core::dreaming::DreamArtifact, String> {
+    state
+        .db
+        .apply_dream_artifact(&artifact_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_dream_artifact_cmd(
+    state: tauri::State<'_, AppState>,
+    artifact_id: String,
+    input: nexa_core::dreaming::UpdateDreamArtifactInput,
+) -> Result<nexa_core::dreaming::DreamArtifact, String> {
+    state
+        .db
+        .update_dream_artifact(&artifact_id, input)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn reject_dream_artifact_cmd(
+    state: tauri::State<'_, AppState>,
+    artifact_id: String,
+) -> Result<nexa_core::dreaming::DreamArtifact, String> {
+    state
+        .db
+        .reject_dream_artifact(&artifact_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn undo_dream_artifact_cmd(
+    state: tauri::State<'_, AppState>,
+    artifact_id: String,
+) -> Result<nexa_core::dreaming::DreamArtifact, String> {
+    state
+        .db
+        .undo_dream_artifact(&artifact_id)
+        .map_err(|e| e.to_string())
 }
 
 // Silence dead-code warnings for the re-exported type alias used by callers.

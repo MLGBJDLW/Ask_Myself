@@ -92,7 +92,24 @@ import type {
   WorkflowAutomationRun,
   WorkflowAutomationSchedulerEvent,
 } from "../types/workflows";
+import type {
+  DreamArtifact,
+  DreamArtifactFilters,
+  DreamRun,
+  DreamRunEvent,
+  StartDreamInput,
+  UpdateDreamArtifactInput,
+} from "../types/dreaming";
 import type { ProviderPreset } from "./providerPresets";
+
+export type {
+  DreamArtifact,
+  DreamArtifactFilters,
+  DreamRun,
+  DreamRunEvent,
+  StartDreamInput,
+  UpdateDreamArtifactInput,
+} from "../types/dreaming";
 
 // ── Sources ─────────────────────────────────────────────────────────────
 
@@ -1378,6 +1395,36 @@ export const runKnowledgeHealthCheck = (staleDays?: number) =>
 
 export const compileAfterScan = (limit?: number) =>
   invoke<CompileResult[]>('compile_after_scan_cmd', { limit: limit ?? 10 });
+
+// ── Dreaming / Insights ─────────────────────────────────────────────
+
+export const startDream = (input?: StartDreamInput) =>
+  invoke<DreamRun>('start_dream_cmd', { input: input ?? { triggerKind: 'manual' } });
+
+export const listDreamRuns = (limit?: number) =>
+  invoke<DreamRun[]>('list_dream_runs_cmd', { limit: limit ?? 20 });
+
+export const listDreamRunEvents = (runId: string) =>
+  invoke<DreamRunEvent[]>('list_dream_run_events_cmd', { runId });
+
+export const listDreamArtifacts = (filters?: DreamArtifactFilters) =>
+  invoke<DreamArtifact[]>('list_dream_artifacts_cmd', {
+    status: filters?.status ?? null,
+    kind: filters?.kind ?? null,
+    limit: filters?.limit ?? 50,
+  });
+
+export const applyDreamArtifact = (artifactId: string) =>
+  invoke<DreamArtifact>('apply_dream_artifact_cmd', { artifactId });
+
+export const updateDreamArtifact = (artifactId: string, input: UpdateDreamArtifactInput) =>
+  invoke<DreamArtifact>('update_dream_artifact_cmd', { artifactId, input });
+
+export const rejectDreamArtifact = (artifactId: string) =>
+  invoke<DreamArtifact>('reject_dream_artifact_cmd', { artifactId });
+
+export const undoDreamArtifact = (artifactId: string) =>
+  invoke<DreamArtifact>('undo_dream_artifact_cmd', { artifactId });
 
 // ── Knowledge Loop ──────────────────────────────────────────────────
 
