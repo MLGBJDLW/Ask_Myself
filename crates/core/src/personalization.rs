@@ -15,6 +15,8 @@ use uuid::Uuid;
 pub enum MemorySource {
     Manual,
     AutoExtracted,
+    Dream,
+    Imported,
 }
 
 impl std::fmt::Display for MemorySource {
@@ -22,6 +24,8 @@ impl std::fmt::Display for MemorySource {
         match self {
             MemorySource::Manual => write!(f, "manual"),
             MemorySource::AutoExtracted => write!(f, "auto_extracted"),
+            MemorySource::Dream => write!(f, "dream"),
+            MemorySource::Imported => write!(f, "imported"),
         }
     }
 }
@@ -29,6 +33,8 @@ impl std::fmt::Display for MemorySource {
 fn parse_memory_source(s: &str) -> MemorySource {
     match s {
         "auto_extracted" => MemorySource::AutoExtracted,
+        "dream" => MemorySource::Dream,
+        "imported" => MemorySource::Imported,
         _ => MemorySource::Manual,
     }
 }

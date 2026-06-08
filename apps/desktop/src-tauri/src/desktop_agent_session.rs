@@ -547,6 +547,79 @@ pub async fn run_desktop_agent_post_success_learning(
             _ => {}
         }
     }
+
+    if app_cfg.dreaming.enabled && app_cfg.dreaming.after_successful_turn {
+        if desktop_background_dream_budget_available(&db, &app_cfg) {
+            match db.start_dream_run(nexa_core::dreaming::StartDreamInput {
+                trigger_kind: Some("after_turn".to_string()),
+                scope_json: Some(desktop_dream_scope_from_config(
+                    &app_cfg,
+                    serde_json::json!({
+                        "conversationId": conversation_id,
+                        "surface": "desktop_agent_post_success_learning"
+                    }),
+                )),
+                max_artifacts: Some(app_cfg.dreaming.max_artifacts_per_run),
+            }) {
+                Ok(run) => {
+                    info!(
+                        "Dreaming consolidation run {} completed after successful conversation {}",
+                        run.id, conversation_id
+                    );
+                }
+                Err(e) => warn!("Dreaming consolidation failed for {conversation_id}: {e}"),
+            }
+        } else {
+            info!("Dreaming consolidation skipped for {conversation_id}: daily background budget reached");
+        }
+    }
+}
+
+fn desktop_background_dream_budget_available(db: &Database, app_cfg: &AppConfig) -> bool {
+    let max_runs = app_cfg.dreaming.max_runs_per_day;
+    if max_runs == 0 {
+        return false;
+    }
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let Ok(runs) = db.list_dream_runs(200) else {
+        return false;
+    };
+    let used = runs
+        .iter()
+        .filter(|run| run.trigger_kind != "manual" && run.created_at.starts_with(&today))
+        .count();
+    used < max_runs
+}
+
+fn desktop_dream_scope_from_config(
+    app_cfg: &AppConfig,
+    base_scope: serde_json::Value,
+) -> serde_json::Value {
+    let mut scope = match base_scope {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    if !app_cfg.dreaming.source_ids.is_empty() {
+        scope.insert(
+            "sourceIds".to_string(),
+            serde_json::json!(&app_cfg.dreaming.source_ids),
+        );
+    }
+    if !app_cfg.dreaming.project_ids.is_empty() {
+        scope.insert(
+            "projectIds".to_string(),
+            serde_json::json!(&app_cfg.dreaming.project_ids),
+        );
+    }
+    scope.insert(
+        "dreamingLocalOnly".to_string(),
+        serde_json::json!(app_cfg.dreaming.local_only),
+    );
+    scope.insert(
+        "dreamingMaxRunsPerDay".to_string(),
+        serde_json::json!(app_cfg.dreaming.max_runs_per_day),
+    );
+    serde_json::Value::Object(scope)
 }
 
 pub fn build_desktop_agent_user_content_parts(

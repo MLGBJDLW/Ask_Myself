@@ -14,8 +14,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use commands::{
-    AgentState, AppState, ApprovalState, DownloadCancelFlag, McpManagerState,
-    TaskOrchestratorSchedulerState,
+    AgentState, AppState, ApprovalState, DownloadCancelFlag, DreamingSchedulerState,
+    McpManagerState, TaskOrchestratorSchedulerState,
 };
 use nexa_core::db::Database;
 use tauri::Manager;
@@ -167,6 +167,7 @@ fn main() {
             let app_state: tauri::State<'_, AppState> = app.state();
             commands::init_watcher(handle, &app_state.db);
             commands::init_task_orchestrator_scheduler(app.handle().clone());
+            commands::init_dreaming_scheduler(app.handle().clone());
 
             Ok(())
         })
@@ -434,6 +435,14 @@ fn main() {
             commands::get_knowledge_graph_cmd,
             commands::run_knowledge_health_check_cmd,
             commands::compile_after_scan_cmd,
+            commands::start_dream_cmd,
+            commands::list_dream_runs_cmd,
+            commands::list_dream_run_events_cmd,
+            commands::list_dream_artifacts_cmd,
+            commands::apply_dream_artifact_cmd,
+            commands::update_dream_artifact_cmd,
+            commands::reject_dream_artifact_cmd,
+            commands::undo_dream_artifact_cmd,
             // Scan errors
             commands::get_scan_errors_cmd,
             commands::clear_scan_errors_cmd,
@@ -455,6 +464,9 @@ fn main() {
             if let Some(scheduler_state) = app_handle.try_state::<TaskOrchestratorSchedulerState>()
             {
                 commands::shutdown_task_orchestrator_scheduler(&scheduler_state);
+            }
+            if let Some(scheduler_state) = app_handle.try_state::<DreamingSchedulerState>() {
+                commands::shutdown_dreaming_scheduler(&scheduler_state);
             }
             // Shutdown MCP manager: kill all managed processes
             if let Some(mcp_state) = app_handle.try_state::<McpManagerState>() {

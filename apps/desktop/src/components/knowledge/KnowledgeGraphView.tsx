@@ -63,6 +63,16 @@ type PositionedNode = KnowledgeGraphNode & {
   rank: number;
 };
 
+type SuggestedGraphArtifact = {
+  id: string;
+  kind: 'graph_relation_candidate' | 'entity_merge_candidate';
+  title: string;
+  sourceEntityId: string;
+  targetEntityId: string;
+  relationType: string;
+  confidence: number;
+};
+
 const ENTITY_FILTERS: EntityFilter[] = ['all', 'person', 'place', 'organization', 'event', 'concept', 'technology', 'other'];
 const ENTITY_FILTER_LABEL_KEYS: Record<EntityFilter, TranslationKey> = {
   all: 'knowledge.entityFilter.all',
@@ -200,6 +210,39 @@ function formatCompactChars(value: number) {
   if (value < 1000) return String(Math.round(value));
   const kilo = value / 1000;
   return `${kilo.toFixed(kilo < 10 ? 1 : 0)}k`;
+}
+
+function buildSuggestedGraphArtifacts(artifacts: api.DreamArtifact[]): SuggestedGraphArtifact[] {
+  const suggestions: SuggestedGraphArtifact[] = [];
+  for (const artifact of artifacts) {
+    if (artifact.kind !== 'graph_relation_candidate' && artifact.kind !== 'entity_merge_candidate') {
+      continue;
+    }
+    const payload = artifact.payloadJson;
+    if (!payload || typeof payload !== 'object') {
+      continue;
+    }
+    const record = payload as Record<string, unknown>;
+    const sourceEntityId = stringValue(record.sourceEntityId) ?? stringValue(record.canonicalEntityId);
+    const targetEntityId = stringValue(record.targetEntityId) ?? stringValue(record.duplicateEntityId);
+    if (!sourceEntityId || !targetEntityId || sourceEntityId === targetEntityId) {
+      continue;
+    }
+    suggestions.push({
+      id: artifact.id,
+      kind: artifact.kind,
+      title: artifact.title,
+      sourceEntityId,
+      targetEntityId,
+      relationType: stringValue(record.relationType) ?? (artifact.kind === 'entity_merge_candidate' ? 'same_as' : 'related_to'),
+      confidence: artifact.confidence,
+    });
+  }
+  return suggestions;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
 function buildDegreeMap(edges: KnowledgeGraphEdge[]) {
@@ -565,7 +608,7 @@ function computeGraphViewBox(nodes: PositionedNode[], graphMode: GraphMode) {
   };
 }
 
-export function KnowledgeGraphView() {
+export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => void } = {}) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const graphSvgRef = useRef<SVGSVGElement | null>(null);
@@ -593,6 +636,7 @@ export function KnowledgeGraphView() {
   const [manualNodePositions, setManualNodePositions] = useState<Record<string, { x: number; y: number }>>({});
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const [agentUsage, setAgentUsage] = useState(() => readGraphAgentUsage());
+  const [suggestedArtifacts, setSuggestedArtifacts] = useState<api.DreamArtifact[]>([]);
 
   const loadSources = useCallback(async () => {
     try {
@@ -631,6 +675,17 @@ export function KnowledgeGraphView() {
     }
   }, [entityFilter, pathPrefix, relationFilter, selectedSourceId, t]);
 
+  const loadGraphSuggestions = useCallback(async () => {
+    try {
+      const artifacts = await api.listDreamArtifacts({ status: 'pending', limit: 80 });
+      setSuggestedArtifacts(artifacts.filter((artifact) =>
+        artifact.kind === 'graph_relation_candidate' || artifact.kind === 'entity_merge_candidate',
+      ));
+    } catch {
+      setSuggestedArtifacts([]);
+    }
+  }, []);
+
   useEffect(() => {
     void loadSources();
   }, [loadSources]);
@@ -638,6 +693,10 @@ export function KnowledgeGraphView() {
   useEffect(() => {
     void loadGraph();
   }, [loadGraph]);
+
+  useEffect(() => {
+    void loadGraphSuggestions();
+  }, [loadGraphSuggestions]);
 
   useEffect(() => {
     const syncUsage = () => setAgentUsage(readGraphAgentUsage());
@@ -676,6 +735,16 @@ export function KnowledgeGraphView() {
   );
   const graphViewBox = useMemo(() => computeGraphViewBox(positionedNodes, graphMode), [graphMode, positionedNodes]);
   const nodeById = useMemo(() => new Map(positionedNodes.map((node) => [node.id, node])), [positionedNodes]);
+  const suggestedGraphArtifacts = useMemo(
+    () => buildSuggestedGraphArtifacts(suggestedArtifacts),
+    [suggestedArtifacts],
+  );
+  const visibleSuggestedGraphArtifacts = useMemo(
+    () => suggestedGraphArtifacts.filter((artifact) =>
+      nodeById.has(artifact.sourceEntityId) && nodeById.has(artifact.targetEntityId),
+    ),
+    [nodeById, suggestedGraphArtifacts],
+  );
   const bundleById = useMemo(
     () => new Map(visibleRelationBundles.map((bundle) => [bundle.id, bundle])),
     [visibleRelationBundles],
@@ -1042,6 +1111,15 @@ export function KnowledgeGraphView() {
               {hiddenNodeCount > 0 && (
                 <Badge variant="warning">{hiddenNodeCount} {t('knowledge.hiddenNodes')}</Badge>
               )}
+              {visibleSuggestedGraphArtifacts.length > 0 && (
+                <button
+                  type="button"
+                  onClick={onOpenInsights}
+                  className="inline-flex items-center rounded-md border border-accent/25 bg-accent/10 px-2 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent/15"
+                >
+                  {visibleSuggestedGraphArtifacts.length} {t('knowledge.graphSuggestions')}
+                </button>
+              )}
               <Badge variant="info">
                 {visibleNodes.length}/{totalGraphNodes || visibleNodes.length} {t('knowledge.nodes')}
               </Badge>
@@ -1208,6 +1286,51 @@ export function KnowledgeGraphView() {
                     />
                   ))}
                 </g>
+
+                {visibleSuggestedGraphArtifacts.length > 0 && (
+                  <g>
+                    {visibleSuggestedGraphArtifacts.map((artifact) => {
+                      const source = nodeById.get(artifact.sourceEntityId);
+                      const target = nodeById.get(artifact.targetEntityId);
+                      if (!source || !target) return null;
+                      const path = edgePath(source, target, artifact.kind === 'entity_merge_candidate' ? 18 : -18);
+                      const midpoint = bundleMidpoint(source, target);
+                      const color = artifact.kind === 'entity_merge_candidate' ? '#7c3aed' : '#0891b2';
+                      const label = artifact.kind === 'entity_merge_candidate'
+                        ? t('knowledge.graphSuggestionMerge')
+                        : relationLabel(artifact.relationType, t);
+                      return (
+                        <g
+                          key={artifact.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={onOpenInsights}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') onOpenInsights?.();
+                          }}
+                          className="cursor-pointer"
+                        >
+                          <title>{artifact.title}</title>
+                          <path
+                            d={path}
+                            fill="none"
+                            stroke={color}
+                            strokeWidth="1.7"
+                            strokeDasharray="8 7"
+                            opacity="0.88"
+                            className="kg-edge-line"
+                          />
+                          <g transform={`translate(${midpoint.x - 50} ${midpoint.y - 36})`}>
+                            <rect width="100" height="24" rx="7" fill="rgba(255,255,255,0.94)" stroke={color} strokeOpacity="0.45" />
+                            <text x="50" y="16" textAnchor="middle" fill={color} className="text-[10px] font-semibold">
+                              {label.slice(0, 14)}
+                            </text>
+                          </g>
+                        </g>
+                      );
+                    })}
+                  </g>
+                )}
 
                 <g>
                   {visibleRelationBundles.map((bundle, bundleIndex) => {

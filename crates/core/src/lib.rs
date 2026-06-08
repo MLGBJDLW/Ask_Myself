@@ -25,6 +25,7 @@ pub mod context_pack;
 pub mod conversation;
 pub mod crypto;
 pub mod db;
+pub mod dreaming;
 pub mod ecosystem;
 pub mod embed;
 pub mod error;

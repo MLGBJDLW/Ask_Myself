@@ -60,6 +60,32 @@ function formatCompact(value: number): string {
   return String(value);
 }
 
+function memorySourceLabel(source: UserMemory['source'], t: ReturnType<typeof useTranslation>['t']): string {
+  switch (source) {
+    case 'auto_extracted':
+      return t('settings.memorySourceAuto');
+    case 'dream':
+      return t('settings.memorySourceDream');
+    case 'imported':
+      return t('settings.memorySourceImported');
+    default:
+      return t('settings.memorySourceManual');
+  }
+}
+
+function memorySourceClass(source: UserMemory['source']): string {
+  switch (source) {
+    case 'auto_extracted':
+      return 'text-[10px] border-accent/30 text-accent';
+    case 'dream':
+      return 'text-[10px] border-teal-500/30 text-teal-400';
+    case 'imported':
+      return 'text-[10px] border-blue-500/30 text-blue-400';
+    default:
+      return 'text-[10px] border-border text-text-tertiary';
+  }
+}
+
 export function DataPrivacySettingsTab({
   analyticsLoading,
   traceSummary,
@@ -403,15 +429,9 @@ export function DataPrivacySettingsTab({
                           <div className="mb-1 flex items-center gap-1.5">
                             <Badge
                               variant="default"
-                              className={
-                                memory.source === 'auto_extracted'
-                                  ? 'text-[10px] border-accent/30 text-accent'
-                                  : 'text-[10px] border-border text-text-tertiary'
-                              }
+                              className={memorySourceClass(memory.source)}
                             >
-                              {memory.source === 'auto_extracted'
-                                ? t('settings.memorySourceAuto')
-                                : t('settings.memorySourceManual')}
+                              {memorySourceLabel(memory.source, t)}
                             </Badge>
                           </div>
                           <p className="text-sm text-text-primary whitespace-pre-wrap" style={{ overflowWrap: 'break-word' }}>

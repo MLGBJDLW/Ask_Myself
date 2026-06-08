@@ -77,6 +77,66 @@ impl Default for WebSearchConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DreamingConfig {
+    /// Enables background consolidation triggers. Manual runs remain available.
+    #[serde(default = "default_dreaming_enabled")]
+    pub enabled: bool,
+    /// Queue a consolidation pass when the app is idle for the configured interval.
+    #[serde(default)]
+    pub idle: bool,
+    /// Queue a consolidation pass after scan/compile completes.
+    #[serde(default)]
+    pub after_scan: bool,
+    /// Queue a consolidation pass after a successful agent turn.
+    #[serde(default)]
+    pub after_successful_turn: bool,
+    /// Queue a scheduled consolidation pass at a fixed interval.
+    #[serde(default)]
+    pub schedule: bool,
+    /// Minimum minutes between idle-triggered consolidation runs.
+    #[serde(default = "default_dreaming_idle_interval_minutes")]
+    pub idle_interval_minutes: usize,
+    /// Minimum minutes between schedule-triggered consolidation runs.
+    #[serde(default = "default_dreaming_schedule_interval_minutes")]
+    pub schedule_interval_minutes: usize,
+    /// Soft cap for created review artifacts per run.
+    #[serde(default = "default_dreaming_max_artifacts_per_run")]
+    pub max_artifacts_per_run: usize,
+    /// Maximum background consolidation runs allowed per day. Manual runs are not blocked.
+    #[serde(default = "default_dreaming_max_runs_per_day")]
+    pub max_runs_per_day: usize,
+    /// Keep dreaming consolidation local-first. Reserved for future LLM-backed planners.
+    #[serde(default = "default_dreaming_local_only")]
+    pub local_only: bool,
+    /// Optional source opt-in list. Empty means all sources are eligible.
+    #[serde(default)]
+    pub source_ids: Vec<String>,
+    /// Optional project opt-in list. Empty means all projects are eligible.
+    #[serde(default)]
+    pub project_ids: Vec<String>,
+}
+
+impl Default for DreamingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_dreaming_enabled(),
+            idle: false,
+            after_scan: false,
+            after_successful_turn: false,
+            schedule: false,
+            idle_interval_minutes: default_dreaming_idle_interval_minutes(),
+            schedule_interval_minutes: default_dreaming_schedule_interval_minutes(),
+            max_artifacts_per_run: default_dreaming_max_artifacts_per_run(),
+            max_runs_per_day: default_dreaming_max_runs_per_day(),
+            local_only: default_dreaming_local_only(),
+            source_ids: Vec::new(),
+            project_ids: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WebSearchProviderMode {
@@ -329,6 +389,10 @@ pub struct AppConfig {
     /// Defaults for native no-key public web search tools.
     #[serde(default)]
     pub web_search: WebSearchConfig,
+
+    /// Background knowledge consolidation and review queue settings.
+    #[serde(default)]
+    pub dreaming: DreamingConfig,
 }
 
 fn default_tool_timeout() -> i64 {
@@ -371,6 +435,24 @@ fn default_auto_memory_extraction() -> bool {
     true
 }
 fn default_auto_skill_learning() -> bool {
+    true
+}
+fn default_dreaming_enabled() -> bool {
+    true
+}
+fn default_dreaming_idle_interval_minutes() -> usize {
+    180
+}
+fn default_dreaming_schedule_interval_minutes() -> usize {
+    720
+}
+fn default_dreaming_max_artifacts_per_run() -> usize {
+    24
+}
+fn default_dreaming_max_runs_per_day() -> usize {
+    12
+}
+fn default_dreaming_local_only() -> bool {
     true
 }
 fn default_hf_mirror_base_url() -> String {
@@ -424,6 +506,7 @@ impl Default for AppConfig {
             ghproxy_base_url: default_ghproxy_base_url(),
             image_generation: ImageGenerationConfig::default(),
             web_search: WebSearchConfig::default(),
+            dreaming: DreamingConfig::default(),
         }
     }
 }
