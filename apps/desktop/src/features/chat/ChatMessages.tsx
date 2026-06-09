@@ -165,6 +165,16 @@ const SUGGESTIONS: {
   },
 ];
 
+function isCompactionSummaryMessage(message: ConversationMessage): boolean {
+  if (message.role !== "system") return false;
+  const lower = message.content.toLowerCase();
+  return (
+    lower.includes("earlier conversation context") ||
+    lower.includes("auto-compacted") ||
+    lower.includes("compacted context")
+  );
+}
+
 function evidenceSourceLabel(
   card: CitationCardData | undefined,
   displayText: string | undefined,
@@ -571,6 +581,10 @@ export function ChatMessages({
   const [hasOverflow, setHasOverflow] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const prevMsgCountRef = useRef(messages.length);
+  const hasPersistentCompactMarker = useMemo(
+    () => messages.some(isCompactionSummaryMessage),
+    [messages],
+  );
 
   const chunkIdCacheRef = useRef<Map<string, string[]>>(new Map());
   const pendingChunkIdsRef = useRef<string[]>([]);
@@ -1539,6 +1553,30 @@ export function ChatMessages({
   const shouldRenderInlineError = Boolean(
     error && !isStreaming && traceEvents.length === 0,
   );
+  const renderCompactStatus = useCallback((active: boolean, key: string) => (
+    <motion.div
+      key={key}
+      initial={shouldReduceMotion ? false : { opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={shouldReduceMotion ? INSTANT_TRANSITION : SOFT_FADE_TRANSITION}
+      className="my-6 flex w-full justify-center px-2"
+    >
+      <div
+        data-testid="chat-compact-status"
+        data-reduce-motion={shouldReduceMotion ? "true" : "false"}
+        className="chat-compact-status-line"
+        role="status"
+        aria-label={active ? t("chat.compacting") : t("chat.compactComplete")}
+      >
+        <span className="chat-compact-status-rule" aria-hidden="true" />
+        <span className="chat-compact-status-text">
+          {active ? t("chat.compacting") : t("chat.compactComplete")}{" "}
+          <span className="font-mono">{active ? "(>_<)" : "(｡•̀ᴗ-)✧"}</span>
+        </span>
+        <span className="chat-compact-status-rule" aria-hidden="true" />
+      </div>
+    </motion.div>
+  ), [shouldReduceMotion, t]);
 
   if (
     messages.length === 0 &&
@@ -1628,7 +1666,12 @@ export function ChatMessages({
     >
       <AnimatePresence initial={false}>
         {messages.map((msg, idx) => {
-          if (msg.role === "tool" || msg.role === "system") return null;
+          if (msg.role === "system") {
+            return isCompactionSummaryMessage(msg)
+              ? renderCompactStatus(false, `compact-status-${msg.id}`)
+              : null;
+          }
+          if (msg.role === "tool") return null;
           if (turnRenderMap.members.has(idx)) return null;
 
           const turnRender = turnRenderMap.anchors.get(idx);
@@ -1933,29 +1976,8 @@ export function ChatMessages({
           </motion.div>
         )}
 
-      {(isCompacting || compactCompleteVisible) && (
-        <motion.div
-          initial={shouldReduceMotion ? false : { opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={shouldReduceMotion ? INSTANT_TRANSITION : SOFT_FADE_TRANSITION}
-          className="my-6 flex w-full justify-center px-2"
-        >
-          <div
-            data-testid="chat-compact-status"
-            data-reduce-motion={shouldReduceMotion ? "true" : "false"}
-            className="chat-compact-status-line"
-            role="status"
-            aria-label={isCompacting ? t("chat.compacting") : t("chat.compactComplete")}
-          >
-            <span className="chat-compact-status-rule" aria-hidden="true" />
-            <span className="chat-compact-status-text">
-              {isCompacting ? t("chat.compacting") : t("chat.compactComplete")}{" "}
-              <span className="font-mono">{isCompacting ? "(>_<)" : "(｡•̀ᴗ-)✧"}</span>
-            </span>
-            <span className="chat-compact-status-rule" aria-hidden="true" />
-          </div>
-        </motion.div>
-      )}
+      {(isCompacting || (compactCompleteVisible && !hasPersistentCompactMarker)) &&
+        renderCompactStatus(isCompacting, "compact-status-current")}
 
       {shouldRenderInlineError && (
         <motion.div
