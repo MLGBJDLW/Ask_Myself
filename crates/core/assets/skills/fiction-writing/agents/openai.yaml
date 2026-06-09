@@ -1,6 +1,6 @@
 interface:
   display_name: "Fiction Writing"
   short_description: "Plan, write, continue, and revise fiction, web serials, and story bibles"
-  default_prompt: "Use this skill for novels, Chinese web fiction, serial chapters, story bibles, continuity, quality checks, prose revision, low-dash human prose, and de-AI fiction polishing."
+  default_prompt: "Use this skill for novels, Chinese web fiction, serial chapters, story bibles, continuity, quality checks, prose revision, trust-the-reader line edits, low-dash human prose, and de-AI fiction polishing."
 policy:
   allow_implicit_invocation: true

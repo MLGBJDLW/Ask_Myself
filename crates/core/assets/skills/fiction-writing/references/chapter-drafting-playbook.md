@@ -16,6 +16,7 @@ scene sequence.
 - Chinese Prose Naturalization
 - Mobile Paragraphing And Length
 - Dash Discipline
+- Trust-The-Reader Line Pass
 - De-Generic Prose Pass
 - Chapter Gate
 
@@ -171,6 +172,29 @@ Before finalizing drafted prose:
    dialogue, or visible consequence.
 5. For Chinese prose, keep dash use below one construction per 1,000 Chinese
    characters unless the user has explicitly requested that punctuation style.
+
+## Trust-The-Reader Line Pass
+
+Run this pass after the chapter has a complete shape and before final polish:
+
+1. Search for denial-first phrasing such as "not X but Y," "not X. It was Y,"
+   "unlike X, more like Y," "不是...而是...," "不是X。是Y。" and
+   "不像...更像...". If the first half only corrects a false option, delete it
+   and keep the useful fact, action, or line.
+2. Cut explanation that follows an already clear fact. Let the action,
+   consequence, object, or dialogue carry the implication.
+3. Remove narrator self-Q&A and speculative inner-state menus unless the POV
+   character is actively reasoning with evidence.
+4. Check POV knowledge, inference paths, and naming. The reader should learn
+   only what the POV has a source for, and named characters should not regress
+   to generic feature tags without a deliberate reason.
+5. Collapse repeated actions, emotions, voice labels, and zero-information
+   echoes. If nothing changed, do not restate it.
+6. Replace mechanical analysis metaphors and non-action sentences with concrete
+   scene pressure, or cut them if absence is enough.
+7. Recheck emotional transitions. If a scene jumps from recognition straight to
+   debt, accusation, romance, forgiveness, or surrender, add a smaller beat or
+   delay the conclusion.
 
 ## De-Generic Prose Pass
 
