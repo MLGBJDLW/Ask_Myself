@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.0...nexa-monorepo-v0.9.1) (2026-06-09)
+
+
+### Features
+
+* **skills:** strengthen fiction writing quality gate ([6b63fae](https://github.com/MLGBJDLW/Nexa/commit/6b63fae94a540fd44b2ba516270b1c46590d9e3f))
+
+
+### Bug Fixes
+
+* **app:** improve mermaid privacy docs and bundles ([238e4be](https://github.com/MLGBJDLW/Nexa/commit/238e4bec56a9f8184eedd5e6a60043df3600f59b))
+* **app:** improve mermaid privacy docs and bundles ([43b78dd](https://github.com/MLGBJDLW/Nexa/commit/43b78ddcd2e6b4fea646ebcadba01ab5bdef311e))
+* **chat:** stabilize running state and retry actions ([9ce87d0](https://github.com/MLGBJDLW/Nexa/commit/9ce87d06224b449d8cb9ad8e5fde0cf3a82d51ef))
+* **ui:** add chat input history and package host i18n ([d1563dd](https://github.com/MLGBJDLW/Nexa/commit/d1563dd5fdda5d926a4779bef37d5907699c8f53))
+
 ## [0.9.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.8.8...nexa-monorepo-v0.9.0) (2026-06-08)
 
 
