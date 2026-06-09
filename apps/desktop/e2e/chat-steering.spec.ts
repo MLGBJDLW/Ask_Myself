@@ -36,9 +36,13 @@ test.beforeEach(async ({ page }) => {
       updatedAt: nowIso,
     };
     const messages: Message[] = [];
+    const staleRunningMode = () => localStorage.getItem('e2e-steering-stale-running') === '1';
+    const retryMode = () => localStorage.getItem('e2e-steering-retry') === '1';
+    let retryMessagesSeeded = false;
     const diagnostics = {
       chatCalls: 0,
       stopCalls: 0,
+      chatMessages: [] as string[],
       steerCalls: [] as Array<{ conversationId: string; message: string }>,
     };
 
@@ -100,7 +104,43 @@ test.beforeEach(async ({ page }) => {
       });
     };
 
+    const ensureRetryMessages = () => {
+      if (!retryMode() || retryMessagesSeeded) return;
+      retryMessagesSeeded = true;
+      messages.push(
+        {
+          id: 'm-retry-user',
+          conversationId: conversation.id,
+          role: 'user',
+          content: 'Persisted retry prompt',
+          toolCallId: null,
+          toolCalls: [],
+          artifacts: null,
+          tokenCount: 0,
+          createdAt: nowIso,
+          sortOrder: 0,
+          thinking: null,
+          imageAttachments: null,
+        },
+        {
+          id: 'm-retry-assistant',
+          conversationId: conversation.id,
+          role: 'assistant',
+          content: 'Persisted answer before retry.',
+          toolCallId: null,
+          toolCalls: [],
+          artifacts: null,
+          tokenCount: 0,
+          createdAt: nowIso,
+          sortOrder: 1,
+          thinking: null,
+          imageAttachments: null,
+        },
+      );
+    };
+
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
+      ensureRetryMessages();
       switch (cmd) {
         case 'plugin:event|listen': {
           const listenerId = listenerSeq++;
@@ -132,11 +172,11 @@ test.beforeEach(async ({ page }) => {
               conversationId: 'conv-steering',
               turnId: 'turn-steering',
               userMessageId: messages.find((message) => message.role === 'user')?.id ?? 'm-user-0',
-              status: 'completed',
-              phase: 'done',
+              status: staleRunningMode() ? 'running' : 'completed',
+              phase: staleRunningMode() ? 'responding' : 'done',
               title: 'Steering task run',
               routeKind: 'DirectResponse',
-              summary: 'Task completed',
+              summary: staleRunningMode() ? 'Task was active before app close' : 'Task completed',
               errorMessage: null,
               provider: 'open_ai',
               model: 'gpt-4.1',
@@ -148,6 +188,28 @@ test.beforeEach(async ({ page }) => {
               finishedAt: nowIso,
             },
           ];
+        case 'get_agent_task_run_events_cmd':
+          return [];
+        case 'get_agent_run_events_cmd':
+          return staleRunningMode()
+            ? [
+                {
+                  runId: 'task-steering',
+                  turnId: 'turn-steering',
+                  eventSeq: 1,
+                  version: 1,
+                  kind: 'thinking',
+                  phase: 'responding',
+                  label: 'Working on a previous request.',
+                  status: 'running',
+                  payload: {
+                    type: 'thinking',
+                    content: 'Working on a previous request.',
+                  },
+                  createdAt: nowIso,
+                },
+              ]
+            : [];
         case 'list_sources':
         case 'get_conversation_sources_cmd':
         case 'list_checkpoints_cmd':
@@ -192,7 +254,9 @@ test.beforeEach(async ({ page }) => {
         case 'agent_chat_cmd': {
           diagnostics.chatCalls += 1;
           const conversationId = String(args.conversationId ?? '');
-          appendUserMessage(conversationId, String(args.message ?? ''));
+          const message = String(args.message ?? '');
+          diagnostics.chatMessages.push(message);
+          appendUserMessage(conversationId, message);
 
           setTimeout(() => {
             emitEvent('agent:event', {
@@ -207,6 +271,9 @@ test.beforeEach(async ({ page }) => {
           const conversationId = String(args.conversationId ?? '');
           const message = String(args.message ?? '');
           diagnostics.steerCalls.push({ conversationId, message });
+          if (staleRunningMode()) {
+            throw new Error('No running agent for this conversation.');
+          }
 
           setTimeout(() => {
             emitEvent('agent:event', {
@@ -280,6 +347,55 @@ test.beforeEach(async ({ page }) => {
       },
     };
   });
+});
+
+test('does not send stale restored running chats as steering messages', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('e2e-steering-stale-running', '1');
+  });
+  await page.goto('/chat/conv-steering');
+
+  await page.waitForTimeout(100);
+  const textbox = page.getByTestId('chat-input-textarea');
+  await textbox.fill('start a new turn after restart');
+  await page.getByTestId('chat-send').click();
+
+  await expect(page.getByText('Working on the first request.')).toBeVisible();
+
+  const diagnostics = await page.evaluate(() => (window as unknown as {
+    __STEERING_E2E__: {
+      chatCalls: number;
+      stopCalls: number;
+      steerCalls: Array<{ conversationId: string; message: string }>;
+    };
+  }).__STEERING_E2E__);
+
+  expect(diagnostics.chatCalls).toBe(1);
+  expect(diagnostics.stopCalls).toBe(0);
+  expect(diagnostics.steerCalls).toEqual([]);
+});
+
+test('retries a persisted user message after reopening a conversation', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('e2e-steering-retry', '1');
+  });
+  await page.goto('/chat/conv-steering');
+
+  await expect(page.getByText('Persisted answer before retry.')).toBeVisible();
+  await page.getByRole('button', { name: 'Retry' }).first().click();
+  await expect(page.getByText('Working on the first request.')).toBeVisible();
+
+  const diagnostics = await page.evaluate(() => (window as unknown as {
+    __STEERING_E2E__: {
+      chatCalls: number;
+      chatMessages: string[];
+      steerCalls: Array<{ conversationId: string; message: string }>;
+    };
+  }).__STEERING_E2E__);
+
+  expect(diagnostics.chatCalls).toBe(1);
+  expect(diagnostics.chatMessages).toEqual(['Persisted retry prompt']);
+  expect(diagnostics.steerCalls).toEqual([]);
 });
 
 test('sends steering while an agent stream is running without stopping it', async ({ page }) => {

@@ -62,6 +62,7 @@ import {
   persistedTraceItemToTimelineSections,
   skillRefsFromTraceItems,
   toolCallToTimelineSection,
+  traceEventsAfterStreamRounds,
   turnLifecycleTimelineSections,
   visibleTraceEventsForTimeline,
   type TimelineSkillRef,
@@ -105,7 +106,7 @@ interface ChatMessagesProps {
   taskRun?: AgentTaskRun | null;
   isStreaming: boolean;
   error?: string | null;
-  onRetry?: () => void;
+  onRetry?: (messageId?: string) => void;
   onDismissError?: () => void;
   onDeleteMessage?: (messageId: string) => void;
   onEditAndResend?: (messageId: string, newContent: string) => void;
@@ -1210,6 +1211,14 @@ export function ChatMessages({
     [visibleTraceEvents, streamRounds],
   );
 
+  const liveTimelineTraceEvents = useMemo(
+    () =>
+      isStreaming
+        ? traceEventsAfterStreamRounds(visibleTraceEvents, streamRounds)
+        : visibleTraceEvents,
+    [isStreaming, streamRounds, visibleTraceEvents],
+  );
+
   const currentTraceActive = useMemo(
     () =>
       isCurrentTraceActive({
@@ -1225,7 +1234,7 @@ export function ChatMessages({
   const liveTraceTimeline = useMemo(
     () =>
       buildLiveTraceTimeline({
-        visibleTraceEvents,
+        visibleTraceEvents: liveTimelineTraceEvents,
         isStreaming,
         currentTraceActive,
         streamText,
@@ -1235,8 +1244,8 @@ export function ChatMessages({
       currentTraceActive,
       displayedText,
       isStreaming,
+      liveTimelineTraceEvents,
       streamText,
-      visibleTraceEvents,
     ],
   );
 
@@ -1520,7 +1529,7 @@ export function ChatMessages({
 
   const shouldRenderLiveTraceTimeline = liveTraceTimeline.length > 0;
   const shouldRenderStreamRounds =
-    !shouldRenderLiveTraceTimeline && streamRounds.length > 0;
+    streamRounds.length > 0 && (isStreaming || !shouldRenderLiveTraceTimeline);
   const shouldShowStreamingText =
     !shouldRenderLiveTraceTimeline &&
     (isStreaming ||
@@ -1970,7 +1979,7 @@ export function ChatMessages({
                   {onRetry && (
                     <button
                       type="button"
-                      onClick={onRetry}
+                      onClick={() => onRetry()}
                       className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-red-500/20 text-red-300 hover:bg-red-500/30 transition-colors cursor-pointer"
                     >
                       <RotateCcw className="h-3 w-3" />

@@ -1287,6 +1287,50 @@ impl Database {
 // ---------------------------------------------------------------------------
 
 impl Database {
+    /// Mark task runs left active by a previous desktop process as interrupted.
+    ///
+    /// The in-memory running task handle is process-local. After the app exits,
+    /// persisted active rows cannot accept steering or cancellation anymore.
+    pub fn mark_interrupted_agent_task_runs(&self) -> Result<usize, CoreError> {
+        const INTERRUPTED_SUMMARY: &str = "Interrupted because the app was closed.";
+        const ACTIVE_STATUSES: [&str; 4] = ["queued", "running", "waiting_approval", "cancelling"];
+
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE agent_task_runs
+             SET status = 'cancelled',
+                 phase = 'done',
+                 summary = COALESCE(NULLIF(summary, ''), ?1),
+                 error_message = NULL,
+                 finished_at = COALESCE(finished_at, datetime('now')),
+                 updated_at = datetime('now')
+             WHERE status IN (?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                INTERRUPTED_SUMMARY,
+                ACTIVE_STATUSES[0],
+                ACTIVE_STATUSES[1],
+                ACTIVE_STATUSES[2],
+                ACTIVE_STATUSES[3],
+            ],
+        )?;
+
+        conn.execute(
+            "UPDATE conversation_turns
+             SET status = 'cancelled',
+                 finished_at = COALESCE(finished_at, datetime('now')),
+                 updated_at = datetime('now')
+             WHERE status = 'running'
+               AND id IN (
+                 SELECT turn_id
+                 FROM agent_task_runs
+                 WHERE status = 'cancelled'
+               )",
+            [],
+        )?;
+
+        Ok(affected)
+    }
+
     /// Create a durable task run for a conversation turn.
     pub fn create_agent_task_run(
         &self,
@@ -3532,6 +3576,68 @@ mod tests {
         let events = db.get_agent_task_run_events(&run.id).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload.as_ref().unwrap()["callId"], "call-1");
+    }
+
+    #[test]
+    fn test_mark_interrupted_agent_task_runs_cancels_stale_active_runs() {
+        let db = Database::open_memory().unwrap();
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+
+        let user_msg = ConversationMessage {
+            id: new_id(),
+            conversation_id: conv.id.clone(),
+            role: Role::User,
+            content: "Continue the stale run.".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 5,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&user_msg).unwrap();
+        let turn = db
+            .create_conversation_turn(&conv.id, &user_msg.id, None)
+            .unwrap();
+        let run = db
+            .create_agent_task_run(
+                &conv.id,
+                &turn.id,
+                &user_msg.id,
+                "Stale run",
+                Some("openai"),
+                Some("gpt-4o"),
+            )
+            .unwrap();
+
+        db.mark_agent_task_run_started(&run.id, "responding")
+            .unwrap();
+        let count = db.mark_interrupted_agent_task_runs().unwrap();
+
+        assert_eq!(count, 1);
+        let updated_run = db.get_agent_task_run(&run.id).unwrap();
+        assert_eq!(updated_run.status, "cancelled");
+        assert_eq!(updated_run.phase, "done");
+        assert_eq!(
+            updated_run.summary.as_deref(),
+            Some("Interrupted because the app was closed.")
+        );
+        assert!(updated_run.finished_at.is_some());
+
+        let updated_turn = db.get_conversation_turn(&turn.id).unwrap();
+        assert_eq!(updated_turn.status, "cancelled");
+        assert!(updated_turn.finished_at.is_some());
     }
 
     #[test]

@@ -189,11 +189,28 @@ export function projectHistoricalEventsToStreamState(
   taskEvents: AgentTaskRunEvent[],
   runEvents: AgentRunEvent[],
 ): DurableReplayProjectionState {
-  if (runEvents.length > 0) {
-    return projectRunEventsToStreamState(taskRun, runEvents, taskEvents);
+  const state = runEvents.length > 0
+    ? projectRunEventsToStreamState(taskRun, runEvents, taskEvents)
+    : projectTaskEventsToStreamState(taskRun, taskEvents);
+
+  if (taskRunIsActive(taskRun) && state.isStreaming) {
+    applyTerminalProjection(state, {
+      toolStatus: 'cancelled',
+      message: 'Previous run interrupted when the app closed.',
+      toolFallbackMessage: 'Interrupted',
+      traceTone: 'error',
+      errorMessage: null,
+    });
+    state.taskRun = {
+      ...taskRun,
+      status: 'cancelled',
+      phase: 'done',
+      summary: taskRun.summary ?? 'Interrupted because the app was closed.',
+      finishedAt: taskRun.finishedAt ?? taskRun.updatedAt,
+    };
   }
 
-  return projectTaskEventsToStreamState(taskRun, taskEvents);
+  return state;
 }
 
 function applyToolPreparingReplay(

@@ -14,8 +14,8 @@ export interface MessageActionsProps {
   showFeedback: boolean;
   chunkIds?: string[];
   queryText?: string;
-  /** Show retry button (only on last assistant message) */
-  isLastAssistant?: boolean;
+  /** Show retry button for assistant retry or user resend. */
+  showRetry?: boolean;
   /** Called when retry is clicked */
   onRetry?: () => void;
   /** Whether the message is from user (enables edit button) */
@@ -28,13 +28,15 @@ export interface MessageActionsProps {
   onEdit?: () => void;
   /** Called when delete is confirmed */
   onDelete?: (messageId: string) => void;
+  /** Align actions with the owning message. */
+  align?: 'start' | 'end';
 }
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function MessageActions({ text, showFeedback, chunkIds = [], queryText = '', isLastAssistant, onRetry, isUser, messageId, conversationId, onEdit, onDelete }: MessageActionsProps) {
+export function MessageActions({ text, showFeedback, chunkIds = [], queryText = '', showRetry, onRetry, isUser, messageId, conversationId, onEdit, onDelete, align = 'start' }: MessageActionsProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
@@ -93,14 +95,15 @@ export function MessageActions({ text, showFeedback, chunkIds = [], queryText = 
   }, [confirmingDelete, messageId, onDelete]);
 
   const actionBtn =
-    'p-1 rounded-md bg-surface-0/80 border border-border/50 text-text-tertiary hover:text-text-primary transition-colors cursor-pointer';
+    'flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-primary disabled:pointer-events-none disabled:opacity-45';
 
   return (
-    <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+    <div className={`mt-1 flex items-center gap-0.5 opacity-70 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 ${align === 'end' ? 'justify-end' : 'justify-start'}`}>
       <button
         type="button"
         onClick={handleCopy}
         title={copied ? t('chat.copied') : t('chat.copyMessage')}
+        aria-label={copied ? t('chat.copied') : t('chat.copyMessage')}
         className={actionBtn}
       >
         {copied ? (
@@ -114,16 +117,18 @@ export function MessageActions({ text, showFeedback, chunkIds = [], queryText = 
           type="button"
           onClick={onEdit}
           title={t('chat.edit')}
+          aria-label={t('chat.edit')}
           className={actionBtn}
         >
           <Pencil className="h-3.5 w-3.5" />
         </button>
       )}
-      {isLastAssistant && onRetry && (
+      {showRetry && onRetry && (
         <button
           type="button"
           onClick={onRetry}
           title={t('chat.retry')}
+          aria-label={t('chat.retry')}
           className={actionBtn}
         >
           <RotateCcw className="h-3.5 w-3.5" />
@@ -136,6 +141,7 @@ export function MessageActions({ text, showFeedback, chunkIds = [], queryText = 
             onClick={() => handleFeedback('up')}
             disabled={submitting}
             title={t('chat.feedbackGood')}
+            aria-label={t('chat.feedbackGood')}
             aria-pressed={feedback === 'up'}
             className={`${actionBtn} ${feedback === 'up' ? 'text-success' : ''} ${submitting ? 'opacity-50 pointer-events-none' : ''}`}
           >
@@ -146,6 +152,7 @@ export function MessageActions({ text, showFeedback, chunkIds = [], queryText = 
             onClick={() => handleFeedback('down')}
             disabled={submitting}
             title={t('chat.feedbackBad')}
+            aria-label={t('chat.feedbackBad')}
             aria-pressed={feedback === 'down'}
             className={`${actionBtn} ${feedback === 'down' ? 'text-danger' : ''} ${submitting ? 'opacity-50 pointer-events-none' : ''}`}
           >
@@ -158,7 +165,8 @@ export function MessageActions({ text, showFeedback, chunkIds = [], queryText = 
           type="button"
           onClick={handleDelete}
           title={confirmingDelete ? t('chat.confirmDelete') : t('chat.delete')}
-          className={`${actionBtn} ${confirmingDelete ? 'text-danger border-danger/50 bg-danger/10' : ''}`}
+          aria-label={confirmingDelete ? t('chat.confirmDelete') : t('chat.delete')}
+          className={`${actionBtn} ${confirmingDelete ? 'w-auto px-2 text-danger bg-danger/10' : ''}`}
         >
           {confirmingDelete ? (
             <span className="text-[10px] font-medium px-0.5">{t('chat.confirmDelete')}</span>
