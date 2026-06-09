@@ -53,7 +53,8 @@ Use this when the user asks for a novel, web novel, chapter-by-chapter story, co
 - In Chinese fiction, use comma, period, colon, semicolon, ellipsis, paragraph breaks, short sentences, action beats, and dialogue tags for rhythm. Reserve dashes only for a true interruption, sudden break in speech, or abrupt turn that cannot be cleaner another way.
 - If a dash is unavoidable, keep it rare: at most one dash construction per 1,000 Chinese characters in finished prose, and only where it has a clear dramatic function.
 - Replace dash-heavy sentences with one of these moves: split the sentence, make the consequence visible, add a physical beat, let a silence carry the turn, use direct dialogue, or put the reversal in the next paragraph.
-- Avoid AI-ish prose patterns: symmetrical "not X but Y" phrasing, decorative abstractions, over-explained emotions, repeated sensory cliches, tidy summary paragraphs, exposition dumps, labeled feelings, generic epiphanies, and repeated "realized/knew/felt a surge" constructions.
+- Avoid AI-ish prose patterns: denial-first phrasing such as "not X but Y," "unlike X, more like Y," "不是...而是...," or "不像...更像...," decorative abstractions, over-explained emotions, repeated sensory cliches, tidy summary paragraphs, exposition dumps, labeled feelings, generic epiphanies, and repeated "realized/knew/felt a surge" constructions.
+- Run a trust-the-reader pass for substantial prose: remove explanation after facts, narrator self-Q&A, speculative inner-state menus, zero-information repetition, unsupported POV knowledge, naming regressions, abrupt unearned emotional turns, mechanical metaphors, and sentences that describe only what did not happen.
 - Human prose should feel locally caused: concrete nouns and verbs, imperfect dialogue timing, subtext, specific physical behavior, asymmetry, pressure, consequence, and a little useful ambiguity.
 - Before finalizing a substantial draft or polish, run a dash audit and an AI-prose audit. Rewrite any paragraph where punctuation is carrying drama that should come from action, choice, or consequence.
 
@@ -75,7 +76,7 @@ Use this when the user asks for a novel, web novel, chapter-by-chapter story, co
 - Read `references/chapter-drafting-playbook.md` for chapter openings, cliffhangers, scene expansion without padding, dialogue, Chinese prose naturalization, and chapter quality gates.
 - Read `references/chinese-webnovel-playbook.md` for Chinese web novel mechanics, reader-payoff design, opening pressure, platform-shaped pacing, genre modules, and Chinese prose risks.
 - Read `references/continuity-state-playbook.md` when continuing, importing, revising, or managing a long manuscript with active canon, character state, timeline, promises, clues, powers, inventory, or relationship changes.
-- Read `references/quality-gate.md` before finalizing substantial fiction deliverables, especially full chapters, longform outlines, continuations, imported manuscript diagnoses, or de-generic prose passes.
+- Read `references/quality-gate.md` before finalizing substantial fiction deliverables, especially full chapters, longform outlines, continuations, imported manuscript diagnoses, trust-the-reader line edits, or de-generic prose passes.
 - Use `assets/fiction-outline-template.md` when the user wants a reusable novel/story planning template or a project bible starter.
 - Use `scripts/check_chinese_fiction_format.py` when a Chinese prose draft is saved to a file and paragraph length or chapter word count needs a mechanical check.
 

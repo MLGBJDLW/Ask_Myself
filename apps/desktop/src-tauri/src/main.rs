@@ -138,6 +138,13 @@ fn main() {
 
             let db_path = data_dir.join("nexa.db");
             let db = Database::new(&db_path).expect("failed to initialize database");
+            match db.mark_interrupted_agent_task_runs() {
+                Ok(count) if count > 0 => {
+                    log::info!("Marked {count} interrupted agent task run(s) from a previous app process")
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("Failed to mark interrupted agent task runs: {e}"),
+            }
             match db
                 .list_skills()
                 .and_then(|skills| nexa_core::skills::materialize_user_skills_to_disk(&data_dir, &skills))

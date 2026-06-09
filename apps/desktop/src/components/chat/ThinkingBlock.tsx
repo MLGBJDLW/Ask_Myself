@@ -4,7 +4,7 @@ import { ChevronRight, Brain } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from '../../i18n';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
-import { markdownRemarkPlugins, rehypePlugins } from './markdownComponents';
+import { MermaidBlock, markdownRemarkPlugins, rehypePlugins } from './markdownComponents';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -58,6 +58,10 @@ const thinkingMarkdownComponents: Record<string, React.ComponentType<ComponentPr
     return <p {...r} className="my-1 leading-relaxed">{children}</p>;
   },
   pre({ children, ...rest }: ComponentPropsWithoutRef<'pre'>) {
+    const child = children as React.ReactElement | undefined;
+    if (child?.props?.className?.startsWith('language-')) {
+      return <>{children}</>;
+    }
     return (
       <pre
         {...rest}
@@ -70,6 +74,18 @@ const thinkingMarkdownComponents: Record<string, React.ComponentType<ComponentPr
   code({ children, className, ...rest }: ComponentPropsWithoutRef<'code'> & { className?: string }) {
     const isBlock = className?.startsWith('language-');
     if (isBlock) {
+      const language = className?.replace('language-', '') ?? '';
+      const raw = typeof children === 'string'
+        ? children
+        : Array.isArray(children)
+          ? children.join('')
+          : String(children ?? '');
+      const code = raw.replace(/\n$/, '');
+
+      if (language.toLowerCase() === 'mermaid') {
+        return <MermaidBlock chart={code} />;
+      }
+
       return <code {...rest} className={className}>{children}</code>;
     }
     return (

@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useState, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Check, ChevronDown, Network, Settings, PanelLeftClose, PanelLeftOpen, UserRound, X } from 'lucide-react';
@@ -16,7 +16,7 @@ import { useChatSession } from '../lib/useChatSession';
 import { useResizablePanel } from '../lib/useResizablePanel';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
-import type { AgentConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
+import type { AgentConfig, Conversation, ConversationMessage, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
 import { formatUserError } from '../lib/userError';
 import {
   GRAPH_AGENT_CONTEXT_EVENT,
@@ -71,6 +71,18 @@ function buildApprovedPlanPrompt(planMarkdown: string): string {
     planMarkdown.trim(),
     '</approved_plan>',
   ].join('\n');
+}
+
+function isSteeringConversationMessage(message: ConversationMessage): boolean {
+  if (message.role !== 'user') return false;
+  if (message.id.startsWith('temp-steer-')) return true;
+  const artifacts = message.artifacts;
+  return Boolean(
+    artifacts &&
+      !Array.isArray(artifacts) &&
+      typeof artifacts === 'object' &&
+      (artifacts as Record<string, unknown>).kind === 'steering',
+  );
 }
 
 function agentConfigToSaveInput(
@@ -374,6 +386,16 @@ export function ChatPage() {
     initialCollectionContext,
     activePersonaId,
   });
+  const chatInputHistory = useMemo(
+    () => chat.messages
+      .filter((message) => (
+        message.role === 'user' &&
+        !isSteeringConversationMessage(message) &&
+        message.content.trim().length > 0
+      ))
+      .map((message) => message.content),
+    [chat.messages],
+  );
   const [pendingGraphContext, setPendingGraphContext] = useState<GraphAgentContext | null>(
     () => readGraphAgentContext(),
   );
@@ -833,14 +855,6 @@ export function ChatPage() {
   }, [chat.activeId, chat.reloadMessages, isCompacting, t]);
 
   useEffect(() => {
-    if (!compactCompleteVisible) return;
-    const timeout = window.setTimeout(() => {
-      setCompactCompleteVisible(false);
-    }, 4800);
-    return () => window.clearTimeout(timeout);
-  }, [compactCompleteVisible]);
-
-  useEffect(() => {
     if (chat.isStreaming) {
       setCompactCompleteVisible(false);
     }
@@ -1069,6 +1083,7 @@ export function ChatPage() {
               isStreaming={chat.isStreaming}
               disabled={!chat.agentConfig || chat.loadingMsgs || isCompacting}
               conversationId={chat.activeId ?? undefined}
+              inputHistory={chatInputHistory}
               sessionControls={sessionControls}
               prefillText={prefillText}
               onCompact={chat.activeId ? handleCompactConversation : undefined}

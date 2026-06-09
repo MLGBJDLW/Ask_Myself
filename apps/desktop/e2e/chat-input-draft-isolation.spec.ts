@@ -54,7 +54,50 @@ test.beforeEach(async ({ page }) => {
     };
 
     const messagesByConversation: Record<string, Message[]> = {
-      'conv-draft-a': [],
+      'conv-draft-a': [
+        {
+          id: 'm-draft-user-1',
+          conversationId: 'conv-draft-a',
+          role: 'user',
+          content: 'first saved prompt',
+          toolCallId: null,
+          toolCalls: [],
+          artifacts: null,
+          tokenCount: 4,
+          createdAt: nowIso,
+          sortOrder: 0,
+          thinking: null,
+          imageAttachments: null,
+        },
+        {
+          id: 'm-draft-assistant-1',
+          conversationId: 'conv-draft-a',
+          role: 'assistant',
+          content: 'first saved answer',
+          toolCallId: null,
+          toolCalls: [],
+          artifacts: null,
+          tokenCount: 4,
+          createdAt: nowIso,
+          sortOrder: 1,
+          thinking: null,
+          imageAttachments: null,
+        },
+        {
+          id: 'm-draft-user-2',
+          conversationId: 'conv-draft-a',
+          role: 'user',
+          content: 'second saved prompt',
+          toolCallId: null,
+          toolCalls: [],
+          artifacts: null,
+          tokenCount: 4,
+          createdAt: nowIso,
+          sortOrder: 2,
+          thinking: null,
+          imageAttachments: null,
+        },
+      ],
       'conv-draft-b': [],
     };
 
@@ -204,4 +247,23 @@ test('keeps an input draft after leaving and returning to chat', async ({ page }
 
   await page.getByRole('button', { name: /Draft A/ }).click();
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue('draft survives page switch');
+});
+
+test('navigates previous user inputs from the textarea boundary and restores the draft', async ({ page }) => {
+  await page.goto('/chat/conv-draft-a');
+
+  const input = page.getByTestId('chat-input-textarea');
+  await input.fill('draft before history');
+
+  await input.press('ArrowUp');
+  await expect(input).toHaveValue('second saved prompt');
+
+  await input.press('ArrowUp');
+  await expect(input).toHaveValue('first saved prompt');
+
+  await input.press('ArrowDown');
+  await expect(input).toHaveValue('second saved prompt');
+
+  await input.press('ArrowDown');
+  await expect(input).toHaveValue('draft before history');
 });

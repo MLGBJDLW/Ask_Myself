@@ -386,7 +386,7 @@ export function normalizeMermaidChart(chart: string): string {
   return normalized.replace(/^\s*mermaid\s*\n/i, '').trim();
 }
 
-function MermaidBlock({ chart }: { chart: string }) {
+export function MermaidBlock({ chart }: { chart: string }) {
   const { t } = useTranslation();
   const { isStreaming } = useContext(MarkdownRenderStateContext);
   const [copied, setCopied] = useState(false);

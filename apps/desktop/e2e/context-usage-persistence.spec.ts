@@ -373,8 +373,9 @@ test('manual compact shows progress, locks input, and refreshes context usage', 
   await expect(page.getByTestId('chat-input-textarea')).toBeDisabled();
   await expect(page.getByTestId('chat-send')).toBeDisabled();
 
-  await expect(page.getByTestId('chat-compact-status')).toBeHidden();
   await expect(page.getByTestId('chat-input-textarea')).toBeEnabled();
+  await expect(page.getByTestId('chat-compact-status')).toBeVisible();
+  await expect(page.getByText('Compaction complete')).toBeVisible();
   await expect(page.getByText('7% context used')).toHaveCount(0);
   await expect(page.getByText('0% context used').first()).toBeVisible();
 });

@@ -529,12 +529,23 @@ export function buildCurrentTimelineSections(input: {
     return visibleTraceEvents.flatMap(traceEventToTimelineSections);
   }
 
+  return traceEventsAfterStreamRounds(visibleTraceEvents, streamRounds)
+    .flatMap(traceEventToTimelineSections);
+}
+
+export function traceEventsAfterStreamRounds(
+  visibleTraceEvents: TraceEvent[],
+  streamRounds: StreamRoundEvent[],
+): TraceEvent[] {
+  if (streamRounds.length === 0) return visibleTraceEvents;
+
   const roundCallIds = new Set<string>();
   for (const round of streamRounds) {
     for (const toolCall of round.toolCalls) {
       roundCallIds.add(toolCall.callId);
     }
   }
+  if (roundCallIds.size === 0) return visibleTraceEvents;
 
   let cutoffIdx = -1;
   for (let i = visibleTraceEvents.length - 1; i >= 0; i -= 1) {
@@ -545,9 +556,7 @@ export function buildCurrentTimelineSections(input: {
     }
   }
 
-  return visibleTraceEvents
-    .slice(cutoffIdx + 1)
-    .flatMap(traceEventToTimelineSections);
+  return visibleTraceEvents.slice(cutoffIdx + 1);
 }
 
 export function isCurrentTraceActive(input: {

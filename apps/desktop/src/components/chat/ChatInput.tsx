@@ -109,6 +109,7 @@ interface ChatInputProps {
   isStreaming: boolean;
   disabled: boolean;
   conversationId?: string;
+  inputHistory?: string[];
   sessionControls?: ReactNode;
   onRestoreCheckpoint?: () => void;
   onBranchCheckpoint?: (conversation: Conversation) => void;
@@ -134,6 +135,7 @@ type SlashCommandTab = "all" | SlashCommandKind;
 const NEW_CONVERSATION_DRAFT_KEY = "__new__";
 const CHAT_INPUT_DRAFT_STORAGE_KEY = "chat-input-drafts-v1";
 const MAX_STORED_CHAT_INPUT_DRAFTS = 100;
+const MAX_INPUT_HISTORY_ITEMS = 100;
 const chatInputDrafts: Record<string, ChatDraftState> = {};
 
 const SLASH_COMMAND_TABS: SlashCommandTab[] = ["all", "command", "skill", "workflow"];
@@ -237,12 +239,37 @@ function clearChatInputDraft(draftKey: string) {
   writeStoredChatInputDrafts(storedDrafts);
 }
 
+function normalizeInputHistory(inputHistory: readonly string[]): string[] {
+  const normalized: string[] = [];
+  for (const item of inputHistory) {
+    const value = item.trim();
+    if (!value) continue;
+    if (normalized[normalized.length - 1] === value) continue;
+    normalized.push(value);
+  }
+  return normalized.slice(-MAX_INPUT_HISTORY_ITEMS);
+}
+
+function isCaretAtInputHistoryBoundary(
+  el: HTMLTextAreaElement,
+  direction: "up" | "down",
+): boolean {
+  if (el.selectionStart !== el.selectionEnd) return false;
+  const value = el.value;
+  if (!value) return direction === "up";
+  if (direction === "up") {
+    return !value.slice(0, el.selectionStart).includes("\n");
+  }
+  return !value.slice(el.selectionEnd).includes("\n");
+}
+
 export function ChatInput({
   onSend,
   onStop,
   isStreaming,
   disabled,
   conversationId,
+  inputHistory = [],
   sessionControls,
   onRestoreCheckpoint,
   onBranchCheckpoint,
@@ -280,9 +307,20 @@ export function ChatInput({
   const draftsRef = useRef<Record<string, ChatDraftState>>(
     initialDraftRef.current ? { [draftKey]: cloneDraftState(initialDraftRef.current) } : {},
   );
+  const historyDraftRef = useRef<{ value: string; cursor: number } | null>(null);
   const inputLocked = disabled || isCompacting;
   const attachmentLocked = inputLocked || isStreaming;
   const effectivePlanModeEnabled = planModeEnabled ?? localPlanModeEnabled;
+  const inputHistoryEntries = useMemo(
+    () => normalizeInputHistory(inputHistory),
+    [inputHistory],
+  );
+  const [inputHistoryIndex, setInputHistoryIndex] = useState(-1);
+
+  const resetInputHistoryNavigation = useCallback(() => {
+    setInputHistoryIndex(-1);
+    historyDraftRef.current = null;
+  }, []);
 
   const setPlanMode = useCallback((enabled: boolean) => {
     if (planModeEnabled === undefined) {
@@ -300,6 +338,7 @@ export function ChatInput({
   useEffect(() => {
     const draft = draftsRef.current[draftKey] ?? readChatInputDraft(draftKey);
     draftsRef.current[draftKey] = cloneDraftState(draft);
+    resetInputHistoryNavigation();
     setLoadedDraftKey(draftKey);
     setValue(draft.value);
     setAttachments(draft.attachments);
@@ -308,7 +347,7 @@ export function ChatInput({
         textareaRef.current.style.height = "auto";
       }
     }, 0);
-  }, [draftKey]);
+  }, [draftKey, resetInputHistoryNavigation]);
 
   useEffect(() => {
     if (loadedDraftKey !== draftKey) return;
@@ -318,11 +357,12 @@ export function ChatInput({
   // Accept prefilled text from outside (e.g. suggestion cards)
   useEffect(() => {
     if (prefillText != null && prefillText !== "") {
+      resetInputHistoryNavigation();
       setValue(prefillText);
       persistDraft(prefillText);
       setTimeout(() => textareaRef.current?.focus(), 0);
     }
-  }, [persistDraft, prefillText]);
+  }, [persistDraft, prefillText, resetInputHistoryNavigation]);
 
   // Auto-resize textarea
   const adjustHeight = useCallback(() => {
@@ -338,6 +378,62 @@ export function ChatInput({
   useEffect(() => {
     adjustHeight();
   }, [value, adjustHeight]);
+
+  const applyInputHistoryValue = useCallback((nextValue: string, cursor: "start" | "end" | number) => {
+    setValue(nextValue);
+    persistDraft(nextValue);
+    const nextCursor = typeof cursor === "number"
+      ? Math.max(0, Math.min(cursor, nextValue.length))
+      : cursor === "start"
+        ? 0
+        : nextValue.length;
+    setCaretPosition(nextCursor);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(nextCursor, nextCursor);
+      adjustHeight();
+    });
+  }, [adjustHeight, persistDraft]);
+
+  const navigateInputHistory = useCallback((direction: "up" | "down") => {
+    if (inputLocked || inputHistoryEntries.length === 0) return false;
+    const el = textareaRef.current;
+    if (!el || !isCaretAtInputHistoryBoundary(el, direction)) return false;
+
+    if (direction === "up") {
+      if (inputHistoryIndex >= inputHistoryEntries.length - 1) return false;
+      const nextIndex = inputHistoryIndex + 1;
+      if (inputHistoryIndex === -1) {
+        historyDraftRef.current = {
+          value,
+          cursor: el.selectionStart,
+        };
+      }
+      setInputHistoryIndex(nextIndex);
+      applyInputHistoryValue(inputHistoryEntries[inputHistoryEntries.length - 1 - nextIndex], "start");
+      return true;
+    }
+
+    if (inputHistoryIndex === -1) return false;
+    const nextIndex = inputHistoryIndex - 1;
+    setInputHistoryIndex(nextIndex);
+    if (nextIndex === -1) {
+      const draft = historyDraftRef.current;
+      applyInputHistoryValue(draft?.value ?? "", draft?.cursor ?? "end");
+      historyDraftRef.current = null;
+      return true;
+    }
+    applyInputHistoryValue(inputHistoryEntries[inputHistoryEntries.length - 1 - nextIndex], "end");
+    return true;
+  }, [
+    applyInputHistoryValue,
+    inputHistoryEntries,
+    inputHistoryIndex,
+    inputLocked,
+    value,
+  ]);
 
   useEffect(() => {
     setCaretPosition((current) => Math.min(current, value.length));
@@ -524,6 +620,7 @@ export function ChatInput({
   const clearDraft = useCallback(() => {
     clearChatInputDraft(draftKey);
     draftsRef.current[draftKey] = { value: "", attachments: [] };
+    resetInputHistoryNavigation();
     setValue("");
     setAttachments([]);
     setDismissedSlashToken(null);
@@ -533,7 +630,7 @@ export function ChatInput({
         textareaRef.current.style.height = "auto";
       }
     }, 0);
-  }, [draftKey]);
+  }, [draftKey, resetInputHistoryNavigation]);
 
   const handleSend = useCallback(() => {
     if (inputLocked) return;
@@ -632,6 +729,19 @@ export function ChatInput({
         if (!inputLocked) {
           handleSend();
         }
+        return;
+      }
+      if (
+        (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !(e.nativeEvent as KeyboardEvent).isComposing
+      ) {
+        const navigated = navigateInputHistory(e.key === "ArrowUp" ? "up" : "down");
+        if (navigated) {
+          e.preventDefault();
+        }
       }
     },
     [
@@ -639,6 +749,7 @@ export function ChatInput({
       applySlashOption,
       handleSend,
       inputLocked,
+      navigateInputHistory,
       slashActiveTab,
       slashEnabledTabs,
       slashMenuOpen,
@@ -1166,6 +1277,7 @@ export function ChatInput({
           value={value}
           onChange={(e) => {
             const nextValue = e.target.value;
+            resetInputHistoryNavigation();
             setValue(nextValue);
             persistDraft(nextValue);
             setCaretPosition(e.target.selectionStart);

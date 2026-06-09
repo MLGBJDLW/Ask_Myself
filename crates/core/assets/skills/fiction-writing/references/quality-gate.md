@@ -14,6 +14,7 @@ into a long report.
 - Chinese Prose Gate
 - Chinese Web-Serial Format Gate
 - Dash and Punctuation Gate
+- Trust-The-Reader Prose Gate
 - De-Generic Gate
 - Revision Gate
 - Output Policy
@@ -162,6 +163,76 @@ Repair if weak:
 - Replace the dash with a physical action or spoken line.
 - Cut ornamental punctuation that only signals drama without adding content.
 
+## Trust-The-Reader Prose Gate
+
+Use when prose feels like the narrator is correcting, explaining, or coaching
+the reader instead of letting the scene work. This gate is general; do not turn
+it into imitation of any named author or house style.
+
+Scan for these patterns:
+
+- Denial-first phrasing: "not X but Y," "not X. It was Y," "unlike X, more
+  like Y," "not merely X but truly Y," "不是...而是...," "不是X。是Y。",
+  "不像...更像...," "不只是...更是...," "与其说...不如说..." If the
+  denied option is not a real misunderstanding in the scene, cut it and state
+  the useful fact, action, or line directly.
+- Dash-supported explanation: a dash, colon, or inserted clause that explains
+  what an action already made clear. Replace with a sentence break, physical
+  beat, consequence, or silence.
+- Fact plus interpretation: a concrete event is followed by "which meant,"
+  "as if," "that was why," or a thematic conclusion. Keep the event unless the
+  explanation changes plot.
+- Exposition dump: biography, rank, wealth, lore, or motive arrives as a
+  narrator block. Move it into pressure, dialogue, document evidence, social
+  treatment, visible cost, or delayed reveal.
+- Narrator self-Q&A: "What did he see?" "Why?" "The answer was..." Cut the
+  question scaffolding and show the action or result.
+- Speculative inner-state menu: "maybe pain, maybe fear, maybe..." or
+  "可能是疼，可能是怕，可能是..." Unless the POV character is actively
+  guessing for plot reasons, use one observable sign, one spoken line, or leave
+  it blank.
+- Near repetition: the same information, action, emotion, or trait appears
+  again before it has changed meaning. Keep the strongest instance and let the
+  later beat become action, consequence, or white space.
+- Zero-information echo: a second clause only restates the first. Cut the echo.
+- Decorative modifier stack: a sentence already establishes "same as before,"
+  then adds rhythm labels such as calm/steady/slow/low without new pressure.
+  Keep only the part that changes the scene.
+- POV leak: the narrator names, explains, or judges something the current POV
+  cannot know yet. Reveal it only after the POV gains the source.
+- Unsupported inference: a character reaches a conclusion without a natural
+  information path. Add the clue, weaken the certainty, or delay the judgment.
+- Naming regression: once the POV knows a character's name, do not keep
+  reverting to generic feature tags unless the distance itself is meaningful.
+- Continuity contradiction: a revised ending, travel plan, object state, injury,
+  relationship promise, or timeline conflicts with earlier setup. Repair the
+  current beat or back-propagate the setup deliberately.
+- Abrupt emotional turn: recognition, debt, romance, betrayal, forgiveness, or
+  accusation jumps straight to a conclusion. Add an intermediate beat, a cost,
+  a withheld response, or a smaller tactical move.
+- Mechanical metaphor: puzzle/assembly/logic metaphors make the scene feel like
+  analysis when the moment needs lived pressure. Use an organic verb, a concrete
+  object, or direct scene consequence.
+- Non-action description: "he did not react," "nothing happened," "she had no
+  expression." Often omission carries absence better. If the absence matters,
+  show what continues unchanged.
+- Trait overuse: a signature voice, flat tone, smile, silence, hand movement, or
+  gaze is repeated as a label. Use it once, then imply it through behavior and
+  context.
+
+Repair order:
+
+1. Cut or rewrite denial-first and explanation-after-fact sentences first.
+2. Check POV knowledge, inference sources, names, and continuity next.
+3. Collapse repetition and non-actions.
+4. Replace remaining abstract conclusions with action, object, dialogue,
+   consequence, or silence.
+5. Reread the repaired scene for lost plot function. Restore necessary facts
+   through scene pressure rather than adding a new explanation block.
+
+Final test: if the reader can infer the meaning from the image, action, order of
+information, or dialogue, place it there and move on.
+
 ## De-Generic Gate
 
 Use when prose feels AI-smooth, interchangeable, or over-explained:
@@ -173,6 +244,8 @@ Use when prose feels AI-smooth, interchangeable, or over-explained:
 - Is there subtext, silence, wrong inference, or asymmetry?
 - Are details functional rather than decorative?
 - Are punctuation and sentence patterns too neat, symmetrical, or repetitive?
+- Does the narrator trust the reader, or does it keep correcting, interpreting,
+  and underlining the same beat?
 
 Repair with:
 

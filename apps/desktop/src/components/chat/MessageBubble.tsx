@@ -39,7 +39,7 @@ export interface MessageBubbleProps {
   /** Whether the last response came from cache */
   lastCached?: boolean;
   /** Called when retry is clicked */
-  onRetry?: () => void;
+  onRetry?: (messageId?: string) => void;
   /** Always show timestamp (when gap > 5min) */
   alwaysShowTimestamp?: boolean;
   /** Called when a message is deleted */
@@ -262,21 +262,6 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
               : 'bg-transparent px-0 py-0 text-text-primary'
             }`}
         >
-          {!isEditing && (
-            <MessageActions
-              text={actionText}
-              showFeedback={!isUser}
-              chunkIds={chunkIds}
-              queryText={queryText}
-              isLastAssistant={isLastAssistant}
-              onRetry={onRetry}
-              isUser={isUser}
-              messageId={msg.id}
-              conversationId={msg.conversationId}
-              onEdit={isUser && onEditAndResend ? handleStartEdit : undefined}
-              onDelete={onDeleteMessage}
-            />
-          )}
           {msg.tokenCount > 0 && !isEditing && (
             <span
               className="absolute bottom-0.5 right-2 text-[9px] text-text-tertiary/0 group-hover:text-text-tertiary/60 transition-colors tabular-nums select-none"
@@ -396,6 +381,28 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
             </>
           )}
         </div>
+        {!isEditing && (
+          <MessageActions
+            text={actionText}
+            showFeedback={!isUser}
+            chunkIds={chunkIds}
+            queryText={queryText}
+            showRetry={Boolean(onRetry && ((isUser && !steering) || isLastAssistant))}
+            onRetry={
+              onRetry
+                ? () => {
+                    void onRetry(isUser ? msg.id : undefined);
+                  }
+                : undefined
+            }
+            isUser={isUser}
+            messageId={msg.id}
+            conversationId={msg.conversationId}
+            onEdit={isUser && onEditAndResend ? handleStartEdit : undefined}
+            onDelete={onDeleteMessage}
+            align={isUser ? 'end' : 'start'}
+          />
+        )}
         {/* Timestamp */}
         <span
           className={`text-[10px] text-text-tertiary mt-1 select-none transition-opacity duration-200

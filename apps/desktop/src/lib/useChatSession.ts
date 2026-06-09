@@ -179,6 +179,15 @@ function isOptimisticSteeringMessage(message: ConversationMessage): boolean {
   return message.id.startsWith('temp-steer-') && isSteeringMessage(message);
 }
 
+function isNoRunningAgentError(error: unknown): boolean {
+  const message = String(error ?? '');
+  return (
+    /no running agent/i.test(message) ||
+    /no conversation running/i.test(message) ||
+    /no longer accepting steering/i.test(message)
+  );
+}
+
 function taskRunCanResumeStream(run: AgentTaskRun): boolean {
   return ['queued', 'running', 'waiting_approval', 'cancelling'].includes(run.status);
 }
@@ -465,7 +474,7 @@ export interface UseChatSessionReturn {
   customSystemPrompt: string;
   setCustomSystemPrompt: (prompt: string) => void;
   error: string | null;
-  retry: () => Promise<void>;
+  retry: (messageId?: string) => Promise<void>;
   clearError: () => void;
   loadConversations: () => Promise<void>;
   reloadMessages: (options?: { resetUsage?: boolean }) => Promise<void>;
@@ -815,8 +824,11 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             .then(([taskEvents, runEvents]) => {
               if (cancelled) return;
               streamStore.restoreFromHistoricalEvents(activeId, resumableRun, taskEvents, runEvents);
-              streamingConversationRef.current = activeId;
-              usageConversationRef.current = activeId;
+              const restoredStream = streamStore.getStream(activeId);
+              if (restoredStream?.isStreaming) {
+                streamingConversationRef.current = activeId;
+                usageConversationRef.current = activeId;
+              }
             })
             .catch(() => undefined);
         }
@@ -1158,7 +1170,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
       let convId = activeId;
 
-      if (convId && streamingConversationRef.current === convId && isStreaming) {
+      const liveStream = convId ? streamStore.getStream(convId) : undefined;
+      if (convId && streamingConversationRef.current === convId && liveStream?.isStreaming) {
         const steeringConversationId = convId;
         if (attachments && attachments.length > 0) {
           toast.error(t('chat.attachmentWhileRunning'));
@@ -1198,6 +1211,21 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           setMessagesForConversation(steeringConversationId, (prev) =>
             prev.filter((m) => m.id !== optimisticId),
           );
+          if (isNoRunningAgentError(e)) {
+            streamStore.clearStream(steeringConversationId);
+            if (usageConversationRef.current === steeringConversationId) {
+              usageConversationRef.current = null;
+            }
+            if (pendingStreamConversationRef.current === steeringConversationId) {
+              pendingStreamConversationRef.current = null;
+            }
+            if (streamingConversationRef.current === steeringConversationId) {
+              streamingConversationRef.current = null;
+            }
+            setChatError(null);
+            await send(content, attachments, personaOverrideId, options);
+            return;
+          }
           const message = String(e);
           setChatError(message);
           toast.error(message);
@@ -1298,7 +1326,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         options?.taskOrchestratorRunId,
       );
     },
-    [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, isStreaming, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
+    [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
   );
 
   const stop = useCallback(() => {
@@ -1309,24 +1337,56 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     }
   }, [activeId, streamStop]);
 
-  const retry = useCallback(async () => {
-    if (!lastUserMessageRef.current || !activeId) return;
+  const retry = useCallback(async (messageId?: string) => {
+    if (!activeId || streamStore.getStream(activeId)?.isStreaming) return;
 
-    // Remove the last user message and any subsequent assistant messages from local state
+    const messageIndexById = new Map(messages.map((message, index) => [message.id, index]));
+    const explicitUserIdx = messageId
+      ? messages.findIndex((message) => message.id === messageId && message.role === 'user')
+      : -1;
     const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
-    const lastUserIdx = lastTurn
-      ? messages.findIndex((message) => message.id === lastTurn.userMessageId)
-      : messages.map(m => m.role).lastIndexOf('user');
-    if (lastUserIdx >= 0) {
-      setMessagesForConversation(activeId, (prev) => prev.slice(0, lastUserIdx));
-      if (lastTurn) {
-        setTurnsForConversation(activeId, (prev) => prev.slice(0, -1));
-      }
-    }
+    const turnUserIdx =
+      !messageId && lastTurn
+        ? (messageIndexById.get(lastTurn.userMessageId) ?? -1)
+        : -1;
+    const fallbackUserIdx = !messageId
+      ? (() => {
+          const lastAssistantIdx = messages.map((message) => message.role).lastIndexOf('assistant');
+          const searchUntil = lastAssistantIdx >= 0 ? lastAssistantIdx : messages.length;
+          for (let idx = searchUntil - 1; idx >= 0; idx -= 1) {
+            if (messages[idx].role === 'user' && !isSteeringMessage(messages[idx])) {
+              return idx;
+            }
+          }
+          return -1;
+        })()
+      : -1;
+    const targetUserIdx = explicitUserIdx >= 0
+      ? explicitUserIdx
+      : turnUserIdx >= 0
+        ? turnUserIdx
+        : fallbackUserIdx;
+    if (targetUserIdx < 0) return;
 
-    setChatError(null);
+    const targetMessage = messages[targetUserIdx];
+    if (!targetMessage || targetMessage.role !== 'user' || isSteeringMessage(targetMessage)) return;
 
-    const { content, attachments, personaId, options } = lastUserMessageRef.current;
+    const fallbackRetry = lastUserMessageRef.current;
+    const content = targetMessage.content;
+    const attachments =
+      fallbackRetry && fallbackRetry.content === content
+        ? fallbackRetry.attachments
+        : targetMessage.imageAttachments ?? undefined;
+    const personaId =
+      fallbackRetry && fallbackRetry.content === content
+        ? fallbackRetry.personaId
+        : activePersonaId;
+    const options =
+      fallbackRetry && fallbackRetry.content === content
+        ? fallbackRetry.options
+        : {
+            userArtifacts: targetMessage.artifacts ?? null,
+          };
 
     // Re-add optimistic user message
     const optimisticMsg: ConversationMessage = {
@@ -1339,10 +1399,22 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       artifacts: options?.userArtifacts ?? null,
       tokenCount: 0,
       createdAt: new Date().toISOString(),
-      sortOrder: messages.length,
+      sortOrder: targetUserIdx,
       thinking: null,
       imageAttachments: attachments ?? null,
     };
+
+    // Remove the target user message and every local message after it.
+    setMessagesForConversation(activeId, (prev) => prev.slice(0, targetUserIdx));
+    setTurnsForConversation(activeId, (prev) =>
+      prev.filter((turn) => {
+        const userIdx = messageIndexById.get(turn.userMessageId);
+        return userIdx != null && userIdx < targetUserIdx;
+      }),
+    );
+    setChatError(null);
+    lastUserMessageRef.current = { content, attachments, personaId, options };
+
     setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
     usageConversationRef.current = activeId;
     pendingStreamConversationRef.current = activeId;

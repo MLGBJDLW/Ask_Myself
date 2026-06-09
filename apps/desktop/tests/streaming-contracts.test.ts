@@ -18,6 +18,7 @@ import {
   shouldRenderTraceToolCall,
   skillNamesFromTraceItems,
   skillRefsFromTraceItems,
+  traceEventsAfterStreamRounds,
   turnLifecycleTimelineSections,
   visibleTraceEventsForTimeline,
 } from '../src/lib/streaming/timelineViewModel';
@@ -486,6 +487,30 @@ test('historical stream projection prefers canonical run events over legacy task
   assertEqual(projected.streamRounds[0]?.reply, 'canonical', 'canonical output should win');
   assertEqual(projected.taskEvents.length, 1, 'timeline task event remains available');
   assertEqual(projected.taskEvents[0].id, 'timeline', 'timeline task event id');
+});
+
+test('historical projection marks stale active task runs as interrupted', () => {
+  const projected = projectHistoricalEventsToStreamState(
+    taskRun('running'),
+    [],
+    [
+      runEvent({
+        eventSeq: 1,
+        kind: 'thinking',
+        payload: { type: 'thinking', content: 'Working before app close.' },
+      }),
+    ],
+  );
+
+  assertEqual(projected.isStreaming, false, 'stale active historical run is not live');
+  assertEqual(projected.taskRun?.status, 'cancelled', 'stale task run status');
+  assertEqual(projected.error, null, 'interrupted stale run should not toast as a failure');
+  assert(
+    projected.traceEvents.some(event =>
+      event.kind === 'status' &&
+      event.text === 'Previous run interrupted when the app closed.'),
+    'interrupted status trace should be visible in restored history',
+  );
 });
 
 test('keeps non-stream task timeline events while filtering durable stream events', () => {
@@ -1710,6 +1735,39 @@ test('timeline view model separates completed round trace from current trace', (
   assertEqual(sections.length, 2, 'current section count');
   assertEqual(sections[0].id, 'current-status', 'current status remains');
   assertEqual(sections[1].id, 'current-thinking', 'current thinking remains');
+});
+
+test('timeline view model keeps completed rounds when steering adds a new status', () => {
+  const round: StreamRoundEvent = {
+    id: 'round-1',
+    thinking: 'Already investigated retries',
+    reply: 'Partial answer before steering.',
+    toolCalls: [traceToolCall({ callId: 'round-call' })],
+  };
+  const events: TraceEvent[] = [
+    { id: 'round-thinking', kind: 'thinking', text: 'Already investigated retries' },
+    { id: 'round-tool', kind: 'tool', toolCall: traceToolCall({ callId: 'round-call' }) },
+    { id: 'steering-status', kind: 'status', text: 'Steering message received.', tone: 'muted' },
+  ];
+
+  const currentEvents = traceEventsAfterStreamRounds(
+    visibleTraceEventsForTimeline(events),
+    [round],
+  );
+  const timeline = buildLiveTraceTimeline({
+    visibleTraceEvents: currentEvents,
+    isStreaming: true,
+    currentTraceActive: true,
+    streamText: '',
+    displayedText: '',
+  });
+
+  assertEqual(currentEvents.length, 1, 'only post-round steering status remains live');
+  assertEqual(timeline.length, 1, 'steering status renders as current trace');
+  assertEqual(timeline[0].kind, 'thinking', 'status renders inside a trace block');
+  assert(timeline[0].kind === 'thinking', 'timeline item should be trace sections');
+  assertEqual(timeline[0].sections[0].id, 'steering-status', 'steering status remains visible');
+  assertEqual(round.reply, 'Partial answer before steering.', 'completed round reply is preserved separately');
 });
 
 test('watchdog arms, fires, and clears timeout handles', async () => {

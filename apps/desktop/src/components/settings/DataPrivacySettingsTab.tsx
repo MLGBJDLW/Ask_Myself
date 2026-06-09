@@ -1,5 +1,5 @@
 import { BarChart3, Database, Loader2, Pencil, Plus, RefreshCw, Save, Shield, Trash2, X, Zap } from 'lucide-react';
-import { useTranslation } from '../../i18n';
+import { useTranslation, type TranslationKey } from '../../i18n';
 import type { IndexStats } from '../../types/index-stats';
 import type { PrivacyConfig, RedactRule } from '../../types/privacy';
 import type { AgentProceduralMemory, UserMemory } from '../../types/conversation';
@@ -85,6 +85,23 @@ function memorySourceClass(source: UserMemory['source']): string {
       return 'text-[10px] border-border text-text-tertiary';
   }
 }
+
+const EXCLUDE_PATTERN_EXAMPLES = ['**/.env*', '**/node_modules/**', '**/*.log'];
+
+const REDACT_RULE_EXAMPLES: Array<RedactRule & { labelKey: TranslationKey }> = [
+  {
+    labelKey: 'settings.redactExampleEmail',
+    name: 'email',
+    pattern: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}',
+    replacement: '[EMAIL]',
+  },
+  {
+    labelKey: 'settings.redactExampleApiKey',
+    name: 'api_key',
+    pattern: "(?i)(?:api[_-]?key|token|secret)\\s*[=:]\\s*[\"']?([A-Za-z0-9\\-_]{16,})[\"']?",
+    replacement: '[REDACTED]',
+  },
+];
 
 export function DataPrivacySettingsTab({
   analyticsLoading,
@@ -283,6 +300,23 @@ export function DataPrivacySettingsTab({
               <h3 className="mb-2 text-sm font-medium text-text-primary">{t('settings.excludePatterns')}</h3>
               <p className="mb-3 text-xs text-text-tertiary">{t('settings.excludePatternsDesc')}</p>
 
+              <div className="mb-3 rounded-lg border border-border/70 bg-surface-2/50 px-3 py-2.5">
+                <p className="text-xs leading-relaxed text-text-secondary">{t('settings.excludePatternGuide')}</p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {EXCLUDE_PATTERN_EXAMPLES.map((pattern) => (
+                    <button
+                      key={pattern}
+                      type="button"
+                      onClick={() => onNewPatternChange(pattern)}
+                      className="rounded-md border border-border/70 bg-surface-1 px-2 py-1 font-mono text-[11px] text-text-secondary transition-colors hover:border-accent/50 hover:text-text-primary"
+                      aria-label={`${t('settings.excludePatternExampleLabel')} ${pattern}`}
+                    >
+                      {pattern}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {privacyConfig.excludePatterns.length > 0 && (
                 <div className="mb-3 flex flex-wrap gap-2">
                   {privacyConfig.excludePatterns.map((pattern, index) => (
@@ -302,7 +336,7 @@ export function DataPrivacySettingsTab({
 
               <div className="flex gap-2">
                 <Input
-                  placeholder="*.log, .git/**, node_modules/**"
+                  placeholder={t('settings.excludePatternPlaceholder')}
                   value={newPattern}
                   onChange={(event) => onNewPatternChange(event.target.value)}
                   onKeyDown={(event) => { if (event.key === 'Enter') onAddPattern(); }}
@@ -317,6 +351,26 @@ export function DataPrivacySettingsTab({
             <div>
               <h3 className="mb-2 text-sm font-medium text-text-primary">{t('settings.redactRules')}</h3>
               <p className="mb-3 text-xs text-text-tertiary">{t('settings.redactRulesDesc')}</p>
+
+              <div className="mb-3 rounded-lg border border-border/70 bg-surface-2/50 px-3 py-2.5">
+                <p className="text-xs leading-relaxed text-text-secondary">{t('settings.redactRuleGuide')}</p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {REDACT_RULE_EXAMPLES.map((rule) => (
+                    <button
+                      key={rule.name}
+                      type="button"
+                      onClick={() => onNewRuleChange({
+                        name: rule.name,
+                        pattern: rule.pattern,
+                        replacement: rule.replacement,
+                      })}
+                      className="rounded-md border border-border/70 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary transition-colors hover:border-accent/50 hover:text-text-primary"
+                    >
+                      {t(rule.labelKey)}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               {privacyConfig.redactPatterns.length > 0 && (
                 <div className="mb-3 overflow-hidden rounded-lg border border-border">
@@ -351,26 +405,42 @@ export function DataPrivacySettingsTab({
                 </div>
               )}
 
-              <div className="flex gap-2">
-                <Input
-                  placeholder={t('settings.ruleName')}
-                  value={newRule.name}
-                  onChange={(event) => onNewRuleChange({ ...newRule, name: event.target.value })}
-                  className="flex-1"
-                />
-                <Input
-                  placeholder={t('settings.rulePattern')}
-                  value={newRule.pattern}
-                  onChange={(event) => onNewRuleChange({ ...newRule, pattern: event.target.value })}
-                  className="flex-1"
-                />
-                <Input
-                  placeholder={t('settings.ruleReplacement')}
-                  value={newRule.replacement}
-                  onChange={(event) => onNewRuleChange({ ...newRule, replacement: event.target.value })}
-                  className="flex-1"
-                />
-                <Button variant="ghost" size="md" icon={<Plus size={16} />} onClick={onAddRule} disabled={!newRule.name.trim() || !newRule.pattern.trim()}>
+              <div className="grid gap-2 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.65fr)_minmax(0,1fr)_auto] lg:items-start">
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-text-secondary">{t('settings.ruleName')}</span>
+                  <Input
+                    placeholder={t('settings.ruleNamePlaceholder')}
+                    value={newRule.name}
+                    onChange={(event) => onNewRuleChange({ ...newRule, name: event.target.value })}
+                  />
+                  <span className="block text-[11px] leading-relaxed text-text-tertiary">{t('settings.ruleNameHelp')}</span>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-text-secondary">{t('settings.rulePattern')}</span>
+                  <Input
+                    placeholder={t('settings.rulePatternPlaceholder')}
+                    value={newRule.pattern}
+                    onChange={(event) => onNewRuleChange({ ...newRule, pattern: event.target.value })}
+                  />
+                  <span className="block text-[11px] leading-relaxed text-text-tertiary">{t('settings.rulePatternHelp')}</span>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-text-secondary">{t('settings.ruleReplacement')}</span>
+                  <Input
+                    placeholder={t('settings.ruleReplacementPlaceholder')}
+                    value={newRule.replacement}
+                    onChange={(event) => onNewRuleChange({ ...newRule, replacement: event.target.value })}
+                  />
+                  <span className="block text-[11px] leading-relaxed text-text-tertiary">{t('settings.ruleReplacementHelp')}</span>
+                </label>
+                <Button
+                  variant="ghost"
+                  size="md"
+                  icon={<Plus size={16} />}
+                  onClick={onAddRule}
+                  disabled={!newRule.name.trim() || !newRule.pattern.trim()}
+                  className="lg:mt-6"
+                >
                   {t('settings.addRule')}
                 </Button>
               </div>
