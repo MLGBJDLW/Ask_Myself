@@ -254,9 +254,12 @@ jobs:
 
           add_platform "windows-x86_64" "*x64-setup.nsis.zip.sig"
           add_platform "linux-x86_64" "*amd64.AppImage.tar.gz.sig"
+          # macOS currently publishes DMG only. Tauri updater entries require
+          # signed .app.tar.gz bundles, so include darwin only if CI produces one.
           add_platform "darwin-aarch64" "*.app.tar.gz.sig"
 
-          for platform in windows-x86_64 linux-x86_64 darwin-aarch64; do
+          REQUIRED_UPDATER_PLATFORMS=(windows-x86_64 linux-x86_64)
+          for platform in "${REQUIRED_UPDATER_PLATFORMS[@]}"; do
             if ! echo "$PLATFORMS" | jq -e --arg platform "$platform" 'has($platform)' >/dev/null; then
               echo "::error::Missing signed updater bundle for $platform. Release remains draft."
               exit 1
@@ -278,8 +281,9 @@ jobs:
             latest.json > latest-ghproxy.json
 
           PLATFORM_COUNT=$(echo "$PLATFORMS" | jq 'keys | length')
-          if [ "$PLATFORM_COUNT" -ne 3 ]; then
-            echo "::error::latest.json must contain exactly 3 updater platforms; found $PLATFORM_COUNT."
+          REQUIRED_PLATFORM_COUNT="${#REQUIRED_UPDATER_PLATFORMS[@]}"
+          if [ "$PLATFORM_COUNT" -lt "$REQUIRED_PLATFORM_COUNT" ]; then
+            echo "::error::latest.json must contain at least $REQUIRED_PLATFORM_COUNT updater platforms; found $PLATFORM_COUNT."
             exit 1
           fi
           echo "latest.json contains $PLATFORM_COUNT platform(s)"

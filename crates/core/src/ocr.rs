@@ -164,14 +164,14 @@ impl OcrEngine {
     fn new(config: &OcrConfig) -> Result<Self, CoreError> {
         let model_dir = ocr_model_dir(config)?;
 
-        let det_path = model_dir.join("pp-ocrv4-det.onnx");
-        let cls_path = model_dir.join("pp-ocrv4-cls.onnx");
-        let rec_path = model_dir.join("pp-ocrv4-rec.onnx");
-        let dict_path = model_dir.join("ppocr_keys_v1.txt");
+        let det_path = model_dir.join(OCR_DET_MODEL_FILE);
+        let cls_path = model_dir.join(OCR_CLS_MODEL_FILE);
+        let rec_path = model_dir.join(OCR_REC_MODEL_FILE);
+        let dict_path = model_dir.join(OCR_DICT_FILE);
 
-        if !det_path.exists() || !rec_path.exists() || !dict_path.exists() {
+        if !required_ocr_model_files_are_valid(&model_dir) {
             return Err(CoreError::Ocr(format!(
-                "PaddleOCR model files not found in {}. \
+                "PaddleOCR model files are missing or invalid in {}. \
                  Download them from Settings → OCR Models.",
                 model_dir.display()
             )));
@@ -184,9 +184,24 @@ impl OcrEngine {
         let det_session = load_onnx_session(&det_path, num_threads)?;
         let rec_session = load_onnx_session(&rec_path, num_threads)?;
 
-        let cls_session = if config.use_cls && cls_path.exists() {
-            Some(Mutex::new(load_onnx_session(&cls_path, num_threads)?))
+        let cls_session = if config.use_cls && looks_like_model_file(&cls_path, OCR_CLS_MIN_BYTES) {
+            match load_onnx_session(&cls_path, num_threads) {
+                Ok(session) => Some(Mutex::new(session)),
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping optional OCR classifier model {}: {e}",
+                        cls_path.display()
+                    );
+                    None
+                }
+            }
         } else {
+            if config.use_cls && cls_path.exists() {
+                tracing::warn!(
+                    "Skipping invalid optional OCR classifier model {}",
+                    cls_path.display()
+                );
+            }
             None
         };
 
@@ -1094,21 +1109,122 @@ pub(crate) fn extract_images_from_pdf_page(
 
 // ── Model download ──────────────────────────────────────────────────
 
-/// Check whether PaddleOCR model files exist.
+const OCR_DET_MODEL_FILE: &str = "pp-ocrv4-det.onnx";
+const OCR_CLS_MODEL_FILE: &str = "pp-ocrv4-cls.onnx";
+const OCR_REC_MODEL_FILE: &str = "pp-ocrv4-rec.onnx";
+const OCR_DICT_FILE: &str = "ppocr_keys_v1.txt";
+
+const OCR_DET_MIN_BYTES: u64 = 1_000_000;
+const OCR_CLS_MIN_BYTES: u64 = 100_000;
+const OCR_REC_MIN_BYTES: u64 = 1_000_000;
+const OCR_DICT_MIN_BYTES: u64 = 1_000;
+const OCR_DICT_MIN_LINES: usize = 100;
+
+struct OcrModelDownload {
+    filename: &'static str,
+    url: &'static str,
+    min_bytes: u64,
+    kind: OcrModelDownloadKind,
+}
+
+#[derive(Clone, Copy)]
+enum OcrModelDownloadKind {
+    Onnx,
+    Dictionary,
+}
+
+const OCR_MODEL_DOWNLOADS: &[OcrModelDownload] = &[
+    OcrModelDownload {
+        filename: OCR_DET_MODEL_FILE,
+        url: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
+        min_bytes: OCR_DET_MIN_BYTES,
+        kind: OcrModelDownloadKind::Onnx,
+    },
+    OcrModelDownload {
+        filename: OCR_REC_MODEL_FILE,
+        url: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx",
+        min_bytes: OCR_REC_MIN_BYTES,
+        kind: OcrModelDownloadKind::Onnx,
+    },
+    OcrModelDownload {
+        filename: OCR_DICT_FILE,
+        url: "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.9/ppocr/utils/ppocr_keys_v1.txt",
+        min_bytes: OCR_DICT_MIN_BYTES,
+        kind: OcrModelDownloadKind::Dictionary,
+    },
+];
+
+/// Check whether required PaddleOCR model files exist and look usable.
 pub fn check_ocr_models_exist(config: &OcrConfig) -> bool {
     let dir = match ocr_model_dir(config) {
         Ok(d) => d,
         Err(_) => return false,
     };
-    dir.join("pp-ocrv4-det.onnx").exists()
-        && dir.join("pp-ocrv4-rec.onnx").exists()
-        && dir.join("ppocr_keys_v1.txt").exists()
+    required_ocr_model_files_are_valid(&dir)
 }
 
-/// Download PaddleOCR ONNX models from the project's model server.
-///
-/// Model URLs are placeholders — replace with actual hosting URLs
-/// (PaddlePaddle BOS, GitHub Releases, etc.) before production use.
+fn required_ocr_model_files_are_valid(dir: &Path) -> bool {
+    looks_like_model_file(&dir.join(OCR_DET_MODEL_FILE), OCR_DET_MIN_BYTES)
+        && looks_like_model_file(&dir.join(OCR_REC_MODEL_FILE), OCR_REC_MIN_BYTES)
+        && looks_like_dictionary_file(&dir.join(OCR_DICT_FILE))
+}
+
+fn looks_like_model_file(path: &Path, min_bytes: u64) -> bool {
+    path.metadata()
+        .map(|metadata| metadata.is_file() && metadata.len() >= min_bytes)
+        .unwrap_or(false)
+}
+
+fn looks_like_dictionary_file(path: &Path) -> bool {
+    if !path
+        .metadata()
+        .map(|metadata| metadata.is_file() && metadata.len() >= OCR_DICT_MIN_BYTES)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    std::fs::read_to_string(path)
+        .map(|content| content.lines().count() >= OCR_DICT_MIN_LINES)
+        .unwrap_or(false)
+}
+
+fn downloaded_file_is_valid(download: &OcrModelDownload, bytes: &[u8]) -> Result<(), CoreError> {
+    if bytes.len() < download.min_bytes as usize {
+        return Err(CoreError::Ocr(format!(
+            "downloaded {} is too small ({} bytes); refusing to cache invalid model data",
+            download.filename,
+            bytes.len()
+        )));
+    }
+
+    if matches!(download.kind, OcrModelDownloadKind::Dictionary) {
+        let content = std::str::from_utf8(bytes).map_err(|e| {
+            CoreError::Ocr(format!(
+                "downloaded {} is not valid UTF-8: {e}",
+                download.filename
+            ))
+        })?;
+        let line_count = content.lines().count();
+        if line_count < OCR_DICT_MIN_LINES {
+            return Err(CoreError::Ocr(format!(
+                "downloaded {} has only {line_count} dictionary entries",
+                download.filename
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn cached_download_is_valid(path: &Path, download: &OcrModelDownload) -> bool {
+    match download.kind {
+        OcrModelDownloadKind::Onnx => looks_like_model_file(path, download.min_bytes),
+        OcrModelDownloadKind::Dictionary => looks_like_dictionary_file(path),
+    }
+}
+
+/// Download required PaddleOCR ONNX models from maintained model hosts.
 pub fn download_ocr_models(
     config: &OcrConfig,
     on_progress: impl Fn(OcrDownloadProgress),
@@ -1116,51 +1232,38 @@ pub fn download_ocr_models(
     let dir = ocr_model_dir(config)?;
     std::fs::create_dir_all(&dir)?;
 
-    let files = [
-        (
-            "pp-ocrv4-det.onnx",
-            "https://paddleocr.bj.bcebos.com/PP-OCRv4/pp-ocrv4-det.onnx",
-        ),
-        (
-            "pp-ocrv4-cls.onnx",
-            "https://paddleocr.bj.bcebos.com/PP-OCRv4/pp-ocrv4-cls.onnx",
-        ),
-        (
-            "pp-ocrv4-rec.onnx",
-            "https://paddleocr.bj.bcebos.com/PP-OCRv4/pp-ocrv4-rec.onnx",
-        ),
-        (
-            "ppocr_keys_v1.txt",
-            "https://paddleocr.bj.bcebos.com/PP-OCRv4/ppocr_keys_v1.txt",
-        ),
-    ];
-
-    for (idx, (filename, url)) in files.iter().enumerate() {
-        let dest = dir.join(filename);
-        if dest.exists() {
+    for (idx, download) in OCR_MODEL_DOWNLOADS.iter().enumerate() {
+        let dest = dir.join(download.filename);
+        if cached_download_is_valid(&dest, download) {
             tracing::debug!("OCR model already exists: {}", dest.display());
             continue;
         }
 
-        tracing::info!("Downloading OCR model: {filename}");
-        let response = reqwest::blocking::get(*url)
-            .map_err(|e| CoreError::Ocr(format!("download {filename}: {e}")))?;
+        if dest.exists() {
+            tracing::warn!("Replacing invalid OCR model cache file: {}", dest.display());
+        }
+
+        tracing::info!("Downloading OCR model: {}", download.filename);
+        let response = reqwest::blocking::get(download.url)
+            .and_then(|response| response.error_for_status())
+            .map_err(|e| CoreError::Ocr(format!("download {}: {e}", download.filename)))?;
 
         let total_bytes = response.content_length();
         let bytes = response
             .bytes()
-            .map_err(|e| CoreError::Ocr(format!("read {filename}: {e}")))?;
+            .map_err(|e| CoreError::Ocr(format!("read {}: {e}", download.filename)))?;
+        downloaded_file_is_valid(download, &bytes)?;
 
         on_progress(OcrDownloadProgress {
-            filename: filename.to_string(),
+            filename: download.filename.to_string(),
             bytes_downloaded: bytes.len() as u64,
             total_bytes,
             file_index: idx,
-            total_files: files.len(),
+            total_files: OCR_MODEL_DOWNLOADS.len(),
         });
 
         std::fs::write(&dest, &bytes)
-            .map_err(|e| CoreError::Ocr(format!("write {filename}: {e}")))?;
+            .map_err(|e| CoreError::Ocr(format!("write {}: {e}", download.filename)))?;
     }
 
     Ok(())
@@ -1235,6 +1338,19 @@ impl Database {
 mod tests {
     use super::*;
     use crate::db::Database;
+    use std::io::Write;
+
+    fn write_sparse_file(path: &Path, len: u64) {
+        let file = std::fs::File::create(path).expect("create sparse file");
+        file.set_len(len).expect("set sparse file length");
+    }
+
+    fn write_test_dictionary(path: &Path) {
+        let mut file = std::fs::File::create(path).expect("create dictionary");
+        for idx in 0..(OCR_DICT_MIN_LINES * 2) {
+            writeln!(file, "char-{idx}").expect("write dictionary line");
+        }
+    }
 
     #[test]
     fn test_save_and_load_ocr_config() {
@@ -1271,5 +1387,37 @@ mod tests {
         db.save_ocr_config(&config).expect("save 2");
         let loaded = db.load_ocr_config().expect("load");
         assert!(!loaded.enabled);
+    }
+
+    #[test]
+    fn test_check_ocr_models_rejects_tiny_placeholder_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join(OCR_DET_MODEL_FILE), b"404 not found").expect("det");
+        std::fs::write(dir.path().join(OCR_REC_MODEL_FILE), b"404 not found").expect("rec");
+        std::fs::write(dir.path().join(OCR_DICT_FILE), b"404 not found").expect("dict");
+
+        let config = OcrConfig {
+            model_path: dir.path().to_string_lossy().to_string(),
+            ..OcrConfig::default()
+        };
+
+        assert!(!check_ocr_models_exist(&config));
+    }
+
+    #[test]
+    fn test_check_ocr_models_requires_only_required_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_sparse_file(&dir.path().join(OCR_DET_MODEL_FILE), OCR_DET_MIN_BYTES);
+        write_sparse_file(&dir.path().join(OCR_REC_MODEL_FILE), OCR_REC_MIN_BYTES);
+        write_test_dictionary(&dir.path().join(OCR_DICT_FILE));
+        std::fs::write(dir.path().join(OCR_CLS_MODEL_FILE), b"bad optional cls")
+            .expect("optional cls");
+
+        let config = OcrConfig {
+            model_path: dir.path().to_string_lossy().to_string(),
+            ..OcrConfig::default()
+        };
+
+        assert!(check_ocr_models_exist(&config));
     }
 }
