@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.1...nexa-monorepo-v0.9.2) (2026-06-10)
+
+
+### Bug Fixes
+
+* **release,ocr:** publish reduced artifacts and validate OCR models ([5a5130a](https://github.com/MLGBJDLW/Nexa/commit/5a5130adb78fdfb4aeb2947c8e872f017e748c4c))
+* require only Windows and Linux updater bundles while treating macOS updater output as optional, switch OCR downloads to maintained ONNX/dictionary sources, reject invalid cached downloads, and avoid failing on a bad optional cls model. ([5a5130a](https://github.com/MLGBJDLW/Nexa/commit/5a5130adb78fdfb4aeb2947c8e872f017e748c4c))
+
 ## [0.9.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.0...nexa-monorepo-v0.9.1) (2026-06-09)
 
 
