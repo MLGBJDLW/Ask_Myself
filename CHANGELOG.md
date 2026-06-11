@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.5...nexa-monorepo-v0.9.6) (2026-06-11)
+
+
+### Bug Fixes
+
+* **chat:** add steering trace event type ([27e3bcb](https://github.com/MLGBJDLW/Nexa/commit/27e3bcb3307e31718a5231e9b6b7e9f8052f0a09))
+* **chat:** keep live steering messages at current turn position ([fa98a45](https://github.com/MLGBJDLW/Nexa/commit/fa98a453142f8910e08244308ae1dcb3417ef74a))
+* **chat:** keep stream protocol unchanged ([680c985](https://github.com/MLGBJDLW/Nexa/commit/680c985a7f1e7ecc2f24589b3faed214d1f3bdfb))
+* **chat:** project live steering messages separately ([5f9a9ce](https://github.com/MLGBJDLW/Nexa/commit/5f9a9ce97536f3f56505738fff6c0732b83d4198))
+* **chat:** project live steering messages separately ([72674eb](https://github.com/MLGBJDLW/Nexa/commit/72674ebc37b01fe9e17fd913baf5b824fb30ea7f))
+* **chat:** render live steering after current trace ([48230fc](https://github.com/MLGBJDLW/Nexa/commit/48230fc0caf7cdc9f8e0df10fb75fe781a6aaea0))
+* **chat:** render optimistic steering after live trace ([02286b7](https://github.com/MLGBJDLW/Nexa/commit/02286b71f20646ff6167faf85a4cbe386c667455))
+
 ## [0.9.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.4...nexa-monorepo-v0.9.5) (2026-06-11)
 
 
