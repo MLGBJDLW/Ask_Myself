@@ -292,16 +292,266 @@
     "baseUrl": "https://openrouter.ai/api/v1",
     "requiresApiKey": true,
     "icon": "🌐",
-    "description": "OpenAI-compatible routing across 357 current OpenRouter chat models",
+    "description": "OpenAI-compatible routing across OpenRouter chat models",
     "capabilities": {
       "vision": true
     },
     "models": [
       {
+        "id": "~anthropic/claude-fable-latest",
+        "name": "Anthropic: Claude Fable Latest",
+        "tagKey": "providers.tagLatest",
+        "recommended": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "anthropic/claude-fable-5",
+        "name": "Anthropic: Claude Fable 5",
+        "tagKey": "providers.tagMostIntelligent",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "nex-agi/nex-n2-pro:free",
+        "name": "Nex AGI: Nex-N2-Pro (free)",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "nvidia/nemotron-3.5-content-safety:free",
+        "name": "NVIDIA: Nemotron 3.5 Content Safety (free)",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "name": "NVIDIA: Nemotron 3 Ultra (free)",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "vision": false,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "nvidia/nemotron-3-ultra-550b-a55b",
+        "name": "NVIDIA: Nemotron 3 Ultra",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "vision": false,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen/qwen3.7-plus",
+        "name": "Qwen: Qwen3.7 Plus",
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "minimax/minimax-m3",
+        "name": "MiniMax: MiniMax M3",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "stepfun/step-3.7-flash",
+        "name": "StepFun: Step 3.7 Flash",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "anthropic/claude-opus-4.8-fast",
+        "name": "Anthropic: Claude Opus 4.8 (Fast)",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "anthropic/claude-opus-4.8",
+        "name": "Anthropic: Claude Opus 4.8",
+        "tagKey": "providers.tagMostIntelligent",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "openrouter/fusion",
+        "name": "OpenRouter: Fusion",
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "vision": false
+        }
+      },
+      {
         "id": "qwen/qwen3.7-max",
         "name": "Qwen: Qwen3.7 Max",
         "tagKey": "providers.tagLatest",
-        "recommended": true,
         "capabilities": {
           "vision": false,
           "reasoning": {
@@ -5692,11 +5942,52 @@
     "baseUrl": "https://api.anthropic.com/v1",
     "requiresApiKey": true,
     "icon": "🧠",
-    "description": "Claude Opus 4.8/4.7, Sonnet 4.6/4.5, Haiku 4.5",
+    "description": "Claude Fable 5, Opus 4.8/4.7, Sonnet 4.6, Haiku 4.5",
     "capabilities": {
       "vision": true
     },
     "models": [
+      {
+        "id": "claude-fable-5",
+        "name": "Claude Fable 5",
+        "tagKey": "providers.tagMostIntelligent",
+        "recommended": true,
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "defaultEffort": "high",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "claude-mythos-5",
+        "name": "Claude Mythos 5",
+        "tagKey": "providers.tagPreview",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "defaultEffort": "high",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
       {
         "id": "claude-opus-4-8",
         "name": "Claude Opus 4.8",
@@ -5754,7 +6045,6 @@
         "id": "claude-sonnet-4-6",
         "name": "Claude Sonnet 4.6",
         "tagKey": "providers.tagBestBalance",
-        "recommended": true,
         "capabilities": {
           "reasoning": {
             "thinkingBudget": {
@@ -5868,16 +6158,64 @@
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
     "requiresApiKey": true,
     "icon": "✨",
-    "description": "Gemini 3 preview, Gemini 2.5 Pro/Flash",
+    "description": "Gemini 3.5 Flash, Gemini 3.1 Pro/Flash Lite, Gemini 3 previews, Gemini 2.5",
     "capabilities": {
       "vision": true
     },
     "models": [
       {
+        "id": "gemini-3.5-flash",
+        "name": "Gemini 3.5 Flash",
+        "tagKey": "providers.tagLatest",
+        "recommended": true,
+        "capabilities": {
+          "reasoning": {
+            "thinkingBudget": {
+              "enabled": true,
+              "defaultTokens": 10000,
+              "minTokens": 128,
+              "maxTokens": 32768,
+              "step": 128
+            }
+          }
+        }
+      },
+      {
+        "id": "gemini-3.1-pro-preview",
+        "name": "Gemini 3.1 Pro Preview",
+        "tagKey": "providers.tagPreview",
+        "capabilities": {
+          "reasoning": {
+            "thinkingBudget": {
+              "enabled": true,
+              "defaultTokens": 10000,
+              "minTokens": 128,
+              "maxTokens": 32768,
+              "step": 128
+            }
+          }
+        }
+      },
+      {
+        "id": "gemini-3.1-flash-lite",
+        "name": "Gemini 3.1 Flash Lite",
+        "tagKey": "providers.tagFast",
+        "capabilities": {
+          "reasoning": {
+            "thinkingBudget": {
+              "enabled": true,
+              "defaultTokens": 10000,
+              "minTokens": 128,
+              "maxTokens": 32768,
+              "step": 128
+            }
+          }
+        }
+      },
+      {
         "id": "gemini-2.5-pro",
         "name": "Gemini 2.5 Pro",
         "tagKey": "providers.tagBest",
-        "recommended": true,
         "capabilities": {
           "reasoning": {
             "thinkingBudget": {
@@ -6020,7 +6358,7 @@
     "baseUrl": "https://api.x.ai/v1",
     "requiresApiKey": true,
     "icon": "🚀",
-    "description": "Grok 4.3",
+    "description": "Grok 4.3, Grok Build 0.1, Grok 4.20",
     "capabilities": {
       "vision": true
     },
@@ -6029,7 +6367,90 @@
         "id": "grok-4.3",
         "name": "Grok 4.3",
         "tagKey": "providers.tagLatest",
-        "recommended": true
+        "recommended": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "grok-build-0.1",
+        "name": "Grok Build 0.1",
+        "tagKey": "providers.tagCoding",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "grok-4.20-multi-agent-0309",
+        "name": "Grok 4.20 Multi-Agent",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "grok-4.20-0309-reasoning",
+        "name": "Grok 4.20 Reasoning",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "grok-4.20-0309-non-reasoning",
+        "name": "Grok 4.20 Non-Reasoning",
+        "capabilities": {
+          "vision": true,
+          "reasoning": null
+        }
       }
     ]
   },
@@ -6040,7 +6461,7 @@
     "baseUrl": "https://api.mistral.ai/v1",
     "requiresApiKey": true,
     "icon": "🌪️",
-    "description": "Mistral Medium 3.5, Large 3, Small 4, Devstral 2",
+    "description": "Mistral Medium 3.5, Large 3, Small 4, Ministral 3, Devstral 2",
     "capabilities": {
       "vision": false
     },
@@ -6048,22 +6469,57 @@
       {
         "id": "mistral-medium-3-5",
         "name": "Mistral Medium 3.5",
-        "tagKey": "providers.tagLatest"
+        "tagKey": "providers.tagLatest",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
       },
       {
         "id": "mistral-large-2512",
         "name": "Mistral Large 3",
         "tagKey": "providers.tagFlagship",
-        "recommended": true
+        "recommended": true,
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "mistral-medium-2508",
         "name": "Mistral Medium 3.1",
-        "tagKey": "providers.tagBestBalance"
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "mistral-small-2603",
         "name": "Mistral Small 4",
+        "tagKey": "providers.tagFast"
+      },
+      {
+        "id": "ministral-14b-2512",
+        "name": "Ministral 3 14B",
+        "tagKey": "providers.tagFast"
+      },
+      {
+        "id": "ministral-8b-2512",
+        "name": "Ministral 3 8B",
+        "tagKey": "providers.tagFast"
+      },
+      {
+        "id": "ministral-3b-2512",
+        "name": "Ministral 3 3B",
         "tagKey": "providers.tagFast"
       },
       {
@@ -6079,7 +6535,20 @@
       {
         "id": "magistral-medium-2509",
         "name": "Magistral Medium",
-        "tagKey": "providers.tagReasoning"
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
       }
     ]
   },
@@ -6096,10 +6565,46 @@
     },
     "models": [
       {
-        "id": "llama3.3:latest",
-        "name": "Llama 3.3",
+        "id": "qwen3.6:latest",
+        "name": "Qwen 3.6",
         "tagKey": "providers.tagRecommended",
-        "recommended": true
+        "recommended": true,
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "qwen3:latest",
+        "name": "Qwen 3",
+        "tagKey": "providers.tagReasoning"
+      },
+      {
+        "id": "qwen3-coder:30b",
+        "name": "Qwen3 Coder 30B",
+        "tagKey": "providers.tagCoding"
+      },
+      {
+        "id": "qwen3-coder-next:latest",
+        "name": "Qwen3 Coder Next",
+        "tagKey": "providers.tagCode"
+      },
+      {
+        "id": "llama3.3:latest",
+        "name": "Llama 3.3"
+      },
+      {
+        "id": "llama4:scout",
+        "name": "Llama 4 Scout",
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "llama4:maverick",
+        "name": "Llama 4 Maverick",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "qwen2.5:latest",
@@ -6116,6 +6621,23 @@
       {
         "id": "deepseek-r1:latest",
         "name": "DeepSeek R1"
+      },
+      {
+        "id": "gpt-oss:20b",
+        "name": "GPT-OSS 20B",
+        "tagKey": "providers.tagReasoning"
+      },
+      {
+        "id": "gpt-oss:120b",
+        "name": "GPT-OSS 120B",
+        "tagKey": "providers.tagReasoning"
+      },
+      {
+        "id": "gemma3:latest",
+        "name": "Gemma 3",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "gemma2:latest",
@@ -6143,7 +6665,7 @@
     "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
     "requiresApiKey": true,
     "icon": "🔵",
-    "description": "GLM-5.1, GLM-5, GLM-4.7, GLM-4.6V",
+    "description": "GLM-5.1, GLM-5, GLM-5V-Turbo, GLM-4.7, GLM-4.6V",
     "capabilities": {
       "vision": false
     },
@@ -6163,6 +6685,14 @@
         "id": "glm-5-turbo",
         "name": "GLM-5 Turbo",
         "tagKey": "providers.tagFast"
+      },
+      {
+        "id": "glm-5v-turbo",
+        "name": "GLM-5V-Turbo",
+        "tagKey": "providers.tagVision",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "glm-4.7",
@@ -6216,7 +6746,10 @@
         "id": "kimi-k2.6",
         "name": "Kimi K2.6",
         "tagKey": "providers.tagLatest",
-        "recommended": true
+        "recommended": true,
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "kimi-k2.5",
@@ -6246,7 +6779,7 @@
     "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "requiresApiKey": true,
     "icon": "🪶",
-    "description": "Qwen3.7 Max, Qwen3.6 Plus/Flash, QwQ, Qwen3-VL",
+    "description": "Qwen3.7 Max/Plus, Qwen3.6 Plus/Flash, QwQ, Qwen3-VL",
     "capabilities": {
       "reasoning": {
         "effortLevels": [],
@@ -6264,7 +6797,33 @@
         "id": "qwen3.7-max",
         "name": "Qwen3.7 Max",
         "tagKey": "providers.tagLatest",
-        "recommended": true
+        "recommended": true,
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "qwen3.7-plus",
+        "name": "Qwen3.7 Plus",
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "qwen3.7-max-2026-06-08",
+        "name": "Qwen3.7 Max 2026-06-08",
+        "tagKey": "providers.tagLatest",
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "qwen3.7-plus-2026-05-26",
+        "name": "Qwen3.7 Plus 2026-05-26",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "qwen3-max-2026-01-23",
@@ -6284,22 +6843,34 @@
       {
         "id": "qwen3.5-plus",
         "name": "Qwen3.5 Plus",
-        "tagKey": "providers.tagBestBalance"
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "qwen3.6-plus",
         "name": "Qwen3.6 Plus",
-        "tagKey": "providers.tagBestBalance"
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "qwen3.6-flash",
         "name": "Qwen3.6 Flash",
-        "tagKey": "providers.tagFast"
+        "tagKey": "providers.tagFast",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "qwen3.5-flash",
         "name": "Qwen3.5 Flash",
-        "tagKey": "providers.tagFast"
+        "tagKey": "providers.tagFast",
+        "capabilities": {
+          "vision": true
+        }
       },
       {
         "id": "qwq-plus",
@@ -6349,16 +6920,54 @@
     "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
     "requiresApiKey": true,
     "icon": "🫘",
-    "description": "Doubao-Seed 1.6, Seed-Code",
+    "description": "Doubao Seed 2.0, Doubao-Seed 1.6, Seed-Code",
     "capabilities": {
       "vision": false
     },
     "models": [
       {
+        "id": "doubao-seed-2.0-pro",
+        "name": "Doubao Seed 2.0 Pro",
+        "tagKey": "providers.tagLatest",
+        "recommended": true,
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "doubao-seed-2.0-code",
+        "name": "Doubao Seed 2.0 Code",
+        "tagKey": "providers.tagCode",
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "doubao-seed-2.0-lite",
+        "name": "Doubao Seed 2.0 Lite",
+        "tagKey": "providers.tagFast",
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "doubao-seed-2-0-pro-260215",
+        "name": "Doubao Seed 2.0 Pro 260215",
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "doubao-seed-2-0-lite-260428",
+        "name": "Doubao Seed 2.0 Lite 260428",
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
         "id": "doubao-seed-1-6-251015",
         "name": "Doubao-Seed 1.6",
-        "tagKey": "providers.tagLatest",
-        "recommended": true
+        "tagKey": "providers.tagLatest"
       },
       {
         "id": "doubao-seed-1-6-thinking",

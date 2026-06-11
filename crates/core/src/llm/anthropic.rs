@@ -502,7 +502,7 @@ fn convert_tools(tools: &[ToolDefinition], cache_tools: bool) -> Vec<AnthropicTo
 fn uses_adaptive_thinking(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
-        "claude-opus-4-8" | "claude-opus-4-7"
+        "claude-fable-5" | "claude-mythos-5" | "claude-opus-4-8" | "claude-opus-4-7"
     )
 }
 
@@ -1033,6 +1033,29 @@ mod tests {
     }
 
     #[test]
+    fn fable_5_uses_adaptive_thinking_effort() {
+        let messages = vec![Message::text(Role::User, "solve it")];
+        let (_, api_messages) = convert_messages(&messages);
+        let mut request = request_with_messages(messages, None);
+        request.model = "claude-fable-5".to_string();
+        request.reasoning_effort = Some(ReasoningEffort::Max);
+
+        let body = build_request_body(&request, None, api_messages, false);
+        let body_json = serde_json::to_value(body).unwrap();
+
+        assert_eq!(
+            body_json["thinking"],
+            serde_json::json!({"type": "adaptive"})
+        );
+        assert_eq!(
+            body_json["output_config"],
+            serde_json::json!({"effort": "max"})
+        );
+        assert!(body_json.get("temperature").is_none());
+        assert!(body_json["thinking"].get("budget_tokens").is_none());
+    }
+
+    #[test]
     fn opus_48_prefers_adaptive_thinking_over_budget() {
         let messages = vec![Message::text(Role::User, "solve it")];
         let (_, api_messages) = convert_messages(&messages);
@@ -1115,6 +1138,8 @@ impl LlmProvider for AnthropicProvider {
         // Anthropic doesn't have a public list-models endpoint.
         // Return commonly available models.
         Ok(vec![
+            "claude-fable-5".to_string(),
+            "claude-mythos-5".to_string(),
             "claude-opus-4-8".to_string(),
             "claude-opus-4-7".to_string(),
             "claude-opus-4-6".to_string(),
