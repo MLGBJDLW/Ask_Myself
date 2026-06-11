@@ -2,7 +2,7 @@
 
 > A local-first desktop assistant and personal knowledge workspace.
 
-[![CI](https://github.com/MLGBJDLW/Nexa/actions/workflows/ci.yml/badge.svg)](https://github.com/MLGBJDLW/Nexa/actions/workflows/ci.yml)
+[![CI](https://github.com/MLGBJDLW/Nexa/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/MLGBJDLW/Nexa/actions/workflows/ci.yml?query=branch%3Amaster)
 [![Release](https://github.com/MLGBJDLW/Nexa/actions/workflows/release.yml/badge.svg)](https://github.com/MLGBJDLW/Nexa/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/github/v/release/MLGBJDLW/Nexa)](https://github.com/MLGBJDLW/Nexa/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
