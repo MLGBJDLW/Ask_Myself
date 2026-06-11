@@ -211,14 +211,15 @@ test('persisted steering stays in history after streaming completes', () => {
     createdAt: '2026-01-01T00:00:05.000Z',
     artifacts: { kind: 'steering' },
   });
+  const messages = [firstUser, steering];
   const projected = projectChatMessageVisibility({
     isStreaming: false,
-    messages: [firstUser, steering],
+    messages,
   });
 
+  assert(projected.historyMessages === messages, 'completed projection keeps history reference');
   assertEqual(projected.historyMessages.length, 2, 'history count');
   assertEqual(projected.liveSteeringMessages.length, 0, 'live steering count');
-  assert(projected.historyMessages === projected.historyMessages, 'projection returns a stable history array');
 });
 
 async function main(): Promise<void> {

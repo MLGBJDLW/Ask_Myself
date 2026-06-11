@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.4...nexa-monorepo-v0.9.5) (2026-06-11)
+
+
+### Bug Fixes
+
+* **chat:** keep prior replies visible during live thinking ([222a6f8](https://github.com/MLGBJDLW/Nexa/commit/222a6f81a098ea93bc123c10801108af25181caf))
+* **chat:** preserve visible trace during streaming ([30dd1d8](https://github.com/MLGBJDLW/Nexa/commit/30dd1d84d3c431ac0ca74eb6f54252f871ebf2d4))
+* **chat:** preserve visible trace while rounds exist ([ed0512b](https://github.com/MLGBJDLW/Nexa/commit/ed0512bfba1e5f0535cb6749dc8d2c20ad2452c8))
+* **chat:** route messages through stable streaming projection ([78449ed](https://github.com/MLGBJDLW/Nexa/commit/78449ed56f6e83a2a9fb27df7a3dd2aae1dbbe8b))
+
+## [0.9.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.3...nexa-monorepo-v0.9.4) (2026-06-11)
+
+
+### Bug Fixes
+
+* **chat:** Preserve pre-reset transcript and improve timeline streaming/merge behaviour ([bf7f575](https://github.com/MLGBJDLW/Nexa/commit/bf7f575c74973cf026fd99ef028e08703de744f8))
+
 ## [0.9.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.2...nexa-monorepo-v0.9.3) (2026-06-11)
 
 

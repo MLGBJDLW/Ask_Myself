@@ -639,10 +639,16 @@ export function buildLiveTraceTimeline(input: {
     });
   };
 
-  const appendReply = (id: string, content: string, streaming = false) => {
+  const appendReply = (
+    id: string,
+    content: string,
+    streaming = false,
+    options: { mergeAdjacent?: boolean } = {},
+  ) => {
     if (!content) return;
+    const mergeAdjacent = options.mergeAdjacent ?? true;
     const lastItem = items[items.length - 1];
-    if (lastItem?.kind === 'reply') {
+    if (mergeAdjacent && lastItem?.kind === 'reply') {
       items[items.length - 1] = {
         ...lastItem,
         content: lastItem.content + content,
@@ -658,31 +664,49 @@ export function buildLiveTraceTimeline(input: {
     });
   };
 
-  for (const event of visibleTraceEvents) {
+  const activeStreamText = streamText.trim().length > 0 ? streamText : '';
+  const lastReplyEventIndex = activeStreamText
+    ? (() => {
+        for (let index = visibleTraceEvents.length - 1; index >= 0; index -= 1) {
+          if (visibleTraceEvents[index].kind === 'reply') return index;
+        }
+        return -1;
+      })()
+    : -1;
+  let renderedActiveStreamReply = false;
+
+  visibleTraceEvents.forEach((event, index) => {
     if (event.kind === 'reply') {
       flushThinking(`${event.id}-before-reply`);
-      appendReply(event.id, event.text);
-      continue;
+      const isActiveStreamReply =
+        isStreaming &&
+        index === lastReplyEventIndex &&
+        activeStreamText.length > 0 &&
+        event.text === streamText;
+      appendReply(
+        event.id,
+        isActiveStreamReply ? displayedText : event.text,
+        isActiveStreamReply,
+      );
+      renderedActiveStreamReply = renderedActiveStreamReply || isActiveStreamReply;
+      return;
     }
 
     activeSections = [...activeSections, ...traceEventToTimelineSections(event)];
-  }
+  });
 
   flushThinking('trace-thinking-tail');
 
-  if (!isStreaming || items.length === 0) return items;
+  if (!isStreaming) return items;
 
-  const lastItem = items[items.length - 1];
-  if (lastItem.kind === 'reply') {
-    items[items.length - 1] = {
-      ...lastItem,
-      content: streamText.trim().length > 0 ? displayedText : lastItem.content,
-      isStreaming: true,
-    };
-    return items;
+  if (activeStreamText && !renderedActiveStreamReply) {
+    appendReply('live-stream-reply-tail', displayedText, true, { mergeAdjacent: false });
   }
 
-  if (currentTraceActive) {
+  if (items.length === 0) return items;
+
+  const lastItem = items[items.length - 1];
+  if (currentTraceActive && lastItem.kind !== 'reply') {
     items[items.length - 1] = {
       ...lastItem,
       isStreaming: true,
