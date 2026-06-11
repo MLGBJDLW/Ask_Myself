@@ -1,5 +1,9 @@
-import { projectChatStreamingVisibility } from '../src/lib/streaming/chatVisibility';
+import {
+  projectChatMessageVisibility,
+  projectChatStreamingVisibility,
+} from '../src/lib/streaming/chatVisibility';
 import type { StreamRoundEvent, TraceEvent } from '../src/lib/streaming/protocol';
+import type { ConversationMessage } from '../src/types/conversation';
 
 type TestFn = () => void | Promise<void>;
 const tests: Array<{ name: string; fn: TestFn }> = [];
@@ -26,6 +30,29 @@ function toolCall(callId: string) {
     status: 'done' as const,
     argsStatus: 'done' as const,
     argsBytes: 2,
+  };
+}
+
+function message(input: {
+  id: string;
+  role: ConversationMessage['role'];
+  content: string;
+  createdAt: string;
+  artifacts?: ConversationMessage['artifacts'];
+}): ConversationMessage {
+  return {
+    id: input.id,
+    conversationId: 'conversation-1',
+    role: input.role,
+    content: input.content,
+    toolCallId: null,
+    toolCalls: [],
+    artifacts: input.artifacts ?? null,
+    tokenCount: 0,
+    createdAt: input.createdAt,
+    sortOrder: 0,
+    thinking: null,
+    imageAttachments: null,
   };
 }
 
@@ -79,6 +106,56 @@ test('streaming visibility leaves normal states unchanged', () => {
   assertEqual(projected.strategy, 'default', 'projection strategy');
   assert(projected.streamRounds === streamRounds, 'rounds reference is unchanged');
   assert(projected.traceEvents === traceEvents, 'trace reference is unchanged');
+});
+
+test('live optimistic steering is projected out of history while streaming', () => {
+  const firstUser = message({
+    id: 'user-1',
+    role: 'user',
+    content: 'Start the turn',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+  const steering = message({
+    id: 'temp-steer-1',
+    role: 'user',
+    content: 'Please redirect the investigation here.',
+    createdAt: '2026-01-01T00:00:05.000Z',
+    artifacts: { kind: 'steering', delivery: 'accepted' },
+  });
+  const projected = projectChatMessageVisibility({
+    isStreaming: true,
+    messages: [firstUser, steering],
+  });
+
+  assertEqual(projected.historyMessages.length, 1, 'history count');
+  assertEqual(projected.historyMessages[0].id, 'user-1', 'history keeps first user');
+  assertEqual(projected.liveSteeringMessages.length, 1, 'live steering count');
+  assertEqual(projected.liveSteeringMessages[0].id, 'temp-steer-1', 'live steering id');
+});
+
+test('persisted steering stays in history after streaming completes', () => {
+  const firstUser = message({
+    id: 'user-1',
+    role: 'user',
+    content: 'Start the turn',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+  const steering = message({
+    id: 'steer-persisted-1',
+    role: 'user',
+    content: 'Please redirect the investigation here.',
+    createdAt: '2026-01-01T00:00:05.000Z',
+    artifacts: { kind: 'steering' },
+  });
+  const messages = [firstUser, steering];
+  const projected = projectChatMessageVisibility({
+    isStreaming: false,
+    messages,
+  });
+
+  assert(projected.historyMessages === messages, 'completed projection keeps history reference');
+  assertEqual(projected.historyMessages.length, 2, 'history count');
+  assertEqual(projected.liveSteeringMessages.length, 0, 'live steering count');
 });
 
 async function main(): Promise<void> {
