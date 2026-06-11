@@ -210,6 +210,26 @@ export function compactThinkingText(content: string): string {
   return normalizeThinking(content).replace(/\s+/g, ' ');
 }
 
+
+function mergeAdjacentThinkingSections(sections: TimelineSection[]): TimelineSection[] {
+  const merged: TimelineSection[] = [];
+
+  for (const section of sections) {
+    const last = merged[merged.length - 1];
+    if (last?.kind === 'thinking' && section.kind === 'thinking') {
+      const separator = last.text.endsWith('\n') || section.text.startsWith('\n') ? '' : '\n';
+      merged[merged.length - 1] = {
+        ...last,
+        text: `${last.text}${separator}${section.text}`,
+      };
+      continue;
+    }
+    merged.push(section);
+  }
+
+  return merged;
+}
+
 export function hasRenderableTimelineSection(section: TimelineSection): boolean {
   if (section.kind === 'thinking') {
     return compactThinkingText(section.text).length > 0;
@@ -604,7 +624,7 @@ export function buildLiveTraceTimeline(input: {
   let activeSections: TimelineSection[] = [];
 
   const flushThinking = (id: string, streaming = false) => {
-    const renderableSections = activeSections.filter(
+    const renderableSections = mergeAdjacentThinkingSections(activeSections).filter(
       (section) =>
         hasRenderableTimelineSection(section) &&
         !isLowSignalTimelineSection(section),
