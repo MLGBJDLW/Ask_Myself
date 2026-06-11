@@ -3,6 +3,7 @@ import {
   projectChatStreamingVisibility,
 } from '../src/lib/streaming/chatVisibility';
 import type { StreamRoundEvent, TraceEvent } from '../src/lib/streaming/protocol';
+import type { ConversationMessage } from '../src/types/conversation';
 import {
   buildLiveTraceTimeline,
   isCurrentTraceActive,
@@ -35,6 +36,29 @@ function toolCall(callId: string) {
     status: 'done' as const,
     argsStatus: 'done' as const,
     argsBytes: 2,
+  };
+}
+
+function message(input: {
+  id: string;
+  role: ConversationMessage['role'];
+  content: string;
+  createdAt: string;
+  artifacts?: ConversationMessage['artifacts'];
+}): ConversationMessage {
+  return {
+    id: input.id,
+    conversationId: 'conversation-1',
+    role: input.role,
+    content: input.content,
+    toolCallId: null,
+    toolCalls: [],
+    artifacts: input.artifacts ?? null,
+    tokenCount: 0,
+    createdAt: input.createdAt,
+    sortOrder: 0,
+    thinking: null,
+    imageAttachments: null,
   };
 }
 
