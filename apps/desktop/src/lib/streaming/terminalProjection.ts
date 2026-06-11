@@ -92,11 +92,29 @@ export function applyStreamResetProjection(
   options: { clearTools?: boolean } = {},
 ): void {
   state.streamText = '';
-  state.streamRounds = [];
   state.thinkingText = '';
   state.isThinking = false;
-  if (options.clearTools) state.toolCalls = [];
-  state.traceEvents = state.traceEvents.filter(trace => trace.kind === 'status');
+
+  if (options.clearTools) {
+    // A reset starts a new model attempt, but it should not erase the
+    // already-rendered transcript for this turn. Keep prior trace/round UI
+    // intact and make any interrupted tools terminal so the timeline does not
+    // show stale in-progress work forever. The flat active-tool list is still
+    // cleared so new tool calls after the reset start from a clean slate.
+    state.toolCalls = markToolCallsFinished(
+      state.toolCalls,
+      'cancelled',
+      reason || 'Interrupted by stream reset',
+    );
+    state.streamRounds = markRoundsToolCallsFinished(
+      state.streamRounds,
+      'cancelled',
+      reason || 'Interrupted by stream reset',
+    );
+    syncTraceToolEvents(state);
+    state.toolCalls = [];
+  }
+
   state.error = null;
   state._activeRoundId = null;
   state._activeRoundAcceptingStarts = false;
