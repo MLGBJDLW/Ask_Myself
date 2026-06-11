@@ -55,9 +55,7 @@ function replyTextsFromTimeline(
     streamText: '',
     displayedText: '',
   });
-  return timeline
-    .filter((item): item is Extract<typeof item, { kind: 'reply' }> => item.kind === 'reply')
-    .map((item) => item.content);
+  return timeline.flatMap((item) => (item.kind === 'reply' ? [item.content] : []));
 }
 
 test('streaming visibility prefers full trace when rounds and new live trace coexist', () => {
