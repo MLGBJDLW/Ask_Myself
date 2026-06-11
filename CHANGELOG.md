@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.6...nexa-monorepo-v0.9.7) (2026-06-11)
+
+
+### Features
+
+* **providers:** Update model catalog ([7f0543a](https://github.com/MLGBJDLW/Nexa/commit/7f0543affd1dea2724232c84804543b43054b435))
+* **providers:** Update model catalog ([7e275b3](https://github.com/MLGBJDLW/Nexa/commit/7e275b3fea4d559a51c2597f9ca71e19a27db9c7))
+
+
+### Bug Fixes
+
+* harden OCR fallback, image paste, and CI badge ([dd2b8a9](https://github.com/MLGBJDLW/Nexa/commit/dd2b8a9cde04a01f25953f002fcc8f3f258a8d15))
+* Harden OCR fallback, image paste, and CI badge ([3ecf702](https://github.com/MLGBJDLW/Nexa/commit/3ecf70281b3ce8354b0b4ad22ef7c120cffd4ee8))
+
 ## [0.9.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.5...nexa-monorepo-v0.9.6) (2026-06-11)
 
 
