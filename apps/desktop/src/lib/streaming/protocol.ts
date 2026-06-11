@@ -71,21 +71,7 @@ export interface TraceStatusEvent {
   tone?: 'muted' | 'success' | 'error';
 }
 
-export interface TraceSteeringEvent {
-  id: string;
-  kind: 'steering';
-  conversationId: string;
-  content: string;
-  createdAt: string;
-  delivery?: 'pending' | 'accepted';
-}
-
-export type TraceEvent =
-  | TraceThinkingEvent
-  | TraceReplyEvent
-  | TraceToolEvent
-  | TraceStatusEvent
-  | TraceSteeringEvent;
+export type TraceEvent = TraceThinkingEvent | TraceReplyEvent | TraceToolEvent | TraceStatusEvent;
 
 export interface ContextUsageSegment {
   kind: string;
