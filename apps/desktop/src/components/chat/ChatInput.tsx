@@ -16,85 +16,14 @@ import {
   type SlashCommandOption,
 } from "../../lib/slashCommands";
 import { buildWorkflowBatchPrompt } from "../../lib/workflowPrompts";
+import {
+  collectPastedImageFiles,
+  getAllowedAttachmentMediaType,
+  getPastedImageDataUrl,
+} from "../../lib/chatAttachments";
 import { CheckpointMenu } from "./CheckpointMenu";
 import { VoiceInputButton } from "./VoiceInputButton";
 import { EmojiPicker } from "./EmojiPicker";
-
-const ALLOWED_MIME_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-  "application/pdf",
-  "text/plain",
-  "text/markdown",
-  "text/x-markdown",
-  "text/csv",
-  "application/json",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  "application/msword",
-  "application/vnd.ms-excel",
-  "application/vnd.ms-powerpoint",
-]);
-
-const ALLOWED_EXTENSIONS = new Set([
-  ".jpg",
-  ".jpeg",
-  ".png",
-  ".gif",
-  ".webp",
-  ".pdf",
-  ".txt",
-  ".md",
-  ".csv",
-  ".json",
-  ".docx",
-  ".xlsx",
-  ".pptx",
-  ".doc",
-  ".xls",
-  ".ppt",
-]);
-
-const MIME_BY_EXTENSION = new Map<string, string>([
-  [".jpg", "image/jpeg"],
-  [".jpeg", "image/jpeg"],
-  [".png", "image/png"],
-  [".gif", "image/gif"],
-  [".webp", "image/webp"],
-  [".pdf", "application/pdf"],
-  [".txt", "text/plain"],
-  [".md", "text/markdown"],
-  [".csv", "text/csv"],
-  [".json", "application/json"],
-  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
-  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
-  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
-  [".doc", "application/msword"],
-  [".xls", "application/vnd.ms-excel"],
-  [".ppt", "application/vnd.ms-powerpoint"],
-]);
-
-function getFileExtension(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return dot >= 0 ? name.slice(dot).toLowerCase() : "";
-}
-
-function getAllowedAttachmentMediaType(mediaType: string | undefined, name: string): string | null {
-  const normalized = (mediaType ?? "").trim().toLowerCase();
-  if (normalized && ALLOWED_MIME_TYPES.has(normalized)) {
-    return normalized;
-  }
-
-  const ext = getFileExtension(name);
-  if (!ALLOWED_EXTENSIONS.has(ext)) {
-    return null;
-  }
-
-  return MIME_BY_EXTENSION.get(ext) ?? "application/octet-stream";
-}
 
 export interface ChatInputSendOptions {
   skillIds?: string[];
@@ -868,39 +797,9 @@ export function ChatInput({
       const clipboardData = e.clipboardData;
       if (!clipboardData) return;
 
-      // --- Synchronously collect all image files BEFORE any async work ---
-      const imageFiles: { file: File; name: string }[] = [];
-
-      // 1. Check clipboardData.files
-      if (clipboardData.files.length > 0) {
-        for (const file of Array.from(clipboardData.files)) {
-          if (file.type.startsWith("image/")) {
-            imageFiles.push({
-              file,
-              name: file.name || `pasted-image-${Date.now()}.png`,
-            });
-          }
-        }
-      }
-
-      // 2. Check clipboardData.items (clipboard items API fallback)
-      if (imageFiles.length === 0 && clipboardData.items) {
-        for (const item of Array.from(clipboardData.items)) {
-          if (!item.type.startsWith("image/")) continue;
-          const blob = item.getAsFile();
-          if (!blob) continue;
-          const ext = item.type.split("/")[1] || "png";
-          imageFiles.push({
-            file: blob,
-            name: `pasted-image-${Date.now()}.${ext}`,
-          });
-        }
-      }
-
-      // 3. If we found image files, preventDefault IMMEDIATELY (synchronous)
+      const imageFiles = collectPastedImageFiles(clipboardData);
       if (imageFiles.length > 0) {
         e.preventDefault();
-        // Now process asynchronously
         for (const { file, name } of imageFiles) {
           try {
             await addAttachment(file, name);
@@ -912,14 +811,9 @@ export function ChatInput({
         return;
       }
 
-      // 4. HTML data-URL fallback (no async needed)
-      const html = clipboardData.getData("text/html") ?? "";
-      const dataUrlMatch = html.match(/src=["'](data:image\/[^"']+)["']/i);
-      if (dataUrlMatch) {
-        const dataUrl = dataUrlMatch[1];
-        const ext = dataUrl.match(/^data:image\/([^;]+)/i)?.[1] || "png";
-        const name = `pasted-image-${Date.now()}.${ext}`;
-        if (addAttachmentFromDataUrl(dataUrl, name)) {
+      const dataUrlImage = getPastedImageDataUrl(clipboardData);
+      if (dataUrlImage) {
+        if (addAttachmentFromDataUrl(dataUrlImage.dataUrl, dataUrlImage.name)) {
           e.preventDefault();
         }
       }

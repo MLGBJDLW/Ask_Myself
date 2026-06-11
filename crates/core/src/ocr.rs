@@ -1154,6 +1154,38 @@ const OCR_MODEL_DOWNLOADS: &[OcrModelDownload] = &[
     },
 ];
 
+fn normalized_base_url(base_url: &str) -> Option<String> {
+    let trimmed = base_url.trim().trim_end_matches('/').to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn hf_endpoint_override() -> Option<String> {
+    std::env::var("HF_ENDPOINT")
+        .ok()
+        .and_then(|value| normalized_base_url(&value))
+}
+
+fn ocr_download_primary_url(download: &OcrModelDownload, hf_endpoint: Option<&str>) -> String {
+    match hf_endpoint {
+        Some(endpoint) if download.url.starts_with("https://huggingface.co/") => {
+            download.url.replacen("https://huggingface.co", endpoint, 1)
+        }
+        _ => download.url.to_string(),
+    }
+}
+
+fn ocr_download_mirror_url(download: &OcrModelDownload, hf_mirror_base: &str) -> Option<String> {
+    let base = normalized_base_url(hf_mirror_base)?;
+    download
+        .url
+        .strip_prefix("https://huggingface.co/")
+        .map(|path| format!("{base}/{path}"))
+}
+
 /// Check whether required PaddleOCR model files exist and look usable.
 pub fn check_ocr_models_exist(config: &OcrConfig) -> bool {
     let dir = match ocr_model_dir(config) {
@@ -1224,13 +1256,63 @@ fn cached_download_is_valid(path: &Path, download: &OcrModelDownload) -> bool {
     }
 }
 
+fn download_ocr_bytes_from_url(
+    client: &reqwest::blocking::Client,
+    download: &OcrModelDownload,
+    url: &str,
+) -> Result<(Vec<u8>, Option<u64>), CoreError> {
+    let response = client
+        .get(url)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(|e| CoreError::Ocr(format!("download {} from {url}: {e}", download.filename)))?;
+
+    let total_bytes = response.content_length();
+    let bytes = response
+        .bytes()
+        .map_err(|e| CoreError::Ocr(format!("read {} from {url}: {e}", download.filename)))?
+        .to_vec();
+    downloaded_file_is_valid(download, &bytes)?;
+    Ok((bytes, total_bytes))
+}
+
+fn download_ocr_bytes_with_fallback(
+    client: &reqwest::blocking::Client,
+    download: &OcrModelDownload,
+    primary_url: &str,
+    mirror_url: Option<&str>,
+) -> Result<(Vec<u8>, Option<u64>), CoreError> {
+    match download_ocr_bytes_from_url(client, download, primary_url) {
+        Ok(result) => Ok(result),
+        Err(primary_err) => match mirror_url {
+            Some(mirror) => {
+                tracing::warn!(
+                    "Primary OCR model download failed ({primary_err}); retrying via mirror {mirror}"
+                );
+                download_ocr_bytes_from_url(client, download, mirror).map_err(|mirror_err| {
+                    CoreError::Ocr(format!("primary: {primary_err}; mirror: {mirror_err}"))
+                })
+            }
+            None => Err(primary_err),
+        },
+    }
+}
+
 /// Download required PaddleOCR ONNX models from maintained model hosts.
 pub fn download_ocr_models(
     config: &OcrConfig,
+    hf_mirror_base: &str,
     on_progress: impl Fn(OcrDownloadProgress),
 ) -> Result<(), CoreError> {
     let dir = ocr_model_dir(config)?;
     std::fs::create_dir_all(&dir)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .user_agent(concat!("nexa/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| CoreError::Ocr(format!("HTTP client error: {e}")))?;
+    let hf_endpoint = hf_endpoint_override();
 
     for (idx, download) in OCR_MODEL_DOWNLOADS.iter().enumerate() {
         let dest = dir.join(download.filename);
@@ -1244,15 +1326,14 @@ pub fn download_ocr_models(
         }
 
         tracing::info!("Downloading OCR model: {}", download.filename);
-        let response = reqwest::blocking::get(download.url)
-            .and_then(|response| response.error_for_status())
-            .map_err(|e| CoreError::Ocr(format!("download {}: {e}", download.filename)))?;
-
-        let total_bytes = response.content_length();
-        let bytes = response
-            .bytes()
-            .map_err(|e| CoreError::Ocr(format!("read {}: {e}", download.filename)))?;
-        downloaded_file_is_valid(download, &bytes)?;
+        let primary_url = ocr_download_primary_url(download, hf_endpoint.as_deref());
+        let mirror_url = ocr_download_mirror_url(download, hf_mirror_base);
+        let (bytes, total_bytes) = download_ocr_bytes_with_fallback(
+            &client,
+            download,
+            &primary_url,
+            mirror_url.as_deref(),
+        )?;
 
         on_progress(OcrDownloadProgress {
             filename: download.filename.to_string(),
@@ -1419,5 +1500,45 @@ mod tests {
         };
 
         assert!(check_ocr_models_exist(&config));
+    }
+
+    #[test]
+    fn test_ocr_mirror_urls_swap_huggingface_host() {
+        let urls: Vec<_> = OCR_MODEL_DOWNLOADS
+            .iter()
+            .filter_map(|download| ocr_download_mirror_url(download, "https://hf-mirror.com/"))
+            .collect();
+
+        assert_eq!(urls.len(), 2);
+        assert!(urls
+            .iter()
+            .all(|url| url.starts_with("https://hf-mirror.com/")));
+        assert!(urls.iter().all(|url| !url.contains("huggingface.co")));
+    }
+
+    #[test]
+    fn test_ocr_mirror_urls_empty_base_disables_mirror() {
+        assert!(OCR_MODEL_DOWNLOADS
+            .iter()
+            .all(|download| ocr_download_mirror_url(download, "").is_none()));
+    }
+
+    #[test]
+    fn test_ocr_primary_url_uses_hf_endpoint_for_huggingface_only() {
+        let det = OCR_MODEL_DOWNLOADS
+            .iter()
+            .find(|download| download.filename == OCR_DET_MODEL_FILE)
+            .expect("det download");
+        let dict = OCR_MODEL_DOWNLOADS
+            .iter()
+            .find(|download| download.filename == OCR_DICT_FILE)
+            .expect("dict download");
+
+        let det_url = ocr_download_primary_url(det, Some("https://hf-mirror.com"));
+        assert!(det_url.starts_with("https://hf-mirror.com/"));
+        assert!(!det_url.contains("huggingface.co"));
+
+        let dict_url = ocr_download_primary_url(dict, Some("https://hf-mirror.com"));
+        assert_eq!(dict_url, dict.url);
     }
 }
