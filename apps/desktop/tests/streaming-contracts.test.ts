@@ -1160,11 +1160,20 @@ test('canonical stream reset projection matches live stream dispatch recovered s
 
   const live = streamStore.getStream(conversationId);
   assert(live, 'live dispatch should create stream state');
-  assertEqual(projected.toolCalls.length, 0, 'projected stream reset clears stale tools');
+  assertEqual(projected.toolCalls.length, 0, 'projected stream reset clears active stale tools');
   assertEqual(live.toolCalls.length, projected.toolCalls.length, 'tool reset equivalence');
   assertEqual(live.streamRounds.length, projected.streamRounds.length, 'recovered round count equivalence');
-  assertEqual(live.streamRounds[0].reply, projected.streamRounds[0].reply, 'recovered reply equivalence');
-  assertEqual(live.streamRounds[0].reply, 'Recovered', 'recovered reply should replace pre-reset output');
+  assertEqual(live.streamRounds[0].reply, projected.streamRounds[0].reply, 'pre-reset reply preservation equivalence');
+  assertEqual(live.streamRounds[0].reply, 'Checking', 'stream reset should preserve pre-reset reply history');
+  assertEqual(live.streamRounds[0].toolCalls[0].status, 'cancelled', 'pre-reset pending tool should be marked cancelled');
+  assert(
+    live.traceEvents.some(event => event.kind === 'reply' && event.text === 'Checking'),
+    'stream reset should preserve pre-reset reply trace',
+  );
+  assert(
+    live.traceEvents.some(event => event.kind === 'reply' && event.text === 'Recovered'),
+    'stream reset should include recovered reply trace',
+  );
   assert(
     projected.traceEvents.some(event =>
       event.kind === 'status' && event.text === 'Stream interrupted; retrying without streaming.'),
@@ -1702,15 +1711,66 @@ test('timeline view model interleaves thinking, tools, and streamed replies', ()
     displayedText: 'Fresh streamed answer',
   });
 
-  assertEqual(timeline.length, 2, 'live timeline item count');
+  assertEqual(timeline.length, 3, 'live timeline item count');
   assertEqual(timeline[0].kind, 'thinking', 'first item kind');
   assert(timeline[0].kind === 'thinking', 'first item should be thinking');
   assertEqual(timeline[0].sections.length, 2, 'thinking section count');
   assertEqual(timeline[0].sections[1].kind, 'tool', 'tool section should be grouped before reply');
   assertEqual(timeline[1].kind, 'reply', 'second item kind');
   assert(timeline[1].kind === 'reply', 'second item should be reply');
-  assertEqual(timeline[1].content, 'Fresh streamed answer', 'streaming reply should replace visible content');
-  assertEqual(timeline[1].isStreaming, true, 'reply remains streaming');
+  assertEqual(timeline[1].content, 'Partial answer', 'prior reply should remain visible while new text streams');
+  assertEqual(timeline[1].isStreaming, false, 'prior reply should not be marked streaming');
+  assertEqual(timeline[2].kind, 'reply', 'third item kind');
+  assert(timeline[2].kind === 'reply', 'third item should be current streaming reply');
+  assertEqual(timeline[2].content, 'Fresh streamed answer', 'streaming reply should append after existing reply');
+  assertEqual(timeline[2].isStreaming, true, 'current reply remains streaming');
+});
+
+test('timeline view model typewriter text only replaces the active reply event', () => {
+  const events: TraceEvent[] = [
+    { id: 'thinking-1', kind: 'thinking', text: 'Checking files' },
+    { id: 'reply-1', kind: 'reply', text: 'Fresh streamed answer' },
+  ];
+
+  const timeline = buildLiveTraceTimeline({
+    visibleTraceEvents: visibleTraceEventsForTimeline(events),
+    isStreaming: true,
+    currentTraceActive: false,
+    streamText: 'Fresh streamed answer',
+    displayedText: 'Fresh',
+  });
+
+  assertEqual(timeline.length, 2, 'active reply timeline item count');
+  assertEqual(timeline[1].kind, 'reply', 'second item kind');
+  assert(timeline[1].kind === 'reply', 'second item should be reply');
+  assertEqual(timeline[1].content, 'Fresh', 'active reply should use typewriter text');
+  assertEqual(timeline[1].isStreaming, true, 'active reply remains streaming');
+});
+
+test('timeline view model merges adjacent thinking trace events into one section', () => {
+  const events: TraceEvent[] = [
+    { id: 'thinking-1', kind: 'thinking', text: 'First thought' },
+    { id: 'thinking-2', kind: 'thinking', text: 'Second thought' },
+    { id: 'reply-1', kind: 'reply', text: 'Answer' },
+  ];
+
+  const timeline = buildLiveTraceTimeline({
+    visibleTraceEvents: visibleTraceEventsForTimeline(events),
+    isStreaming: true,
+    currentTraceActive: false,
+    streamText: 'Answer',
+    displayedText: 'Answer',
+  });
+
+  assertEqual(timeline.length, 2, 'merged thinking timeline item count');
+  assert(timeline[0].kind === 'thinking', 'first item should be thinking');
+  assertEqual(timeline[0].sections.length, 1, 'adjacent thinking events should render as one section');
+  assert(timeline[0].sections[0].kind === 'thinking', 'merged section should be thinking');
+  assertEqual(
+    timeline[0].sections[0].text,
+    'First thought\nSecond thought',
+    'adjacent thinking text should be joined without visual section splitting',
+  );
 });
 
 test('timeline view model separates completed round trace from current trace', () => {
