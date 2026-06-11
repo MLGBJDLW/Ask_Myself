@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.2...nexa-monorepo-v0.9.3) (2026-06-11)
+
+
+### Bug Fixes
+
+* **chat:** Preserve live trace on stream reset and merge adjacent thinking sections ([8d76e68](https://github.com/MLGBJDLW/Nexa/commit/8d76e68494933f83b72175d2e6c1a4eff485b3a8))
+
 ## [0.9.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.1...nexa-monorepo-v0.9.2) (2026-06-10)
 
 
