@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_catalog_defaults_to_opus_48() {
+    fn anthropic_catalog_defaults_to_fable_5() {
         let anthropic = find_provider_preset("anthropic", Some("https://api.anthropic.com/v1"))
             .expect("anthropic preset should match");
         let ids = anthropic
@@ -320,20 +320,24 @@ mod tests {
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids.first(), Some(&"claude-opus-4-8"));
+        assert_eq!(ids.first(), Some(&"claude-fable-5"));
+        assert!(ids.contains(&"claude-mythos-5"));
+        assert!(ids.contains(&"claude-opus-4-8"));
         assert!(ids.contains(&"claude-opus-4-7"));
         assert!(ids.contains(&"claude-sonnet-4-6"));
 
-        let opus_48 = anthropic
+        let fable_5 = anthropic
             .models
             .iter()
-            .find(|model| model.id == "claude-opus-4-8")
-            .expect("claude-opus-4-8 should be listed");
-        let reasoning = opus_48
+            .find(|model| model.id == "claude-fable-5")
+            .expect("claude-fable-5 should be listed");
+        assert_eq!(fable_5.recommended, Some(true));
+
+        let reasoning = fable_5
             .capabilities
             .as_ref()
             .and_then(|capabilities| capabilities.reasoning.as_ref())
-            .expect("claude-opus-4-8 should expose reasoning capability");
+            .expect("claude-fable-5 should expose reasoning capability");
         assert_eq!(
             reasoning.effort_levels,
             vec![
@@ -368,6 +372,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids.first(), Some(&"qwen3.7-max"));
+        assert!(ids.contains(&"qwen3.7-plus"));
+        assert!(ids.contains(&"qwen3.7-max-2026-06-08"));
         assert!(ids.contains(&"qwen3.6-plus"));
 
         let qwen37 = qwen
@@ -377,6 +383,13 @@ mod tests {
             .expect("qwen3.7-max should be listed");
         assert_eq!(qwen37.recommended, Some(true));
         assert_eq!(qwen37.tag_key.as_deref(), Some("providers.tagLatest"));
+        assert_eq!(
+            qwen37
+                .capabilities
+                .as_ref()
+                .and_then(|capabilities| capabilities.vision),
+            Some(true)
+        );
     }
 
     #[test]
@@ -389,7 +402,9 @@ mod tests {
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids.first(), Some(&"qwen/qwen3.7-max"));
+        assert_eq!(ids.first(), Some(&"~anthropic/claude-fable-latest"));
+        assert!(ids.contains(&"anthropic/claude-fable-5"));
+        assert!(ids.contains(&"qwen/qwen3.7-plus"));
         assert!(ids.contains(&"x-ai/grok-build-0.1"));
         assert!(ids.contains(&"anthropic/claude-sonnet-4.6"));
         let codex = openrouter
@@ -401,6 +416,10 @@ mod tests {
 
         assert_eq!(
             model_supports_reasoning_from_catalog(ProviderType::OpenRouter, "x-ai/grok-4.3"),
+            Some(true)
+        );
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::OpenRouter, "qwen/qwen3.7-plus"),
             Some(true)
         );
         assert_eq!(
@@ -425,7 +444,15 @@ mod tests {
         );
         assert_eq!(
             model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3.6-plus"),
-            Some(false)
+            Some(true)
+        );
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::Doubao, "doubao-seed-2.0-pro"),
+            Some(true)
+        );
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::OpenAi, "grok-4.3"),
+            Some(true)
         );
         assert_eq!(
             model_supports_vision_from_catalog(ProviderType::LmStudio, "custom-vl-model"),
@@ -448,7 +475,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            model_supports_reasoning_from_catalog(ProviderType::Anthropic, "claude-opus-4-8"),
+            model_supports_reasoning_from_catalog(ProviderType::Anthropic, "claude-fable-5"),
             Some(true)
         );
         assert_eq!(
@@ -457,6 +484,13 @@ mod tests {
         );
         assert_eq!(
             model_supports_reasoning_from_catalog(ProviderType::OpenAi, "grok-4.3"),
+            Some(true)
+        );
+        assert_eq!(
+            model_supports_reasoning_from_catalog(
+                ProviderType::OpenAi,
+                "grok-4.20-0309-non-reasoning"
+            ),
             Some(false)
         );
         assert_eq!(

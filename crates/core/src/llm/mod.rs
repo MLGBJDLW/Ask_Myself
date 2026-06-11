@@ -609,7 +609,7 @@ mod tests {
             "deepseek-v4-pro"
         ));
         assert!(model_supports_vision(&ProviderType::Qwen, "qwen3-vl-plus"));
-        assert!(!model_supports_vision(&ProviderType::Qwen, "qwen3.6-plus"));
+        assert!(model_supports_vision(&ProviderType::Qwen, "qwen3.6-plus"));
         assert!(model_supports_vision(
             &ProviderType::LmStudio,
             "local-vision-model"
