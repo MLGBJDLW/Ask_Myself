@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.3...nexa-monorepo-v0.9.4) (2026-06-11)
+
+
+### Bug Fixes
+
+* **chat:** Preserve pre-reset transcript and improve timeline streaming/merge behaviour ([bf7f575](https://github.com/MLGBJDLW/Nexa/commit/bf7f575c74973cf026fd99ef028e08703de744f8))
+
 ## [0.9.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.2...nexa-monorepo-v0.9.3) (2026-06-11)
 
 
