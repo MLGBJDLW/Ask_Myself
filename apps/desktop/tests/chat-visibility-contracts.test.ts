@@ -1,5 +1,11 @@
 import { projectChatStreamingVisibility } from '../src/lib/streaming/chatVisibility';
 import type { StreamRoundEvent, TraceEvent } from '../src/lib/streaming/protocol';
+import {
+  buildLiveTraceTimeline,
+  isCurrentTraceActive,
+  traceEventsAfterStreamRounds,
+  visibleTraceEventsForTimeline,
+} from '../src/lib/streaming/timelineViewModel';
 
 type TestFn = () => void | Promise<void>;
 const tests: Array<{ name: string; fn: TestFn }> = [];
@@ -27,6 +33,29 @@ function toolCall(callId: string) {
     argsStatus: 'done' as const,
     argsBytes: 2,
   };
+}
+
+function replyTextsFromTimeline(
+  traceEvents: TraceEvent[],
+  streamRounds: StreamRoundEvent[],
+): string[] {
+  const visibleTraceEvents = visibleTraceEventsForTimeline(traceEvents);
+  const liveTraceEvents = traceEventsAfterStreamRounds(visibleTraceEvents, streamRounds);
+  const currentTraceActive = isCurrentTraceActive({
+    isStreaming: true,
+    isThinking: true,
+    thinkingText: 'Second thinking streaming',
+    toolCalls: [],
+    visibleTraceEvents,
+  });
+  const timeline = buildLiveTraceTimeline({
+    visibleTraceEvents: liveTraceEvents,
+    isStreaming: true,
+    currentTraceActive,
+    streamText: '',
+    displayedText: '',
+  });
+  return timeline.flatMap((item) => (item.kind === 'reply' ? [item.content] : []));
 }
 
 test('streaming visibility prefers full trace when rounds and new live trace coexist', () => {
@@ -61,6 +90,41 @@ test('streaming visibility prefers full trace when rounds and new live trace coe
   assert(
     projected.traceEvents.some((event) => event.kind === 'thinking' && event.text === 'Second thinking streaming'),
     'current thinking remains visible',
+  );
+});
+
+test('full live timeline keeps prior reply while later thinking streams', () => {
+  const traceEvents: TraceEvent[] = [
+    { id: 'thinking-1', kind: 'thinking', text: 'First thinking' },
+    { id: 'reply-1', kind: 'reply', text: 'First reply' },
+    { id: 'tool-1', kind: 'tool', toolCall: toolCall('call-1') },
+    { id: 'thinking-2', kind: 'thinking', text: 'Second thinking streaming' },
+  ];
+  const streamRounds: StreamRoundEvent[] = [
+    {
+      id: 'round-1',
+      thinking: 'First thinking',
+      reply: 'First reply',
+      toolCalls: [toolCall('call-1')],
+    },
+  ];
+
+  const oldPathReplies = replyTextsFromTimeline(traceEvents, streamRounds);
+  assert(
+    !oldPathReplies.includes('First reply'),
+    'pre-fix stream-round trimming drops the prior reply from live timeline',
+  );
+
+  const projected = projectChatStreamingVisibility({
+    isStreaming: true,
+    streamRounds,
+    traceEvents,
+  });
+  const newPathReplies = replyTextsFromTimeline(projected.traceEvents, projected.streamRounds);
+
+  assert(
+    newPathReplies.includes('First reply'),
+    'projected live timeline preserves prior reply while later thinking streams',
   );
 });
 
