@@ -23,6 +23,13 @@ use crate::error::CoreError;
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
+// Gemini can emit relatively large SSE payloads, especially for thought parts.
+// Splitting only the provider-local delta preserves protocol semantics while
+// making the UI feel like a token stream instead of paragraph-sized bursts.
+const GEMINI_TEXT_CHUNK_CHARS: usize = 24;
+const GEMINI_THINKING_CHUNK_CHARS: usize = 32;
+const GEMINI_MICRO_CHUNK_DELAY: Duration = Duration::from_millis(12);
+
 // ---------------------------------------------------------------------------
 // Gemini API wire types
 // ---------------------------------------------------------------------------
@@ -543,6 +550,227 @@ fn to_incremental_delta(previous: &mut String, current: String) -> String {
 // Gemini SSE stream parser
 // ---------------------------------------------------------------------------
 
+/// Append one arbitrary network byte chunk to a UTF-8 string buffer.
+///
+/// `reqwest::bytes_stream()` does not guarantee that each yielded byte chunk is
+/// a complete UTF-8 string. Large Chinese/Japanese/Korean text or emoji can be
+/// split across byte chunks, so per-chunk `str::from_utf8` creates false
+/// "incomplete utf-8 byte sequence" failures. This helper keeps an unfinished
+/// UTF-8 suffix in `pending_utf8` until the next network chunk arrives.
+fn push_utf8_stream_chunk(
+    buffer: &mut String,
+    pending_utf8: &mut Vec<u8>,
+    chunk: &[u8],
+) -> Result<(), CoreError> {
+    pending_utf8.extend_from_slice(chunk);
+
+    loop {
+        match std::str::from_utf8(pending_utf8) {
+            Ok(text) => {
+                buffer.push_str(text);
+                pending_utf8.clear();
+                return Ok(());
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                if valid_up_to > 0 {
+                    let valid = std::str::from_utf8(&pending_utf8[..valid_up_to])
+                        .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in stream: {e}")))?
+                        .to_string();
+                    buffer.push_str(&valid);
+                    pending_utf8.drain(..valid_up_to);
+                    continue;
+                }
+
+                // No valid prefix and no definite invalid byte: the entire
+                // pending buffer is an incomplete multi-byte sequence. Wait for
+                // the next network chunk instead of failing the stream.
+                if error.error_len().is_none() {
+                    return Ok(());
+                }
+
+                return Err(CoreError::Llm(format!("Invalid UTF-8 in stream: {error}")));
+            }
+        }
+    }
+}
+
+fn split_delta_for_streaming(delta: &str, target_chars: usize) -> Vec<String> {
+    if delta.is_empty() {
+        return Vec::new();
+    }
+
+    let target_chars = target_chars.max(1);
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut current_chars = 0usize;
+
+    for ch in delta.chars() {
+        current.push(ch);
+        current_chars += 1;
+
+        let soft_boundary = matches!(
+            ch,
+            '\n' | '\r'
+                | '。'
+                | '！'
+                | '？'
+                | '，'
+                | '、'
+                | '；'
+                | '：'
+                | '.'
+                | '!'
+                | '?'
+                | ','
+                | ';'
+                | ':'
+        );
+
+        if current_chars >= target_chars || (current_chars >= 8 && soft_boundary) {
+            parts.push(std::mem::take(&mut current));
+            current_chars = 0;
+        }
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    parts
+}
+
+async fn send_gemini_content_chunks(
+    tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
+    text_delta: String,
+    thinking_delta: Option<String>,
+    finish_reason: Option<FinishReason>,
+    usage: Option<Usage>,
+) -> bool {
+    let text_parts = split_delta_for_streaming(&text_delta, GEMINI_TEXT_CHUNK_CHARS);
+    let thinking_parts = thinking_delta
+        .as_deref()
+        .map(|delta| split_delta_for_streaming(delta, GEMINI_THINKING_CHUNK_CHARS))
+        .unwrap_or_default();
+    let needs_terminal_chunk = finish_reason.is_some() || usage.is_some();
+    let chunk_count = text_parts
+        .len()
+        .max(thinking_parts.len())
+        .max(if needs_terminal_chunk { 1 } else { 0 });
+
+    for idx in 0..chunk_count {
+        let is_last = idx + 1 == chunk_count;
+        let chunk = StreamChunk {
+            delta: text_parts.get(idx).cloned().unwrap_or_default(),
+            tool_call_delta: None,
+            finish_reason: if is_last { finish_reason.clone() } else { None },
+            usage: if is_last { usage.clone() } else { None },
+            thinking_delta: thinking_parts.get(idx).cloned(),
+        };
+
+        let has_payload = !chunk.delta.is_empty()
+            || chunk.thinking_delta.as_deref().is_some_and(|delta| !delta.is_empty())
+            || chunk.finish_reason.is_some()
+            || chunk.usage.is_some();
+        if !has_payload {
+            continue;
+        }
+
+        if tx.send(Ok(chunk)).await.is_err() {
+            return false;
+        }
+
+        if !is_last && !GEMINI_MICRO_CHUNK_DELAY.is_zero() {
+            tokio::time::sleep(GEMINI_MICRO_CHUNK_DELAY).await;
+        }
+    }
+
+    true
+}
+
+async fn emit_gemini_response_chunk(
+    resp: GeminiResponse,
+    tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
+    emitted_text: &mut String,
+    emitted_thinking: &mut String,
+    saw_finish_reason: &mut bool,
+) -> bool {
+    let (text_content, tool_calls, finish_reason, usage, thinking) = extract_response(&resp);
+    let text_delta = to_incremental_delta(emitted_text, text_content);
+    let thinking_delta = thinking
+        .map(|t| to_incremental_delta(emitted_thinking, t))
+        .filter(|s| !s.is_empty());
+    let has_finish = finish_reason != FinishReason::Other;
+    if has_finish {
+        *saw_finish_reason = true;
+    }
+
+    if !text_delta.is_empty() || has_finish || usage.total_tokens > 0 || thinking_delta.is_some() {
+        let finish_reason = if has_finish { Some(finish_reason) } else { None };
+        let usage = if usage.total_tokens > 0 { Some(usage) } else { None };
+        if !send_gemini_content_chunks(tx, text_delta, thinking_delta, finish_reason, usage).await {
+            return false;
+        }
+    }
+
+    for tc in &tool_calls {
+        let delta_chunk = StreamChunk {
+            delta: String::new(),
+            tool_call_delta: Some(ToolCallDelta {
+                id: tc.id.clone(),
+                name: Some(tc.name.clone()),
+                arguments_delta: tc.arguments.clone(),
+                index: tc
+                    .id
+                    .strip_prefix("call_")
+                    .and_then(|s| s.parse::<u32>().ok()),
+                thought_signature: tc.thought_signature.clone(),
+            }),
+            finish_reason: None,
+            usage: None,
+            thinking_delta: None,
+        };
+        if tx.send(Ok(delta_chunk)).await.is_err() {
+            return false;
+        }
+    }
+
+    true
+}
+
+async fn process_gemini_sse_event(
+    data: &str,
+    tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
+    emitted_text: &mut String,
+    emitted_thinking: &mut String,
+    saw_finish_reason: &mut bool,
+) -> Result<bool, CoreError> {
+    let data = data.trim();
+    if data.is_empty() {
+        return Ok(true);
+    }
+    if data == "[DONE]" {
+        return Ok(false);
+    }
+
+    let resp: GeminiResponse = match serde_json::from_str(data) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("Gemini SSE parse skip: {e}");
+            return Ok(true);
+        }
+    };
+
+    Ok(emit_gemini_response_chunk(
+        resp,
+        tx,
+        emitted_text,
+        emitted_thinking,
+        saw_finish_reason,
+    )
+    .await)
+}
+
 /// Parse Gemini's SSE streaming response.
 ///
 /// Gemini streams the same JSON response shape as non-streaming, one chunk per SSE event.
@@ -552,6 +780,7 @@ async fn parse_gemini_stream(
 ) -> Result<(), CoreError> {
     let mut byte_stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut pending_utf8: Vec<u8> = Vec::new();
     let mut event_data_lines: Vec<String> = Vec::new();
     let mut emitted_text = String::new();
     let mut emitted_thinking = String::new();
@@ -565,9 +794,7 @@ async fn parse_gemini_stream(
     .await?
     {
         let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
-        let text = std::str::from_utf8(&chunk)
-            .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in stream: {e}")))?;
-        buffer.push_str(text);
+        push_utf8_stream_chunk(&mut buffer, &mut pending_utf8, &chunk)?;
 
         // Process complete lines.
         while let Some(newline_pos) = buffer.find('\n') {
@@ -582,79 +809,16 @@ async fn parse_gemini_stream(
 
                 let data = event_data_lines.join("\n");
                 event_data_lines.clear();
-                let data = data.trim();
-                if data.is_empty() {
-                    continue;
-                }
-                if data == "[DONE]" {
-                    return Ok(());
-                }
-
-                let resp: GeminiResponse = match serde_json::from_str(data) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::debug!("Gemini SSE parse skip: {e}");
-                        continue;
-                    }
-                };
-
-                let (text_content, tool_calls, finish_reason, usage, thinking) =
-                    extract_response(&resp);
-                let text_delta = to_incremental_delta(&mut emitted_text, text_content);
-                let thinking_delta = thinking
-                    .map(|t| to_incremental_delta(&mut emitted_thinking, t))
-                    .filter(|s| !s.is_empty());
-                let has_finish = finish_reason != FinishReason::Other;
-                if has_finish {
-                    saw_finish_reason = true;
-                }
-
-                if !text_delta.is_empty()
-                    || has_finish
-                    || usage.total_tokens > 0
-                    || thinking_delta.is_some()
+                if !process_gemini_sse_event(
+                    &data,
+                    &tx,
+                    &mut emitted_text,
+                    &mut emitted_thinking,
+                    &mut saw_finish_reason,
+                )
+                .await?
                 {
-                    let chunk = StreamChunk {
-                        delta: text_delta,
-                        tool_call_delta: None,
-                        finish_reason: if has_finish {
-                            Some(finish_reason)
-                        } else {
-                            None
-                        },
-                        usage: if usage.total_tokens > 0 {
-                            Some(usage)
-                        } else {
-                            None
-                        },
-                        thinking_delta,
-                    };
-
-                    if tx.send(Ok(chunk)).await.is_err() {
-                        return Ok(());
-                    }
-                }
-
-                for tc in &tool_calls {
-                    let delta_chunk = StreamChunk {
-                        delta: String::new(),
-                        tool_call_delta: Some(ToolCallDelta {
-                            id: tc.id.clone(),
-                            name: Some(tc.name.clone()),
-                            arguments_delta: tc.arguments.clone(),
-                            index: tc
-                                .id
-                                .strip_prefix("call_")
-                                .and_then(|s| s.parse::<u32>().ok()),
-                            thought_signature: tc.thought_signature.clone(),
-                        }),
-                        finish_reason: None,
-                        usage: None,
-                        thinking_delta: None,
-                    };
-                    if tx.send(Ok(delta_chunk)).await.is_err() {
-                        return Ok(());
-                    }
+                    return Ok(());
                 }
                 continue;
             }
@@ -669,77 +833,23 @@ async fn parse_gemini_stream(
         }
     }
 
+    if !pending_utf8.is_empty() {
+        return Err(CoreError::Llm(
+            "Invalid UTF-8 in stream: incomplete UTF-8 byte sequence at end of stream".to_string(),
+        ));
+    }
+
     // Flush a trailing event if the stream ended without a blank line.
     if !event_data_lines.is_empty() {
         let data = event_data_lines.join("\n");
-        let data = data.trim();
-        if !data.is_empty() && data != "[DONE]" {
-            let resp: GeminiResponse = match serde_json::from_str(data) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::debug!("Gemini SSE trailing parse skip: {e}");
-                    return Ok(());
-                }
-            };
-
-            let (text_content, tool_calls, finish_reason, usage, thinking) =
-                extract_response(&resp);
-            let text_delta = to_incremental_delta(&mut emitted_text, text_content);
-            let thinking_delta = thinking
-                .map(|t| to_incremental_delta(&mut emitted_thinking, t))
-                .filter(|s| !s.is_empty());
-            let has_finish = finish_reason != FinishReason::Other;
-            if has_finish {
-                saw_finish_reason = true;
-            }
-
-            if !text_delta.is_empty()
-                || has_finish
-                || usage.total_tokens > 0
-                || thinking_delta.is_some()
-            {
-                let chunk = StreamChunk {
-                    delta: text_delta,
-                    tool_call_delta: None,
-                    finish_reason: if has_finish {
-                        Some(finish_reason)
-                    } else {
-                        None
-                    },
-                    usage: if usage.total_tokens > 0 {
-                        Some(usage)
-                    } else {
-                        None
-                    },
-                    thinking_delta,
-                };
-                if tx.send(Ok(chunk)).await.is_err() {
-                    return Ok(());
-                }
-            }
-
-            for tc in &tool_calls {
-                let delta_chunk = StreamChunk {
-                    delta: String::new(),
-                    tool_call_delta: Some(ToolCallDelta {
-                        id: tc.id.clone(),
-                        name: Some(tc.name.clone()),
-                        arguments_delta: tc.arguments.clone(),
-                        index: tc
-                            .id
-                            .strip_prefix("call_")
-                            .and_then(|s| s.parse::<u32>().ok()),
-                        thought_signature: tc.thought_signature.clone(),
-                    }),
-                    finish_reason: None,
-                    usage: None,
-                    thinking_delta: None,
-                };
-                if tx.send(Ok(delta_chunk)).await.is_err() {
-                    return Ok(());
-                }
-            }
-        }
+        let _ = process_gemini_sse_event(
+            &data,
+            &tx,
+            &mut emitted_text,
+            &mut emitted_thinking,
+            &mut saw_finish_reason,
+        )
+        .await?;
     }
 
     if saw_finish_reason {
@@ -1104,5 +1214,48 @@ mod tests {
         let tc = gc.thinking_config.expect("thinking config");
         assert_eq!(tc.include_thoughts, Some(true));
         assert_eq!(tc.thinking_budget, Some(2048));
+    }
+
+    #[test]
+    fn test_push_utf8_stream_chunk_handles_split_multibyte_chars() {
+        let text = "data: {\"text\":\"你好，Gemini 🙂\"}\n\n";
+        let bytes = text.as_bytes();
+
+        for split in 1..bytes.len() {
+            let mut buffer = String::new();
+            let mut pending = Vec::new();
+
+            push_utf8_stream_chunk(&mut buffer, &mut pending, &bytes[..split]).unwrap();
+            push_utf8_stream_chunk(&mut buffer, &mut pending, &bytes[split..]).unwrap();
+
+            assert_eq!(buffer, text);
+            assert!(pending.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_push_utf8_stream_chunk_rejects_invalid_utf8() {
+        let mut buffer = String::new();
+        let mut pending = Vec::new();
+
+        let err = push_utf8_stream_chunk(&mut buffer, &mut pending, &[0xff])
+            .expect_err("invalid byte should be rejected");
+        assert!(err.to_string().contains("Invalid UTF-8 in stream"));
+    }
+
+    #[test]
+    fn test_split_delta_for_streaming_preserves_text_without_breaking_multibyte_chars() {
+        let text = "这是一个比较长的 Gemini streaming delta，用来确认中文和 emoji 🙂 不会被切坏。";
+        let parts = split_delta_for_streaming(text, 8);
+
+        assert!(parts.len() > 1);
+        assert_eq!(parts.join(""), text);
+        assert!(parts.iter().all(|part| std::str::from_utf8(part.as_bytes()).is_ok()));
+    }
+
+    #[test]
+    fn test_split_delta_for_streaming_keeps_small_delta_single_chunk() {
+        let parts = split_delta_for_streaming("hello", 24);
+        assert_eq!(parts, vec!["hello".to_string()]);
     }
 }

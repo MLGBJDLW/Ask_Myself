@@ -1,5 +1,4 @@
 import { type ComponentProps, useMemo } from 'react';
-import { MessageBubble } from '../../components/chat/MessageBubble';
 import { ChatMessages as BaseChatMessages } from './ChatMessages';
 import {
   projectChatMessageVisibility,
@@ -17,12 +16,12 @@ type ChatMessagesProps = ComponentProps<typeof BaseChatMessages>;
  * rounds and then trim those same events from the live trace, causing the user
  * to see only the latest thinking block until final replay restores the turn.
  *
- * Temporary steering messages have a similar ordering issue: while the current
- * assistant turn is still live, the in-progress reply/thinking/tool output is
- * rendered outside the persisted message list. Keeping optimistic steering in
- * that list places it directly under the turn's first user message. We render
- * it as live input after the current trace until backend persistence can place
- * it by sort order at turn completion.
+ * Temporary steering messages are also kept out of the persisted history path
+ * while streaming. The backend now emits the accepted steering text as an inline
+ * status trace at the exact interruption point, which lets the trace timeline
+ * show: previous thinking → user steering → reset/new thinking. Rendering the
+ * optimistic message as a sibling below BaseChatMessages would put it at the
+ * bottom of the chat instead of at the interruption point.
  */
 export function ChatMessages(props: ChatMessagesProps) {
   const visibility = useMemo(
@@ -42,24 +41,11 @@ export function ChatMessages(props: ChatMessagesProps) {
   );
 
   return (
-    <>
-      <BaseChatMessages
-        {...props}
-        messages={messageVisibility.historyMessages}
-        streamRounds={visibility.streamRounds}
-        traceEvents={visibility.traceEvents}
-      />
-      {messageVisibility.liveSteeringMessages.length > 0 && (
-        <div className="shrink-0 border-t border-border/45 bg-surface-1/95 px-4 pb-2 pt-2">
-          {messageVisibility.liveSteeringMessages.map((message) => (
-            <MessageBubble
-              key={message.id}
-              msg={message}
-              alwaysShowTimestamp
-            />
-          ))}
-        </div>
-      )}
-    </>
+    <BaseChatMessages
+      {...props}
+      messages={messageVisibility.historyMessages}
+      streamRounds={visibility.streamRounds}
+      traceEvents={visibility.traceEvents}
+    />
   );
 }
