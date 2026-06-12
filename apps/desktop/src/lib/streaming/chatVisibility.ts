@@ -1,5 +1,6 @@
 import type { ConversationMessage } from '../../types/conversation';
 import type { StreamRoundEvent, TraceEvent } from './protocol';
+import { isOptimisticSteeringMessage } from '../chatMessageGuards';
 
 export interface ChatStreamingVisibilityInput {
   isStreaming: boolean;
@@ -21,10 +22,6 @@ export interface ChatMessageVisibilityInput {
 export interface ChatMessageVisibilityProjection {
   historyMessages: ConversationMessage[];
   liveSteeringMessages: ConversationMessage[];
-}
-
-export function isOptimisticSteeringMessage(message: ConversationMessage): boolean {
-  return message.role === 'user' && message.id.startsWith('temp-steer-');
 }
 
 /**
@@ -68,7 +65,8 @@ export function projectChatStreamingVisibility(
  * persisted message list yet. Rendering temporary steering inside the history
  * list therefore places it right after the turn's first user message and before
  * the live trace overlay. Keep temporary steering out of the history path and
- * render it as live input until final persistence can place it by sort order.
+ * let the backend-emitted steering status appear inside the trace timeline at
+ * the actual interruption point.
  */
 export function projectChatMessageVisibility(
   input: ChatMessageVisibilityInput,
