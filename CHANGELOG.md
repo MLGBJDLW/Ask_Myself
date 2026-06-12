@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.7...nexa-monorepo-v0.9.8) (2026-06-12)
+
+
+### Bug Fixes
+
+* **chat:** Gemini streaming UTF-8 handling and steering timeline placement ([ab7746e](https://github.com/MLGBJDLW/Nexa/commit/ab7746e17fb5e6e74176e5833385407e1149bfab))
+
 ## [0.9.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.6...nexa-monorepo-v0.9.7) (2026-06-11)
 
 
