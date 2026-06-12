@@ -9,20 +9,13 @@ import {
 type ChatMessagesProps = ComponentProps<typeof BaseChatMessages>;
 
 /**
- * Stabilizes ChatMessages' live streaming inputs before the heavy renderer sees
- * them. The base renderer has two valid render paths: stream rounds and live
- * trace timeline. When both exist during an active turn, the live-trace path is
- * the only one that can preserve prior in-turn replies while showing the next
- * streaming thinking block. Passing both makes the base renderer suppress
- * rounds and then trim those same events from the live trace, causing the user
- * to see only the latest thinking block until final replay restores the turn.
+ * Transitional adapter for ChatMessages.
  *
- * Temporary steering messages have a similar ordering issue: while the current
- * assistant turn is still live, the in-progress reply/thinking/tool output is
- * rendered outside the persisted message list. Keeping optimistic steering in
- * that list places it directly under the turn's first user message. We render
- * it as live input after the current trace until backend persistence can place
- * it by sort order at turn completion.
+ * Keep the duplicate projection logic here small and explicit while the main
+ * ChatMessages renderer still owns both legacy streamRounds rendering and the
+ * canonical trace timeline. New behavior should be added to the projection
+ * helpers, not to this wrapper, so it can be folded into ChatMessages once the
+ * streamRounds UI path is retired.
  */
 export function ChatMessages(props: ChatMessagesProps) {
   const visibility = useMemo(
