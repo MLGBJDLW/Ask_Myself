@@ -8,13 +8,7 @@ import {
 type ChatMessagesProps = ComponentProps<typeof BaseChatMessages>;
 
 /**
- * Stabilizes ChatMessages' live streaming inputs before the heavy renderer sees
- * them. The base renderer has two valid render paths: stream rounds and live
- * trace timeline. When both exist during an active turn, the live-trace path is
- * the only one that can preserve prior in-turn replies while showing the next
- * streaming thinking block. Passing both makes the base renderer suppress
- * rounds and then trim those same events from the live trace, causing the user
- * to see only the latest thinking block until final replay restores the turn.
+ * Transitional adapter for ChatMessages.
  *
  * Temporary steering messages are also kept out of the persisted history path
  * while streaming. The backend now emits the accepted steering text as an inline

@@ -48,6 +48,15 @@ const TOOL_PREPARING_DELAY_MS = 150;
 
 type StoreListener = (conversationId: string) => void;
 
+function stateHasVisiblePreview(state: InternalStreamState | undefined): boolean {
+  return Boolean(state && (
+    state.isStreaming ||
+    state.traceEvents.length > 0 ||
+    state.streamText.length > 0 ||
+    state.streamRounds.length > 0
+  ));
+}
+
 class StreamStoreImpl {
   private _streams: Record<string, InternalStreamState> = {};
   private _listeners = new Set<StoreListener>();
@@ -114,30 +123,34 @@ class StreamStoreImpl {
     return null;
   }
 
+  private restoreProjectedState(
+    conversationId: string,
+    stateFactory: () => InternalStreamState,
+  ): void {
+    const existing = this._streams[conversationId];
+    if (existing?.isStreaming && stateHasVisiblePreview(existing)) {
+      return;
+    }
+    if (existing) clearStreamWatchdog(existing);
+    if (existing) clearToolPreparingTimers(existing);
+
+    const state = stateFactory();
+    this._streams[conversationId] = state;
+    if (state.isStreaming) {
+      this.resetTimeout(conversationId);
+    }
+    this.notify(conversationId);
+  }
+
   /** Rebuild the visible stream preview from durable typed stream events. */
   restoreFromTaskEvents(
     conversationId: string,
     taskRun: AgentTaskRun,
     taskEvents: AgentTaskRunEvent[],
   ): void {
-    const existing = this._streams[conversationId];
-    if (existing?.isStreaming && (
-      existing.traceEvents.length > 0 ||
-      existing.streamText.length > 0 ||
-      existing.streamRounds.length > 0
-    )) {
-      return;
-    }
-    if (existing) clearStreamWatchdog(existing);
-    if (existing) clearToolPreparingTimers(existing);
-
-    const state = projectTaskEventsToStreamState(taskRun, taskEvents);
-
-    this._streams[conversationId] = state;
-    if (state.isStreaming) {
-      this.resetTimeout(conversationId);
-    }
-    this.notify(conversationId);
+    this.restoreProjectedState(conversationId, () =>
+      projectTaskEventsToStreamState(taskRun, taskEvents),
+    );
   }
 
   /** Rebuild the visible stream preview directly from canonical durable Run Events. */
@@ -147,24 +160,9 @@ class StreamStoreImpl {
     runEvents: AgentRunEvent[],
     taskEvents: AgentTaskRunEvent[] = [],
   ): void {
-    const existing = this._streams[conversationId];
-    if (existing?.isStreaming && (
-      existing.traceEvents.length > 0 ||
-      existing.streamText.length > 0 ||
-      existing.streamRounds.length > 0
-    )) {
-      return;
-    }
-    if (existing) clearStreamWatchdog(existing);
-    if (existing) clearToolPreparingTimers(existing);
-
-    const state = projectRunEventsToStreamState(taskRun, runEvents, taskEvents);
-
-    this._streams[conversationId] = state;
-    if (state.isStreaming) {
-      this.resetTimeout(conversationId);
-    }
-    this.notify(conversationId);
+    this.restoreProjectedState(conversationId, () =>
+      projectRunEventsToStreamState(taskRun, runEvents, taskEvents),
+    );
   }
 
   /** Rebuild historical stream preview, preferring canonical Run Events over legacy task events. */
@@ -174,24 +172,9 @@ class StreamStoreImpl {
     taskEvents: AgentTaskRunEvent[],
     runEvents: AgentRunEvent[],
   ): void {
-    const existing = this._streams[conversationId];
-    if (existing?.isStreaming && (
-      existing.traceEvents.length > 0 ||
-      existing.streamText.length > 0 ||
-      existing.streamRounds.length > 0
-    )) {
-      return;
-    }
-    if (existing) clearStreamWatchdog(existing);
-    if (existing) clearToolPreparingTimers(existing);
-
-    const state = projectHistoricalEventsToStreamState(taskRun, taskEvents, runEvents);
-
-    this._streams[conversationId] = state;
-    if (state.isStreaming) {
-      this.resetTimeout(conversationId);
-    }
-    this.notify(conversationId);
+    this.restoreProjectedState(conversationId, () =>
+      projectHistoricalEventsToStreamState(taskRun, taskEvents, runEvents),
+    );
   }
 
   /** Initialize (or reset) stream state for a conversation. */
