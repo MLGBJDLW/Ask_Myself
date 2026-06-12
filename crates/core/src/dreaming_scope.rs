@@ -108,10 +108,8 @@ mod tests {
             ..DreamingConfig::default()
         };
 
-        let scope = merge_configured_dream_scope(
-            &config,
-            serde_json::json!({ "sourceIds": ["blocked"] }),
-        );
+        let scope =
+            merge_configured_dream_scope(&config, serde_json::json!({ "sourceIds": ["blocked"] }));
 
         assert_eq!(scope["sourceIds"], serde_json::json!([]));
     }

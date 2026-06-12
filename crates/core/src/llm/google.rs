@@ -669,7 +669,10 @@ async fn send_gemini_content_chunks(
         };
 
         let has_payload = !chunk.delta.is_empty()
-            || chunk.thinking_delta.as_deref().is_some_and(|delta| !delta.is_empty())
+            || chunk
+                .thinking_delta
+                .as_deref()
+                .is_some_and(|delta| !delta.is_empty())
             || chunk.finish_reason.is_some()
             || chunk.usage.is_some();
         if !has_payload {
@@ -706,8 +709,16 @@ async fn emit_gemini_response_chunk(
     }
 
     if !text_delta.is_empty() || has_finish || usage.total_tokens > 0 || thinking_delta.is_some() {
-        let finish_reason = if has_finish { Some(finish_reason) } else { None };
-        let usage = if usage.total_tokens > 0 { Some(usage) } else { None };
+        let finish_reason = if has_finish {
+            Some(finish_reason)
+        } else {
+            None
+        };
+        let usage = if usage.total_tokens > 0 {
+            Some(usage)
+        } else {
+            None
+        };
         if !send_gemini_content_chunks(tx, text_delta, thinking_delta, finish_reason, usage).await {
             return false;
         }
@@ -761,14 +772,10 @@ async fn process_gemini_sse_event(
         }
     };
 
-    Ok(emit_gemini_response_chunk(
-        resp,
-        tx,
-        emitted_text,
-        emitted_thinking,
-        saw_finish_reason,
+    Ok(
+        emit_gemini_response_chunk(resp, tx, emitted_text, emitted_thinking, saw_finish_reason)
+            .await,
     )
-    .await)
 }
 
 /// Parse Gemini's SSE streaming response.
@@ -1250,7 +1257,9 @@ mod tests {
 
         assert!(parts.len() > 1);
         assert_eq!(parts.join(""), text);
-        assert!(parts.iter().all(|part| std::str::from_utf8(part.as_bytes()).is_ok()));
+        assert!(parts
+            .iter()
+            .all(|part| std::str::from_utf8(part.as_bytes()).is_ok()));
     }
 
     #[test]
