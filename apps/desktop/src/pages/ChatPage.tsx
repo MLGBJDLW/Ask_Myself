@@ -16,8 +16,9 @@ import { useChatSession } from '../lib/useChatSession';
 import { useResizablePanel } from '../lib/useResizablePanel';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
-import type { AgentConfig, Conversation, ConversationMessage, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
+import type { AgentConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
 import { formatUserError } from '../lib/userError';
+import { isSteeringMessage } from '../lib/chatMessageGuards';
 import {
   GRAPH_AGENT_CONTEXT_EVENT,
   buildGraphCollectionContext,
@@ -73,17 +74,6 @@ function buildApprovedPlanPrompt(planMarkdown: string): string {
   ].join('\n');
 }
 
-function isSteeringConversationMessage(message: ConversationMessage): boolean {
-  if (message.role !== 'user') return false;
-  if (message.id.startsWith('temp-steer-')) return true;
-  const artifacts = message.artifacts;
-  return Boolean(
-    artifacts &&
-      !Array.isArray(artifacts) &&
-      typeof artifacts === 'object' &&
-      (artifacts as Record<string, unknown>).kind === 'steering',
-  );
-}
 
 function agentConfigToSaveInput(
   config: AgentConfig,
@@ -390,7 +380,7 @@ export function ChatPage() {
     () => chat.messages
       .filter((message) => (
         message.role === 'user' &&
-        !isSteeringConversationMessage(message) &&
+        !isSteeringMessage(message) &&
         message.content.trim().length > 0
       ))
       .map((message) => message.content),

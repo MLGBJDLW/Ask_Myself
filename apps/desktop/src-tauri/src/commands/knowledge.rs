@@ -404,7 +404,10 @@ fn start_dream_run_with_config(
     }
     db.start_dream_run(nexa_core::dreaming::StartDreamInput {
         trigger_kind: Some(trigger_kind.to_string()),
-        scope_json: Some(merge_configured_dream_scope(app_config, base_scope)),
+        scope_json: Some(nexa_core::dreaming_scope::merge_configured_dream_scope(
+            &app_config.dreaming,
+            base_scope,
+        )),
         max_artifacts: Some(max_artifacts.unwrap_or(app_config.dreaming.max_artifacts_per_run)),
     })
     .map_err(|e| e.to_string())
@@ -425,89 +428,6 @@ fn background_dream_budget_available(
         .filter(|run| run.trigger_kind != "manual" && run.created_at.starts_with(&today))
         .count();
     Ok(used < max_runs)
-}
-
-fn merge_configured_dream_scope(
-    app_config: &AppConfig,
-    base_scope: serde_json::Value,
-) -> serde_json::Value {
-    let mut scope = match base_scope {
-        serde_json::Value::Object(map) => map,
-        _ => serde_json::Map::new(),
-    };
-    let source_ids = constrained_scope_ids(
-        &scope,
-        "sourceIds",
-        "sourceId",
-        &app_config.dreaming.source_ids,
-    );
-    let project_ids = constrained_scope_ids(
-        &scope,
-        "projectIds",
-        "projectId",
-        &app_config.dreaming.project_ids,
-    );
-    scope.insert(
-        "dreamingLocalOnly".to_string(),
-        serde_json::json!(app_config.dreaming.local_only),
-    );
-    scope.insert(
-        "dreamingMaxRunsPerDay".to_string(),
-        serde_json::json!(app_config.dreaming.max_runs_per_day),
-    );
-    if !source_ids.is_empty() {
-        scope.insert("sourceIds".to_string(), serde_json::json!(source_ids));
-    }
-    if !project_ids.is_empty() {
-        scope.insert("projectIds".to_string(), serde_json::json!(project_ids));
-    }
-    serde_json::Value::Object(scope)
-}
-
-fn constrained_scope_ids(
-    scope: &serde_json::Map<String, serde_json::Value>,
-    array_key: &str,
-    single_key: &str,
-    configured_ids: &[String],
-) -> Vec<String> {
-    let requested = scope_ids(scope, array_key, single_key);
-    if configured_ids.is_empty() {
-        return requested;
-    }
-    if requested.is_empty() {
-        return configured_ids.to_vec();
-    }
-    requested
-        .into_iter()
-        .filter(|id| configured_ids.iter().any(|configured| configured == id))
-        .collect()
-}
-
-fn scope_ids(
-    scope: &serde_json::Map<String, serde_json::Value>,
-    array_key: &str,
-    single_key: &str,
-) -> Vec<String> {
-    let mut ids = Vec::new();
-    if let Some(single) = scope.get(single_key).and_then(serde_json::Value::as_str) {
-        let trimmed = single.trim();
-        if !trimmed.is_empty() {
-            ids.push(trimmed.to_string());
-        }
-    }
-    if let Some(items) = scope.get(array_key).and_then(serde_json::Value::as_array) {
-        for item in items {
-            let Some(raw) = item.as_str() else {
-                continue;
-            };
-            let trimmed = raw.trim();
-            if trimmed.is_empty() || ids.iter().any(|id| id == trimmed) {
-                continue;
-            }
-            ids.push(trimmed.to_string());
-        }
-    }
-    ids
 }
 
 pub struct DreamingSchedulerState {

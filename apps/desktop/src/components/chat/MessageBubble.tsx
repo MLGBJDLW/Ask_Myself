@@ -11,9 +11,10 @@ import {
   preprocessFilePaths,
   rehypePlugins,
 } from './markdownComponents';
-import { extractChunkCitations, preprocessChunkCitations, preprocessInlineCitations } from '../../lib/citationParser';
+import { preprocessChunkCitations, preprocessInlineCitations } from '../../lib/citationParser';
 import type { CitationCardData } from '../../lib/citationParser';
-import { isWebUrl, sourceBasename, sourceHost } from '../../lib/sourceDisplay';
+import { isSteeringMessage } from '../../lib/chatMessageGuards';
+import { buildEvidenceItemsFromContent } from '../../lib/evidenceItems';
 import { MessageActions } from './MessageActions';
 import { messageTimestamp } from '../../lib/relativeTime';
 import type { ConversationMessage } from '../../types/conversation';
@@ -50,17 +51,6 @@ export interface MessageBubbleProps {
   onApprovePlan?: (planMarkdown: string, sourceMessageId: string) => void;
 }
 
-function isSteeringMessage(msg: ConversationMessage): boolean {
-  if (msg.role !== 'user') return false;
-  if (msg.id.startsWith('temp-steer-')) return true;
-  const artifacts = msg.artifacts;
-  return Boolean(
-    artifacts &&
-      !Array.isArray(artifacts) &&
-      typeof artifacts === 'object' &&
-      (artifacts as Record<string, unknown>).kind === 'steering',
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -168,70 +158,15 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
 
   const evidenceItems = useMemo(() => {
     if (isUser) return [];
-
-    const parsed = extractChunkCitations(visibleContent);
-    const grouped = new Map<string, {
-      chunkId: string;
-      card?: CitationCardData;
-      count: number;
-      displayText?: string;
-    }>();
-    const seenChunks = new Set<string>();
-
-    const addEvidence = (chunkId: string, displayText?: string) => {
-      if (seenChunks.has(chunkId)) return;
-      seenChunks.add(chunkId);
-
-      const card = citationLookup?.getCard(chunkId);
-      const groupKey =
-        card?.documentPath?.trim()
-        || card?.documentTitle?.trim()
-        || chunkId;
-      const existing = grouped.get(groupKey);
-      if (existing) {
-        existing.count += 1;
-        if (!existing.card && card) existing.card = card;
-        if (!existing.displayText && displayText) existing.displayText = displayText;
-        return;
-      }
-
-      grouped.set(groupKey, {
-        chunkId,
-        card: card ?? undefined,
-        count: 1,
-        displayText,
-      });
-    };
-
-    for (const entry of parsed) {
-      addEvidence(entry.chunkId, entry.displayText);
-    }
-
-    return Array.from(grouped.values())
-      .sort((a, b) => {
-        if (b.count !== a.count) return b.count - a.count;
-        const aLabel = a.card?.documentTitle || a.card?.documentPath || a.displayText || a.chunkId;
-        const bLabel = b.card?.documentTitle || b.card?.documentPath || b.displayText || b.chunkId;
-        return aLabel.localeCompare(bLabel);
-      })
-      .map((item, index) => {
-        const sourcePath = item.card?.documentPath?.trim() ?? '';
-        const host = sourcePath && isWebUrl(sourcePath) ? sourceHost(sourcePath) : '';
-        const title = item.card?.documentTitle?.trim() ?? '';
-        const sourceLabel = sourcePath
-          ? (host
-            ? (title ? `${title} · ${host}` : host)
-            : (title || sourceBasename(sourcePath)))
-          : '';
-        const baseLabel =
-          sourceLabel
-          || item.displayText
-          || t('chat.evidenceSourceLabel', { index: String(index + 1) });
-        return {
-          chunkId: item.chunkId,
-          displayText: item.count > 1 ? `${baseLabel} ×${item.count}` : baseLabel,
-        };
-      });
+    return buildEvidenceItemsFromContent(
+      visibleContent,
+      citationLookup,
+      (index) => t('chat.evidenceSourceLabel', { index: String(index) }),
+      { dedupeChunks: true, sortByFrequency: true },
+    ).map((item) => ({
+      chunkId: item.chunkId,
+      displayText: item.displayText,
+    }));
   }, [citationLookup, isUser, visibleContent, t]);
 
   const timestamp = messageTimestamp(msg.createdAt, t);
