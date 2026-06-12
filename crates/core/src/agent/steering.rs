@@ -11,6 +11,32 @@ pub(super) struct SteeringDrainContext<'a> {
     pub(super) privacy_cfg: &'a privacy::PrivacyConfig,
 }
 
+fn steering_status_preview(text: &str) -> String {
+    const MAX_CHARS: usize = 280;
+
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= MAX_CHARS {
+        return compact;
+    }
+
+    let mut preview = compact.chars().take(MAX_CHARS).collect::<String>();
+    preview.push('…');
+    preview
+}
+
+fn steering_status_text(text: &str, has_parts: bool) -> String {
+    let preview = steering_status_preview(text);
+    if preview.is_empty() {
+        if has_parts {
+            "User steering: attached context received.".to_string()
+        } else {
+            "User steering received.".to_string()
+        }
+    } else {
+        format!("User steering: {preview}")
+    }
+}
+
 impl AgentExecutor {
     pub(super) async fn drain_steering_messages(
         &self,
@@ -76,20 +102,18 @@ impl AgentExecutor {
             return Vec::new();
         }
 
-        let _ = ctx
-            .tx
-            .send(AgentEvent::Status {
-                content: if drained.len() == 1 {
-                    "Steering message received; applying it to the next agent step.".to_string()
-                } else {
-                    format!(
+        if drained.len() > 1 {
+            let _ = ctx
+                .tx
+                .send(AgentEvent::Status {
+                    content: format!(
                         "{} steering messages received; applying them to the next agent step.",
                         drained.len()
-                    )
-                },
-                tone: Some("muted".to_string()),
-            })
-            .await;
+                    ),
+                    tone: Some("muted".to_string()),
+                })
+                .await;
+        }
 
         let mut steering_texts = Vec::with_capacity(drained.len());
         for steering in drained {
@@ -97,6 +121,14 @@ impl AgentExecutor {
             if text.is_empty() && steering.parts.is_empty() {
                 continue;
             }
+
+            let _ = ctx
+                .tx
+                .send(AgentEvent::Status {
+                    content: steering_status_text(&text, !steering.parts.is_empty()),
+                    tone: Some("success".to_string()),
+                })
+                .await;
 
             if let Some(cid) = ctx.conversation_id {
                 let conv_msg = ConversationMessage {
@@ -186,5 +218,31 @@ impl AgentExecutor {
             return Some(MISSING_REASONING_CONTENT_PLACEHOLDER.to_string());
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steering_status_preview_compacts_whitespace() {
+        assert_eq!(steering_status_preview("  please\n\tchange   direction  "), "please change direction");
+    }
+
+    #[test]
+    fn steering_status_preview_truncates_long_text() {
+        let long = "a".repeat(400);
+        let preview = steering_status_preview(&long);
+        assert_eq!(preview.chars().count(), 281);
+        assert!(preview.ends_with('…'));
+    }
+
+    #[test]
+    fn steering_status_text_mentions_attached_context() {
+        assert_eq!(
+            steering_status_text("", true),
+            "User steering: attached context received."
+        );
     }
 }
