@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.7...nexa-monorepo-v0.9.8) (2026-06-12)
+
+
+### Bug Fixes
+
+* apply rustfmt to restore CI ([e5cc421](https://github.com/MLGBJDLW/Nexa/commit/e5cc421f81f6356758885d26ad633757ff0f9ece))
+* apply rustfmt to restore CI ([b4d5477](https://github.com/MLGBJDLW/Nexa/commit/b4d5477bf588384c1eaf42224b5b0ce5f76bb335))
+* **chat:** Gemini streaming UTF-8 handling and steering timeline placement ([ab7746e](https://github.com/MLGBJDLW/Nexa/commit/ab7746e17fb5e6e74176e5833385407e1149bfab))
+
 ## [0.9.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.6...nexa-monorepo-v0.9.7) (2026-06-11)
 
 
