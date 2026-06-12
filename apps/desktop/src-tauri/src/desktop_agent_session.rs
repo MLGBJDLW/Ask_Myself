@@ -591,7 +591,6 @@ fn desktop_background_dream_budget_available(db: &Database, app_cfg: &AppConfig)
     used < max_runs
 }
 
-
 pub fn build_desktop_agent_user_content_parts(
     request: DesktopAgentUserContentRequest<'_>,
 ) -> Result<Vec<ContentPart>, String> {

@@ -227,7 +227,10 @@ mod tests {
 
     #[test]
     fn steering_status_preview_compacts_whitespace() {
-        assert_eq!(steering_status_preview("  please\n\tchange   direction  "), "please change direction");
+        assert_eq!(
+            steering_status_preview("  please\n\tchange   direction  "),
+            "please change direction"
+        );
     }
 
     #[test]
