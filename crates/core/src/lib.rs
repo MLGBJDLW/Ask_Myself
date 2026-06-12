@@ -26,6 +26,7 @@ pub mod conversation;
 pub mod crypto;
 pub mod db;
 pub mod dreaming;
+pub mod dreaming_scope;
 pub mod ecosystem;
 pub mod embed;
 pub mod error;

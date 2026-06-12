@@ -1,1 +1,1 @@
-export { ChatMessages } from './ChatMessagesStable';
+export { ChatMessages } from './ChatMessages';

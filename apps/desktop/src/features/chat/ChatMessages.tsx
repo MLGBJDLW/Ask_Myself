@@ -37,11 +37,11 @@ import {
   preprocessChunkCitations,
   preprocessInlineCitations,
   buildCitationMap,
-  extractChunkCitations,
 } from "../../lib/citationParser";
 import type { CitationCardData } from "../../lib/citationParser";
-import { isWebUrl, sourceBasename, sourceHost } from "../../lib/sourceDisplay";
 import { SOFT_FADE_TRANSITION } from "../../lib/uiMotion";
+import { isCompactionSummaryMessage } from "../../lib/chatMessageGuards";
+import { buildEvidenceItemsFromContent } from "../../lib/evidenceItems";
 import type {
   StreamRoundEvent,
   ToolCallEvent,
@@ -68,6 +68,10 @@ import {
   type TimelineSkillRef,
   type TimelineSection,
 } from "../../lib/streaming/timelineViewModel";
+import {
+  projectChatMessageVisibility,
+  projectChatStreamingVisibility,
+} from "../../lib/streaming/chatVisibility";
 import { ToolCallCard } from "../../components/chat/ToolCallCard";
 import {
   FileDiffSummaryPanel,
@@ -165,84 +169,6 @@ const SUGGESTIONS: {
   },
 ];
 
-function isCompactionSummaryMessage(message: ConversationMessage): boolean {
-  if (message.role !== "system") return false;
-  const lower = message.content.toLowerCase();
-  return (
-    lower.includes("earlier conversation context") ||
-    lower.includes("auto-compacted") ||
-    lower.includes("compacted context")
-  );
-}
-
-function evidenceSourceLabel(
-  card: CitationCardData | undefined,
-  displayText: string | undefined,
-  fallback: string,
-): string {
-  const sourcePath = card?.documentPath?.trim() ?? "";
-  const title = card?.documentTitle?.trim() ?? "";
-  if (sourcePath) {
-    const host = isWebUrl(sourcePath) ? sourceHost(sourcePath) : "";
-    if (host) {
-      return title ? `${title} · ${host}` : host;
-    }
-    return title || sourceBasename(sourcePath);
-  }
-  return displayText || fallback;
-}
-
-function buildExplicitEvidenceItems(
-  content: string,
-  citationLookup:
-    | { getCard: (id: string) => CitationCardData | undefined }
-    | undefined,
-  fallbackLabel: (index: number) => string,
-) {
-  const grouped = new Map<
-    string,
-    {
-      chunkId: string;
-      card?: CitationCardData;
-      count: number;
-      displayText?: string;
-    }
-  >();
-
-  for (const entry of extractChunkCitations(content)) {
-    const card = citationLookup?.getCard(entry.chunkId);
-    const groupKey =
-      card?.documentPath?.trim() || card?.documentTitle?.trim() || entry.chunkId;
-    const existing = grouped.get(groupKey);
-    if (existing) {
-      existing.count += 1;
-      if (!existing.card && card) existing.card = card;
-      if (!existing.displayText && entry.displayText) {
-        existing.displayText = entry.displayText;
-      }
-      continue;
-    }
-    grouped.set(groupKey, {
-      chunkId: entry.chunkId,
-      card,
-      count: 1,
-      displayText: entry.displayText,
-    });
-  }
-
-  return Array.from(grouped.values()).map((item, index) => {
-    const baseLabel = evidenceSourceLabel(
-      item.card,
-      item.displayText,
-      fallbackLabel(index + 1),
-    );
-    return {
-      chunkId: item.chunkId,
-      displayText: item.count > 1 ? `${baseLabel} ×${item.count}` : baseLabel,
-      card: item.card,
-    };
-  });
-}
 
 const INSTANT_TRANSITION = { duration: 0 };
 const NEAR_BOTTOM_THRESHOLD = 96;
@@ -549,29 +475,46 @@ function TraceStatusRow({
   );
 }
 
-export function ChatMessages({
-  messages,
-  turns,
-  streamText,
-  streamRounds,
-  traceEvents,
-  thinkingText,
-  isThinking,
-  toolCalls,
-  taskRun,
-  isStreaming,
-  error,
-  onRetry,
-  onDismissError,
-  onDeleteMessage,
-  onEditAndResend,
-  onApprovePlan,
-  loadingMsgs,
-  lastCached,
-  onSuggestionClick,
-  isCompacting = false,
-  compactCompleteVisible = false,
-}: ChatMessagesProps) {
+export function ChatMessages(props: ChatMessagesProps) {
+  const {
+    turns,
+    streamText,
+    thinkingText,
+    isThinking,
+    toolCalls,
+    taskRun,
+    isStreaming,
+    error,
+    onRetry,
+    onDismissError,
+    onDeleteMessage,
+    onEditAndResend,
+    onApprovePlan,
+    loadingMsgs,
+    lastCached,
+    onSuggestionClick,
+    isCompacting = false,
+    compactCompleteVisible = false,
+  } = props;
+  const streamingVisibility = useMemo(
+    () => projectChatStreamingVisibility({
+      isStreaming,
+      streamRounds: props.streamRounds,
+      traceEvents: props.traceEvents,
+    }),
+    [isStreaming, props.streamRounds, props.traceEvents],
+  );
+  const messageVisibility = useMemo(
+    () => projectChatMessageVisibility({
+      isStreaming,
+      messages: props.messages,
+    }),
+    [isStreaming, props.messages],
+  );
+  const messages = messageVisibility.historyMessages;
+  const streamRounds = streamingVisibility.streamRounds;
+  const traceEvents = streamingVisibility.traceEvents;
+
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -754,7 +697,7 @@ export function ChatMessages({
       citationLookup?: { getCard: (id: string) => CitationCardData | undefined },
     ) => {
       const effectiveCitationLookup = citationLookup ?? allToolCitationLookup;
-      const evidenceItems = buildExplicitEvidenceItems(
+      const evidenceItems = buildEvidenceItemsFromContent(
         content,
         effectiveCitationLookup,
         (index) => t("chat.evidenceSourceLabel", { index: String(index) }),

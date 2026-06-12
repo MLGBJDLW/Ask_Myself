@@ -552,8 +552,8 @@ pub async fn run_desktop_agent_post_success_learning(
         if desktop_background_dream_budget_available(&db, &app_cfg) {
             match db.start_dream_run(nexa_core::dreaming::StartDreamInput {
                 trigger_kind: Some("after_turn".to_string()),
-                scope_json: Some(desktop_dream_scope_from_config(
-                    &app_cfg,
+                scope_json: Some(nexa_core::dreaming_scope::merge_configured_dream_scope(
+                    &app_cfg.dreaming,
                     serde_json::json!({
                         "conversationId": conversation_id,
                         "surface": "desktop_agent_post_success_learning"
@@ -591,36 +591,6 @@ fn desktop_background_dream_budget_available(db: &Database, app_cfg: &AppConfig)
     used < max_runs
 }
 
-fn desktop_dream_scope_from_config(
-    app_cfg: &AppConfig,
-    base_scope: serde_json::Value,
-) -> serde_json::Value {
-    let mut scope = match base_scope {
-        serde_json::Value::Object(map) => map,
-        _ => serde_json::Map::new(),
-    };
-    if !app_cfg.dreaming.source_ids.is_empty() {
-        scope.insert(
-            "sourceIds".to_string(),
-            serde_json::json!(&app_cfg.dreaming.source_ids),
-        );
-    }
-    if !app_cfg.dreaming.project_ids.is_empty() {
-        scope.insert(
-            "projectIds".to_string(),
-            serde_json::json!(&app_cfg.dreaming.project_ids),
-        );
-    }
-    scope.insert(
-        "dreamingLocalOnly".to_string(),
-        serde_json::json!(app_cfg.dreaming.local_only),
-    );
-    scope.insert(
-        "dreamingMaxRunsPerDay".to_string(),
-        serde_json::json!(app_cfg.dreaming.max_runs_per_day),
-    );
-    serde_json::Value::Object(scope)
-}
 
 pub fn build_desktop_agent_user_content_parts(
     request: DesktopAgentUserContentRequest<'_>,

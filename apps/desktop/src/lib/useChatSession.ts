@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import * as api from './api';
+import { isOptimisticSteeringMessage, isSteeringMessage } from './chatMessageGuards';
 import type { AgentExecutionMode } from './api';
 import { useAgentStream, type ContextUsageBreakdown, type UsageTotal } from './useAgentStream';
 import { streamStore } from './streamStore';
@@ -163,21 +164,6 @@ function mergeImageAttachments(
   });
 }
 
-function isSteeringMessage(message: ConversationMessage): boolean {
-  if (message.role !== 'user') return false;
-  if (message.id.startsWith('temp-steer-')) return true;
-  const artifacts = message.artifacts;
-  return Boolean(
-    artifacts &&
-      !Array.isArray(artifacts) &&
-      typeof artifacts === 'object' &&
-      (artifacts as Record<string, unknown>).kind === 'steering',
-  );
-}
-
-function isOptimisticSteeringMessage(message: ConversationMessage): boolean {
-  return message.id.startsWith('temp-steer-') && isSteeringMessage(message);
-}
 
 function isNoRunningAgentError(error: unknown): boolean {
   const message = String(error ?? '');
