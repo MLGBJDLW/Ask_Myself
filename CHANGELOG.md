@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.8...nexa-monorepo-v0.9.9) (2026-06-17)
+
+
+### Bug Fixes
+
+* **ci:** align default config test with unlimited iterations ([ad819cd](https://github.com/MLGBJDLW/Nexa/commit/ad819cd85c5dfc9004cf169d5d0eb97c315fd57d))
+* **ci:** pass rustfmt check in desktop agent session ([3bd3329](https://github.com/MLGBJDLW/Nexa/commit/3bd3329f2fe4882bdfdfd67b40adb839465f50e8))
+* **ci:** pass rustfmt check in desktop agent session ([7d4caa7](https://github.com/MLGBJDLW/Nexa/commit/7d4caa75222faee1028c4529d00caf2746a7b223))
+* **ci:** restore default max_iterations cap ([e4ed399](https://github.com/MLGBJDLW/Nexa/commit/e4ed3994060a003c920a969d7505393a7d42c622))
+
 ## [0.9.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.7...nexa-monorepo-v0.9.8) (2026-06-12)
 
 
