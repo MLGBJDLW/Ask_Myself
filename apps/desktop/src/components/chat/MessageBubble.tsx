@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
-import { Check, CheckCircle2, ClipboardList, CornerDownRight, HelpCircle, X } from 'lucide-react';
+import { Check, CheckCircle2, ClipboardList, CornerDownRight, HelpCircle, Target, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import {
   CitationContext,
@@ -13,7 +13,7 @@ import {
 } from './markdownComponents';
 import { preprocessChunkCitations, preprocessInlineCitations } from '../../lib/citationParser';
 import type { CitationCardData } from '../../lib/citationParser';
-import { isSteeringMessage } from '../../lib/chatMessageGuards';
+import { goalObjectiveFromMessage, isGoalMessage, isSteeringMessage } from '../../lib/chatMessageGuards';
 import { buildEvidenceItemsFromContent } from '../../lib/evidenceItems';
 import { MessageActions } from './MessageActions';
 import { messageTimestamp } from '../../lib/relativeTime';
@@ -50,6 +50,8 @@ export interface MessageBubbleProps {
   onEditAndResend?: (messageId: string, newContent: string) => void;
   /** Called when a proposed plan is approved for implementation */
   onApprovePlan?: (planMarkdown: string, sourceMessageId: string) => void;
+  /** Goal status shown for dedicated /goal user messages */
+  goalStatus?: 'active' | 'complete' | 'set';
 }
 
 
@@ -144,7 +146,38 @@ function QuestionCardsPanel({ cards }: { cards: QuestionCard[] }) {
   );
 }
 
-function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAssistant, lastCached, onRetry, alwaysShowTimestamp, onDeleteMessage, onEditAndResend, onApprovePlan }: MessageBubbleProps) {
+function GoalStatusCard({
+  objective,
+  label,
+  title,
+}: {
+  objective: string;
+  label: string;
+  title: string;
+}) {
+  return (
+    <div
+      className="w-full overflow-hidden rounded-lg border border-accent/25 bg-surface-1/90 px-3 py-2.5 shadow-sm shadow-black/5"
+      aria-label={`${title}: ${objective}`}
+    >
+      <div className="flex min-w-0 items-start gap-2.5">
+        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
+          <Target className="h-3.5 w-3.5" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[11px] font-semibold text-accent/90">
+            {label}
+          </span>
+          <span className="mt-0.5 block break-words text-sm leading-5 text-text-primary" title={objective}>
+            {objective}
+          </span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAssistant, lastCached, onRetry, alwaysShowTimestamp, onDeleteMessage, onEditAndResend, onApprovePlan, goalStatus = 'set' }: MessageBubbleProps) {
   const { t } = useTranslation();
   const isUser = msg.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
@@ -216,7 +249,16 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
 
   const timestamp = messageTimestamp(msg.createdAt, t);
   const steering = isSteeringMessage(msg);
-  const ariaLabel = steering
+  const goalMessage = isGoalMessage(msg);
+  const goalObjective = goalMessage ? goalObjectiveFromMessage(msg) : '';
+  const goalLabel = goalStatus === 'active'
+    ? t('chat.goalStatusActive')
+    : goalStatus === 'complete'
+      ? t('chat.goalStatusComplete')
+      : t('chat.goalStatusSet');
+  const ariaLabel = goalMessage
+    ? t('chat.goalMessage')
+    : steering
     ? t('chat.steeringMessage')
     : isUser
       ? t('chat.userMessage')
@@ -238,11 +280,13 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
           aria-label={ariaLabel}
           className={`relative text-sm leading-relaxed
             ${isUser
-              ? 'rounded-lg bg-accent/20 px-3.5 py-2.5 text-text-primary'
+              ? goalMessage
+                ? 'bg-transparent px-0 py-0 text-text-primary'
+                : 'rounded-lg bg-accent/20 px-3.5 py-2.5 text-text-primary'
               : 'bg-transparent px-0 py-0 text-text-primary'
             }`}
         >
-          {msg.tokenCount > 0 && !isEditing && (
+          {msg.tokenCount > 0 && !isEditing && !goalMessage && (
             <span
               className="absolute bottom-0.5 right-2 text-[9px] text-text-tertiary/0 group-hover:text-text-tertiary/60 transition-colors tabular-nums select-none"
               title={`${msg.tokenCount.toLocaleString()} ${t('chat.tokensLabel')}`}
@@ -288,6 +332,22 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
                 </button>
               </div>
             </div>
+          ) : isUser && goalMessage ? (
+            <>
+              <GoalStatusCard objective={goalObjective} label={goalLabel} title={t('chat.goalStatusTitle')} />
+              {msg.imageAttachments && msg.imageAttachments.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  {msg.imageAttachments.map((att, i) => (
+                    <img
+                      key={i}
+                      src={`data:${att.mediaType};base64,${att.base64Data}`}
+                      alt={att.originalName}
+                      className="max-w-[200px] max-h-[200px] object-contain rounded-md border border-border"
+                    />
+                  ))}
+                </div>
+              )}
+            </>
           ) : isUser ? (
             <>
               {steering && (
@@ -380,7 +440,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
             isUser={isUser}
             messageId={msg.id}
             conversationId={msg.conversationId}
-            onEdit={isUser && onEditAndResend ? handleStartEdit : undefined}
+            onEdit={isUser && !goalMessage && onEditAndResend ? handleStartEdit : undefined}
             onDelete={onDeleteMessage}
             align={isUser ? 'end' : 'start'}
           />

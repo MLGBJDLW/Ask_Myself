@@ -104,6 +104,9 @@ test('resolves goal into a goal-oriented prompt', () => {
   const resolved = resolveSlashCommandMessage('/goal ship offline sync', options);
   assert(resolved, 'goal should resolve');
   assertEqual(resolved.skillIds.length, 0, 'goal does not pin skills');
+  assertEqual(resolved.displayMessage, 'ship offline sync', 'goal display hides slash syntax');
+  assertEqual(resolved.artifact.kind, 'goal', 'goal uses dedicated artifact kind');
+  assertEqual(resolved.artifact.objective, 'ship offline sync', 'goal artifact records objective');
   assert(resolved.message.includes('success criteria'), 'goal prompt asks for success criteria');
   assert(resolved.message.includes('ship offline sync'), 'goal preserves user objective');
 });

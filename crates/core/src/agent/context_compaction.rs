@@ -2,6 +2,23 @@
 
 use super::*;
 
+fn conversation_message_to_compaction_llm_message(m: &ConversationMessage) -> Message {
+    let mut msg = Message::text(
+        m.role.clone(),
+        crate::conversation::conversation_message_llm_context_content(m),
+    );
+    msg.name = m.tool_call_id.clone();
+    msg.tool_calls = if m.tool_calls.is_empty() {
+        None
+    } else {
+        Some(m.tool_calls.clone())
+    };
+    if m.role == Role::Assistant {
+        msg.reasoning_content = m.thinking.clone();
+    }
+    msg
+}
+
 impl AgentExecutor {
     // -----------------------------------------------------------------------
     // Pre-summarization helper
@@ -250,16 +267,7 @@ impl AgentExecutor {
         // Convert to LLM Messages.
         let llm_msgs: Vec<Message> = messages
             .iter()
-            .map(|m| {
-                let mut msg = Message::text(m.role.clone(), &m.content);
-                msg.name = m.tool_call_id.clone();
-                msg.tool_calls = if m.tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(m.tool_calls.clone())
-                };
-                msg
-            })
+            .map(conversation_message_to_compaction_llm_message)
             .collect();
 
         let ctx_window = self
@@ -365,5 +373,37 @@ impl AgentExecutor {
         }
 
         Ok(compacted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compaction_llm_message_prefers_hidden_context_content() {
+        let msg = ConversationMessage {
+            id: "msg-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            role: Role::User,
+            content: "visible goal".to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: Some(serde_json::json!({
+                "llmContextContent": "expanded goal prompt\n\nvisible goal"
+            })),
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+
+        let llm_msg = conversation_message_to_compaction_llm_message(&msg);
+
+        assert_eq!(
+            llm_msg.text_content(),
+            "expanded goal prompt\n\nvisible goal"
+        );
     }
 }

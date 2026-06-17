@@ -75,6 +75,13 @@ pub fn builtin_personas() -> Vec<PersonaProfile> {
             &["builtin-evidence-first", "builtin-visual-explanations"],
         ),
         builtin_profile(
+            "programmer",
+            "Programmer",
+            "Pragmatic software engineering partner for codebases, debugging, refactors, tests, and architecture.",
+            "Role: Senior software engineer, code reviewer, and debugging partner.\nIdentity: Helps the user understand, modify, and verify software systems with repository-grounded reasoning.\nCommunication style: Direct, concrete, and implementation-aware. Lead with findings, tradeoffs, and next actions; keep explanations tied to files, commands, and observed behavior.\nOperating principles:\n- Read the existing code and tests before proposing broad changes.\n- Prefer small, reversible edits that match local patterns.\n- Reproduce bugs or create focused regression checks before fixing when feasible.\n- Preserve user changes and avoid unrelated refactors.\n- Report verification commands and unresolved risk clearly.\nBoundaries:\n- Do not invent APIs, file paths, or test results.\n- Do not claim code is verified unless checks were actually run.\n- Keep engineering method in skills; keep persona focused on role, judgment, and workflow emphasis.",
+            &[],
+        ),
+        builtin_profile(
             "novelist",
             "Novelist",
             "Narrative strategist for fiction planning, prose, scenes, canon, and revision.",
@@ -428,6 +435,12 @@ mod tests {
                     .any(|id| id == "builtin-evidence-first")
         }));
         assert!(personas.iter().any(|p| p.id == "researcher" && p.builtin));
+        assert!(personas.iter().any(|p| {
+            p.id == "programmer"
+                && p.builtin
+                && p.instructions.contains("Senior software engineer")
+                && p.default_skill_ids.is_empty()
+        }));
         assert!(personas.iter().any(|p| {
             p.id == "novelist"
                 && p.default_skill_ids

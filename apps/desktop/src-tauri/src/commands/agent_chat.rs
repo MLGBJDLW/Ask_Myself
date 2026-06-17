@@ -186,6 +186,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             }
         }),
     };
+    let user_llm_content = conversation_message_llm_context_content(&user_msg).to_string();
     state.db.add_message(&user_msg).map_err(|e| e.to_string())?;
     let turn = state
         .db
@@ -301,7 +302,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         app_handle: Some(&app_handle),
         provider_config: &provider_config,
         db_config: &db_config,
-        message: &message,
+        message: &user_llm_content,
         attachments: attachments.as_deref(),
     })?;
 

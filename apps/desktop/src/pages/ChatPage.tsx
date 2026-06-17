@@ -18,7 +18,7 @@ import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
 import type { AgentConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
 import { formatUserError } from '../lib/userError';
-import { isSteeringMessage } from '../lib/chatMessageGuards';
+import { isGoalMessage, isSteeringMessage } from '../lib/chatMessageGuards';
 import {
   GRAPH_AGENT_CONTEXT_EVENT,
   buildGraphCollectionContext,
@@ -35,6 +35,46 @@ function suggestPersonaId(message: string, personas: api.PersonaProfile[]): stri
   const text = message.toLowerCase();
   const matches = (terms: string[]) => terms.some((term) => text.includes(term.toLowerCase()));
 
+  if (
+    personaExists(personas, 'programmer') &&
+    matches([
+      'code',
+      'coding',
+      'program',
+      'programmer',
+      'developer',
+      'debug',
+      'bug',
+      'stack trace',
+      'typescript',
+      'javascript',
+      'rust',
+      'python',
+      'react',
+      'repo',
+      'repository',
+      'refactor',
+      'tests',
+      'unit test',
+      'integration test',
+      'test failed',
+      'lint',
+      'build failed',
+      '代码',
+      '程序',
+      '程序员',
+      '开发',
+      '调试',
+      '报错',
+      '修复',
+      '重构',
+      '测试',
+      '仓库',
+      '构建失败',
+    ])
+  ) {
+    return 'programmer';
+  }
   if (
     personaExists(personas, 'speaker') &&
     matches(['ppt', 'pptx', 'powerpoint', 'slide', 'slides', 'deck', 'presentation', 'pitch', '演讲', '讲稿', '幻灯', '汇报', '路演'])
@@ -381,6 +421,7 @@ export function ChatPage() {
       .filter((message) => (
         message.role === 'user' &&
         !isSteeringMessage(message) &&
+        !isGoalMessage(message) &&
         message.content.trim().length > 0
       ))
       .map((message) => message.content),

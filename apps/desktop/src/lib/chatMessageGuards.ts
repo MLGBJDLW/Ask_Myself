@@ -18,6 +18,22 @@ export function isOptimisticSteeringMessage(message: ConversationMessage): boole
   return message.id.startsWith('temp-steer-') && isSteeringMessage(message);
 }
 
+export function isGoalMessage(message: ConversationMessage): boolean {
+  return message.role === 'user'
+    && (artifactKind(message) === 'goal' || artifactKind(message) === 'agentGoal');
+}
+
+export function goalObjectiveFromMessage(message: ConversationMessage): string {
+  const artifacts = message.artifacts;
+  if (artifacts && !Array.isArray(artifacts) && typeof artifacts === 'object') {
+    const objective = (artifacts as Record<string, unknown>).objective;
+    if (typeof objective === 'string' && objective.trim().length > 0) {
+      return objective.trim();
+    }
+  }
+  return message.content.trim();
+}
+
 export function isCompactionSummaryMessage(message: ConversationMessage): boolean {
   if (message.role !== 'system') return false;
   const lower = message.content.toLowerCase();
