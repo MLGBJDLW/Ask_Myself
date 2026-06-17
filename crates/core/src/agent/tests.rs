@@ -193,7 +193,7 @@ fn test_accumulate_by_index_when_id_missing() {
 #[test]
 fn test_default_config() {
     let cfg = AgentConfig::default();
-    assert_eq!(cfg.max_iterations, 25);
+    assert_eq!(cfg.max_iterations, u32::MAX);
     assert!(cfg
         .system_prompt
         .contains("local-first personal workspace assistant"));
