@@ -933,7 +933,10 @@ pub fn build_desktop_agent_turn_config(
     ];
 
     let executor_config = AgentConfig {
-        max_iterations: db_config.max_iterations.map(|v| v as u32).unwrap_or(u32::MAX),
+        max_iterations: db_config
+            .max_iterations
+            .map(|v| v as u32)
+            .unwrap_or(u32::MAX),
         system_prompt,
         volatile_system_sections,
         model: Some(db_config.model.clone()),
