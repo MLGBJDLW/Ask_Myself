@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.9...nexa-monorepo-v0.9.10) (2026-06-17)
+
+
+### Features
+
+* **chat:** Add programmer persona and goal status ([54b5cf5](https://github.com/MLGBJDLW/Nexa/commit/54b5cf5cd1635fd55f471d8c806c94b380062b65))
+* **chat:** Add programmer persona and goal status ([157d5fb](https://github.com/MLGBJDLW/Nexa/commit/157d5fbfdef10dd487c8f34e7b69c0f09eccbaf0))
+* **knowledge:** upgrade graph forging ([02ebeb8](https://github.com/MLGBJDLW/Nexa/commit/02ebeb87de7c95cf1e9552afd9fbb02567e7e845))
+* **knowledge:** upgrade graph forging ([f4d900e](https://github.com/MLGBJDLW/Nexa/commit/f4d900e6cdd955199bc37fdc6b341bd6cd185b00))
+
 ## [0.9.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.8...nexa-monorepo-v0.9.9) (2026-06-17)
 
 
