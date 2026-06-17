@@ -1,7 +1,7 @@
 //! Knowledge compilation layer — Karpathy-inspired "raw → compile → wiki" pipeline.
 //! Automatically distills documents into structured summaries, entities, and relationships.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +65,13 @@ pub struct CompileStats {
     pub total_links: i64,
 }
 
+pub struct EntityLinkEvidence<'a> {
+    pub strength: f64,
+    pub evidence_doc: Option<&'a str>,
+    pub evidence_snippet: Option<&'a str>,
+    pub confidence: Option<f64>,
+}
+
 // ── LLM Response Parsing ──
 
 #[derive(Deserialize)]
@@ -78,9 +85,12 @@ struct LlmCompileOutput {
 #[derive(Deserialize)]
 struct LlmEntity {
     name: String,
+    #[serde(default)]
+    aliases: Vec<String>,
     entity_type: String,
     description: String,
     context: String,
+    #[serde(default)]
     relations: Vec<LlmRelation>,
 }
 
@@ -88,6 +98,8 @@ struct LlmEntity {
 struct LlmRelation {
     target: String,
     relation_type: String,
+    evidence: Option<String>,
+    confidence: Option<f64>,
 }
 
 // ── Constants ──
@@ -156,8 +168,9 @@ pub async fn compile_document(
     let mut entity_ids_by_name: HashMap<String, String> = HashMap::new();
     for llm_entity in &output.entities {
         let entity_type = parse_entity_type(&llm_entity.entity_type);
-        let entity = db.upsert_entity(
+        let entity = db.upsert_entity_with_aliases(
             &llm_entity.name,
+            &llm_entity.aliases,
             &entity_type,
             &llm_entity.description,
             doc_id,
@@ -185,12 +198,17 @@ pub async fn compile_document(
                 });
 
             if let Some(target_id) = target_id {
-                db.upsert_entity_link(
+                let strength = rel.confidence.unwrap_or(1.0).clamp(0.1, 1.0);
+                db.upsert_entity_link_with_evidence(
                     &source_id,
                     &target_id,
-                    &rel.relation_type,
-                    1.0,
-                    Some(doc_id),
+                    &normalize_relation_type(&rel.relation_type),
+                    EntityLinkEvidence {
+                        strength,
+                        evidence_doc: Some(doc_id),
+                        evidence_snippet: rel.evidence.as_deref(),
+                        confidence: rel.confidence,
+                    },
                 )?;
                 links_created += 1;
             }
@@ -206,7 +224,39 @@ pub async fn compile_document(
 }
 
 fn normalize_entity_lookup_name(name: &str) -> String {
-    name.trim().to_lowercase()
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_lowercase()
+}
+
+fn normalize_entity_display_name(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_relation_type(relation_type: &str) -> String {
+    let normalized = relation_type
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let collapsed = normalized
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    if collapsed.is_empty() {
+        "related_to".to_string()
+    } else {
+        collapsed
+    }
 }
 
 fn build_compile_input_excerpt(content: &str, max_chars: usize) -> String {
@@ -320,6 +370,88 @@ pub fn parse_entity_type(s: &str) -> EntityType {
     }
 }
 
+fn entity_type_key(entity_type: &EntityType) -> &'static str {
+    match entity_type {
+        EntityType::Concept => "concept",
+        EntityType::Person => "person",
+        EntityType::Technology => "technology",
+        EntityType::Event => "event",
+        EntityType::Organization => "organization",
+        EntityType::Place => "place",
+        EntityType::Other => "other",
+    }
+}
+
+fn entity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entity> {
+    Ok(Entity {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        entity_type: parse_entity_type(&row.get::<_, String>(2)?),
+        description: row.get(3)?,
+        first_seen_doc: row.get(4)?,
+        mention_count: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+fn normalized_entity_aliases(name: &str, aliases: &[String]) -> Vec<(String, String)> {
+    let mut seen = HashSet::new();
+    std::iter::once(name)
+        .chain(aliases.iter().map(String::as_str))
+        .filter_map(|alias| {
+            let display = normalize_entity_display_name(alias);
+            let normalized = normalize_entity_lookup_name(&display);
+            if display.is_empty() || normalized.is_empty() || !seen.insert(normalized.clone()) {
+                None
+            } else {
+                Some((display, normalized))
+            }
+        })
+        .collect()
+}
+
+fn find_entity_by_aliases(
+    conn: &rusqlite::Connection,
+    aliases: &[(String, String)],
+    entity_type: &str,
+) -> Result<Option<Entity>, CoreError> {
+    for (_, normalized_alias) in aliases {
+        let found = conn.query_row(
+            "SELECT DISTINCT e.id, e.name, e.entity_type, e.description, e.first_seen_doc, e.mention_count, e.created_at
+             FROM entities e
+             LEFT JOIN entity_aliases ea ON ea.entity_id = e.id
+             WHERE e.entity_type = ?2
+               AND (ea.normalized_alias = ?1 OR lower(trim(e.name)) = ?1)
+             ORDER BY e.mention_count DESC, e.name COLLATE NOCASE
+             LIMIT 1",
+            rusqlite::params![normalized_alias, entity_type],
+            entity_from_row,
+        );
+        match found {
+            Ok(entity) => return Ok(Some(entity)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(None)
+}
+
+fn insert_entity_aliases(
+    conn: &rusqlite::Connection,
+    entity_id: &str,
+    entity_type: &str,
+    aliases: &[(String, String)],
+) -> Result<(), CoreError> {
+    for (alias, normalized_alias) in aliases {
+        conn.execute(
+            "INSERT OR IGNORE INTO entity_aliases (entity_id, alias, normalized_alias, entity_type)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![entity_id, alias, normalized_alias, entity_type],
+        )?;
+    }
+    Ok(())
+}
+
 // ── Database Methods ──
 
 impl Database {
@@ -377,45 +509,58 @@ impl Database {
         description: &str,
         first_doc: &str,
     ) -> Result<Entity, CoreError> {
-        let conn = self.conn();
-        let type_str = serde_json::to_value(entity_type)
-            .ok()
-            .and_then(|v| v.as_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| "other".to_string());
-        let now = chrono::Utc::now().to_rfc3339();
+        self.upsert_entity_with_aliases(name, &[], entity_type, description, first_doc)
+    }
 
-        // Try to find existing
-        let existing = conn.query_row(
-            "SELECT id, mention_count FROM entities WHERE name = ?1 AND entity_type = ?2",
-            rusqlite::params![name, type_str],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-        );
+    pub fn upsert_entity_with_aliases(
+        &self,
+        name: &str,
+        aliases: &[String],
+        entity_type: &EntityType,
+        description: &str,
+        first_doc: &str,
+    ) -> Result<Entity, CoreError> {
+        let conn = self.conn();
+        let type_str = entity_type_key(entity_type);
+        let now = chrono::Utc::now().to_rfc3339();
+        let canonical_name = normalize_entity_display_name(name);
+        let alias_pairs = normalized_entity_aliases(&canonical_name, aliases);
+
+        if canonical_name.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "Entity name cannot be empty".into(),
+            ));
+        }
+
+        let existing = find_entity_by_aliases(&conn, &alias_pairs, type_str)?;
 
         match existing {
-            Ok((id, count)) => {
+            Some(mut entity) => {
                 conn.execute(
-                    "UPDATE entities SET mention_count = ?1, description = CASE WHEN length(?2) > length(description) THEN ?2 ELSE description END, updated_at = ?3 WHERE id = ?4",
-                    rusqlite::params![count + 1, description, now, id],
+                    "UPDATE entities
+                     SET mention_count = mention_count + 1,
+                         description = CASE WHEN length(?1) > length(description) THEN ?1 ELSE description END,
+                         updated_at = ?2
+                     WHERE id = ?3",
+                    rusqlite::params![description, now, entity.id],
                 )?;
-                Ok(Entity {
-                    id,
-                    name: name.to_string(),
-                    entity_type: entity_type.clone(),
-                    description: description.to_string(),
-                    first_seen_doc: Some(first_doc.to_string()),
-                    mention_count: count + 1,
-                    created_at: now,
-                })
+                insert_entity_aliases(&conn, &entity.id, type_str, &alias_pairs)?;
+                entity.mention_count += 1;
+                if description.len() > entity.description.len() {
+                    entity.description = description.to_string();
+                }
+                Ok(entity)
             }
-            Err(_) => {
+            None => {
                 let id = uuid::Uuid::new_v4().to_string();
                 conn.execute(
                     "INSERT INTO entities (id, name, entity_type, description, first_seen_doc, mention_count, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)",
-                    rusqlite::params![id, name, type_str, description, first_doc, now],
+                    rusqlite::params![id, canonical_name, type_str, description, first_doc, now],
                 )?;
+                insert_entity_aliases(&conn, &id, type_str, &alias_pairs)?;
                 Ok(Entity {
                     id,
-                    name: name.to_string(),
+                    name: canonical_name,
                     entity_type: entity_type.clone(),
                     description: description.to_string(),
                     first_seen_doc: Some(first_doc.to_string()),
@@ -428,20 +573,16 @@ impl Database {
 
     pub fn find_entity_by_name(&self, name: &str) -> Result<Entity, CoreError> {
         let conn = self.conn();
+        let normalized = normalize_entity_lookup_name(name);
         conn.query_row(
-            "SELECT id, name, entity_type, description, first_seen_doc, mention_count, created_at FROM entities WHERE name = ?1 COLLATE NOCASE",
-            rusqlite::params![name],
-            |row| {
-                Ok(Entity {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    entity_type: parse_entity_type(&row.get::<_, String>(2)?),
-                    description: row.get(3)?,
-                    first_seen_doc: row.get(4)?,
-                    mention_count: row.get(5)?,
-                    created_at: row.get(6)?,
-                })
-            },
+            "SELECT DISTINCT e.id, e.name, e.entity_type, e.description, e.first_seen_doc, e.mention_count, e.created_at
+             FROM entities e
+             LEFT JOIN entity_aliases ea ON ea.entity_id = e.id
+             WHERE ea.normalized_alias = ?1 OR lower(trim(e.name)) = ?1
+             ORDER BY e.mention_count DESC, e.name COLLATE NOCASE
+             LIMIT 1",
+            rusqlite::params![normalized],
+            entity_from_row,
         )
         .map_err(|_| CoreError::NotFound("Entity not found".into()))
     }
@@ -469,11 +610,61 @@ impl Database {
         strength: f64,
         evidence_doc: Option<&str>,
     ) -> Result<(), CoreError> {
+        self.upsert_entity_link_with_evidence(
+            source_id,
+            target_id,
+            relation_type,
+            EntityLinkEvidence {
+                strength,
+                evidence_doc,
+                evidence_snippet: None,
+                confidence: None,
+            },
+        )
+    }
+
+    pub fn upsert_entity_link_with_evidence(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        relation_type: &str,
+        evidence: EntityLinkEvidence<'_>,
+    ) -> Result<(), CoreError> {
         let conn = self.conn();
         let id = uuid::Uuid::new_v4().to_string();
+        let normalized_relation_type = normalize_relation_type(relation_type);
+        let clamped_strength = evidence.strength.clamp(0.0, 1.0);
+        let clamped_confidence = evidence.confidence.map(|value| value.clamp(0.0, 1.0));
+        let evidence_snippet = evidence.evidence_snippet.unwrap_or("").trim();
         conn.execute(
-            "INSERT INTO entity_links (id, source_entity_id, target_entity_id, relation_type, strength, evidence_doc_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(source_entity_id, target_entity_id, relation_type) DO UPDATE SET strength = strength + 0.1",
-            rusqlite::params![id, source_id, target_id, relation_type, strength, evidence_doc],
+            "INSERT INTO entity_links (
+                id, source_entity_id, target_entity_id, relation_type, strength,
+                evidence_doc_id, evidence_snippet, confidence
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(source_entity_id, target_entity_id, relation_type) DO UPDATE SET
+                strength = MIN(1.0, MAX(entity_links.strength, excluded.strength) + 0.1),
+                evidence_doc_id = COALESCE(excluded.evidence_doc_id, entity_links.evidence_doc_id),
+                evidence_snippet = CASE
+                    WHEN length(excluded.evidence_snippet) > length(COALESCE(entity_links.evidence_snippet, ''))
+                    THEN excluded.evidence_snippet
+                    ELSE entity_links.evidence_snippet
+                END,
+                confidence = CASE
+                    WHEN entity_links.confidence IS NULL THEN excluded.confidence
+                    WHEN excluded.confidence IS NULL THEN entity_links.confidence
+                    ELSE MAX(entity_links.confidence, excluded.confidence)
+                END",
+            rusqlite::params![
+                id,
+                source_id,
+                target_id,
+                normalized_relation_type,
+                clamped_strength,
+                evidence.evidence_doc,
+                evidence_snippet,
+                clamped_confidence
+            ],
         )?;
         Ok(())
     }
@@ -781,5 +972,61 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM entity_links", [], |row| row.get(0))
             .expect("entity link count");
         assert_eq!(entity_links, 1);
+    }
+
+    #[tokio::test]
+    async fn compile_document_resolves_aliases_and_stores_relation_evidence() {
+        let db = Database::open_memory().expect("open memory");
+        let doc_id = insert_compile_doc(&db, "PKCE protects OAuth login.");
+        let provider = StaticLlmProvider {
+            content: serde_json::json!({
+                "summary": "PKCE protects OAuth login.",
+                "key_points": ["Proof Key for Code Exchange is used by OAuth."],
+                "tags": ["security"],
+                "entities": [
+                    {
+                        "name": "Proof Key for Code Exchange",
+                        "aliases": ["PKCE"],
+                        "entity_type": "technology",
+                        "description": "An OAuth security extension.",
+                        "context": "PKCE protects OAuth login.",
+                        "relations": [
+                            {
+                                "target": "OAuth",
+                                "relation_type": "protects",
+                                "evidence": "PKCE protects OAuth login",
+                                "confidence": 0.92
+                            }
+                        ]
+                    },
+                    {
+                        "name": "OAuth",
+                        "entity_type": "technology",
+                        "description": "An authorization protocol.",
+                        "context": "PKCE protects OAuth login.",
+                        "relations": []
+                    }
+                ]
+            })
+            .to_string(),
+        };
+
+        let result = compile_document(&db, &doc_id, &provider, "test-model", None)
+            .await
+            .expect("compile document");
+
+        assert_eq!(result.entities_found, 2);
+        let pkce = db.find_entity_by_name("PKCE").expect("alias lookup");
+        assert_eq!(pkce.name, "Proof Key for Code Exchange");
+        let (snippet, confidence): (String, f64) = db
+            .conn()
+            .query_row(
+                "SELECT evidence_snippet, confidence FROM entity_links WHERE relation_type = 'protects'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("relation evidence");
+        assert_eq!(snippet, "PKCE protects OAuth login");
+        assert!((confidence - 0.92).abs() < f64::EPSILON);
     }
 }

@@ -2107,7 +2107,7 @@ mod tests {
     #[test]
     fn entity_merge_candidate_applies_and_undoes_same_as_marker() {
         let db = Database::open_memory().expect("open memory db");
-        let (canonical, duplicate) = {
+        let (canonical, duplicate_id) = {
             let conn = db.conn();
             conn.execute(
                 "INSERT INTO sources (id, root_path) VALUES ('source-1', 'C:/knowledge')",
@@ -2132,15 +2132,15 @@ mod tests {
                 "doc-1",
             )
             .expect("increment canonical mention count");
-            let duplicate = db
-                .upsert_entity(
-                    "aster",
-                    &EntityType::Concept,
-                    "Lowercase duplicate",
-                    "doc-1",
+            let duplicate_id = "legacy-duplicate-aster".to_string();
+            db.conn()
+                .execute(
+                    "INSERT INTO entities (id, name, entity_type, description, first_seen_doc, mention_count)
+                     VALUES (?1, 'aster', 'concept', 'Lowercase duplicate', 'doc-1', 1)",
+                    params![&duplicate_id],
                 )
-                .expect("duplicate entity");
-            (canonical, duplicate)
+                .expect("insert legacy duplicate entity");
+            (canonical, duplicate_id)
         };
 
         let run = db
@@ -2154,7 +2154,7 @@ mod tests {
             .pop()
             .expect("entity merge candidate");
         assert_eq!(artifact.payload_json["canonicalEntityId"], canonical.id);
-        assert_eq!(artifact.payload_json["duplicateEntityId"], duplicate.id);
+        assert_eq!(artifact.payload_json["duplicateEntityId"], duplicate_id);
         assert_eq!(artifact.payload_json["relationType"], "same_as");
 
         let applied = db
@@ -2163,14 +2163,14 @@ mod tests {
         assert_eq!(applied.application_json["target"], "entity_merge");
         assert_eq!(applied.application_json["undoable"], true);
         assert!(db
-            .find_entity_link(&canonical.id, &duplicate.id, "same_as")
+            .find_entity_link(&canonical.id, &duplicate_id, "same_as")
             .expect("find applied same_as link")
             .is_some());
 
         db.undo_dream_artifact(&artifact.id)
             .expect("undo entity merge marker");
         assert!(db
-            .find_entity_link(&canonical.id, &duplicate.id, "same_as")
+            .find_entity_link(&canonical.id, &duplicate_id, "same_as")
             .expect("find link after undo")
             .is_none());
     }

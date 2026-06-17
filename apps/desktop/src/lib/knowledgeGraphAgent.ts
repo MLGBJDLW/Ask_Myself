@@ -15,6 +15,7 @@ export const GRAPH_AGENT_USAGE_EVENT = 'nexa:agent-graph-usage';
 export interface GraphAgentNodeRef {
   id: string;
   label: string;
+  aliases?: string[];
   entityType?: string;
   description?: string;
   documentCount?: number;
@@ -28,9 +29,13 @@ export interface GraphAgentEdgeRef {
   relationType: string;
   relationCategory?: RelationCategory;
   strength?: number;
+  confidence?: number | null;
   evidenceDocId?: string | null;
   evidenceTitle?: string | null;
   evidencePath?: string | null;
+  evidenceSnippet?: string | null;
+  evidenceCount?: number;
+  evidenceSource?: string;
   otherLabel?: string | null;
 }
 
@@ -112,6 +117,9 @@ function parseNodeRef(value: unknown): GraphAgentNodeRef | null {
   return {
     id,
     label,
+    aliases: Array.isArray(value.aliases)
+      ? value.aliases.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : undefined,
     entityType: stringOrNull(value.entityType) ?? undefined,
     description: stringOrNull(value.description) ?? undefined,
     documentCount: optionalNumber(value.documentCount),
@@ -134,9 +142,13 @@ function parseEdgeRef(value: unknown): GraphAgentEdgeRef | null {
     relationType,
     relationCategory: relationCategory ? (relationCategory as RelationCategory) : undefined,
     strength: typeof value.strength === 'number' ? value.strength : undefined,
+    confidence: typeof value.confidence === 'number' ? value.confidence : null,
     evidenceDocId: stringOrNull(value.evidenceDocId),
     evidenceTitle: stringOrNull(value.evidenceTitle),
     evidencePath: stringOrNull(value.evidencePath),
+    evidenceSnippet: stringOrNull(value.evidenceSnippet),
+    evidenceCount: optionalNumber(value.evidenceCount),
+    evidenceSource: stringOrNull(value.evidenceSource) ?? undefined,
     otherLabel: stringOrNull(value.otherLabel),
   };
 }
@@ -297,6 +309,7 @@ export function buildGraphAgentContext(input: {
   const node: GraphAgentNodeRef = {
     id: input.node.id,
     label: input.node.label,
+    aliases: input.node.aliases,
     entityType: input.node.entityType,
     description: input.node.description,
     documentCount: input.node.documentCount,
@@ -311,9 +324,13 @@ export function buildGraphAgentContext(input: {
       relationType: edge.relationType,
       relationCategory: buildRelationBundles([edge])[0]?.category,
       strength: edge.strength,
+      confidence: edge.confidence,
       evidenceDocId: edge.evidenceDocId,
       evidenceTitle: edge.evidenceTitle,
       evidencePath: edge.evidencePath,
+      evidenceSnippet: edge.evidenceSnippet,
+      evidenceCount: edge.evidenceCount,
+      evidenceSource: edge.evidenceSource,
       otherLabel: input.nodeLabelById.get(otherId) ?? otherId,
     };
   });
@@ -353,8 +370,15 @@ export function buildGraphCollectionContext(
     const other = edge.otherLabel ?? (edge.source === context.node.id ? edge.target : edge.source);
     const strength =
       typeof edge.strength === 'number' ? ` strength=${edge.strength.toFixed(2)}` : '';
-    const evidence = edge.evidenceDocId ? ` evidenceDocId=${edge.evidenceDocId}` : '';
-    return `- ${context.node.label} --${edge.relationType}${strength}--> ${other}${evidence}`;
+    const confidence =
+      typeof edge.confidence === 'number' ? ` confidence=${edge.confidence.toFixed(2)}` : '';
+    const evidence = [
+      edge.evidenceSource ? `source=${edge.evidenceSource}` : '',
+      edge.evidenceCount ? `evidenceCount=${edge.evidenceCount}` : '',
+      edge.evidenceDocId ? `evidenceDocId=${edge.evidenceDocId}` : '',
+      edge.evidenceSnippet ? `evidence="${edge.evidenceSnippet}"` : '',
+    ].filter(Boolean).join(' ');
+    return `- ${context.node.label} --${edge.relationType}${strength}${confidence}--> ${other}${evidence ? ` ${evidence}` : ''}`;
   });
   const documentLines = context.documents.slice(0, 8).map(
     (doc) => `- ${doc.title} | documentId=${doc.documentId} | sourceId=${doc.sourceId} | path=${doc.path}`,
@@ -362,13 +386,14 @@ export function buildGraphCollectionContext(
   const scope = [
     `nodeId=${context.node.id}`,
     `entityName=${context.node.label}`,
+    context.node.aliases?.length ? `aliases=${context.node.aliases.join(', ')}` : '',
     `entityType=${context.node.entityType ?? 'unknown'}`,
     `focusKind=${context.focusKind ?? 'node'}`,
     `focusLabel=${focusLabel}`,
     `sourceScope=${context.sourceId ?? 'all'}`,
     `pathPrefix=${context.pathPrefix ?? ''}`,
     `scopeLabel=${context.scopeLabel ?? ''}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   return {
     title: `Graph: ${focusLabel}`,

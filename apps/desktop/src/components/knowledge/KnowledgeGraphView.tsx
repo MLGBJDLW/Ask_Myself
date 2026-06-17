@@ -281,7 +281,11 @@ function hashNumber(value: string) {
 
 function nodeMatchesSearch(node: KnowledgeGraphNode, query: string) {
   if (!query) return true;
-  return node.label.toLowerCase().includes(query) || node.description.toLowerCase().includes(query);
+  return (
+    node.label.toLowerCase().includes(query) ||
+    node.description.toLowerCase().includes(query) ||
+    Boolean(node.aliases?.some((alias) => alias.toLowerCase().includes(query)))
+  );
 }
 
 function collectNeighborIds(edges: KnowledgeGraphEdge[], ids: Set<string>) {
@@ -1349,6 +1353,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
                     const pulsing = directlySelected || agentUsed || Boolean(graphMode === 'focus' && connectedToSelectedNode);
                     const bundleWaveDuration = directlySelected || agentUsed ? '2.6s' : '3.4s';
                     const bundleWaveBegin = `${(bundleIndex % 7) * 0.42}s`;
+                    const bundleDash = bundle.edges.every((edge) => edge.evidenceSource === 'cooccurrence') ? '3 5' : style.dash;
                     const selectBundle = () => {
                       handleSelectBundle(bundle.id);
                     };
@@ -1374,6 +1379,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
                             const edgePulsing = selected || agentUsedEdgeIds.has(edge.id);
                             const edgeWaveDuration = directlySelected || agentUsedEdgeIds.has(edge.id) ? '2.6s' : '3.4s';
                             const edgeWaveBegin = `${(index % 6) * 0.42}s`;
+                            const dash = edge.evidenceSource === 'cooccurrence' ? '3 5' : edgeStyle.dash;
                             return (
                               <g key={edge.id}>
                                 <path
@@ -1383,7 +1389,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
                                   stroke={agentUsedEdgeIds.has(edge.id) ? '#f59e0b' : edgeStyle.color}
                                   strokeWidth={selected ? 1.25 : agentUsedEdgeIds.has(edge.id) ? 1.15 : 0.9}
                                   opacity={selected || agentUsedEdgeIds.has(edge.id) ? 0.82 : 0.58}
-                                  strokeDasharray={edgeStyle.dash}
+                                  strokeDasharray={dash}
                                   markerEnd={`url(#knowledge-edge-arrow-${edgeStyle.id})`}
                                 />
                                 {edgePulsing && (
@@ -1416,7 +1422,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
                               stroke={agentUsed ? '#f59e0b' : style.color}
                               strokeWidth={selected ? 1.25 : agentUsed ? 1.15 : bundle.relationCount > 1 ? 1 : 0.85}
                               opacity={selected || agentUsed ? 0.84 : 0.56}
-                              strokeDasharray={style.dash}
+                              strokeDasharray={bundleDash}
                               markerStart={bundle.direction === 'bidirectional' ? `url(#knowledge-edge-arrow-${style.id})` : undefined}
                               markerEnd={bundle.direction !== 'undirected' ? `url(#knowledge-edge-arrow-${style.id})` : undefined}
                             />
@@ -1666,6 +1672,15 @@ function NodeDetail({
         {node.description && (
           <p className="mt-3 text-sm leading-6 text-text-secondary">{node.description}</p>
         )}
+        {node.aliases && node.aliases.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {node.aliases.slice(0, 8).map((alias) => (
+              <span key={alias} className="rounded bg-surface-0 px-2 py-1 text-[11px] text-text-tertiary">
+                {alias}
+              </span>
+            ))}
+          </div>
+        )}
         {tokenEstimate && (
           <div className="mt-3 rounded-md border border-border bg-surface-0 p-2">
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">
@@ -1883,6 +1898,8 @@ function RelationBundleDetail({
             {bundle.edges.map((edge) => {
               const edgeSource = nodeById.get(edge.source);
               const edgeTarget = nodeById.get(edge.target);
+              const evidenceTitle = edge.evidenceTitle || edge.evidenceTitles?.[0] || (edge.evidencePath ? shortPath(edge.evidencePath) : null);
+              const evidenceSource = edge.evidenceSource === 'cooccurrence' ? 'co-occurrence' : 'explicit';
               return (
                 <div key={edge.id} className="rounded-md border border-border bg-surface-0 px-3 py-2">
                   <div className="flex items-start justify-between gap-2">
@@ -1890,13 +1907,27 @@ function RelationBundleDetail({
                       <div className="truncate text-sm font-medium text-text-primary">
                         {edgeSource?.label ?? edge.source} {'->'} {edgeTarget?.label ?? edge.target}
                       </div>
-                      <div className="mt-1 text-xs text-text-tertiary">{relationLabel(edge.relationType, t)}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-text-tertiary">
+                        <span>{relationLabel(edge.relationType, t)}</span>
+                        <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px]">{evidenceSource}</span>
+                        {edge.evidenceCount ? (
+                          <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px]">{edge.evidenceCount} evidence</span>
+                        ) : null}
+                        {typeof edge.confidence === 'number' ? (
+                          <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px]">{Math.round(edge.confidence * 100)}%</span>
+                        ) : null}
+                      </div>
                     </div>
                     <Badge variant="default">{edge.strength.toFixed(1)}</Badge>
                   </div>
-                  {edge.evidenceTitle || edge.evidencePath ? (
+                  {evidenceTitle ? (
                     <div className="mt-2 truncate text-[11px] text-text-tertiary">
-                      {edge.evidenceTitle || shortPath(edge.evidencePath ?? '')}
+                      {evidenceTitle}
+                    </div>
+                  ) : null}
+                  {edge.evidenceSnippet ? (
+                    <div className="mt-2 line-clamp-2 rounded bg-surface-2 px-2 py-1.5 text-[11px] leading-5 text-text-secondary">
+                      {edge.evidenceSnippet}
                     </div>
                   ) : null}
                 </div>

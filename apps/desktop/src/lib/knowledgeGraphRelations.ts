@@ -85,8 +85,11 @@ export function buildRelationBundles(edges: KnowledgeGraphEdge[]): KnowledgeGrap
     if (!bundle.relationTypes.includes(edge.relationType)) {
       bundle.relationTypes.push(edge.relationType);
     }
-    if (edge.evidenceTitle && !bundle.evidenceTitles.includes(edge.evidenceTitle)) {
-      bundle.evidenceTitles.push(edge.evidenceTitle);
+    const edgeEvidenceTitles = edge.evidenceTitles?.length ? edge.evidenceTitles : edge.evidenceTitle ? [edge.evidenceTitle] : [];
+    for (const title of edgeEvidenceTitles) {
+      if (!bundle.evidenceTitles.includes(title)) {
+        bundle.evidenceTitles.push(title);
+      }
     }
   }
 
