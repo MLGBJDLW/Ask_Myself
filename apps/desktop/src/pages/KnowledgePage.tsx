@@ -153,8 +153,8 @@ export function KnowledgePage() {
         api.listDreamRuns(5),
         api.listDreamArtifacts({ limit: 50 }),
       ]);
-      setDreamRuns(runs);
-      setDreamArtifacts(artifacts);
+      setDreamRuns(Array.isArray(runs) ? runs : []);
+      setDreamArtifacts(Array.isArray(artifacts) ? artifacts : []);
     } catch (e) {
       toast.error(formatUserError(t('knowledge.dreamingLoad'), e));
     } finally {
@@ -286,10 +286,10 @@ export function KnowledgePage() {
 
   const allIssues: HealthIssue[] = healthReport
     ? [
-        ...healthReport.staleDocuments,
-        ...healthReport.orphanDocuments,
-        ...healthReport.lowCoverageEntities,
-        ...healthReport.duplicateCandidates,
+        ...(healthReport.staleDocuments ?? []),
+        ...(healthReport.orphanDocuments ?? []),
+        ...(healthReport.lowCoverageEntities ?? []),
+        ...(healthReport.duplicateCandidates ?? []),
       ]
     : [];
 

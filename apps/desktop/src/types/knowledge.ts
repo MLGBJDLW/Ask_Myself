@@ -70,6 +70,7 @@ export interface KnowledgeGraphDocumentRef {
 export interface KnowledgeGraphNode {
   id: string;
   label: string;
+  aliases?: string[];
   entityType: string;
   description: string;
   mentionCount: number;
@@ -85,9 +86,14 @@ export interface KnowledgeGraphEdge {
   target: string;
   relationType: string;
   strength: number;
+  confidence?: number | null;
   evidenceDocId: string | null;
   evidenceTitle: string | null;
   evidencePath: string | null;
+  evidenceSnippet?: string | null;
+  evidenceCount?: number;
+  evidenceTitles?: string[];
+  evidenceSource?: "explicit" | "cooccurrence" | string;
 }
 
 export interface KnowledgeGraph {

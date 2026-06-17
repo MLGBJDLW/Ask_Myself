@@ -356,9 +356,18 @@ const FUTURE_MIGRATIONS: &[(&str, &str)] = &[
             relation_type TEXT NOT NULL,
             strength REAL NOT NULL DEFAULT 1.0,
             evidence_doc_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+            evidence_snippet TEXT NOT NULL DEFAULT '',
+            confidence REAL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        INSERT OR IGNORE INTO entity_links_new SELECT * FROM entity_links;
+        INSERT OR IGNORE INTO entity_links_new (
+            id, source_entity_id, target_entity_id, relation_type,
+            strength, evidence_doc_id, created_at
+        )
+        SELECT
+            id, source_entity_id, target_entity_id, relation_type,
+            strength, evidence_doc_id, created_at
+        FROM entity_links;
         DROP TABLE IF EXISTS entity_links;
         ALTER TABLE entity_links_new RENAME TO entity_links;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_links_unique ON entity_links(source_entity_id, target_entity_id, relation_type);
@@ -1124,6 +1133,31 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_dream_artifacts_kind
             ON dream_artifacts(kind, status, created_at);",
     ),
+    (
+        "v070_entity_aliases",
+        "CREATE TABLE IF NOT EXISTS entity_aliases (
+            entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+            alias TEXT NOT NULL,
+            normalized_alias TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY(entity_id, normalized_alias)
+        );
+        CREATE INDEX IF NOT EXISTS idx_entity_aliases_lookup
+            ON entity_aliases(normalized_alias, entity_type);
+        INSERT OR IGNORE INTO entity_aliases (entity_id, alias, normalized_alias, entity_type)
+        SELECT id, name, lower(trim(name)), entity_type
+        FROM entities
+        WHERE trim(name) <> '';",
+    ),
+    (
+        "v071_entity_link_evidence_snippet",
+        "ALTER TABLE entity_links ADD COLUMN evidence_snippet TEXT NOT NULL DEFAULT '';",
+    ),
+    (
+        "v072_entity_link_confidence",
+        "ALTER TABLE entity_links ADD COLUMN confidence REAL;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1513,6 +1547,32 @@ mod tests {
                 )
                 .unwrap();
             assert!(exists, "agent_task_artifact_versions.{column} should exist");
+        }
+    }
+
+    #[test]
+    fn test_knowledge_graph_alias_and_evidence_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+
+        let alias_table_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'entity_aliases'",
+                [],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
+            )
+            .unwrap();
+        assert!(alias_table_exists, "entity_aliases table should exist");
+
+        for column in ["evidence_snippet", "confidence"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('entity_links') WHERE name = ?1",
+                    [column],
+                    |row| row.get::<_, i64>(0).map(|n| n > 0),
+                )
+                .unwrap();
+            assert!(exists, "entity_links.{column} should exist");
         }
     }
 }

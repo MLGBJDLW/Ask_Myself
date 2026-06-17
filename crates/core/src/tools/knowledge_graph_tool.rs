@@ -342,6 +342,7 @@ fn graph_used_nodes(graph: &KnowledgeGraph) -> Vec<serde_json::Value> {
             serde_json::json!({
                 "id": &node.id,
                 "label": &node.label,
+                "aliases": &node.aliases,
                 "entityType": &node.entity_type,
                 "description": &node.description,
                 "documentCount": node.document_count,
@@ -362,9 +363,14 @@ fn graph_used_edges(graph: &KnowledgeGraph) -> Vec<serde_json::Value> {
                 "target": &edge.target,
                 "relationType": &edge.relation_type,
                 "strength": edge.strength,
+                "confidence": edge.confidence,
                 "evidenceDocId": &edge.evidence_doc_id,
                 "evidenceTitle": &edge.evidence_title,
                 "evidencePath": &edge.evidence_path,
+                "evidenceSnippet": &edge.evidence_snippet,
+                "evidenceCount": edge.evidence_count,
+                "evidenceTitles": &edge.evidence_titles,
+                "evidenceSource": &edge.evidence_source,
             })
         })
         .collect()
@@ -483,13 +489,25 @@ fn format_graph_llm_context(graph: &KnowledgeGraph, view: &GraphView<'_>) -> Str
             .collect::<Vec<_>>()
             .join("; ");
         let description = compact_text(&node.description, 120);
+        let aliases = node
+            .aliases
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         lines.push(format!(
-            "- {} [{}] docs:{} mentions:{} links:{}{}{}",
+            "- {} [{}] docs:{} mentions:{} links:{}{}{}{}",
             node.label,
             node.entity_type,
             node.document_count,
             node.mention_count,
             node.link_count,
+            if aliases.is_empty() {
+                String::new()
+            } else {
+                format!(" aliases:{aliases}")
+            },
             if description.is_empty() {
                 String::new()
             } else {
@@ -648,7 +666,15 @@ fn graph_relation_bundles(graph: &KnowledgeGraph) -> Vec<GraphRelationBundle> {
         bundle.relation_count += 1;
         bundle.total_strength += edge.strength;
         bundle.strongest_strength = bundle.strongest_strength.max(edge.strength);
+        let mut edge_titles = edge
+            .evidence_titles
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
         if let Some(title) = edge.evidence_title.as_deref() {
+            edge_titles.push(title);
+        }
+        for title in edge_titles {
             if !bundle.evidence_titles.iter().any(|value| value == title) {
                 bundle.evidence_titles.push(title.to_string());
             }
@@ -840,7 +866,9 @@ fn path_graph_slice(graph: &KnowledgeGraph, from_name: &str, to_name: &str) -> K
     let Some(to) = find_node_by_label(graph, to_name) else {
         return empty_scoped_graph(graph);
     };
-    let Some(path_ids) = shortest_path_ids(graph, &from.id, &to.id) else {
+    let Some(path_ids) = shortest_path_ids(graph, &from.id, &to.id, false)
+        .or_else(|| shortest_path_ids(graph, &from.id, &to.id, true))
+    else {
         return empty_scoped_graph(graph);
     };
     let selected_ids: HashSet<String> = path_ids.into_iter().collect();
@@ -862,18 +890,36 @@ fn find_node_by_label<'a>(graph: &'a KnowledgeGraph, name: &str) -> Option<&'a K
     graph
         .nodes
         .iter()
-        .find(|node| node.label.to_lowercase() == needle)
+        .find(|node| node.label.to_lowercase() == needle || alias_matches(node, &needle, true))
         .or_else(|| {
-            graph
-                .nodes
-                .iter()
-                .find(|node| node.label.to_lowercase().contains(&needle))
+            graph.nodes.iter().find(|node| {
+                node.label.to_lowercase().contains(&needle) || alias_matches(node, &needle, false)
+            })
         })
 }
 
-fn shortest_path_ids(graph: &KnowledgeGraph, from: &str, to: &str) -> Option<Vec<String>> {
+fn alias_matches(node: &KnowledgeGraphNode, needle: &str, exact: bool) -> bool {
+    node.aliases.iter().any(|alias| {
+        let alias = alias.to_lowercase();
+        if exact {
+            alias == needle
+        } else {
+            alias.contains(needle)
+        }
+    })
+}
+
+fn shortest_path_ids(
+    graph: &KnowledgeGraph,
+    from: &str,
+    to: &str,
+    include_cooccurrence: bool,
+) -> Option<Vec<String>> {
     let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
     for edge in &graph.edges {
+        if !include_cooccurrence && is_cooccurrence_edge(edge) {
+            continue;
+        }
         adjacency
             .entry(edge.source.as_str())
             .or_default()
@@ -906,6 +952,10 @@ fn shortest_path_ids(graph: &KnowledgeGraph, from: &str, to: &str) -> Option<Vec
         }
     }
     None
+}
+
+fn is_cooccurrence_edge(edge: &KnowledgeGraphEdge) -> bool {
+    edge.evidence_source == "cooccurrence" || edge.relation_type == "co_occurs"
 }
 
 fn slice_graph(graph: &KnowledgeGraph, selected_ids: &HashSet<String>) -> KnowledgeGraph {

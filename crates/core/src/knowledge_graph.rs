@@ -61,6 +61,7 @@ pub struct KnowledgeGraphDocumentRef {
 pub struct KnowledgeGraphNode {
     pub id: String,
     pub label: String,
+    pub aliases: Vec<String>,
     pub entity_type: String,
     pub description: String,
     pub mention_count: i64,
@@ -78,9 +79,14 @@ pub struct KnowledgeGraphEdge {
     pub target: String,
     pub relation_type: String,
     pub strength: f64,
+    pub confidence: Option<f64>,
     pub evidence_doc_id: Option<String>,
     pub evidence_title: Option<String>,
     pub evidence_path: Option<String>,
+    pub evidence_snippet: Option<String>,
+    pub evidence_count: i64,
+    pub evidence_titles: Vec<String>,
+    pub evidence_source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,7 +308,12 @@ impl Database {
         let conn = self.conn();
         let pattern = format!("%{query}%");
         let mut stmt = conn.prepare(
-            "SELECT id, name, entity_type, description, first_seen_doc, mention_count, created_at FROM entities WHERE name LIKE ?1 OR description LIKE ?1 ORDER BY mention_count DESC LIMIT 20",
+            "SELECT DISTINCT e.id, e.name, e.entity_type, e.description, e.first_seen_doc, e.mention_count, e.created_at
+             FROM entities e
+             LEFT JOIN entity_aliases ea ON ea.entity_id = e.id
+             WHERE e.name LIKE ?1 OR e.description LIKE ?1 OR ea.alias LIKE ?1
+             ORDER BY e.mention_count DESC
+             LIMIT 20",
         )?;
         let entities = stmt
             .query_map(rusqlite::params![pattern], |row| {
@@ -387,6 +398,7 @@ impl Database {
                 Ok(KnowledgeGraphNode {
                     id: row.get(0)?,
                     label: row.get(1)?,
+                    aliases: Vec::new(),
                     entity_type: row.get(2)?,
                     description: row.get(3)?,
                     first_seen_doc: row.get(4)?,
@@ -403,6 +415,7 @@ impl Database {
         for mut node in nodes_seed {
             node.documents =
                 query_entity_documents(&conn, &node.id, &source_ids, &path_patterns, 5)?;
+            node.aliases = query_entity_aliases(&conn, &node.id, &node.label, 8)?;
             nodes.push(node);
         }
 
@@ -417,15 +430,14 @@ impl Database {
                 &query.relation_types,
                 query.min_strength.unwrap_or(0.0),
             )?;
-            if graph_edges.is_empty() && relation_filter_allows_cooccurrence(&query.relation_types)
-            {
-                graph_edges = query_cooccurrence_edges(
+            if relation_filter_allows_cooccurrence(&query.relation_types) {
+                graph_edges.extend(query_cooccurrence_edges(
                     &conn,
                     &node_ids,
                     &source_ids,
                     &path_patterns,
                     query.min_strength.unwrap_or(0.0),
-                )?;
+                )?);
             }
             graph_edges
         };
@@ -633,6 +645,39 @@ fn query_entity_documents(
     Ok(rows)
 }
 
+fn query_entity_aliases(
+    conn: &rusqlite::Connection,
+    entity_id: &str,
+    label: &str,
+    limit: usize,
+) -> Result<Vec<String>, CoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT alias
+         FROM entity_aliases
+         WHERE entity_id = ?1
+           AND lower(trim(alias)) <> lower(trim(?2))
+         ORDER BY alias COLLATE NOCASE
+         LIMIT ?3",
+    )?;
+    let aliases = stmt
+        .query_map(rusqlite::params![entity_id, label, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(aliases)
+}
+
+fn parse_evidence_titles(value: Option<String>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split('\u{1f}')
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .take(5)
+        .map(str::to_string)
+        .collect()
+}
+
 fn query_cooccurrence_edges(
     conn: &rusqlite::Connection,
     node_ids: &[String],
@@ -673,7 +718,7 @@ fn query_cooccurrence_edges(
     let sql = format!(
         "{ENTITY_DOCUMENT_LINKS_CTE},
          scoped_links AS (
-            SELECT edl.entity_id, edl.document_id
+            SELECT edl.entity_id, edl.document_id, COALESCE(d.title, d.path) AS evidence_title
             FROM entity_document_links edl
             JOIN documents d ON d.id = edl.document_id
             {scope_where_sql}
@@ -683,11 +728,18 @@ fn query_cooccurrence_edges(
                 a.entity_id AS source,
                 b.entity_id AS target,
                 COUNT(DISTINCT a.document_id) AS shared_documents,
-                MIN(a.document_id) AS evidence_doc_id
+                MIN(a.document_id) AS evidence_doc_id,
+                GROUP_CONCAT(a.evidence_title, char(31)) AS evidence_titles
             FROM scoped_links a
             JOIN scoped_links b ON a.document_id = b.document_id AND a.entity_id < b.entity_id
             WHERE a.entity_id IN ({node_placeholders})
               AND b.entity_id IN ({node_placeholders})
+              AND NOT EXISTS (
+                SELECT 1
+                FROM entity_links el
+                WHERE (el.source_entity_id = a.entity_id AND el.target_entity_id = b.entity_id)
+                   OR (el.source_entity_id = b.entity_id AND el.target_entity_id = a.entity_id)
+              )
             GROUP BY a.entity_id, b.entity_id
          ),
          scored_pairs AS (
@@ -701,11 +753,12 @@ fn query_cooccurrence_edges(
                     ELSE 0.35 + (shared_documents * 0.15)
                 END AS strength,
                 evidence_doc_id,
-                shared_documents
+                shared_documents,
+                evidence_titles
             FROM pairs
          )
          SELECT sp.id, sp.source, sp.target, sp.relation_type, sp.strength,
-                sp.evidence_doc_id, d.title, d.path
+                sp.evidence_doc_id, d.title, d.path, sp.shared_documents, sp.evidence_titles
          FROM scored_pairs sp
          LEFT JOIN documents d ON d.id = sp.evidence_doc_id
          WHERE sp.strength >= ?
@@ -721,9 +774,14 @@ fn query_cooccurrence_edges(
                 target: row.get(2)?,
                 relation_type: row.get(3)?,
                 strength: row.get(4)?,
+                confidence: None,
                 evidence_doc_id: row.get(5)?,
                 evidence_title: row.get(6)?,
                 evidence_path: row.get(7)?,
+                evidence_snippet: None,
+                evidence_count: row.get(8)?,
+                evidence_titles: parse_evidence_titles(row.get(9)?),
+                evidence_source: "cooccurrence".to_string(),
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -957,6 +1015,61 @@ mod tests {
             Some(doc.as_str())
         );
     }
+
+    #[test]
+    fn graph_supplements_explicit_edges_with_evidence_scored_cooccurrence() {
+        let db = Database::open_memory().expect("open memory");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: dir.path().to_string_lossy().to_string(),
+                include_globs: vec![],
+                exclude_globs: vec![],
+                watch_enabled: true,
+            })
+            .expect("add source");
+        let doc_path = dir.path().join("chapter.md");
+        let doc = insert_doc(&db, &source.id, &doc_path.to_string_lossy(), "Chapter");
+        let ada = db
+            .upsert_entity("Ada", &EntityType::Person, "A person", &doc)
+            .expect("ada");
+        let archive = db
+            .upsert_entity("Archive", &EntityType::Place, "A place", &doc)
+            .expect("archive");
+        let protocol = db
+            .upsert_entity("Protocol", &EntityType::Technology, "A technology", &doc)
+            .expect("protocol");
+        for entity in [&ada, &archive, &protocol] {
+            db.link_document_entity(&doc, &entity.id, 1.0, &entity.name)
+                .expect("link entity");
+        }
+        db.upsert_entity_link(&ada.id, &archive.id, "visits", 0.9, Some(&doc))
+            .expect("explicit edge");
+
+        let graph = db
+            .get_knowledge_graph(KnowledgeGraphQuery {
+                limit: 20,
+                source_id: Some(source.id.clone()),
+                ..KnowledgeGraphQuery::default()
+            })
+            .expect("graph");
+
+        assert!(graph
+            .edges
+            .iter()
+            .any(|edge| edge.relation_type == "visits" && edge.evidence_source == "explicit"));
+        let cooccurs = graph
+            .edges
+            .iter()
+            .find(|edge| edge.relation_type == "co_occurs")
+            .expect("co-occurrence supplement");
+        assert_eq!(cooccurs.evidence_source, "cooccurrence");
+        assert_eq!(cooccurs.evidence_count, 1);
+        assert!(cooccurs
+            .evidence_titles
+            .iter()
+            .any(|title| title == "Chapter"));
+    }
 }
 
 fn query_graph_edges(
@@ -1002,7 +1115,7 @@ fn query_graph_edges(
 
     let sql = format!(
         "SELECT el.id, el.source_entity_id, el.target_entity_id, el.relation_type, el.strength,
-                el.evidence_doc_id, ed.title, ed.path
+                el.evidence_doc_id, ed.title, ed.path, NULLIF(el.evidence_snippet, ''), el.confidence
          FROM entity_links el
          LEFT JOIN documents ed ON ed.id = el.evidence_doc_id
          WHERE {}
@@ -1018,9 +1131,18 @@ fn query_graph_edges(
                 target: row.get(2)?,
                 relation_type: row.get(3)?,
                 strength: row.get(4)?,
+                confidence: row.get(9)?,
                 evidence_doc_id: row.get(5)?,
                 evidence_title: row.get(6)?,
                 evidence_path: row.get(7)?,
+                evidence_snippet: row.get(8)?,
+                evidence_count: if row.get::<_, Option<String>>(5)?.is_some() {
+                    1
+                } else {
+                    0
+                },
+                evidence_titles: row.get::<_, Option<String>>(6)?.into_iter().collect(),
+                evidence_source: "explicit".to_string(),
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
