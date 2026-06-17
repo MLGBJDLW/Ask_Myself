@@ -445,7 +445,7 @@
   "reasoningEffortHelp": "可用的推理强度取决于当前提供商和模型。",
   "reasoningUnsupported": "当前模型没有可配置的推理参数。",
   "maxIterations": "最大工具迭代次数",
-  "maxIterationsHelp": "每条消息的最大工具调用往返次数。默认为 10，深度研究任务可适当增加。",
+  "maxIterationsHelp": "每条消息的最大工具调用往返次数。留空表示不限制工具迭代次数。只有在需要限制单次运行时才填写数字。",
   "summarizationSection": "摘要（节省费用）",
   "summarizationHelp": "使用更便宜的模型来生成对话摘要。如果留空，则使用主模型。",
   "summarizationModel": "摘要模型",

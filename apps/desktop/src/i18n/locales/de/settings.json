@@ -429,7 +429,7 @@
   "reasoningEffortHelp": "Verfügbare Reasoning-Stufen hängen vom ausgewählten Anbieter und Modell ab.",
   "reasoningUnsupported": "Für dieses Modell sind keine konfigurierbaren Reasoning-Optionen verfügbar.",
   "maxIterations": "Max. Werkzeug-Iterationen",
-  "maxIterationsHelp": "Maximale Anzahl von Tool-Roundtrips pro Nachricht. Standard ist 10. Für tiefgehende Recherchen erhöhen.",
+  "maxIterationsHelp": "Maximale Anzahl von Tool-Roundtrips pro Nachricht. Leer lassen, um Werkzeug-Iterationen nicht zu begrenzen. Nur eine Zahl setzen, wenn ein Lauf begrenzt werden soll.",
   "summarizationSection": "Zusammenfassung (Kosteneinsparung)",
   "summarizationHelp": "Verwenden Sie ein günstigeres Modell für die Gesprächszusammenfassung. Wenn leer, wird das Hauptmodell verwendet.",
   "summarizationModel": "Zusammenfassungsmodell",
