@@ -40,7 +40,7 @@ import {
 } from "../../lib/citationParser";
 import type { CitationCardData } from "../../lib/citationParser";
 import { SOFT_FADE_TRANSITION } from "../../lib/uiMotion";
-import { isCompactionSummaryMessage } from "../../lib/chatMessageGuards";
+import { isCompactionSummaryMessage, isGoalMessage } from "../../lib/chatMessageGuards";
 import { buildEvidenceItemsFromContent } from "../../lib/evidenceItems";
 import type {
   StreamRoundEvent,
@@ -1670,6 +1670,15 @@ export function ChatMessages(props: ChatMessagesProps) {
                   onDeleteMessage={onDeleteMessage}
                   onEditAndResend={onEditAndResend}
                   onApprovePlan={onApprovePlan}
+                  goalStatus={
+                    isGoalMessage(msg)
+                      ? isStreaming && idx === latestUserIdx
+                        ? "active"
+                        : assistantMsg
+                          ? "complete"
+                          : "set"
+                      : undefined
+                  }
                 />
 
                 {visibleSkills.length > 0 && (
@@ -1799,6 +1808,15 @@ export function ChatMessages(props: ChatMessagesProps) {
                   onDeleteMessage={onDeleteMessage}
                   onEditAndResend={onEditAndResend}
                   onApprovePlan={onApprovePlan}
+                  goalStatus={
+                    isGoalMessage(msg)
+                      ? isStreaming && idx === latestUserIdx
+                        ? "active"
+                        : idx < lastAssistantIdx
+                          ? "complete"
+                          : "set"
+                      : undefined
+                  }
                 />
               )}
 

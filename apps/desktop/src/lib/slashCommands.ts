@@ -37,6 +37,7 @@ export interface SlashCommandTrigger {
 export interface ResolvedSlashCommand {
   command: SlashCommandOption;
   message: string;
+  displayMessage?: string;
   skillIds: string[];
   localAction?: Exclude<SlashCommandAction, "prompt" | "planMode">;
   executionMode?: SlashCommandExecutionMode;
@@ -416,6 +417,17 @@ export function resolveSlashCommandMessage(
 
   const skillIds = option.skillId ? [option.skillId] : [];
   const expandedMessage = expandPromptTemplate(option.promptTemplate, remainder);
+  if (option.kind === "command" && option.name === "goal") {
+    const objective = remainder || option.title;
+    return {
+      command: option,
+      message: expandedMessage,
+      displayMessage: objective,
+      skillIds,
+      artifact: goalCommandArtifact(option, objective),
+    };
+  }
+
   return {
     command: option,
     message: option.kind === "workflow" && option.workflowTemplateId
@@ -435,5 +447,15 @@ export function slashCommandArtifact(option: SlashCommandOption): Record<string,
     skillId: option.skillId ?? null,
     workflowTemplateId: option.workflowTemplateId ?? null,
     executionMode: option.action === "planMode" ? "plan" : null,
+  };
+}
+
+function goalCommandArtifact(option: SlashCommandOption, objective: string): Record<string, unknown> {
+  return {
+    ...slashCommandArtifact(option),
+    kind: "goal",
+    version: 1,
+    objective,
+    status: "active",
   };
 }

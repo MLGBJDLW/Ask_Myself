@@ -72,6 +72,7 @@ const chatInputDrafts: Record<string, ChatDraftState> = {};
 const SLASH_COMMAND_TABS: SlashCommandTab[] = ["all", "command", "skill", "workflow"];
 const LOCALIZED_COMMON_SLASH_COMMANDS = new Set([
   "plan",
+  "goal",
   "review",
   "debug",
   "refactor",
@@ -596,7 +597,7 @@ export function ChatInput({
     }
 
     const outgoingMessage = slashResolution && !slashResolution.localAction
-      ? (trimmed || slashResolution.message)
+      ? (slashResolution.displayMessage || trimmed || slashResolution.message)
       : (slashResolution?.message || trimmed || t("chat.imageMessage"));
     const planModeArtifact: ArtifactPayload | null = effectivePlanModeEnabled
       ? {
