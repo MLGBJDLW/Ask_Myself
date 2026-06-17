@@ -429,7 +429,7 @@
   "reasoningEffortHelp": "Les niveaux de raisonnement disponibles dépendent du fournisseur et du modèle sélectionnés.",
   "reasoningUnsupported": "Aucun contrôle de raisonnement configurable n’est disponible pour ce modèle.",
   "maxIterations": "Itérations max. d'outils",
-  "maxIterationsHelp": "Nombre maximum d'allers-retours d'outils par message. Par défaut : 10. Augmentez pour les recherches approfondies.",
+  "maxIterationsHelp": "Nombre maximum d'allers-retours d'outils par message. Laissez vide pour ne pas limiter les itérations d’outils. Définissez un nombre uniquement pour borner une exécution.",
   "summarizationSection": "Résumé (Économie de coûts)",
   "summarizationHelp": "Utilisez un modèle moins cher pour le résumé des conversations. Si vide, le modèle principal est utilisé.",
   "summarizationModel": "Modèle de résumé",

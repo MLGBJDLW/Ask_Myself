@@ -99,6 +99,23 @@ test('resolves compact as a local command', () => {
   assertEqual(resolved.message, '', 'compact has no message body');
 });
 
+test('resolves goal into a goal-oriented prompt', () => {
+  const options = buildSlashCommandOptions([], []);
+  const resolved = resolveSlashCommandMessage('/goal ship offline sync', options);
+  assert(resolved, 'goal should resolve');
+  assertEqual(resolved.skillIds.length, 0, 'goal does not pin skills');
+  assert(resolved.message.includes('success criteria'), 'goal prompt asks for success criteria');
+  assert(resolved.message.includes('ship offline sync'), 'goal preserves user objective');
+});
+
+test('resolves ask into a question card prompt', () => {
+  const options = buildSlashCommandOptions([], []);
+  const resolved = resolveSlashCommandMessage('/ask clarify deployment', options);
+  assert(resolved, 'ask should resolve');
+  assert(resolved.message.includes('question-card set'), 'ask prompt requests question cards');
+  assert(resolved.message.includes('clarify deployment'), 'ask preserves request');
+});
+
 test('resolves plan as execution mode without prompt expansion', () => {
   const options = buildSlashCommandOptions([], []);
   const resolved = resolveSlashCommandMessage('/plan build the reporting dashboard', options);

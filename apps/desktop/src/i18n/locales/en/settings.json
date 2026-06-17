@@ -445,7 +445,7 @@
   "reasoningEffortHelp": "Available reasoning effort levels depend on the selected provider and model.",
   "reasoningUnsupported": "No configurable reasoning controls are available for this model.",
   "maxIterations": "Max Tool Iterations",
-  "maxIterationsHelp": "Maximum number of tool-use round-trips per message. Default is 10. Increase for deep research tasks.",
+  "maxIterationsHelp": "Maximum number of tool-use round-trips per message. Leave empty for no tool-iteration cap. Set a number only when you want to bound a run.",
   "summarizationSection": "Summarization (Cost Saving)",
   "summarizationHelp": "Use a cheaper model for conversation summarization. If empty, the main model is used.",
   "summarizationModel": "Summarization Model",

@@ -429,7 +429,7 @@
   "reasoningEffortHelp": "사용 가능한 추론 강도는 선택한 제공업체와 모델에 따라 달라집니다.",
   "reasoningUnsupported": "이 모델에는 설정 가능한 추론 컨트롤이 없습니다.",
   "maxIterations": "최대 도구 반복 횟수",
-  "maxIterationsHelp": "메시지당 최대 도구 사용 왕복 횟수. 기본값은 10. 심층 연구 작업에는 늘리세요.",
+  "maxIterationsHelp": "메시지당 최대 도구 사용 왕복 횟수. 비워 두면 도구 반복 횟수 제한이 없습니다. 실행을 제한하려는 경우에만 숫자를 설정하세요.",
   "summarizationSection": "요약 (비용 절감)",
   "summarizationHelp": "대화 요약에 더 저렴한 모델을 사용합니다. 비어 있으면 기본 모델이 사용됩니다.",
   "summarizationModel": "요약 모델",
