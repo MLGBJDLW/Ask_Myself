@@ -336,7 +336,7 @@ fn tool_timeout_for_call(
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_iterations: u32::MAX,
+            max_iterations: 25,
             system_prompt: default_system_prompt(),
             volatile_system_sections: Vec::new(),
             model: None,
