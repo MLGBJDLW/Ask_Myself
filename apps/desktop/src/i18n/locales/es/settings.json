@@ -429,7 +429,7 @@
   "reasoningEffortHelp": "Los niveles de razonamiento disponibles dependen del proveedor y modelo seleccionados.",
   "reasoningUnsupported": "Este modelo no tiene controles de razonamiento configurables.",
   "maxIterations": "Iteraciones máx. de herramientas",
-  "maxIterationsHelp": "Número máximo de viajes de ida y vuelta de herramientas por mensaje. El valor predeterminado es 10. Aumente para tareas de investigación profunda.",
+  "maxIterationsHelp": "Número máximo de viajes de ida y vuelta de herramientas por mensaje. Déjelo vacío para no limitar las iteraciones de herramientas. Defina un número solo si desea acotar una ejecución.",
   "summarizationSection": "Resumen (Ahorro de costos)",
   "summarizationHelp": "Use un modelo más económico para el resumen de conversaciones. Si está vacío, se usa el modelo principal.",
   "summarizationModel": "Modelo de resumen",

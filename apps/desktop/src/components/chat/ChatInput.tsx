@@ -25,6 +25,8 @@ import { CheckpointMenu } from "./CheckpointMenu";
 import { VoiceInputButton } from "./VoiceInputButton";
 import { EmojiPicker } from "./EmojiPicker";
 
+const LLM_CONTEXT_CONTENT_ARTIFACT_KEY = "llmContextContent";
+
 export interface ChatInputSendOptions {
   skillIds?: string[];
   userArtifacts?: ArtifactPayload | null;
@@ -593,7 +595,9 @@ export function ChatInput({
       return;
     }
 
-    const outgoingMessage = slashResolution?.message || trimmed || t("chat.imageMessage");
+    const outgoingMessage = slashResolution && !slashResolution.localAction
+      ? (trimmed || slashResolution.message)
+      : (slashResolution?.message || trimmed || t("chat.imageMessage"));
     const planModeArtifact: ArtifactPayload | null = effectivePlanModeEnabled
       ? {
           kind: "executionMode",
@@ -602,10 +606,18 @@ export function ChatInput({
         }
       : null;
     const executionMode = slashResolution?.executionMode ?? (effectivePlanModeEnabled ? "plan" : undefined);
+    const slashArtifact = slashResolution
+      ? {
+          ...slashResolution.artifact,
+          ...(slashResolution.message !== outgoingMessage
+            ? { [LLM_CONTEXT_CONTENT_ARTIFACT_KEY]: slashResolution.message }
+            : {}),
+        }
+      : null;
     const sendOptions = slashResolution || executionMode
       ? {
           skillIds: slashResolution?.skillIds,
-          userArtifacts: slashResolution?.artifact ?? planModeArtifact,
+          userArtifacts: slashArtifact ?? planModeArtifact,
           executionMode,
         }
       : undefined;

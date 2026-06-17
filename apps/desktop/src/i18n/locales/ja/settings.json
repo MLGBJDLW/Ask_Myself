@@ -429,7 +429,7 @@
   "reasoningEffortHelp": "利用できる推論強度は、選択したプロバイダーとモデルによって異なります。",
   "reasoningUnsupported": "このモデルで設定できる推論コントロールはありません。",
   "maxIterations": "最大ツール反復回数",
-  "maxIterationsHelp": "メッセージごとのツール使用ラウンドトリップの最大数。デフォルトは10。深い調査タスクには増やしてください。",
+  "maxIterationsHelp": "メッセージごとのツール使用ラウンドトリップの最大数。空欄の場合、ツール反復回数に上限はありません。実行を制限したい場合のみ数値を設定してください。",
   "summarizationSection": "要約（コスト削減）",
   "summarizationHelp": "会話の要約に安価なモデルを使用します。空の場合、メインモデルが使用されます。",
   "summarizationModel": "要約モデル",

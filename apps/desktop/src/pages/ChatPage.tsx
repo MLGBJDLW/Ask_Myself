@@ -436,12 +436,16 @@ export function ChatPage() {
       if (graphContext?.sourceId) {
         currentSourceIdsRef.current = [graphContext.sourceId];
       }
+      const contextContent = inputOptions?.userArtifacts && !Array.isArray(inputOptions.userArtifacts)
+        ? inputOptions.userArtifacts.llmContextContent
+        : null;
       const userArtifacts =
         graphContext && inputOptions?.userArtifacts
           ? {
               kind: 'chatSendContext',
               graphContext,
               slashCommand: inputOptions.userArtifacts,
+              ...(typeof contextContent === 'string' ? { llmContextContent: contextContent } : {}),
             }
           : graphContext
             ? {

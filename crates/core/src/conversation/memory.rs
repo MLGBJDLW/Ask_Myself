@@ -236,7 +236,8 @@ pub fn model_context_window(model: &str) -> u32 {
         | "doubao-seed-1-6-flash-250828" => 256_000,
 
         // Qwen / DashScope
-        "qwen3.7-max" | "qwen3.7-max-2026-05-20" => 1_000_000,
+        "qwen3.7-max" | "qwen3.7-max-2026-05-20" | "qwen3.7-max-2026-06-08" => 1_000_000,
+        "qwen3.7-plus" | "qwen3.7-plus-2026-05-26" => 1_000_000,
         "qwen3.6-max-preview" => 262_144,
         "qwen3-max-preview" => 81_920,
 
@@ -387,6 +388,7 @@ fn prefix_model_context_window(m: &str) -> u32 {
         _ if m.contains("kimi") || m.contains("moonshot") => 128_000,
 
         // Qwen
+        _ if m.starts_with("qwen3.7-plus") => 1_000_000,
         _ if m.contains("qwen") => 128_000,
 
         // Others
@@ -664,6 +666,9 @@ mod tests {
         // Qwen / DashScope
         assert_eq!(model_context_window("qwen3.7-max"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-max-2026-05-20"), 1_000_000);
+        assert_eq!(model_context_window("qwen3.7-max-2026-06-08"), 1_000_000);
+        assert_eq!(model_context_window("qwen3.7-plus"), 1_000_000);
+        assert_eq!(model_context_window("qwen3.7-plus-2026-05-26"), 1_000_000);
         assert_eq!(model_context_window("qwen3-max-2026-01-23"), 262_144);
         assert_eq!(model_context_window("qwen3.6-max-preview"), 262_144);
         assert_eq!(model_context_window("qwen3-max-preview"), 81_920);
@@ -716,6 +721,7 @@ mod tests {
         assert_eq!(model_context_window("deepseek-something"), 128_000);
         assert_eq!(model_context_window("qwen3.5-plus-2026-02-15"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-max-latest"), 1_000_000);
+        assert_eq!(model_context_window("qwen3.7-plus-latest"), 1_000_000);
         assert_eq!(
             model_context_window("qwen3-coder-plus-2025-07-22"),
             1_000_000
