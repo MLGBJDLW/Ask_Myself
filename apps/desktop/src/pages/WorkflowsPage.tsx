@@ -11,6 +11,7 @@ import {
   PauseCircle,
   Play,
   RefreshCw,
+  Repeat2,
   Save,
   ShieldCheck,
   Trash2,
@@ -21,6 +22,7 @@ import type { LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../lib/api';
 import { useTranslation, type TranslationKey } from '../i18n';
+import { WorkflowRecorderPanel } from '../features/workflows/WorkflowRecorderPanel';
 import type { Source } from '../types';
 import type { WorkflowCatalogTemplate } from '../lib/api';
 import { buildWorkflowBatchPrompt } from '../lib/workflowPrompts';
@@ -33,7 +35,7 @@ import type {
   WorkflowAutomationDueRun,
 } from '../types/workflows';
 
-type Tab = 'templates' | 'automations' | 'governance' | 'browser';
+type Tab = 'templates' | 'automations' | 'recorder' | 'governance' | 'browser';
 
 const emptyForm: SaveWorkflowAutomationInput = {
   id: null,
@@ -54,6 +56,7 @@ const emptyForm: SaveWorkflowAutomationInput = {
 const TAB_ITEMS: Array<{ id: Tab; label: string; icon: LucideIcon }> = [
   { id: 'templates', label: 'templates', icon: Workflow },
   { id: 'automations', label: 'automations', icon: CalendarClock },
+  { id: 'recorder', label: 'recordReplay', icon: Repeat2 },
   { id: 'governance', label: 'governance', icon: Activity },
   { id: 'browser', label: 'browserEvidence', icon: Globe2 },
 ];
@@ -577,6 +580,16 @@ export function WorkflowsPage() {
                 ))}
               </section>
             </div>
+          )}
+
+          {tab === 'recorder' && (
+            <WorkflowRecorderPanel
+              templates={templates}
+              sources={sources}
+              tr={tr}
+              onReplay={runPrompt}
+              onSaved={load}
+            />
           )}
 
           {tab === 'governance' && governance && (
