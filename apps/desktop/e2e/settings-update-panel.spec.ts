@@ -14,9 +14,12 @@ test.beforeEach(async ({ page }) => {
       switch (cmd) {
         case "plugin:app|version":
           return "0.2.9";
-        case "plugin:updater|check":
+        case "check_update_from_source_cmd":
           updateCheckCount += 1;
           (window as unknown as { __updateCheckCount: number }).__updateCheckCount = updateCheckCount;
+          (window as unknown as { __lastUpdateSource: string }).__lastUpdateSource = String(_args.source ?? "");
+          return null;
+        case "plugin:updater|check":
           return null;
         case "plugin:event|listen": {
           const listenerId = listenerSeq++;
@@ -104,6 +107,7 @@ test.beforeEach(async ({ page }) => {
       convertFileSrc: (filePath: string) => filePath,
     };
     (window as unknown as { __updateCheckCount: number }).__updateCheckCount = 0;
+    (window as unknown as { __lastUpdateSource: string }).__lastUpdateSource = "";
 
     (
       window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }
@@ -120,9 +124,28 @@ test("settings appearance tab owns version and update controls", async ({ page }
   await page.getByRole("button", { name: "Appearance" }).click();
 
   await expect(page.getByRole("heading", { name: "App update" })).toBeVisible();
+  await expect(page.getByText("Update source")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Official GitHub Releases/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: /Gitee mirror/ })).toBeVisible();
   await expect(page.getByText("Current version")).toBeVisible();
   await expect(page.getByRole("main").getByText("v0.2.9")).toBeVisible();
   await expect(page.getByRole("button", { name: "Check for Updates" })).toBeVisible();
+});
+
+test("update source selection is persisted and used for checks", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Appearance" }).click();
+
+  await page.getByRole("button", { name: /Gitee mirror/ }).click();
+  await expect(page.getByRole("button", { name: /Gitee mirror/ })).toHaveAttribute("aria-pressed", "true");
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("nexa-update-source")))
+    .toBe("gitee");
+
+  await page.getByRole("button", { name: "Check for Updates" }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __lastUpdateSource: string }).__lastUpdateSource))
+    .toBe("gitee");
 });
 
 test("layout performs the silent startup update check", async ({ page }) => {

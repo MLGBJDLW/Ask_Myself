@@ -21,6 +21,8 @@ serde_json = "1"
 log = "0.4"
 tokio = { version = "1", features = ["sync", "rt"] }
 futures = "0.3"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+url = "2"
 uuid = { version = "1", features = ["v4"] }
 nexa-core = { path = "../../../crates/core" }
 base64 = "0.22"

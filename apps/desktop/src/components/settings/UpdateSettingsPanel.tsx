@@ -1,15 +1,18 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
   AlertTriangle,
+  Check,
   CheckCircle,
   Download,
+  Github,
   Loader2,
   RefreshCw,
+  Server,
   XCircle,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
-import { useUpdater } from '../../lib/useUpdater';
+import { useUpdater, type UpdateSource } from '../../lib/useUpdater';
 import {
   markdownComponents,
   markdownRemarkPlugins,
@@ -45,10 +48,32 @@ export function UpdateSettingsPanel({ appVersion, updater }: UpdateSettingsPanel
     errorDetail,
     errorStage,
     lastCheckedAt,
+    source,
+    setUpdateSource,
     checkForUpdate,
     downloadAndInstall,
     restart,
   } = updater;
+  const sourceSwitchDisabled = status === 'checking' || status === 'downloading';
+  const updateSourceOptions: Array<{
+    id: UpdateSource;
+    icon: ReactNode;
+    label: string;
+    description: string;
+  }> = [
+    {
+      id: 'github',
+      icon: <Github size={16} />,
+      label: t('update.sourceGithub'),
+      description: t('update.sourceGithubDescription'),
+    },
+    {
+      id: 'gitee',
+      icon: <Server size={16} />,
+      label: t('update.sourceGitee'),
+      description: t('update.sourceGiteeDescription'),
+    },
+  ];
 
   const statusMeta = (() => {
     switch (status) {
@@ -116,11 +141,62 @@ export function UpdateSettingsPanel({ appVersion, updater }: UpdateSettingsPanel
               icon={status === 'checking' ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
               loading={status === 'checking'}
               disabled={status === 'downloading'}
-              onClick={checkForUpdate}
+              onClick={() => { void checkForUpdate(); }}
             >
               {t('update.checkNow')}
             </Button>
           )}
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-border bg-surface-1/60 px-4 py-3">
+        <div className="flex flex-col gap-1">
+          <p className="text-[11px] font-medium uppercase text-text-tertiary">{t('update.source')}</p>
+          <p className="text-xs text-text-tertiary">{t('update.sourceDescription')}</p>
+        </div>
+        <div className="mt-3 grid gap-2 md:grid-cols-2">
+          {updateSourceOptions.map((option) => {
+            const selected = option.id === source;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                aria-pressed={selected}
+                disabled={sourceSwitchDisabled}
+                onClick={() => setUpdateSource(option.id)}
+                className={`
+                  flex min-h-[84px] w-full items-start gap-3 rounded-lg border px-3 py-3 text-left
+                  transition-colors disabled:cursor-not-allowed disabled:opacity-60
+                  ${selected
+                    ? 'border-accent/45 bg-accent/10 text-text-primary'
+                    : 'border-border bg-surface-2 text-text-secondary hover:border-border-hover hover:bg-surface-3 hover:text-text-primary'}
+                `}
+              >
+                <span
+                  className={`
+                    flex h-8 w-8 shrink-0 items-center justify-center rounded-md border
+                    ${selected ? 'border-accent/30 bg-accent/15 text-accent' : 'border-border bg-surface-1 text-text-tertiary'}
+                  `}
+                >
+                  {option.icon}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium">{option.label}</span>
+                    {selected && (
+                      <Badge variant="accent" className="gap-1">
+                        <Check size={11} />
+                        {t('update.sourceActive')}
+                      </Badge>
+                    )}
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-text-tertiary">
+                    {option.description}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
