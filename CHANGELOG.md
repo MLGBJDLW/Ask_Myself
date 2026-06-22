@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.10...nexa-monorepo-v0.9.11) (2026-06-22)
+
+
+### Features
+
+* **desktop:** Add selectable update sources ([d03262c](https://github.com/MLGBJDLW/Nexa/commit/d03262c9f8bb2b0e065c2f1bcb71a9d882624ca3))
+* **desktop:** Add selectable update sources ([a68a240](https://github.com/MLGBJDLW/Nexa/commit/a68a2408270a1e7c4a807d4507f95519d82eec2f))
+* **workflows:** Add recorded workflow replay ([e3559cf](https://github.com/MLGBJDLW/Nexa/commit/e3559cff0401b12d29b3b2efddc98e22b5f9742a))
+* **workflows:** Add recorded workflow replay ([dabefde](https://github.com/MLGBJDLW/Nexa/commit/dabefde1abb487f0c8c11b4e34cd09b019b5f180))
+
+
+### Bug Fixes
+
+* **agent:** Prefer grep search for codebase browsing ([8b0e63f](https://github.com/MLGBJDLW/Nexa/commit/8b0e63fb9cc48180d109f9974c274b71572c284c))
+* **agent:** Prefer grep search for codebase browsing ([98959fb](https://github.com/MLGBJDLW/Nexa/commit/98959fbf3a027dfdf71401750c29ee72efefbeb4))
+
 ## [0.9.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.9...nexa-monorepo-v0.9.10) (2026-06-17)
 
 
