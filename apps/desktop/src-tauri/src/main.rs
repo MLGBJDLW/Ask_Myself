@@ -364,6 +364,7 @@ fn main() {
             commands::get_web_search_status_cmd,
             commands::check_office_runtime_cmd,
             commands::prepare_office_runtime_cmd,
+            commands::check_update_from_source_cmd,
             // Setup Wizard
             commands::get_wizard_state_cmd,
             commands::set_wizard_completed_cmd,

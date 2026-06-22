@@ -43,6 +43,8 @@ test.beforeEach(async ({ page }) => {
       switch (cmd) {
         case "plugin:app|version":
           return "0.6.3";
+        case "check_update_from_source_cmd":
+          return null;
         case "plugin:updater|check":
           return null;
         case "plugin:event|listen": {

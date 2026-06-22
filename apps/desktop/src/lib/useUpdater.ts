@@ -1,9 +1,14 @@
-import { check, type Update } from '@tauri-apps/plugin-updater';
+import { invoke } from '@tauri-apps/api/core';
+import { Update as TauriUpdate, type Update as TauriUpdateInstance } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { useState, useEffect, useCallback } from 'react';
 
+export const UPDATE_SOURCES = ['github', 'gitee'] as const;
+export type UpdateSource = typeof UPDATE_SOURCES[number];
+
 interface UpdateState {
   status: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date';
+  source: UpdateSource;
   version?: string;
   notes?: string;
   progress?: number;
@@ -14,11 +19,54 @@ interface UpdateState {
   lastCheckedAt?: string;
 }
 
+interface TauriUpdateMetadata {
+  rid: number;
+  currentVersion: string;
+  version: string;
+  date?: string;
+  body?: string;
+  rawJson: Record<string, unknown>;
+}
+
+const UPDATE_SOURCE_STORAGE_KEY = 'nexa-update-source';
+const DEFAULT_UPDATE_SOURCE: UpdateSource = 'github';
 const UPDATE_CHECK_TIMEOUT_MS = 90_000;
 const UPDATE_DOWNLOAD_TIMEOUT_MS = 600_000;
 
-let sharedState: UpdateState = { status: 'idle' };
-let sharedUpdate: Update | null = null;
+function isUpdateSource(value: string | null): value is UpdateSource {
+  return value === 'github' || value === 'gitee';
+}
+
+function readStoredUpdateSource(): UpdateSource {
+  if (typeof window === 'undefined') return DEFAULT_UPDATE_SOURCE;
+  try {
+    const value = window.localStorage.getItem(UPDATE_SOURCE_STORAGE_KEY);
+    return isUpdateSource(value) ? value : DEFAULT_UPDATE_SOURCE;
+  } catch {
+    return DEFAULT_UPDATE_SOURCE;
+  }
+}
+
+function persistUpdateSource(source: UpdateSource) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(UPDATE_SOURCE_STORAGE_KEY, source);
+  } catch {
+    // Ignore storage failures; the current session still uses the selected source.
+  }
+}
+
+async function checkUpdateFromSource(source: UpdateSource): Promise<TauriUpdateInstance | null> {
+  const metadata = await invoke<TauriUpdateMetadata | null>('check_update_from_source_cmd', {
+    source,
+    timeout: UPDATE_CHECK_TIMEOUT_MS,
+  });
+  return metadata ? new TauriUpdate(metadata) : null;
+}
+
+let sharedSource = readStoredUpdateSource();
+let sharedState: UpdateState = { status: 'idle', source: sharedSource };
+let sharedUpdate: TauriUpdateInstance | null = null;
 let autoCheckStarted = false;
 const listeners = new Set<(state: UpdateState) => void>();
 
@@ -43,15 +91,28 @@ function extractError(e: unknown): { error: string; errorCode: string | number |
 export function useUpdater(checkOnMount = true) {
   const [state, setState] = useState<UpdateState>(sharedState);
 
-  const checkForUpdate = useCallback(async () => {
-    setSharedState({ status: 'checking' });
+  const setUpdateSource = useCallback((source: UpdateSource) => {
+    if (source === sharedSource) return;
+    sharedSource = source;
+    persistUpdateSource(source);
+    sharedUpdate = null;
+    setSharedState({ status: 'idle', source });
+  }, []);
+
+  const checkForUpdate = useCallback(async (sourceOverride?: UpdateSource) => {
+    const source = sourceOverride ?? sharedSource;
+    setSharedState({ status: 'checking', source });
     try {
-      const update = await check({ timeout: UPDATE_CHECK_TIMEOUT_MS });
+      const update = await checkUpdateFromSource(source);
       const lastCheckedAt = new Date().toISOString();
+      if (source !== sharedSource) {
+        return update;
+      }
       if (update) {
         sharedUpdate = update;
         setSharedState({
           status: 'available',
+          source,
           version: update.version,
           notes: update.body ?? undefined,
           lastCheckedAt,
@@ -59,30 +120,34 @@ export function useUpdater(checkOnMount = true) {
         return update;
       } else {
         sharedUpdate = null;
-        setSharedState({ status: 'up-to-date', lastCheckedAt });
+        setSharedState({ status: 'up-to-date', source, lastCheckedAt });
         return null;
       }
     } catch (e) {
+      if (source !== sharedSource) {
+        return null;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       // Graceful fallback: missing release manifest (404) → treat as up-to-date
       if (/\b404\b|Not Found/i.test(msg)) {
         sharedUpdate = null;
-        setSharedState({ status: 'up-to-date', lastCheckedAt: new Date().toISOString() });
+        setSharedState({ status: 'up-to-date', source, lastCheckedAt: new Date().toISOString() });
         return null;
       }
-      setSharedState({ status: 'error', errorStage: 'check', lastCheckedAt: new Date().toISOString(), ...extractError(e) });
+      setSharedState({ status: 'error', source, errorStage: 'check', lastCheckedAt: new Date().toISOString(), ...extractError(e) });
       return null;
     }
   }, []);
 
   const downloadAndInstall = useCallback(async () => {
     let update = sharedUpdate;
+    const source = sharedSource;
     if (!update) {
       try {
-        update = await check({ timeout: UPDATE_CHECK_TIMEOUT_MS });
+        update = await checkForUpdate(source);
         if (update) sharedUpdate = update;
       } catch (e) {
-        setSharedState({ status: 'error', errorStage: 'check', lastCheckedAt: new Date().toISOString(), ...extractError(e) });
+        setSharedState({ status: 'error', source, errorStage: 'check', lastCheckedAt: new Date().toISOString(), ...extractError(e) });
         return;
       }
       if (!update) return;
@@ -91,6 +156,7 @@ export function useUpdater(checkOnMount = true) {
     setSharedState(prev => ({
       ...prev,
       status: 'downloading',
+      source,
       progress: 0,
       error: undefined,
       errorCode: undefined,
@@ -135,7 +201,7 @@ export function useUpdater(checkOnMount = true) {
       }));
       return;
     }
-  }, []);
+  }, [checkForUpdate]);
 
   const restart = useCallback(async () => {
     try {
@@ -145,6 +211,7 @@ export function useUpdater(checkOnMount = true) {
         ...prev,
         status: 'error',
         progress: undefined,
+        source: sharedSource,
         errorStage: 'install',
         ...extractError(e),
       }));
@@ -175,5 +242,5 @@ export function useUpdater(checkOnMount = true) {
     };
   }, [checkOnMount, checkForUpdate]);
 
-  return { ...state, checkForUpdate, downloadAndInstall, restart };
+  return { ...state, setUpdateSource, checkForUpdate, downloadAndInstall, restart };
 }
