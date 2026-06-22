@@ -1,6 +1,6 @@
 {
   "name": "grep_files",
-  "description": "Alias of search_files using familiar grep/rg terminology. Search plain-text files by content inside registered source directories, with literal or regex matching, include/exclude globs, hidden-file control, line numbers, and optional context lines. Prefer this when the user asks to grep, rg, or find text inside local files.",
+  "description": "Alias of search_files using familiar grep/rg terminology. Search plain-text files by content inside registered source directories, with literal or regex matching, include/exclude globs, hidden-file control, line numbers, and optional context lines. Prefer this for coding/codebase browsing and whenever the user asks to grep, rg, or find text inside local files. Use it before read_file/read_files unless an exact file or path is already known.",
   "parameters": {
     "type": "object",
     "properties": {

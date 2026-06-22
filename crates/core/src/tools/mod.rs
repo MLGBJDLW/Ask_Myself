@@ -1288,6 +1288,7 @@ mod tests {
         assert!(names.iter().any(|name| name == "code_intelligence"));
         assert!(names.iter().any(|name| name == "project_tool"));
         assert!(names.iter().any(|name| name == "search_files"));
+        assert!(names.iter().any(|name| name == "grep_files"));
         assert!(names.iter().any(|name| name == "run_shell"));
     }
 
