@@ -13,6 +13,7 @@
     "tests/**/*.test.ts",
     "src/lib/chatAttachments.ts",
     "src/lib/slashCommands.ts",
+    "src/lib/workflowRecorder.ts",
     "src/lib/streaming/**/*.ts",
     "src/types/**/*.ts"
   ]
