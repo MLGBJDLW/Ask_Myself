@@ -1,0 +1,33 @@
+name: Sync GitHub release to Gitee
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub release tag to sync
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-gitee-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Sync release assets to Gitee
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_OWNER: ButlerW
+          GITEE_REPO: Nexa
+          GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'ButlerW' }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+        run: node scripts/sync-gitee-release.mjs
