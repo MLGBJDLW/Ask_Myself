@@ -344,6 +344,12 @@ pub fn infer_tool_access_profile(
                 .get("overwrite")
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false)
+                || args
+                    .get("mode")
+                    .and_then(|value| value.as_str())
+                    .map(|mode| mode.trim().eq_ignore_ascii_case("overwrite")
+                        || mode.trim().eq_ignore_ascii_case("append"))
+                    .unwrap_or(false)
             {
                 ApprovalRisk::High
             } else {

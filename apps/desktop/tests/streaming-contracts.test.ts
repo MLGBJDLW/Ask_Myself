@@ -155,6 +155,7 @@ function toolRun(input: {
   status: ToolRunItem['status'];
   content?: string;
   progressNote?: string;
+  artifacts?: ToolRunItem['artifacts'];
 }): ToolRunItem {
   return {
     callId: input.callId,
@@ -178,6 +179,7 @@ function toolRun(input: {
       resourceKeys: ['source:notes'],
     },
     content: input.content,
+    artifacts: input.artifacts,
     isError: input.status === 'failed',
     progressNote: input.progressNote,
     durationMs: input.status === 'completed' ? 42 : undefined,
@@ -1029,6 +1031,38 @@ test('canonical run event projection matches live stream dispatch for render sta
   assertEqual(live.lastUsage?.totalTokens, projected.lastUsage?.totalTokens, 'usage equivalence');
 
   streamStore.clearStream(conversationId);
+});
+
+
+test('canonical tool run projection uses backend inputProgress received bytes', () => {
+  const runEvents = [
+    runEvent({
+      eventSeq: 1,
+      kind: 'toolStarted',
+      phase: 'tooling',
+      payload: {
+        type: 'toolRunStarted',
+        run: toolRun({
+          callId: 'call-large-args',
+          status: 'preparing',
+          artifacts: {
+            inputProgress: {
+              receivedBytes: 9000000,
+              argumentsComplete: false,
+            },
+          },
+        }),
+      },
+    }),
+  ];
+
+  const projected = projectRunEventsToStreamState(taskRun('running'), runEvents);
+
+  assertEqual(
+    projected.toolCalls[0].argsBytes,
+    9000000,
+    'received byte count should not stop at truncated arguments length',
+  );
 });
 
 test('canonical auto-compaction projection matches live stream dispatch summary', () => {

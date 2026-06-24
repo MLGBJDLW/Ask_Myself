@@ -50,6 +50,25 @@ export function createToolCall(partial: {
   };
 }
 
+function inputProgressReceivedBytes(artifacts: ArtifactPayload | undefined): number | null {
+  if (!artifacts || Array.isArray(artifacts) || typeof artifacts !== 'object') return null;
+  const progress = (artifacts as Record<string, unknown>).inputProgress;
+  if (!progress || Array.isArray(progress) || typeof progress !== 'object') return null;
+  const received = (progress as Record<string, unknown>).receivedBytes;
+  const parsed = typeof received === 'number'
+    ? received
+    : Number.parseInt(String(received ?? ''), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function argsBytesFromArtifacts(
+  artifacts: ArtifactPayload | undefined,
+  fallback: number,
+): number {
+  const received = inputProgressReceivedBytes(artifacts);
+  return received === null ? fallback : Math.max(fallback, received);
+}
+
 function finalizeToolCall(
   tc: ToolCallEvent,
   isError: boolean | undefined,
@@ -78,7 +97,10 @@ function patchToolCallFromRun(prev: ToolCallEvent, run: ToolRunItem): ToolCallEv
     capabilities: run.capabilities ?? prev.capabilities,
     plugin: run.plugin ?? prev.plugin,
     argsStatus: argsStatusForToolRun(run, status),
-    argsBytes: Math.max(prev.argsBytes, argumentsText.length),
+    argsBytes: argsBytesFromArtifacts(
+      run.artifacts,
+      Math.max(prev.argsBytes, argumentsText.length),
+    ),
     content: run.content ?? prev.content,
     isError: run.isError ?? prev.isError,
     artifacts: run.artifacts ?? prev.artifacts,
@@ -289,7 +311,10 @@ export function toolPreparingPayloadFromRun(run: ToolRunItem): ToolPreparingPayl
   return {
     callId,
     toolName: (run.toolName || '').trim() || 'unknown_tool',
-    argsBytes: typeof run.arguments === 'string' ? run.arguments.length : 0,
+    argsBytes: argsBytesFromArtifacts(
+      run.artifacts,
+      typeof run.arguments === 'string' ? run.arguments.length : 0,
+    ),
   };
 }
 
@@ -451,7 +476,7 @@ export function applyToolCallArgsDeltaEvent(
       return {
         ...tc,
         arguments: nextArgs,
-        argsBytes: nextArgs.length,
+        argsBytes: Math.max(tc.argsBytes, nextArgs.length),
         argsStatus: isPendingToolCallStatus(tc.status) ? 'streaming' : tc.argsStatus,
       };
     };

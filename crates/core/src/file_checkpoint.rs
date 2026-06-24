@@ -4,6 +4,7 @@
 //! bytes immediately before a tool mutates a user file so the change can be
 //! restored later.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use rusqlite::OptionalExtension;
@@ -90,6 +91,20 @@ fn validate_restore_target_in_sources(db: &Database, target: &Path) -> Result<()
     Ok(())
 }
 
+fn hash_file(path: &Path) -> Result<String, CoreError> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 fn map_checkpoint_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileCheckpoint> {
     Ok(FileCheckpoint {
         id: row.get(0)?,
@@ -121,10 +136,18 @@ impl Database {
             )));
         }
 
+        let append_checkpoint = input.operation == "append";
         let (existed_before, content_before, bytes_before, hash_before) = if absolute.exists() {
-            let bytes = std::fs::read(&absolute)?;
-            let hash = blake3::hash(&bytes).to_hex().to_string();
-            (true, Some(bytes.clone()), bytes.len() as u64, Some(hash))
+            let metadata = std::fs::metadata(&absolute)?;
+            let bytes_before = metadata.len();
+            if append_checkpoint {
+                let hash = hash_file(&absolute)?;
+                (true, None, bytes_before, Some(hash))
+            } else {
+                let bytes = std::fs::read(&absolute)?;
+                let hash = blake3::hash(&bytes).to_hex().to_string();
+                (true, Some(bytes), bytes_before, Some(hash))
+            }
         } else {
             (false, None, 0, None)
         };
@@ -226,20 +249,31 @@ impl Database {
         drop(conn);
 
         if checkpoint.existed_before {
-            let bytes = content_before.ok_or_else(|| {
-                CoreError::Internal(format!(
-                    "File checkpoint {checkpoint_id} is missing its stored bytes."
-                ))
-            })?;
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
+            if let Some(bytes) = content_before {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&target, &bytes)?;
+                return Ok(FileCheckpointRestore {
+                    checkpoint,
+                    action: "restored".to_string(),
+                    bytes_written: bytes.len() as u64,
+                });
             }
-            std::fs::write(&target, &bytes)?;
-            Ok(FileCheckpointRestore {
-                checkpoint,
-                action: "restored".to_string(),
-                bytes_written: bytes.len() as u64,
-            })
+
+            if checkpoint.operation == "append" {
+                let file = std::fs::OpenOptions::new().write(true).open(&target)?;
+                file.set_len(checkpoint.bytes_before)?;
+                return Ok(FileCheckpointRestore {
+                    bytes_written: checkpoint.bytes_before,
+                    checkpoint,
+                    action: "truncated_append".to_string(),
+                });
+            }
+
+            Err(CoreError::Internal(format!(
+                "File checkpoint {checkpoint_id} is missing its stored bytes."
+            )))
         } else {
             if target.exists() {
                 if !target.is_file() {
@@ -320,6 +354,41 @@ mod tests {
         assert_eq!(restored.action, "restored");
         assert_eq!(std::fs::read(&file).unwrap(), b"before");
         assert_eq!(restored.bytes_written, 6);
+    }
+
+    #[test]
+    fn append_checkpoint_truncates_without_storing_original_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("large.log");
+        std::fs::write(&file, b"before").unwrap();
+        let db = db_with_source(dir.path());
+
+        let checkpoint = db
+            .create_file_checkpoint(CreateFileCheckpointInput {
+                conversation_id: None,
+                tool_call_id: "call-append",
+                tool_name: "create_file",
+                operation: "append",
+                path: "large.log",
+                absolute_path: &file,
+            })
+            .unwrap();
+
+        let stored: Option<Vec<u8>> = db
+            .conn()
+            .query_row(
+                "SELECT content_before FROM file_checkpoints WHERE id = ?1",
+                rusqlite::params![&checkpoint.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(stored.is_none());
+
+        std::fs::write(&file, b"before-after").unwrap();
+        let restored = db.restore_file_checkpoint(&checkpoint.id).unwrap();
+
+        assert_eq!(restored.action, "truncated_append");
+        assert_eq!(std::fs::read(&file).unwrap(), b"before");
     }
 
     #[test]

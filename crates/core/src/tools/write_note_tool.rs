@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::db::Database;
 use crate::error::CoreError;
@@ -68,6 +69,15 @@ fn validate_filename(filename: &str) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 // Tool implementation
 // ---------------------------------------------------------------------------
+
+fn append_diff_artifact(path: &str, content: &str, base_bytes: u64) -> Value {
+    let mut diff = create_file_diff_artifact(path, content);
+    if let Some(map) = diff.as_object_mut() {
+        map.insert("operation".to_string(), Value::String("append".to_string()));
+        map.insert("baseBytes".to_string(), Value::Number(base_bytes.into()));
+    }
+    diff
+}
 
 #[async_trait]
 impl Tool for WriteNoteTool {
@@ -220,7 +230,8 @@ impl WriteNoteTool {
             }
 
             let existed_before = file_path.exists();
-            let old_content = if existed_before {
+            let bytes_before = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+            let old_content = if existed_before && mode == "overwrite" {
                 std::fs::read_to_string(&file_path).unwrap_or_default()
             } else {
                 String::new()
@@ -257,11 +268,15 @@ impl WriteNoteTool {
             }
 
             let size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
-            let new_content = std::fs::read_to_string(&file_path).unwrap_or_default();
-            let diff = if !existed_before && mode == "create" {
-                create_file_diff_artifact(&args.filename, &new_content)
-            } else {
-                text_diff_artifact(&args.filename, &mode, &old_content, &new_content)
+            let diff = match mode.as_str() {
+                "append" => append_diff_artifact(&args.filename, &args.content, bytes_before),
+                "create" if !existed_before => {
+                    create_file_diff_artifact(&args.filename, &args.content)
+                }
+                _ => {
+                    let new_content = std::fs::read_to_string(&file_path).unwrap_or_default();
+                    text_diff_artifact(&args.filename, &mode, &old_content, &new_content)
+                }
             };
 
             let text = format!(
@@ -361,6 +376,16 @@ mod tests {
         assert!(!result.is_error, "unexpected error: {}", result.content);
         let artifact = result.artifacts.as_ref().unwrap();
         assert_eq!(artifact["diff"]["operation"], "append");
+        assert_eq!(artifact["diff"]["baseBytes"], 8);
+        let stored: Option<Vec<u8>> = db
+            .conn()
+            .query_row(
+                "SELECT content_before FROM file_checkpoints WHERE id = ?1",
+                rusqlite::params![artifact["checkpoint"]["id"].as_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(stored.is_none());
         assert!(artifact["diff"]["hunks"][0]["lines"]
             .as_array()
             .unwrap()

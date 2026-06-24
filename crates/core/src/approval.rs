@@ -627,18 +627,32 @@ pub fn describe_request(tool_name: &str, args: &serde_json::Value) -> String {
                 .get("path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("<unknown>");
-            if args
-                .get("overwrite")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                format!(
+            let mode = args
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|mode| !mode.is_empty())
+                .unwrap_or_else(|| {
+                    if args
+                        .get("overwrite")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        "overwrite"
+                    } else {
+                        "create"
+                    }
+                });
+            match mode {
+                mode if mode.eq_ignore_ascii_case("overwrite") => format!(
                     "Agent wants to overwrite `{path}`. A restorable file checkpoint will be saved first."
-                )
-            } else {
-                format!(
+                ),
+                mode if mode.eq_ignore_ascii_case("append") => format!(
+                    "Agent wants to append to `{path}`. A restorable append checkpoint will be saved first."
+                ),
+                _ => format!(
                     "Agent wants to create `{path}`. A checkpoint will record that this file did not exist before the write."
-                )
+                ),
             }
         }
         "edit_file" | "multi_edit" => {

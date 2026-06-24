@@ -1367,9 +1367,29 @@ mod tests {
             }),
         );
 
+        let overwrite_mode = registry.access_profile(
+            "create_file",
+            &serde_json::json!({
+                "path": "notes/example.md",
+                "content": "hello",
+                "mode": "overwrite"
+            }),
+        );
+        let append_mode = registry.access_profile(
+            "create_file",
+            &serde_json::json!({
+                "path": "notes/example.md",
+                "content": "hello",
+                "mode": "append",
+                "expected_bytes": 0
+            }),
+        );
+
         assert!(create.can_write);
         assert_eq!(create.risk_level, ApprovalRisk::Medium);
         assert_eq!(overwrite.risk_level, ApprovalRisk::High);
+        assert_eq!(overwrite_mode.risk_level, ApprovalRisk::High);
+        assert_eq!(append_mode.risk_level, ApprovalRisk::High);
         assert!(overwrite.needs_approval);
     }
 
