@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.14](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.13...nexa-monorepo-v0.9.14) (2026-06-24)
+
+
+### Bug Fixes
+
+* add actions: write to publish job permissions to allow workflow dispatch ([716fb6f](https://github.com/MLGBJDLW/Nexa/commit/716fb6f9b529e7bc50aab7d1c2175eb742adca92))
+
 ## [0.9.13](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.12...nexa-monorepo-v0.9.13) (2026-06-24)
 
 
