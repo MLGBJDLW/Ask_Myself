@@ -324,7 +324,6 @@ impl CreateFileTool {
                 }
                 FileWriteMode::Append => {
                     let mut file = match std::fs::OpenOptions::new()
-                        .write(true)
                         .append(true)
                         .open(&canonical)
                     {
