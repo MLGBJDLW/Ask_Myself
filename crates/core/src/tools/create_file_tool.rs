@@ -67,10 +67,7 @@ fn normalized_mode(args: &CreateFileArgs) -> Result<FileWriteMode, String> {
         .map(str::to_ascii_lowercase);
 
     if args.overwrite {
-        if requested
-            .as_deref()
-            .is_some_and(|mode| mode != "overwrite")
-        {
+        if requested.as_deref().is_some_and(|mode| mode != "overwrite") {
             return Err(
                 "Do not combine overwrite=true with mode='create' or mode='append'. Use mode='overwrite' instead."
                     .to_string(),
@@ -526,7 +523,10 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
-        assert_eq!(result.artifacts.as_ref().unwrap()["diff"]["operation"], "overwrite");
+        assert_eq!(
+            result.artifacts.as_ref().unwrap()["diff"]["operation"],
+            "overwrite"
+        );
         assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "new content");
     }
 
@@ -549,7 +549,10 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
-        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "first\nsecond\n");
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "first\nsecond\n"
+        );
         let artifact = result.artifacts.as_ref().unwrap();
         assert_eq!(artifact["diff"]["operation"], "append");
         assert_eq!(artifact["diffStats"]["additions"], 1);
