@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.13](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.12...nexa-monorepo-v0.9.13) (2026-06-24)
+
+
+### Bug Fixes
+
+* allow release workflow to dispatch actions ([48a8b2a](https://github.com/MLGBJDLW/Nexa/commit/48a8b2a39b6000479c8c44c4f4dd50d79052b99b))
+
 ## [0.9.12](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.11...nexa-monorepo-v0.9.12) (2026-06-24)
 
 
