@@ -1,0 +1,33 @@
+name: PR Rustfmt Artifact
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  rustfmt:
+    name: Format changed files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format workspace
+        run: cargo fmt --all
+      - name: Upload formatted files
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustfmt-files
+          if-no-files-found: error
+          path: |
+            apps/desktop/src/lib/streaming/toolProjection.ts
+            crates/core/src/agent/tool_runtime.rs
+            crates/core/src/file_checkpoint.rs
+            crates/core/src/migrations/v_initial_consolidated.sql
+            crates/core/src/tools/capability.rs
+            crates/core/src/tools/create_file_tool.rs

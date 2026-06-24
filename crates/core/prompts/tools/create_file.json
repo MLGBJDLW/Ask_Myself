@@ -1,20 +1,30 @@
 {
   "name": "create_file",
-  "description": "Create a new plain-text file at the specified path. In restricted mode paths must resolve inside the current registered source scope; allow-all/non-restricted permission modes can use all registered sources, and open mode can also use absolute local paths outside registered sources. Parent directories are created automatically. Supports text-based formats (md, txt, json, csv, rs, py, etc.). Paths may be absolute or relative to a source root.\n\nUse this tool when:\n- You need to create a brand-new text file\n- The file does not yet exist (or you explicitly set overwrite to true)\n\nDo not use Python or run_shell snippets for ordinary plain-text file creation. Do not use this tool for DOCX/XLSX/PPTX/PDF files. Use run_shell + doc-script-editor (Python Office libraries) for Office/PDF creation, validation, conversion, rendering, existing-file edits, extraction, redaction, formula checks, OOXML surgery, or template-preserving work. For generated PPT/PPTX decks, do not use create_file just to stage a transient deck JSON spec; call the PPTX renderer through run_shell with --spec - and pass the spec through stdin.\nFor editing existing text files, use edit_file instead.\nFor notes in the notes/ subdirectory, use write_note instead.",
+  "description": "Create, overwrite, or incrementally append UTF-8 plain-text files at the specified path. In restricted mode paths must resolve inside the current registered source scope; allow-all/non-restricted permission modes can use all registered sources, and open mode can also use absolute local paths outside registered sources. Parent directories are created automatically for create/overwrite. Supports text-based formats (md, txt, json, csv, rs, py, etc.). Paths may be absolute or relative to a source root.\n\nUse this tool when:\n- You need to create a brand-new text file (mode=create, the default)\n- You explicitly need to replace the whole file (mode=overwrite)\n- You are continuing a long plain-text write in ordered chunks (mode=append)\n\nLong-write protocol:\n1. Write the first coherent chunk with mode=create.\n2. Read nextExpectedBytes from the successful tool result.\n3. Append each remaining coherent chunk with mode=append, expected_bytes set to that exact byte value, and wait_for_previous=true when calls share an assistant turn.\n4. Use the returned nextExpectedBytes for the next chunk. A precondition mismatch means the file changed or a chunk already ran; inspect current state instead of blindly resending.\n\nThere is no special UTF-8 'encoding limit' in this tool. The practical constraint is the model/tool-call payload, so keep individual generated chunks reasonably bounded (typically tens of KiB) and continue with append calls. Never tell the user that a long text file could not be written because of an encoding limitation when this chunk protocol is available.\n\nDo not use Python or run_shell snippets for ordinary plain-text file creation or continuation. Do not use this tool for DOCX/XLSX/PPTX/PDF files. Use run_shell + doc-script-editor (Python Office libraries) for Office/PDF creation, validation, conversion, rendering, existing-file edits, extraction, redaction, formula checks, OOXML surgery, or template-preserving work. For generated PPT/PPTX decks, do not use create_file just to stage a transient deck JSON spec; call the PPTX renderer through run_shell with --spec - and pass the spec through stdin.\nFor targeted edits inside an existing text file, use edit_file instead.\nFor notes in the notes/ subdirectory, use write_note instead.",
   "parameters": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
-        "description": "Path to the file to create (absolute or relative to a source directory; open mode also accepts absolute local paths outside registered sources)."
+        "description": "Path to the file (absolute or relative to a source directory; open mode also accepts absolute local paths outside registered sources)."
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["create", "overwrite", "append"],
+        "description": "Write mode. create is the default and fails if the file exists. overwrite replaces the whole file. append requires an existing file and a matching expected_bytes precondition."
       },
       "content": {
         "type": "string",
-        "description": "The text content to write to the file."
+        "description": "The UTF-8 text content for this write or append chunk."
+      },
+      "expected_bytes": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Required for mode=append. Exact current file length in UTF-8 bytes, normally copied from the previous result's nextExpectedBytes. Prevents duplicate and out-of-order chunks."
       },
       "overwrite": {
         "type": "boolean",
-        "description": "If true, overwrite the file if it already exists. Default: false."
+        "description": "Deprecated compatibility alias for mode=overwrite. Do not combine it with another explicit mode."
       }
     },
     "required": ["path", "content"]
