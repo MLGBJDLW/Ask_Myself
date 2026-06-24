@@ -31,7 +31,6 @@ import {
   extractToolPreparingPayload,
   extractToolRunPayload,
   type ToolPreparingPayload,
-  toolPreparingPayloadFromRun,
 } from './toolProjection';
 import { clearStreamWatchdog } from './watchdog';
 
@@ -87,12 +86,10 @@ export function applyLiveStreamEvent(
         const run = extractToolRunPayload(event, raw);
         if (!run) break;
 
-        const preparing = toolPreparingPayloadFromRun(run);
-        if (preparing) {
-          callbacks.scheduleToolPreparing(preparing);
-          break;
-        }
-
+        // Canonical tool-run events already carry the richest available state,
+        // including partial arguments and semantic preview artifacts. Apply
+        // preparing runs immediately instead of replacing them with the legacy
+        // delayed placeholder, otherwise every live file diff is discarded.
         clearToolPreparingTimer(state, run.callId.trim());
         applyToolRunEvent(state, run);
       } catch (err) {
