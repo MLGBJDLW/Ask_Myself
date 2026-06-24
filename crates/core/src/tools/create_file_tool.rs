@@ -201,8 +201,9 @@ impl CreateFileTool {
         source_scope: &[String],
         conversation_id: Option<&str>,
     ) -> Result<ToolResult, CoreError> {
-        let args: CreateFileArgs = serde_json::from_str(arguments)
-            .map_err(|error| CoreError::InvalidInput(format!("Invalid create_file arguments: {error}")))?;
+        let args: CreateFileArgs = serde_json::from_str(arguments).map_err(|error| {
+            CoreError::InvalidInput(format!("Invalid create_file arguments: {error}"))
+        })?;
         let mode = normalized_mode(&args).map_err(CoreError::InvalidInput)?;
 
         if has_path_traversal(&args.path) {
@@ -430,6 +431,7 @@ impl CreateFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_settings::{AppConfig, ShellAccessMode};
     use crate::sources::CreateSourceInput;
 
     fn setup_db_with_source(root: &std::path::Path) -> Database {
@@ -442,6 +444,12 @@ mod tests {
         })
         .expect("register source root");
         db
+    }
+
+    fn enable_open_file_access(db: &Database) {
+        let mut config = AppConfig::default();
+        config.shell_access_mode = ShellAccessMode::Open;
+        db.save_app_config(&config).expect("save app config");
     }
 
     #[tokio::test]
@@ -463,7 +471,15 @@ mod tests {
         assert!(result.content.contains("Created file"));
         let artifact = result.artifacts.as_ref().unwrap();
         assert_eq!(artifact["diff"]["operation"], "create");
-        assert_eq!(artifact["diffStats"]["additions"], 1);
+        assert_eq!(artifact["diff"]["additions"], 1);
+        assert_eq!(artifact["diff"]["deletions"], 0);
+        assert_eq!(artifact["diff"]["hunks"][0]["lines"][0]["type"], "addition");
+        assert_eq!(
+            artifact["diff"]["hunks"][0]["lines"][0]["content"],
+            "hello world"
+        );
+        assert_eq!(artifact["diffStats"]["kind"], "diffStats");
+        assert_eq!(artifact["diffStats"]["operation"], "create");
         assert_eq!(artifact["writeProgress"]["nextExpectedBytes"], 11);
         assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "hello world");
 
@@ -592,6 +608,107 @@ mod tests {
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert!(file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn create_file_resolves_source_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = setup_db_with_source(dir.path());
+        let tool = CreateFileTool;
+        let args = serde_json::json!({
+            "path": "notes/today.md",
+            "content": "hello"
+        });
+
+        let result = tool
+            .execute("c-rel", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("notes").join("today.md")).unwrap(),
+            "hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_file_rejects_office_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = setup_db_with_source(dir.path());
+        let tool = CreateFileTool;
+        let args = serde_json::json!({
+            "path": "reports/status.docx",
+            "content": "this should be structured, not plain text"
+        });
+
+        let result = tool
+            .execute("c-docx", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.content.contains("doc-script-editor"));
+    }
+
+    #[tokio::test]
+    async fn create_file_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = setup_db_with_source(dir.path());
+        let tool = CreateFileTool;
+        let args = serde_json::json!({
+            "path": format!("{}/../../../etc/passwd", dir.path().display()),
+            "content": "evil"
+        });
+
+        let result = tool
+            .execute("c1", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(result.content.contains("traversal"));
+    }
+
+    #[tokio::test]
+    async fn create_file_rejects_outside_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        let db = setup_db_with_source(dir.path());
+        let tool = CreateFileTool;
+        let file_path = other_dir.path().join("outside.txt");
+        let args = serde_json::json!({
+            "path": file_path.to_string_lossy(),
+            "content": "not allowed"
+        });
+
+        let result = tool
+            .execute("c1", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(result.content.contains("Access denied"));
+    }
+
+    #[tokio::test]
+    async fn create_file_open_mode_allows_absolute_path_outside_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        let db = setup_db_with_source(dir.path());
+        enable_open_file_access(&db);
+        let tool = CreateFileTool;
+        let file_path = other_dir.path().join("outside.txt");
+        let args = serde_json::json!({
+            "path": file_path.to_string_lossy(),
+            "content": "allowed"
+        });
+
+        let result = tool
+            .execute("c-open", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert_eq!(std::fs::read_to_string(file_path).unwrap(), "allowed");
     }
 
     #[test]
