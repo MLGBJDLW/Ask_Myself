@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.12](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.11...nexa-monorepo-v0.9.12) (2026-06-24)
+
+
+### Features
+
+* **agent:** stream semantic previews from partial tool JSON ([831c76a](https://github.com/MLGBJDLW/Nexa/commit/831c76a67ab0e547c018277b459e2f8bbdb547fc))
+* **files:** add resumable append mode with byte preconditions ([645e852](https://github.com/MLGBJDLW/Nexa/commit/645e8528366f125f097f277bb6bb8ac68499b312))
+
+
+### Bug Fixes
+
+* apply rustfmt formatting to fix CI check ([7760f11](https://github.com/MLGBJDLW/Nexa/commit/7760f1104fe29ccc6b3352460d2c9f76a7f2c64d))
+* **streaming:** preserve canonical preparing tool runs ([37b32be](https://github.com/MLGBJDLW/Nexa/commit/37b32be9f008ff0e7db5704b4941ac937e372b00))
+
 ## [0.9.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.10...nexa-monorepo-v0.9.11) (2026-06-22)
 
 
