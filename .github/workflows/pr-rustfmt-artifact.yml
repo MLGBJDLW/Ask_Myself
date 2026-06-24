@@ -26,4 +26,5 @@ jobs:
           if-no-files-found: error
           path: |
             crates/core/src/agent/tool_runtime.rs
+            crates/core/src/tools/capability.rs
             crates/core/src/tools/create_file_tool.rs
