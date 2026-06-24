@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   rustfmt:
-    name: Format changed Rust files
+    name: Format changed files
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -25,6 +25,9 @@ jobs:
           name: rustfmt-files
           if-no-files-found: error
           path: |
+            apps/desktop/src/lib/streaming/toolProjection.ts
             crates/core/src/agent/tool_runtime.rs
+            crates/core/src/file_checkpoint.rs
+            crates/core/src/migrations/v_initial_consolidated.sql
             crates/core/src/tools/capability.rs
             crates/core/src/tools/create_file_tool.rs
