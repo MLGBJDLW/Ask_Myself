@@ -130,6 +130,24 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Fix clang_rt.osx search path (macOS / Xcode 16)
+        if: runner.os == 'macOS'
+        run: |
+          # rustc for aarch64-apple-darwin emits -lclang_rt.osx and
+          # -L .../clang/<MAJOR>/lib/darwin, but Xcode 16 stores the runtime
+          # under the full version directory (e.g. "17.0.6"), not just "17".
+          # Create a major-version symlink so the linker search path resolves.
+          CLANG_BASE="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang"
+          for dir in "$CLANG_BASE"/*/; do
+            [ -d "$dir" ] || continue
+            full=$(basename "$dir")
+            major="${full%%.*}"
+            if [ "$full" != "$major" ] && [ ! -e "$CLANG_BASE/$major" ]; then
+              sudo ln -sf "$dir" "$CLANG_BASE/$major"
+              echo "Created symlink: $CLANG_BASE/$major -> $dir"
+            fi
+          done
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.6.2
         id: tauri
