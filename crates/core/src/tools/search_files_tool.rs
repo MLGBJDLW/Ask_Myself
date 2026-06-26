@@ -75,10 +75,30 @@ enum Matcher {
     Regex(regex::Regex),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchMode {
+    Literal,
+    Regex,
+}
+
+impl MatchMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Literal => "literal",
+            Self::Regex => "regex",
+        }
+    }
+}
+
 impl Matcher {
-    fn new(query: &str, regex: bool, case_sensitive: bool) -> Result<Self, String> {
+    fn new(
+        tool_name: &str,
+        query: &str,
+        regex: bool,
+        case_sensitive: bool,
+    ) -> Result<Self, String> {
         if query.trim().is_empty() {
-            return Err("search_files query must not be empty.".to_string());
+            return Err(format!("{tool_name} query must not be empty."));
         }
 
         if regex {
@@ -86,12 +106,25 @@ impl Matcher {
                 .case_insensitive(!case_sensitive)
                 .build()
                 .map(Self::Regex)
-                .map_err(|e| format!("Invalid regex: {e}"))
+                .map_err(|e| {
+                    format!(
+                        "Invalid regex for {tool_name}: {e}. If you wanted exact text, omit \
+                         regex or set \"regex\": false; only escape regex metacharacters such \
+                         as | when regex mode is intentional."
+                    )
+                })
         } else {
             Ok(Self::Literal {
                 query: query.to_string(),
                 case_sensitive,
             })
+        }
+    }
+
+    fn mode(&self) -> MatchMode {
+        match self {
+            Self::Literal { .. } => MatchMode::Literal,
+            Self::Regex(_) => MatchMode::Regex,
         }
     }
 
@@ -140,139 +173,7 @@ impl Tool for SearchFilesTool {
         db: &Database,
         source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
-        let args: SearchFilesArgs = serde_json::from_str(arguments)
-            .map_err(|e| CoreError::InvalidInput(format!("Invalid search_files arguments: {e}")))?;
-
-        let db = db.clone();
-        let call_id = call_id.to_string();
-        let source_scope = source_scope.to_vec();
-        tokio::task::spawn_blocking(move || {
-            let matcher = Matcher::new(&args.query, args.regex, args.case_sensitive)
-                .map_err(CoreError::InvalidInput)?;
-            let max_results = args
-                .max_results
-                .unwrap_or(DEFAULT_MAX_RESULTS)
-                .min(MAX_RESULTS);
-            let context_lines = args.context_lines.unwrap_or(0).min(MAX_CONTEXT_LINES);
-            let include_set = build_globset(&args.include_globs)?;
-            let exclude_set = build_globset(&args.exclude_globs)?;
-
-            let file_policy = file_access_policy(&db, &source_scope)?;
-            let roots = resolve_search_roots(&args, &file_policy)?;
-            if roots.is_empty() {
-                return Ok(ToolResult {
-                    call_id,
-                    content: "No source directories are available to search.".to_string(),
-                    is_error: true,
-                    artifacts: None,
-                });
-            }
-
-            let mut matches = Vec::new();
-            let mut searched_files = 0usize;
-            let mut skipped_files = 0usize;
-
-            'roots: for root in roots {
-                if root.root.is_file() {
-                    if file_included(&root.root, &root.display_base, &include_set, &exclude_set) {
-                        searched_files += 1;
-                        search_file(
-                            &root.root,
-                            &root.display_base,
-                            &matcher,
-                            context_lines,
-                            max_results,
-                            &mut matches,
-                        )?;
-                    }
-                    if matches.len() >= max_results {
-                        break;
-                    }
-                    continue;
-                }
-
-                let mut builder = ignore::WalkBuilder::new(&root.root);
-                builder
-                    .follow_links(false)
-                    .hidden(!args.include_hidden)
-                    .git_ignore(true)
-                    .git_exclude(true)
-                    .git_global(true)
-                    .require_git(false)
-                    .parents(true);
-
-                for entry in builder.build() {
-                    let entry = match entry {
-                        Ok(entry) => entry,
-                        Err(_) => {
-                            skipped_files += 1;
-                            continue;
-                        }
-                    };
-                    if !entry
-                        .file_type()
-                        .is_some_and(|file_type| file_type.is_file())
-                    {
-                        continue;
-                    }
-                    let path = entry.path();
-                    if !file_included(path, &root.display_base, &include_set, &exclude_set) {
-                        continue;
-                    }
-                    searched_files += 1;
-                    search_file(
-                        path,
-                        &root.display_base,
-                        &matcher,
-                        context_lines,
-                        max_results,
-                        &mut matches,
-                    )?;
-                    if matches.len() >= max_results {
-                        break 'roots;
-                    }
-                }
-            }
-
-            let truncated = matches.len() >= max_results;
-            let mut text = format!(
-                "Found {} matching line(s) for {:?} across {} searched file(s).",
-                matches.len(),
-                args.query,
-                searched_files
-            );
-            if truncated {
-                text.push_str(&format!(" Results truncated at {max_results}."));
-            }
-            if skipped_files > 0 {
-                text.push_str(&format!(" Skipped {skipped_files} unreadable path(s)."));
-            }
-            text.push('\n');
-
-            for item in &matches {
-                text.push_str(&format!(
-                    "\n{}:{}: {}",
-                    item.path, item.line_number, item.line
-                ));
-            }
-
-            Ok(ToolResult {
-                call_id,
-                content: text,
-                is_error: false,
-                artifacts: Some(json!({
-                    "kind": "fileSearchResults",
-                    "query": args.query,
-                    "regex": args.regex,
-                    "caseSensitive": args.case_sensitive,
-                    "truncated": truncated,
-                    "searchedFiles": searched_files,
-                    "matches": matches,
-                })),
-            })
-        })
-        .await
-        .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?
+        execute_search_files("search_files", call_id, arguments, db, source_scope).await
     }
 }
 
@@ -303,10 +204,152 @@ impl Tool for GrepFilesTool {
         db: &Database,
         source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
-        SearchFilesTool
-            .execute(call_id, arguments, db, source_scope)
-            .await
+        execute_search_files("grep_files", call_id, arguments, db, source_scope).await
     }
+}
+
+async fn execute_search_files(
+    tool_name: &'static str,
+    call_id: &str,
+    arguments: &str,
+    db: &Database,
+    source_scope: &[String],
+) -> Result<ToolResult, CoreError> {
+    let args: SearchFilesArgs = serde_json::from_str(arguments)
+        .map_err(|e| CoreError::InvalidInput(format!("Invalid {tool_name} arguments: {e}")))?;
+
+    let db = db.clone();
+    let call_id = call_id.to_string();
+    let source_scope = source_scope.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let matcher = Matcher::new(tool_name, &args.query, args.regex, args.case_sensitive)
+            .map_err(CoreError::InvalidInput)?;
+        let match_mode = matcher.mode().as_str();
+        let max_results = args
+            .max_results
+            .unwrap_or(DEFAULT_MAX_RESULTS)
+            .min(MAX_RESULTS);
+        let context_lines = args.context_lines.unwrap_or(0).min(MAX_CONTEXT_LINES);
+        let include_set = build_globset(&args.include_globs)?;
+        let exclude_set = build_globset(&args.exclude_globs)?;
+
+        let file_policy = file_access_policy(&db, &source_scope)?;
+        let roots = resolve_search_roots(&args, &file_policy)?;
+        if roots.is_empty() {
+            return Ok(ToolResult {
+                call_id,
+                content: "No source directories are available to search.".to_string(),
+                is_error: true,
+                artifacts: None,
+            });
+        }
+
+        let mut matches = Vec::new();
+        let mut searched_files = 0usize;
+        let mut skipped_files = 0usize;
+
+        'roots: for root in roots {
+            if root.root.is_file() {
+                if file_included(&root.root, &root.display_base, &include_set, &exclude_set) {
+                    searched_files += 1;
+                    search_file(
+                        &root.root,
+                        &root.display_base,
+                        &matcher,
+                        context_lines,
+                        max_results,
+                        &mut matches,
+                    )?;
+                }
+                if matches.len() >= max_results {
+                    break;
+                }
+                continue;
+            }
+
+            let mut builder = ignore::WalkBuilder::new(&root.root);
+            builder
+                .follow_links(false)
+                .hidden(!args.include_hidden)
+                .git_ignore(true)
+                .git_exclude(true)
+                .git_global(true)
+                .require_git(false)
+                .parents(true);
+
+            for entry in builder.build() {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => {
+                        skipped_files += 1;
+                        continue;
+                    }
+                };
+                if !entry
+                    .file_type()
+                    .is_some_and(|file_type| file_type.is_file())
+                {
+                    continue;
+                }
+                let path = entry.path();
+                if !file_included(path, &root.display_base, &include_set, &exclude_set) {
+                    continue;
+                }
+                searched_files += 1;
+                search_file(
+                    path,
+                    &root.display_base,
+                    &matcher,
+                    context_lines,
+                    max_results,
+                    &mut matches,
+                )?;
+                if matches.len() >= max_results {
+                    break 'roots;
+                }
+            }
+        }
+
+        let truncated = matches.len() >= max_results;
+        let mut text = format!(
+            "Found {} matching line(s) for {:?} using {match_mode} matching across {} searched file(s).",
+            matches.len(),
+            args.query,
+            searched_files
+        );
+        if truncated {
+            text.push_str(&format!(" Results truncated at {max_results}."));
+        }
+        if skipped_files > 0 {
+            text.push_str(&format!(" Skipped {skipped_files} unreadable path(s)."));
+        }
+        text.push('\n');
+
+        for item in &matches {
+            text.push_str(&format!(
+                "\n{}:{}: {}",
+                item.path, item.line_number, item.line
+            ));
+        }
+
+        Ok(ToolResult {
+            call_id,
+            content: text,
+            is_error: false,
+            artifacts: Some(json!({
+                "kind": "fileSearchResults",
+                "query": args.query,
+                "regex": args.regex,
+                "matchMode": match_mode,
+                "caseSensitive": args.case_sensitive,
+                "truncated": truncated,
+                "searchedFiles": searched_files,
+                "matches": matches,
+            })),
+        })
+    })
+    .await
+    .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?
 }
 
 fn resolve_search_roots(
@@ -563,5 +606,91 @@ mod tests {
         assert_eq!(artifact["matches"][0]["lineNumber"], 2);
         assert_eq!(artifact["matches"][0]["before"][0]["text"], "before");
         assert_eq!(artifact["matches"][0]["after"][0]["text"], "after");
+    }
+
+    #[tokio::test]
+    async fn grep_files_treats_pipe_as_literal_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("query.txt"),
+            "alpha|beta exact\nalpha only\nbeta only\n",
+        )
+        .unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = GrepFilesTool;
+        let args = serde_json::json!({
+            "query": "alpha|beta",
+            "max_results": 10
+        });
+
+        let result = tool
+            .execute("grep-1", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert!(result.content.contains("using literal matching"));
+        assert!(result.content.contains("query.txt:1"));
+        assert!(!result.content.contains("query.txt:2"));
+        assert!(!result.content.contains("query.txt:3"));
+        let artifact = result.artifacts.as_ref().unwrap();
+        assert_eq!(artifact["matchMode"], "literal");
+        assert_eq!(artifact["matches"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn grep_files_supports_regex_alternation_when_opted_in() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("query.txt"),
+            "alpha item\nbeta item\ngamma item\n",
+        )
+        .unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = GrepFilesTool;
+        let args = serde_json::json!({
+            "query": "alpha|beta",
+            "regex": true,
+            "max_results": 10
+        });
+
+        let result = tool
+            .execute("grep-2", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert!(result.content.contains("using regex matching"));
+        assert!(result.content.contains("query.txt:1"));
+        assert!(result.content.contains("query.txt:2"));
+        assert!(!result.content.contains("query.txt:3"));
+        let artifact = result.artifacts.as_ref().unwrap();
+        assert_eq!(artifact["matchMode"], "regex");
+        assert_eq!(artifact["matches"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn grep_files_invalid_regex_error_points_to_literal_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("query.txt"), "alpha item\n").unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = GrepFilesTool;
+        let args = serde_json::json!({
+            "query": "(",
+            "regex": true
+        });
+
+        let err = tool
+            .execute("grep-3", &args.to_string(), &db, &[])
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("grep_files"), "{err}");
+        assert!(err.contains("Invalid regex"), "{err}");
+        assert!(err.contains("\"regex\": false"), "{err}");
     }
 }
