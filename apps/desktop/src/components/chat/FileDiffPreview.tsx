@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, FileCode2, FilePenLine, FilePlus2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { ArtifactPayload } from '../../types/conversation';
@@ -529,25 +529,37 @@ export function FileDiffPreview({
   diff,
   compact = false,
   defaultOpen = false,
+  live = false,
 }: {
   diff: FileDiffArtifact;
   compact?: boolean;
   defaultOpen?: boolean;
+  live?: boolean;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(defaultOpen);
+
+  useEffect(() => {
+    if (defaultOpen) setExpanded(true);
+  }, [defaultOpen]);
   const created = diff.operation === 'create';
   const Icon = created ? FilePlus2 : FilePenLine;
   const operationLabel = created ? t('chat.fileDiffCreated') : t('chat.fileDiffModified');
   const previewPath = diff.absolutePath || diff.path;
   const ToggleIcon = expanded ? ChevronDown : ChevronRight;
+  const panelClassName = live
+    ? 'w-full overflow-hidden rounded-xl border border-accent/30 bg-surface-0 shadow-[0_12px_36px_rgba(0,0,0,0.14)] ring-1 ring-accent/10'
+    : 'w-full overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-sm ring-1 ring-black/[0.02]';
+  const headerClassName = live
+    ? 'flex items-center gap-2 border-b border-accent/20 bg-gradient-to-r from-accent/12 via-surface-1/95 to-surface-1/80 px-3 py-2.5'
+    : 'flex items-center gap-2 border-b border-border/60 bg-surface-1/85 px-3 py-2';
 
   return (
     <div
-      className="w-full overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-sm ring-1 ring-black/[0.02]"
+      className={panelClassName}
       data-testid="file-diff-preview"
     >
-      <div className="flex items-center gap-2 border-b border-border/60 bg-surface-1/85 px-3 py-2">
+      <div className={headerClassName}>
         <button
           type="button"
           onClick={() => setExpanded((current) => !current)}
@@ -556,10 +568,16 @@ export function FileDiffPreview({
           className="inline-flex shrink-0 items-center gap-2 rounded-md px-1 text-left transition-colors hover:bg-surface-0/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         >
           <ToggleIcon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
-          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/60 bg-surface-0 text-text-secondary">
+          <span className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border ${live ? 'border-accent/25 bg-accent/10 text-accent' : 'border-border/60 bg-surface-0 text-text-secondary'}`}>
             <Icon size={14} strokeWidth={1.9} />
           </span>
           <span className="shrink-0 text-xs font-medium text-text-primary">{operationLabel}</span>
+          {live ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-accent/20 bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-accent">
+              <span className="h-1.5 w-1.5 rounded-full bg-accent motion-safe:animate-pulse" aria-hidden="true" />
+              Live
+            </span>
+          ) : null}
         </button>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
