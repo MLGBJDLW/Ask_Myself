@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.16](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.15...nexa-monorepo-v0.9.16) (2026-06-26)
+
+
+### Bug Fixes
+
+* animate tool card diff stats ([4f3c6fd](https://github.com/MLGBJDLW/Nexa/commit/4f3c6fd085aa6822186ba069de487e19e985ebeb))
+* polish tool cards and plan mode ([10b55a0](https://github.com/MLGBJDLW/Nexa/commit/10b55a04dff8148c3de287dbdf3d7bd133db72fb))
+* remove gitee release sync and stabilize agent UI ([d5d2933](https://github.com/MLGBJDLW/Nexa/commit/d5d293336a6171f90d6f46e30ce99e3ef6001394))
+* remove Gitee release sync and stabilize agent UI ([7cb6360](https://github.com/MLGBJDLW/Nexa/commit/7cb63606a4e8cae41cad2fa1963071417676a6c9))
+* show live file change stats in tool cards ([476dd2c](https://github.com/MLGBJDLW/Nexa/commit/476dd2ce2d1ee32b59d97daf3492fc867f22a00f))
+* shrink short user message bubbles ([a163b83](https://github.com/MLGBJDLW/Nexa/commit/a163b83099efd2388287a1d495c00726531674af))
+* **tools:** Clarify grep search match modes ([8d9f202](https://github.com/MLGBJDLW/Nexa/commit/8d9f20236ed38ce95848e3c7eb0d4ad504fc5ccc))
+* **tools:** Clarify grep search match modes ([f39f4bd](https://github.com/MLGBJDLW/Nexa/commit/f39f4bd9d82bea3644b0a2c23d68576104ff28bb))
+
 ## [0.9.15](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.14...nexa-monorepo-v0.9.15) (2026-06-26)
 
 
