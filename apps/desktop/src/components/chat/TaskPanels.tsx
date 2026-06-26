@@ -205,9 +205,11 @@ function SubtaskRow({ subtask }: { subtask: SubtaskRunArtifact }) {
 }
 
 export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const counts = getPlanCounts(plan);
   const current = getCurrentPlanStep(plan);
+  const percent = counts.total > 0 ? Math.round((counts.completed / counts.total) * 100) : 0;
   let currentIcon = <Circle className="h-3 w-3 text-text-tertiary" />;
   if (current?.status === 'completed') {
     currentIcon = <CheckCircle2 className="h-3 w-3 text-success" />;
@@ -216,16 +218,23 @@ export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
   }
 
   return (
-    <div>
+    <div className="rounded-lg border border-border/60 bg-surface-1/70 px-2 py-1.5 shadow-[0_1px_0_rgba(255,255,255,0.04)]">
       <button
         type="button"
-        className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-surface-1"
+        className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-surface-2/70"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <span className="shrink-0">{currentIcon}</span>
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-accent/20 bg-accent/10">
+          {currentIcon}
+        </span>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-medium text-text-primary">
+          <div className="mb-0.5 flex min-w-0 items-center gap-1.5">
+            <span className="rounded-md border border-border/60 bg-surface-0/70 px-1.5 py-0.5 text-[10px] text-text-tertiary">
+              {t('chat.planPercentComplete', { percent: String(percent) })}
+            </span>
+          </div>
+          <div className="truncate text-xs font-semibold text-text-primary">
             {current?.title ?? plan.title ?? ''}
           </div>
           {current?.notes && (
@@ -240,6 +249,12 @@ export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
         </span>
         <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
+      <div className="mx-1 mt-1 h-1 rounded-full bg-surface-0">
+        <div
+          className="h-full rounded-full bg-accent transition-[width] duration-300"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
 
       {open && (
         <ol className="mt-1.5 max-h-32 space-y-1 overflow-y-auto pr-1">

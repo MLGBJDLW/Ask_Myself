@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, FileCode2, FilePenLine, FilePlus2 } from 'lu
 import { useTranslation } from '../../i18n';
 import type { ArtifactPayload } from '../../types/conversation';
 import { FileBadge } from '../ui/FileBadge';
+import { DiffStatsTicker } from './DiffStatsTicker';
 
 type FileDiffLineType = 'context' | 'addition' | 'deletion';
 
@@ -384,26 +385,6 @@ function FileDiffBody({
   );
 }
 
-function FileDiffStatsPills({ additions, deletions }: { additions: number; deletions: number }) {
-  const showAdditions = additions > 0 || deletions === 0;
-  const showDeletions = deletions > 0;
-
-  return (
-    <div className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums">
-      {showAdditions && (
-        <span className="rounded-md border border-success/20 bg-success/10 px-1.5 py-0.5 text-success">
-          +{additions}
-        </span>
-      )}
-      {showDeletions && (
-        <span className="rounded-md border border-danger/20 bg-danger/10 px-1.5 py-0.5 text-danger">
-          -{deletions}
-        </span>
-      )}
-    </div>
-  );
-}
-
 function basename(path: string): string {
   const normalized = path.replace(/\\/g, '/');
   return normalized.split('/').filter(Boolean).pop() ?? path;
@@ -476,7 +457,15 @@ export function FileDiffSummaryPanel({ diffs }: { diffs: FileDiffArtifact[] }) {
             </span>
           </span>
         </button>
-        <FileDiffStatsPills additions={additions} deletions={deletions} />
+        <DiffStatsTicker
+          additions={additions}
+          deletions={deletions}
+          filesChanged={diffs.length}
+          compact
+          live={false}
+          showFiles={false}
+          showReplacements={false}
+        />
         <ChevronDown
           size={16}
           className={`shrink-0 text-text-tertiary transition-transform ${panelOpen ? 'rotate-180' : ''}`}
@@ -510,7 +499,14 @@ export function FileDiffSummaryPanel({ diffs }: { diffs: FileDiffArtifact[] }) {
                   </span>
                   <span className="shrink-0 text-xs font-medium text-text-secondary">{rowOperationLabel}</span>
                   <FileBadge path={previewPath} className="min-w-0 flex-1" />
-                  <FileDiffStatsPills additions={diff.additions} deletions={diff.deletions} />
+                    <DiffStatsTicker
+                      additions={diff.additions}
+                      deletions={diff.deletions}
+                      compact
+                      live={false}
+                      showFiles={false}
+                      showReplacements={false}
+                    />
                 </button>
                 {expanded && (
                   <div className="border-t border-border/40">
@@ -601,7 +597,14 @@ export function FileDiffPreview({
             <FileBadge path={previewPath} className="min-w-0 max-w-full" />
           </div>
         </div>
-        <FileDiffStatsPills additions={diff.additions} deletions={diff.deletions} />
+        <DiffStatsTicker
+          additions={diff.additions}
+          deletions={diff.deletions}
+          compact={compact}
+          live={live}
+          showFiles={false}
+          showReplacements={false}
+        />
       </div>
 
       {expanded ? (

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import type { CSSProperties } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { save as showSaveDialog } from '@tauri-apps/plugin-dialog';
@@ -68,6 +68,7 @@ import {
   extractFileDiffArtifact,
   type DiffStatsArtifact,
 } from './FileDiffPreview';
+import { DiffStatsTicker } from './DiffStatsTicker';
 import { isFileChangeToolRender } from './toolRenderers';
 import {
   extractGraphAgentUsage,
@@ -275,97 +276,17 @@ function formatDurationMs(durationMs: number | undefined): string {
   return `${minutes}m ${remainingSeconds}s`;
 }
 
-function AnimatedCount({
-  value,
-  prefix = '',
-  className,
-}: {
-  value: number;
-  prefix?: string;
-  className?: string;
-}) {
-  const shouldReduceMotion = useReducedMotion();
-  const displayRef = useRef(0);
-  const [display, setDisplay] = useState(0);
-
-  useEffect(() => {
-    const target = Number.isFinite(value) ? value : 0;
-    if (shouldReduceMotion) {
-      displayRef.current = target;
-      setDisplay(target);
-      return;
-    }
-
-    const start = displayRef.current;
-    const delta = target - start;
-    if (Math.abs(delta) < 0.001) return;
-
-    let frame = 0;
-    const startedAt = performance.now();
-    const duration = Math.min(900, 320 + Math.abs(delta) * 18);
-    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-
-    const tick = (now: number) => {
-      const progress = Math.min(1, (now - startedAt) / duration);
-      const next = start + delta * easeOutCubic(progress);
-      displayRef.current = next;
-      setDisplay(next);
-      if (progress < 1) {
-        frame = requestAnimationFrame(tick);
-      } else {
-        displayRef.current = target;
-        setDisplay(target);
-      }
-    };
-
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [shouldReduceMotion, value]);
-
-  return (
-    <span className={`inline-block min-w-[1.4ch] text-right tabular-nums ${className ?? ''}`}>
-      {prefix}{Math.round(display)}
-    </span>
-  );
-}
-
-function DiffStatsTicker({ stats, compact = false }: { stats: DiffStatsArtifact; compact?: boolean }) {
-  const { t } = useTranslation();
-  const pillBase = compact
-    ? 'h-5 px-1.5 text-[10px]'
-    : 'h-6 px-2 text-[11px]';
-  const neutralPill = `${pillBase} inline-flex items-center gap-1 rounded-md border border-border/60 bg-surface-0/70 text-text-tertiary`;
-
-  return (
-    <div className="inline-flex shrink-0 items-center gap-1 font-mono tabular-nums">
-      <span className={`${pillBase} inline-flex items-center gap-0.5 rounded-md border border-success/20 bg-success/10 text-success`}>
-        <AnimatedCount value={stats.additions} prefix="+" />
-      </span>
-      <span className={`${pillBase} inline-flex items-center gap-0.5 rounded-md border border-danger/20 bg-danger/10 text-danger`}>
-        <AnimatedCount value={stats.deletions} prefix="-" />
-      </span>
-      {stats.filesChanged > 1 && (
-        <span className={neutralPill}>
-          <AnimatedCount value={stats.filesChanged} />
-          <span className="font-sans">{t('chat.diffFiles')}</span>
-        </span>
-      )}
-      {typeof stats.replacements === 'number' && stats.replacements > 0 && (
-        <span className={`${neutralPill} hidden sm:inline-flex`}>
-          <AnimatedCount value={stats.replacements} />
-          <span className="font-sans">{t('chat.diffReplacements')}</span>
-        </span>
-      )}
-    </div>
-  );
-}
-
 function DiffStatsSummaryPanel({ stats }: { stats: DiffStatsArtifact }) {
   const { t } = useTranslation();
   const path = stats.paths[0];
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-surface-0/65 px-3 py-2">
-      <DiffStatsTicker stats={stats} />
+      <DiffStatsTicker
+        additions={stats.additions}
+        deletions={stats.deletions}
+        filesChanged={stats.filesChanged}
+        replacements={stats.replacements}
+      />
       {path && <FileBadge path={path} className="min-w-0 max-w-full" />}
       {stats.hunks > 0 && (
         <span className="rounded-md border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-tertiary">
@@ -1505,7 +1426,7 @@ export function ToolCallCard({
           type="button"
           onClick={() => expandableDetails && setExpanded((prev) => !prev)}
           aria-expanded={expandableDetails ? detailsExpanded : undefined}
-          className={`group inline-grid min-h-9 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 rounded-md border border-l-2 px-2 py-1.5 text-left align-top transition-colors disabled:cursor-default sm:max-w-[36rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          className={`group inline-grid min-h-9 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 rounded-lg border border-l-2 px-2 py-1.5 text-left align-top shadow-[0_1px_0_rgba(255,255,255,0.035)] transition-colors disabled:cursor-default sm:max-w-[36rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
           disabled={!expandableDetails}
           title={capabilitySummary ?? undefined}
         >
@@ -1525,7 +1446,14 @@ export function ToolCallCard({
           <span className="flex shrink-0 items-center gap-1 pl-1">
             {diffStats ? (
               <span className="inline-flex">
-                <DiffStatsTicker stats={diffStats} compact />
+                <DiffStatsTicker
+                  additions={diffStats.additions}
+                  deletions={diffStats.deletions}
+                  filesChanged={diffStats.filesChanged}
+                  replacements={diffStats.replacements}
+                  compact
+                  live={isPending}
+                />
               </span>
             ) : null}
             <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}>
@@ -1636,7 +1564,7 @@ export function ToolCallCard({
           onClick={() => expandableDetails && setExpanded((p) => !p)}
           aria-expanded={expandableDetails ? expanded : undefined}
           disabled={!expandableDetails}
-          className={`inline-grid min-h-8 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1.5 rounded-md border border-l-2 px-1.5 py-1 text-left align-top transition-colors disabled:cursor-default sm:max-w-[32rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          className={`inline-grid min-h-8 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1.5 rounded-lg border border-l-2 px-1.5 py-1 text-left align-top shadow-[0_1px_0_rgba(255,255,255,0.035)] transition-colors disabled:cursor-default sm:max-w-[32rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
         >
           <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
             <Icon className="h-3 w-3 shrink-0" />
@@ -1654,7 +1582,14 @@ export function ToolCallCard({
           <span className="flex shrink-0 items-center gap-1 pl-1">
             {diffStats ? (
               <span className="inline-flex">
-                <DiffStatsTicker stats={diffStats} compact />
+                <DiffStatsTicker
+                  additions={diffStats.additions}
+                  deletions={diffStats.deletions}
+                  filesChanged={diffStats.filesChanged}
+                  replacements={diffStats.replacements}
+                  compact
+                  live={isPending}
+                />
               </span>
             ) : null}
             <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}>
@@ -1919,7 +1854,7 @@ export function ToolCallCard({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className="chat-trace-panel my-1 overflow-hidden rounded-md border border-border/50 bg-surface-0/45"
+      className="chat-trace-panel my-1 overflow-hidden rounded-lg border border-border/60 bg-surface-0/70 shadow-[0_1px_0_rgba(255,255,255,0.04)]"
       data-trace-soft={traceSoft ? 'true' : 'false'}
       data-trace-active={traceActive ? 'true' : 'false'}
     >
@@ -1929,7 +1864,7 @@ export function ToolCallCard({
         aria-expanded={expandableDetails ? expanded : undefined}
         aria-label={expandableDetails ? (expanded ? t('common.collapse') : t('common.expand')) : briefLabel}
         disabled={!expandableDetails}
-        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 text-left hover:bg-surface-2
+        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 text-left hover:bg-surface-1/85
           transition-colors duration-fast ease-out cursor-pointer disabled:cursor-default disabled:hover:bg-transparent"
       >
         <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
@@ -1943,8 +1878,14 @@ export function ToolCallCard({
         </span>
         <span className="flex shrink-0 items-center gap-1.5 pl-1">
           {diffStats ? (
-            <span className="hidden sm:inline-flex">
-              <DiffStatsTicker stats={diffStats} />
+            <span className="inline-flex">
+              <DiffStatsTicker
+                additions={diffStats.additions}
+                deletions={diffStats.deletions}
+                filesChanged={diffStats.filesChanged}
+                replacements={diffStats.replacements}
+                live={isPending}
+              />
             </span>
           ) : null}
           <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md border ${statusBadgeClass}`}>

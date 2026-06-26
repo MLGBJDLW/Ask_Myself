@@ -930,6 +930,30 @@ export function ChatInput({
       </div>
     </div>
   );
+  const planModeBanner = effectivePlanModeEnabled ? (
+    <div
+      data-testid="chat-plan-mode-banner"
+      className="flex min-w-0 items-center gap-2 rounded-lg border border-accent/25 bg-accent/10 px-2.5 py-2 text-xs text-text-secondary"
+    >
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-accent/25 bg-surface-0/70 text-accent">
+        <BrainCircuit className="h-3.5 w-3.5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium text-text-primary">Plan mode</div>
+        <div className="truncate text-[11px] text-text-tertiary">
+          Read-only proposal. Approve the plan card to switch into implementation.
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => setPlanMode(false)}
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-0 hover:text-text-primary"
+        aria-label={t("common.close")}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  ) : null;
 
   return (
     <div
@@ -1150,6 +1174,7 @@ export function ChatInput({
 
       <div className="space-y-2">
         {modeSegment}
+        {planModeBanner}
 
         <div
           className={`overflow-hidden rounded-xl border bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast focus-within:border-accent/55 focus-within:ring-accent/20 ${
