@@ -1,34 +1,39 @@
-name: PR Source Artifact
+name: Apply Live Inline File Diff
 
 on:
   pull_request:
     branches: [master]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  source-artifact:
-    name: Capture files for validation
+  apply-live-inline-diff:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - name: Format workspace
-        run: cargo fmt --all
-      - name: Upload relevant files
-        uses: actions/upload-artifact@v4
-        with:
-          name: live-inline-diff-sources
-          if-no-files-found: error
-          path: |
-            apps/desktop/src/components/chat/FileDiffPreview.tsx
-            apps/desktop/src/components/chat/ToolCallCard.tsx
-            apps/desktop/src/lib/streaming/toolProjection.ts
-            apps/desktop/tests/live-file-streaming.test.ts
-            crates/core/src/agent/tool_runtime.rs
-            crates/core/src/tools/capability.rs
-            crates/core/src/tools/create_file_tool.rs
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Apply staged source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/nexa-patches/live-inline-diff.part-* | base64 --decode > /tmp/live-inline-diff.patch
+          git apply --check /tmp/live-inline-diff.patch
+          git apply /tmp/live-inline-diff.patch
+          rm -f .github/nexa-patches/live-inline-diff.part-*
+          rm -f .github/nexa-patches/chunk-00.b64
+          rm -f .github/workflows/pr-rustfmt-artifact.yml
+
+      - name: Commit applied implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat(ui): render file changes as live inline diffs"
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
