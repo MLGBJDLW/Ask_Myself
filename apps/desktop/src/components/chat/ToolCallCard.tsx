@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import type { CSSProperties } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { save as showSaveDialog } from '@tauri-apps/plugin-dialog';
@@ -47,6 +47,11 @@ import {
   isPendingToolCallStatus,
   isUnsuccessfulToolCallStatus,
 } from '../../lib/streaming/toolStatus';
+import {
+  formatToolTarget,
+  getStableFileChangeTarget,
+  getToolBriefTarget,
+} from '../../lib/streaming/toolCardPresentation';
 import { extractPlanArtifact, extractVerificationArtifact } from '../../lib/taskArtifacts';
 import {
   extractSubagentArtifact,
@@ -64,6 +69,7 @@ import {
   extractFileDiffArtifact,
   type DiffStatsArtifact,
 } from './FileDiffPreview';
+import { DiffStatsTicker } from './DiffStatsTicker';
 import { isFileChangeToolRender } from './toolRenderers';
 import {
   extractGraphAgentUsage,
@@ -271,97 +277,17 @@ function formatDurationMs(durationMs: number | undefined): string {
   return `${minutes}m ${remainingSeconds}s`;
 }
 
-function AnimatedCount({
-  value,
-  prefix = '',
-  className,
-}: {
-  value: number;
-  prefix?: string;
-  className?: string;
-}) {
-  const shouldReduceMotion = useReducedMotion();
-  const displayRef = useRef(0);
-  const [display, setDisplay] = useState(0);
-
-  useEffect(() => {
-    const target = Number.isFinite(value) ? value : 0;
-    if (shouldReduceMotion) {
-      displayRef.current = target;
-      setDisplay(target);
-      return;
-    }
-
-    const start = displayRef.current;
-    const delta = target - start;
-    if (Math.abs(delta) < 0.001) return;
-
-    let frame = 0;
-    const startedAt = performance.now();
-    const duration = Math.min(900, 320 + Math.abs(delta) * 18);
-    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-
-    const tick = (now: number) => {
-      const progress = Math.min(1, (now - startedAt) / duration);
-      const next = start + delta * easeOutCubic(progress);
-      displayRef.current = next;
-      setDisplay(next);
-      if (progress < 1) {
-        frame = requestAnimationFrame(tick);
-      } else {
-        displayRef.current = target;
-        setDisplay(target);
-      }
-    };
-
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [shouldReduceMotion, value]);
-
-  return (
-    <span className={`inline-block min-w-[1.4ch] text-right tabular-nums ${className ?? ''}`}>
-      {prefix}{Math.round(display)}
-    </span>
-  );
-}
-
-function DiffStatsTicker({ stats, compact = false }: { stats: DiffStatsArtifact; compact?: boolean }) {
-  const { t } = useTranslation();
-  const pillBase = compact
-    ? 'h-5 px-1.5 text-[10px]'
-    : 'h-6 px-2 text-[11px]';
-  const neutralPill = `${pillBase} inline-flex items-center gap-1 rounded-md border border-border/60 bg-surface-0/70 text-text-tertiary`;
-
-  return (
-    <div className="inline-flex shrink-0 items-center gap-1 font-mono tabular-nums">
-      <span className={`${pillBase} inline-flex items-center gap-0.5 rounded-md border border-success/20 bg-success/10 text-success`}>
-        <AnimatedCount value={stats.additions} prefix="+" />
-      </span>
-      <span className={`${pillBase} inline-flex items-center gap-0.5 rounded-md border border-danger/20 bg-danger/10 text-danger`}>
-        <AnimatedCount value={stats.deletions} prefix="-" />
-      </span>
-      {stats.filesChanged > 1 && (
-        <span className={neutralPill}>
-          <AnimatedCount value={stats.filesChanged} />
-          <span className="font-sans">{t('chat.diffFiles')}</span>
-        </span>
-      )}
-      {typeof stats.replacements === 'number' && stats.replacements > 0 && (
-        <span className={`${neutralPill} hidden sm:inline-flex`}>
-          <AnimatedCount value={stats.replacements} />
-          <span className="font-sans">{t('chat.diffReplacements')}</span>
-        </span>
-      )}
-    </div>
-  );
-}
-
 function DiffStatsSummaryPanel({ stats }: { stats: DiffStatsArtifact }) {
   const { t } = useTranslation();
   const path = stats.paths[0];
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-surface-0/65 px-3 py-2">
-      <DiffStatsTicker stats={stats} />
+      <DiffStatsTicker
+        additions={stats.additions}
+        deletions={stats.deletions}
+        filesChanged={stats.filesChanged}
+        replacements={stats.replacements}
+      />
       {path && <FileBadge path={path} className="min-w-0 max-w-full" />}
       {stats.hunks > 0 && (
         <span className="rounded-md border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-tertiary">
@@ -626,91 +552,6 @@ function getFileChangeDisplayName(name: string, isFileChange: boolean, operation
   return TOOL_LABELS.edit_file;
 }
 
-function truncateMiddle(value: string, max = 42): string {
-  if (value.length <= max) return value;
-  const head = Math.max(8, Math.floor((max - 1) * 0.42));
-  const tail = Math.max(8, max - head - 1);
-  return `${value.slice(0, head)}\u2026${value.slice(-tail)}`;
-}
-
-function normalizeOneLine(value: string): string {
-  return value.trim().replace(/\s+/g, ' ');
-}
-
-function parseArgsRecord(raw?: string): Record<string, unknown> | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function firstStringArg(parsed: Record<string, unknown>, keys: string[]): { key: string; value: string } | null {
-  for (const key of keys) {
-    const value = parsed[key];
-    if (typeof value === 'string' && value.trim()) {
-      return { key, value: value.trim() };
-    }
-  }
-  return null;
-}
-
-function firstArrayCountArg(parsed: Record<string, unknown>, keys: string[]): string | null {
-  for (const key of keys) {
-    const value = parsed[key];
-    if (Array.isArray(value) && value.length > 0) {
-      const noun = key.toLowerCase().includes('file') || key.toLowerCase().includes('path')
-        ? 'file'
-        : 'item';
-      return `${value.length} ${noun}${value.length === 1 ? '' : 's'}`;
-    }
-  }
-  return null;
-}
-
-function formatToolTarget(key: string, value: string): string {
-  const normalized = normalizeOneLine(value);
-  const pathLikeKeys = new Set(['path', 'file', 'filename', 'filepath', 'resourcepath', 'sourcepath', 'cwd']);
-  const quotedKeys = new Set(['query', 'regex', 'pattern', 'topic', 'prompt', 'description']);
-  const keyLower = key.toLowerCase();
-  if (pathLikeKeys.has(keyLower)) {
-    return truncateMiddle(normalized.replace(/\\/g, '/'), 44);
-  }
-  if (quotedKeys.has(keyLower)) {
-    return `"${truncateMiddle(normalized, 40)}"`;
-  }
-  return truncateMiddle(normalized, 44);
-}
-
-function getToolBriefTarget(args?: string): string | null {
-  const parsed = parseArgsRecord(args);
-  if (!parsed) return args ? truncateMiddle(normalizeOneLine(args), 44) : null;
-  const counted = firstArrayCountArg(parsed, ['paths', 'files', 'filePaths', 'resourcePaths', 'items']);
-  if (counted) return counted;
-  const picked = firstStringArg(parsed, [
-    'path',
-    'file',
-    'filename',
-    'filePath',
-    'resourcePath',
-    'sourcePath',
-    'url',
-    'query',
-    'regex',
-    'pattern',
-    'topic',
-    'prompt',
-    'command',
-    'program',
-    'skillId',
-    'name',
-    'description',
-  ]);
-  return picked ? formatToolTarget(picked.key, picked.value) : null;
-}
-
 function parseSearchResults(content: string): SearchResultItem[] | null {
   const blocks = content.split(/---\s*Result\s+\d+\s*\(score:\s*([\d.]+)\)\s*---/);
   // blocks[0] is preamble (e.g. "Found N results:"), then pairs of [score, body]
@@ -746,9 +587,188 @@ function formatArgs(raw?: string): string {
   }
 }
 
-function getToolBriefLabel(name: string, args?: string, displayNameOverride?: string | null): string {
+function parseArgsRecord(raw?: string): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const FILE_TARGET_ARG_KEYS = [
+  'path',
+  'file',
+  'filename',
+  'filePath',
+  'filepath',
+  'targetPath',
+  'target_path',
+  'resourcePath',
+  'resource_path',
+  'absolutePath',
+  'absolute_path',
+];
+
+const FILE_NEW_TEXT_ARG_KEYS = [
+  'content',
+  'text',
+  'body',
+  'newString',
+  'new_string',
+  'replacement',
+  'newContent',
+  'new_content',
+];
+
+const FILE_OLD_TEXT_ARG_KEYS = [
+  'oldString',
+  'old_string',
+  'oldContent',
+  'old_content',
+  'search',
+  'old',
+];
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function decodeJsonStringFragment(raw: string, start: number): string {
+  let out = '';
+  let escaped = false;
+  for (let i = start; i < raw.length; i += 1) {
+    const char = raw[i];
+    if (escaped) {
+      if (char === 'n') out += '\n';
+      else if (char === 'r') out += '\r';
+      else if (char === 't') out += '\t';
+      else if (char === 'b') out += '\b';
+      else if (char === 'f') out += '\f';
+      else if (char === 'u') {
+        const hex = raw.slice(i + 1, i + 5);
+        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+          out += String.fromCharCode(parseInt(hex, 16));
+          i += 4;
+        } else {
+          out += char;
+        }
+      } else {
+        out += char;
+      }
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') break;
+    out += char;
+  }
+  return out;
+}
+
+function extractJsonStringFieldFragment(raw: string | undefined, key: string): string | null {
+  if (!raw) return null;
+  const match = new RegExp(`"${escapeRegExp(key)}"\\s*:\\s*"`, 'i').exec(raw);
+  if (!match) return null;
+  const value = decodeJsonStringFragment(raw, match.index + match[0].length);
+  return value.trim().length > 0 ? value : '';
+}
+
+function extractStringArg(raw: string | undefined, keys: string[]): string | null {
+  const parsed = parseArgsRecord(raw);
+  if (parsed) {
+    for (const key of keys) {
+      const value = parsed[key];
+      if (typeof value === 'string') return value;
+    }
+  }
+  for (const key of keys) {
+    const value = extractJsonStringFieldFragment(raw, key);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+function countTextLines(value: string | null): number {
+  if (!value) return 0;
+  const normalized = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const withoutTrailingNewline = normalized.endsWith('\n')
+    ? normalized.slice(0, -1)
+    : normalized;
+  if (!withoutTrailingNewline) return 0;
+  return withoutTrailingNewline.split('\n').length;
+}
+
+function countPatchLines(patch: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of patch.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) additions += 1;
+    if (line.startsWith('-')) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
+function inferFileChangeOperation(toolName: string): string {
+  const lower = toolName.toLowerCase();
+  if (lower.includes('create_file')) return 'create';
+  if (lower.includes('multi_edit') || lower.includes('apply_patch')) return 'multi_edit';
+  if (lower.includes('download_asset')) return 'download';
+  return 'edit';
+}
+
+function deriveFileChangeStatsFromArgs({
+  rawArgs,
+  toolName,
+  isFileChange,
+}: {
+  rawArgs?: string;
+  toolName: string;
+  isFileChange: boolean;
+}): { stats: DiffStatsArtifact; target: string | null } | null {
+  if (!isFileChange || !rawArgs) return null;
+  const operation = inferFileChangeOperation(toolName);
+  const path = extractStringArg(rawArgs, FILE_TARGET_ARG_KEYS);
+  const patch = extractStringArg(rawArgs, ['patch', 'diff']);
+  const countedPatch = patch ? countPatchLines(patch) : null;
+  const newText = countedPatch ? null : extractStringArg(rawArgs, FILE_NEW_TEXT_ARG_KEYS);
+  const oldText = countedPatch ? null : extractStringArg(rawArgs, FILE_OLD_TEXT_ARG_KEYS);
+  const additions = countedPatch?.additions ?? countTextLines(newText);
+  const deletions = operation === 'create'
+    ? 0
+    : countedPatch?.deletions ?? countTextLines(oldText);
+
+  if (!path && additions === 0 && deletions === 0) return null;
+
+  return {
+    target: path ? formatToolTarget('path', path) : null,
+    stats: {
+      kind: 'diffStats',
+      filesChanged: 1,
+      additions,
+      deletions,
+      hunks: additions > 0 || deletions > 0 ? 1 : 0,
+      operation,
+      paths: path ? [path] : [],
+    },
+  };
+}
+
+function getToolBriefLabel(
+  name: string,
+  args?: string,
+  displayNameOverride?: string | null,
+  targetOverride?: string | null,
+): string {
   const label = displayNameOverride ?? getToolDisplayName(name);
-  const target = getToolBriefTarget(args);
+  const target = targetOverride ?? getToolBriefTarget(args);
   return target ? `${label} \u00b7 ${target}` : label;
 }
 
@@ -1390,11 +1410,25 @@ export function ToolCallCard({
   const fileDiff = useMemo(() => extractFileDiffArtifact(artifacts), [artifacts]);
   const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
   const isFileChangeRender = isFileChangeToolRender(safeToolName, renderKind);
+  const isPending = isPendingToolCallStatus(status);
+  const argumentFileChangeStats = useMemo(
+    () => deriveFileChangeStatsFromArgs({
+      rawArgs: args,
+      toolName: safeToolName,
+      isFileChange: isFileChangeRender,
+    }),
+    [args, isFileChangeRender, safeToolName],
+  );
+  const headerDiffStats = diffStats ?? argumentFileChangeStats?.stats ?? null;
   const fileChangeDisplayName = getFileChangeDisplayName(
     safeToolName,
     isFileChangeRender,
-    diffStats?.operation ?? fileDiff?.operation,
+    headerDiffStats?.operation ?? fileDiff?.operation,
   );
+  const fileChangeTarget = isFileChangeRender
+    ? getStableFileChangeTarget(fileDiff, headerDiffStats) ?? argumentFileChangeStats?.target ?? null
+    : null;
+  const briefTargetOverride = isFileChangeRender ? (fileChangeTarget ?? '') : fileChangeTarget;
   const formattedArgs = formatArgs(args);
   const briefLabel = skillActivationName
     ? (
@@ -1402,9 +1436,8 @@ export function ToolCallCard({
           ? t('chat.skillActivatedLabel', { name: skillActivationName })
           : t('chat.skillActivatingLabel', { name: skillActivationName })
       )
-    : getToolBriefLabel(safeToolName, args, fileChangeDisplayName);
+    : getToolBriefLabel(safeToolName, args, fileChangeDisplayName, briefTargetOverride);
   const briefResult = getToolBriefResult(status, t, content, safeToolName);
-  const isPending = isPendingToolCallStatus(status);
   const argsByteLabel = formatByteCount(
     typeof argsBytes === 'number' ? argsBytes : (args ? args.length : 0),
   );
@@ -1464,6 +1497,12 @@ export function ToolCallCard({
     }
   }, [isPending]);
 
+  useEffect(() => {
+    if (isPending && isFileChangeRender && fileDiff) {
+      setExpanded(true);
+    }
+  }, [fileDiff, isFileChangeRender, isPending]);
+
   if (inline) {
     return (
       <span className="inline-flex items-center gap-1">
@@ -1509,15 +1548,16 @@ export function ToolCallCard({
               edges: String(graphUsage.usedGraphEdges.length),
               documents: String(graphUsage.usedDocuments.length),
             })
-        : diffStats
+        : headerDiffStats
           ? isPending
             ? statusConfig.text
-            : `${diffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
+            : `${headerDiffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
         : status === 'done' && content
           ? briefResult
           : statusConfig.text;
+  const showArgsByteLabel = isPending && argsByteLabel && !(isFileChangeRender && headerDiffStats);
   const headerSummary =
-    isPending && argsByteLabel
+    showArgsByteLabel
       ? `${baseHeaderSummary} · ${argsByteLabel}`
       : !isPending && durationLabel
         ? `${baseHeaderSummary} · ${durationLabel}`
@@ -1526,8 +1566,8 @@ export function ToolCallCard({
   const StatusIcon = statusConfig.icon;
   const traceActive = isPending && !shouldReduceMotion;
   const traceSoft = status !== 'error';
-  const visibleFormattedArgs = fileDiff || diffStats ? null : formattedArgs;
-  const streamingArgsPreview = fileDiff || diffStats ? null : rawStreamingArgsPreview;
+  const visibleFormattedArgs = fileDiff || diffStats || isFileChangeRender ? null : formattedArgs;
+  const streamingArgsPreview = fileDiff || diffStats || isFileChangeRender ? null : rawStreamingArgsPreview;
   const liveFileDiff = trace && isPending && Boolean(fileDiff);
   const detailsExpanded = expanded;
   const expandableDetails = Boolean(
@@ -1572,7 +1612,7 @@ export function ToolCallCard({
           type="button"
           onClick={() => expandableDetails && setExpanded((prev) => !prev)}
           aria-expanded={expandableDetails ? detailsExpanded : undefined}
-          className={`group inline-grid min-h-9 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 rounded-md border border-l-2 px-2 py-1.5 text-left align-top transition-colors disabled:cursor-default sm:max-w-[36rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          className={`group inline-grid min-h-9 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 rounded-lg border border-l-2 px-2 py-1.5 text-left align-top shadow-[0_1px_0_rgba(255,255,255,0.035)] transition-colors disabled:cursor-default sm:max-w-[36rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
           disabled={!expandableDetails}
           title={capabilitySummary ?? undefined}
         >
@@ -1590,9 +1630,17 @@ export function ToolCallCard({
             )}
           </span>
           <span className="flex shrink-0 items-center gap-1 pl-1">
-            {diffStats ? (
+            {headerDiffStats ? (
               <span className="inline-flex">
-                <DiffStatsTicker stats={diffStats} compact />
+                <DiffStatsTicker
+                  additions={headerDiffStats.additions}
+                  deletions={headerDiffStats.deletions}
+                  filesChanged={headerDiffStats.filesChanged}
+                  replacements={headerDiffStats.replacements}
+                  compact
+                  live={isPending}
+                  testIdPrefix="tool-card-header"
+                />
               </span>
             ) : null}
             <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}>
@@ -1703,7 +1751,7 @@ export function ToolCallCard({
           onClick={() => expandableDetails && setExpanded((p) => !p)}
           aria-expanded={expandableDetails ? expanded : undefined}
           disabled={!expandableDetails}
-          className={`inline-grid min-h-8 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1.5 rounded-md border border-l-2 px-1.5 py-1 text-left align-top transition-colors disabled:cursor-default sm:max-w-[32rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          className={`inline-grid min-h-8 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1.5 rounded-lg border border-l-2 px-1.5 py-1 text-left align-top shadow-[0_1px_0_rgba(255,255,255,0.035)] transition-colors disabled:cursor-default sm:max-w-[32rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
         >
           <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
             <Icon className="h-3 w-3 shrink-0" />
@@ -1719,9 +1767,17 @@ export function ToolCallCard({
             )}
           </span>
           <span className="flex shrink-0 items-center gap-1 pl-1">
-            {diffStats ? (
+            {headerDiffStats ? (
               <span className="inline-flex">
-                <DiffStatsTicker stats={diffStats} compact />
+                <DiffStatsTicker
+                  additions={headerDiffStats.additions}
+                  deletions={headerDiffStats.deletions}
+                  filesChanged={headerDiffStats.filesChanged}
+                  replacements={headerDiffStats.replacements}
+                  compact
+                  live={isPending}
+                  testIdPrefix="tool-card-header"
+                />
               </span>
             ) : null}
             <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}>
@@ -1986,7 +2042,7 @@ export function ToolCallCard({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className="chat-trace-panel my-1 overflow-hidden rounded-md border border-border/50 bg-surface-0/45"
+      className="chat-trace-panel my-1 overflow-hidden rounded-lg border border-border/60 bg-surface-0/70 shadow-[0_1px_0_rgba(255,255,255,0.04)]"
       data-trace-soft={traceSoft ? 'true' : 'false'}
       data-trace-active={traceActive ? 'true' : 'false'}
     >
@@ -1996,7 +2052,7 @@ export function ToolCallCard({
         aria-expanded={expandableDetails ? expanded : undefined}
         aria-label={expandableDetails ? (expanded ? t('common.collapse') : t('common.expand')) : briefLabel}
         disabled={!expandableDetails}
-        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 text-left hover:bg-surface-2
+        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 text-left hover:bg-surface-1/85
           transition-colors duration-fast ease-out cursor-pointer disabled:cursor-default disabled:hover:bg-transparent"
       >
         <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
@@ -2009,9 +2065,16 @@ export function ToolCallCard({
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-1.5 pl-1">
-          {diffStats ? (
-            <span className="hidden sm:inline-flex">
-              <DiffStatsTicker stats={diffStats} />
+          {headerDiffStats ? (
+            <span className="inline-flex">
+              <DiffStatsTicker
+                additions={headerDiffStats.additions}
+                deletions={headerDiffStats.deletions}
+                filesChanged={headerDiffStats.filesChanged}
+                replacements={headerDiffStats.replacements}
+                live={isPending}
+                testIdPrefix="tool-card-header"
+              />
             </span>
           ) : null}
           <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md border ${statusBadgeClass}`}>

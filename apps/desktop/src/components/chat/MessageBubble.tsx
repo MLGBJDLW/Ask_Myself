@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
-import { Check, CheckCircle2, ClipboardList, CornerDownRight, HelpCircle, Target, X } from 'lucide-react';
+import { Check, CheckCircle2, ClipboardList, CornerDownRight, HelpCircle, ShieldCheck, Target, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import {
   CitationContext,
@@ -67,27 +67,38 @@ function ProposedPlanCard({
   onApprove?: () => void;
 }) {
   return (
-    <div className="mb-3 overflow-hidden rounded-lg border border-accent/25 bg-surface-1/80">
-      <div className="flex min-w-0 items-center gap-2 border-b border-border/50 px-3 py-2">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
+    <div className="mb-3 overflow-hidden rounded-lg border border-accent/25 bg-surface-1/85 shadow-[0_1px_0_rgba(255,255,255,0.04)]">
+      <div className="flex min-w-0 items-start gap-2 border-b border-border/50 bg-surface-0/35 px-3 py-2.5">
+        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
           <ClipboardList className="h-3.5 w-3.5" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-semibold text-text-primary">Plan mode</div>
-          <div className="truncate text-[11px] text-text-tertiary">Read-only proposal</div>
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span className="truncate text-xs font-semibold text-text-primary">Plan mode</span>
+            <span className="rounded-md border border-border/60 bg-surface-0/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-text-tertiary">
+              Read-only
+            </span>
+            <span className="rounded-md border border-accent/25 bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-accent">
+              Approval handoff
+            </span>
+          </div>
+          <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[11px] text-text-tertiary">
+            <ShieldCheck className="h-3 w-3 shrink-0 text-accent" />
+            <span className="truncate">No files are changed until this plan is approved.</span>
+          </div>
         </div>
         {onApprove && (
           <button
             type="button"
             onClick={onApprove}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-accent px-2.5 text-xs font-medium text-on-accent transition-colors hover:bg-accent/90"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent/40 bg-accent px-2.5 text-xs font-medium text-on-accent shadow-[0_8px_24px_rgba(20,184,166,0.16)] transition-colors hover:bg-accent/90"
           >
             <CheckCircle2 className="h-3.5 w-3.5" />
-            Approve and implement
+            Approve
           </button>
         )}
       </div>
-      <div className="px-3 py-3">
+      <div className="border-l-2 border-accent/45 px-3 py-3 pl-3.5">
         <h3 className="mb-2 text-sm font-semibold leading-5 text-text-primary">{plan.title}</h3>
         <div className="prose-chat text-sm">
           <ReactMarkdown
@@ -273,7 +284,11 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
     >
       <div
         className={`group flex flex-col ${
-          isUser ? 'max-w-[80%]' : 'w-full min-w-0'
+          isUser
+            ? isEditing
+              ? 'w-full max-w-[80%]'
+              : 'max-w-[80%] items-end'
+            : 'w-full min-w-0'
         }`}
       >
         <div

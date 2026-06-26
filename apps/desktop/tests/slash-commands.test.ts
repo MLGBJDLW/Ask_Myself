@@ -4,6 +4,12 @@ import {
   getSlashCommandTrigger,
   resolveSlashCommandMessage,
 } from '../src/lib/slashCommands';
+import {
+  buildGoalContinuationLlmContext,
+  getActiveGoalContext,
+  mergeGoalContextArtifact,
+} from '../src/lib/goalContext';
+import type { ConversationMessage } from '../src/types/conversation';
 import type { Skill } from '../src/types/extensions';
 
 type TestFn = () => void | Promise<void>;
@@ -44,6 +50,27 @@ function skill(overrides: Partial<Skill> = {}): Skill {
     sourcePath: null,
     resources: [],
     ...overrides,
+  };
+}
+
+function message(
+  id: string,
+  role: ConversationMessage['role'],
+  content: string,
+  artifacts: ConversationMessage['artifacts'] = null,
+): ConversationMessage {
+  return {
+    id,
+    conversationId: 'conversation-1',
+    role,
+    content,
+    toolCallId: null,
+    toolCalls: [],
+    artifacts,
+    tokenCount: 0,
+    createdAt: `2026-06-26T00:00:0${id.length}.000Z`,
+    sortOrder: id.length,
+    thinking: null,
   };
 }
 
@@ -108,7 +135,74 @@ test('resolves goal into a goal-oriented prompt', () => {
   assertEqual(resolved.artifact.kind, 'goal', 'goal uses dedicated artifact kind');
   assertEqual(resolved.artifact.objective, 'ship offline sync', 'goal artifact records objective');
   assert(resolved.message.includes('success criteria'), 'goal prompt asks for success criteria');
+  assert(resolved.message.includes('future work'), 'goal prompt makes the objective persistent');
   assert(resolved.message.includes('ship offline sync'), 'goal preserves user objective');
+});
+
+test('keeps the latest goal active across assistant replies until replaced or completed', () => {
+  const active = getActiveGoalContext([
+    message('g1', 'user', 'ship offline sync', {
+      kind: 'goal',
+      objective: 'ship offline sync',
+      status: 'active',
+    }),
+    message('a1', 'assistant', 'Initial plan complete.'),
+    message('u2', 'user', 'continue implementation'),
+  ]);
+
+  assert(active, 'active goal should survive a completed assistant turn');
+  assertEqual(active.objective, 'ship offline sync', 'active goal objective is preserved');
+  assertEqual(active.sourceMessageId, 'g1', 'active goal points to the original goal message');
+
+  const replaced = getActiveGoalContext([
+    message('g1', 'user', 'ship offline sync', {
+      kind: 'goal',
+      objective: 'ship offline sync',
+      status: 'active',
+    }),
+    message('g2', 'user', 'fix release publishing', {
+      kind: 'goal',
+      objective: 'fix release publishing',
+      status: 'active',
+    }),
+  ]);
+
+  assert(replaced, 'replacement goal should become active');
+  assertEqual(replaced.objective, 'fix release publishing', 'latest goal wins');
+
+  const completed = getActiveGoalContext([
+    message('g1', 'user', 'ship offline sync', {
+      kind: 'goal',
+      objective: 'ship offline sync',
+      status: 'active',
+    }),
+    message('g2', 'user', 'mark done', {
+      kind: 'goal',
+      objective: 'ship offline sync',
+      status: 'complete',
+    }),
+  ]);
+
+  assertEqual(completed, null, 'terminal goal artifact clears active context');
+});
+
+test('builds hidden continuation context for normal messages under an active goal', () => {
+  const goal = {
+    objective: 'ship offline sync',
+    status: 'active' as const,
+    sourceMessageId: 'g1',
+    createdAt: '2026-06-26T00:00:00.000Z',
+  };
+
+  const llmContext = buildGoalContinuationLlmContext(goal, 'continue with tests');
+  assert(llmContext.includes('Active conversation goal:'), 'context labels the active goal');
+  assert(llmContext.includes('ship offline sync'), 'context includes the active goal objective');
+  assert(llmContext.includes('continue with tests'), 'context includes the new user message');
+
+  const artifact = mergeGoalContextArtifact({ kind: 'executionMode', mode: 'plan' }, goal, llmContext);
+  assert(!Array.isArray(artifact), 'merged artifact stays object-shaped');
+  assertEqual(artifact.kind, 'executionMode', 'existing artifact kind is preserved');
+  assertEqual(artifact.llmContextContent, llmContext, 'hidden context is attached at the top level');
 });
 
 test('resolves ask into a question card prompt', () => {

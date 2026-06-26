@@ -3,7 +3,7 @@ import { Update as TauriUpdate, type Update as TauriUpdateInstance } from '@taur
 import { relaunch } from '@tauri-apps/plugin-process';
 import { useState, useEffect, useCallback } from 'react';
 
-export const UPDATE_SOURCES = ['github', 'gitee'] as const;
+export const UPDATE_SOURCES = ['github'] as const;
 export type UpdateSource = typeof UPDATE_SOURCES[number];
 
 interface UpdateState {
@@ -34,7 +34,7 @@ const UPDATE_CHECK_TIMEOUT_MS = 90_000;
 const UPDATE_DOWNLOAD_TIMEOUT_MS = 600_000;
 
 function isUpdateSource(value: string | null): value is UpdateSource {
-  return value === 'github' || value === 'gitee';
+  return value === 'github';
 }
 
 function readStoredUpdateSource(): UpdateSource {

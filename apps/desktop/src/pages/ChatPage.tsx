@@ -19,6 +19,7 @@ import * as api from '../lib/api';
 import type { AgentConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
 import { formatUserError } from '../lib/userError';
 import { isGoalMessage, isSteeringMessage } from '../lib/chatMessageGuards';
+import { getActiveGoalContext } from '../lib/goalContext';
 import {
   GRAPH_AGENT_CONTEXT_EVENT,
   buildGraphCollectionContext,
@@ -425,6 +426,10 @@ export function ChatPage() {
         message.content.trim().length > 0
       ))
       .map((message) => message.content),
+    [chat.messages],
+  );
+  const activeGoalContext = useMemo(
+    () => getActiveGoalContext(chat.messages),
     [chat.messages],
   );
   const [pendingGraphContext, setPendingGraphContext] = useState<GraphAgentContext | null>(
@@ -1125,6 +1130,7 @@ export function ChatPage() {
               isCompacting={isCompacting}
               planModeEnabled={planModeEnabled}
               onPlanModeChange={setPlanModeEnabled}
+              activeGoalContext={activeGoalContext}
               onRestoreCheckpoint={chat.activeId ? async () => {
                 await chat.reloadMessages();
               } : undefined}

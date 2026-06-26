@@ -126,26 +126,28 @@ test("settings appearance tab owns version and update controls", async ({ page }
   await expect(page.getByRole("heading", { name: "App update" })).toBeVisible();
   await expect(page.getByText("Update source")).toBeVisible();
   await expect(page.getByRole("button", { name: /Official GitHub Releases/ })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByRole("button", { name: /Gitee mirror/ })).toBeVisible();
+  await expect(page.locator('[aria-pressed="true"]')).toHaveCount(1);
   await expect(page.getByText("Current version")).toBeVisible();
   await expect(page.getByRole("main").getByText("v0.2.9")).toBeVisible();
   await expect(page.getByRole("button", { name: "Check for Updates" })).toBeVisible();
 });
 
-test("update source selection is persisted and used for checks", async ({ page }) => {
+test("unsupported stored update source falls back to GitHub", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("nexa-update-source", "legacy-mirror");
+  });
   await page.goto("/settings");
   await page.getByRole("button", { name: "Appearance" }).click();
 
-  await page.getByRole("button", { name: /Gitee mirror/ }).click();
-  await expect(page.getByRole("button", { name: /Gitee mirror/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: /Official GitHub Releases/ })).toHaveAttribute("aria-pressed", "true");
   await expect
     .poll(() => page.evaluate(() => localStorage.getItem("nexa-update-source")))
-    .toBe("gitee");
+    .toBe("legacy-mirror");
 
   await page.getByRole("button", { name: "Check for Updates" }).click();
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { __lastUpdateSource: string }).__lastUpdateSource))
-    .toBe("gitee");
+    .toBe("github");
 });
 
 test("layout performs the silent startup update check", async ({ page }) => {

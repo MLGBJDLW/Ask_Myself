@@ -15,6 +15,7 @@
     "src/lib/slashCommands.ts",
     "src/lib/workflowRecorder.ts",
     "src/lib/streaming/**/*.ts",
+    "src/lib/streaming/toolCardPresentation.ts",
     "src/types/**/*.ts"
   ]
 }

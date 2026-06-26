@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileCode2, FilePenLine, FilePlus2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { ArtifactPayload } from '../../types/conversation';
 import { FileBadge } from '../ui/FileBadge';
+import { DiffStatsTicker } from './DiffStatsTicker';
 
 type FileDiffLineType = 'context' | 'addition' | 'deletion';
 
@@ -323,12 +324,29 @@ function lineNumber(value: number | null): string {
   return value == null ? '' : String(value);
 }
 
-function FileDiffBody({ diff, compact = false }: { diff: FileDiffArtifact; compact?: boolean }) {
+function FileDiffBody({
+  diff,
+  compact = false,
+  live = false,
+}: {
+  diff: FileDiffArtifact;
+  compact?: boolean;
+  live?: boolean;
+}) {
   const { t } = useTranslation();
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const maxHeight = compact ? 'max-h-72' : 'max-h-[32rem]';
+  const liveLineCount = diff.hunks.reduce((count, hunk) => count + hunk.lines.length, 0);
+
+  useEffect(() => {
+    if (!live) return;
+    const container = scrollRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+  }, [live, liveLineCount]);
 
   return (
-    <div className={`${maxHeight} overflow-auto bg-surface-0`}>
+    <div ref={scrollRef} className={`${maxHeight} overflow-auto bg-surface-0`}>
       <div className="min-w-max py-1 font-mono text-[11px] leading-5">
         {diff.hunks.map((hunk, hunkIndex) => (
           <div key={`hunk-${hunkIndex}`}>
@@ -363,26 +381,6 @@ function FileDiffBody({ diff, compact = false }: { diff: FileDiffArtifact; compa
           </div>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-function FileDiffStatsPills({ additions, deletions }: { additions: number; deletions: number }) {
-  const showAdditions = additions > 0 || deletions === 0;
-  const showDeletions = deletions > 0;
-
-  return (
-    <div className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums">
-      {showAdditions && (
-        <span className="rounded-md border border-success/20 bg-success/10 px-1.5 py-0.5 text-success">
-          +{additions}
-        </span>
-      )}
-      {showDeletions && (
-        <span className="rounded-md border border-danger/20 bg-danger/10 px-1.5 py-0.5 text-danger">
-          -{deletions}
-        </span>
-      )}
     </div>
   );
 }
@@ -459,7 +457,15 @@ export function FileDiffSummaryPanel({ diffs }: { diffs: FileDiffArtifact[] }) {
             </span>
           </span>
         </button>
-        <FileDiffStatsPills additions={additions} deletions={deletions} />
+        <DiffStatsTicker
+          additions={additions}
+          deletions={deletions}
+          filesChanged={diffs.length}
+          compact
+          live={false}
+          showFiles={false}
+          showReplacements={false}
+        />
         <ChevronDown
           size={16}
           className={`shrink-0 text-text-tertiary transition-transform ${panelOpen ? 'rotate-180' : ''}`}
@@ -493,7 +499,14 @@ export function FileDiffSummaryPanel({ diffs }: { diffs: FileDiffArtifact[] }) {
                   </span>
                   <span className="shrink-0 text-xs font-medium text-text-secondary">{rowOperationLabel}</span>
                   <FileBadge path={previewPath} className="min-w-0 flex-1" />
-                  <FileDiffStatsPills additions={diff.additions} deletions={diff.deletions} />
+                    <DiffStatsTicker
+                      additions={diff.additions}
+                      deletions={diff.deletions}
+                      compact
+                      live={false}
+                      showFiles={false}
+                      showReplacements={false}
+                    />
                 </button>
                 {expanded && (
                   <div className="border-t border-border/40">
@@ -584,11 +597,18 @@ export function FileDiffPreview({
             <FileBadge path={previewPath} className="min-w-0 max-w-full" />
           </div>
         </div>
-        <FileDiffStatsPills additions={diff.additions} deletions={diff.deletions} />
+        <DiffStatsTicker
+          additions={diff.additions}
+          deletions={diff.deletions}
+          compact={compact}
+          live={live}
+          showFiles={false}
+          showReplacements={false}
+        />
       </div>
 
       {expanded ? (
-        <FileDiffBody diff={diff} compact={compact} />
+        <FileDiffBody diff={diff} compact={compact} live={live} />
       ) : null}
     </div>
   );

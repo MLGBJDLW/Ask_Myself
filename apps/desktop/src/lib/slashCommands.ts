@@ -58,10 +58,10 @@ const COMMON_COMMANDS: Array<Omit<SlashCommandOption, "id" | "kind" | "sourceLab
   {
     name: "goal",
     title: "Goal",
-    description: "Turn an objective into a success-oriented execution brief with constraints and checkpoints.",
+    description: "Set a persistent active goal with success criteria, constraints, and checkpoints.",
     action: "prompt",
     promptTemplate:
-      "Treat this as a goal-oriented Codex task. First restate the goal and success criteria, then identify constraints, risks, missing information, and a short execution plan. Ask concise clarifying questions only when they block safe progress; otherwise proceed and keep the final answer tied to the goal.\n\nGoal:\n{{input}}",
+      "Treat this as a persistent goal-oriented task. First restate the goal and success criteria, then identify constraints, risks, missing information, and a short execution plan. Ask concise clarifying questions only when they block safe progress; otherwise proceed. Keep future work tied to this goal until it is explicitly replaced, cleared, or completed.\n\nGoal:\n{{input}}",
   },
   {
     name: "ask",

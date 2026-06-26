@@ -12,6 +12,10 @@ import {
   normalizePersistedToolCallStatus,
 } from '../src/lib/streaming/toolStatus';
 import {
+  getStableFileChangeTarget,
+  getToolBriefTarget,
+} from '../src/lib/streaming/toolCardPresentation';
+import {
   buildCurrentTimelineSections,
   buildLiveTraceTimeline,
   shouldHideTraceStatus,
@@ -1684,6 +1688,20 @@ test('uses one tool status reducer for run, trace, and card-facing statuses', ()
   assertEqual(normalizePersistedToolCallStatus('timed_out'), 'timedOut', 'timed out status');
   assert(isPendingToolCallStatus('preparing'), 'preparing is pending');
   assert(!isPendingToolCallStatus('done'), 'done is not pending');
+});
+
+test('file change tool cards use stable diff paths instead of partial streaming json as title target', () => {
+  const partialArgs = '{"path":"notes/live.md","content":"first\\nsecond';
+
+  assert(
+    getToolBriefTarget(partialArgs)?.startsWith('{"path"'),
+    'generic tool target still falls back to partial args for non-file tools',
+  );
+  assertEqual(
+    getStableFileChangeTarget({ path: 'notes/live.md' }, { paths: ['notes/live.md'] }),
+    'notes/live.md',
+    'file change target should come from diff artifact path',
+  );
 });
 
 test('timeline view model hides low-signal statuses and internal successful tools', () => {

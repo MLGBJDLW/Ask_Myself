@@ -18,8 +18,6 @@
   "sourceActive": "Active",
   "sourceGithub": "GitHub",
   "sourceGithubDescription": "GitHub Releases officiel avec le proxy existant en secours.",
-  "sourceGitee": "Gitee",
-  "sourceGiteeDescription": "Miroir Gitee pour les métadonnées de versions et les paquets de mise à jour lorsque GitHub est instable.",
   "currentVersion": "Version actuelle",
   "latestVersion": "Dernière version",
   "status": "État",

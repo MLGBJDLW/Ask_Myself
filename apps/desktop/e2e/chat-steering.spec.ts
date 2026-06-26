@@ -398,6 +398,29 @@ test('retries a persisted user message after reopening a conversation', async ({
   expect(diagnostics.steerCalls).toEqual([]);
 });
 
+test('keeps short user message bubbles close to their text width', async ({ page }) => {
+  await page.goto('/chat/conv-steering');
+
+  const textbox = page.getByTestId('chat-input-textarea');
+  await textbox.fill('继续');
+  await page.getByTestId('chat-send').click();
+
+  const bubble = page.getByLabel('User message').filter({ hasText: '继续' }).last();
+  await expect(bubble).toBeVisible();
+
+  const metrics = await bubble.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    const text = node.querySelector('span.whitespace-pre-wrap');
+    const textRect = text?.getBoundingClientRect();
+    return {
+      bubbleWidth: rect.width,
+      textWidth: textRect?.width ?? 0,
+    };
+  });
+
+  expect(metrics.bubbleWidth).toBeLessThan(metrics.textWidth + 80);
+});
+
 test('sends steering while an agent stream is running without stopping it', async ({ page }) => {
   await page.goto('/chat/conv-steering');
 
