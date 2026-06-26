@@ -1453,6 +1453,7 @@ export function ToolCallCard({
                   replacements={diffStats.replacements}
                   compact
                   live={isPending}
+                  testIdPrefix="tool-card-header"
                 />
               </span>
             ) : null}
@@ -1589,6 +1590,7 @@ export function ToolCallCard({
                   replacements={diffStats.replacements}
                   compact
                   live={isPending}
+                  testIdPrefix="tool-card-header"
                 />
               </span>
             ) : null}
@@ -1885,6 +1887,7 @@ export function ToolCallCard({
                 filesChanged={diffStats.filesChanged}
                 replacements={diffStats.replacements}
                 live={isPending}
+                testIdPrefix="tool-card-header"
               />
             </span>
           ) : null}

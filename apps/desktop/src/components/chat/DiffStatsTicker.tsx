@@ -11,6 +11,7 @@ interface DiffStatsTickerProps {
   live?: boolean;
   showFiles?: boolean;
   showReplacements?: boolean;
+  testIdPrefix?: string;
 }
 
 function normalizedCount(value: number | null | undefined): number {
@@ -19,16 +20,15 @@ function normalizedCount(value: number | null | undefined): number {
 
 function RollingCount({
   value,
-  prefix = '',
   className,
 }: {
   value: number;
-  prefix?: string;
   className?: string;
 }) {
   const shouldReduceMotion = useReducedMotion();
   const previousRef = useRef(value);
   const [direction, setDirection] = useState(1);
+  const digits = String(value).split('');
 
   useEffect(() => {
     const previous = previousRef.current;
@@ -38,37 +38,59 @@ function RollingCount({
 
   if (shouldReduceMotion) {
     return (
-      <span className={`inline-block min-w-[2.6ch] text-right tabular-nums ${className ?? ''}`}>
-        {prefix}{value}
+      <span className={`inline-block text-right tabular-nums ${className ?? ''}`}>
+        {value}
       </span>
     );
   }
 
   return (
-    <span className={`relative inline-flex h-[1.15em] min-w-[2.6ch] overflow-hidden align-[-0.12em] tabular-nums ${className ?? ''}`}>
-      <AnimatePresence initial={false} mode="popLayout">
-        <motion.span
-          key={`${prefix}${value}`}
-          initial={{ y: direction > 0 ? '82%' : '-82%', opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          exit={{ y: direction > 0 ? '-82%' : '82%', opacity: 0 }}
-          transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-          className="block w-full text-right"
+    <span className={`inline-flex justify-end tabular-nums ${className ?? ''}`}>
+      {digits.map((digit, index) => (
+        <span
+          key={`${digits.length}-${index}`}
+          className="relative inline-flex h-[1.15em] w-[1ch] overflow-hidden align-[-0.12em]"
         >
-          {prefix}{value}
-        </motion.span>
-      </AnimatePresence>
+          <AnimatePresence initial={false} mode="popLayout">
+            <motion.span
+              key={`${digits.length}-${index}-${digit}`}
+              initial={{ y: direction > 0 ? '82%' : '-82%', opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: direction > 0 ? '-82%' : '82%', opacity: 0 }}
+              transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+              className="absolute inset-0 text-center"
+            >
+              {digit}
+            </motion.span>
+          </AnimatePresence>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function SignedRollingCount({ value, sign }: { value: number; sign: '+' | '-' }) {
+  return (
+    <span className="inline-flex min-w-[2.6ch] justify-end tabular-nums">
+      <span className="shrink-0">{sign}</span>
+      <RollingCount value={value} />
     </span>
   );
 }
 
 function StatPill({
   tone,
+  kind,
+  valueLabel,
+  testId,
   compact,
   live,
   children,
 }: {
   tone: 'add' | 'delete' | 'neutral';
+  kind: 'additions' | 'deletions' | 'files' | 'replacements';
+  valueLabel: string;
+  testId?: string;
   compact?: boolean;
   live?: boolean;
   children: ReactNode;
@@ -83,6 +105,9 @@ function StatPill({
 
   return (
     <span
+      data-testid={testId}
+      data-diff-stat-kind={kind}
+      data-value={valueLabel}
       className={`${size} inline-flex items-center gap-1 rounded-md border font-mono leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] ${toneClass} ${
         live ? 'motion-safe:animate-pulse' : ''
       }`}
@@ -101,33 +126,62 @@ export function DiffStatsTicker({
   live = false,
   showFiles = true,
   showReplacements = true,
+  testIdPrefix,
 }: DiffStatsTickerProps) {
   const { t } = useTranslation();
   const additionsValue = normalizedCount(additions);
   const deletionsValue = normalizedCount(deletions);
   const filesValue = normalizedCount(filesChanged);
   const replacementsValue = normalizedCount(replacements);
+  const statTestId = (kind: string) => (testIdPrefix ? `${testIdPrefix}-${kind}` : undefined);
 
   return (
     <div
+      data-testid={testIdPrefix ? `${testIdPrefix}-diff-stats` : undefined}
       className="inline-flex shrink-0 items-center gap-1 tabular-nums"
       aria-label={`+${additionsValue} -${deletionsValue}`}
       data-live-diff-stats={live ? 'true' : 'false'}
     >
-      <StatPill tone="add" compact={compact} live={live}>
-        <RollingCount value={additionsValue} prefix="+" />
+      <StatPill
+        tone="add"
+        kind="additions"
+        valueLabel={`+${additionsValue}`}
+        testId={statTestId('additions')}
+        compact={compact}
+        live={live}
+      >
+        <SignedRollingCount value={additionsValue} sign="+" />
       </StatPill>
-      <StatPill tone="delete" compact={compact} live={live}>
-        <RollingCount value={deletionsValue} prefix="-" />
+      <StatPill
+        tone="delete"
+        kind="deletions"
+        valueLabel={`-${deletionsValue}`}
+        testId={statTestId('deletions')}
+        compact={compact}
+        live={live}
+      >
+        <SignedRollingCount value={deletionsValue} sign="-" />
       </StatPill>
       {showFiles && filesValue > 1 && (
-        <StatPill tone="neutral" compact={compact}>
+        <StatPill
+          tone="neutral"
+          kind="files"
+          valueLabel={String(filesValue)}
+          testId={statTestId('files')}
+          compact={compact}
+        >
           <RollingCount value={filesValue} />
           <span className="font-sans">{t('chat.diffFiles')}</span>
         </StatPill>
       )}
       {showReplacements && replacementsValue > 0 && (
-        <StatPill tone="neutral" compact={compact}>
+        <StatPill
+          tone="neutral"
+          kind="replacements"
+          valueLabel={String(replacementsValue)}
+          testId={statTestId('replacements')}
+          compact={compact}
+        >
           <RollingCount value={replacementsValue} />
           <span className="hidden font-sans sm:inline">{t('chat.diffReplacements')}</span>
         </StatPill>

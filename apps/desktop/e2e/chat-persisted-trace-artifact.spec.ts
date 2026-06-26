@@ -104,6 +104,30 @@ test.beforeEach(async ({ page }) => {
                   artifacts: null,
                 },
               },
+              {
+                kind: 'tool',
+                toolCall: {
+                  callId: 'tool-create-file-1',
+                  toolName: 'create_file',
+                  arguments: '{"path":"H:/novel/chapter-1.md"}',
+                  status: 'done',
+                  content: 'Created H:/novel/chapter-1.md',
+                  isError: false,
+                  artifacts: {
+                    kind: 'fileChangeSet',
+                    source: 'create_file',
+                    diffStats: {
+                      kind: 'diffStats',
+                      filesChanged: 1,
+                      additions: 140,
+                      deletions: 0,
+                      hunks: 1,
+                      operation: 'create',
+                      paths: ['H:/novel/chapter-1.md'],
+                    },
+                  },
+                },
+              },
               { kind: 'status', text: 'Recovered from persisted trace data.', tone: 'success' },
             ],
           },
@@ -239,16 +263,28 @@ test('renders persisted trace artifacts as a single unified timeline', async ({ 
   await thinkingToggle.click();
 
   await expect(page.getByText('Investigating retry behaviour from persisted artifacts.')).toBeVisible();
-  await expect(page.getByText('search_knowledge_base')).toBeVisible();
+  await expect(page.getByRole('button', { name: /Search.*retry.*done/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Create File.*chapter-1\.md.*\+140.*-0/ })).toBeVisible();
   await expect(page.getByText('Recovered from persisted trace data.')).toBeVisible();
   await expect(page.getByText('Final answer from persisted trace artifacts.')).toBeVisible();
   await expect(page.getByText('Draft fix')).toBeVisible();
 
+  const headerStats = page.getByTestId('tool-card-header-diff-stats').first();
+  await expect(headerStats).toBeVisible();
+  await expect(headerStats.getByTestId('tool-card-header-additions')).toHaveAttribute('data-value', '+140');
+  await expect(headerStats.getByTestId('tool-card-header-deletions')).toHaveAttribute('data-value', '-0');
+  await expect(headerStats.getByTestId('tool-card-header-additions')).toContainText('+140');
+  await expect(headerStats.getByTestId('tool-card-header-deletions')).toContainText('-0');
+
   const chatLogText = await page.getByLabel('Chat messages').textContent();
   const text = chatLogText ?? '';
-  expect(text.indexOf('Investigating retry behaviour from persisted artifacts.')).toBeGreaterThanOrEqual(0);
-  expect(text.indexOf('search_knowledge_base')).toBeGreaterThan(text.indexOf('Investigating retry behaviour from persisted artifacts.'));
-  expect(text.indexOf('Recovered from persisted trace data.')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
+  const thinkingIndex = text.indexOf('Investigating retry behaviour from persisted artifacts.');
+  const searchIndex = text.indexOf('"retry"');
+  const createFileIndex = text.indexOf('Create File');
+  expect(thinkingIndex).toBeGreaterThanOrEqual(0);
+  expect(searchIndex).toBeGreaterThan(thinkingIndex);
+  expect(createFileIndex).toBeGreaterThan(searchIndex);
+  expect(text.indexOf('Recovered from persisted trace data.')).toBeGreaterThan(createFileIndex);
   expect(text.indexOf('Final answer from persisted trace artifacts.')).toBeGreaterThan(text.indexOf('Recovered from persisted trace data.'));
   expect(text).not.toContain('update_plan');
   expect(text).not.toContain('Draft fix');
