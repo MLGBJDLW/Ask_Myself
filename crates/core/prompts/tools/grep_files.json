@@ -1,12 +1,12 @@
 {
   "name": "grep_files",
-  "description": "Alias of search_files using familiar grep/rg terminology. Search plain-text files by content inside registered source directories, with literal or regex matching, include/exclude globs, hidden-file control, line numbers, and optional context lines. Prefer this for coding/codebase browsing and whenever the user asks to grep, rg, or find text inside local files. Use it before read_file/read_files unless an exact file or path is already known.",
+  "description": "Alias of search_files using familiar grep/rg terminology. Search plain-text files by content inside registered source directories with literal matching by default, plus opt-in Rust regex matching. Prefer literal mode for exact user text, identifiers, snippets, and strings containing regex metacharacters such as |, ., *, ?, [, or (. Set regex=true only when the query is intentionally a regex; escape metacharacters such as \\| only in regex mode when they should be matched literally. Supports include/exclude globs, hidden-file control, line numbers, and optional context lines. Prefer this for coding/codebase browsing and whenever the user asks to grep, rg, or find text inside local files. Use it before read_file/read_files unless an exact file or path is already known.",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "Literal text or regex pattern to search for"
+        "description": "Text to search for. Treated as exact literal text unless regex=true, so characters such as | are literal by default."
       },
       "path": {
         "type": "string",
@@ -14,7 +14,7 @@
       },
       "regex": {
         "type": "boolean",
-        "description": "Treat query as a regular expression instead of literal text (default false)"
+        "description": "Treat query as a Rust regular expression instead of literal text (default false). Do not enable this for exact text; if regex=true and you need a literal |, escape it as \\|."
       },
       "case_sensitive": {
         "type": "boolean",

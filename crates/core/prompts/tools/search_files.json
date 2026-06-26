@@ -1,12 +1,12 @@
 {
   "name": "search_files",
-  "description": "Search plain-text files by content inside registered source directories, similar to a safe rg/ripgrep query. Use this when you need to find exact text, phrases, or regex patterns in local files before reading or editing them. For coding/codebase browsing, use this as the default first pass to locate declarations, usages, imports, tests, configuration keys, error text, TODOs, or implementation seams, then follow up with read_file/read_files only for the relevant matched paths or line ranges. In restricted mode, searches are limited to the current registered source scope; allow-all/non-restricted permission modes can search all registered sources, and open mode can search an explicitly supplied absolute local path.\n\nThis tool searches file contents, not the indexed knowledge base. Use search_knowledge_base first for evidence retrieval across indexed documents; use search_files when you need source-local text locations, line numbers, or files that may not be indexed yet.",
+  "description": "Search plain-text files by content inside registered source directories, similar to a safe rg/ripgrep query. Matching is literal by default; use regex=true only for intentional Rust regex patterns. Use literal mode for exact text, phrases, identifiers, snippets, and strings containing regex metacharacters such as |, ., *, ?, [, or (. Escape metacharacters such as \\| only when regex=true and you need them matched literally. Use this when you need to find text or regex patterns in local files before reading or editing them. For coding/codebase browsing, use this as the default first pass to locate declarations, usages, imports, tests, configuration keys, error text, TODOs, or implementation seams, then follow up with read_file/read_files only for the relevant matched paths or line ranges. In restricted mode, searches are limited to the current registered source scope; allow-all/non-restricted permission modes can search all registered sources, and open mode can search an explicitly supplied absolute local path.\n\nThis tool searches file contents, not the indexed knowledge base. Use search_knowledge_base first for evidence retrieval across indexed documents; use search_files when you need source-local text locations, line numbers, or files that may not be indexed yet.",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "Literal text or regex pattern to search for"
+        "description": "Text to search for. Treated as exact literal text unless regex=true, so characters such as | are literal by default."
       },
       "path": {
         "type": "string",
@@ -14,7 +14,7 @@
       },
       "regex": {
         "type": "boolean",
-        "description": "Treat query as a regular expression instead of literal text (default false)"
+        "description": "Treat query as a Rust regular expression instead of literal text (default false). Do not enable this for exact text; if regex=true and you need a literal |, escape it as \\|."
       },
       "case_sensitive": {
         "type": "boolean",
