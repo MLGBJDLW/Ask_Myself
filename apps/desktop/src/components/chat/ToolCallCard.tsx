@@ -48,6 +48,7 @@ import {
   isUnsuccessfulToolCallStatus,
 } from '../../lib/streaming/toolStatus';
 import {
+  formatToolTarget,
   getStableFileChangeTarget,
   getToolBriefTarget,
 } from '../../lib/streaming/toolCardPresentation';
@@ -584,6 +585,180 @@ function formatArgs(raw?: string): string {
   } catch {
     return raw;
   }
+}
+
+function parseArgsRecord(raw?: string): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const FILE_TARGET_ARG_KEYS = [
+  'path',
+  'file',
+  'filename',
+  'filePath',
+  'filepath',
+  'targetPath',
+  'target_path',
+  'resourcePath',
+  'resource_path',
+  'absolutePath',
+  'absolute_path',
+];
+
+const FILE_NEW_TEXT_ARG_KEYS = [
+  'content',
+  'text',
+  'body',
+  'newString',
+  'new_string',
+  'replacement',
+  'newContent',
+  'new_content',
+];
+
+const FILE_OLD_TEXT_ARG_KEYS = [
+  'oldString',
+  'old_string',
+  'oldContent',
+  'old_content',
+  'search',
+  'old',
+];
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function decodeJsonStringFragment(raw: string, start: number): string {
+  let out = '';
+  let escaped = false;
+  for (let i = start; i < raw.length; i += 1) {
+    const char = raw[i];
+    if (escaped) {
+      if (char === 'n') out += '\n';
+      else if (char === 'r') out += '\r';
+      else if (char === 't') out += '\t';
+      else if (char === 'b') out += '\b';
+      else if (char === 'f') out += '\f';
+      else if (char === 'u') {
+        const hex = raw.slice(i + 1, i + 5);
+        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+          out += String.fromCharCode(parseInt(hex, 16));
+          i += 4;
+        } else {
+          out += char;
+        }
+      } else {
+        out += char;
+      }
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') break;
+    out += char;
+  }
+  return out;
+}
+
+function extractJsonStringFieldFragment(raw: string | undefined, key: string): string | null {
+  if (!raw) return null;
+  const match = new RegExp(`"${escapeRegExp(key)}"\\s*:\\s*"`, 'i').exec(raw);
+  if (!match) return null;
+  const value = decodeJsonStringFragment(raw, match.index + match[0].length);
+  return value.trim().length > 0 ? value : '';
+}
+
+function extractStringArg(raw: string | undefined, keys: string[]): string | null {
+  const parsed = parseArgsRecord(raw);
+  if (parsed) {
+    for (const key of keys) {
+      const value = parsed[key];
+      if (typeof value === 'string') return value;
+    }
+  }
+  for (const key of keys) {
+    const value = extractJsonStringFieldFragment(raw, key);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+function countTextLines(value: string | null): number {
+  if (!value) return 0;
+  const normalized = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const withoutTrailingNewline = normalized.endsWith('\n')
+    ? normalized.slice(0, -1)
+    : normalized;
+  if (!withoutTrailingNewline) return 0;
+  return withoutTrailingNewline.split('\n').length;
+}
+
+function countPatchLines(patch: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of patch.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) additions += 1;
+    if (line.startsWith('-')) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
+function inferFileChangeOperation(toolName: string): string {
+  const lower = toolName.toLowerCase();
+  if (lower.includes('create_file')) return 'create';
+  if (lower.includes('multi_edit') || lower.includes('apply_patch')) return 'multi_edit';
+  if (lower.includes('download_asset')) return 'download';
+  return 'edit';
+}
+
+function deriveFileChangeStatsFromArgs({
+  rawArgs,
+  toolName,
+  isFileChange,
+}: {
+  rawArgs?: string;
+  toolName: string;
+  isFileChange: boolean;
+}): { stats: DiffStatsArtifact; target: string | null } | null {
+  if (!isFileChange || !rawArgs) return null;
+  const operation = inferFileChangeOperation(toolName);
+  const path = extractStringArg(rawArgs, FILE_TARGET_ARG_KEYS);
+  const patch = extractStringArg(rawArgs, ['patch', 'diff']);
+  const countedPatch = patch ? countPatchLines(patch) : null;
+  const newText = countedPatch ? null : extractStringArg(rawArgs, FILE_NEW_TEXT_ARG_KEYS);
+  const oldText = countedPatch ? null : extractStringArg(rawArgs, FILE_OLD_TEXT_ARG_KEYS);
+  const additions = countedPatch?.additions ?? countTextLines(newText);
+  const deletions = operation === 'create'
+    ? 0
+    : countedPatch?.deletions ?? countTextLines(oldText);
+
+  if (!path && additions === 0 && deletions === 0) return null;
+
+  return {
+    target: path ? formatToolTarget('path', path) : null,
+    stats: {
+      kind: 'diffStats',
+      filesChanged: 1,
+      additions,
+      deletions,
+      hunks: additions > 0 || deletions > 0 ? 1 : 0,
+      operation,
+      paths: path ? [path] : [],
+    },
+  };
 }
 
 function getToolBriefLabel(
@@ -1235,14 +1410,25 @@ export function ToolCallCard({
   const fileDiff = useMemo(() => extractFileDiffArtifact(artifacts), [artifacts]);
   const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
   const isFileChangeRender = isFileChangeToolRender(safeToolName, renderKind);
+  const isPending = isPendingToolCallStatus(status);
+  const argumentFileChangeStats = useMemo(
+    () => deriveFileChangeStatsFromArgs({
+      rawArgs: args,
+      toolName: safeToolName,
+      isFileChange: isFileChangeRender,
+    }),
+    [args, isFileChangeRender, safeToolName],
+  );
+  const headerDiffStats = diffStats ?? argumentFileChangeStats?.stats ?? null;
   const fileChangeDisplayName = getFileChangeDisplayName(
     safeToolName,
     isFileChangeRender,
-    diffStats?.operation ?? fileDiff?.operation,
+    headerDiffStats?.operation ?? fileDiff?.operation,
   );
   const fileChangeTarget = isFileChangeRender
-    ? getStableFileChangeTarget(fileDiff, diffStats)
+    ? getStableFileChangeTarget(fileDiff, headerDiffStats) ?? argumentFileChangeStats?.target ?? null
     : null;
+  const briefTargetOverride = isFileChangeRender ? (fileChangeTarget ?? '') : fileChangeTarget;
   const formattedArgs = formatArgs(args);
   const briefLabel = skillActivationName
     ? (
@@ -1250,9 +1436,8 @@ export function ToolCallCard({
           ? t('chat.skillActivatedLabel', { name: skillActivationName })
           : t('chat.skillActivatingLabel', { name: skillActivationName })
       )
-    : getToolBriefLabel(safeToolName, args, fileChangeDisplayName, fileChangeTarget);
+    : getToolBriefLabel(safeToolName, args, fileChangeDisplayName, briefTargetOverride);
   const briefResult = getToolBriefResult(status, t, content, safeToolName);
-  const isPending = isPendingToolCallStatus(status);
   const argsByteLabel = formatByteCount(
     typeof argsBytes === 'number' ? argsBytes : (args ? args.length : 0),
   );
@@ -1363,15 +1548,16 @@ export function ToolCallCard({
               edges: String(graphUsage.usedGraphEdges.length),
               documents: String(graphUsage.usedDocuments.length),
             })
-        : diffStats
+        : headerDiffStats
           ? isPending
             ? statusConfig.text
-            : `${diffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
+            : `${headerDiffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
         : status === 'done' && content
           ? briefResult
           : statusConfig.text;
+  const showArgsByteLabel = isPending && argsByteLabel && !(isFileChangeRender && headerDiffStats);
   const headerSummary =
-    isPending && argsByteLabel
+    showArgsByteLabel
       ? `${baseHeaderSummary} · ${argsByteLabel}`
       : !isPending && durationLabel
         ? `${baseHeaderSummary} · ${durationLabel}`
@@ -1380,8 +1566,8 @@ export function ToolCallCard({
   const StatusIcon = statusConfig.icon;
   const traceActive = isPending && !shouldReduceMotion;
   const traceSoft = status !== 'error';
-  const visibleFormattedArgs = fileDiff || diffStats ? null : formattedArgs;
-  const streamingArgsPreview = fileDiff || diffStats ? null : rawStreamingArgsPreview;
+  const visibleFormattedArgs = fileDiff || diffStats || isFileChangeRender ? null : formattedArgs;
+  const streamingArgsPreview = fileDiff || diffStats || isFileChangeRender ? null : rawStreamingArgsPreview;
   const liveFileDiff = trace && isPending && Boolean(fileDiff);
   const detailsExpanded = expanded;
   const expandableDetails = Boolean(
@@ -1444,13 +1630,13 @@ export function ToolCallCard({
             )}
           </span>
           <span className="flex shrink-0 items-center gap-1 pl-1">
-            {diffStats ? (
+            {headerDiffStats ? (
               <span className="inline-flex">
                 <DiffStatsTicker
-                  additions={diffStats.additions}
-                  deletions={diffStats.deletions}
-                  filesChanged={diffStats.filesChanged}
-                  replacements={diffStats.replacements}
+                  additions={headerDiffStats.additions}
+                  deletions={headerDiffStats.deletions}
+                  filesChanged={headerDiffStats.filesChanged}
+                  replacements={headerDiffStats.replacements}
                   compact
                   live={isPending}
                   testIdPrefix="tool-card-header"
@@ -1581,13 +1767,13 @@ export function ToolCallCard({
             )}
           </span>
           <span className="flex shrink-0 items-center gap-1 pl-1">
-            {diffStats ? (
+            {headerDiffStats ? (
               <span className="inline-flex">
                 <DiffStatsTicker
-                  additions={diffStats.additions}
-                  deletions={diffStats.deletions}
-                  filesChanged={diffStats.filesChanged}
-                  replacements={diffStats.replacements}
+                  additions={headerDiffStats.additions}
+                  deletions={headerDiffStats.deletions}
+                  filesChanged={headerDiffStats.filesChanged}
+                  replacements={headerDiffStats.replacements}
                   compact
                   live={isPending}
                   testIdPrefix="tool-card-header"
@@ -1879,13 +2065,13 @@ export function ToolCallCard({
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-1.5 pl-1">
-          {diffStats ? (
+          {headerDiffStats ? (
             <span className="inline-flex">
               <DiffStatsTicker
-                additions={diffStats.additions}
-                deletions={diffStats.deletions}
-                filesChanged={diffStats.filesChanged}
-                replacements={diffStats.replacements}
+                additions={headerDiffStats.additions}
+                deletions={headerDiffStats.deletions}
+                filesChanged={headerDiffStats.filesChanged}
+                replacements={headerDiffStats.replacements}
                 live={isPending}
                 testIdPrefix="tool-card-header"
               />
