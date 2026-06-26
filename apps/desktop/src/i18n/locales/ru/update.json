@@ -18,8 +18,6 @@
   "sourceActive": "Активен",
   "sourceGithub": "GitHub",
   "sourceGithubDescription": "Официальные GitHub Releases с существующим резервным прокси.",
-  "sourceGitee": "Gitee",
-  "sourceGiteeDescription": "Зеркало Gitee для метаданных релизов и пакетов обновлений там, где GitHub нестабилен.",
   "currentVersion": "Текущая версия",
   "latestVersion": "Последняя версия",
   "status": "Статус",

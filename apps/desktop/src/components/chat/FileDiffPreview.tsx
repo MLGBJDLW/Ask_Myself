@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileCode2, FilePenLine, FilePlus2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { ArtifactPayload } from '../../types/conversation';
@@ -323,12 +323,29 @@ function lineNumber(value: number | null): string {
   return value == null ? '' : String(value);
 }
 
-function FileDiffBody({ diff, compact = false }: { diff: FileDiffArtifact; compact?: boolean }) {
+function FileDiffBody({
+  diff,
+  compact = false,
+  live = false,
+}: {
+  diff: FileDiffArtifact;
+  compact?: boolean;
+  live?: boolean;
+}) {
   const { t } = useTranslation();
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const maxHeight = compact ? 'max-h-72' : 'max-h-[32rem]';
+  const liveLineCount = diff.hunks.reduce((count, hunk) => count + hunk.lines.length, 0);
+
+  useEffect(() => {
+    if (!live) return;
+    const container = scrollRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+  }, [live, liveLineCount]);
 
   return (
-    <div className={`${maxHeight} overflow-auto bg-surface-0`}>
+    <div ref={scrollRef} className={`${maxHeight} overflow-auto bg-surface-0`}>
       <div className="min-w-max py-1 font-mono text-[11px] leading-5">
         {diff.hunks.map((hunk, hunkIndex) => (
           <div key={`hunk-${hunkIndex}`}>
@@ -588,7 +605,7 @@ export function FileDiffPreview({
       </div>
 
       {expanded ? (
-        <FileDiffBody diff={diff} compact={compact} />
+        <FileDiffBody diff={diff} compact={compact} live={live} />
       ) : null}
     </div>
   );

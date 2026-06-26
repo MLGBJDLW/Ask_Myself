@@ -47,6 +47,10 @@ import {
   isPendingToolCallStatus,
   isUnsuccessfulToolCallStatus,
 } from '../../lib/streaming/toolStatus';
+import {
+  getStableFileChangeTarget,
+  getToolBriefTarget,
+} from '../../lib/streaming/toolCardPresentation';
 import { extractPlanArtifact, extractVerificationArtifact } from '../../lib/taskArtifacts';
 import {
   extractSubagentArtifact,
@@ -626,91 +630,6 @@ function getFileChangeDisplayName(name: string, isFileChange: boolean, operation
   return TOOL_LABELS.edit_file;
 }
 
-function truncateMiddle(value: string, max = 42): string {
-  if (value.length <= max) return value;
-  const head = Math.max(8, Math.floor((max - 1) * 0.42));
-  const tail = Math.max(8, max - head - 1);
-  return `${value.slice(0, head)}\u2026${value.slice(-tail)}`;
-}
-
-function normalizeOneLine(value: string): string {
-  return value.trim().replace(/\s+/g, ' ');
-}
-
-function parseArgsRecord(raw?: string): Record<string, unknown> | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function firstStringArg(parsed: Record<string, unknown>, keys: string[]): { key: string; value: string } | null {
-  for (const key of keys) {
-    const value = parsed[key];
-    if (typeof value === 'string' && value.trim()) {
-      return { key, value: value.trim() };
-    }
-  }
-  return null;
-}
-
-function firstArrayCountArg(parsed: Record<string, unknown>, keys: string[]): string | null {
-  for (const key of keys) {
-    const value = parsed[key];
-    if (Array.isArray(value) && value.length > 0) {
-      const noun = key.toLowerCase().includes('file') || key.toLowerCase().includes('path')
-        ? 'file'
-        : 'item';
-      return `${value.length} ${noun}${value.length === 1 ? '' : 's'}`;
-    }
-  }
-  return null;
-}
-
-function formatToolTarget(key: string, value: string): string {
-  const normalized = normalizeOneLine(value);
-  const pathLikeKeys = new Set(['path', 'file', 'filename', 'filepath', 'resourcepath', 'sourcepath', 'cwd']);
-  const quotedKeys = new Set(['query', 'regex', 'pattern', 'topic', 'prompt', 'description']);
-  const keyLower = key.toLowerCase();
-  if (pathLikeKeys.has(keyLower)) {
-    return truncateMiddle(normalized.replace(/\\/g, '/'), 44);
-  }
-  if (quotedKeys.has(keyLower)) {
-    return `"${truncateMiddle(normalized, 40)}"`;
-  }
-  return truncateMiddle(normalized, 44);
-}
-
-function getToolBriefTarget(args?: string): string | null {
-  const parsed = parseArgsRecord(args);
-  if (!parsed) return args ? truncateMiddle(normalizeOneLine(args), 44) : null;
-  const counted = firstArrayCountArg(parsed, ['paths', 'files', 'filePaths', 'resourcePaths', 'items']);
-  if (counted) return counted;
-  const picked = firstStringArg(parsed, [
-    'path',
-    'file',
-    'filename',
-    'filePath',
-    'resourcePath',
-    'sourcePath',
-    'url',
-    'query',
-    'regex',
-    'pattern',
-    'topic',
-    'prompt',
-    'command',
-    'program',
-    'skillId',
-    'name',
-    'description',
-  ]);
-  return picked ? formatToolTarget(picked.key, picked.value) : null;
-}
-
 function parseSearchResults(content: string): SearchResultItem[] | null {
   const blocks = content.split(/---\s*Result\s+\d+\s*\(score:\s*([\d.]+)\)\s*---/);
   // blocks[0] is preamble (e.g. "Found N results:"), then pairs of [score, body]
@@ -746,9 +665,14 @@ function formatArgs(raw?: string): string {
   }
 }
 
-function getToolBriefLabel(name: string, args?: string, displayNameOverride?: string | null): string {
+function getToolBriefLabel(
+  name: string,
+  args?: string,
+  displayNameOverride?: string | null,
+  targetOverride?: string | null,
+): string {
   const label = displayNameOverride ?? getToolDisplayName(name);
-  const target = getToolBriefTarget(args);
+  const target = targetOverride ?? getToolBriefTarget(args);
   return target ? `${label} \u00b7 ${target}` : label;
 }
 
@@ -1395,6 +1319,9 @@ export function ToolCallCard({
     isFileChangeRender,
     diffStats?.operation ?? fileDiff?.operation,
   );
+  const fileChangeTarget = isFileChangeRender
+    ? getStableFileChangeTarget(fileDiff, diffStats)
+    : null;
   const formattedArgs = formatArgs(args);
   const briefLabel = skillActivationName
     ? (
@@ -1402,7 +1329,7 @@ export function ToolCallCard({
           ? t('chat.skillActivatedLabel', { name: skillActivationName })
           : t('chat.skillActivatingLabel', { name: skillActivationName })
       )
-    : getToolBriefLabel(safeToolName, args, fileChangeDisplayName);
+    : getToolBriefLabel(safeToolName, args, fileChangeDisplayName, fileChangeTarget);
   const briefResult = getToolBriefResult(status, t, content, safeToolName);
   const isPending = isPendingToolCallStatus(status);
   const argsByteLabel = formatByteCount(
@@ -1463,6 +1390,12 @@ export function ToolCallCard({
       setExpanded(false);
     }
   }, [isPending]);
+
+  useEffect(() => {
+    if (isPending && isFileChangeRender && fileDiff) {
+      setExpanded(true);
+    }
+  }, [fileDiff, isFileChangeRender, isPending]);
 
   if (inline) {
     return (

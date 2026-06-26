@@ -322,19 +322,9 @@ jobs:
           fi
           echo "latest.json contains $PLATFORM_COUNT platform(s)"
 
-          GITEE_RELEASE_BASE="https://gitee.com/ButlerW/Nexa/releases/download/$TAG"
-          jq --arg base "$GITEE_RELEASE_BASE" \
-            '.platforms |= with_entries(.value.url = ($base + "/" + (.value.url | split("/")[-1])))' \
-            latest.json > latest-gitee.json
-
-          gh release upload "$TAG" latest.json latest-ghproxy.json latest-gitee.json --clobber --repo "$REPO"
+          gh release upload "$TAG" latest.json latest-ghproxy.json --clobber --repo "$REPO"
 
       - name: Publish verified release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit ${{ needs.release-please.outputs.tag_name }} --draft=false --repo ${{ github.repository }}
-
-      - name: Sync release to Gitee
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run sync-gitee-release.yml --ref master -f tag=${{ needs.release-please.outputs.tag_name }} --repo ${{ github.repository }}

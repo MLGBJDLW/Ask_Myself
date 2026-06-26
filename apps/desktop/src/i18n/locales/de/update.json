@@ -18,8 +18,6 @@
   "sourceActive": "Aktiv",
   "sourceGithub": "GitHub",
   "sourceGithubDescription": "Offizielle GitHub Releases mit bestehendem Proxy-Fallback.",
-  "sourceGitee": "Gitee",
-  "sourceGiteeDescription": "Gitee-Spiegel für Release-Metadaten und Update-Pakete in Regionen mit instabilem GitHub.",
   "currentVersion": "Aktuelle Version",
   "latestVersion": "Neueste Version",
   "status": "Status",

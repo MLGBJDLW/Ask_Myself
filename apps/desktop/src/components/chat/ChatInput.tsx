@@ -15,6 +15,11 @@ import {
   type SlashCommandKind,
   type SlashCommandOption,
 } from "../../lib/slashCommands";
+import {
+  buildGoalContinuationLlmContext,
+  mergeGoalContextArtifact,
+  type ActiveGoalContext,
+} from "../../lib/goalContext";
 import { buildWorkflowBatchPrompt } from "../../lib/workflowPrompts";
 import {
   collectPastedImageFiles,
@@ -49,6 +54,7 @@ interface ChatInputProps {
   isCompacting?: boolean;
   planModeEnabled?: boolean;
   onPlanModeChange?: (enabled: boolean) => void;
+  activeGoalContext?: ActiveGoalContext | null;
 }
 
 interface ChatDraftState {
@@ -210,6 +216,7 @@ export function ChatInput({
   isCompacting = false,
   planModeEnabled,
   onPlanModeChange,
+  activeGoalContext,
 }: ChatInputProps) {
   const { t } = useTranslation();
   const draftKey = conversationId ?? NEW_CONVERSATION_DRAFT_KEY;
@@ -615,10 +622,20 @@ export function ChatInput({
             : {}),
         }
       : null;
-    const sendOptions = slashResolution || executionMode
+    const baseUserArtifacts = slashArtifact ?? planModeArtifact;
+    const activeGoal = !slashResolution && activeGoalContext?.status === "active"
+      ? activeGoalContext
+      : null;
+    const goalContextContent = activeGoal
+      ? buildGoalContinuationLlmContext(activeGoal, outgoingMessage)
+      : null;
+    const userArtifacts = activeGoal && goalContextContent
+      ? mergeGoalContextArtifact(baseUserArtifacts, activeGoal, goalContextContent)
+      : baseUserArtifacts;
+    const sendOptions = slashResolution || executionMode || userArtifacts
       ? {
           skillIds: slashResolution?.skillIds,
-          userArtifacts: slashArtifact ?? planModeArtifact,
+          userArtifacts,
           executionMode,
         }
       : undefined;
@@ -631,7 +648,7 @@ export function ChatInput({
       sendOptions,
     );
     clearDraft();
-  }, [attachments, clearDraft, effectivePlanModeEnabled, inputLocked, isStreaming, onCompact, onSend, persistDraft, setPlanMode, slashOptions, t, value]);
+  }, [activeGoalContext, attachments, clearDraft, effectivePlanModeEnabled, inputLocked, isStreaming, onCompact, onSend, persistDraft, setPlanMode, slashOptions, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

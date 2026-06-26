@@ -18,8 +18,6 @@
   "sourceActive": "使用中",
   "sourceGithub": "GitHub",
   "sourceGithubDescription": "公式 GitHub Releases。既存のプロキシフォールバックを使用します。",
-  "sourceGitee": "Gitee",
-  "sourceGiteeDescription": "GitHub が不安定な地域向けの Gitee ミラーです。",
   "currentVersion": "現在のバージョン",
   "latestVersion": "最新バージョン",
   "status": "ステータス",

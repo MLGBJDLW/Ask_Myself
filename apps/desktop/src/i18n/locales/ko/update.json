@@ -18,8 +18,6 @@
   "sourceActive": "사용 중",
   "sourceGithub": "GitHub",
   "sourceGithubDescription": "기존 프록시 폴백을 포함한 공식 GitHub Releases입니다.",
-  "sourceGitee": "Gitee",
-  "sourceGiteeDescription": "GitHub가 불안정한 지역을 위한 Gitee 미러입니다.",
   "currentVersion": "현재 버전",
   "latestVersion": "최신 버전",
   "status": "상태",

@@ -8,7 +8,6 @@ import {
   Github,
   Loader2,
   RefreshCw,
-  Server,
   XCircle,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
@@ -66,12 +65,6 @@ export function UpdateSettingsPanel({ appVersion, updater }: UpdateSettingsPanel
       icon: <Github size={16} />,
       label: t('update.sourceGithub'),
       description: t('update.sourceGithubDescription'),
-    },
-    {
-      id: 'gitee',
-      icon: <Server size={16} />,
-      label: t('update.sourceGitee'),
-      description: t('update.sourceGiteeDescription'),
     },
   ];
 
@@ -154,7 +147,7 @@ export function UpdateSettingsPanel({ appVersion, updater }: UpdateSettingsPanel
           <p className="text-[11px] font-medium uppercase text-text-tertiary">{t('update.source')}</p>
           <p className="text-xs text-text-tertiary">{t('update.sourceDescription')}</p>
         </div>
-        <div className="mt-3 grid gap-2 md:grid-cols-2">
+        <div className="mt-3 grid gap-2">
           {updateSourceOptions.map((option) => {
             const selected = option.id === source;
             return (

@@ -41,6 +41,7 @@ import {
 import type { CitationCardData } from "../../lib/citationParser";
 import { SOFT_FADE_TRANSITION } from "../../lib/uiMotion";
 import { isCompactionSummaryMessage, isGoalMessage } from "../../lib/chatMessageGuards";
+import { getActiveGoalContext } from "../../lib/goalContext";
 import { buildEvidenceItemsFromContent } from "../../lib/evidenceItems";
 import type {
   StreamRoundEvent,
@@ -514,6 +515,10 @@ export function ChatMessages(props: ChatMessagesProps) {
   const messages = messageVisibility.historyMessages;
   const streamRounds = streamingVisibility.streamRounds;
   const traceEvents = streamingVisibility.traceEvents;
+  const activeGoalContext = useMemo(
+    () => getActiveGoalContext(messages),
+    [messages],
+  );
 
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -1667,11 +1672,9 @@ export function ChatMessages(props: ChatMessagesProps) {
                   onApprovePlan={onApprovePlan}
                   goalStatus={
                     isGoalMessage(msg)
-                      ? isStreaming && idx === latestUserIdx
+                      ? activeGoalContext?.sourceMessageId === msg.id
                         ? "active"
-                        : assistantMsg
-                          ? "complete"
-                          : "set"
+                        : "complete"
                       : undefined
                   }
                 />
@@ -1805,11 +1808,9 @@ export function ChatMessages(props: ChatMessagesProps) {
                   onApprovePlan={onApprovePlan}
                   goalStatus={
                     isGoalMessage(msg)
-                      ? isStreaming && idx === latestUserIdx
+                      ? activeGoalContext?.sourceMessageId === msg.id
                         ? "active"
-                        : idx < lastAssistantIdx
-                          ? "complete"
-                          : "set"
+                        : "complete"
                       : undefined
                   }
                 />
