@@ -1,4 +1,4 @@
-name: PR Rustfmt Artifact
+name: PR Source Artifact
 
 on:
   pull_request:
@@ -8,8 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  rustfmt:
-    name: Format changed files
+  source-artifact:
+    name: Capture files for validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -19,15 +19,16 @@ jobs:
           components: rustfmt
       - name: Format workspace
         run: cargo fmt --all
-      - name: Upload formatted files
+      - name: Upload relevant files
         uses: actions/upload-artifact@v4
         with:
-          name: rustfmt-files
+          name: live-inline-diff-sources
           if-no-files-found: error
           path: |
+            apps/desktop/src/components/chat/FileDiffPreview.tsx
+            apps/desktop/src/components/chat/ToolCallCard.tsx
             apps/desktop/src/lib/streaming/toolProjection.ts
+            apps/desktop/tests/live-file-streaming.test.ts
             crates/core/src/agent/tool_runtime.rs
-            crates/core/src/file_checkpoint.rs
-            crates/core/src/migrations/v_initial_consolidated.sql
             crates/core/src/tools/capability.rs
             crates/core/src/tools/create_file_tool.rs
