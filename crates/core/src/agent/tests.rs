@@ -1448,6 +1448,7 @@ async fn test_parallel_tool_result_streams_when_each_tool_finishes() {
     let first_result = tokio::time::timeout(Duration::from_millis(500), async {
         loop {
             tokio::select! {
+                biased;
                 maybe_event = rx.recv() => {
                     match maybe_event {
                         Some(AgentEvent::ToolCallResult { call_id, content, .. }) => {
@@ -1545,6 +1546,7 @@ async fn test_non_concurrency_safe_tool_creates_execution_barrier() {
     let first_result = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             tokio::select! {
+                biased;
                 maybe_event = rx.recv() => {
                     match maybe_event {
                         Some(AgentEvent::ToolCallResult { call_id, content, .. }) => {

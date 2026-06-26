@@ -1421,7 +1421,7 @@ export function ToolCallCard({
         resourceKeyCount > 0 ? t('chat.capabilityResources', { count: String(resourceKeyCount) }) : null,
       ].filter(Boolean).join(' · ')
     : null;
-  const streamingArgsPreview =
+  const rawStreamingArgsPreview =
     isPending && (argsStatus === 'streaming' || status === 'starting' || status === 'approvalPending') && args
       ? args.length > 500 ? args.slice(0, 500) + '\u2026' : args
       : null;
@@ -1526,8 +1526,12 @@ export function ToolCallCard({
   const StatusIcon = statusConfig.icon;
   const traceActive = isPending && !shouldReduceMotion;
   const traceSoft = status !== 'error';
+  const visibleFormattedArgs = fileDiff || diffStats ? null : formattedArgs;
+  const streamingArgsPreview = fileDiff || diffStats ? null : rawStreamingArgsPreview;
+  const liveFileDiff = trace && isPending && Boolean(fileDiff);
+  const detailsExpanded = expanded;
   const expandableDetails = Boolean(
-    formattedArgs ||
+    visibleFormattedArgs ||
     content ||
     searchItems ||
     subagentRun ||
@@ -1567,7 +1571,7 @@ export function ToolCallCard({
         <button
           type="button"
           onClick={() => expandableDetails && setExpanded((prev) => !prev)}
-          aria-expanded={expandableDetails ? expanded : undefined}
+          aria-expanded={expandableDetails ? detailsExpanded : undefined}
           className={`group inline-grid min-h-9 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 rounded-md border border-l-2 px-2 py-1.5 text-left align-top transition-colors disabled:cursor-default sm:max-w-[36rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
           disabled={!expandableDetails}
           title={capabilitySummary ?? undefined}
@@ -1587,7 +1591,7 @@ export function ToolCallCard({
           </span>
           <span className="flex shrink-0 items-center gap-1 pl-1">
             {diffStats ? (
-              <span className="hidden sm:inline-flex">
+              <span className="inline-flex">
                 <DiffStatsTicker stats={diffStats} compact />
               </span>
             ) : null}
@@ -1595,7 +1599,7 @@ export function ToolCallCard({
               <StatusIcon className={`h-3 w-3 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`} />
             </span>
             {expandableDetails && (
-              expanded
+              detailsExpanded
                 ? <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
                 : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
             )}
@@ -1603,7 +1607,7 @@ export function ToolCallCard({
         </button>
 
         <AnimatePresence initial={false}>
-          {expanded && expandableDetails && (
+          {detailsExpanded && expandableDetails && (
             <motion.div
               {...getSoftCollapseMotion(!!shouldReduceMotion)}
               className="overflow-hidden"
@@ -1613,9 +1617,9 @@ export function ToolCallCard({
                   <pre className="whitespace-pre-wrap break-words rounded-md border border-border/35 bg-surface-0/45 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary">
                     {streamingArgsPreview}
                   </pre>
-                ) : formattedArgs ? (
+                ) : visibleFormattedArgs ? (
                   <div className="break-words rounded-md border border-border/35 bg-surface-0/45 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary">
-                    {formattedArgs}
+                    {visibleFormattedArgs}
                   </div>
                 ) : null}
                 {skillActivation ? (
@@ -1668,7 +1672,7 @@ export function ToolCallCard({
                 ) : verificationArtifact ? (
                   <VerificationPanel verification={verificationArtifact} />
                 ) : fileDiff ? (
-                  <FileDiffPreview diff={fileDiff} compact />
+                  <FileDiffPreview diff={fileDiff} compact live={liveFileDiff} />
                 ) : diffStats ? (
                   <>
                     <DiffStatsSummaryPanel stats={diffStats} />
@@ -1716,7 +1720,7 @@ export function ToolCallCard({
           </span>
           <span className="flex shrink-0 items-center gap-1 pl-1">
             {diffStats ? (
-              <span className="hidden sm:inline-flex">
+              <span className="inline-flex">
                 <DiffStatsTicker stats={diffStats} compact />
               </span>
             ) : null}
@@ -1726,14 +1730,14 @@ export function ToolCallCard({
               />
             </span>
             {expandableDetails && (
-              expanded
+              detailsExpanded
                 ? <ChevronUp className="h-3 w-3 shrink-0 text-text-tertiary" />
                 : <ChevronDown className="h-3 w-3 shrink-0 text-text-tertiary" />
             )}
           </span>
         </button>
         <AnimatePresence initial={false}>
-          {expanded && expandableDetails && (
+          {detailsExpanded && expandableDetails && (
             <motion.div
               {...getSoftCollapseMotion(!!shouldReduceMotion)}
               className="overflow-hidden"
@@ -1743,9 +1747,9 @@ export function ToolCallCard({
                   <pre className="whitespace-pre-wrap break-words rounded-md border border-border/35 bg-surface-0/45 px-1.5 py-0.5 text-[10px] text-text-tertiary">
                     {streamingArgsPreview}
                   </pre>
-                ) : formattedArgs ? (
+                ) : visibleFormattedArgs ? (
                   <div className="break-words rounded-md border border-border/35 bg-surface-0/45 px-1.5 py-0.5 text-[10px] text-text-tertiary">
-                    {formattedArgs}
+                    {visibleFormattedArgs}
                   </div>
                 ) : null}
                 {skillActivation ? (
@@ -1790,7 +1794,7 @@ export function ToolCallCard({
                 ) : verificationArtifact ? (
                   <VerificationPanel verification={verificationArtifact} />
                 ) : fileDiff ? (
-                  <FileDiffPreview diff={fileDiff} compact />
+                  <FileDiffPreview diff={fileDiff} compact live={liveFileDiff} />
                 ) : diffStats ? (
                   <div className="space-y-1.5">
                     <DiffStatsSummaryPanel stats={diffStats} />
@@ -2040,9 +2044,9 @@ export function ToolCallCard({
                   {streamingArgsPreview}
                 </pre>
               )}
-              {formattedArgs && !streamingArgsPreview && (
+              {visibleFormattedArgs && !streamingArgsPreview && (
                 <div className="mb-2 rounded-md bg-surface-0/60 px-2 py-1 text-[11px] text-text-tertiary break-words">
-                  {formattedArgs}
+                  {visibleFormattedArgs}
                 </div>
               )}
               {skillActivation ? (
