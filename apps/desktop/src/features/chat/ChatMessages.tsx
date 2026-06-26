@@ -524,11 +524,6 @@ export function ChatMessages(props: ChatMessagesProps) {
   const [hasOverflow, setHasOverflow] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const prevMsgCountRef = useRef(messages.length);
-  const hasPersistentCompactMarker = useMemo(
-    () => messages.some(isCompactionSummaryMessage),
-    [messages],
-  );
-
   const chunkIdCacheRef = useRef<Map<string, string[]>>(new Map());
   const pendingChunkIdsRef = useRef<string[]>([]);
 
@@ -1937,7 +1932,7 @@ export function ChatMessages(props: ChatMessagesProps) {
           </motion.div>
         )}
 
-      {(isCompacting || (compactCompleteVisible && !hasPersistentCompactMarker)) &&
+      {(isCompacting || compactCompleteVisible) &&
         renderCompactStatus(isCompacting, "compact-status-current")}
 
       {shouldRenderInlineError && (

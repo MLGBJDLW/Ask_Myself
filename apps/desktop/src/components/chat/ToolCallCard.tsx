@@ -1528,8 +1528,8 @@ export function ToolCallCard({
   const traceSoft = status !== 'error';
   const visibleFormattedArgs = fileDiff || diffStats ? null : formattedArgs;
   const streamingArgsPreview = fileDiff || diffStats ? null : rawStreamingArgsPreview;
-  const liveFileDiffExpanded = trace && isPending && Boolean(fileDiff);
-  const detailsExpanded = expanded || liveFileDiffExpanded;
+  const liveFileDiff = trace && isPending && Boolean(fileDiff);
+  const detailsExpanded = expanded;
   const expandableDetails = Boolean(
     visibleFormattedArgs ||
     content ||
@@ -1591,7 +1591,7 @@ export function ToolCallCard({
           </span>
           <span className="flex shrink-0 items-center gap-1 pl-1">
             {diffStats ? (
-              <span className="hidden sm:inline-flex">
+              <span className="inline-flex">
                 <DiffStatsTicker stats={diffStats} compact />
               </span>
             ) : null}
@@ -1672,7 +1672,7 @@ export function ToolCallCard({
                 ) : verificationArtifact ? (
                   <VerificationPanel verification={verificationArtifact} />
                 ) : fileDiff ? (
-                  <FileDiffPreview diff={fileDiff} compact defaultOpen={liveFileDiffExpanded} live={liveFileDiffExpanded} />
+                  <FileDiffPreview diff={fileDiff} compact live={liveFileDiff} />
                 ) : diffStats ? (
                   <>
                     <DiffStatsSummaryPanel stats={diffStats} />
@@ -1720,7 +1720,7 @@ export function ToolCallCard({
           </span>
           <span className="flex shrink-0 items-center gap-1 pl-1">
             {diffStats ? (
-              <span className="hidden sm:inline-flex">
+              <span className="inline-flex">
                 <DiffStatsTicker stats={diffStats} compact />
               </span>
             ) : null}
@@ -1794,7 +1794,7 @@ export function ToolCallCard({
                 ) : verificationArtifact ? (
                   <VerificationPanel verification={verificationArtifact} />
                 ) : fileDiff ? (
-                  <FileDiffPreview diff={fileDiff} compact defaultOpen={liveFileDiffExpanded} live={liveFileDiffExpanded} />
+                  <FileDiffPreview diff={fileDiff} compact live={liveFileDiff} />
                 ) : diffStats ? (
                   <div className="space-y-1.5">
                     <DiffStatsSummaryPanel stats={diffStats} />
