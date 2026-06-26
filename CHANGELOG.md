@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.15](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.14...nexa-monorepo-v0.9.15) (2026-06-26)
+
+
+### Bug Fixes
+
+* show diff stats on tool cards ([9be5d93](https://github.com/MLGBJDLW/Nexa/commit/9be5d93accb523ea2ec79562b93984c24fa5070f))
+* show live file diffs in tool cards ([50f4f6e](https://github.com/MLGBJDLW/Nexa/commit/50f4f6eee2422bf22f1e58542ee768d6099fc697))
+
 ## [0.9.14](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.13...nexa-monorepo-v0.9.14) (2026-06-24)
 
 
