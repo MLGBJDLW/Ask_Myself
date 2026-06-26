@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileCode2, FilePenLine, FilePlus2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { ArtifactPayload } from '../../types/conversation';
@@ -323,12 +323,58 @@ function lineNumber(value: number | null): string {
   return value == null ? '' : String(value);
 }
 
-function FileDiffBody({ diff, compact = false }: { diff: FileDiffArtifact; compact?: boolean }) {
+function fileDiffRevision(diff: FileDiffArtifact): string {
+  let lineCount = 0;
+  let lastLine: FileDiffLine | null = null;
+  for (const hunk of diff.hunks) {
+    lineCount += hunk.lines.length;
+    if (hunk.lines.length > 0) lastLine = hunk.lines[hunk.lines.length - 1];
+  }
+  return `${diff.additions}:${diff.deletions}:${lineCount}:${lastLine?.type ?? ''}:${lastLine?.content ?? ''}`;
+}
+
+function FileDiffBody({
+  diff,
+  compact = false,
+  live = false,
+}: {
+  diff: FileDiffArtifact;
+  compact?: boolean;
+  live?: boolean;
+}) {
   const { t } = useTranslation();
   const maxHeight = compact ? 'max-h-72' : 'max-h-[32rem]';
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldFollowRef = useRef(true);
+  const revision = fileDiffRevision(diff);
+  const lastHunkIndex = diff.hunks.length - 1;
+  const lastLineIndex = lastHunkIndex >= 0 ? diff.hunks[lastHunkIndex].lines.length - 1 : -1;
+
+  useLayoutEffect(() => {
+    if (!live || !shouldFollowRef.current) return;
+    const element = scrollRef.current;
+    if (!element) return;
+    const frame = requestAnimationFrame(() => {
+      element.scrollTop = element.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [live, revision]);
+
+  const handleScroll = () => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+    shouldFollowRef.current = distanceFromBottom <= 28;
+  };
 
   return (
-    <div className={`${maxHeight} overflow-auto bg-surface-0`}>
+    <div
+      ref={scrollRef}
+      onScroll={handleScroll}
+      className={`${maxHeight} overflow-auto bg-surface-0`}
+      aria-busy={live}
+      data-testid={live ? 'live-file-diff-body' : 'file-diff-body'}
+    >
       <div className="min-w-max py-1 font-mono text-[11px] leading-5">
         {diff.hunks.map((hunk, hunkIndex) => (
           <div key={`hunk-${hunkIndex}`}>
@@ -337,24 +383,40 @@ function FileDiffBody({ diff, compact = false }: { diff: FileDiffArtifact; compa
                 @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
               </span>
             </div>
-            {hunk.lines.map((line, lineIndex) => (
-              <div
-                key={`line-${hunkIndex}-${lineIndex}`}
-                className={`grid min-h-5 items-start px-2 transition-colors ${lineClassName(line.type)}`}
-                style={{ gridTemplateColumns: '3.25rem 3.25rem 1.5rem minmax(0, 1fr)' }}
-              >
-                <span className="select-none pr-3 text-right text-text-tertiary/70">
-                  {lineNumber(line.oldLine)}
-                </span>
-                <span className="select-none pr-3 text-right text-text-tertiary/70">
-                  {lineNumber(line.newLine)}
-                </span>
-                <span className={`select-none ${markerClassName(line.type)}`}>
-                  {marker(line.type)}
-                </span>
-                <span className="whitespace-pre pr-4 text-left">{line.content || ' '}</span>
-              </div>
-            ))}
+            {hunk.lines.map((line, lineIndex) => {
+              const liveTail = live
+                && hunkIndex === lastHunkIndex
+                && lineIndex === lastLineIndex
+                && line.type === 'addition';
+              return (
+                <div
+                  key={`line-${hunkIndex}-${lineIndex}`}
+                  className={`grid min-h-5 items-start px-2 transition-colors ${lineClassName(line.type)} ${liveTail ? 'ring-1 ring-inset ring-accent/20' : ''}`}
+                  style={{ gridTemplateColumns: '3.25rem 3.25rem 1.5rem minmax(0, 1fr)' }}
+                  data-diff-line-type={line.type}
+                  data-live-tail={liveTail ? 'true' : undefined}
+                >
+                  <span className="select-none pr-3 text-right text-text-tertiary/70">
+                    {lineNumber(line.oldLine)}
+                  </span>
+                  <span className="select-none pr-3 text-right text-text-tertiary/70">
+                    {lineNumber(line.newLine)}
+                  </span>
+                  <span className={`select-none ${markerClassName(line.type)}`}>
+                    {marker(line.type)}
+                  </span>
+                  <span className="whitespace-pre pr-4 text-left">
+                    {line.content || ' '}
+                    {liveTail ? (
+                      <span
+                        aria-hidden="true"
+                        className="ml-px inline-block h-3 w-px animate-pulse bg-accent align-middle"
+                      />
+                    ) : null}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         ))}
         {diff.truncated && diff.omittedLineCount ? (
@@ -529,13 +591,23 @@ export function FileDiffPreview({
   diff,
   compact = false,
   defaultOpen = false,
+  live = false,
 }: {
   diff: FileDiffArtifact;
   compact?: boolean;
   defaultOpen?: boolean;
+  live?: boolean;
 }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(defaultOpen);
+  const [expanded, setExpanded] = useState(defaultOpen || live);
+  const openedForLiveRef = useRef(live);
+
+  useLayoutEffect(() => {
+    if (live && !openedForLiveRef.current) {
+      openedForLiveRef.current = true;
+      setExpanded(true);
+    }
+  }, [live]);
   const created = diff.operation === 'create';
   const Icon = created ? FilePlus2 : FilePenLine;
   const operationLabel = created ? t('chat.fileDiffCreated') : t('chat.fileDiffModified');
@@ -545,7 +617,8 @@ export function FileDiffPreview({
   return (
     <div
       className="w-full overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-sm ring-1 ring-black/[0.02]"
-      data-testid="file-diff-preview"
+      data-testid={live ? 'live-file-diff-preview' : 'file-diff-preview'}
+      data-live={live ? 'true' : 'false'}
     >
       <div className="flex items-center gap-2 border-b border-border/60 bg-surface-1/85 px-3 py-2">
         <button
@@ -566,11 +639,20 @@ export function FileDiffPreview({
             <FileBadge path={previewPath} className="min-w-0 max-w-full" />
           </div>
         </div>
+        {live ? (
+          <span
+            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-accent/25 bg-accent/10"
+            aria-label={t('chat.toolRunning')}
+            title={t('chat.toolRunning')}
+          >
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+          </span>
+        ) : null}
         <FileDiffStatsPills additions={diff.additions} deletions={diff.deletions} />
       </div>
 
       {expanded ? (
-        <FileDiffBody diff={diff} compact={compact} />
+        <FileDiffBody diff={diff} compact={compact} live={live} />
       ) : null}
     </div>
   );

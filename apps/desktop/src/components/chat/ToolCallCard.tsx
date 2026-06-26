@@ -1405,6 +1405,7 @@ export function ToolCallCard({
     : getToolBriefLabel(safeToolName, args, fileChangeDisplayName);
   const briefResult = getToolBriefResult(status, t, content, safeToolName);
   const isPending = isPendingToolCallStatus(status);
+  const failedStatus = isUnsuccessfulToolCallStatus(status);
   const argsByteLabel = formatByteCount(
     typeof argsBytes === 'number' ? argsBytes : (args ? args.length : 0),
   );
@@ -1447,6 +1448,13 @@ export function ToolCallCard({
   );
 
   const [expanded, setExpanded] = useState(false);
+  const liveFileDiffSeenRef = useRef(false);
+  if (isPending && isFileChangeRender && fileDiff) {
+    liveFileDiffSeenRef.current = true;
+  }
+  const showInlineFileDiff = Boolean(
+    isFileChangeRender && fileDiff && (isPending || liveFileDiffSeenRef.current),
+  );
 
   useEffect(() => {
     if (!isPending && graphUsage) {
@@ -1472,6 +1480,30 @@ export function ToolCallCard({
         <span className="text-text-tertiary/40">→</span>
         <span>{briefResult}</span>
       </span>
+    );
+  }
+
+  if (showInlineFileDiff && fileDiff) {
+    return (
+      <motion.div
+        initial={shouldReduceMotion ? false : { opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={shouldReduceMotion ? { duration: 0 } : { duration: 0.16 }}
+        className="my-1 w-full max-w-[42rem]"
+        data-testid="inline-live-file-diff-tool"
+      >
+        <FileDiffPreview
+          diff={fileDiff}
+          compact={Boolean(compact || trace)}
+          defaultOpen
+          live={isPending}
+        />
+        {!isPending && failedStatus && content ? (
+          <pre className="mt-1.5 whitespace-pre-wrap break-words rounded-md border border-danger/25 bg-danger/10 px-2 py-1 text-[11px] leading-relaxed text-danger">
+            {content}
+          </pre>
+        ) : null}
+      </motion.div>
     );
   }
 
@@ -1543,7 +1575,6 @@ export function ToolCallCard({
     showImagePendingPreview ||
     streamingArgsPreview,
   );
-  const failedStatus = isUnsuccessfulToolCallStatus(status);
   const toolTone = getToolTone(safeToolName);
   const traceToneClass = failedStatus
     ? 'border-danger/25 border-l-danger/75 bg-danger/10 hover:border-danger/35 hover:bg-danger/15'

@@ -5,7 +5,17 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-function preparingFileRun(additions: number, content: string): ToolRunItem {
+function assertEqual<T>(actual: T, expected: T, message: string): void {
+  if (actual !== expected) {
+    throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`);
+  }
+}
+
+function preparingFileRun(
+  additions: number,
+  content: string,
+  receivedBytes: number,
+): ToolRunItem {
   return {
     callId: 'call-live-file',
     toolName: 'create_file',
@@ -30,6 +40,10 @@ function preparingFileRun(additions: number, content: string): ToolRunItem {
     artifacts: {
       kind: 'fileChangePreview',
       preview: true,
+      inputProgress: {
+        receivedBytes,
+        argumentsComplete: false,
+      },
       diffStats: {
         kind: 'diffStats',
         path: 'notes.md',
@@ -44,7 +58,18 @@ function preparingFileRun(additions: number, content: string): ToolRunItem {
         operation: 'create',
         additions,
         deletions: 0,
-        hunks: [],
+        hunks: [{
+          oldStart: 0,
+          newStart: 1,
+          oldLines: 0,
+          newLines: additions,
+          lines: content.split('\n').map((line, index) => ({
+            type: 'addition',
+            oldLine: null,
+            newLine: index + 1,
+            content: line,
+          })),
+        }],
       },
     },
   };
@@ -56,7 +81,7 @@ streamStore.startStream(conversationId);
 const started: AgentFrontendEvent = {
   conversationId,
   type: 'toolRunStarted',
-  run: preparingFileRun(2, 'first\nsecond'),
+  run: preparingFileRun(2, 'first\nsecond', 4096),
 };
 streamStore.dispatch(conversationId, started);
 
@@ -72,11 +97,17 @@ assert(
   ((state.toolCalls[0].artifacts as Record<string, unknown>).diffStats as Record<string, unknown>).additions === 2,
   'initial additions should be visible before tool completion',
 );
+assertEqual(state.toolCalls[0].argsBytes, 4096, 'streamed argument byte count');
+const initialDiff = (state.toolCalls[0].artifacts as Record<string, unknown>).diff as Record<string, unknown>;
+const initialHunks = initialDiff.hunks as Array<Record<string, unknown>>;
+const initialLines = initialHunks[0].lines as Array<Record<string, unknown>>;
+assertEqual(initialLines[0].type, 'addition', 'first live line type');
+assertEqual(initialLines[1].content, 'second', 'second live addition content');
 
 const updated: AgentFrontendEvent = {
   conversationId,
   type: 'toolRunUpdated',
-  run: preparingFileRun(3, 'first\nsecond\nthird'),
+  run: preparingFileRun(3, 'first\nsecond\nthird', 8192),
 };
 streamStore.dispatch(conversationId, updated);
 
@@ -91,5 +122,11 @@ assert(
   state.toolCalls[0].arguments.includes('third'),
   'latest partial arguments should replace the stale placeholder arguments',
 );
+assertEqual(state.toolCalls[0].argsBytes, 8192, 'updated streamed argument byte count');
+const updatedDiff = (state.toolCalls[0].artifacts as Record<string, unknown>).diff as Record<string, unknown>;
+const updatedHunks = updatedDiff.hunks as Array<Record<string, unknown>>;
+const updatedLines = updatedHunks[0].lines as Array<Record<string, unknown>>;
+assertEqual(updatedLines.length, 3, 'live diff line count');
+assertEqual(updatedLines[2].content, 'third', 'latest live addition content');
 
 streamStore.clearStream(conversationId);

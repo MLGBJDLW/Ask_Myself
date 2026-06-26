@@ -66,9 +66,20 @@ function finalizeToolCall(
   };
 }
 
+function streamedArgumentBytes(artifacts: ArtifactPayload | undefined): number {
+  if (!artifacts || typeof artifacts !== 'object' || Array.isArray(artifacts)) return 0;
+  const progress = (artifacts as Record<string, unknown>).inputProgress;
+  if (!progress || typeof progress !== 'object' || Array.isArray(progress)) return 0;
+  const receivedBytes = (progress as Record<string, unknown>).receivedBytes;
+  return typeof receivedBytes === 'number' && Number.isFinite(receivedBytes) && receivedBytes >= 0
+    ? receivedBytes
+    : 0;
+}
+
 function patchToolCallFromRun(prev: ToolCallEvent, run: ToolRunItem): ToolCallEvent {
   const status = toolRunStatusToToolCallStatus(run.status);
   const argumentsText = run.arguments ?? prev.arguments;
+  const artifacts = run.artifacts ?? prev.artifacts;
   return {
     ...prev,
     toolName: run.toolName || prev.toolName,
@@ -78,10 +89,10 @@ function patchToolCallFromRun(prev: ToolCallEvent, run: ToolRunItem): ToolCallEv
     capabilities: run.capabilities ?? prev.capabilities,
     plugin: run.plugin ?? prev.plugin,
     argsStatus: argsStatusForToolRun(run, status),
-    argsBytes: Math.max(prev.argsBytes, argumentsText.length),
+    argsBytes: Math.max(prev.argsBytes, argumentsText.length, streamedArgumentBytes(artifacts)),
     content: run.content ?? prev.content,
     isError: run.isError ?? prev.isError,
-    artifacts: run.artifacts ?? prev.artifacts,
+    artifacts,
     durationMs: run.durationMs ?? prev.durationMs,
   };
 }
