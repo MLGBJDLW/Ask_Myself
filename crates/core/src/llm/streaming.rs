@@ -105,15 +105,52 @@ struct SseCompletionTokensDetails {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum SseCacheCreationUsage {
+    Tokens(u32),
+    Details(SseCacheCreationDetails),
+}
+
+impl SseCacheCreationUsage {
+    fn input_tokens(&self) -> Option<u32> {
+        match self {
+            Self::Tokens(tokens) => Some(*tokens),
+            Self::Details(details) => details.cache_creation_input_tokens,
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SseCacheCreationDetails {
+    #[serde(
+        default,
+        alias = "cache_write_input_tokens",
+        alias = "cache_creation_tokens",
+        alias = "ephemeral_5m_input_tokens"
+    )]
+    cache_creation_input_tokens: Option<u32>,
+}
+
+#[derive(serde::Deserialize)]
 struct SsePromptTokensDetails {
     #[serde(default, alias = "cache_read_input_tokens", alias = "cachedTokens")]
     cached_tokens: Option<u32>,
     #[serde(
         default,
+        alias = "cache_creation",
         alias = "cache_creation_input_tokens",
-        alias = "cache_write_input_tokens"
+        alias = "cache_write_input_tokens",
+        alias = "cache_write_tokens"
     )]
-    cache_write_tokens: Option<u32>,
+    cache_creation: Option<SseCacheCreationUsage>,
+}
+
+impl SsePromptTokensDetails {
+    fn cache_creation_tokens(&self) -> Option<u32> {
+        self.cache_creation
+            .as_ref()
+            .and_then(SseCacheCreationUsage::input_tokens)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -468,7 +505,9 @@ async fn process_sse_line(
                     thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
                     cache_read_tokens,
                     cache_miss_tokens: u.prompt_cache_miss_tokens,
-                    cache_creation_tokens: prompt_details.and_then(|d| d.cache_write_tokens),
+                    cache_creation_tokens: prompt_details
+                        .as_ref()
+                        .and_then(SsePromptTokensDetails::cache_creation_tokens),
                 }
             });
 
@@ -810,6 +849,48 @@ mod tests {
         assert_eq!(delta.id, "call_1");
         assert_eq!(delta.name.as_deref(), Some("lookup"));
         assert_eq!(delta.arguments_delta, "{\"q\":\"x\"}");
+    }
+
+    #[test]
+    fn stream_usage_maps_deepseek_top_level_cache_hits() {
+        let usage: SseUsage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "prompt_cache_hit_tokens": 48,
+            "prompt_cache_miss_tokens": 52
+        }))
+        .expect("usage");
+
+        let prompt_details = usage.prompt_tokens_details;
+        let cache_read_tokens = super::super::prompt_cache::openai_compatible_cache_read_tokens(
+            prompt_details.as_ref().and_then(|d| d.cached_tokens),
+            usage.prompt_cache_hit_tokens,
+        );
+
+        assert_eq!(cache_read_tokens, Some(48));
+        assert_eq!(usage.prompt_cache_miss_tokens, Some(52));
+    }
+
+    #[test]
+    fn stream_usage_maps_qwen_nested_cache_creation() {
+        let usage: SseUsage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": 120,
+            "completion_tokens": 20,
+            "total_tokens": 140,
+            "prompt_tokens_details": {
+                "cached_tokens": 64,
+                "cache_creation": {
+                    "cache_creation_input_tokens": 24,
+                    "cache_type": "ephemeral"
+                }
+            }
+        }))
+        .expect("usage");
+
+        let details = usage.prompt_tokens_details.expect("details");
+        assert_eq!(details.cached_tokens, Some(64));
+        assert_eq!(details.cache_creation_tokens(), Some(24));
     }
 
     // -- split_think_tags tests -------------------------------------------

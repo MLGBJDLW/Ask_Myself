@@ -48,8 +48,49 @@ export interface ProviderPreset {
   capabilities?: ProviderCapabilities;
 }
 
+const ZHIPU_GLM_52_MODEL: ProviderModelPreset = {
+  id: "glm-5.2",
+  name: "GLM-5.2",
+  tagKey: "providers.tagLatest",
+  recommended: true,
+};
+
+function withZhipuGlm52Preset(presets: ProviderPreset[]): ProviderPreset[] {
+  return presets.map((preset) => {
+    if (preset.id !== "zhipu" || preset.provider !== "zhipu") {
+      return preset;
+    }
+
+    if (preset.models.some((model) => normalizeModelId(model.id) === "glm-5.2")) {
+      return preset;
+    }
+
+    const models = [
+      ZHIPU_GLM_52_MODEL,
+      ...preset.models.map((model) => {
+        if (normalizeModelId(model.id) !== "glm-5.1") {
+          return model;
+        }
+        return {
+          ...model,
+          recommended: false,
+          tagKey: model.tagKey === "providers.tagLatest" ? "providers.tagBest" : model.tagKey,
+        };
+      }),
+    ];
+
+    return {
+      ...preset,
+      description: preset.description.includes("GLM-5.2")
+        ? preset.description
+        : `GLM-5.2, ${preset.description}`,
+      models,
+    };
+  });
+}
+
 export const PROVIDER_PRESETS: ProviderPreset[] =
-  providerPresets as ProviderPreset[];
+  withZhipuGlm52Preset(providerPresets as ProviderPreset[]);
 
 function normalizePresetBaseUrl(baseUrl: string | null | undefined): string {
   return (baseUrl ?? "").trim().replace(/\/+$/, "").toLowerCase();
