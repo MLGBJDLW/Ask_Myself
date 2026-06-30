@@ -1,12 +1,13 @@
 import { useCallback, useState, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Check, ChevronDown, Network, Settings, PanelLeftClose, PanelLeftOpen, UserRound, X } from 'lucide-react';
+import { Check, ChevronDown, Network, Settings, PanelLeftClose, PanelLeftOpen, TerminalSquare, UserRound, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, AgentModelPicker, type AgentModelSelection, type ChatInputSendOptions } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
+import { TerminalDock, TERMINAL_TOGGLE_EVENT } from '../components/chat/TerminalDock';
 import { ChatMessages } from '../features/chat';
 import { useApprovalQueue } from '../lib/useApprovalQueue';
 import { useTranslation } from '../i18n';
@@ -548,6 +549,10 @@ export function ChatPage() {
     setPendingGraphContext(null);
   }, []);
 
+  const handleToggleTerminal = useCallback(() => {
+    window.dispatchEvent(new Event(TERMINAL_TOGGLE_EVENT));
+  }, []);
+
   const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>([]);
   useEffect(() => {
     api.listAgentConfigs().then(setAgentConfigs);
@@ -1041,6 +1046,18 @@ export function ChatPage() {
                       conversationId={chat.activeId ?? undefined}
                     />
                   </div>
+                  <button
+                    type="button"
+                    onClick={handleToggleTerminal}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/50 bg-surface-2/70
+                      text-text-tertiary hover:text-text-primary hover:bg-surface-3
+                      transition-colors cursor-pointer"
+                    title={`${t('shortcuts.toggleTerminal')} (Ctrl+J / Cmd+J)`}
+                    aria-label={t('shortcuts.toggleTerminal')}
+                    aria-keyshortcuts="Control+J Meta+J"
+                  >
+                    <TerminalSquare size={16} />
+                  </button>
                 </div>
               </div>
             )}
@@ -1082,6 +1099,7 @@ export function ChatPage() {
               toolCalls={chat.toolCalls}
               taskRun={chat.taskRun}
             />
+            <TerminalDock />
             {pendingGraphContext && (
               <div className="mx-4 mb-2 rounded-md border border-accent/25 bg-accent/10 px-3 py-2">
                 <div className="flex min-w-0 items-center gap-2">

@@ -1,5 +1,6 @@
 {
   "commandPalette": "Open command palette",
   "toggleSidebar": "Toggle sidebar",
+  "toggleTerminal": "Toggle terminal",
   "askAi": "Ask AI"
 }

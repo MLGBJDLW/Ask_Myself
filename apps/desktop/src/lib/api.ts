@@ -308,6 +308,47 @@ export const openFileInDefaultApp = (path: string) =>
 export const showInFileExplorer = (path: string) =>
   invoke<void>('show_in_file_explorer', { path });
 
+// ── Terminal ────────────────────────────────────────────────────────────
+
+export type TerminalShell = 'default' | 'powershell' | 'cmd' | 'bash';
+
+export interface TerminalStartInput {
+  cwd?: string | null;
+  shell?: TerminalShell | string | null;
+  rows?: number | null;
+  cols?: number | null;
+}
+
+export interface TerminalSessionInfo {
+  id: string;
+  shell: string;
+  cwd: string;
+  processId?: number | null;
+}
+
+export interface TerminalEvent {
+  sessionId: string;
+  kind: 'data' | 'exit' | 'error';
+  data?: string | null;
+  exitCode?: number | null;
+  signal?: string | null;
+}
+
+export const startTerminalSession = (input: TerminalStartInput) =>
+  invoke<TerminalSessionInfo>('terminal_start_session_cmd', { input });
+
+export const writeTerminalSession = (sessionId: string, data: string) =>
+  invoke<void>('terminal_write_session_cmd', { sessionId, data });
+
+export const resizeTerminalSession = (sessionId: string, rows: number, cols: number) =>
+  invoke<void>('terminal_resize_session_cmd', { sessionId, rows, cols });
+
+export const closeTerminalSession = (sessionId: string) =>
+  invoke<void>('terminal_close_session_cmd', { sessionId });
+
+export const listTerminalSessions = () =>
+  invoke<TerminalSessionInfo[]>('terminal_list_sessions_cmd');
+
 export interface FilePreview {
   path: string;
   displayName: string;
