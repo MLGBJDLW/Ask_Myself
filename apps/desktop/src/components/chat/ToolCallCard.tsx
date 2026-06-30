@@ -50,7 +50,8 @@ import {
 import {
   formatToolTarget,
   getStableFileChangeTarget,
-  getToolBriefTarget,
+  getToolTitleTarget,
+  isCommandExecutionTool,
 } from '../../lib/streaming/toolCardPresentation';
 import { extractPlanArtifact, extractVerificationArtifact } from '../../lib/taskArtifacts';
 import {
@@ -766,9 +767,17 @@ function getToolBriefLabel(
   args?: string,
   displayNameOverride?: string | null,
   targetOverride?: string | null,
+  argsStatus?: ToolCallEvent['argsStatus'],
+  renderKind?: ToolRenderKind,
 ): string {
   const label = displayNameOverride ?? getToolDisplayName(name);
-  const target = targetOverride ?? getToolBriefTarget(args);
+  const target = getToolTitleTarget({
+    toolName: name,
+    renderKind,
+    args,
+    argsStatus,
+    targetOverride,
+  });
   return target ? `${label} \u00b7 ${target}` : label;
 }
 
@@ -1410,6 +1419,7 @@ export function ToolCallCard({
   const fileDiff = useMemo(() => extractFileDiffArtifact(artifacts), [artifacts]);
   const diffStats = useMemo(() => extractDiffStatsArtifact(artifacts), [artifacts]);
   const isFileChangeRender = isFileChangeToolRender(safeToolName, renderKind);
+  const isCommandExecutionRender = isCommandExecutionTool(safeToolName, renderKind);
   const isPending = isPendingToolCallStatus(status);
   const argumentFileChangeStats = useMemo(
     () => deriveFileChangeStatsFromArgs({
@@ -1436,7 +1446,14 @@ export function ToolCallCard({
           ? t('chat.skillActivatedLabel', { name: skillActivationName })
           : t('chat.skillActivatingLabel', { name: skillActivationName })
       )
-    : getToolBriefLabel(safeToolName, args, fileChangeDisplayName, briefTargetOverride);
+    : getToolBriefLabel(
+        safeToolName,
+        args,
+        fileChangeDisplayName,
+        briefTargetOverride,
+        argsStatus,
+        renderKind,
+      );
   const briefResult = getToolBriefResult(status, t, content, safeToolName);
   const argsByteLabel = formatByteCount(
     typeof argsBytes === 'number' ? argsBytes : (args ? args.length : 0),
@@ -1454,8 +1471,15 @@ export function ToolCallCard({
         resourceKeyCount > 0 ? t('chat.capabilityResources', { count: String(resourceKeyCount) }) : null,
       ].filter(Boolean).join(' · ')
     : null;
+  const suppressNoisyLiveArgs =
+    isCommandExecutionRender
+    && isPending
+    && (argsStatus === 'pending' || argsStatus === 'streaming');
   const rawStreamingArgsPreview =
-    isPending && (argsStatus === 'streaming' || status === 'starting' || status === 'approvalPending') && args
+    !suppressNoisyLiveArgs
+    && isPending
+    && (argsStatus === 'streaming' || status === 'starting' || status === 'approvalPending')
+    && args
       ? args.length > 500 ? args.slice(0, 500) + '\u2026' : args
       : null;
   const subagentRun = useMemo(
@@ -1566,7 +1590,7 @@ export function ToolCallCard({
   const StatusIcon = statusConfig.icon;
   const traceActive = isPending && !shouldReduceMotion;
   const traceSoft = status !== 'error';
-  const visibleFormattedArgs = fileDiff || diffStats || isFileChangeRender ? null : formattedArgs;
+  const visibleFormattedArgs = fileDiff || diffStats || isFileChangeRender || suppressNoisyLiveArgs ? null : formattedArgs;
   const streamingArgsPreview = fileDiff || diffStats || isFileChangeRender ? null : rawStreamingArgsPreview;
   const liveFileDiff = trace && isPending && Boolean(fileDiff);
   const detailsExpanded = expanded;

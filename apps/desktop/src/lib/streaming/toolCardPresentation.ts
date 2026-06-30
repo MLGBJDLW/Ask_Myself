@@ -8,6 +8,16 @@ export interface ToolCardDiffStatsLike {
   paths?: Array<string | null | undefined> | null;
 }
 
+export type ToolCardArgsStatus = 'pending' | 'streaming' | 'ready' | 'done' | 'error';
+
+export interface ToolCardTitleTargetInput {
+  toolName?: string | null;
+  renderKind?: string | null;
+  args?: string;
+  argsStatus?: ToolCardArgsStatus | null;
+  targetOverride?: string | null;
+}
+
 function truncateMiddle(value: string, max = 42): string {
   if (value.length <= max) return value;
   const head = Math.max(8, Math.floor((max - 1) * 0.42));
@@ -54,6 +64,52 @@ function firstArrayCountArg(parsed: Record<string, unknown>, keys: string[]): st
   return null;
 }
 
+function toolLeafName(name: string): string {
+  const parts = name
+    .split(/[.:/]/)
+    .filter(Boolean)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : name.trim();
+}
+
+export function isCommandExecutionTool(toolName?: string | null, renderKind?: string | null): boolean {
+  if (renderKind === 'commandExecution') return true;
+  const lower = (toolName ?? '').toLowerCase();
+  const leaf = toolLeafName(lower);
+  return leaf === 'run_shell'
+    || leaf === 'shell_command'
+    || leaf === 'run_command'
+    || lower.includes('shell_command');
+}
+
+function commandArgsPreview(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (typeof item === 'number' || typeof item === 'boolean') return String(item);
+        return '';
+      })
+      .filter(Boolean)
+      .join(' ');
+  }
+  if (typeof value === 'string') return value;
+  return '';
+}
+
+function getCommandBriefTarget(parsed: Record<string, unknown>): string | null {
+  const command = firstStringArg(parsed, ['command', 'cmd', 'script']);
+  if (command) return formatToolTarget('command', command.value);
+
+  const program = firstStringArg(parsed, ['program', 'executable', 'bin']);
+  if (!program) return null;
+
+  const argText = commandArgsPreview(parsed.args ?? parsed.arguments ?? parsed.argv);
+  const target = [program.value, argText].filter(Boolean).join(' ');
+  return target ? formatToolTarget('command', target) : null;
+}
+
 export function formatToolTarget(key: string, value: string): string {
   const normalized = normalizeOneLine(value);
   const pathLikeKeys = new Set(['path', 'file', 'filename', 'filepath', 'resourcepath', 'sourcepath', 'cwd']);
@@ -93,6 +149,27 @@ export function getToolBriefTarget(args?: string): string | null {
     'description',
   ]);
   return picked ? formatToolTarget(picked.key, picked.value) : null;
+}
+
+export function getToolTitleTarget({
+  toolName,
+  renderKind,
+  args,
+  argsStatus,
+  targetOverride,
+}: ToolCardTitleTargetInput): string | null {
+  if (targetOverride != null) return targetOverride.trim() ? targetOverride : null;
+
+  if (!isCommandExecutionTool(toolName, renderKind)) {
+    return getToolBriefTarget(args);
+  }
+
+  if (argsStatus === 'pending' || argsStatus === 'streaming') {
+    return null;
+  }
+
+  const parsed = parseArgsRecord(args);
+  return parsed ? getCommandBriefTarget(parsed) : null;
 }
 
 export function getStableFileChangeTarget(
