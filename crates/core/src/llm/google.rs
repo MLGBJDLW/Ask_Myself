@@ -175,6 +175,8 @@ struct GeminiUsageMetadata {
     candidates_token_count: Option<u32>,
     total_token_count: Option<u32>,
     #[serde(default)]
+    cached_content_token_count: Option<u32>,
+    #[serde(default)]
     thoughts_token_count: Option<i64>,
 }
 
@@ -508,7 +510,7 @@ fn extract_response(
             completion_tokens: u.candidates_token_count.unwrap_or(0),
             total_tokens: u.total_token_count.unwrap_or(0),
             thinking_tokens: u.thoughts_token_count.map(|t| t.max(0) as u32),
-            cache_read_tokens: None,
+            cache_read_tokens: u.cached_content_token_count,
             cache_miss_tokens: None,
             cache_creation_tokens: None,
         })
@@ -1266,5 +1268,48 @@ mod tests {
     fn test_split_delta_for_streaming_keeps_small_delta_single_chunk() {
         let parts = split_delta_for_streaming("hello", 24);
         assert_eq!(parts, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_response_maps_gemini_cached_content_tokens() {
+        let resp: GeminiResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{ "text": "ok" }]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 100,
+                "cachedContentTokenCount": 40,
+                "candidatesTokenCount": 12,
+                "totalTokenCount": 112,
+                "thoughtsTokenCount": 0
+            }
+        }))
+        .expect("response");
+
+        let (_content, _tool_calls, _finish_reason, usage, _thinking) = extract_response(&resp);
+
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.cache_read_tokens, Some(40));
+        assert_eq!(usage.cache_miss_tokens, None);
+        assert_eq!(usage.cache_creation_tokens, None);
+    }
+
+    #[test]
+    fn test_extract_response_allows_absent_gemini_cached_content_tokens() {
+        let resp: GeminiResponse = serde_json::from_value(serde_json::json!({
+            "usageMetadata": {
+                "promptTokenCount": 100,
+                "candidatesTokenCount": 12,
+                "totalTokenCount": 112
+            }
+        }))
+        .expect("response");
+
+        let (_content, _tool_calls, _finish_reason, usage, _thinking) = extract_response(&resp);
+
+        assert_eq!(usage.cache_read_tokens, None);
     }
 }

@@ -238,15 +238,52 @@ struct OaiCompletionTokensDetails {
 }
 
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum OaiCacheCreationUsage {
+    Tokens(u32),
+    Details(OaiCacheCreationDetails),
+}
+
+impl OaiCacheCreationUsage {
+    fn input_tokens(&self) -> Option<u32> {
+        match self {
+            Self::Tokens(tokens) => Some(*tokens),
+            Self::Details(details) => details.cache_creation_input_tokens,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct OaiCacheCreationDetails {
+    #[serde(
+        default,
+        alias = "cache_write_input_tokens",
+        alias = "cache_creation_tokens",
+        alias = "ephemeral_5m_input_tokens"
+    )]
+    cache_creation_input_tokens: Option<u32>,
+}
+
+#[derive(Deserialize)]
 struct OaiPromptTokensDetails {
     #[serde(default, alias = "cache_read_input_tokens", alias = "cachedTokens")]
     cached_tokens: Option<u32>,
     #[serde(
         default,
+        alias = "cache_creation",
         alias = "cache_creation_input_tokens",
-        alias = "cache_write_input_tokens"
+        alias = "cache_write_input_tokens",
+        alias = "cache_write_tokens"
     )]
-    cache_write_tokens: Option<u32>,
+    cache_creation: Option<OaiCacheCreationUsage>,
+}
+
+impl OaiPromptTokensDetails {
+    fn cache_creation_tokens(&self) -> Option<u32> {
+        self.cache_creation
+            .as_ref()
+            .and_then(OaiCacheCreationUsage::input_tokens)
+    }
 }
 
 fn usage_from_oai_usage(u: OaiUsage) -> Usage {
@@ -262,7 +299,9 @@ fn usage_from_oai_usage(u: OaiUsage) -> Usage {
         thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
         cache_read_tokens,
         cache_miss_tokens: u.prompt_cache_miss_tokens,
-        cache_creation_tokens: prompt_details.and_then(|d| d.cache_write_tokens),
+        cache_creation_tokens: prompt_details
+            .as_ref()
+            .and_then(OaiPromptTokensDetails::cache_creation_tokens),
     }
 }
 
@@ -1899,7 +1938,7 @@ data: [DONE]
 
         let details = response.usage.unwrap().prompt_tokens_details.unwrap();
         assert_eq!(details.cached_tokens, Some(64));
-        assert_eq!(details.cache_write_tokens, Some(32));
+        assert_eq!(details.cache_creation_tokens(), Some(32));
     }
 
     #[test]
@@ -1917,6 +1956,47 @@ data: [DONE]
 
         assert_eq!(normalized.cache_read_tokens, Some(48));
         assert_eq!(normalized.cache_miss_tokens, Some(52));
+    }
+
+    #[test]
+    fn openai_compatible_usage_maps_nested_qwen_cache_creation() {
+        let usage: OaiUsage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": 120,
+            "completion_tokens": 20,
+            "total_tokens": 140,
+            "prompt_tokens_details": {
+                "cached_tokens": 64,
+                "cache_creation": {
+                    "cache_creation_input_tokens": 24,
+                    "cache_type": "ephemeral"
+                }
+            }
+        }))
+        .unwrap();
+
+        let normalized = usage_from_oai_usage(usage);
+
+        assert_eq!(normalized.cache_read_tokens, Some(64));
+        assert_eq!(normalized.cache_creation_tokens, Some(24));
+    }
+
+    #[test]
+    fn openai_compatible_usage_maps_flat_cache_creation_aliases() {
+        let usage: OaiUsage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": 120,
+            "completion_tokens": 20,
+            "total_tokens": 140,
+            "prompt_tokens_details": {
+                "cached_tokens": 64,
+                "cache_creation_input_tokens": 24
+            }
+        }))
+        .unwrap();
+
+        let normalized = usage_from_oai_usage(usage);
+
+        assert_eq!(normalized.cache_read_tokens, Some(64));
+        assert_eq!(normalized.cache_creation_tokens, Some(24));
     }
 
     #[test]
