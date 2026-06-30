@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.10.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.17...nexa-monorepo-v0.10.0) (2026-06-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **desktop:** Add embedded terminal dock
+
+### Features
+
+* **desktop:** Add embedded terminal dock ([233c35a](https://github.com/MLGBJDLW/Nexa/commit/233c35a261af2c67c136c9e42387e3d6706d6326))
+
+
+### Bug Fixes
+
+* **desktop:** polish embedded chat controls ([6983b4c](https://github.com/MLGBJDLW/Nexa/commit/6983b4c4a50de644c61464c9cb9a27389830b290))
+* **desktop:** polish embedded chat controls ([761613c](https://github.com/MLGBJDLW/Nexa/commit/761613cf259547fa46682bd314f892ea08eda472))
+* **desktop:** Stabilize tool card titles and chat HUD ([ee61268](https://github.com/MLGBJDLW/Nexa/commit/ee61268079566325b6f279b1a75ceffccfcdc811))
+* **desktop:** Stabilize tool card titles and chat HUD ([d0a8213](https://github.com/MLGBJDLW/Nexa/commit/d0a8213b372172a199779cc3490df76f0592cb06))
+
 ## [0.9.17](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.16...nexa-monorepo-v0.9.17) (2026-06-30)
 
 
