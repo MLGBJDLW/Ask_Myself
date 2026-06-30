@@ -14,6 +14,7 @@ import {
 import {
   getStableFileChangeTarget,
   getToolBriefTarget,
+  getToolTitleTarget,
 } from '../src/lib/streaming/toolCardPresentation';
 import {
   buildCurrentTimelineSections,
@@ -1701,6 +1702,41 @@ test('file change tool cards use stable diff paths instead of partial streaming 
     getStableFileChangeTarget({ path: 'notes/live.md' }, { paths: ['notes/live.md'] }),
     'notes/live.md',
     'file change target should come from diff artifact path',
+  );
+});
+
+test('command tool cards do not stream partial arguments into the title target', () => {
+  const partialArgs = '{"command":"npm run test -- --watch';
+
+  assertEqual(
+    getToolTitleTarget({
+      toolName: 'run_shell',
+      renderKind: 'commandExecution',
+      args: partialArgs,
+      argsStatus: 'streaming',
+    }),
+    null,
+    'partial command arguments should not appear in the card title',
+  );
+  assertEqual(
+    getToolTitleTarget({
+      toolName: 'run_shell',
+      renderKind: 'commandExecution',
+      args: '{"command":"npm run test -- --watch"}',
+      argsStatus: 'ready',
+    }),
+    'npm run test -- --watch',
+    'complete command arguments can become a stable title target',
+  );
+  assertEqual(
+    getToolTitleTarget({
+      toolName: 'run_shell',
+      renderKind: 'commandExecution',
+      args: '{"program":"npm","args":["run","test"]}',
+      argsStatus: 'ready',
+    }),
+    'npm run test',
+    'program and argv command arguments should be summarized together',
   );
 });
 
