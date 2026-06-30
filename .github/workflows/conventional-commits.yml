@@ -1,0 +1,49 @@
+name: Conventional Commits
+
+on:
+  pull_request_target:
+    branches: [master]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate-commit-subjects:
+    name: Validate commit subjects
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR commit subjects
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          api_url="https://api.github.com/repos/$REPOSITORY/pulls/$PR_NUMBER/commits?per_page=100"
+          token_header="Authorization: Bearer ${GH_TOKEN}"
+          subjects=$(curl -fsSL \
+            -H "$token_header" \
+            -H "Accept: application/vnd.github+json" \
+            "$api_url" | jq -r '.[].commit.message | split("\n")[0]')
+
+          if [ -z "$subjects" ]; then
+            echo "::error::No commits were returned for PR #$PR_NUMBER."
+            exit 1
+          fi
+
+          conventional_pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]+\))?!?: .+'
+          invalid=0
+
+          while IFS= read -r subject; do
+            if [[ ! "$subject" =~ $conventional_pattern ]]; then
+              echo "::error::Non-conventional commit subject: $subject"
+              invalid=1
+            fi
+          done <<< "$subjects"
+
+          if [ "$invalid" -ne 0 ]; then
+            echo "::error::Use Conventional Commit subjects so release-please can detect releasable changes."
+            exit 1
+          fi
