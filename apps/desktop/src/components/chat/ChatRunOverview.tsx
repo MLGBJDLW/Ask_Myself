@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useTranslation, type TranslationKey } from '../../i18n';
+import { ProviderIcon } from '../../lib/providerIcons';
 
 interface ContextUsageSegment {
   kind: string;
@@ -216,6 +217,7 @@ export function ChatRunOverview({
   const cacheValueLabel = cacheStats?.hitPercent == null
     ? formatTokens(cacheStats?.readTokens ?? 0)
     : `${cacheStats.hitPercent}%`;
+  const hasRuntimeProvider = Boolean(runtimeProfile?.provider);
 
   if (!usage && !runtimeProfile && !isStreaming) {
     return null;
@@ -223,15 +225,24 @@ export function ChatRunOverview({
 
   return (
     <div className="shrink-0 border-b border-border/60 bg-surface-1/85 px-4 py-2 backdrop-blur">
-      <div className="mx-auto flex w-full max-w-5xl items-center gap-3 text-[11px] text-text-tertiary">
-        <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 ${statusTone}`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${isStreaming || isCompacting ? 'animate-pulse bg-current' : 'bg-current opacity-70'}`} />
-          <span className="max-w-[14rem] truncate text-[11px] font-medium">{statusLabel}</span>
+      <div className="flex w-full min-w-0 flex-col gap-2 text-[11px] text-text-tertiary sm:flex-row sm:items-center">
+        <span className={`inline-flex max-w-full shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 sm:max-w-[18rem] ${statusTone}`}>
+          {hasRuntimeProvider ? (
+            <ProviderIcon
+              provider={runtimeProfile!.provider}
+              label={`${runtimeProfile!.provider} ${runtimeProfile!.model}`}
+              size="xs"
+              className="rounded-sm"
+            />
+          ) : (
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${isStreaming || isCompacting ? 'animate-pulse bg-current' : 'bg-current opacity-70'}`} />
+          )}
+          <span className="min-w-0 truncate text-[11px] font-medium">{statusLabel}</span>
         </span>
 
         {usage && (
           <div className="min-w-0 flex-1">
-            <div className="mb-1 flex items-center justify-between gap-2">
+            <div className="mb-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:flex-nowrap sm:justify-between">
               <div className="flex min-w-0 items-center gap-1.5">
                 <span className="shrink-0 font-medium text-text-secondary">{t('chat.contextBudgetLabel')}</span>
                 <span className="truncate tabular-nums">
@@ -241,7 +252,7 @@ export function ChatRunOverview({
                   })}
                 </span>
               </div>
-              <div className="flex max-w-[58%] shrink-0 items-center justify-end gap-1.5 text-right tabular-nums">
+              <div className="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-1.5 tabular-nums sm:max-w-[58%] sm:shrink-0 sm:justify-end sm:text-right">
                 <span className={contextRisk === 'danger'
                   ? 'font-semibold text-red-300'
                   : contextRisk === 'warning'
@@ -251,7 +262,7 @@ export function ChatRunOverview({
                 </span>
                 {cacheStats && (
                   <span
-                    className={`inline-flex h-5 max-w-[11rem] items-center gap-1.5 rounded-full border px-1.5 ${cacheTone}`}
+                    className={`inline-flex h-5 min-w-0 max-w-[11rem] items-center gap-1.5 rounded-full border px-1.5 ${cacheTone}`}
                     title={cacheTitle}
                   >
                     <span className="truncate text-[10px] font-medium">{t('chat.providerCache')}</span>

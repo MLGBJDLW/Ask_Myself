@@ -222,6 +222,38 @@ test('persisted steering stays in history after streaming completes', () => {
   assertEqual(projected.liveSteeringMessages.length, 0, 'live steering count');
 });
 
+test('completed projection removes leftover optimistic steering from history', () => {
+  const firstUser = message({
+    id: 'user-1',
+    role: 'user',
+    content: 'Start the turn',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+  const optimisticSteering = message({
+    id: 'temp-steer-1',
+    role: 'user',
+    content: 'Please redirect the investigation here.',
+    createdAt: '2026-01-01T00:00:05.000Z',
+    artifacts: { kind: 'steering', delivery: 'accepted' },
+  });
+  const assistant = message({
+    id: 'assistant-1',
+    role: 'assistant',
+    content: 'Final answer.',
+    createdAt: '2026-01-01T00:00:10.000Z',
+  });
+
+  const projected = projectChatMessageVisibility({
+    isStreaming: false,
+    messages: [firstUser, assistant, optimisticSteering],
+  });
+
+  assertEqual(projected.historyMessages.length, 2, 'history count');
+  assertEqual(projected.historyMessages[0].id, 'user-1', 'first user remains');
+  assertEqual(projected.historyMessages[1].id, 'assistant-1', 'assistant remains');
+  assertEqual(projected.liveSteeringMessages.length, 0, 'live steering count');
+});
+
 async function main(): Promise<void> {
   for (const { name, fn } of tests) {
     try {

@@ -212,22 +212,25 @@ interface ResolveProviderIconInput {
 
 interface ProviderIconProps extends ResolveProviderIconInput {
   className?: string;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg';
 }
 
 const sizeClasses = {
+  xs: 'h-4 w-4',
   sm: 'h-6 w-6',
   md: 'h-8 w-8',
   lg: 'h-10 w-10',
 };
 
 const glyphSizeClasses = {
+  xs: 'h-2.5 w-2.5',
   sm: 'h-3.5 w-3.5',
   md: 'h-[18px] w-[18px]',
   lg: 'h-[22px] w-[22px]',
 };
 
 const fallbackTextClasses = {
+  xs: 'text-[7px]',
   sm: 'text-[9px]',
   md: 'text-[10px]',
   lg: 'text-xs',

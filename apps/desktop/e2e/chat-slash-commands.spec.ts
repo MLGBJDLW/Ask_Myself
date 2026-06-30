@@ -251,3 +251,35 @@ test('slash command menu uses localized chrome and built-in command labels', asy
   await expect(menu).toContainText('规划');
   await expect(menu).toContainText('进入只读规划模式，生成可审批的实现计划。');
 });
+
+test('plan mode switch keeps its divider centered between labels', async ({ page }) => {
+  await page.goto('/chat/conv-slash?locale=zh-CN');
+
+  await expect(page.getByTestId('chat-mode-segment')).toBeVisible();
+
+  const metrics = await page.evaluate(() => {
+    const segment = document.querySelector('[data-testid="chat-mode-segment"]');
+    const plan = document.querySelector('[data-testid="chat-plan-mode"]');
+    const normal = document.querySelector('[data-testid="chat-normal-mode"]');
+    const divider = document.querySelector('[data-testid="chat-mode-divider"]');
+    if (!segment || !plan || !normal || !divider) {
+      throw new Error('mode switch elements missing');
+    }
+
+    const segmentRect = segment.getBoundingClientRect();
+    const planRect = plan.getBoundingClientRect();
+    const normalRect = normal.getBoundingClientRect();
+    const dividerRect = divider.getBoundingClientRect();
+
+    return {
+      segmentCenter: segmentRect.left + segmentRect.width / 2,
+      buttonBoundary: planRect.right,
+      normalLeft: normalRect.left,
+      dividerCenter: dividerRect.left + dividerRect.width / 2,
+    };
+  });
+
+  expect(Math.abs(metrics.buttonBoundary - metrics.normalLeft)).toBeLessThan(0.5);
+  expect(Math.abs(metrics.dividerCenter - metrics.segmentCenter)).toBeLessThan(0.75);
+  expect(Math.abs(metrics.dividerCenter - metrics.buttonBoundary)).toBeLessThan(1);
+});
