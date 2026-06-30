@@ -276,10 +276,11 @@ test.beforeEach(async ({ page }) => {
           }
 
           setTimeout(() => {
+            appendUserMessage(conversationId, message, { kind: 'steering' });
             emitEvent('agent:event', {
               conversationId,
               type: 'status',
-              content: 'Steering message received.',
+              content: `User steering: ${message}`,
               tone: 'muted',
             });
           }, 10);
@@ -450,6 +451,16 @@ test('sends steering while an agent stream is running without stopping it', asyn
       }),
     )
     .toBe(true);
+
+  await expect
+    .poll(async () =>
+      page.locator('body').evaluate((body) => {
+        const text = body.innerText;
+        const matches = text.match(/focus on edge cases instead/g) ?? [];
+        return matches.length;
+      }),
+    )
+    .toBe(1);
 
   const diagnostics = await page.evaluate(() => (window as unknown as {
     __STEERING_E2E__: {

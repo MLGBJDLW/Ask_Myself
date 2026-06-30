@@ -209,6 +209,14 @@ function insertMessagesByCreatedAt(
   return ordered.map((message, index) => ({ ...message, sortOrder: index }));
 }
 
+function optimisticSteeringIsPending(message: ConversationMessage): boolean {
+  const artifacts = message.artifacts;
+  if (!artifacts || Array.isArray(artifacts) || typeof artifacts !== 'object') {
+    return true;
+  }
+  return (artifacts as Record<string, unknown>).delivery !== 'accepted';
+}
+
 function mergeLocalMessageState(
   prev: ConversationMessage[],
   next: ConversationMessage[],
@@ -218,7 +226,10 @@ function mergeLocalMessageState(
     merged.filter((m) => m.role === 'user').map((m) => m.content.trim()),
   );
   const preservedSteering = prev.filter(
-    (m) => isOptimisticSteeringMessage(m) && !nextUserContent.has(m.content.trim()),
+    (m) =>
+      isOptimisticSteeringMessage(m) &&
+      optimisticSteeringIsPending(m) &&
+      !nextUserContent.has(m.content.trim()),
   );
 
   if (preservedSteering.length === 0) {

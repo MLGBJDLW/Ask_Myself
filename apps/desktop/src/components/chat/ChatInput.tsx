@@ -866,10 +866,20 @@ export function ChatInput({
     });
   }, [adjustHeight, persistDraft]);
 
+  const modeIndicatorStyle = {
+    width: "calc(50% + 0.25rem)",
+    transform: effectivePlanModeEnabled ? "translateX(0)" : "translateX(calc(100% - 0.5rem))",
+    borderRadius: effectivePlanModeEnabled ? "999px 2px 2px 999px" : "2px 999px 999px 2px",
+    clipPath: effectivePlanModeEnabled
+      ? "polygon(0 0, 100% 0, calc(100% - 0.5rem) 100%, 0 100%)"
+      : "polygon(0.5rem 0, 100% 0, 100% 100%, 0 100%)",
+  };
+
   const modeSegment = (
     <div className="flex h-7 items-center pl-1">
       <div
-        className={`relative grid h-7 w-[8.75rem] shrink-0 grid-cols-[minmax(0,1fr)_0.75rem_minmax(0,1fr)] overflow-hidden rounded-full border p-px text-[10px] font-semibold shadow-sm transition-colors duration-200 ${
+        data-testid="chat-mode-segment"
+        className={`relative grid h-7 w-[8.75rem] shrink-0 grid-cols-2 overflow-hidden rounded-full border p-px text-[10px] font-semibold shadow-sm transition-colors duration-200 ${
           effectivePlanModeEnabled
             ? "border-accent/35 bg-accent/10 text-text-secondary"
             : "border-border/70 bg-surface-0/95 text-text-secondary"
@@ -879,16 +889,8 @@ export function ChatInput({
       >
         <span
           aria-hidden="true"
-          style={{
-            width: "calc((100% - 0.75rem) / 2)",
-            transform: effectivePlanModeEnabled
-              ? "translateX(0)"
-              : "translateX(calc(100% + 0.75rem))",
-            borderRadius: effectivePlanModeEnabled ? "999px 2px 2px 999px" : "2px 999px 999px 2px",
-            clipPath: effectivePlanModeEnabled
-              ? "polygon(0 0, 100% 0, calc(100% - 0.32rem) 100%, 0 100%)"
-              : "polygon(0.32rem 0, 100% 0, 100% 100%, 0 100%)",
-          }}
+          data-testid="chat-mode-active-indicator"
+          style={modeIndicatorStyle}
           className={`absolute bottom-px left-px top-px border shadow-sm transition-all duration-200 ease-out ${
             effectivePlanModeEnabled
               ? "border-accent/35 bg-accent text-on-accent shadow-accent/20"
@@ -901,7 +903,7 @@ export function ChatInput({
           onClick={() => setPlanMode(true)}
           disabled={attachmentLocked}
           aria-pressed={effectivePlanModeEnabled}
-          className={`relative z-10 col-start-1 row-start-1 flex min-w-0 items-center justify-center rounded-full pl-1.5 pr-1 transition-colors duration-200 disabled:pointer-events-none disabled:opacity-45 ${
+          className={`relative z-10 col-start-1 row-start-1 flex min-w-0 items-center justify-center rounded-full pl-2 pr-3 transition-colors duration-200 disabled:pointer-events-none disabled:opacity-45 ${
             effectivePlanModeEnabled ? "text-on-accent" : "text-text-tertiary hover:text-text-primary"
           }`}
         >
@@ -909,7 +911,8 @@ export function ChatInput({
         </button>
         <span
           aria-hidden="true"
-          className={`pointer-events-none relative z-20 col-start-2 row-start-1 flex items-center justify-center text-[10px] font-medium transition-colors duration-200 ${
+          data-testid="chat-mode-divider"
+          className={`pointer-events-none absolute inset-y-px left-1/2 z-20 flex w-3 -translate-x-1/2 items-center justify-center text-[10px] font-medium leading-none transition-colors duration-200 ${
             effectivePlanModeEnabled ? "text-accent/70" : "text-text-tertiary/70"
           }`}
         >
@@ -921,7 +924,7 @@ export function ChatInput({
           onClick={() => setPlanMode(false)}
           disabled={attachmentLocked}
           aria-pressed={!effectivePlanModeEnabled}
-          className={`relative z-10 col-start-3 row-start-1 flex min-w-0 items-center justify-center rounded-full pl-1 pr-1.5 transition-colors duration-200 disabled:pointer-events-none disabled:opacity-45 ${
+          className={`relative z-10 col-start-2 row-start-1 flex min-w-0 items-center justify-center rounded-full pl-3 pr-2 transition-colors duration-200 disabled:pointer-events-none disabled:opacity-45 ${
             effectivePlanModeEnabled ? "text-text-tertiary hover:text-text-primary" : "text-text-primary"
           }`}
         >

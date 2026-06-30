@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import * as api from '../../lib/api';
 import type { TerminalEvent, TerminalSessionInfo, TerminalShell } from '../../lib/api';
+import { useTheme } from '../../lib/ThemeProvider';
 import { Button } from '../ui/Button';
 
 type TerminalStatus = 'idle' | 'starting' | 'running' | 'exited' | 'error';
@@ -32,6 +33,64 @@ const SHELL_OPTIONS: Array<{ value: TerminalShell; label: string }> = [
   { value: 'cmd', label: 'Cmd' },
   { value: 'bash', label: 'Bash' },
 ];
+
+const FALLBACK_TERMINAL_THEME = {
+  background: '#0a0a0f',
+  foreground: '#f0f0f5',
+  cursor: '#2dd4bf',
+  selectionBackground: '#14B8A620',
+  black: '#12121a',
+  red: '#ef4444',
+  green: '#22c55e',
+  yellow: '#f59e0b',
+  blue: '#3b82f6',
+  magenta: '#14B8A6',
+  cyan: '#2DD4BF',
+  white: '#f0f0f5',
+  brightBlack: '#606070',
+  brightRed: '#f87171',
+  brightGreen: '#22c55e',
+  brightYellow: '#f59e0b',
+  brightBlue: '#3b82f6',
+  brightMagenta: '#14B8A6',
+  brightCyan: '#2DD4BF',
+  brightWhite: '#ffffff',
+};
+
+function cssColorVar(styles: CSSStyleDeclaration, name: string, fallback: string): string {
+  const value = styles.getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function readTerminalTheme() {
+  if (typeof window === 'undefined') {
+    return FALLBACK_TERMINAL_THEME;
+  }
+  const styles = window.getComputedStyle(document.documentElement);
+  const surface0 = cssColorVar(styles, '--color-surface-0', FALLBACK_TERMINAL_THEME.background);
+  const surface1 = cssColorVar(styles, '--color-surface-1', FALLBACK_TERMINAL_THEME.black);
+  const textPrimary = cssColorVar(styles, '--color-text-primary', FALLBACK_TERMINAL_THEME.foreground);
+  const textTertiary = cssColorVar(styles, '--color-text-tertiary', FALLBACK_TERMINAL_THEME.brightBlack);
+  const accent = cssColorVar(styles, '--color-accent', FALLBACK_TERMINAL_THEME.magenta);
+  const accentHover = cssColorVar(styles, '--color-accent-hover', FALLBACK_TERMINAL_THEME.cyan);
+  const accentSubtle = cssColorVar(styles, '--color-accent-subtle', FALLBACK_TERMINAL_THEME.selectionBackground);
+
+  return {
+    ...FALLBACK_TERMINAL_THEME,
+    background: surface0,
+    foreground: textPrimary,
+    cursor: accentHover,
+    selectionBackground: accentSubtle,
+    black: surface1,
+    magenta: accent,
+    cyan: accentHover,
+    white: textPrimary,
+    brightBlack: textTertiary,
+    brightMagenta: accent,
+    brightCyan: accentHover,
+    brightWhite: textPrimary,
+  };
+}
 
 function clampOutputBuffer(value: string): string {
   if (value.length <= MAX_BUFFER_CHARS) return value;
@@ -69,6 +128,7 @@ function terminalStatusClass(status: TerminalStatus): string {
 }
 
 export function TerminalDock() {
+  const { theme } = useTheme();
   const [isOpen, setIsOpen] = useState(false);
   const [isTall, setIsTall] = useState(false);
   const [selectedShell, setSelectedShell] = useState<TerminalShell>('default');
@@ -222,28 +282,7 @@ export function TerminalDock() {
       fontSize: 12,
       lineHeight: 1.25,
       scrollback: 5000,
-      theme: {
-        background: '#090b0f',
-        foreground: '#d8dee9',
-        cursor: '#f8c555',
-        selectionBackground: '#2d6cdf55',
-        black: '#111827',
-        red: '#ff6b6b',
-        green: '#69db7c',
-        yellow: '#ffd43b',
-        blue: '#74c0fc',
-        magenta: '#da77f2',
-        cyan: '#66d9e8',
-        white: '#f8f9fa',
-        brightBlack: '#495057',
-        brightRed: '#ff8787',
-        brightGreen: '#8ce99a',
-        brightYellow: '#ffe066',
-        brightBlue: '#91a7ff',
-        brightMagenta: '#e599f7',
-        brightCyan: '#99e9f2',
-        brightWhite: '#ffffff',
-      },
+      theme: readTerminalTheme(),
     });
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
@@ -284,6 +323,16 @@ export function TerminalDock() {
       term.dispose();
     };
   }, [appendSystemLine, isOpen, resizeActiveTerminal]);
+
+  useEffect(() => {
+    if (!xtermRef.current) return;
+    const frame = requestAnimationFrame(() => {
+      if (xtermRef.current) {
+        xtermRef.current.options.theme = readTerminalTheme();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [theme]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -434,7 +483,7 @@ export function TerminalDock() {
         </div>
       </div>
       {isOpen && (
-        <div className={`border-t border-border/50 bg-[#090b0f] ${panelHeight}`}>
+        <div className={`border-t border-border/50 bg-surface-0 ${panelHeight}`}>
           <div ref={hostRef} className="h-full w-full overflow-hidden px-2 py-2" />
         </div>
       )}

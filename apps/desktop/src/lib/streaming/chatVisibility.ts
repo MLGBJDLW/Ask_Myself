@@ -71,23 +71,25 @@ export function projectChatStreamingVisibility(
 export function projectChatMessageVisibility(
   input: ChatMessageVisibilityInput,
 ): ChatMessageVisibilityProjection {
-  if (!input.isStreaming) {
+  const liveSteeringMessages = input.messages.filter(isOptimisticSteeringMessage);
+  if (liveSteeringMessages.length === 0) {
     return {
       historyMessages: input.messages,
       liveSteeringMessages: [],
     };
   }
 
-  const liveSteeringMessages = input.messages.filter(isOptimisticSteeringMessage);
-  if (liveSteeringMessages.length === 0) {
+  const historyMessages = input.messages.filter((message) => !isOptimisticSteeringMessage(message));
+
+  if (!input.isStreaming) {
     return {
-      historyMessages: input.messages,
-      liveSteeringMessages,
+      historyMessages,
+      liveSteeringMessages: [],
     };
   }
 
   return {
-    historyMessages: input.messages.filter((message) => !isOptimisticSteeringMessage(message)),
+    historyMessages,
     liveSteeringMessages,
   };
 }

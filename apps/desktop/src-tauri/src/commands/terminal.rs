@@ -363,7 +363,56 @@ fn resolve_terminal_cwd(input: Option<String>) -> Result<PathBuf, String> {
             cwd.display()
         ));
     }
-    Ok(cwd)
+    Ok(normalize_terminal_cwd_for_interactive_shell(cwd))
+}
+
+#[cfg(windows)]
+fn normalize_terminal_cwd_for_interactive_shell(cwd: PathBuf) -> PathBuf {
+    let Some(normalized) = strip_windows_verbatim_prefix(&cwd) else {
+        return cwd;
+    };
+    if normalized.is_dir() {
+        normalized
+    } else {
+        cwd
+    }
+}
+
+#[cfg(not(windows))]
+fn normalize_terminal_cwd_for_interactive_shell(cwd: PathBuf) -> PathBuf {
+    cwd
+}
+
+#[cfg(windows)]
+fn strip_windows_verbatim_prefix(path: &std::path::Path) -> Option<PathBuf> {
+    use std::path::{Component, Prefix};
+
+    let mut components = path.components();
+    let prefix = match components.next()? {
+        Component::Prefix(prefix) => prefix,
+        _ => return None,
+    };
+
+    let mut normalized = match prefix.kind() {
+        Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", drive as char)),
+        Prefix::VerbatimUNC(server, share) => PathBuf::from(format!(
+            r"\\{}\{}",
+            server.to_string_lossy(),
+            share.to_string_lossy()
+        )),
+        _ => return None,
+    };
+
+    for component in components {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::ParentDir => normalized.push(".."),
+            Component::Prefix(_) => {}
+        }
+    }
+
+    Some(normalized)
 }
 
 fn shell_candidates(requested: &str) -> Vec<ShellCandidate> {
@@ -453,5 +502,39 @@ fn shell_candidates(requested: &str) -> Vec<ShellCandidate> {
                 ]
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn strips_verbatim_disk_prefix_for_interactive_shells() {
+        let input = PathBuf::from(r"\\?\D:\Apps\ask_myself\apps\desktop\src-tauri");
+        let normalized = strip_windows_verbatim_prefix(&input)
+            .expect("verbatim disk paths should be convertible to normal DOS paths");
+
+        assert_eq!(
+            normalized,
+            PathBuf::from(r"D:\Apps\ask_myself\apps\desktop\src-tauri")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolved_terminal_cwd_is_powershell_friendly_when_possible() {
+        let current = std::env::current_dir().expect("current directory should exist");
+        let canonical =
+            std::fs::canonicalize(&current).expect("current directory should be canonicalizable");
+
+        let resolved = normalize_terminal_cwd_for_interactive_shell(canonical);
+
+        assert!(resolved.is_dir());
+        assert!(
+            !resolved.display().to_string().starts_with(r"\\?\"),
+            "interactive PowerShell sessions should not start in verbatim paths"
+        );
     }
 }
