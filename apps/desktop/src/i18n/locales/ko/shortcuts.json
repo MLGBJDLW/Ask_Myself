@@ -1,5 +1,6 @@
 {
   "commandPalette": "명령 팔레트 열기",
   "toggleSidebar": "사이드바 전환",
+  "toggleTerminal": "터미널 전환",
   "askAi": "AI에게 질문"
 }

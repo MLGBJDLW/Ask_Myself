@@ -167,6 +167,7 @@ fn main() {
                 manager: TokioMutex::new(nexa_core::mcp::McpManager::new()),
             });
             app.manage(ApprovalState::default());
+            app.manage(commands::TerminalState::default());
             app.manage(DownloadCancelFlag(Arc::new(AtomicBool::new(false))));
 
             // Initialise the file watcher for auto-indexing.
@@ -354,6 +355,12 @@ fn main() {
             commands::agent_chat_cmd,
             commands::agent_steer_cmd,
             commands::agent_stop_cmd,
+            // Terminal
+            commands::terminal_start_session_cmd,
+            commands::terminal_write_session_cmd,
+            commands::terminal_resize_session_cmd,
+            commands::terminal_close_session_cmd,
+            commands::terminal_list_sessions_cmd,
             // Model info
             commands::get_model_context_window,
             // Image attachment

@@ -1,5 +1,6 @@
 {
   "commandPalette": "コマンドパレットを開く",
   "toggleSidebar": "サイドバーの切り替え",
+  "toggleTerminal": "ターミナルの切り替え",
   "askAi": "AIに質問"
 }
