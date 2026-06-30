@@ -249,6 +249,7 @@ test("settings provider form shows updated preset models for add and edit flows"
   await providerField().getByRole("combobox").selectOption("zhipu");
   modelSelect = modelField().getByRole("combobox");
   await expectModelOptions(modelSelect, [
+    "GLM-5.2",
     "GLM-5.1",
     "GLM-5",
     "GLM-4.7",
