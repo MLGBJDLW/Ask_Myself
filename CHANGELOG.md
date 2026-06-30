@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.17](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.16...nexa-monorepo-v0.9.17) (2026-06-30)
+
+
+### Bug Fixes
+
+* **release:** enforce conventional commit subjects ([14ddc29](https://github.com/MLGBJDLW/Nexa/commit/14ddc291d3db5707b44fac88629e4fbf08eb84ae))
+
 ## [0.9.16](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.15...nexa-monorepo-v0.9.16) (2026-06-26)
 
 
