@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
 import { useTranslation, type TranslationKey } from '../../i18n';
-import { ProviderIcon } from '../../lib/providerIcons';
 
 interface ContextUsageSegment {
   kind: string;
@@ -119,6 +118,71 @@ function cacheUsageStats(usage: TokenUsage | null): CacheUsageStats | null {
   };
 }
 
+function compactModelGlyphLabel(runtimeProfile: RuntimeProfile | null | undefined): string {
+  const raw = (runtimeProfile?.model || runtimeProfile?.provider || '').trim();
+  if (!raw) return 'AI';
+  const parts = raw
+    .replace(/[_:/.-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0][0] ?? ''}${parts[1][0] ?? ''}`.toUpperCase();
+  }
+  const alnum = raw.replace(/[^a-z0-9]/gi, '');
+  return (alnum.slice(0, 2) || 'AI').toUpperCase();
+}
+
+function ModelGlyph({
+  label,
+  active,
+}: {
+  label: string;
+  active: boolean;
+}) {
+  return (
+    <svg
+      viewBox="0 0 36 36"
+      aria-hidden="true"
+      className="h-8 w-8 shrink-0 overflow-visible"
+    >
+      <rect
+        x="4"
+        y="4"
+        width="28"
+        height="28"
+        rx="7"
+        className="fill-surface-2 stroke-current text-accent/70"
+        strokeWidth="1.2"
+      />
+      <path
+        d="M12 22.5 18 10.5l6 12M14.5 18.5h7"
+        fill="none"
+        className="stroke-current text-text-primary/80"
+        strokeWidth="1.55"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle
+        cx="28"
+        cy="8"
+        r="3"
+        className={active ? 'fill-accent' : 'fill-text-tertiary'}
+      />
+      <text
+        x="18"
+        y="29"
+        textAnchor="middle"
+        fontSize="7"
+        fontWeight="700"
+        className="fill-current text-text-tertiary"
+      >
+        {label}
+      </text>
+    </svg>
+  );
+}
+
 function segmentKey(kind: string): string {
   if (kind in SEGMENT_LABEL_KEYS) return kind;
   return 'other';
@@ -172,9 +236,13 @@ export function ChatRunOverview({
         ? t('chat.truncated')
         : contextOverflow
           ? t('chat.contextOverflow')
-          : runtimeProfile
-            ? `${runtimeProfile.provider} · ${runtimeProfile.model}`
-            : t('chat.contextNoModel');
+          : usage
+            ? usage.source === 'live'
+              ? t('chat.contextUsageLive')
+              : usage.source === 'cached'
+                ? t('chat.contextUsageCached')
+                : t('chat.contextUsageEstimated')
+            : t('chat.contextNoUsage');
 
   const statusTone = contextRisk === 'danger'
     ? 'border-red-500/30 bg-red-500/10 text-red-300'
@@ -191,6 +259,16 @@ export function ChatRunOverview({
         ? t('chat.contextUsageCached')
         : t('chat.contextUsageEstimated')
     : t('chat.contextNoUsage');
+
+  const modelLabel = runtimeProfile
+    ? `${runtimeProfile.provider} / ${runtimeProfile.model}`
+    : t('chat.contextNoModel');
+  const modelTitle = runtimeProfile?.contextWindow
+    ? `${t('chat.contextRuntimeModel')}: ${modelLabel} · ${t('chat.contextWindowValue', {
+      value: formatTokens(runtimeProfile.contextWindow),
+    })}`
+    : `${t('chat.contextRuntimeModel')}: ${modelLabel}`;
+  const modelGlyphLabel = compactModelGlyphLabel(runtimeProfile);
 
   const cacheDetailLabel = cacheStats
     ? cacheStats.missTokens > 0
@@ -214,105 +292,116 @@ export function ChatRunOverview({
     : cacheStats?.creationTokens
       ? 'border-amber-300/30 bg-amber-300/10 text-amber-300'
       : 'border-border/60 bg-surface-2/60 text-text-tertiary';
-  const cacheValueLabel = cacheStats?.hitPercent == null
-    ? formatTokens(cacheStats?.readTokens ?? 0)
-    : `${cacheStats.hitPercent}%`;
-  const hasRuntimeProvider = Boolean(runtimeProfile?.provider);
+  const cacheValueLabel = `${cacheStats?.hitPercent ?? 0}%`;
 
   if (!usage && !runtimeProfile && !isStreaming) {
     return null;
   }
 
   return (
-    <div className="shrink-0 border-b border-border/60 bg-surface-1/85 px-4 py-2 backdrop-blur">
-      <div className="flex w-full min-w-0 flex-col gap-2 text-[11px] text-text-tertiary sm:flex-row sm:items-center">
-        <span className={`inline-flex max-w-full shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 sm:max-w-[18rem] ${statusTone}`}>
-          {hasRuntimeProvider ? (
-            <ProviderIcon
-              provider={runtimeProfile!.provider}
-              label={`${runtimeProfile!.provider} ${runtimeProfile!.model}`}
-              size="xs"
-              className="rounded-sm"
-            />
-          ) : (
-            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${isStreaming || isCompacting ? 'animate-pulse bg-current' : 'bg-current opacity-70'}`} />
-          )}
-          <span className="min-w-0 truncate text-[11px] font-medium">{statusLabel}</span>
+    <div className="shrink-0 border-b border-border/60 bg-surface-1/90 px-4 py-2 backdrop-blur">
+      <div className="mx-auto grid w-full max-w-5xl grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 text-[11px] text-text-tertiary sm:gap-3">
+        <span
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-surface-0/75 text-accent shadow-[0_1px_0_rgba(255,255,255,0.04)]"
+          title={modelTitle}
+          aria-label={modelTitle}
+          data-testid="chat-run-model-anchor"
+        >
+          <ModelGlyph label={modelGlyphLabel} active={isStreaming || isCompacting} />
         </span>
 
-        {usage && (
-          <div className="min-w-0 flex-1">
-            <div className="mb-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:flex-nowrap sm:justify-between">
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className="shrink-0 font-medium text-text-secondary">{t('chat.contextBudgetLabel')}</span>
-                <span className="truncate tabular-nums">
-                  {t('chat.tokenUsage', {
-                    used: formatTokens(usage.promptTokens),
-                    total: formatTokens(usage.contextWindow),
-                  })}
-                </span>
+        <div className="min-w-0">
+          {usage ? (
+            <>
+              <div className="mb-1 hidden items-center justify-between gap-2 sm:flex">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="shrink-0 font-medium text-text-secondary">{t('chat.contextBudgetLabel')}</span>
+                  <span className="truncate tabular-nums">
+                    {t('chat.tokenUsage', {
+                      used: formatTokens(usage.promptTokens),
+                      total: formatTokens(usage.contextWindow),
+                    })}
+                  </span>
+                </div>
+                <div className="shrink-0 text-right tabular-nums">
+                  <span className={contextRisk === 'danger'
+                    ? 'font-semibold text-red-300'
+                    : contextRisk === 'warning'
+                      ? 'font-semibold text-amber-300'
+                      : 'font-semibold text-text-secondary'}>
+                    {t('chat.tokenUsagePercent', { percent: usagePercentRounded })}
+                  </span>
+                  <span className="hidden pl-2 text-text-tertiary sm:inline">{usageSourceLabel}</span>
+                </div>
               </div>
-              <div className="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-1.5 tabular-nums sm:max-w-[58%] sm:shrink-0 sm:justify-end sm:text-right">
-                <span className={contextRisk === 'danger'
-                  ? 'font-semibold text-red-300'
-                  : contextRisk === 'warning'
-                    ? 'font-semibold text-amber-300'
-                    : 'font-semibold text-text-secondary'}>
-                  {t('chat.tokenUsagePercent', { percent: usagePercentRounded })}
-                </span>
-                {cacheStats && (
-                  <span
-                    className={`inline-flex h-5 min-w-0 max-w-[11rem] items-center gap-1.5 rounded-full border px-1.5 ${cacheTone}`}
-                    title={cacheTitle}
-                  >
-                    <span className="truncate text-[10px] font-medium">{t('chat.providerCache')}</span>
-                    <span className="shrink-0 text-[10px] font-semibold">{cacheValueLabel}</span>
-                    {cacheStats.readTokens > 0 && (
-                      <span className="hidden shrink-0 text-[10px] opacity-80 xl:inline">
-                        {formatTokens(cacheStats.readTokens)}
+              <div
+                className="h-1.5 overflow-hidden rounded-full bg-surface-3/80"
+                title={`${t('chat.contextBudgetLabel')}: ${t('chat.tokenUsage', {
+                  used: formatTokens(usage.promptTokens),
+                  total: formatTokens(usage.contextWindow),
+                })} · ${t('chat.tokenUsagePercent', { percent: usagePercentRounded })}`}
+              >
+                <div className="flex h-full" style={{ width: `${barFillPercent}%` }}>
+                  {segments.length > 0 ? (
+                    segments.map((segment, index) => {
+                      const width = totalSegmentTokens > 0
+                        ? Math.max(2, (segment.tokens / totalSegmentTokens) * 100)
+                        : 100;
+                      return (
+                        <div
+                          key={`${segment.kind}-${index}`}
+                          className={CONTEXT_SEGMENT_COLOR[segment.kind] ?? CONTEXT_SEGMENT_COLOR.other}
+                          style={{ width: `${width}%` }}
+                          title={`${t(SEGMENT_LABEL_KEYS[segment.kind] ?? SEGMENT_LABEL_KEYS.other)} · ${formatTokens(segment.tokens)}`}
+                        />
+                      );
+                    })
+                  ) : (
+                    <div className="h-full w-full bg-text-tertiary/60" />
+                  )}
+                </div>
+              </div>
+              {segments.length > 1 && (
+                <div className="mt-1 hidden flex-wrap gap-x-2 gap-y-1 md:flex">
+                  {segments.slice(0, 5).map((segment, index) => (
+                    <span key={`${segment.kind}-legend-${index}`} className="inline-flex items-center gap-1">
+                      <span className={`h-1.5 w-1.5 rounded-full ${CONTEXT_SEGMENT_COLOR[segment.kind] ?? CONTEXT_SEGMENT_COLOR.other}`} />
+                      <span className="truncate">
+                        {t(SEGMENT_LABEL_KEYS[segment.kind] ?? SEGMENT_LABEL_KEYS.other)} {formatTokens(segment.tokens)}
                       </span>
-                    )}
-                  </span>
-                )}
-                <span className="hidden text-text-tertiary sm:inline">{usageSourceLabel}</span>
-              </div>
-            </div>
-            <div className="h-1.5 overflow-hidden rounded-full bg-surface-3/80">
-              <div className="flex h-full" style={{ width: `${barFillPercent}%` }}>
-                {segments.length > 0 ? (
-                  segments.map((segment, index) => {
-                    const width = totalSegmentTokens > 0
-                      ? Math.max(2, (segment.tokens / totalSegmentTokens) * 100)
-                      : 100;
-                    return (
-                      <div
-                        key={`${segment.kind}-${index}`}
-                        className={CONTEXT_SEGMENT_COLOR[segment.kind] ?? CONTEXT_SEGMENT_COLOR.other}
-                        style={{ width: `${width}%` }}
-                        title={`${t(SEGMENT_LABEL_KEYS[segment.kind] ?? SEGMENT_LABEL_KEYS.other)} · ${formatTokens(segment.tokens)}`}
-                      />
-                    );
-                  })
-                ) : (
-                  <div className="h-full w-full bg-text-tertiary/60" />
-                )}
-              </div>
-            </div>
-            {segments.length > 1 && (
-              <div className="mt-1 hidden flex-wrap gap-x-2 gap-y-1 md:flex">
-                {segments.slice(0, 5).map((segment, index) => (
-                  <span key={`${segment.kind}-legend-${index}`} className="inline-flex items-center gap-1">
-                    <span className={`h-1.5 w-1.5 rounded-full ${CONTEXT_SEGMENT_COLOR[segment.kind] ?? CONTEXT_SEGMENT_COLOR.other}`} />
-                    <span className="truncate">
-                      {t(SEGMENT_LABEL_KEYS[segment.kind] ?? SEGMENT_LABEL_KEYS.other)} {formatTokens(segment.tokens)}
                     </span>
-                  </span>
-                ))}
-                {segments.length > 5 && <span>+{segments.length - 5}</span>}
-              </div>
-            )}
-          </div>
-        )}
+                  ))}
+                  {segments.length > 5 && <span>+{segments.length - 5}</span>}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="h-1.5 overflow-hidden rounded-full bg-surface-3/70" title={statusLabel}>
+              <div className={`h-full w-1/3 rounded-full ${isStreaming || isCompacting ? 'animate-pulse bg-accent/70' : 'bg-text-tertiary/50'}`} />
+            </div>
+          )}
+        </div>
+
+        <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
+          {cacheStats && (
+            <span
+              className={`inline-flex h-7 min-w-12 items-center justify-center rounded-lg border px-2 text-[11px] font-semibold tabular-nums ${cacheTone}`}
+              title={cacheTitle}
+              aria-label={cacheTitle}
+              data-testid="chat-run-cache-hit"
+            >
+              {cacheValueLabel}
+            </span>
+          )}
+          <span
+            className={`inline-flex h-7 w-7 items-center justify-center gap-1.5 rounded-lg border px-0 sm:w-auto sm:max-w-[8rem] sm:px-2 ${statusTone}`}
+            title={statusLabel}
+            aria-label={statusLabel}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${isStreaming || isCompacting ? 'animate-pulse bg-current' : 'bg-current opacity-70'}`} />
+            <span className="hidden truncate text-[11px] font-medium sm:block">{statusLabel}</span>
+          </span>
+        </div>
       </div>
     </div>
   );
