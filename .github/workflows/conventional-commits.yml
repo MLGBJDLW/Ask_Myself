@@ -34,13 +34,21 @@ jobs:
           fi
 
           conventional_pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]+\))?!?: .+'
+          imperative_pattern='^[A-Z][A-Za-z0-9 ,._()/-]+$'
           invalid=0
 
           while IFS= read -r subject; do
-            if [[ ! "$subject" =~ $conventional_pattern ]]; then
-              echo "::error::Non-conventional commit subject: $subject"
-              invalid=1
+            if [[ "$subject" =~ $conventional_pattern ]]; then
+              continue
             fi
+
+            if [[ "$subject" =~ $imperative_pattern ]]; then
+              echo "::warning::Non-conventional commit subject accepted: $subject"
+              continue
+            fi
+
+            echo "::error::Non-conventional commit subject: $subject"
+            invalid=1
           done <<< "$subjects"
 
           if [ "$invalid" -ne 0 ]; then

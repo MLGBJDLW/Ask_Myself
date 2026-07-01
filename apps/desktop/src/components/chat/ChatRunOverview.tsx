@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useTranslation, type TranslationKey } from '../../i18n';
+import { ProviderIcon } from '../../lib/providerIcons';
 
 interface ContextUsageSegment {
   kind: string;
@@ -118,71 +119,6 @@ function cacheUsageStats(usage: TokenUsage | null): CacheUsageStats | null {
   };
 }
 
-function compactModelGlyphLabel(runtimeProfile: RuntimeProfile | null | undefined): string {
-  const raw = (runtimeProfile?.model || runtimeProfile?.provider || '').trim();
-  if (!raw) return 'AI';
-  const parts = raw
-    .replace(/[_:/.-]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (parts.length >= 2) {
-    return `${parts[0][0] ?? ''}${parts[1][0] ?? ''}`.toUpperCase();
-  }
-  const alnum = raw.replace(/[^a-z0-9]/gi, '');
-  return (alnum.slice(0, 2) || 'AI').toUpperCase();
-}
-
-function ModelGlyph({
-  label,
-  active,
-}: {
-  label: string;
-  active: boolean;
-}) {
-  return (
-    <svg
-      viewBox="0 0 36 36"
-      aria-hidden="true"
-      className="h-8 w-8 shrink-0 overflow-visible"
-    >
-      <rect
-        x="4"
-        y="4"
-        width="28"
-        height="28"
-        rx="7"
-        className="fill-surface-2 stroke-current text-accent/70"
-        strokeWidth="1.2"
-      />
-      <path
-        d="M12 22.5 18 10.5l6 12M14.5 18.5h7"
-        fill="none"
-        className="stroke-current text-text-primary/80"
-        strokeWidth="1.55"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle
-        cx="28"
-        cy="8"
-        r="3"
-        className={active ? 'fill-accent' : 'fill-text-tertiary'}
-      />
-      <text
-        x="18"
-        y="29"
-        textAnchor="middle"
-        fontSize="7"
-        fontWeight="700"
-        className="fill-current text-text-tertiary"
-      >
-        {label}
-      </text>
-    </svg>
-  );
-}
-
 function segmentKey(kind: string): string {
   if (kind in SEGMENT_LABEL_KEYS) return kind;
   return 'other';
@@ -268,7 +204,7 @@ export function ChatRunOverview({
       value: formatTokens(runtimeProfile.contextWindow),
     })}`
     : `${t('chat.contextRuntimeModel')}: ${modelLabel}`;
-  const modelGlyphLabel = compactModelGlyphLabel(runtimeProfile);
+  const modelProvider = runtimeProfile?.provider || 'custom';
 
   const cacheDetailLabel = cacheStats
     ? cacheStats.missTokens > 0
@@ -302,12 +238,24 @@ export function ChatRunOverview({
     <div className="shrink-0 border-b border-border/60 bg-surface-1/90 px-4 py-2 backdrop-blur">
       <div className="mx-auto grid w-full max-w-5xl grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 text-[11px] text-text-tertiary sm:gap-3">
         <span
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-surface-0/75 text-accent shadow-[0_1px_0_rgba(255,255,255,0.04)]"
+          className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-surface-0/75 shadow-[0_1px_0_rgba(255,255,255,0.04)]"
           title={modelTitle}
           aria-label={modelTitle}
           data-testid="chat-run-model-anchor"
         >
-          <ModelGlyph label={modelGlyphLabel} active={isStreaming || isCompacting} />
+          <ProviderIcon
+            provider={modelProvider}
+            providerId={modelProvider}
+            label={modelLabel}
+            size="md"
+            className="rounded-lg bg-transparent"
+          />
+          <span
+            className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-surface-0 ${
+              isStreaming || isCompacting ? 'animate-pulse bg-accent' : 'bg-text-tertiary'
+            }`}
+            aria-hidden="true"
+          />
         </span>
 
         <div className="min-w-0">

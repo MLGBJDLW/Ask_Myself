@@ -131,17 +131,9 @@ struct SseCacheCreationDetails {
     cache_creation_input_tokens: Option<u32>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Default)]
 struct SsePromptTokensDetails {
-    #[serde(default, alias = "cache_read_input_tokens", alias = "cachedTokens")]
     cached_tokens: Option<u32>,
-    #[serde(
-        default,
-        alias = "cache_creation",
-        alias = "cache_creation_input_tokens",
-        alias = "cache_write_input_tokens",
-        alias = "cache_write_tokens"
-    )]
     cache_creation: Option<SseCacheCreationUsage>,
 }
 
@@ -151,6 +143,76 @@ impl SsePromptTokensDetails {
             .as_ref()
             .and_then(SseCacheCreationUsage::input_tokens)
     }
+}
+
+impl<'de> serde::Deserialize<'de> for SsePromptTokensDetails {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let Some(object) = value.as_object() else {
+            return Ok(Self::default());
+        };
+
+        let cached_tokens = object
+            .get("cached_tokens")
+            .or_else(|| object.get("cache_read_input_tokens"))
+            .or_else(|| object.get("cachedTokens"))
+            .and_then(value_as_u32);
+
+        let cache_creation = object
+            .get("cache_creation")
+            .and_then(deserialize_cache_creation_usage)
+            .or_else(|| {
+                first_u32_field(
+                    object,
+                    &[
+                        "cache_creation_input_tokens",
+                        "cache_write_input_tokens",
+                        "cache_write_tokens",
+                    ],
+                )
+                .map(SseCacheCreationUsage::Tokens)
+            });
+
+        Ok(Self {
+            cached_tokens,
+            cache_creation,
+        })
+    }
+}
+
+fn deserialize_cache_creation_usage(value: &serde_json::Value) -> Option<SseCacheCreationUsage> {
+    if let Some(tokens) = value_as_u32(value) {
+        return Some(SseCacheCreationUsage::Tokens(tokens));
+    }
+
+    let object = value.as_object()?;
+    first_u32_field(
+        object,
+        &[
+            "cache_creation_input_tokens",
+            "cache_write_input_tokens",
+            "cache_creation_tokens",
+            "ephemeral_5m_input_tokens",
+        ],
+    )
+    .map(SseCacheCreationUsage::Tokens)
+}
+
+fn first_u32_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<u32> {
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(value_as_u32))
+}
+
+fn value_as_u32(value: &serde_json::Value) -> Option<u32> {
+    value
+        .as_u64()
+        .and_then(|tokens| u32::try_from(tokens).ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -891,6 +953,27 @@ mod tests {
         let details = usage.prompt_tokens_details.expect("details");
         assert_eq!(details.cached_tokens, Some(64));
         assert_eq!(details.cache_creation_tokens(), Some(24));
+    }
+
+    #[test]
+    fn stream_usage_accepts_qwen_duplicate_cache_creation_aliases() {
+        let usage: SseUsage = serde_json::from_str(
+            r#"{
+                "prompt_tokens": 120,
+                "completion_tokens": 20,
+                "total_tokens": 140,
+                "prompt_tokens_details": {
+                    "cached_tokens": 64,
+                    "cache_creation": 12,
+                    "cache_creation_input_tokens": 24
+                }
+            }"#,
+        )
+        .expect("usage");
+
+        let details = usage.prompt_tokens_details.expect("details");
+        assert_eq!(details.cached_tokens, Some(64));
+        assert_eq!(details.cache_creation_tokens(), Some(12));
     }
 
     // -- split_think_tags tests -------------------------------------------
