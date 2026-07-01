@@ -210,9 +210,7 @@ fn first_u32_field(
 }
 
 fn value_as_u32(value: &serde_json::Value) -> Option<u32> {
-    value
-        .as_u64()
-        .and_then(|tokens| u32::try_from(tokens).ok())
+    value.as_u64().and_then(|tokens| u32::try_from(tokens).ok())
 }
 
 // ---------------------------------------------------------------------------
