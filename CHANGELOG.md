@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.1...nexa-monorepo-v0.10.2) (2026-07-01)
+
+
+### Bug Fixes
+
+* apply cargo fmt to streaming.rs ([9dac5fa](https://github.com/MLGBJDLW/Nexa/commit/9dac5fa3493ea33ef883cdc5587795ea9576d054))
+* rustfmt formatting in streaming.rs ([5542f41](https://github.com/MLGBJDLW/Nexa/commit/5542f41854cbbd514b60c0a01ef953079bba8706))
+
 ## [0.10.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.0...nexa-monorepo-v0.10.1) (2026-07-01)
 
 
