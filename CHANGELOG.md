@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.0...nexa-monorepo-v0.10.1) (2026-07-01)
+
+
+### Bug Fixes
+
+* Replace custom model glyph with ProviderIcon and harden SSE prompt token deserialization ([d9ebeac](https://github.com/MLGBJDLW/Nexa/commit/d9ebeacd0c932750eff81ebc32580e425441950b))
+
 ## [0.10.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.9.17...nexa-monorepo-v0.10.0) (2026-06-30)
 
 
