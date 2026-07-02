@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.2...nexa-monorepo-v0.10.3) (2026-07-02)
+
+
+### Bug Fixes
+
+* **desktop:** stabilize chat runtime UX ([26c6e7d](https://github.com/MLGBJDLW/Nexa/commit/26c6e7dae99b9b5a23e8bcb83c2941910c73e5aa))
+* **desktop:** stabilize chat runtime UX ([a23ed37](https://github.com/MLGBJDLW/Nexa/commit/a23ed37552e0ea99c99edede35ceb620728587e2))
+
 ## [0.10.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.1...nexa-monorepo-v0.10.2) (2026-07-01)
 
 
