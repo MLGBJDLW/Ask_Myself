@@ -478,6 +478,11 @@ export interface UsageTotal {
   cacheReadTokens?: number;
   cacheMissTokens?: number;
   cacheCreationTokens?: number;
+  cacheAveragePromptTokens?: number;
+  cacheAverageReadTokens?: number;
+  cacheAverageMissTokens?: number;
+  cacheAverageCreationTokens?: number;
+  cacheAverageSampleCount?: number;
   lastPromptTokens?: number;
   contextBreakdown?: ContextUsageBreakdown;
 }

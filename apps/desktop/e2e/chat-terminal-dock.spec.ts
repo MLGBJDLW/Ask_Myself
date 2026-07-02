@@ -198,6 +198,8 @@ test('opens an interactive terminal dock from the chat screen', async ({ page })
 
   await page.getByRole('button', { name: 'Stop terminal' }).click();
   await expect(page.getByText('Exited')).toBeVisible();
+  await page.getByRole('button', { name: 'Close terminal' }).click();
+  await expect(page.getByText('Exited')).toHaveCount(0);
 
   const afterStop = await page.evaluate(() => {
     const diagnostics = (window as unknown as {

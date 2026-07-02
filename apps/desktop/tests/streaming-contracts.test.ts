@@ -1887,7 +1887,7 @@ test('timeline view model keeps completed rounds when steering adds a new status
   const events: TraceEvent[] = [
     { id: 'round-thinking', kind: 'thinking', text: 'Already investigated retries' },
     { id: 'round-tool', kind: 'tool', toolCall: traceToolCall({ callId: 'round-call' }) },
-    { id: 'steering-status', kind: 'status', text: 'Steering message received.', tone: 'muted' },
+    { id: 'steering-status', kind: 'status', text: 'User steering: focus on edge cases instead', tone: 'muted' },
   ];
 
   const currentEvents = traceEventsAfterStreamRounds(
@@ -1906,7 +1906,10 @@ test('timeline view model keeps completed rounds when steering adds a new status
   assertEqual(timeline.length, 1, 'steering status renders as current trace');
   assertEqual(timeline[0].kind, 'thinking', 'status renders inside a trace block');
   assert(timeline[0].kind === 'thinking', 'timeline item should be trace sections');
-  assertEqual(timeline[0].sections[0].id, 'steering-status', 'steering status remains visible');
+  const section = timeline[0].sections[0];
+  assertEqual(section.id, 'steering-status', 'steering status remains visible');
+  assert(section.kind === 'steering', 'steering status gets a dedicated section');
+  assertEqual(section.text, 'focus on edge cases instead', 'steering text is preserved');
   assertEqual(round.reply, 'Partial answer before steering.', 'completed round reply is preserved separately');
 });
 

@@ -28,6 +28,7 @@ export interface TimelineSkillRef extends PersistedTraceSkillRef {
 export type TimelineSection =
   | { kind: 'thinking'; id: string; text: string }
   | { kind: 'status'; id: string; text: string; tone?: TraceTone }
+  | { kind: 'steering'; id: string; text: string }
   | { kind: 'tool'; id: string; toolCall: ToolCallEvent; trace: boolean }
   | { kind: 'reply'; id: string; text: string };
 
@@ -289,6 +290,14 @@ export function shouldHideTraceStatus(text: string | null | undefined): boolean 
   );
 }
 
+export function steeringTextFromTraceStatus(text: string | null | undefined): string | null {
+  const raw = (text ?? '').trim();
+  const match = raw.match(/^User steering:\s*(.+)$/i);
+  if (!match) return null;
+  const steeringText = match[1].trim();
+  return steeringText.length > 0 ? steeringText : null;
+}
+
 function normalizeToolName(toolName: string | null | undefined): string {
   return (toolName ?? '').trim().toLowerCase();
 }
@@ -448,6 +457,12 @@ export function persistedTraceItemToTimelineSections(input: {
   const { item, id, trace } = input;
   switch (item.kind) {
     case 'status':
+      {
+        const steeringText = steeringTextFromTraceStatus(item.text);
+        if (steeringText) {
+          return [{ kind: 'steering', id, text: steeringText }];
+        }
+      }
       if (shouldHideTraceStatus(item.text)) return [];
       return [{
         kind: 'status',
@@ -491,7 +506,11 @@ export function persistedTraceItemsToTimelineSections(input: {
 
 export function visibleTraceEventsForTimeline(traceEvents: TraceEvent[]): TraceEvent[] {
   return traceEvents.filter(
-    (event) => !(event.kind === 'status' && shouldHideTraceStatus(event.text)),
+    (event) => !(
+      event.kind === 'status' &&
+      !steeringTextFromTraceStatus(event.text) &&
+      shouldHideTraceStatus(event.text)
+    ),
   );
 }
 
@@ -508,6 +527,10 @@ export function traceEventToTimelineSections(event: TraceEvent): TimelineSection
       toolCall: event.toolCall,
       trace: true,
     });
+  }
+  {
+    const steeringText = steeringTextFromTraceStatus(event.text);
+    if (steeringText) return [{ kind: 'steering', id: event.id, text: steeringText }];
   }
   return [{
     kind: 'status',

@@ -1,6 +1,10 @@
 import type { ConversationMessage } from '../../types/conversation';
 import type { StreamRoundEvent, TraceEvent } from './protocol';
-import { isOptimisticSteeringMessage } from '../chatMessageGuards';
+import {
+  isGoalMessage,
+  isOptimisticSteeringMessage,
+  isSteeringMessage,
+} from '../chatMessageGuards';
 
 export interface ChatStreamingVisibilityInput {
   isStreaming: boolean;
@@ -22,6 +26,54 @@ export interface ChatMessageVisibilityInput {
 export interface ChatMessageVisibilityProjection {
   historyMessages: ConversationMessage[];
   liveSteeringMessages: ConversationMessage[];
+}
+
+function isNormalUserTurnMessage(message: ConversationMessage): boolean {
+  return message.role === 'user' && !isSteeringMessage(message) && !isGoalMessage(message);
+}
+
+export function hasPersistedResultAfterLatestUserMessage(
+  messages: ConversationMessage[],
+): boolean {
+  let lastUserIdx = -1;
+  for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+    if (isNormalUserTurnMessage(messages[idx])) {
+      lastUserIdx = idx;
+      break;
+    }
+  }
+  if (lastUserIdx < 0) return false;
+  return messages
+    .slice(lastUserIdx + 1)
+    .some(message => message.role === 'assistant' || message.role === 'tool');
+}
+
+function latestNormalUserMessageIndex(messages: ConversationMessage[]): number {
+  for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+    if (isNormalUserTurnMessage(messages[idx])) return idx;
+  }
+  return -1;
+}
+
+function projectCompletedHistoryMessages(
+  messages: ConversationMessage[],
+): ConversationMessage[] {
+  const lastUserIdx = latestNormalUserMessageIndex(messages);
+  if (lastUserIdx < 0) {
+    return messages.filter(message => !isOptimisticSteeringMessage(message));
+  }
+
+  const beforeTurnResult = messages.slice(0, lastUserIdx + 1);
+  const afterLatestUser = messages.slice(lastUserIdx + 1);
+  const persistedSteering = afterLatestUser.filter(
+    message => isSteeringMessage(message) && !isOptimisticSteeringMessage(message),
+  );
+  const nonSteeringResults = afterLatestUser.filter(message => !isSteeringMessage(message));
+  return [
+    ...beforeTurnResult,
+    ...persistedSteering,
+    ...nonSteeringResults,
+  ];
 }
 
 /**
@@ -72,14 +124,27 @@ export function projectChatMessageVisibility(
   input: ChatMessageVisibilityInput,
 ): ChatMessageVisibilityProjection {
   const liveSteeringMessages = input.messages.filter(isOptimisticSteeringMessage);
-  if (liveSteeringMessages.length === 0) {
+  const hasCompletedResult = hasPersistedResultAfterLatestUserMessage(input.messages);
+  if (hasCompletedResult && !input.isStreaming) {
+    return {
+      historyMessages: projectCompletedHistoryMessages(input.messages),
+      liveSteeringMessages: [],
+    };
+  }
+
+  const shouldHideSteeringFromHistory = input.isStreaming;
+  if (!shouldHideSteeringFromHistory && liveSteeringMessages.length === 0) {
     return {
       historyMessages: input.messages,
       liveSteeringMessages: [],
     };
   }
 
-  const historyMessages = input.messages.filter((message) => !isOptimisticSteeringMessage(message));
+  const historyMessages = input.messages.filter((message) => (
+    shouldHideSteeringFromHistory
+      ? !isSteeringMessage(message)
+      : !isOptimisticSteeringMessage(message)
+  ));
 
   if (!input.isStreaming) {
     return {

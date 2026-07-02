@@ -32,6 +32,16 @@ const UPDATE_SOURCE_STORAGE_KEY = 'nexa-update-source';
 const DEFAULT_UPDATE_SOURCE: UpdateSource = 'github';
 const UPDATE_CHECK_TIMEOUT_MS = 90_000;
 const UPDATE_DOWNLOAD_TIMEOUT_MS = 600_000;
+const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/MLGBJDLW/Nexa/releases?per_page=50';
+
+interface GitHubRelease {
+  tag_name?: string;
+  name?: string | null;
+  body?: string | null;
+  draft?: boolean;
+  prerelease?: boolean;
+  published_at?: string | null;
+}
 
 function isUpdateSource(value: string | null): value is UpdateSource {
   return value === 'github';
@@ -62,6 +72,93 @@ async function checkUpdateFromSource(source: UpdateSource): Promise<TauriUpdateI
     timeout: UPDATE_CHECK_TIMEOUT_MS,
   });
   return metadata ? new TauriUpdate(metadata) : null;
+}
+
+function normalizeReleaseVersion(value: string | null | undefined): string {
+  const match = (value ?? '').trim().match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/);
+  return match?.[1] ?? '';
+}
+
+function compareReleaseVersions(a: string, b: string): number {
+  const [aCore, aPre = ''] = a.split('-', 2);
+  const [bCore, bPre = ''] = b.split('-', 2);
+  const aParts = aCore.split('.').map(part => Number.parseInt(part, 10) || 0);
+  const bParts = bCore.split('.').map(part => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < 3; index += 1) {
+    const diff = (aParts[index] ?? 0) - (bParts[index] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  if (!aPre && bPre) return 1;
+  if (aPre && !bPre) return -1;
+  return aPre.localeCompare(bPre);
+}
+
+function releaseDisplayName(release: GitHubRelease, version: string): string {
+  const name = release.name?.trim();
+  if (name) return name;
+  const tag = release.tag_name?.trim();
+  if (tag) return tag;
+  return `v${version}`;
+}
+
+async function fetchGithubReleaseNotesBetween(
+  currentVersion: string,
+  latestVersion: string,
+  fallbackBody: string | undefined,
+): Promise<string | undefined> {
+  const current = normalizeReleaseVersion(currentVersion);
+  const latest = normalizeReleaseVersion(latestVersion);
+  if (!current || !latest || compareReleaseVersions(current, latest) >= 0) {
+    return fallbackBody;
+  }
+
+  const response = await fetch(GITHUB_RELEASES_API_URL, {
+    headers: { Accept: 'application/vnd.github+json' },
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub releases request failed (${response.status})`);
+  }
+
+  const releases = await response.json() as GitHubRelease[];
+  const selected = releases
+    .map((release) => ({
+      release,
+      version: normalizeReleaseVersion(release.tag_name ?? release.name ?? ''),
+    }))
+    .filter(({ release, version }) => (
+      !release.draft &&
+      version &&
+      compareReleaseVersions(version, current) > 0 &&
+      compareReleaseVersions(version, latest) <= 0
+    ))
+    .sort((a, b) => compareReleaseVersions(a.version, b.version));
+
+  if (selected.length === 0) return fallbackBody;
+
+  return selected
+    .map(({ release, version }) => {
+      const heading = `## ${releaseDisplayName(release, version)}`;
+      const body = (release.body ?? '').trim() || '_No release notes provided._';
+      return `${heading}\n\n${body}`;
+    })
+    .join('\n\n---\n\n');
+}
+
+async function resolveUpdateNotes(
+  source: UpdateSource,
+  update: TauriUpdateInstance,
+): Promise<string | undefined> {
+  if (source !== 'github') return update.body ?? undefined;
+  try {
+    return await fetchGithubReleaseNotesBetween(
+      update.currentVersion,
+      update.version,
+      update.body ?? undefined,
+    );
+  } catch (error) {
+    console.warn('[useUpdater] failed to load ranged release notes:', error);
+    return update.body ?? undefined;
+  }
 }
 
 let sharedSource = readStoredUpdateSource();
@@ -110,11 +207,15 @@ export function useUpdater(checkOnMount = true) {
       }
       if (update) {
         sharedUpdate = update;
+        const notes = await resolveUpdateNotes(source, update);
+        if (source !== sharedSource) {
+          return update;
+        }
         setSharedState({
           status: 'available',
           source,
           version: update.version,
-          notes: update.body ?? undefined,
+          notes,
           lastCheckedAt,
         });
         return update;

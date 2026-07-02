@@ -245,12 +245,27 @@ test.beforeEach(async ({ page }) => {
         case 'agent_chat_cmd': {
           const conversationId = String(args.conversationId ?? '');
           const userText = String(args.message ?? '');
+          const lowerCacheSample = /lower cache/i.test(userText);
           const streamUsage = {
             promptTokens: 74000,
             completionTokens: 1400,
             totalTokens: 75400,
             thinkingTokens: 0,
+            cacheReadTokens: lowerCacheSample ? 10000 : 30000,
+            cacheMissTokens: 30000,
+            cacheCreationTokens: lowerCacheSample ? 1000 : 2000,
             lastPromptTokens: 74000,
+            contextBreakdown: {
+              totalTokens: 74000,
+              segments: [
+                { kind: 'systemCore', tokens: 3000 },
+                { kind: 'runtime', tokens: 1500 },
+                { kind: 'userMemory', tokens: 2000 },
+                { kind: 'availableSkills', tokens: 1000 },
+                { kind: 'sourceScope', tokens: 500 },
+                { kind: 'toolCalls', tokens: 400 },
+              ],
+            },
           };
 
           const currentMessages = messagesByConversation[conversationId] ?? [];
@@ -361,6 +376,27 @@ test('usage cache is scoped to conversation id and does not leak to another conv
   await expect(page.getByText(/context used/i)).toHaveCount(0);
 });
 
+test('context HUD groups detailed segments and averages cache across completed turns', async ({ page }) => {
+  await page.goto('/chat/conv-e2e');
+  const overview = page.getByTestId('chat-run-overview');
+
+  await page.getByTestId('chat-input-textarea').fill('Generate the first cache sample.');
+  await page.getByTestId('chat-send').click();
+
+  await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('50%');
+  await expect(overview.getByText('Prompts 4.5K')).toBeVisible();
+  await expect(overview.getByText('Memory 2.0K')).toBeVisible();
+  await expect(overview.getByText('Skills 1.0K')).toBeVisible();
+  await expect(overview.getByText('Sources 500')).toBeVisible();
+  await expect(overview.getByText('Tools 400')).toBeVisible();
+  await expect(overview.getByText(/Other/)).toHaveCount(0);
+
+  await page.getByTestId('chat-input-textarea').fill('Generate a lower cache sample.');
+  await page.getByTestId('chat-send').click();
+
+  await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('40%');
+});
+
 test('manual compact shows progress, locks input, and refreshes context usage', async ({ page }) => {
   await page.goto('/chat/conv-e2e');
 
@@ -369,13 +405,13 @@ test('manual compact shows progress, locks input, and refreshes context usage', 
   await expect(page.getByText('7% context used').first()).toBeVisible();
 
   await page.getByTestId('chat-compact').click();
-  await expect(page.getByTestId('chat-compact-status')).toBeVisible();
+  await expect(page.getByTestId('chat-compact-status').first()).toBeVisible();
   await expect(page.getByTestId('chat-input-textarea')).toBeDisabled();
   await expect(page.getByTestId('chat-send')).toBeDisabled();
 
   await expect(page.getByTestId('chat-input-textarea')).toBeEnabled();
-  await expect(page.getByTestId('chat-compact-status')).toBeVisible();
-  await expect(page.getByText('Compaction complete')).toBeVisible();
+  await expect(page.getByTestId('chat-compact-status').first()).toBeVisible();
+  await expect(page.getByText('Compaction complete').first()).toBeVisible();
   await expect(page.getByText('7% context used')).toHaveCount(0);
   await expect(page.getByText('0% context used').first()).toBeVisible();
 });

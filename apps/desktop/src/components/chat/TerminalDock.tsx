@@ -25,6 +25,7 @@ type TerminalStatus = 'idle' | 'starting' | 'running' | 'exited' | 'error';
 
 const TERMINAL_EVENT = 'terminal:event';
 export const TERMINAL_TOGGLE_EVENT = 'nexa:terminal-toggle';
+export const TERMINAL_OPEN_EVENT = 'nexa:terminal-open';
 const MAX_BUFFER_CHARS = 180_000;
 
 const SHELL_OPTIONS: Array<{ value: TerminalShell; label: string }> = [
@@ -177,12 +178,16 @@ export function TerminalDock() {
     });
   }, []);
 
-  const closeActiveSession = useCallback(async () => {
+  const closeActiveSession = useCallback(async (nextStatus: TerminalStatus = 'exited') => {
     const sessionId = sessionIdRef.current;
-    if (!sessionId) return;
+    if (!sessionId) {
+      setSession(null);
+      setStatus(nextStatus);
+      return;
+    }
     sessionIdRef.current = null;
     setSession(null);
-    setStatus('exited');
+    setStatus(nextStatus);
     try {
       await api.closeTerminalSession(sessionId);
     } catch (err) {
@@ -192,6 +197,15 @@ export function TerminalDock() {
       appendSystemLine(message);
     }
   }, [appendSystemLine]);
+
+  const closeTerminalDock = useCallback(() => {
+    setIsOpen(false);
+    setIsTall(false);
+    setError(null);
+    outputBufferRef.current = '';
+    xtermRef.current?.reset();
+    void closeActiveSession('idle');
+  }, [closeActiveSession]);
 
   const startSession = useCallback(async (shell: TerminalShell = selectedShell) => {
     if (startingRef.current) return;
@@ -249,6 +263,7 @@ export function TerminalDock() {
           : `process exited with code ${payload.exitCode ?? 'unknown'}`;
         appendSystemLine(exitText);
         sessionIdRef.current = null;
+        setSession(null);
         setStatus('exited');
         return;
       }
@@ -371,6 +386,12 @@ export function TerminalDock() {
     return () => window.removeEventListener(TERMINAL_TOGGLE_EVENT, toggleTerminalPanel);
   }, [toggleTerminalPanel]);
 
+  useEffect(() => {
+    const handler = () => setIsOpen(true);
+    window.addEventListener(TERMINAL_OPEN_EVENT, handler);
+    return () => window.removeEventListener(TERMINAL_OPEN_EVENT, handler);
+  }, []);
+
   const handleShellChange = (value: TerminalShell) => {
     setSelectedShell(value);
     if (isOpen) {
@@ -384,6 +405,11 @@ export function TerminalDock() {
 
   const statusText = terminalStatusLabel(status);
   const panelHeight = isTall ? 'h-[42vh] min-h-72' : 'h-64 min-h-48';
+  const shouldRenderDock = isOpen || status !== 'idle' || Boolean(session) || Boolean(error);
+
+  if (!shouldRenderDock) {
+    return null;
+  }
 
   return (
     <div className="shrink-0 border-t border-border/60 bg-surface-1/90 backdrop-blur">
@@ -468,7 +494,7 @@ export function TerminalDock() {
             icon={<Power size={14} />}
             aria-label="Stop terminal"
             title="Stop terminal"
-            onClick={() => void closeActiveSession()}
+            onClick={() => void closeActiveSession('exited')}
             disabled={!sessionIdRef.current}
           />
           <Button
@@ -476,9 +502,9 @@ export function TerminalDock() {
             size="sm"
             iconOnly
             icon={<X size={14} />}
-            aria-label="Close terminal panel"
-            title="Close terminal panel"
-            onClick={() => setIsOpen(false)}
+            aria-label="Close terminal"
+            title="Close terminal"
+            onClick={closeTerminalDock}
           />
         </div>
       </div>
