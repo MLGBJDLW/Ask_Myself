@@ -482,6 +482,7 @@
   "cacheReadWrite": "{read} 读取 / {write} 写入",
   "cacheReadMissWrite": "{read} 读取 / {miss} 未命中 / {write} 写入",
   "cacheRead": "{read} 读取",
+  "cacheAverageTurns": "当前对话 {count} 轮平均",
   "smartTitleGenerationFailed": "智能标题生成失败：{message}",
   "mermaidDiagram": "Mermaid",
   "mermaidRendering": "正在渲染图表...",

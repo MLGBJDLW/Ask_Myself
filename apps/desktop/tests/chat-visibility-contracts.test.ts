@@ -1,4 +1,5 @@
 import {
+  hasPersistedResultAfterLatestUserMessage,
   projectChatMessageVisibility,
   projectChatStreamingVisibility,
 } from '../src/lib/streaming/chatVisibility';
@@ -197,7 +198,7 @@ test('live optimistic steering is projected out of history while streaming', () 
   assertEqual(projected.liveSteeringMessages[0].id, 'temp-steer-1', 'live steering id');
 });
 
-test('persisted steering stays in history after streaming completes', () => {
+test('persisted steering is placed before the completed assistant result', () => {
   const firstUser = message({
     id: 'user-1',
     role: 'user',
@@ -211,14 +212,22 @@ test('persisted steering stays in history after streaming completes', () => {
     createdAt: '2026-01-01T00:00:05.000Z',
     artifacts: { kind: 'steering' },
   });
-  const messages = [firstUser, steering];
+  const assistant = message({
+    id: 'assistant-1',
+    role: 'assistant',
+    content: 'Final answer.',
+    createdAt: '2026-01-01T00:00:10.000Z',
+  });
+  const messages = [firstUser, assistant, steering];
   const projected = projectChatMessageVisibility({
     isStreaming: false,
     messages,
   });
 
-  assert(projected.historyMessages === messages, 'completed projection keeps history reference');
-  assertEqual(projected.historyMessages.length, 2, 'history count');
+  assertEqual(projected.historyMessages.length, 3, 'history count');
+  assertEqual(projected.historyMessages[0].id, 'user-1', 'first user remains');
+  assertEqual(projected.historyMessages[1].id, 'steer-persisted-1', 'steering moves before assistant');
+  assertEqual(projected.historyMessages[2].id, 'assistant-1', 'assistant remains after steering');
   assertEqual(projected.liveSteeringMessages.length, 0, 'live steering count');
 });
 
@@ -252,6 +261,33 @@ test('completed projection removes leftover optimistic steering from history', (
   assertEqual(projected.historyMessages[0].id, 'user-1', 'first user remains');
   assertEqual(projected.historyMessages[1].id, 'assistant-1', 'assistant remains');
   assertEqual(projected.liveSteeringMessages.length, 0, 'live steering count');
+});
+
+test('persisted result detection ignores in-turn steering users', () => {
+  const firstUser = message({
+    id: 'user-1',
+    role: 'user',
+    content: 'Start the turn',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+  const assistant = message({
+    id: 'assistant-1',
+    role: 'assistant',
+    content: 'Final answer.',
+    createdAt: '2026-01-01T00:00:10.000Z',
+  });
+  const steering = message({
+    id: 'steer-persisted-1',
+    role: 'user',
+    content: 'Please redirect the investigation here.',
+    createdAt: '2026-01-01T00:00:12.000Z',
+    artifacts: { kind: 'steering' },
+  });
+
+  assert(
+    hasPersistedResultAfterLatestUserMessage([firstUser, assistant, steering]),
+    'steering should not make the completed assistant result look stale',
+  );
 });
 
 async function main(): Promise<void> {

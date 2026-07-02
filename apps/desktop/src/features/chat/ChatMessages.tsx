@@ -476,6 +476,27 @@ function TraceStatusRow({
   );
 }
 
+function TraceSteeringRow({
+  text,
+  label,
+}: {
+  text: string;
+  label: string;
+}) {
+  return (
+    <div
+      className="inline-flex max-w-full items-start gap-2 rounded-lg border border-pink-400/25 bg-pink-400/8 px-2.5 py-2 text-xs leading-relaxed text-text-secondary"
+      title={text}
+    >
+      <MessageCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-pink-300" />
+      <span className="min-w-0">
+        <span className="mr-1 font-medium text-pink-200">{label}</span>
+        <span className="wrap-break-word">{text}</span>
+      </span>
+    </div>
+  );
+}
+
 export function ChatMessages(props: ChatMessagesProps) {
   const {
     turns,
@@ -797,6 +818,17 @@ export function ChatMessages(props: ChatMessagesProps) {
               />
             ),
           };
+        case "steering":
+          return {
+            text: "",
+            node: (
+              <TraceSteeringRow
+                key={section.id}
+                text={section.text}
+                label={t("chat.steeringLabel")}
+              />
+            ),
+          };
         case "reply":
           return {
             text: "",
@@ -828,7 +860,7 @@ export function ChatMessages(props: ChatMessagesProps) {
           return null;
       }
     },
-    [renderTraceReplyNode],
+    [renderTraceReplyNode, t],
   );
 
   const renderTimelineSections = useCallback(
@@ -1484,7 +1516,8 @@ export function ChatMessages(props: ChatMessagesProps) {
     [],
   );
 
-  const shouldRenderLiveTraceTimeline = liveTraceTimeline.length > 0;
+  const shouldRenderLiveTraceTimeline =
+    liveTraceTimeline.length > 0 && (isStreaming || streamRounds.length === 0);
   const shouldRenderStreamRounds =
     streamRounds.length > 0 && (isStreaming || !shouldRenderLiveTraceTimeline);
   const shouldShowStreamingText =
@@ -1856,18 +1889,18 @@ export function ChatMessages(props: ChatMessagesProps) {
           if (!hasThinking && !hasReply) return null;
           return (
             <Fragment key={`round-${round.id}`}>
+              {hasThinking &&
+                renderTimelineTraceNode(
+                  `round-thinking-${round.id}`,
+                  roundSections,
+                  false,
+                )}
               {hasReply &&
                 renderTraceReplyNode(
                   `round-reply-${round.id}`,
                   round.reply,
                   false,
                   streamingCitationLookup,
-                )}
-              {hasThinking &&
-                renderTimelineTraceNode(
-                  `round-thinking-${round.id}`,
-                  roundSections,
-                  false,
                 )}
             </Fragment>
           );

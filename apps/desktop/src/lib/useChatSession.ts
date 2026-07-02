@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import * as api from './api';
 import { isOptimisticSteeringMessage, isSteeringMessage } from './chatMessageGuards';
+import { hasPersistedResultAfterLatestUserMessage } from './streaming/chatVisibility';
 import type { AgentExecutionMode } from './api';
 import { useAgentStream, type ContextUsageBreakdown, type UsageTotal } from './useAgentStream';
 import { streamStore } from './streamStore';
@@ -44,6 +45,11 @@ interface StoredUsageEntry {
   cacheReadTokens?: number;
   cacheMissTokens?: number;
   cacheCreationTokens?: number;
+  cacheSampleCount?: number;
+  cachePromptTotal?: number;
+  cacheReadTotal?: number;
+  cacheMissTotal?: number;
+  cacheCreationTotal?: number;
   lastPromptTokens: number;
   contextBreakdown?: ContextUsageBreakdown;
   updatedAt: number;
@@ -52,6 +58,11 @@ interface StoredUsageEntry {
 function sanitizeNumber(input: unknown, fallback = 0): number {
   if (typeof input !== 'number' || !Number.isFinite(input)) return fallback;
   return Math.max(0, Math.round(input));
+}
+
+function averageTokens(total: number | undefined, sampleCount: number): number | undefined {
+  if (!Number.isFinite(total) || sampleCount <= 0) return undefined;
+  return Math.max(0, Math.round((total ?? 0) / sampleCount));
 }
 
 function sanitizeContextBreakdown(input: unknown): ContextUsageBreakdown | undefined {
@@ -178,14 +189,6 @@ function taskRunCanResumeStream(run: AgentTaskRun): boolean {
   return ['queued', 'running', 'waiting_approval', 'cancelling'].includes(run.status);
 }
 
-function hasPersistedResultAfterLatestUser(messages: ConversationMessage[]): boolean {
-  const lastUserIdx = messages.map(message => message.role).lastIndexOf('user');
-  if (lastUserIdx < 0) return false;
-  return messages
-    .slice(lastUserIdx + 1)
-    .some(message => message.role === 'assistant' || message.role === 'tool');
-}
-
 function streamHasVisiblePreview(conversationId: string): boolean {
   const stream = streamStore.getStream(conversationId);
   return Boolean(stream && (
@@ -247,6 +250,23 @@ function normalizeUsage(usage: UsageTotal): UsageTotal {
   const cacheReadTokens = sanitizeNumber(usage.cacheReadTokens ?? 0);
   const cacheMissTokens = sanitizeNumber(usage.cacheMissTokens ?? 0);
   const cacheCreationTokens = sanitizeNumber(usage.cacheCreationTokens ?? 0);
+  const cacheAverageSampleCount = sanitizeNumber(usage.cacheAverageSampleCount ?? 0);
+  const cacheAveragePromptTokens = averageTokens(
+    sanitizeNumber(usage.cacheAveragePromptTokens ?? 0),
+    cacheAverageSampleCount > 0 ? 1 : 0,
+  );
+  const cacheAverageReadTokens = averageTokens(
+    sanitizeNumber(usage.cacheAverageReadTokens ?? 0),
+    cacheAverageSampleCount > 0 ? 1 : 0,
+  );
+  const cacheAverageMissTokens = averageTokens(
+    sanitizeNumber(usage.cacheAverageMissTokens ?? 0),
+    cacheAverageSampleCount > 0 ? 1 : 0,
+  );
+  const cacheAverageCreationTokens = averageTokens(
+    sanitizeNumber(usage.cacheAverageCreationTokens ?? 0),
+    cacheAverageSampleCount > 0 ? 1 : 0,
+  );
   const lastPromptTokens = sanitizeNumber(usage.lastPromptTokens ?? promptTokens, promptTokens);
   const contextBreakdown = sanitizeContextBreakdown(usage.contextBreakdown);
   return {
@@ -257,8 +277,40 @@ function normalizeUsage(usage: UsageTotal): UsageTotal {
     cacheReadTokens,
     cacheMissTokens,
     cacheCreationTokens,
+    cacheAveragePromptTokens,
+    cacheAverageReadTokens,
+    cacheAverageMissTokens,
+    cacheAverageCreationTokens,
+    cacheAverageSampleCount: cacheAverageSampleCount > 0 ? cacheAverageSampleCount : undefined,
     lastPromptTokens,
     contextBreakdown,
+  };
+}
+
+function usageAverageFromStoredEntry(entry: StoredUsageEntry): Partial<UsageTotal> {
+  const sampleCount = sanitizeNumber(entry.cacheSampleCount ?? 0);
+  if (sampleCount <= 0) return {};
+  return {
+    cacheAveragePromptTokens: averageTokens(entry.cachePromptTotal, sampleCount) ?? 0,
+    cacheAverageReadTokens: averageTokens(entry.cacheReadTotal, sampleCount) ?? 0,
+    cacheAverageMissTokens: averageTokens(entry.cacheMissTotal, sampleCount) ?? 0,
+    cacheAverageCreationTokens: averageTokens(entry.cacheCreationTotal, sampleCount) ?? 0,
+    cacheAverageSampleCount: sampleCount,
+  };
+}
+
+function storedEntryToUsage(entry: StoredUsageEntry): UsageTotal {
+  return {
+    promptTokens: entry.promptTokens,
+    completionTokens: entry.completionTokens,
+    totalTokens: entry.totalTokens,
+    thinkingTokens: entry.thinkingTokens,
+    cacheReadTokens: entry.cacheReadTokens,
+    cacheMissTokens: entry.cacheMissTokens,
+    cacheCreationTokens: entry.cacheCreationTokens,
+    lastPromptTokens: entry.lastPromptTokens,
+    contextBreakdown: entry.contextBreakdown,
+    ...usageAverageFromStoredEntry(entry),
   };
 }
 
@@ -280,6 +332,11 @@ function readUsageCache(): Record<string, StoredUsageEntry> {
       const cacheReadTokens = sanitizeNumber(row.cacheReadTokens ?? 0);
       const cacheMissTokens = sanitizeNumber(row.cacheMissTokens ?? 0);
       const cacheCreationTokens = sanitizeNumber(row.cacheCreationTokens ?? 0);
+      const cacheSampleCount = sanitizeNumber(row.cacheSampleCount ?? 0);
+      const cachePromptTotal = sanitizeNumber(row.cachePromptTotal ?? 0);
+      const cacheReadTotal = sanitizeNumber(row.cacheReadTotal ?? 0);
+      const cacheMissTotal = sanitizeNumber(row.cacheMissTotal ?? 0);
+      const cacheCreationTotal = sanitizeNumber(row.cacheCreationTotal ?? 0);
       const lastPromptTokens = sanitizeNumber(row.lastPromptTokens ?? promptTokens, promptTokens);
       const contextBreakdown = sanitizeContextBreakdown(row.contextBreakdown);
       const updatedAt = sanitizeNumber(row.updatedAt ?? Date.now(), Date.now());
@@ -291,6 +348,11 @@ function readUsageCache(): Record<string, StoredUsageEntry> {
         cacheReadTokens,
         cacheMissTokens,
         cacheCreationTokens,
+        cacheSampleCount,
+        cachePromptTotal,
+        cacheReadTotal,
+        cacheMissTotal,
+        cacheCreationTotal,
         lastPromptTokens,
         contextBreakdown,
         updatedAt,
@@ -445,6 +507,11 @@ export interface UseChatSessionReturn {
     cacheReadTokens?: number;
     cacheMissTokens?: number;
     cacheCreationTokens?: number;
+    cacheAveragePromptTokens?: number;
+    cacheAverageReadTokens?: number;
+    cacheAverageMissTokens?: number;
+    cacheAverageCreationTokens?: number;
+    cacheAverageSampleCount?: number;
     contextBreakdown?: ContextUsageBreakdown;
     isEstimated: boolean;
     source: 'live' | 'cached' | 'estimated';
@@ -534,6 +601,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   } | null>(null);
   const usageConversationRef = useRef<string | null>(null);
   const usageCacheRef = useRef<Record<string, StoredUsageEntry>>(readUsageCache());
+  const lastUsageRef = useRef<UsageTotal | null>(null);
+  const recordedUsageSampleRef = useRef<string | null>(null);
   const pendingStreamConversationRef = useRef<string | null>(null);
   const streamingConversationRef = useRef<string | null>(null);
   const systemPromptCacheRef = useRef<Record<string, string>>({});
@@ -621,6 +690,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     reset,
   } = useAgentStream(activeId);
 
+  useEffect(() => {
+    lastUsageRef.current = lastUsage;
+  }, [lastUsage]);
+
   // Reconnect to in-progress or just-completed stream from global store
   // (runs during render so scoping computed values below see the correct ref)
   if (activeId && !streamingConversationRef.current) {
@@ -638,24 +711,82 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   const setUsageCacheForConversation = useCallback((conversationId: string, usage: UsageTotal) => {
     const normalized = normalizeUsage(usage);
+    const previous = usageCacheRef.current[conversationId];
+    const nextEntry: StoredUsageEntry = {
+      promptTokens: normalized.promptTokens,
+      completionTokens: normalized.completionTokens,
+      totalTokens: normalized.totalTokens,
+      thinkingTokens: normalized.thinkingTokens ?? 0,
+      cacheReadTokens: normalized.cacheReadTokens ?? 0,
+      cacheMissTokens: normalized.cacheMissTokens ?? 0,
+      cacheCreationTokens: normalized.cacheCreationTokens ?? 0,
+      cacheSampleCount: previous?.cacheSampleCount ?? 0,
+      cachePromptTotal: previous?.cachePromptTotal ?? 0,
+      cacheReadTotal: previous?.cacheReadTotal ?? 0,
+      cacheMissTotal: previous?.cacheMissTotal ?? 0,
+      cacheCreationTotal: previous?.cacheCreationTotal ?? 0,
+      lastPromptTokens: normalized.lastPromptTokens ?? normalized.promptTokens,
+      contextBreakdown: normalized.contextBreakdown,
+      updatedAt: Date.now(),
+    };
     usageCacheRef.current = {
       ...usageCacheRef.current,
-      [conversationId]: {
-        promptTokens: normalized.promptTokens,
-        completionTokens: normalized.completionTokens,
-        totalTokens: normalized.totalTokens,
-        thinkingTokens: normalized.thinkingTokens ?? 0,
-        cacheReadTokens: normalized.cacheReadTokens ?? 0,
-        cacheMissTokens: normalized.cacheMissTokens ?? 0,
-        cacheCreationTokens: normalized.cacheCreationTokens ?? 0,
-        lastPromptTokens: normalized.lastPromptTokens ?? normalized.promptTokens,
-        contextBreakdown: normalized.contextBreakdown,
-        updatedAt: Date.now(),
-      },
+      [conversationId]: nextEntry,
     };
     writeUsageCache(usageCacheRef.current);
-    setCachedUsage(normalized);
+    setCachedUsage(storedEntryToUsage(nextEntry));
   }, []);
+
+  const recordUsageCacheSampleForConversation = useCallback((conversationId: string, usage: UsageTotal) => {
+    const normalized = normalizeUsage(usage);
+    const readTokens = normalized.cacheReadTokens ?? 0;
+    const missTokens = normalized.cacheMissTokens ?? 0;
+    const creationTokens = normalized.cacheCreationTokens ?? 0;
+    if (readTokens + missTokens + creationTokens <= 0) return;
+
+    const promptTokens = normalized.lastPromptTokens ?? normalized.promptTokens;
+    const signature = [
+      conversationId,
+      normalized.promptTokens,
+      normalized.completionTokens,
+      normalized.totalTokens,
+      normalized.thinkingTokens ?? 0,
+      promptTokens,
+      readTokens,
+      missTokens,
+      creationTokens,
+    ].join(':');
+    if (recordedUsageSampleRef.current === signature) return;
+    recordedUsageSampleRef.current = signature;
+
+    const previous = usageCacheRef.current[conversationId];
+    const nextEntry: StoredUsageEntry = {
+      promptTokens: normalized.promptTokens,
+      completionTokens: normalized.completionTokens,
+      totalTokens: normalized.totalTokens,
+      thinkingTokens: normalized.thinkingTokens ?? 0,
+      cacheReadTokens: readTokens,
+      cacheMissTokens: missTokens,
+      cacheCreationTokens: creationTokens,
+      cacheSampleCount: (previous?.cacheSampleCount ?? 0) + 1,
+      cachePromptTotal: (previous?.cachePromptTotal ?? 0) + promptTokens,
+      cacheReadTotal: (previous?.cacheReadTotal ?? 0) + readTokens,
+      cacheMissTotal: (previous?.cacheMissTotal ?? 0) + missTokens,
+      cacheCreationTotal: (previous?.cacheCreationTotal ?? 0) + creationTokens,
+      lastPromptTokens: promptTokens,
+      contextBreakdown: normalized.contextBreakdown,
+      updatedAt: Date.now(),
+    };
+
+    usageCacheRef.current = {
+      ...usageCacheRef.current,
+      [conversationId]: nextEntry,
+    };
+    writeUsageCache(usageCacheRef.current);
+    if (activeId === conversationId) {
+      setCachedUsage(storedEntryToUsage(nextEntry));
+    }
+  }, [activeId]);
 
   const deleteUsageCacheForConversations = useCallback((conversationIds: string[]) => {
     if (conversationIds.length === 0) return;
@@ -782,21 +913,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     let cancelled = false;
     setLoadingMsgs(true);
     const restored = usageCacheRef.current[activeId];
-    setCachedUsage(
-      restored
-        ? {
-            promptTokens: restored.promptTokens,
-            completionTokens: restored.completionTokens,
-            totalTokens: restored.totalTokens,
-            thinkingTokens: restored.thinkingTokens,
-            cacheReadTokens: restored.cacheReadTokens,
-            cacheMissTokens: restored.cacheMissTokens,
-            cacheCreationTokens: restored.cacheCreationTokens,
-            lastPromptTokens: restored.lastPromptTokens,
-            contextBreakdown: restored.contextBreakdown,
-          }
-        : null,
-    );
+    setCachedUsage(restored ? storedEntryToUsage(restored) : null);
 
     void (async () => {
       try {
@@ -876,6 +993,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     let cancelled = false;
     const completedConversationId = !isStreaming ? streamingConversationRef.current : null;
     if (completedConversationId) {
+      const completedUsage = lastUsageRef.current;
+      if (completedUsage && usageConversationRef.current === completedConversationId) {
+        recordUsageCacheSampleForConversation(completedConversationId, completedUsage);
+      }
       // Re-fetch messages after agent is done.
       Promise.all([
         api.getConversation(completedConversationId),
@@ -948,7 +1069,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       }
     }
     return () => { cancelled = true; };
-  }, [activeId, isStreaming, loadConversations, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation, t]);
+  }, [activeId, isStreaming, loadConversations, recordUsageCacheSampleForConversation, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation, t]);
 
   /* ── Sync stream errors to chatError ────────────────────────────── */
   useEffect(() => {
@@ -1192,6 +1313,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           imageAttachments: null,
         };
         setMessagesForConversation(steeringConversationId, (prev) => [...prev, optimisticMsg]);
+        recordedUsageSampleRef.current = null;
         usageConversationRef.current = steeringConversationId;
         streamingConversationRef.current = steeringConversationId;
 
@@ -1307,6 +1429,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         imageAttachments: attachments ?? null,
       };
       setMessagesForConversation(convId, (prev) => [...prev, optimisticMsg]);
+      recordedUsageSampleRef.current = null;
       usageConversationRef.current = convId;
       pendingStreamConversationRef.current = convId;
       streamingConversationRef.current = convId;
@@ -1413,6 +1536,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     lastUserMessageRef.current = { content, attachments, personaId, options };
 
     setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
+    recordedUsageSampleRef.current = null;
     usageConversationRef.current = activeId;
     pendingStreamConversationRef.current = activeId;
     streamingConversationRef.current = activeId;
@@ -1466,6 +1590,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       imageAttachments: null,
     };
     setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
+    recordedUsageSampleRef.current = null;
     usageConversationRef.current = activeId;
     pendingStreamConversationRef.current = activeId;
     streamingConversationRef.current = activeId;
@@ -1504,7 +1629,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   const isViewingStreamingConversation =
     activeId != null && streamingConversationRef.current === activeId;
-  const hasPersistedStreamResult = hasPersistedResultAfterLatestUser(messages);
+  const hasPersistedStreamResult = hasPersistedResultAfterLatestUserMessage(messages);
   const shouldShowLivePreview =
     isViewingStreamingConversation && (isStreaming || !hasPersistedStreamResult);
   const activeConversation = activeId
@@ -1531,6 +1656,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const scopedError = usageConversationRef.current === activeId ? chatError : null;
 
   const usageForView = scopedLastUsage ? normalizeUsage(scopedLastUsage) : (cachedUsage ? normalizeUsage(cachedUsage) : null);
+  const usageAverageForView = cachedUsage ? normalizeUsage(cachedUsage) : null;
   const estimatedPromptTokens = messages.reduce((sum, msg) => {
     if (!Number.isFinite(msg.tokenCount) || msg.tokenCount <= 0) return sum;
     return sum + msg.tokenCount;
@@ -1550,6 +1676,16 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             cacheReadTokens: usageForView.cacheReadTokens ?? 0,
             cacheMissTokens: usageForView.cacheMissTokens ?? 0,
             cacheCreationTokens: usageForView.cacheCreationTokens ?? 0,
+            cacheAveragePromptTokens:
+              usageForView.cacheAveragePromptTokens ?? usageAverageForView?.cacheAveragePromptTokens,
+            cacheAverageReadTokens:
+              usageForView.cacheAverageReadTokens ?? usageAverageForView?.cacheAverageReadTokens,
+            cacheAverageMissTokens:
+              usageForView.cacheAverageMissTokens ?? usageAverageForView?.cacheAverageMissTokens,
+            cacheAverageCreationTokens:
+              usageForView.cacheAverageCreationTokens ?? usageAverageForView?.cacheAverageCreationTokens,
+            cacheAverageSampleCount:
+              usageForView.cacheAverageSampleCount ?? usageAverageForView?.cacheAverageSampleCount,
             contextBreakdown: usageForView.contextBreakdown ?? buildFallbackContextBreakdown(messages, promptTokens),
             isEstimated: false,
             source: (scopedLastUsage ? 'live' : 'cached') as 'live' | 'cached',
@@ -1565,6 +1701,11 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             cacheReadTokens: 0,
             cacheMissTokens: 0,
             cacheCreationTokens: 0,
+            cacheAveragePromptTokens: 0,
+            cacheAverageReadTokens: 0,
+            cacheAverageMissTokens: 0,
+            cacheAverageCreationTokens: 0,
+            cacheAverageSampleCount: 0,
             contextBreakdown: buildFallbackContextBreakdown(messages, estimatedPromptTokens),
             isEstimated: true,
             source: 'estimated' as const,

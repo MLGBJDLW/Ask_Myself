@@ -78,6 +78,8 @@ import {
   type GraphAgentUsage,
 } from '../../lib/knowledgeGraphAgent';
 
+const TERMINAL_OPEN_EVENT = 'nexa:terminal-open';
+
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
@@ -1502,6 +1504,9 @@ export function ToolCallCard({
     () => (isSearchDone ? parseSearchResults(content!) : null),
     [isSearchDone, content],
   );
+  const openTerminalDock = useCallback(() => {
+    window.dispatchEvent(new Event(TERMINAL_OPEN_EVENT));
+  }, []);
 
   const [expanded, setExpanded] = useState(false);
 
@@ -2124,6 +2129,19 @@ export function ToolCallCard({
             className="overflow-hidden"
           >
             <div className="border-t border-border px-3 py-2">
+              {isCommandExecutionRender && (
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    icon={<Terminal className="h-3.5 w-3.5" />}
+                    onClick={openTerminalDock}
+                  >
+                    {t('shortcuts.toggleTerminal')}
+                  </Button>
+                </div>
+              )}
               {streamingArgsPreview && (
                 <pre
                   className="mb-2 whitespace-pre-wrap break-words rounded-md bg-surface-0/60 px-2 py-1 text-[11px] text-text-tertiary max-h-48 overflow-y-auto"

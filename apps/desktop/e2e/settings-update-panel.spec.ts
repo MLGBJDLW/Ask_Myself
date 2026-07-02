@@ -9,6 +9,39 @@ test.beforeEach(async ({ page }) => {
     let callbackSeq = 1;
     let listenerSeq = 1;
     let updateCheckCount = 0;
+    const realFetch = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/repos/MLGBJDLW/Nexa/releases")) {
+        return new Response(JSON.stringify([
+          {
+            tag_name: "nexa-monorepo-v0.10.2",
+            name: "v0.10.2",
+            body: "Second ranged release note.",
+            draft: false,
+            prerelease: false,
+          },
+          {
+            tag_name: "nexa-monorepo-v0.10.1",
+            name: "v0.10.1",
+            body: "First ranged release note.",
+            draft: false,
+            prerelease: false,
+          },
+          {
+            tag_name: "nexa-monorepo-v0.10.0",
+            name: "v0.10.0",
+            body: "Already installed release note.",
+            draft: false,
+            prerelease: false,
+          },
+        ]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return realFetch(input, init);
+    };
 
     const invoke = async (cmd: string, _args: Record<string, unknown> = {}) => {
       switch (cmd) {
@@ -18,6 +51,15 @@ test.beforeEach(async ({ page }) => {
           updateCheckCount += 1;
           (window as unknown as { __updateCheckCount: number }).__updateCheckCount = updateCheckCount;
           (window as unknown as { __lastUpdateSource: string }).__lastUpdateSource = String(_args.source ?? "");
+          if (localStorage.getItem("e2e-update-available") === "1") {
+            return {
+              rid: 1,
+              currentVersion: "0.10.0",
+              version: "0.10.2",
+              body: "Latest-only release note.",
+              rawJson: {},
+            };
+          }
           return null;
         case "plugin:updater|check":
           return null;
@@ -148,6 +190,22 @@ test("unsupported stored update source falls back to GitHub", async ({ page }) =
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { __lastUpdateSource: string }).__lastUpdateSource))
     .toBe("github");
+});
+
+test("release notes include every GitHub release between current and latest", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("e2e-update-available", "1");
+  });
+
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Appearance" }).click();
+  await page.getByRole("button", { name: "Check for Updates" }).click();
+
+  await expect(page.locator("p").filter({ hasText: /^v0\.10\.2$/ })).toBeVisible();
+  await page.getByText("Release notes").click();
+  await expect(page.getByText("First ranged release note.")).toBeVisible();
+  await expect(page.getByText("Second ranged release note.")).toBeVisible();
+  await expect(page.getByText("Already installed release note.")).toHaveCount(0);
 });
 
 test("layout performs the silent startup update check", async ({ page }) => {

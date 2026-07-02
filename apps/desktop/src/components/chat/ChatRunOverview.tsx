@@ -22,6 +22,11 @@ interface TokenUsage {
   cacheReadTokens?: number;
   cacheMissTokens?: number;
   cacheCreationTokens?: number;
+  cacheAveragePromptTokens?: number;
+  cacheAverageReadTokens?: number;
+  cacheAverageMissTokens?: number;
+  cacheAverageCreationTokens?: number;
+  cacheAverageSampleCount?: number;
   contextBreakdown?: ContextUsageBreakdown;
   isEstimated: boolean;
   source: 'live' | 'cached' | 'estimated';
@@ -43,6 +48,7 @@ interface CacheUsageStats {
   missTokens: number;
   creationTokens: number;
   hitPercent: number | null;
+  sampleCount: number;
 }
 
 interface ChatRunOverviewProps {
@@ -82,6 +88,29 @@ const CONTEXT_SEGMENT_COLOR: Record<string, string> = {
   other: 'bg-text-tertiary/50',
 };
 
+const SEGMENT_KIND_ALIASES: Record<string, string> = {
+  systemcore: 'prompts',
+  runtime: 'prompts',
+  instructions: 'prompts',
+  persona: 'prompts',
+  routeplan: 'prompts',
+  taskplan: 'prompts',
+  scratchpad: 'prompts',
+  overhead: 'prompts',
+  availableskills: 'skills',
+  loadedskills: 'skills',
+  usermemory: 'memory',
+  projectmemory: 'memory',
+  agentmemory: 'memory',
+  preferences: 'memory',
+  learnedsuccesses: 'memory',
+  sourcescope: 'sources',
+  collectioncontext: 'sources',
+  conversationsummary: 'conversation',
+  toolcalls: 'tools',
+  toolresults: 'toolResults',
+};
+
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
@@ -96,12 +125,22 @@ function safeTokenCount(value: number | undefined): number {
 function cacheUsageStats(usage: TokenUsage | null): CacheUsageStats | null {
   if (!usage || usage.isEstimated) return null;
 
-  const readTokens = safeTokenCount(usage.cacheReadTokens);
-  const missTokens = safeTokenCount(usage.cacheMissTokens);
-  const creationTokens = safeTokenCount(usage.cacheCreationTokens);
+  const sampleCount = safeTokenCount(usage.cacheAverageSampleCount);
+  const useAverage = sampleCount > 0;
+  const readTokens = safeTokenCount(
+    useAverage ? usage.cacheAverageReadTokens : usage.cacheReadTokens,
+  );
+  const missTokens = safeTokenCount(
+    useAverage ? usage.cacheAverageMissTokens : usage.cacheMissTokens,
+  );
+  const creationTokens = safeTokenCount(
+    useAverage ? usage.cacheAverageCreationTokens : usage.cacheCreationTokens,
+  );
   if (readTokens + missTokens + creationTokens <= 0) return null;
 
-  const promptTokens = safeTokenCount(usage.promptTokens);
+  const promptTokens = safeTokenCount(
+    useAverage ? usage.cacheAveragePromptTokens : usage.promptTokens,
+  );
   const denominator = missTokens > 0
     ? readTokens + missTokens
     : promptTokens >= readTokens
@@ -116,23 +155,30 @@ function cacheUsageStats(usage: TokenUsage | null): CacheUsageStats | null {
     missTokens,
     creationTokens,
     hitPercent,
+    sampleCount,
   };
 }
 
 function segmentKey(kind: string): string {
-  if (kind in SEGMENT_LABEL_KEYS) return kind;
+  const trimmed = kind.trim();
+  if (trimmed in SEGMENT_LABEL_KEYS) return trimmed;
+  const normalized = trimmed.replace(/[\s_-]+/g, '').toLowerCase();
+  const aliased = SEGMENT_KIND_ALIASES[normalized];
+  if (aliased && aliased in SEGMENT_LABEL_KEYS) return aliased;
   return 'other';
 }
 
 function contextSegmentsForBar(usage: TokenUsage): ContextUsageSegment[] {
   const breakdown = usage.contextBreakdown;
   if (breakdown?.segments?.length) {
-    return breakdown.segments
-      .map(segment => ({
-        kind: segmentKey(segment.kind),
-        tokens: Math.max(0, Math.round(segment.tokens)),
-      }))
-      .filter(segment => segment.tokens > 0);
+    const totals = new Map<string, number>();
+    for (const segment of breakdown.segments) {
+      const tokens = Math.max(0, Math.round(segment.tokens));
+      if (tokens <= 0) continue;
+      const key = segmentKey(segment.kind);
+      totals.set(key, (totals.get(key) ?? 0) + tokens);
+    }
+    return Array.from(totals.entries()).map(([kind, tokens]) => ({ kind, tokens }));
   }
   const promptTokens = Math.max(0, usage.promptTokens);
   return promptTokens > 0 ? [{ kind: 'estimated', tokens: promptTokens }] : [];
@@ -221,7 +267,7 @@ export function ChatRunOverview({
         : t('chat.cacheRead', { read: formatTokens(cacheStats.readTokens) })
     : '';
   const cacheTitle = cacheStats
-    ? `${t('chat.providerCache')}: ${cacheDetailLabel}${cacheStats.hitPercent == null ? '' : ` (${cacheStats.hitPercent}%)`}`
+    ? `${t('chat.providerCache')}: ${cacheDetailLabel}${cacheStats.hitPercent == null ? '' : ` (${cacheStats.hitPercent}%)`}${cacheStats.sampleCount > 0 ? ` · ${t('chat.cacheAverageTurns', { count: String(cacheStats.sampleCount) })}` : ''}`
     : '';
   const cacheTone = cacheStats?.readTokens
     ? 'border-accent/35 bg-accent/10 text-accent'
@@ -235,7 +281,10 @@ export function ChatRunOverview({
   }
 
   return (
-    <div className="shrink-0 border-b border-border/60 bg-surface-1/90 px-4 py-2 backdrop-blur">
+    <div
+      className="shrink-0 border-b border-border/60 bg-surface-1/90 px-4 py-2 backdrop-blur"
+      data-testid="chat-run-overview"
+    >
       <div className="mx-auto grid w-full max-w-5xl grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 text-[11px] text-text-tertiary sm:gap-3">
         <span
           className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-surface-0/75 shadow-[0_1px_0_rgba(255,255,255,0.04)]"

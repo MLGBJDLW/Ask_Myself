@@ -482,6 +482,7 @@
   "cacheReadWrite": "{read} read / {write} write",
   "cacheReadMissWrite": "{read} read / {miss} miss / {write} write",
   "cacheRead": "{read} read",
+  "cacheAverageTurns": "Average over {count} turns",
   "smartTitleGenerationFailed": "Smart title generation failed: {message}",
   "mermaidDiagram": "Mermaid",
   "mermaidRendering": "Rendering diagram...",
