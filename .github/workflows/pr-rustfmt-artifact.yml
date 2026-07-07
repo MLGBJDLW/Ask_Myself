@@ -27,6 +27,7 @@ jobs:
           path: |
             apps/desktop/src/lib/streaming/toolProjection.ts
             crates/core/src/agent/tool_runtime.rs
+            crates/core/src/agent/usage_accounting.rs
             crates/core/src/file_checkpoint.rs
             crates/core/src/migrations/v_initial_consolidated.sql
             crates/core/src/tools/capability.rs
