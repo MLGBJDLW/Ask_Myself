@@ -183,7 +183,10 @@ mod tests {
             ..Usage::default()
         };
 
-        assert_eq!(model_step_accounting_tokens(Some(&usage), 999), (100, 20, true));
+        assert_eq!(
+            model_step_accounting_tokens(Some(&usage), 999),
+            (100, 20, true)
+        );
     }
 
     #[test]
