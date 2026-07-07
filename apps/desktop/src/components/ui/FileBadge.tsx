@@ -206,6 +206,14 @@ function isDirectory(path: string): boolean {
   return path.endsWith('/') || path.endsWith('\\');
 }
 
+export function isAbsoluteFileSystemPath(path: string): boolean {
+  const trimmed = path.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith('/')) return true;
+  if (/^[A-Za-z]:[\\/]/.test(trimmed)) return true;
+  return /^\\\\[^\\/]+[\\/][^\\/]+/.test(trimmed);
+}
+
 function basename(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
   const lastSep = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
@@ -214,30 +222,33 @@ function basename(path: string): string {
 
 export function FileBadge({ path, className = '' }: FileBadgeProps) {
   const { openFilePreview } = useFilePreview();
-  const dir = isDirectory(path);
-  const name = basename(path);
+  const safePath = path.trim();
+  if (!isAbsoluteFileSystemPath(safePath)) return null;
+
+  const dir = isDirectory(safePath);
+  const name = basename(safePath);
   const { color, icon: Icon } = dir ? dirStyle : getStyleForPath(name);
 
   const handleClick = (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (e.altKey) {
-      showInFileExplorer(path);
-    } else if (!dir && canPreviewInApp(path) && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-      openFilePreview(path);
+      showInFileExplorer(safePath);
+    } else if (!dir && canPreviewInApp(safePath) && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      openFilePreview(safePath);
     } else {
-      openFileInDefaultApp(path);
+      openFileInDefaultApp(safePath);
     }
   };
 
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    showInFileExplorer(path);
+    showInFileExplorer(safePath);
   };
 
   return (
-    <Tooltip content={path} side="top">
+    <Tooltip content={safePath} side="top">
       <button
         type="button"
         onClick={handleClick}

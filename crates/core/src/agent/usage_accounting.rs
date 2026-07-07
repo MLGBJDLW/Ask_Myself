@@ -49,6 +49,7 @@ impl AgentExecutor {
         } = ctx;
 
         let actual_prompt_tokens = chunk_usage.as_ref().map(|usage| usage.prompt_tokens);
+        let normalized_cache_miss_tokens = chunk_usage.as_ref().and_then(usage_cache_miss_tokens);
         let context_breakdown = context::estimate_context_usage_breakdown_for_model(
             model,
             messages,
@@ -69,7 +70,7 @@ impl AgentExecutor {
             if let Some(t) = u.cache_read_tokens {
                 *total_usage.cache_read_tokens.get_or_insert(0) += t;
             }
-            if let Some(t) = u.cache_miss_tokens {
+            if let Some(t) = normalized_cache_miss_tokens {
                 *total_usage.cache_miss_tokens.get_or_insert(0) += t;
             }
             if let Some(t) = u.cache_creation_tokens {
@@ -136,9 +137,7 @@ impl AgentExecutor {
                 cache_read_tokens: chunk_usage
                     .as_ref()
                     .and_then(|usage| usage.cache_read_tokens.map(u64::from)),
-                cache_miss_tokens: chunk_usage
-                    .as_ref()
-                    .and_then(|usage| usage.cache_miss_tokens.map(u64::from)),
+                cache_miss_tokens: normalized_cache_miss_tokens.map(u64::from),
                 cache_creation_tokens: chunk_usage
                     .as_ref()
                     .and_then(|usage| usage.cache_creation_tokens.map(u64::from)),
@@ -163,6 +162,14 @@ fn model_step_accounting_tokens(
     }
 }
 
+fn usage_cache_miss_tokens(usage: &Usage) -> Option<u32> {
+    usage.cache_miss_tokens.or_else(|| {
+        usage
+            .cache_read_tokens
+            .map(|read| usage.prompt_tokens.saturating_sub(read))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +192,41 @@ mod tests {
     #[test]
     fn model_step_tokens_fallback_to_estimated_prompt_tokens_without_usage() {
         assert_eq!(model_step_accounting_tokens(None, 321), (321, 0, false));
+    }
+
+    #[test]
+    fn usage_cache_miss_prefers_provider_value() {
+        let usage = Usage {
+            prompt_tokens: 1_000,
+            cache_read_tokens: Some(900),
+            cache_miss_tokens: Some(25),
+            ..Usage::default()
+        };
+
+        assert_eq!(usage_cache_miss_tokens(&usage), Some(25));
+    }
+
+    #[test]
+    fn usage_cache_miss_falls_back_to_prompt_minus_cache_read() {
+        let usage = Usage {
+            prompt_tokens: 1_000,
+            cache_read_tokens: Some(920),
+            cache_miss_tokens: None,
+            ..Usage::default()
+        };
+
+        assert_eq!(usage_cache_miss_tokens(&usage), Some(80));
+    }
+
+    #[test]
+    fn usage_cache_miss_saturates_when_cache_read_exceeds_prompt() {
+        let usage = Usage {
+            prompt_tokens: 100,
+            cache_read_tokens: Some(128),
+            cache_miss_tokens: None,
+            ..Usage::default()
+        };
+
+        assert_eq!(usage_cache_miss_tokens(&usage), Some(0));
     }
 }
