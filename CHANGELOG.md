@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.10.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.3...nexa-monorepo-v0.10.4) (2026-07-07)
+
+
+### Bug Fixes
+
+* **chat:** add edge glow for running tool cards ([2af6c65](https://github.com/MLGBJDLW/Nexa/commit/2af6c653873b08d13e11049293e73ea0a49d341f))
+* **chat:** align provider cache usage and runtime UX ([d8d2e24](https://github.com/MLGBJDLW/Nexa/commit/d8d2e2453f12e1e143fe5dd92d7587ab658d211d))
+* **chat:** prefer provider cache tokens in HUD ([aacba3f](https://github.com/MLGBJDLW/Nexa/commit/aacba3f55398efbcab845db856cc1ef83da01338))
+* **chat:** require absolute file badge paths ([babfc8e](https://github.com/MLGBJDLW/Nexa/commit/babfc8e03ad336878683cb068737cda76e496860))
+* **core:** infer provider cache miss tokens ([1891eb3](https://github.com/MLGBJDLW/Nexa/commit/1891eb319dc892e46bb8b8f9f01941946589117a))
+
 ## [0.10.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.2...nexa-monorepo-v0.10.3) (2026-07-02)
 
 
