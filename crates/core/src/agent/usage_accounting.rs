@@ -49,8 +49,7 @@ impl AgentExecutor {
         } = ctx;
 
         let actual_prompt_tokens = chunk_usage.as_ref().map(|usage| usage.prompt_tokens);
-        let normalized_cache_miss_tokens =
-            chunk_usage.as_ref().and_then(usage_cache_miss_tokens);
+        let normalized_cache_miss_tokens = chunk_usage.as_ref().and_then(usage_cache_miss_tokens);
         let context_breakdown = context::estimate_context_usage_breakdown_for_model(
             model,
             messages,
@@ -164,9 +163,11 @@ fn model_step_accounting_tokens(
 }
 
 fn usage_cache_miss_tokens(usage: &Usage) -> Option<u32> {
-    usage
-        .cache_miss_tokens
-        .or_else(|| usage.cache_read_tokens.map(|read| usage.prompt_tokens.saturating_sub(read)))
+    usage.cache_miss_tokens.or_else(|| {
+        usage
+            .cache_read_tokens
+            .map(|read| usage.prompt_tokens.saturating_sub(read))
+    })
 }
 
 #[cfg(test)]
@@ -182,10 +183,7 @@ mod tests {
             ..Usage::default()
         };
 
-        assert_eq!(
-            model_step_accounting_tokens(Some(&usage), 999),
-            (100, 20, true)
-        );
+        assert_eq!(model_step_accounting_tokens(Some(&usage), 999), (100, 20, true));
     }
 
     #[test]
