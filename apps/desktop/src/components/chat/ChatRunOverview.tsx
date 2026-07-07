@@ -84,6 +84,9 @@ const CONTEXT_SEGMENT_COLOR: Record<string, string> = {
   sources: 'bg-teal-400/70',
   skills: 'bg-purple-400/70',
   thinking: 'bg-pink-400/70',
+  cacheRead: 'bg-accent/75',
+  cacheMiss: 'bg-amber-400/75',
+  cacheCreation: 'bg-orange-400/70',
   estimated: 'bg-text-tertiary/60',
   other: 'bg-text-tertiary/50',
 };
@@ -130,17 +133,20 @@ function cacheUsageStats(usage: TokenUsage | null): CacheUsageStats | null {
   const readTokens = safeTokenCount(
     useAverage ? usage.cacheAverageReadTokens : usage.cacheReadTokens,
   );
-  const missTokens = safeTokenCount(
+  const promptTokens = safeTokenCount(
+    useAverage ? usage.cacheAveragePromptTokens : usage.promptTokens,
+  );
+  let missTokens = safeTokenCount(
     useAverage ? usage.cacheAverageMissTokens : usage.cacheMissTokens,
   );
+  if (missTokens <= 0 && readTokens > 0 && promptTokens > readTokens) {
+    missTokens = promptTokens - readTokens;
+  }
   const creationTokens = safeTokenCount(
     useAverage ? usage.cacheAverageCreationTokens : usage.cacheCreationTokens,
   );
   if (readTokens + missTokens + creationTokens <= 0) return null;
 
-  const promptTokens = safeTokenCount(
-    useAverage ? usage.cacheAveragePromptTokens : usage.promptTokens,
-  );
   const denominator = missTokens > 0
     ? readTokens + missTokens
     : promptTokens >= readTokens
@@ -168,7 +174,33 @@ function segmentKey(kind: string): string {
   return 'other';
 }
 
+function segmentLabel(kind: string, t: ReturnType<typeof useTranslation>['t']): string {
+  if (kind === 'cacheRead') return t('chat.cached');
+  if (kind === 'cacheMiss') return 'uncached';
+  if (kind === 'cacheCreation') return 'cache write';
+  return t(SEGMENT_LABEL_KEYS[kind] ?? SEGMENT_LABEL_KEYS.other);
+}
+
+function providerCacheSegmentsForBar(usage: TokenUsage): ContextUsageSegment[] | null {
+  if (usage.isEstimated) return null;
+
+  const readTokens = safeTokenCount(usage.cacheReadTokens);
+  let missTokens = safeTokenCount(usage.cacheMissTokens);
+  if (missTokens <= 0 && readTokens > 0 && usage.promptTokens > readTokens) {
+    missTokens = usage.promptTokens - readTokens;
+  }
+  if (readTokens + missTokens <= 0) return null;
+
+  const segments: ContextUsageSegment[] = [];
+  if (readTokens > 0) segments.push({ kind: 'cacheRead', tokens: readTokens });
+  if (missTokens > 0) segments.push({ kind: 'cacheMiss', tokens: missTokens });
+  return segments;
+}
+
 function contextSegmentsForBar(usage: TokenUsage): ContextUsageSegment[] {
+  const providerCacheSegments = providerCacheSegmentsForBar(usage);
+  if (providerCacheSegments) return providerCacheSegments;
+
   const breakdown = usage.contextBreakdown;
   if (breakdown?.segments?.length) {
     const totals = new Map<string, number>();
@@ -349,7 +381,7 @@ export function ChatRunOverview({
                           key={`${segment.kind}-${index}`}
                           className={CONTEXT_SEGMENT_COLOR[segment.kind] ?? CONTEXT_SEGMENT_COLOR.other}
                           style={{ width: `${width}%` }}
-                          title={`${t(SEGMENT_LABEL_KEYS[segment.kind] ?? SEGMENT_LABEL_KEYS.other)} · ${formatTokens(segment.tokens)}`}
+                          title={`${segmentLabel(segment.kind, t)} · ${formatTokens(segment.tokens)}`}
                         />
                       );
                     })
@@ -364,7 +396,7 @@ export function ChatRunOverview({
                     <span key={`${segment.kind}-legend-${index}`} className="inline-flex items-center gap-1">
                       <span className={`h-1.5 w-1.5 rounded-full ${CONTEXT_SEGMENT_COLOR[segment.kind] ?? CONTEXT_SEGMENT_COLOR.other}`} />
                       <span className="truncate">
-                        {t(SEGMENT_LABEL_KEYS[segment.kind] ?? SEGMENT_LABEL_KEYS.other)} {formatTokens(segment.tokens)}
+                        {segmentLabel(segment.kind, t)} {formatTokens(segment.tokens)}
                       </span>
                     </span>
                   ))}
