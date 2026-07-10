@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::llm::ToolDefinition;
 use crate::tools::ToolRegistry;
 
-use super::merge_tool_definitions;
+use super::{context, merge_tool_definitions};
 
 pub(super) fn dynamic_tool_visibility_prompt() -> &'static str {
     "## Dynamic Tool Discovery\nSome enabled tools may be hidden from the current model step to keep context small. `tool_search` is the resident discovery tool. If the task needs a capability and the exact tool is not visible, call `tool_search` with the capability or tool-name fragment before using a nearby substitute. After `tool_search` returns, use the activated matching tool on the next model step. Do not claim an enabled capability is unavailable until `tool_search` fails or returns no match."
@@ -16,6 +16,7 @@ pub(super) struct ToolSearchActivation {
     pub(super) activated: Vec<String>,
     pub(super) already_available: Vec<String>,
     pub(super) unknown: Vec<String>,
+    pub(super) capacity_limited: Vec<String>,
 }
 
 impl ToolSearchActivation {
@@ -29,6 +30,24 @@ pub(super) fn activate_tool_search_matches(
     tool_defs: &mut Vec<ToolDefinition>,
     artifacts: Option<&serde_json::Value>,
 ) -> ToolSearchActivation {
+    activate_tool_search_matches_bounded(
+        registry,
+        tool_defs,
+        artifacts,
+        "gpt-4o",
+        usize::MAX,
+        u32::MAX,
+    )
+}
+
+pub(super) fn activate_tool_search_matches_bounded(
+    registry: &ToolRegistry,
+    tool_defs: &mut Vec<ToolDefinition>,
+    artifacts: Option<&serde_json::Value>,
+    model: &str,
+    max_definitions: usize,
+    max_tool_tokens: u32,
+) -> ToolSearchActivation {
     let Some(payload) = tool_search_payload(artifacts) else {
         return ToolSearchActivation::default();
     };
@@ -40,6 +59,8 @@ pub(super) fn activate_tool_search_matches(
     let mut available: HashSet<String> = tool_defs.iter().map(|tool| tool.name.clone()).collect();
     let mut seen = HashSet::new();
     let mut newly_selected = Vec::new();
+    let mut selected_count = tool_defs.len();
+    let mut selected_tokens = context::estimate_tool_tokens_for_model(model, tool_defs);
 
     for item in matches {
         let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
@@ -53,7 +74,18 @@ pub(super) fn activate_tool_search_matches(
             continue;
         }
         if let Some(tool) = registry.get(name) {
-            newly_selected.push(tool.definition());
+            let definition = tool.definition();
+            let definition_tokens =
+                context::estimate_tool_tokens_for_model(model, std::slice::from_ref(&definition));
+            if selected_count >= max_definitions
+                || selected_tokens.saturating_add(definition_tokens) > max_tool_tokens
+            {
+                activation.capacity_limited.push(name.to_string());
+                continue;
+            }
+            selected_count = selected_count.saturating_add(1);
+            selected_tokens = selected_tokens.saturating_add(definition_tokens);
+            newly_selected.push(definition);
             available.insert(name.to_string());
             activation.activated.push(name.to_string());
         } else {

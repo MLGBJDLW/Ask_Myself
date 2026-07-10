@@ -96,9 +96,12 @@ impl AgentExecutor {
 
         // --- 0b. Pre-summarize evicted history if context is getting full -----
         turn_state.transition_to(TurnPhase::PreparingContext);
+        let history_before_summarization = prompt_cache::message_sequence_fingerprint(&history);
         let history = self
             .summarize_if_needed(history, model, max_response_tokens)
             .await;
+        let history_was_compacted =
+            history_before_summarization != prompt_cache::message_sequence_fingerprint(&history);
 
         // --- 1. Build initial messages with context-window trimming -----------
         // Extract user query text early — used for both tool selection and
@@ -188,9 +191,30 @@ impl AgentExecutor {
 
         let layout =
             prompt_layout::PromptLayout::for_request(self.config.provider_type, Some(model));
-        let effective_dynamic_tool_visibility =
-            layout.effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility);
-        let mut tool_defs = if effective_dynamic_tool_visibility {
+        let cache_stable_tool_surface = if layout.allow_dynamic_tool_visibility {
+            None
+        } else {
+            Some(prompt_layout::select_cache_stable_tool_surface(
+                &self.tools,
+                model,
+                self.config.context_window,
+                max_response_tokens,
+            )?)
+        };
+        let effective_dynamic_tool_visibility = cache_stable_tool_surface
+            .as_ref()
+            .map(prompt_layout::CacheStableToolSurface::uses_dynamic_discovery)
+            .unwrap_or_else(|| {
+                layout.effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility)
+            });
+        let mut tool_defs = if let Some(surface) = cache_stable_tool_surface {
+            debug!(
+                mode = ?surface.mode,
+                tool_count = surface.definitions.len(),
+                "Selected cache-stable tool surface"
+            );
+            surface.definitions
+        } else if effective_dynamic_tool_visibility {
             self.tools
                 .select_tools_for_decision(&route_plan.visibility_decision)
         } else {
@@ -236,6 +260,17 @@ impl AgentExecutor {
                 append_volatile_system_prompt_to_tail: layout.append_volatile_system_prompt_to_tail,
             },
         );
+        let current_user_was_preserved = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User)
+            .is_some_and(|message| message.parts.as_slice() == user_parts.as_slice());
+        if !current_user_was_preserved {
+            return Err(CoreError::InvalidInput(
+                "The current user message could not fit in the model context after reserving system, response, and tool budgets. Reduce enabled tools or use a larger context window."
+                    .to_string(),
+            ));
+        }
 
         // --- 2. Privacy redaction on outgoing user content --------------------
         let privacy_cfg = db.load_privacy_config().unwrap_or_default();
@@ -399,6 +434,7 @@ impl AgentExecutor {
         let mut loop_guard = AgentLoopGuard::new();
         let mut long_task_state = LongTaskState::new();
         let mut force_non_streaming_llm = llm_streaming_disabled_by_env();
+        let mut prompt_was_compacted = history_was_compacted;
         'react_loop: for iteration in 0..self.config.max_iterations {
             turn_state.start_iteration(iteration);
             let step_started = TurnLoopEvent::StepStarted {
@@ -432,11 +468,14 @@ impl AgentExecutor {
                     .config
                     .context_window
                     .unwrap_or_else(|| model_context_window(model));
+                let before_trim = prompt_cache::message_sequence_fingerprint(&messages);
                 messages = trim_to_context_window(
                     &messages,
                     max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
                     max_response_tokens,
                 );
+                prompt_was_compacted |=
+                    before_trim != prompt_cache::message_sequence_fingerprint(&messages);
             }
             debug!(
                 "Agent iteration {}/{}",
@@ -469,17 +508,18 @@ impl AgentExecutor {
                 self.config.max_iterations,
                 layout.append_volatile_system_prompt_to_tail,
             );
-            self.compact_before_model_step_if_needed(LongTaskCompactionContext {
-                tx: &tx,
-                model,
-                messages: &mut messages,
-                context_pipeline,
-                tool_defs: &tool_defs,
-                turn_state: &mut turn_state,
-                loop_recorder: &mut loop_recorder,
-                persisted_trace_items: &mut persisted_trace_items,
-            })
-            .await;
+            prompt_was_compacted |= self
+                .compact_before_model_step_if_needed(LongTaskCompactionContext {
+                    tx: &tx,
+                    model,
+                    messages: &mut messages,
+                    context_pipeline,
+                    tool_defs: &tool_defs,
+                    turn_state: &mut turn_state,
+                    loop_recorder: &mut loop_recorder,
+                    persisted_trace_items: &mut persisted_trace_items,
+                })
+                .await;
             self.persist_unpersisted_replayable_system_messages(
                 ReplayableSystemPersistenceContext {
                     db,
@@ -524,9 +564,15 @@ impl AgentExecutor {
                 prompt_cache_observation,
             } = match model_step {
                 model_step::ModelStepOutcome::Completed(output) => *output,
-                model_step::ModelStepOutcome::Restart => continue 'react_loop,
+                model_step::ModelStepOutcome::Restart {
+                    prompt_was_compacted: restart_was_compacted,
+                } => {
+                    prompt_was_compacted |= restart_was_compacted;
+                    continue 'react_loop;
+                }
             };
             last_finish_reason = step_finish_reason;
+            let request_was_compacted = prompt_was_compacted;
             // -- 4b. Accumulate usage ------------------------------------------
             let usage_report = self
                 .record_model_step_usage(
@@ -553,11 +599,12 @@ impl AgentExecutor {
             if let Some(observation) = prompt_cache_observation {
                 if let Some(value) = prompt_cache::prompt_cache_observation_to_value(
                     &observation,
-                    usage_report.was_compacted,
+                    request_was_compacted,
                 ) {
                     append_persisted_trace_prompt_cache(&mut persisted_trace_items, value);
                 }
             }
+            prompt_was_compacted = usage_report.compacted_after_step;
 
             if !full_content.trim().is_empty() {
                 last_iteration_content = full_content.clone();
@@ -678,11 +725,14 @@ impl AgentExecutor {
                         .config
                         .context_window
                         .unwrap_or_else(|| model_context_window(model));
+                    let before_trim = prompt_cache::message_sequence_fingerprint(&messages);
                     messages = trim_to_context_window(
                         &messages,
                         max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
                         max_response_tokens,
                     );
+                    prompt_was_compacted |=
+                        before_trim != prompt_cache::message_sequence_fingerprint(&messages);
                     continue;
                 }
                 append_persisted_trace_thinking(&mut persisted_trace_items, &iteration_thinking);
@@ -799,7 +849,10 @@ impl AgentExecutor {
 
             // Re-trim messages to fit context window after appending tool results.
             // This prevents unbounded growth across iterations.
+            let before_trim = prompt_cache::message_sequence_fingerprint(&messages);
             messages = context_pipeline.trim_after_tool_results(&messages);
+            prompt_was_compacted |=
+                before_trim != prompt_cache::message_sequence_fingerprint(&messages);
 
             if long_task_state.should_checkpoint_after_tool_round(iteration) {
                 let reason = format!("auto_tool_round_{}", iteration.saturating_add(1));

@@ -25,7 +25,7 @@ pub(super) struct ModelStepContext<'a> {
 
 pub(super) enum ModelStepOutcome {
     Completed(Box<ModelStepOutput>),
-    Restart,
+    Restart { prompt_was_compacted: bool },
 }
 
 pub(super) struct ModelStepOutput {
@@ -545,7 +545,9 @@ impl AgentExecutor {
                         .await
                 };
                 if steering_texts.is_empty() {
-                    return Ok(ModelStepOutcome::Restart);
+                    return Ok(ModelStepOutcome::Restart {
+                        prompt_was_compacted: false,
+                    });
                 }
                 let reason = "Steering message received; restarting the model response.";
                 let _ = tx
@@ -572,12 +574,16 @@ impl AgentExecutor {
                     .config
                     .context_window
                     .unwrap_or_else(|| model_context_window(model));
+                let before_trim = prompt_cache::message_sequence_fingerprint(messages);
                 *messages = trim_to_context_window(
                     messages,
                     max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
                     max_response_tokens,
                 );
-                return Ok(ModelStepOutcome::Restart);
+                return Ok(ModelStepOutcome::Restart {
+                    prompt_was_compacted: before_trim
+                        != prompt_cache::message_sequence_fingerprint(messages),
+                });
             }
 
             if let Some(detail) = stream_incomplete_detail {

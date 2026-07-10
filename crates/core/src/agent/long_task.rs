@@ -145,7 +145,7 @@ impl AgentExecutor {
     pub(super) async fn compact_before_model_step_if_needed(
         &self,
         ctx: LongTaskCompactionContext<'_>,
-    ) {
+    ) -> bool {
         let LongTaskCompactionContext {
             tx,
             model,
@@ -161,10 +161,11 @@ impl AgentExecutor {
             context::estimate_context_usage_breakdown_for_model(model, messages, tool_defs, None);
         let budget_decision = context_pipeline.budget_decision(estimated.total_tokens);
         if !budget_decision.should_compact {
-            return;
+            return false;
         }
 
         let before_message_count = messages.len();
+        let before_messages = prompt_cache::message_sequence_fingerprint(messages);
         let started = TurnLoopEvent::CompactionStarted {
             reason: "pre_model_estimate".to_string(),
             message_count: before_message_count,
@@ -178,8 +179,10 @@ impl AgentExecutor {
         );
         turn_state.transition_to(TurnPhase::Compacting);
 
-        match self.aggressive_compact(messages, model, tx).await {
+        let compacted = match self.aggressive_compact(messages, model, tx).await {
             Ok(()) => {
+                let after_messages = prompt_cache::message_sequence_fingerprint(messages);
+                let compacted = before_messages != after_messages;
                 let evicted_count = before_message_count.saturating_sub(messages.len());
                 let ended = TurnLoopEvent::CompactionEnded {
                     reason: "pre_model_estimate".to_string(),
@@ -188,6 +191,7 @@ impl AgentExecutor {
                 };
                 loop_recorder.record(ended.clone());
                 append_persisted_trace_loop_event(persisted_trace_items, ended);
+                compacted
             }
             Err(err) => {
                 warn!("Pre-model context compaction failed: {err}");
@@ -196,9 +200,11 @@ impl AgentExecutor {
                     &format!("Pre-model context compaction failed: {err}"),
                     "warning",
                 );
+                false
             }
-        }
+        };
         turn_state.transition_to(TurnPhase::ModelStep);
+        compacted
     }
 }
 

@@ -1,6 +1,31 @@
 //! Provider-aware prompt layout decisions for model requests.
 
+use std::collections::HashSet;
+
 use super::*;
+use crate::tools::ToolCategory;
+
+const MAX_CACHE_STABLE_TOOL_DEFINITIONS: usize = 128;
+const CACHE_STABLE_TOOL_BUDGET_DIVISOR: u32 = 4;
+const RESIDENT_DISCOVERY_TOOL_NAME: &str = "tool_search";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CacheStableToolSurfaceMode {
+    FullPinned,
+    StableResidentDynamic,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CacheStableToolSurface {
+    pub(super) mode: CacheStableToolSurfaceMode,
+    pub(super) definitions: Vec<ToolDefinition>,
+}
+
+impl CacheStableToolSurface {
+    pub(super) fn uses_dynamic_discovery(&self) -> bool {
+        self.mode == CacheStableToolSurfaceMode::StableResidentDynamic
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PromptLayout {
@@ -17,11 +42,17 @@ impl PromptLayout {
     }
 
     pub(super) fn for_request(provider_type: Option<ProviderType>, model: Option<&str>) -> Self {
-        if uses_implicit_prefix_cache(provider_type, model) {
+        if uses_stable_prefix_cache(provider_type, model) {
             return Self {
                 include_skill_system_prompt: true,
                 include_turn_scaffolding_system_prompts: true,
-                allow_dynamic_tool_visibility: true,
+                // Prefix-cached providers serialize tool definitions into the
+                // reusable request prefix. Route-specific filtering or
+                // activating tools after `tool_search` changes that prefix and
+                // can invalidate the entire warm cache. Keep the complete,
+                // deterministically sorted registry pinned for the request
+                // loop; volatile route/skill state remains append-only below.
+                allow_dynamic_tool_visibility: false,
                 append_volatile_system_prompt_to_tail: true,
             };
         }
@@ -39,11 +70,91 @@ impl PromptLayout {
     }
 }
 
-fn uses_implicit_prefix_cache(provider_type: Option<ProviderType>, model: Option<&str>) -> bool {
+pub(super) fn cache_stable_tool_surface_limits(
+    model: &str,
+    context_window: Option<u32>,
+    max_response_tokens: u32,
+) -> (usize, u32) {
+    let max_context = context_window.unwrap_or_else(|| model_context_window(model));
+    let usable_prompt = max_context
+        .saturating_sub(max_response_tokens)
+        .saturating_sub(context_safety_buffer(max_context));
+    (
+        MAX_CACHE_STABLE_TOOL_DEFINITIONS,
+        usable_prompt / CACHE_STABLE_TOOL_BUDGET_DIVISOR,
+    )
+}
+
+pub(super) fn tool_surface_fits_cache_stable_limits(
+    model: &str,
+    definitions: &[ToolDefinition],
+    max_definitions: usize,
+    max_tool_tokens: u32,
+) -> bool {
+    definitions.len() <= max_definitions
+        && context::estimate_tool_tokens_for_model(model, definitions) <= max_tool_tokens
+}
+
+/// Choose a query-independent tool surface for providers whose prompt caches
+/// require an exact, stable prefix. The complete registry is preferred, but it
+/// is never allowed to consume an unbounded share of the request context.
+pub(super) fn select_cache_stable_tool_surface(
+    registry: &ToolRegistry,
+    model: &str,
+    context_window: Option<u32>,
+    max_response_tokens: u32,
+) -> Result<CacheStableToolSurface, CoreError> {
+    let (max_definitions, max_tool_tokens) =
+        cache_stable_tool_surface_limits(model, context_window, max_response_tokens);
+    let full = registry.definitions();
+    if tool_surface_fits_cache_stable_limits(model, &full, max_definitions, max_tool_tokens) {
+        return Ok(CacheStableToolSurface {
+            mode: CacheStableToolSurfaceMode::FullPinned,
+            definitions: full,
+        });
+    }
+
+    let core_categories = HashSet::from([ToolCategory::Core]);
+    let core = registry.definitions_for_categories(&core_categories);
+    let has_discovery = core
+        .iter()
+        .any(|definition| definition.name == RESIDENT_DISCOVERY_TOOL_NAME);
+    if has_discovery
+        && tool_surface_fits_cache_stable_limits(model, &core, max_definitions, max_tool_tokens)
+    {
+        return Ok(CacheStableToolSurface {
+            mode: CacheStableToolSurfaceMode::StableResidentDynamic,
+            definitions: core,
+        });
+    }
+
+    let discovery_names = vec![RESIDENT_DISCOVERY_TOOL_NAME.to_string()];
+    let discovery = registry.filtered(&discovery_names).definitions();
+    if !discovery.is_empty()
+        && tool_surface_fits_cache_stable_limits(
+            model,
+            &discovery,
+            max_definitions,
+            max_tool_tokens,
+        )
+    {
+        return Ok(CacheStableToolSurface {
+            mode: CacheStableToolSurfaceMode::StableResidentDynamic,
+            definitions: discovery,
+        });
+    }
+
+    Err(CoreError::InvalidInput(format!(
+        "The enabled tool registry exceeds the model prompt budget, and the resident tool_search surface cannot fit safely (limit: {max_definitions} tools / {max_tool_tokens} estimated tokens)."
+    )))
+}
+
+fn uses_stable_prefix_cache(provider_type: Option<ProviderType>, model: Option<&str>) -> bool {
     matches!(
         provider_type,
         Some(
-            ProviderType::OpenAi
+            ProviderType::Anthropic
+                | ProviderType::OpenAi
                 | ProviderType::AzureOpenAi
                 | ProviderType::Qwen
                 | ProviderType::OpenRouter
@@ -78,8 +189,56 @@ pub(super) fn turn_scaffolding_sections(
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+
     use super::*;
+    use crate::db::Database;
     use crate::intelligence::{build_task_plan, TaskPlanningInput};
+    use crate::tools::{tool_search_tool::ToolSearchTool, Tool, ToolResult};
+
+    struct OversizedMcpTool;
+
+    #[async_trait]
+    impl Tool for OversizedMcpTool {
+        fn name(&self) -> &str {
+            "mcp__cache_test__oversized"
+        }
+
+        fn description(&self) -> &str {
+            "Oversized schema used to exercise cache-stable surface fallback."
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "payload": {
+                        "type": "string",
+                        "description": "cache schema field description ".repeat(300)
+                    }
+                }
+            })
+        }
+
+        fn categories(&self) -> &'static [ToolCategory] {
+            &[ToolCategory::Mcp]
+        }
+
+        async fn execute(
+            &self,
+            call_id: &str,
+            _arguments: &str,
+            _db: &Database,
+            _source_scope: &[String],
+        ) -> Result<ToolResult, CoreError> {
+            Ok(ToolResult {
+                call_id: call_id.to_string(),
+                content: "ok".to_string(),
+                is_error: false,
+                artifacts: None,
+            })
+        }
+    }
 
     fn plan() -> AgentTaskPlan {
         build_task_plan(TaskPlanningInput {
@@ -97,14 +256,15 @@ mod tests {
 
         assert!(layout.include_skill_system_prompt);
         assert!(layout.include_turn_scaffolding_system_prompts);
-        assert!(layout.allow_dynamic_tool_visibility);
+        assert!(!layout.allow_dynamic_tool_visibility);
         assert!(layout.append_volatile_system_prompt_to_tail);
-        assert!(layout.effective_dynamic_tool_visibility(true));
+        assert!(!layout.effective_dynamic_tool_visibility(true));
     }
 
     #[test]
     fn exact_prefix_cache_layout_keeps_replayable_tail_context() {
         for provider_type in [
+            ProviderType::Anthropic,
             ProviderType::OpenAi,
             ProviderType::AzureOpenAi,
             ProviderType::Qwen,
@@ -114,9 +274,9 @@ mod tests {
 
             assert!(layout.include_skill_system_prompt);
             assert!(layout.include_turn_scaffolding_system_prompts);
-            assert!(layout.allow_dynamic_tool_visibility);
+            assert!(!layout.allow_dynamic_tool_visibility);
             assert!(layout.append_volatile_system_prompt_to_tail);
-            assert!(layout.effective_dynamic_tool_visibility(true));
+            assert!(!layout.effective_dynamic_tool_visibility(true));
         }
     }
 
@@ -136,7 +296,7 @@ mod tests {
         let layout = PromptLayout::for_request(Some(ProviderType::OpenRouter), Some("deepseek/v3"));
 
         assert!(layout.include_skill_system_prompt);
-        assert!(layout.allow_dynamic_tool_visibility);
+        assert!(!layout.allow_dynamic_tool_visibility);
         assert!(layout.append_volatile_system_prompt_to_tail);
     }
 
@@ -179,5 +339,43 @@ mod tests {
             turn_scaffolding_sections("## Active Routing Plan\nroute", &plan(), true, layout);
 
         assert!(sections.is_empty());
+    }
+
+    #[test]
+    fn cache_stable_surface_pins_a_registry_that_fits_the_budget() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ToolSearchTool));
+
+        let surface =
+            select_cache_stable_tool_surface(&registry, "deepseek-chat", Some(128_000), 4_096)
+                .expect("small registry should fit");
+
+        assert_eq!(surface.mode, CacheStableToolSurfaceMode::FullPinned);
+        assert_eq!(surface.definitions.len(), 1);
+        assert_eq!(surface.definitions[0].name, "tool_search");
+    }
+
+    #[test]
+    fn cache_stable_surface_falls_back_to_query_independent_core_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ToolSearchTool));
+        registry.register(Box::new(OversizedMcpTool));
+
+        let surface =
+            select_cache_stable_tool_surface(&registry, "deepseek-chat", Some(8_192), 4_096)
+                .expect("resident discovery surface should fit");
+
+        assert_eq!(
+            surface.mode,
+            CacheStableToolSurfaceMode::StableResidentDynamic
+        );
+        assert_eq!(
+            surface
+                .definitions
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tool_search"]
+        );
     }
 }
