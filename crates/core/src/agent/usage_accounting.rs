@@ -21,7 +21,10 @@ pub(super) struct UsageAccountingContext<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ModelStepUsageReport {
-    pub(super) was_compacted: bool,
+    /// Whether context was rewritten after this request and therefore before
+    /// the next model step. The current request's cache sample must not be
+    /// mislabeled with a compaction that had not happened yet.
+    pub(super) compacted_after_step: bool,
 }
 
 impl AgentExecutor {
@@ -49,7 +52,9 @@ impl AgentExecutor {
         } = ctx;
 
         let actual_prompt_tokens = chunk_usage.as_ref().map(|usage| usage.prompt_tokens);
-        let normalized_cache_miss_tokens = chunk_usage.as_ref().and_then(usage_cache_miss_tokens);
+        let normalized_cache_miss_tokens = chunk_usage
+            .as_ref()
+            .and_then(|usage| normalized_cache_miss_tokens(self.config.provider_type, usage));
         let context_breakdown = context::estimate_context_usage_breakdown_for_model(
             model,
             messages,
@@ -92,6 +97,7 @@ impl AgentExecutor {
         let iteration_context_pct = budget_decision.usage_pct;
         if budget_decision.should_compact {
             let before_message_count = messages.len();
+            let before_messages = prompt_cache::message_sequence_fingerprint(messages);
             let started = TurnLoopEvent::CompactionStarted {
                 reason: "auto".to_string(),
                 message_count: before_message_count,
@@ -102,7 +108,8 @@ impl AgentExecutor {
             if let Err(e) = self.aggressive_compact(messages, model, tx).await {
                 warn!("Auto-compact failed: {e}");
             } else {
-                iteration_compacted = true;
+                let after_messages = prompt_cache::message_sequence_fingerprint(messages);
+                iteration_compacted = before_messages != after_messages;
                 let evicted_count = before_message_count.saturating_sub(messages.len());
                 let ended = TurnLoopEvent::CompactionEnded {
                     reason: "auto".to_string(),
@@ -142,12 +149,15 @@ impl AgentExecutor {
                     .as_ref()
                     .and_then(|usage| usage.cache_creation_tokens.map(u64::from)),
                 context_usage_pct: iteration_context_pct,
+                // Preserve the persisted TraceStep contract: this flag records
+                // compaction performed after this model step. Prompt-cache
+                // observations carry the separate pre-request attribution.
                 was_compacted: iteration_compacted,
             });
         }
 
         ModelStepUsageReport {
-            was_compacted: iteration_compacted,
+            compacted_after_step: iteration_compacted,
         }
     }
 }
@@ -162,11 +172,26 @@ fn model_step_accounting_tokens(
     }
 }
 
-fn usage_cache_miss_tokens(usage: &Usage) -> Option<u32> {
+pub(super) fn normalized_cache_miss_tokens(
+    provider_type: Option<ProviderType>,
+    usage: &Usage,
+) -> Option<u32> {
     usage.cache_miss_tokens.or_else(|| {
-        usage
-            .cache_read_tokens
-            .map(|read| usage.prompt_tokens.saturating_sub(read))
+        if matches!(provider_type, Some(ProviderType::Anthropic))
+            && (usage.cache_read_tokens.is_some() || usage.cache_creation_tokens.is_some())
+        {
+            // Anthropic reports uncached input, cache reads, and cache writes as
+            // disjoint counters. Cache writes are misses for hit-rate purposes.
+            Some(
+                usage
+                    .prompt_tokens
+                    .saturating_add(usage.cache_creation_tokens.unwrap_or(0)),
+            )
+        } else {
+            usage
+                .cache_read_tokens
+                .map(|read| usage.prompt_tokens.saturating_sub(read))
+        }
     })
 }
 
@@ -203,7 +228,10 @@ mod tests {
             ..Usage::default()
         };
 
-        assert_eq!(usage_cache_miss_tokens(&usage), Some(25));
+        assert_eq!(
+            normalized_cache_miss_tokens(Some(ProviderType::OpenAi), &usage),
+            Some(25)
+        );
     }
 
     #[test]
@@ -215,7 +243,10 @@ mod tests {
             ..Usage::default()
         };
 
-        assert_eq!(usage_cache_miss_tokens(&usage), Some(80));
+        assert_eq!(
+            normalized_cache_miss_tokens(Some(ProviderType::OpenAi), &usage),
+            Some(80)
+        );
     }
 
     #[test]
@@ -227,6 +258,25 @@ mod tests {
             ..Usage::default()
         };
 
-        assert_eq!(usage_cache_miss_tokens(&usage), Some(0));
+        assert_eq!(
+            normalized_cache_miss_tokens(Some(ProviderType::OpenAi), &usage),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn anthropic_cache_miss_uses_disjoint_input_and_creation_counters() {
+        let usage = Usage {
+            prompt_tokens: 100,
+            cache_read_tokens: Some(900),
+            cache_miss_tokens: None,
+            cache_creation_tokens: Some(50),
+            ..Usage::default()
+        };
+
+        assert_eq!(
+            normalized_cache_miss_tokens(Some(ProviderType::Anthropic), &usage),
+            Some(150)
+        );
     }
 }

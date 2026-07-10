@@ -1,6 +1,6 @@
 //! Lightweight prompt-cache stability diagnostics for agent model requests.
 
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
@@ -15,6 +15,7 @@ const MIN_CACHE_BREAK_TOKEN_DROP: u32 = 1_000;
 const MAX_STABLE_CACHE_READ_RATIO: f32 = 0.95;
 const PREFIX_HASH_TOKEN_WINDOWS: [u32; 3] = [1_024, 4_096, 16_384];
 const DEEPSEEK_CACHE_SETTLE_RISK_MS: u64 = 2_000;
+const CACHE_RATIO_BASIS_POINTS: u64 = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +42,18 @@ pub(super) struct PromptCacheSnapshot {
     system_message_hashes: Vec<u64>,
     dynamic_system_tokens: u32,
     tool_result_tokens: u32,
+    /// Estimated token cost for each message, aligned with `message_hashes`.
+    /// Defaults keep snapshots written before diagnostics v2 readable.
+    #[serde(default)]
+    estimated_message_tokens: Vec<u32>,
+    #[serde(default)]
+    estimated_tool_tokens: u32,
+    #[serde(default)]
+    estimated_prompt_tokens: u32,
+    /// Per-tool hashes aligned with `tool_names`, used to name schema drift
+    /// instead of reporting only an opaque aggregate hash change.
+    #[serde(default)]
+    tool_schema_hashes: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,13 +72,36 @@ pub(super) struct PromptCacheTraceObservation {
     snapshot: PromptCacheSnapshot,
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_snapshot_source: Option<PromptCacheSnapshotSource>,
+    /// `coldStart`, `warmAppend`, `warmReplay`, or the concrete prefix
+    /// invalidation class. Cold starts are intentionally not mixed with warm
+    /// append-only samples when diagnosing provider cache quality.
+    sample_kind: String,
+    prefix_changed: bool,
     changes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_changed_message_index: Option<usize>,
+    common_prefix_message_count: usize,
+    estimated_request_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    estimated_reusable_prefix_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    estimated_changed_suffix_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    estimated_reuse_ratio_bps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_names_added: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_names_removed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_schemas_changed: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_read_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_miss_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_creation_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actual_cache_hit_rate_bps: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     was_compacted: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,9 +114,25 @@ struct PendingPromptCacheObservation {
     request_kind: String,
     snapshot: PromptCacheSnapshot,
     previous_snapshot_source: Option<PromptCacheSnapshotSource>,
-    changes: Vec<String>,
+    diff: PromptCacheDiff,
     model_step_interval_ms: Option<u64>,
     fast_cache_settle_risk: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromptCacheDiff {
+    sample_kind: String,
+    prefix_changed: bool,
+    changes: Vec<String>,
+    first_changed_message_index: Option<usize>,
+    common_prefix_message_count: usize,
+    estimated_request_tokens: u32,
+    estimated_reusable_prefix_tokens: Option<u32>,
+    estimated_changed_suffix_tokens: Option<u32>,
+    estimated_reuse_ratio_bps: Option<u32>,
+    tool_names_added: Vec<String>,
+    tool_names_removed: Vec<String>,
+    tool_schemas_changed: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -111,6 +163,13 @@ fn tool_schema_hash(tools: &[ToolDefinition]) -> u64 {
     hash_text(&serialized)
 }
 
+fn individual_tool_schema_hashes(tools: &[ToolDefinition]) -> Vec<u64> {
+    tools
+        .iter()
+        .map(|tool| hash_text(&serde_json::to_string(tool).unwrap_or_default()))
+        .collect()
+}
+
 fn role_label(role: &Role) -> &'static str {
     match role {
         Role::System => "system",
@@ -122,18 +181,55 @@ fn role_label(role: &Role) -> &'static str {
 
 fn serialized_message_for_hash(message: &Message) -> String {
     let tool_calls = serde_json::to_string(&message.tool_calls).unwrap_or_default();
-    format!(
+    let base = format!(
         "role={};name={};text={};tool_calls={};reasoning={}",
         role_label(&message.role),
         message.name.as_deref().unwrap_or_default(),
         message.text_content(),
         tool_calls,
         message.reasoning_content.as_deref().unwrap_or_default()
-    )
+    );
+    let image_fingerprints = message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            ContentPart::Image { media_type, data } => Some((media_type.as_str(), hash_text(data))),
+            ContentPart::Text { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if image_fingerprints.is_empty() {
+        base
+    } else {
+        format!(
+            "{base};images={}",
+            serde_json::to_string(&image_fingerprints).unwrap_or_default()
+        )
+    }
+}
+
+fn estimate_prompt_cache_message_tokens(model: &str, message: &Message) -> u32 {
+    let base = estimate_message_tokens_for_model(model, message);
+    message
+        .reasoning_content
+        .as_deref()
+        .map(|reasoning| base.saturating_add(estimate_tokens_for_model(model, reasoning)))
+        .unwrap_or(base)
 }
 
 fn message_hash(message: &Message) -> u64 {
     hash_text(&serialized_message_for_hash(message))
+}
+
+/// A compact structural fingerprint used to detect whether a context
+/// compaction actually rewrote the message sequence. Unlike serializing the
+/// entire history, this avoids materializing another copy of large image data.
+pub(super) fn message_sequence_fingerprint(messages: &[Message]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    messages.len().hash(&mut hasher);
+    for message in messages {
+        message_hash(message).hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn message_fingerprint(message: &Message) -> PromptCacheMessageFingerprint {
@@ -153,7 +249,7 @@ fn prefix_hash_for_token_budget(model: &str, messages: &[Message], token_budget:
         if used >= token_budget {
             break;
         }
-        let message_tokens = estimate_message_tokens_for_model(model, message);
+        let message_tokens = estimate_prompt_cache_message_tokens(model, message);
         let message_text = serialized_message_for_hash(message);
         if used.saturating_add(message_tokens) <= token_budget {
             serialized.push_str(&message_text);
@@ -214,6 +310,16 @@ fn snapshot_for(
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> PromptCacheSnapshot {
+    let estimated_message_tokens = messages
+        .iter()
+        .map(|message| estimate_prompt_cache_message_tokens(model, message))
+        .collect::<Vec<_>>();
+    let estimated_tool_tokens = context::estimate_tool_tokens_for_model(model, tools);
+    let estimated_prompt_tokens = estimated_message_tokens
+        .iter()
+        .copied()
+        .sum::<u32>()
+        .saturating_add(estimated_tool_tokens);
     PromptCacheSnapshot {
         provider_type,
         model: model.to_string(),
@@ -229,27 +335,118 @@ fn snapshot_for(
         system_message_hashes: system_message_hashes(messages),
         dynamic_system_tokens: dynamic_system_tokens(model, messages),
         tool_result_tokens: tool_result_tokens(model, messages),
+        estimated_message_tokens,
+        estimated_tool_tokens,
+        estimated_prompt_tokens,
+        tool_schema_hashes: individual_tool_schema_hashes(tools),
     }
 }
 
-fn diff_snapshots(previous: &PromptCacheSnapshot, next: &PromptCacheSnapshot) -> Vec<String> {
+fn common_prefix_message_count(previous: &[u64], next: &[u64]) -> usize {
+    previous
+        .iter()
+        .zip(next.iter())
+        .take_while(|(previous, next)| previous == next)
+        .count()
+}
+
+fn tool_name_changes(
+    previous: &PromptCacheSnapshot,
+    next: &PromptCacheSnapshot,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let previous_names = previous.tool_names.iter().cloned().collect::<BTreeSet<_>>();
+    let next_names = next.tool_names.iter().cloned().collect::<BTreeSet<_>>();
+    let added = next_names
+        .difference(&previous_names)
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed = previous_names
+        .difference(&next_names)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let hashes_for = |snapshot: &PromptCacheSnapshot| {
+        if snapshot.tool_names.len() != snapshot.tool_schema_hashes.len() {
+            return BTreeMap::new();
+        }
+        snapshot
+            .tool_names
+            .iter()
+            .cloned()
+            .zip(snapshot.tool_schema_hashes.iter().copied())
+            .collect::<BTreeMap<_, _>>()
+    };
+    let previous_hashes = hashes_for(previous);
+    let next_hashes = hashes_for(next);
+    let changed = previous_names
+        .intersection(&next_names)
+        .filter(|name| {
+            matches!(
+                (previous_hashes.get(*name), next_hashes.get(*name)),
+                (Some(previous), Some(next)) if previous != next
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    (added, removed, changed)
+}
+
+fn ratio_basis_points(numerator: u32, denominator: u32) -> Option<u32> {
+    (denominator > 0).then(|| {
+        let ratio =
+            u64::from(numerator).saturating_mul(CACHE_RATIO_BASIS_POINTS) / u64::from(denominator);
+        u32::try_from(ratio.min(CACHE_RATIO_BASIS_POINTS)).unwrap_or(10_000)
+    })
+}
+
+fn cold_start_diff(next: &PromptCacheSnapshot) -> PromptCacheDiff {
+    PromptCacheDiff {
+        sample_kind: "coldStart".to_string(),
+        prefix_changed: false,
+        changes: Vec::new(),
+        first_changed_message_index: None,
+        common_prefix_message_count: 0,
+        estimated_request_tokens: next.estimated_prompt_tokens,
+        estimated_reusable_prefix_tokens: None,
+        estimated_changed_suffix_tokens: None,
+        estimated_reuse_ratio_bps: None,
+        tool_names_added: Vec::new(),
+        tool_names_removed: Vec::new(),
+        tool_schemas_changed: Vec::new(),
+    }
+}
+
+fn diff_snapshots(previous: &PromptCacheSnapshot, next: &PromptCacheSnapshot) -> PromptCacheDiff {
     let mut changes = Vec::new();
-    if previous.provider_type != next.provider_type {
+    let provider_changed = previous.provider_type != next.provider_type;
+    let model_changed = previous.model != next.model;
+    let stable_system_changed = previous.stable_system_hash != next.stable_system_hash;
+    let tool_surface_changed = previous.tool_schema_hash != next.tool_schema_hash;
+    let common_prefix_message_count =
+        common_prefix_message_count(&previous.message_hashes, &next.message_hashes);
+    let previous_messages_are_prefix = common_prefix_message_count == previous.message_hashes.len();
+    let messages_equal =
+        previous_messages_are_prefix && previous.message_hashes.len() == next.message_hashes.len();
+    let (tool_names_added, tool_names_removed, tool_schemas_changed) =
+        tool_name_changes(previous, next);
+
+    if provider_changed {
         changes.push(format!(
             "provider type changed ({:?} -> {:?})",
             previous.provider_type, next.provider_type
         ));
     }
-    if previous.model != next.model {
+    if model_changed {
         changes.push(format!(
             "model changed ({} -> {})",
             previous.model, next.model
         ));
     }
-    if previous.stable_system_hash != next.stable_system_hash {
+    if stable_system_changed {
         changes.push("stable system prompt changed".to_string());
     }
-    if previous.tool_schema_hash != next.tool_schema_hash {
+    if tool_surface_changed {
         if previous.tool_count == next.tool_count {
             changes.push("tool schemas changed with same count".to_string());
         } else {
@@ -258,9 +455,27 @@ fn diff_snapshots(previous: &PromptCacheSnapshot, next: &PromptCacheSnapshot) ->
                 previous.tool_count, next.tool_count
             ));
         }
+        if !tool_names_added.is_empty() {
+            changes.push(format!("tools added: {}", tool_names_added.join(", ")));
+        }
+        if !tool_names_removed.is_empty() {
+            changes.push(format!("tools removed: {}", tool_names_removed.join(", ")));
+        }
+        if !tool_schemas_changed.is_empty() {
+            changes.push(format!(
+                "tool schemas changed: {}",
+                tool_schemas_changed.join(", ")
+            ));
+        }
     }
-    if let Some(index) = first_changed_message_index(&previous.message_hashes, &next.message_hashes)
-    {
+
+    // Appending a new assistant/tool/user tail is the healthy cache path and
+    // must not be diagnosed as a prefix mutation. Only explain message-level
+    // drift when bytes inside the prior request were removed or rewritten.
+    let first_changed_message_index = (!previous_messages_are_prefix)
+        .then(|| first_changed_message_index(&previous.message_hashes, &next.message_hashes))
+        .flatten();
+    if let Some(index) = first_changed_message_index {
         changes.push(format!("first changed message index {index}"));
         match (
             previous.message_fingerprints.get(index),
@@ -281,40 +496,71 @@ fn diff_snapshots(previous: &PromptCacheSnapshot, next: &PromptCacheSnapshot) ->
             (Some(_), None) => changes.push(format!("message {index} was removed")),
             (None, None) => {}
         }
+        if previous.prefix_hashes != next.prefix_hashes {
+            let changed = PREFIX_HASH_TOKEN_WINDOWS
+                .iter()
+                .zip(previous.prefix_hashes.iter().zip(next.prefix_hashes.iter()))
+                .filter_map(|(window, (previous_hash, next_hash))| {
+                    (previous_hash != next_hash).then_some(format!("{window}t"))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            changes.push(format!("serialized prefix hash changed ({changed})"));
+        }
     }
-    if previous.prefix_hashes != next.prefix_hashes {
-        let changed = PREFIX_HASH_TOKEN_WINDOWS
-            .iter()
-            .zip(previous.prefix_hashes.iter().zip(next.prefix_hashes.iter()))
-            .filter_map(|(window, (previous_hash, next_hash))| {
-                (previous_hash != next_hash).then_some(format!("{window}t"))
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        changes.push(format!("serialized prefix hash changed ({changed})"));
+
+    let static_prefix_compatible =
+        !provider_changed && !model_changed && !stable_system_changed && !tool_surface_changed;
+    let estimated_reusable_prefix_tokens = if static_prefix_compatible
+        && next.estimated_message_tokens.len() == next.message_hashes.len()
+    {
+        Some(
+            next.estimated_message_tokens
+                .iter()
+                .take(common_prefix_message_count)
+                .copied()
+                .sum::<u32>()
+                .saturating_add(next.estimated_tool_tokens),
+        )
+    } else {
+        Some(0)
+    };
+    let estimated_changed_suffix_tokens = estimated_reusable_prefix_tokens
+        .map(|reusable| next.estimated_prompt_tokens.saturating_sub(reusable));
+    let estimated_reuse_ratio_bps = estimated_reusable_prefix_tokens
+        .and_then(|reusable| ratio_basis_points(reusable, next.estimated_prompt_tokens));
+
+    let sample_kind = if provider_changed {
+        "providerChanged"
+    } else if model_changed {
+        "modelChanged"
+    } else if stable_system_changed {
+        "systemPromptChanged"
+    } else if tool_surface_changed {
+        "toolSurfaceChanged"
+    } else if !previous_messages_are_prefix {
+        "prefixRewrite"
+    } else if messages_equal {
+        "warmReplay"
+    } else {
+        "warmAppend"
+    };
+    let prefix_changed = !matches!(sample_kind, "warmAppend" | "warmReplay");
+
+    PromptCacheDiff {
+        sample_kind: sample_kind.to_string(),
+        prefix_changed,
+        changes,
+        first_changed_message_index,
+        common_prefix_message_count,
+        estimated_request_tokens: next.estimated_prompt_tokens,
+        estimated_reusable_prefix_tokens,
+        estimated_changed_suffix_tokens,
+        estimated_reuse_ratio_bps,
+        tool_names_added,
+        tool_names_removed,
+        tool_schemas_changed,
     }
-    if previous.system_message_positions != next.system_message_positions {
-        changes.push(format!(
-            "system message positions changed ({:?} -> {:?})",
-            previous.system_message_positions, next.system_message_positions
-        ));
-    }
-    if previous.system_message_hashes != next.system_message_hashes {
-        changes.push("system message hashes changed".to_string());
-    }
-    if previous.dynamic_system_tokens != next.dynamic_system_tokens {
-        changes.push(format!(
-            "dynamic system tokens changed ({} -> {})",
-            previous.dynamic_system_tokens, next.dynamic_system_tokens
-        ));
-    }
-    if previous.tool_result_tokens != next.tool_result_tokens {
-        changes.push(format!(
-            "tool result tokens changed ({} -> {})",
-            previous.tool_result_tokens, next.tool_result_tokens
-        ));
-    }
-    changes
 }
 
 impl PromptCacheTracker {
@@ -332,11 +578,11 @@ impl PromptCacheTracker {
         });
         self.previous_begin_at = Some(now);
         let next = snapshot_for(provider_type, model, messages, tools);
-        let changes = self
+        let diff = self
             .previous_snapshot
             .as_ref()
             .map(|previous| diff_snapshots(previous, &next))
-            .unwrap_or_default();
+            .unwrap_or_else(|| cold_start_diff(&next));
         let previous_snapshot_source = self.previous_snapshot_source.clone();
         let fast_cache_settle_risk = matches!(provider_type, Some(ProviderType::DeepSeek))
             && model_step_interval_ms
@@ -345,7 +591,7 @@ impl PromptCacheTracker {
             request_kind: request_kind.to_string(),
             snapshot: next.clone(),
             previous_snapshot_source,
-            changes,
+            diff,
             model_step_interval_ms,
             fast_cache_settle_risk,
         });
@@ -356,13 +602,18 @@ impl PromptCacheTracker {
         });
     }
 
-    fn seed_previous_turn_snapshot(&mut self, turn_id: String, snapshot: PromptCacheSnapshot) {
+    fn seed_previous_turn_snapshot(
+        &mut self,
+        turn_id: String,
+        snapshot: PromptCacheSnapshot,
+        cache_read_tokens: Option<u32>,
+    ) {
         self.previous_snapshot = Some(snapshot);
         self.previous_snapshot_source = Some(PromptCacheSnapshotSource {
             kind: "previousConversationTurn".to_string(),
             turn_id: Some(turn_id),
         });
-        self.previous_cache_read_tokens = None;
+        self.previous_cache_read_tokens = cache_read_tokens;
         self.pending_observation = None;
     }
 
@@ -382,8 +633,16 @@ impl PromptCacheTracker {
             .unwrap_or_default();
 
         let cache_read_tokens = usage.and_then(|usage| usage.cache_read_tokens);
-        let cache_miss_tokens = usage.and_then(|usage| usage.cache_miss_tokens);
+        let cache_miss_tokens = usage
+            .and_then(|usage| usage_accounting::normalized_cache_miss_tokens(provider_type, usage));
         let cache_creation_tokens = usage.and_then(|usage| usage.cache_creation_tokens);
+        let actual_cache_hit_rate_bps = cache_read_tokens.and_then(|read| {
+            let denominator = cache_miss_tokens
+                .map(|miss| read.saturating_add(miss))
+                .or_else(|| usage.map(|usage| usage.prompt_tokens))
+                .unwrap_or(0);
+            ratio_basis_points(read, denominator)
+        });
         if let Some(cache_read_tokens) = cache_read_tokens {
             let previous = self.previous_cache_read_tokens;
             self.previous_cache_read_tokens = Some(cache_read_tokens);
@@ -398,7 +657,7 @@ impl PromptCacheTracker {
                     let changes = self
                         .pending_observation
                         .as_ref()
-                        .map(|pending| pending.changes.as_slice())
+                        .map(|pending| pending.diff.changes.as_slice())
                         .unwrap_or_default();
                     let reason = if changes.is_empty() {
                         "prompt unchanged; likely provider-side TTL/routing/eviction".to_string()
@@ -426,21 +685,34 @@ impl PromptCacheTracker {
             }
         }
 
-        self.pending_observation
-            .take()
-            .map(|pending| PromptCacheTraceObservation {
-                version: 1,
+        self.pending_observation.take().map(|pending| {
+            let diff = pending.diff;
+            PromptCacheTraceObservation {
+                version: 2,
                 request_kind: pending.request_kind,
                 snapshot: pending.snapshot,
                 previous_snapshot_source: pending.previous_snapshot_source,
-                changes: pending.changes,
+                sample_kind: diff.sample_kind,
+                prefix_changed: diff.prefix_changed,
+                changes: diff.changes,
+                first_changed_message_index: diff.first_changed_message_index,
+                common_prefix_message_count: diff.common_prefix_message_count,
+                estimated_request_tokens: diff.estimated_request_tokens,
+                estimated_reusable_prefix_tokens: diff.estimated_reusable_prefix_tokens,
+                estimated_changed_suffix_tokens: diff.estimated_changed_suffix_tokens,
+                estimated_reuse_ratio_bps: diff.estimated_reuse_ratio_bps,
+                tool_names_added: diff.tool_names_added,
+                tool_names_removed: diff.tool_names_removed,
+                tool_schemas_changed: diff.tool_schemas_changed,
                 cache_read_tokens,
                 cache_miss_tokens,
                 cache_creation_tokens,
+                actual_cache_hit_rate_bps,
                 was_compacted,
                 model_step_interval_ms: pending.model_step_interval_ms,
                 fast_cache_settle_risk: pending.fast_cache_settle_risk,
-            })
+            }
+        })
     }
 }
 
@@ -457,23 +729,26 @@ impl AgentExecutor {
         let Ok(turns) = db.get_conversation_turns(conversation_id) else {
             return;
         };
-        let Some(previous) = turns
+        let Some((previous_turn_id, seed)) = turns
             .iter()
             .rev()
             .filter(|turn| Some(turn.id.as_str()) != current_turn_id)
-            .find(|turn| turn.finished_at.is_some())
-        else {
-            return;
-        };
-        let Some(snapshot) = previous
-            .trace
-            .as_ref()
-            .and_then(prompt_cache_snapshot_from_turn_trace)
+            .filter(|turn| turn.finished_at.is_some())
+            .find_map(|turn| {
+                turn.trace
+                    .as_ref()
+                    .and_then(prompt_cache_seed_from_turn_trace)
+                    .map(|seed| (turn.id.clone(), seed))
+            })
         else {
             return;
         };
         if let Ok(mut tracker) = self.prompt_cache_tracker.lock() {
-            tracker.seed_previous_turn_snapshot(previous.id.clone(), snapshot);
+            tracker.seed_previous_turn_snapshot(
+                previous_turn_id,
+                seed.snapshot,
+                seed.cache_read_tokens,
+            );
         }
     }
 
@@ -515,15 +790,31 @@ pub(super) fn prompt_cache_observation_to_value(
     serde_json::to_value(observation).ok()
 }
 
-fn prompt_cache_snapshot_from_turn_trace(trace: &serde_json::Value) -> Option<PromptCacheSnapshot> {
+struct PromptCacheSeed {
+    snapshot: PromptCacheSnapshot,
+    cache_read_tokens: Option<u32>,
+}
+
+fn prompt_cache_seed_from_turn_trace(trace: &serde_json::Value) -> Option<PromptCacheSeed> {
     let items = trace.get("items")?.as_array()?;
     items
         .iter()
         .rev()
         .filter(|item| item.get("kind").and_then(serde_json::Value::as_str) == Some("promptCache"))
         .filter_map(|item| item.get("observation"))
-        .filter_map(|observation| observation.get("snapshot"))
-        .find_map(|snapshot| serde_json::from_value(snapshot.clone()).ok())
+        .find_map(|observation| {
+            let snapshot = observation
+                .get("snapshot")
+                .and_then(|snapshot| serde_json::from_value(snapshot.clone()).ok())?;
+            let cache_read_tokens = observation
+                .get("cacheReadTokens")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok());
+            Some(PromptCacheSeed {
+                snapshot,
+                cache_read_tokens,
+            })
+        })
 }
 
 #[cfg(test)]
@@ -561,15 +852,19 @@ mod tests {
 
         let diff = diff_snapshots(&first, &second);
 
+        assert_eq!(diff.sample_kind, "prefixRewrite");
+        assert!(diff.prefix_changed);
+        assert_eq!(diff.first_changed_message_index, Some(1));
         assert!(diff
+            .changes
             .iter()
             .any(|change| change == "first changed message index 1"));
         assert!(diff
-            .iter()
-            .any(|change| change == "system message hashes changed"));
-        assert!(diff
+            .changes
             .iter()
             .any(|change| change.starts_with("serialized prefix hash changed")));
+        assert!(diff.estimated_reusable_prefix_tokens.unwrap_or(0) > 0);
+        assert!(diff.estimated_changed_suffix_tokens.unwrap_or(0) > 0);
     }
 
     #[test]
@@ -583,10 +878,16 @@ mod tests {
         tool_b.description = "Search docs".into();
         let previous = snapshot_for(None, "m", &[msg(Role::System, "stable")], &[tool_a]);
         let next = snapshot_for(None, "m", &[msg(Role::System, "stable")], &[tool_b]);
-        assert_eq!(
-            diff_snapshots(&previous, &next),
-            vec!["tool schemas changed with same count"]
-        );
+        let diff = diff_snapshots(&previous, &next);
+
+        assert_eq!(diff.sample_kind, "toolSurfaceChanged");
+        assert!(diff.prefix_changed);
+        assert_eq!(diff.tool_schemas_changed, vec!["search"]);
+        assert_eq!(diff.estimated_reusable_prefix_tokens, Some(0));
+        assert!(diff
+            .changes
+            .iter()
+            .any(|change| change == "tool schemas changed with same count"));
     }
 
     #[test]
@@ -604,8 +905,12 @@ mod tests {
             &[],
         );
 
+        let diff = diff_snapshots(&previous, &next);
+
+        assert_eq!(diff.sample_kind, "providerChanged");
+        assert_eq!(diff.estimated_reusable_prefix_tokens, Some(0));
         assert_eq!(
-            diff_snapshots(&previous, &next),
+            diff.changes,
             vec!["provider type changed (Some(OpenAi) -> Some(DeepSeek))"]
         );
     }
@@ -622,8 +927,213 @@ mod tests {
         let diff = diff_snapshots(&previous, &next);
 
         assert!(diff
+            .changes
             .iter()
             .any(|change| change == "message 0 reasoning hash changed"));
+    }
+
+    #[test]
+    fn snapshot_hash_detects_image_content_changes() {
+        let message_with_image = |data: &str| Message {
+            role: Role::User,
+            parts: vec![
+                ContentPart::Text {
+                    text: "inspect this image".to_string(),
+                },
+                ContentPart::Image {
+                    media_type: "image/png".to_string(),
+                    data: data.to_string(),
+                },
+            ],
+            name: None,
+            tool_calls: None,
+            reasoning_content: None,
+        };
+        let previous = snapshot_for(None, "m", &[message_with_image("first-image")], &[]);
+        let next = snapshot_for(None, "m", &[message_with_image("second-image")], &[]);
+
+        let diff = diff_snapshots(&previous, &next);
+
+        assert_eq!(diff.sample_kind, "prefixRewrite");
+        assert_eq!(diff.first_changed_message_index, Some(0));
+    }
+
+    #[test]
+    fn snapshot_token_estimate_includes_replayed_reasoning_content() {
+        let plain = msg(Role::Assistant, "answer");
+        let mut with_reasoning = plain.clone();
+        with_reasoning.reasoning_content = Some("reasoning ".repeat(2_000));
+
+        let plain_snapshot = snapshot_for(
+            Some(ProviderType::DeepSeek),
+            "deepseek-reasoner",
+            &[plain],
+            &[],
+        );
+        let reasoning_snapshot = snapshot_for(
+            Some(ProviderType::DeepSeek),
+            "deepseek-reasoner",
+            &[with_reasoning],
+            &[],
+        );
+
+        assert!(
+            reasoning_snapshot.estimated_prompt_tokens > plain_snapshot.estimated_prompt_tokens
+        );
+    }
+
+    #[test]
+    fn persisted_seed_restores_snapshot_and_cache_read_baseline() {
+        let snapshot = snapshot_for(
+            Some(ProviderType::Anthropic),
+            "claude-sonnet-4-6",
+            &[msg(Role::System, "stable"), msg(Role::User, "first")],
+            &[],
+        );
+        let trace = serde_json::json!({
+            "items": [{
+                "kind": "promptCache",
+                "observation": {
+                    "snapshot": snapshot,
+                    "cacheReadTokens": 8192
+                }
+            }]
+        });
+
+        let seed = prompt_cache_seed_from_turn_trace(&trace).expect("persisted cache seed");
+        assert_eq!(seed.cache_read_tokens, Some(8192));
+
+        let mut tracker = PromptCacheTracker::default();
+        tracker.seed_previous_turn_snapshot(
+            "previous-turn".to_string(),
+            seed.snapshot,
+            seed.cache_read_tokens,
+        );
+        assert_eq!(tracker.previous_cache_read_tokens, Some(8192));
+        assert_eq!(
+            tracker
+                .previous_snapshot_source
+                .as_ref()
+                .and_then(|source| source.turn_id.as_deref()),
+            Some("previous-turn")
+        );
+    }
+
+    #[test]
+    fn snapshot_diff_classifies_append_only_growth_as_warm_without_false_changes() {
+        let previous_messages = vec![
+            msg(Role::System, "stable"),
+            msg(Role::User, "first request"),
+        ];
+        let next_messages = vec![
+            msg(Role::System, "stable"),
+            msg(Role::User, "first request"),
+            msg(Role::Assistant, "first answer"),
+            msg(Role::User, "next request"),
+        ];
+        let previous = snapshot_for(
+            Some(ProviderType::DeepSeek),
+            "deepseek-chat",
+            &previous_messages,
+            &[],
+        );
+        let next = snapshot_for(
+            Some(ProviderType::DeepSeek),
+            "deepseek-chat",
+            &next_messages,
+            &[],
+        );
+
+        let diff = diff_snapshots(&previous, &next);
+
+        assert_eq!(diff.sample_kind, "warmAppend");
+        assert!(!diff.prefix_changed);
+        assert!(diff.changes.is_empty());
+        assert_eq!(diff.first_changed_message_index, None);
+        assert_eq!(diff.common_prefix_message_count, previous_messages.len());
+        assert!(diff.estimated_reusable_prefix_tokens.unwrap_or(0) > 0);
+        assert!(diff.estimated_changed_suffix_tokens.unwrap_or(0) > 0);
+        assert!(diff
+            .estimated_reuse_ratio_bps
+            .is_some_and(|ratio| ratio < 10_000));
+    }
+
+    #[test]
+    fn tracker_separates_cold_start_from_warm_append_and_normalizes_miss_tokens() {
+        let mut tracker = PromptCacheTracker::default();
+        tracker.begin(
+            "mainAgentStep",
+            Some(ProviderType::DeepSeek),
+            "deepseek-chat",
+            &[msg(Role::System, "stable"), msg(Role::User, "first")],
+            &[],
+        );
+        let cold = tracker
+            .complete(
+                Some(&Usage {
+                    prompt_tokens: 100,
+                    cache_read_tokens: Some(0),
+                    ..Usage::default()
+                }),
+                Some(false),
+            )
+            .expect("cold observation");
+        assert_eq!(cold.sample_kind, "coldStart");
+        assert_eq!(cold.cache_miss_tokens, Some(100));
+        assert_eq!(cold.actual_cache_hit_rate_bps, Some(0));
+
+        tracker.begin(
+            "mainAgentStep",
+            Some(ProviderType::DeepSeek),
+            "deepseek-chat",
+            &[
+                msg(Role::System, "stable"),
+                msg(Role::User, "first"),
+                msg(Role::Assistant, "answer"),
+            ],
+            &[],
+        );
+        let warm = tracker
+            .complete(
+                Some(&Usage {
+                    prompt_tokens: 125,
+                    cache_read_tokens: Some(100),
+                    ..Usage::default()
+                }),
+                Some(false),
+            )
+            .expect("warm observation");
+        assert_eq!(warm.sample_kind, "warmAppend");
+        assert!(!warm.prefix_changed);
+        assert_eq!(warm.cache_miss_tokens, Some(25));
+        assert_eq!(warm.actual_cache_hit_rate_bps, Some(8_000));
+    }
+
+    #[test]
+    fn tracker_normalizes_anthropic_disjoint_cache_counters() {
+        let mut tracker = PromptCacheTracker::default();
+        tracker.begin(
+            "mainAgentStep",
+            Some(ProviderType::Anthropic),
+            "claude-sonnet-4-6",
+            &[msg(Role::System, "stable"), msg(Role::User, "first")],
+            &[],
+        );
+
+        let observation = tracker
+            .complete(
+                Some(&Usage {
+                    prompt_tokens: 100,
+                    cache_read_tokens: Some(900),
+                    cache_creation_tokens: Some(50),
+                    ..Usage::default()
+                }),
+                Some(false),
+            )
+            .expect("anthropic observation");
+
+        assert_eq!(observation.cache_miss_tokens, Some(150));
+        assert_eq!(observation.actual_cache_hit_rate_bps, Some(8_571));
     }
 
     #[test]

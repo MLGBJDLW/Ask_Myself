@@ -356,18 +356,15 @@ body {
   }
 }
 
-@keyframes chat-tool-card-border-glow {
-  0%, 100% {
-    opacity: 0.44;
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--color-accent) 34%, transparent),
-      0 0 10px color-mix(in srgb, var(--color-accent) 22%, transparent);
-  }
-  50% {
-    opacity: 0.96;
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--color-accent) 72%, transparent),
-      0 0 22px color-mix(in srgb, var(--color-accent) 34%, transparent);
+@property --chat-tool-card-flow-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes chat-tool-card-border-flow {
+  to {
+    --chat-tool-card-flow-angle: 360deg;
   }
 }
 
@@ -519,31 +516,15 @@ body {
   opacity: 0.22;
 }
 
-.chat-trace-panel {
+.chat-tool-card {
   position: relative;
   isolation: isolate;
   transform-origin: center;
 }
 
-.chat-trace-panel > * {
+.chat-tool-card > * {
   position: relative;
-  z-index: 1;
-}
-
-.chat-trace-panel > button {
-  min-height: 2.35rem;
-  padding-top: 0.4rem;
-  padding-bottom: 0.4rem;
-}
-
-.chat-trace-panel > button > span:first-child {
-  width: 1.5rem;
-  height: 1.5rem;
-}
-
-.chat-trace-panel > button > span:first-child svg {
-  width: 0.875rem;
-  height: 0.875rem;
+  z-index: 2;
 }
 
 .chat-trace-panel::before {
@@ -561,14 +542,23 @@ body {
   box-shadow: none;
 }
 
-.chat-trace-panel[data-trace-active='true'] {
+.chat-tool-card[data-tool-state='running'] {
   border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-accent) 88%, white),
+    transparent
+  );
+  background-position: calc(100% - 0.5rem) 0;
+  background-repeat: no-repeat;
+  background-size: 2.75rem 2px;
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--color-accent) 24%, transparent),
-    0 0 18px color-mix(in srgb, var(--color-accent) 12%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 14%, transparent),
+    0 0 14px color-mix(in srgb, var(--color-accent) 9%, transparent);
 }
 
-.chat-trace-panel[data-trace-active='true']::before {
+.chat-trace-panel[data-tool-state='running']::before {
   opacity: 0.16;
   background: linear-gradient(
     120deg,
@@ -577,29 +567,41 @@ body {
   );
 }
 
-.chat-trace-panel[data-trace-active='true']::after {
-  content: "";
-  position: absolute;
-  inset: -1px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 48%, transparent);
-  border-radius: inherit;
-  pointer-events: none;
-  z-index: 0;
-  animation: chat-tool-card-border-glow 1.9s ease-in-out infinite;
+@supports ((-webkit-mask-composite: xor) or (mask-composite: exclude)) {
+  .chat-tool-card[data-tool-state='running']::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    pointer-events: none;
+    z-index: 3;
+    background: conic-gradient(
+      from var(--chat-tool-card-flow-angle),
+      transparent 0deg,
+      transparent 268deg,
+      color-mix(in srgb, var(--color-accent) 18%, transparent) 286deg,
+      color-mix(in srgb, var(--color-accent) 82%, transparent) 310deg,
+      color-mix(in srgb, white 88%, var(--color-accent)) 324deg,
+      color-mix(in srgb, var(--color-accent) 76%, transparent) 338deg,
+      transparent 354deg,
+      transparent 360deg
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    filter: drop-shadow(0 0 3px color-mix(in srgb, var(--color-accent) 58%, transparent));
+    animation: chat-tool-card-border-flow 2.4s linear infinite;
+  }
 }
 
-.chat-trace-panel[data-trace-active='true'] > button > span:last-child > span:last-of-type {
-  width: 0.45rem;
-  min-width: 0.45rem;
-  height: 1.35rem;
-  border-color: transparent;
-  background: transparent;
-  color: transparent;
-  box-shadow: none;
-}
-
-.chat-trace-panel[data-trace-active='true'] > button > span:last-child > span:last-of-type svg {
-  opacity: 0;
+.chat-tool-card[data-tool-state='error'] {
+  border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-border));
 }
 
 .streaming-caret-overlay {
@@ -678,8 +680,10 @@ body {
   .thinking-status-text-active,
   .thinking-status-text-active::after,
   .chat-compact-status-text::after,
-  .chat-trace-panel[data-trace-active='true']::after {
+  .chat-tool-card[data-tool-state='running']::after {
     animation: none;
+    --chat-tool-card-flow-angle: 318deg;
+    filter: drop-shadow(0 0 2px color-mix(in srgb, var(--color-accent) 48%, transparent));
   }
 }
 

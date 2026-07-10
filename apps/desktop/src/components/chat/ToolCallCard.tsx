@@ -16,7 +16,6 @@ import {
   List,
   ChevronDown,
   ChevronUp,
-  Loader2,
   CheckCircle2,
   XCircle,
   Wrench,
@@ -1402,7 +1401,6 @@ export function ToolCallCard({
   inline,
   trace,
   argsStatus,
-  argsBytes,
 }: ToolCallCardProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -1457,9 +1455,6 @@ export function ToolCallCard({
         renderKind,
       );
   const briefResult = getToolBriefResult(status, t, content, safeToolName);
-  const argsByteLabel = formatByteCount(
-    typeof argsBytes === 'number' ? argsBytes : (args ? args.length : 0),
-  );
   const durationLabel = formatDurationMs(durationMs);
   const resourceKeyCount = Array.isArray(capabilities?.resourceKeys)
     ? capabilities.resourceKeys.length
@@ -1543,17 +1538,7 @@ export function ToolCallCard({
     );
   }
 
-  const statusConfig = {
-    preparing: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },
-    starting: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },
-    approvalPending: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },
-    running: { icon: Loader2, text: t('chat.toolRunning'), color: 'text-accent', spin: true },
-    done: { icon: CheckCircle2, text: t('chat.toolDone'), color: 'text-success', spin: false },
-    error: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
-    declined: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
-    cancelled: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
-    timedOut: { icon: XCircle, text: t('chat.toolError'), color: 'text-danger', spin: false },
-  }[status];
+  const failedStatus = isUnsuccessfulToolCallStatus(status);
   const baseHeaderSummary = skillActivation
     ? t('chat.skillActivationReady')
     : planArtifact
@@ -1570,7 +1555,7 @@ export function ToolCallCard({
         : generatedImage
           ? t('chat.generatedImageReady')
         : showImagePendingPreview
-          ? t('chat.generatedImageLoading')
+          ? null
         : graphUsage
           ? t('chat.graphContextSummary', {
               nodes: String(graphUsage.usedGraphNodes.length),
@@ -1579,22 +1564,28 @@ export function ToolCallCard({
             })
         : headerDiffStats
           ? isPending
-            ? statusConfig.text
+            ? null
             : `${headerDiffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
-        : status === 'done' && content
+        : failedStatus
           ? briefResult
-          : statusConfig.text;
-  const showArgsByteLabel = isPending && argsByteLabel && !(isFileChangeRender && headerDiffStats);
-  const headerSummary =
-    showArgsByteLabel
-      ? `${baseHeaderSummary} · ${argsByteLabel}`
-      : !isPending && durationLabel
-        ? `${baseHeaderSummary} · ${durationLabel}`
-      : baseHeaderSummary;
+          : null;
+  const headerSummary = [
+    baseHeaderSummary,
+    !isPending && durationLabel ? durationLabel : null,
+  ].filter((value): value is string => Boolean(value)).join(' · ') || null;
 
-  const StatusIcon = statusConfig.icon;
-  const traceActive = isPending && !shouldReduceMotion;
-  const traceSoft = status !== 'error';
+  // The moving edge communicates activity without spending header space on a
+  // spinner or a redundant visible "running" label. Terminal states retain a
+  // compact mark with an accessible label.
+  const StatusIcon = isPending ? null : failedStatus ? XCircle : CheckCircle2;
+  const statusLabel = isPending ? t('chat.toolRunning') : briefResult;
+  const toolCardState = isPending ? 'running' : failedStatus ? 'error' : 'done';
+  const toolCardAriaLabel = [
+    briefLabel,
+    headerDiffStats ? `+${headerDiffStats.additions}, -${headerDiffStats.deletions}` : null,
+    statusLabel,
+  ].filter((value): value is string => Boolean(value)).join(', ');
+  const traceSoft = !failedStatus;
   const visibleFormattedArgs = fileDiff || diffStats || isFileChangeRender || suppressNoisyLiveArgs ? null : formattedArgs;
   const streamingArgsPreview = fileDiff || diffStats || isFileChangeRender ? null : rawStreamingArgsPreview;
   const liveFileDiff = trace && isPending && Boolean(fileDiff);
@@ -1616,7 +1607,6 @@ export function ToolCallCard({
     showImagePendingPreview ||
     streamingArgsPreview,
   );
-  const failedStatus = isUnsuccessfulToolCallStatus(status);
   const toolTone = getToolTone(safeToolName);
   const traceToneClass = failedStatus
     ? 'border-danger/25 border-l-danger/75 bg-danger/10 hover:border-danger/35 hover:bg-danger/15'
@@ -1626,9 +1616,7 @@ export function ToolCallCard({
     : toolTone.icon;
   const statusBadgeClass = failedStatus
     ? 'border-danger/25 bg-danger/10 text-danger'
-    : isPending
-      ? 'border-accent/25 bg-accent/10 text-accent'
-      : 'border-success/20 bg-success/10 text-success';
+    : 'border-success/20 bg-success/10 text-success';
   const traceDetailBorderClass = failedStatus
     ? 'border-danger/25'
     : toolTone.detailBorder;
@@ -1636,24 +1624,28 @@ export function ToolCallCard({
 
   if (trace) {
     return (
-      <div className="my-1 max-w-full">
+      <div className="my-0.5 max-w-full">
         <button
           type="button"
           onClick={() => expandableDetails && setExpanded((prev) => !prev)}
           aria-expanded={expandableDetails ? detailsExpanded : undefined}
-          className={`group inline-grid min-h-9 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 rounded-lg border border-l-2 px-2 py-1.5 text-left align-top shadow-[0_1px_0_rgba(255,255,255,0.035)] transition-colors disabled:cursor-default sm:max-w-[36rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          aria-label={toolCardAriaLabel}
+          aria-busy={isPending}
+          className={`chat-tool-card group inline-grid min-h-7 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1.5 overflow-hidden rounded-lg border border-l-2 px-2 py-1 text-left shadow-[0_1px_0_rgba(255,255,255,0.035)] transition-colors disabled:cursor-default sm:max-w-[36rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
           disabled={!expandableDetails}
           title={capabilitySummary ?? undefined}
+          data-testid="tool-call-card"
+          data-tool-state={toolCardState}
         >
-          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
-            <Icon className="h-3.5 w-3.5 shrink-0" />
+          <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
+            <Icon className="h-3 w-3 shrink-0" />
           </span>
-          <span className="min-w-0 py-0.5">
-            <span className="block truncate text-[11px] font-medium leading-4 text-text-primary">
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            <span className="min-w-0 truncate text-[11px] font-medium leading-4 text-text-primary">
               {briefLabel}
             </span>
             {tracePreviewText && (
-              <span className="block truncate text-[10px] leading-3 text-text-tertiary">
+              <span className="hidden min-w-0 truncate text-[10px] leading-3 text-text-tertiary sm:inline">
                 {tracePreviewText}
               </span>
             )}
@@ -1672,13 +1664,21 @@ export function ToolCallCard({
                 />
               </span>
             ) : null}
-            <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}>
-              <StatusIcon className={`h-3 w-3 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`} />
-            </span>
+            {StatusIcon && (
+              <span
+                className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}
+                data-testid="tool-card-status"
+                role="img"
+                aria-label={statusLabel}
+                title={statusLabel}
+              >
+                <StatusIcon className="h-3 w-3 shrink-0" />
+              </span>
+            )}
             {expandableDetails && (
               detailsExpanded
-                ? <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
-                : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+                ? <ChevronUp className="h-3 w-3 shrink-0 text-text-tertiary" />
+                : <ChevronDown className="h-3 w-3 shrink-0 text-text-tertiary" />
             )}
           </span>
         </button>
@@ -1774,23 +1774,27 @@ export function ToolCallCard({
 
   if (compact) {
     return (
-      <div className="my-1 max-w-full">
+      <div className="my-0.5 max-w-full">
         <button
           type="button"
           onClick={() => expandableDetails && setExpanded((p) => !p)}
           aria-expanded={expandableDetails ? expanded : undefined}
+          aria-label={toolCardAriaLabel}
+          aria-busy={isPending}
           disabled={!expandableDetails}
-          className={`inline-grid min-h-8 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1.5 rounded-lg border border-l-2 px-1.5 py-1 text-left align-top shadow-[0_1px_0_rgba(255,255,255,0.035)] transition-colors disabled:cursor-default sm:max-w-[32rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          className={`chat-tool-card inline-grid min-h-7 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1.5 overflow-hidden rounded-lg border border-l-2 px-1.5 py-1 text-left shadow-[0_1px_0_rgba(255,255,255,0.035)] transition-colors disabled:cursor-default sm:max-w-[32rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          data-testid="tool-call-card"
+          data-tool-state={toolCardState}
         >
           <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
             <Icon className="h-3 w-3 shrink-0" />
           </span>
-          <span className="min-w-0">
-            <span className="block truncate text-[11px] font-medium leading-4 text-text-primary">
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            <span className="min-w-0 truncate text-[11px] font-medium leading-4 text-text-primary">
               {briefLabel}
             </span>
             {headerSummary && (
-              <span className="hidden truncate text-[10px] leading-3 text-text-tertiary sm:block">
+              <span className="hidden min-w-0 truncate text-[10px] leading-3 text-text-tertiary sm:inline">
                 {headerSummary}
               </span>
             )}
@@ -1809,11 +1813,17 @@ export function ToolCallCard({
                 />
               </span>
             ) : null}
-            <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}>
-              <StatusIcon
-                className={`h-2.5 w-2.5 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`}
-              />
-            </span>
+            {StatusIcon && (
+              <span
+                className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}
+                data-testid="tool-card-status"
+                role="img"
+                aria-label={statusLabel}
+                title={statusLabel}
+              >
+                <StatusIcon className="h-2.5 w-2.5 shrink-0" />
+              </span>
+            )}
             {expandableDetails && (
               detailsExpanded
                 ? <ChevronUp className="h-3 w-3 shrink-0 text-text-tertiary" />
@@ -1916,8 +1926,11 @@ export function ToolCallCard({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="chat-image-panel my-2 overflow-hidden rounded-md border border-border/55 bg-surface-0/55"
+        className="chat-image-panel chat-tool-card my-2 overflow-hidden rounded-md border border-border/55 bg-surface-0/55"
         data-state={generatedImage ? 'ready' : 'loading'}
+        data-testid="tool-call-card"
+        data-tool-state={toolCardState}
+        aria-busy={isPending}
       >
         <div className="flex min-h-11 items-center gap-2 border-b border-border/40 px-3 py-2">
           <Icon className="h-4 w-4 shrink-0 text-accent" />
@@ -1934,10 +1947,17 @@ export function ToolCallCard({
               ))}
             </div>
           </div>
-          <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] ${statusConfig.color}`}>
-            <StatusIcon className={`h-3.5 w-3.5 ${statusConfig.spin ? 'animate-spin' : ''}`} />
-            <span>{headerSummary}</span>
-          </span>
+          {StatusIcon && (
+            <span
+              className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${statusBadgeClass}`}
+              data-testid="tool-card-status"
+              role="img"
+              aria-label={statusLabel}
+              title={statusLabel}
+            >
+              <StatusIcon className="h-3 w-3" />
+            </span>
+          )}
         </div>
         <div className="px-3 py-3">
           {generatedImage ? (
@@ -1959,7 +1979,7 @@ export function ToolCallCard({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="my-2"
+        className="my-0.5"
       >
         <SubagentCard run={subagentRun} />
       </motion.div>
@@ -1972,9 +1992,12 @@ export function ToolCallCard({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="my-2 rounded-lg border border-border/60 bg-surface-0/55 p-3"
+        className="chat-tool-card my-0.5 overflow-hidden rounded-lg border border-border/60 bg-surface-0/55 p-2"
+        data-testid="tool-call-card"
+        data-tool-state={toolCardState}
+        aria-busy={isPending}
       >
-        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs text-text-secondary">
+        <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] text-text-secondary">
           <span className="font-medium text-text-primary">
             {subagentBatch.batchGoal || t('chat.subagentParallelRun')}
           </span>
@@ -1985,24 +2008,24 @@ export function ToolCallCard({
           )}
           {subagentBatch.workflowTemplateLabel && (
             <span
-              className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5"
+              className="rounded-full border border-border/55 bg-surface-1/70 px-1.5 py-0.5"
               title={subagentBatch.workflowTemplateDescription ?? undefined}
             >
               {subagentBatch.workflowTemplateLabel}
             </span>
           )}
           {typeof subagentBatch.completedRuns === 'number' && (
-            <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
+            <span className="rounded-full border border-border/55 bg-surface-1/70 px-1.5 py-0.5">
               {t('chat.subagentCompletedCount', { count: String(subagentBatch.completedRuns) })}
             </span>
           )}
           {typeof subagentBatch.failedRuns === 'number' && subagentBatch.failedRuns > 0 && (
-            <span className="rounded-full border border-danger/25 bg-danger/10 px-2 py-0.5 text-danger">
+            <span className="rounded-full border border-danger/25 bg-danger/10 px-1.5 py-0.5 text-danger">
               {t('chat.subagentFailedCount', { count: String(subagentBatch.failedRuns) })}
             </span>
           )}
         </div>
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {subagentBatch.runs.map(run => (
             <SubagentCard key={run.id} run={run} compact />
           ))}
@@ -2017,22 +2040,25 @@ export function ToolCallCard({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="my-2 rounded-lg border border-border/60 bg-surface-0/55 p-3"
+        className="chat-tool-card my-0.5 overflow-hidden rounded-lg border border-border/60 bg-surface-0/55 p-2"
+        data-testid="tool-call-card"
+        data-tool-state={toolCardState}
+        aria-busy={isPending}
       >
-        <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-text-secondary">
+        <div className="mb-1.5 flex flex-wrap items-center gap-1 text-[11px] text-text-secondary">
           <span className="font-medium text-text-primary">
             {subagentJudgement.task || t('chat.subagentJudgementFallback')}
           </span>
-          <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
+          <span className="rounded-full border border-border/55 bg-surface-1/70 px-1.5 py-0.5">
             {subagentJudgement.decisionMode}
           </span>
           {subagentJudgement.confidence && (
-            <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
+            <span className="rounded-full border border-border/55 bg-surface-1/70 px-1.5 py-0.5">
               {t('chat.subagentConfidence', { value: subagentJudgement.confidence })}
             </span>
           )}
           {subagentJudgement.winnerIds.length > 0 && (
-            <span className="rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-accent">
+            <span className="rounded-full border border-accent/25 bg-accent/10 px-1.5 py-0.5 text-accent">
               {t('chat.subagentWinners', { value: subagentJudgement.winnerIds.join(', ') })}
             </span>
           )}
@@ -2071,27 +2097,31 @@ export function ToolCallCard({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className="chat-trace-panel my-1 overflow-hidden rounded-lg border border-border/60 bg-surface-0/70 shadow-[0_1px_0_rgba(255,255,255,0.04)]"
+      className="chat-tool-card chat-trace-panel my-0.5 overflow-hidden rounded-lg border border-border/60 bg-surface-0/70 shadow-[0_1px_0_rgba(255,255,255,0.04)]"
       data-trace-soft={traceSoft ? 'true' : 'false'}
-      data-trace-active={traceActive ? 'true' : 'false'}
+      data-testid="tool-call-card"
+      data-tool-state={toolCardState}
+      aria-busy={isPending}
     >
       {/* Header */}
       <button
         onClick={() => expandableDetails && setExpanded((p) => !p)}
         aria-expanded={expandableDetails ? expanded : undefined}
-        aria-label={expandableDetails ? (expanded ? t('common.collapse') : t('common.expand')) : briefLabel}
+        aria-label={toolCardAriaLabel}
         disabled={!expandableDetails}
-        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 text-left hover:bg-surface-1/85
+        className="grid min-h-8 w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 px-2 py-1 text-left hover:bg-surface-1/85
           transition-colors duration-fast ease-out cursor-pointer disabled:cursor-default disabled:hover:bg-transparent"
       >
-        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
-          <Icon className="h-4 w-4 shrink-0" />
+        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
+          <Icon className="h-3 w-3 shrink-0" />
         </span>
-        <span className="min-w-0">
-          <span className="block truncate text-xs font-medium leading-5 text-text-primary">{briefLabel}</span>
-          <span className="block truncate text-[11px] leading-4 text-text-tertiary">
-            {headerSummary}
-          </span>
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className="min-w-0 truncate text-[11px] font-medium leading-4 text-text-primary">{briefLabel}</span>
+          {headerSummary && (
+            <span className="hidden min-w-0 truncate text-[10px] leading-3 text-text-tertiary sm:inline">
+              {headerSummary}
+            </span>
+          )}
         </span>
         <span className="flex shrink-0 items-center gap-1.5 pl-1">
           {headerDiffStats ? (
@@ -2106,16 +2136,22 @@ export function ToolCallCard({
               />
             </span>
           ) : null}
-          <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md border ${statusBadgeClass}`}>
-            <StatusIcon
-              className={`h-3.5 w-3.5 shrink-0 ${statusConfig.spin ? 'animate-spin' : ''}`}
-            />
-          </span>
+          {StatusIcon && (
+            <span
+              className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${statusBadgeClass}`}
+              data-testid="tool-card-status"
+              role="img"
+              aria-label={statusLabel}
+              title={statusLabel}
+            >
+              <StatusIcon className="h-3 w-3 shrink-0" />
+            </span>
+          )}
           {expandableDetails ? (
             expanded ? (
-              <ChevronUp className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+              <ChevronUp className="h-3 w-3 shrink-0 text-text-tertiary" />
             ) : (
-              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+              <ChevronDown className="h-3 w-3 shrink-0 text-text-tertiary" />
             )
           ) : null}
         </span>

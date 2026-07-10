@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Bot,
   ChevronDown,
-  Loader2,
   CheckCircle2,
   AlertTriangle,
   Wrench,
@@ -26,27 +25,21 @@ function statusCopy(status: SubagentRun['status'], t: TranslateFn) {
     case 'running':
       return {
         label: t('chat.subagentStatusRunning'),
-        icon: Loader2,
-        className: 'text-accent',
-        chipClassName: 'border-accent/25 bg-accent/10 text-accent',
-        spin: true,
+        icon: null,
+        chipClassName: '',
       };
     case 'error':
       return {
         label: t('chat.subagentStatusNeedsAttention'),
         icon: AlertTriangle,
-        className: 'text-danger',
         chipClassName: 'border-danger/25 bg-danger/10 text-danger',
-        spin: false,
       };
     case 'done':
     default:
       return {
         label: t('chat.subagentStatusComplete'),
         icon: CheckCircle2,
-        className: 'text-success',
         chipClassName: 'border-success/25 bg-success/10 text-success',
-        spin: false,
       };
   }
 }
@@ -92,22 +85,39 @@ export function SubagentCard({
       ? truncate(run.content, compact ? 120 : 180)
       : t('chat.subagentInProgress');
   const displayRole = run.roleName?.trim() || run.role?.trim() || t('chat.helperDefaultLabel');
+  const isRunning = run.status === 'running';
+  const cardState = isRunning ? 'running' : run.status === 'error' ? 'error' : 'done';
+  const accessibleLabel = [
+    displayRole,
+    status.label,
+    startedTools.length > 0
+      ? t('chat.subagentToolCount', { count: String(startedTools.length) })
+      : null,
+    run.task,
+  ].filter(Boolean).join(' ');
 
   return (
-    <div className={`rounded-lg border bg-surface-0/55 ${compact ? 'border-border/45' : 'border-border/60'}`}>
+    <div
+      className={`chat-tool-card overflow-hidden rounded-lg border bg-surface-0/55 ${compact ? 'border-border/45' : 'border-border/60'}`}
+      data-testid="subagent-card"
+      data-tool-state={cardState}
+      aria-busy={isRunning}
+    >
       <button
         type="button"
         onClick={() => setExpanded(prev => !prev)}
-        className={`flex w-full items-start gap-2.5 text-left transition-colors hover:bg-surface-0/45 ${compact ? 'px-2.5 py-2' : 'px-3 py-2.5'}`}
+        className={`flex w-full items-start gap-2 text-left transition-colors hover:bg-surface-0/45 ${compact ? 'px-2 py-1' : 'px-2.5 py-1.5'}`}
         aria-expanded={expanded}
+        aria-label={accessibleLabel}
+        data-testid="subagent-card-trigger"
       >
-        <span className={`mt-0.5 inline-flex shrink-0 items-center justify-center rounded-lg border border-border/55 bg-surface-1/70 text-accent ${compact ? 'h-6 w-6' : 'h-7 w-7'}`}>
-          <Bot className={compact ? 'h-3.5 w-3.5' : 'h-4 w-4'} />
+        <span className={`mt-0.5 inline-flex shrink-0 items-center justify-center rounded-md border border-border/55 bg-surface-1/70 text-accent ${compact ? 'h-5 w-5' : 'h-6 w-6'}`}>
+          <Bot className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
         </span>
 
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={`${compact ? 'text-xs' : 'text-[13px]'} font-semibold text-text-primary`}>
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            <span className={`${compact ? 'text-[11px]' : 'text-xs'} font-semibold text-text-primary`}>
               {displayRole}
             </span>
             {run.roleId && (
@@ -115,30 +125,37 @@ export function SubagentCard({
                 {run.roleId}
               </span>
             )}
-            <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${status.chipClassName}`}>
-              <StatusIcon className={`h-3 w-3 ${status.spin ? 'animate-spin' : ''}`} />
-              {status.label}
-            </span>
+            {StatusIcon && (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] ${status.chipClassName}`}
+                title={status.label}
+              >
+                <StatusIcon className="h-2.5 w-2.5" aria-hidden="true" />
+                {status.label}
+              </span>
+            )}
             {startedTools.length > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary">
-                <Wrench className="h-3 w-3" />
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-secondary">
+                <Wrench className="h-2.5 w-2.5" />
                 {t('chat.subagentToolCount', { count: String(startedTools.length) })}
               </span>
             )}
             {failedTools.length > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-danger/25 bg-danger/10 px-2 py-0.5 text-[11px] text-danger">
-                <AlertTriangle className="h-3 w-3" />
+              <span className="inline-flex items-center gap-1 rounded-full border border-danger/25 bg-danger/10 px-1.5 py-0.5 text-[10px] text-danger">
+                <AlertTriangle className="h-2.5 w-2.5" />
                 {t('chat.subagentIssueCount', { count: String(failedTools.length) })}
               </span>
             )}
           </div>
 
-          <div className={`mt-1 text-text-primary ${compact ? 'text-xs' : 'text-sm'}`}>{run.task}</div>
-          <div className={`mt-0.5 text-text-tertiary ${compact ? 'text-[11px]' : 'text-[12px]'}`}>{summaryText}</div>
+          <div className={`mt-0.5 truncate text-text-primary ${compact ? 'text-[11px]' : 'text-xs'}`}>{run.task}</div>
+          {!isRunning && !expanded && (
+            <div className={`mt-0.5 truncate text-text-tertiary ${compact ? 'text-[10px]' : 'text-[11px]'}`}>{summaryText}</div>
+          )}
         </div>
 
         <ChevronDown
-          className={`mt-1 h-4 w-4 shrink-0 text-text-tertiary transition-transform ${expanded ? 'rotate-180' : ''}`}
+          className={`mt-1 h-3.5 w-3.5 shrink-0 text-text-tertiary transition-transform ${expanded ? 'rotate-180' : ''}`}
         />
       </button>
 

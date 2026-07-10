@@ -394,6 +394,23 @@ test('keeps the live thinking mounted until delayed persisted messages load', as
   await expect(chatLog.getByRole('button', { name: /Read file/i })).toHaveCount(1);
   const liveCreateFile = chatLog.getByRole('button', { name: /Create File.*retry-summary\.md/i });
   await expect(liveCreateFile).toHaveCount(1);
+  await expect(liveCreateFile).toHaveAttribute('data-testid', 'tool-call-card');
+  await expect(liveCreateFile).toHaveAttribute('data-tool-state', 'running');
+  await expect(liveCreateFile).toHaveAttribute('aria-busy', 'true');
+  await expect(liveCreateFile).not.toContainText(/Running tool/i);
+  await expect(liveCreateFile.getByTestId('tool-card-status')).toHaveCount(0);
+  await expect(liveCreateFile.locator('.animate-spin')).toHaveCount(0);
+  await expect.poll(() => liveCreateFile.evaluate((element) =>
+    getComputedStyle(element, '::after').animationName,
+  )).toBe('chat-tool-card-border-flow');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect.poll(() => liveCreateFile.evaluate((element) =>
+    getComputedStyle(element, '::after').animationName,
+  )).toBe('none');
+  await expect.poll(() => liveCreateFile.evaluate((element) =>
+    getComputedStyle(element).borderTopColor,
+  )).not.toBe('rgba(0, 0, 0, 0)');
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   await expect(liveCreateFile).not.toContainText('content');
   await expect(liveCreateFile).not.toContainText(/\d+\s+B/);
   await expect(liveCreateFile.getByTestId('tool-card-header-additions')).toHaveAttribute('data-value', '+3');
@@ -410,5 +427,9 @@ test('keeps the live thinking mounted until delayed persisted messages load', as
   await expect(chatLog.getByRole('button', { name: /Read file/i })).toHaveCount(1);
   const persistedCreateFile = chatLog.getByRole('button', { name: /Create File.*\+3.*-0/i });
   await expect(persistedCreateFile).toHaveCount(1);
+  await expect(persistedCreateFile).toHaveAttribute('data-tool-state', 'done');
+  await expect(persistedCreateFile).toHaveAttribute('aria-busy', 'false');
+  await expect(persistedCreateFile.getByTestId('tool-card-status')).toHaveCount(1);
+  await expect(persistedCreateFile.locator('.animate-spin')).toHaveCount(0);
   await expect(persistedCreateFile).not.toContainText('content');
 });

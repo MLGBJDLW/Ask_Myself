@@ -167,6 +167,7 @@ test.beforeEach(async ({ page }) => {
           return [{
             id: 'skill-critic-format',
             name: 'Critic Format',
+            description: 'Format delegated critique results with explicit risks.',
             content: 'Always return a compact critique with explicit risks.',
             enabled: true,
             createdAt: nowIso,
@@ -204,6 +205,7 @@ test.beforeEach(async ({ page }) => {
           const conversationId = String(args.conversationId ?? '');
           const currentMessages = messagesByConversation[conversationId] ?? [];
           const userText = String(args.message ?? '');
+          const keepRunning = /keep running/i.test(userText);
           const toolCallId = nextId('subagent-call');
           const toolArguments = JSON.stringify({
             task: 'Audit the last answer for risks',
@@ -330,13 +332,15 @@ test.beforeEach(async ({ page }) => {
             imageAttachments: null,
           };
 
-          messagesByConversation[conversationId] = [
-            ...currentMessages,
-            userMessage,
-            assistantToolMessage,
-            toolMessage,
-            assistantFinalMessage,
-          ];
+          messagesByConversation[conversationId] = keepRunning
+            ? [...currentMessages, userMessage, assistantToolMessage]
+            : [
+                ...currentMessages,
+                userMessage,
+                assistantToolMessage,
+                toolMessage,
+                assistantFinalMessage,
+              ];
 
           setTimeout(() => {
             emitEvent('agent:event', {
@@ -347,6 +351,8 @@ test.beforeEach(async ({ page }) => {
               arguments: toolArguments,
             });
           }, 20);
+
+          if (keepRunning) return null;
 
           setTimeout(() => {
             emitEvent('agent:event', {
@@ -405,20 +411,65 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test('uses a compact flowing border for a stable running subagent', async ({ page }) => {
+  await page.goto('/chat/conv-subagent');
+
+  await page.getByTestId('chat-input-textarea').fill('Keep running while I inspect the subagent card.');
+  await page.getByTestId('chat-send').click();
+
+  const chatLog = page.getByLabel('Chat messages');
+  const toolCard = chatLog.getByTestId('tool-call-card').first();
+  await expect(toolCard).toHaveAttribute('data-tool-state', 'running');
+  await toolCard.click();
+
+  const subagentShell = chatLog.getByTestId('subagent-card').first();
+  const subagentTrigger = subagentShell.getByTestId('subagent-card-trigger');
+  await expect(subagentShell).toHaveAttribute('data-tool-state', 'running');
+  await expect(subagentShell).toHaveAttribute('aria-busy', 'true');
+  await expect(subagentShell).not.toContainText(/Running/i);
+  await expect(subagentShell.locator('.animate-spin')).toHaveCount(0);
+  await expect.poll(async () => {
+    const box = await subagentTrigger.boundingBox();
+    return box?.height ?? 999;
+  }).toBeLessThanOrEqual(48);
+  await expect.poll(() => subagentShell.evaluate((element) =>
+    getComputedStyle(element, '::after').animationName,
+  )).toBe('chat-tool-card-border-flow');
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect.poll(() => subagentShell.evaluate((element) =>
+    getComputedStyle(element, '::after').animationName,
+  )).toBe('none');
+  await expect.poll(() => subagentShell.evaluate((element) =>
+    getComputedStyle(element, '::after').opacity,
+  )).not.toBe('0');
+  await expect.poll(() => subagentShell.evaluate((element) =>
+    getComputedStyle(element).backgroundImage,
+  )).not.toBe('none');
+});
+
 test('shows subagent cards in chat and tool permissions in settings', async ({ page }) => {
   await page.goto('/chat/conv-subagent');
 
   await page.getByTestId('chat-input-textarea').fill('Please review the answer.');
   await page.getByTestId('chat-send').click();
 
-  await page.getByRole('button', { name: /Thinking completed/ }).click();
+  const thinkingToggle = page.getByRole('button', { name: /Thinking completed/ });
+  if (await thinkingToggle.getAttribute('aria-expanded') !== 'true') {
+    await thinkingToggle.click();
+  }
 
   const chatLog = page.getByLabel('Chat messages');
-  await chatLog.getByRole('button', { name: /spawn_subagent/ }).click();
+  await chatLog.getByRole('button', { name: /Spawn Subagent/i }).click();
   const subagentCard = chatLog.getByRole('button', {
-    name: /Critic\s+Complete\s+1 tool\s+Audit the last answer for risks/i,
+    name: /Critic\s+Complete\s+1 tools?\s+Audit the last answer for risks/i,
   }).first();
   await expect(subagentCard).toBeVisible();
+  const subagentShell = subagentCard.locator('xpath=..');
+  await expect(subagentShell).toHaveAttribute('data-testid', 'subagent-card');
+  await expect(subagentShell).toHaveAttribute('data-tool-state', 'done');
+  await expect(subagentShell).toHaveAttribute('aria-busy', 'false');
+  await expect(subagentShell.locator('.animate-spin')).toHaveCount(0);
 
   await chatLog.getByText('Allowed tools').scrollIntoViewIfNeeded();
   await expect(chatLog.getByText('Allowed tools')).toBeVisible();
@@ -437,11 +488,14 @@ test('shows subagent cards in chat and tool permissions in settings', async ({ p
   await expect(page.getByText(/subagents \d+/)).toBeVisible();
   await page.getByRole('button', { name: 'Add Provider' }).click();
   await page.getByRole('button', { name: 'Custom / Manual' }).click();
-  await page.getByRole('button', { name: 'Expand' }).click();
+  await page.getByRole('button', { name: /Advanced Settings/ }).click();
   await expect(page.getByRole('heading', { name: 'Subagents' })).toBeVisible();
   await expect(page.getByText('Max parallel workers')).toBeVisible();
   await expect(page.getByText('Max worker calls / turn')).toBeVisible();
   await expect(page.getByText('Token budget / turn')).toBeVisible();
+  await page.getByRole('button', { name: /^Research/ }).click();
+  await page.getByRole('button', { name: /^Workflow Plans/ }).click();
+  await page.getByRole('button', { name: /^Delegated skills/ }).click();
   await expect(page.getByText('Knowledge Search', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('Record Verification', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('Web Search', { exact: true }).first()).toBeVisible();

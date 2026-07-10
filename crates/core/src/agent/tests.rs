@@ -840,6 +840,143 @@ struct CapturingScriptedProvider {
     final_answer: &'static str,
 }
 
+struct ToolSurfaceCapturingProvider {
+    tool_names: Arc<Mutex<Vec<Vec<String>>>>,
+    latest_user_texts: Arc<Mutex<Vec<Option<String>>>>,
+}
+
+#[async_trait]
+impl LlmProvider for ToolSurfaceCapturingProvider {
+    fn name(&self) -> &str {
+        "tool-surface-capturing-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["deepseek-chat".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        self.latest_user_texts.lock().unwrap().push(
+            request
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == Role::User)
+                .map(Message::text_content),
+        );
+        self.tool_names.lock().unwrap().push(
+            request
+                .tools
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect(),
+        );
+        Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
+            delta: "done".to_string(),
+            tool_call_delta: None,
+            finish_reason: Some(FinishReason::Stop),
+            usage: None,
+            thinking_delta: None,
+        })])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+struct DeferredCacheTool;
+
+struct OversizedDeferredCacheTool;
+
+#[async_trait]
+impl Tool for DeferredCacheTool {
+    fn name(&self) -> &str {
+        "mcp__cache_test__deferred"
+    }
+
+    fn description(&self) -> &str {
+        "A route-deferred tool used to verify cache-stable tool surfaces."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{}})
+    }
+
+    fn categories(&self) -> &'static [crate::tools::ToolCategory] {
+        &[crate::tools::ToolCategory::Mcp]
+    }
+
+    async fn execute(
+        &self,
+        call_id: &str,
+        _arguments: &str,
+        _db: &Database,
+        _source_scope: &[String],
+    ) -> Result<ToolResult, CoreError> {
+        Ok(ToolResult {
+            call_id: call_id.to_string(),
+            content: "ok".to_string(),
+            is_error: false,
+            artifacts: None,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for OversizedDeferredCacheTool {
+    fn name(&self) -> &str {
+        "mcp__cache_test__oversized"
+    }
+
+    fn description(&self) -> &str {
+        "An oversized deferred schema used to verify bounded cache-stable surfaces."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "string",
+                    "description": "cache schema field description ".repeat(300)
+                }
+            }
+        })
+    }
+
+    fn categories(&self) -> &'static [crate::tools::ToolCategory] {
+        &[crate::tools::ToolCategory::Mcp]
+    }
+
+    async fn execute(
+        &self,
+        call_id: &str,
+        _arguments: &str,
+        _db: &Database,
+        _source_scope: &[String],
+    ) -> Result<ToolResult, CoreError> {
+        Ok(ToolResult {
+            call_id: call_id.to_string(),
+            content: "ok".to_string(),
+            is_error: false,
+            artifacts: None,
+        })
+    }
+}
+
 #[async_trait]
 impl LlmProvider for CapturingScriptedProvider {
     fn name(&self) -> &str {
@@ -886,6 +1023,113 @@ impl LlmProvider for CapturingScriptedProvider {
     async fn health_check(&self) -> Result<(), CoreError> {
         Ok(())
     }
+}
+
+#[tokio::test]
+async fn prefix_cached_provider_pins_full_tool_surface_when_dynamic_visibility_is_enabled() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool));
+    registry.register(Box::new(DeferredCacheTool));
+    let expected = registry
+        .definitions()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let latest_user_texts = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured),
+            latest_user_texts,
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("deepseek-chat".to_string()),
+            provider_type: Some(ProviderType::DeepSeek),
+            dynamic_tool_visibility: true,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(16);
+
+    executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Explain why a stable prompt prefix matters.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("agent turn");
+
+    let requests = captured.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0], expected);
+    assert!(requests[0]
+        .iter()
+        .any(|name| name == "mcp__cache_test__deferred"));
+}
+
+#[tokio::test]
+async fn prefix_cached_provider_uses_bounded_resident_surface_without_dropping_user() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(crate::tools::tool_search_tool::ToolSearchTool));
+    registry.register(Box::new(MockTool));
+    registry.register(Box::new(OversizedDeferredCacheTool));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let latest_user_texts = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured),
+            latest_user_texts: Arc::clone(&latest_user_texts),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("deepseek-chat".to_string()),
+            provider_type: Some(ProviderType::DeepSeek),
+            context_window: Some(8_192),
+            dynamic_tool_visibility: true,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(16);
+    let query = "Keep this exact user request in the bounded prompt.";
+
+    executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: query.to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("agent turn");
+
+    let requests = captured.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].iter().any(|name| name == "tool_search"));
+    assert!(requests[0].iter().any(|name| name == "mock_tool"));
+    assert!(!requests[0]
+        .iter()
+        .any(|name| name == "mcp__cache_test__oversized"));
+    assert_eq!(
+        latest_user_texts.lock().unwrap().as_slice(),
+        &[Some(query.to_string())]
+    );
 }
 
 struct LoopGuardSteeringProvider {
@@ -2247,13 +2491,19 @@ async fn test_prompt_cache_trace_compares_previous_turn_snapshot_with_new_execut
         observation["previousSnapshotSource"]["turnId"],
         first_turn.id
     );
-    assert!(observation["changes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|change| change
-            .as_str()
-            .is_some_and(|text| text.starts_with("first changed message index"))));
+    assert_eq!(observation["sampleKind"], "warmAppend");
+    assert_eq!(observation["prefixChanged"], false);
+    assert_eq!(
+        observation["changes"].as_array().map(Vec::len),
+        Some(0),
+        "append-only conversation growth must not be reported as a prefix rewrite"
+    );
+    assert!(observation["commonPrefixMessageCount"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    assert!(observation["estimatedReusablePrefixTokens"]
+        .as_u64()
+        .is_some_and(|tokens| tokens > 0));
 }
 
 #[tokio::test]

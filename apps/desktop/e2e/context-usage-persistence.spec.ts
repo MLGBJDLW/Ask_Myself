@@ -349,51 +349,85 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('context usage card persists after reloading the same conversation', async ({ page }) => {
+test('context usage ring persists after reloading the same conversation', async ({ page }) => {
   await page.goto('/chat/conv-e2e');
-  const usageSummary = page.getByText('7% context used').first();
+  const contextTrigger = page.getByTestId('chat-context-trigger');
+  const contextDetails = page.getByTestId('chat-context-details');
 
-  await expect(usageSummary).toHaveCount(0);
+  await expect(contextTrigger).not.toHaveAttribute('aria-label', /7% context used/);
   await page.getByTestId('chat-input-textarea').fill('Please summarize this thread.');
   await page.getByTestId('chat-send').click();
 
-  await expect(usageSummary).toBeVisible();
+  await expect(contextTrigger).toHaveAttribute('aria-label', /7% context used/);
+  await contextTrigger.hover();
+  await expect(contextDetails).toBeVisible();
+  await expect(contextTrigger).toHaveAttribute('aria-expanded', 'true');
+  const triggerBox = await contextTrigger.boundingBox();
+  const detailsBox = await contextDetails.boundingBox();
+  expect(triggerBox).not.toBeNull();
+  expect(detailsBox).not.toBeNull();
+  await page.mouse.move(triggerBox!.x + triggerBox!.width / 2, triggerBox!.y + 1);
+  await page.mouse.move(
+    detailsBox!.x + detailsBox!.width / 2,
+    detailsBox!.y + detailsBox!.height - 2,
+    { steps: 12 },
+  );
+  await expect(contextDetails).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(contextDetails).toBeHidden();
+  await expect(contextTrigger).toHaveAttribute('aria-expanded', 'false');
+
+  await page.mouse.move(0, 0);
+  await contextTrigger.hover();
+  await expect(contextDetails).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(contextDetails).toBeHidden();
+
+  await contextTrigger.focus();
+  await expect(contextDetails).toBeVisible();
+  await expect(contextDetails.getByText('7% context used')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(contextDetails).toBeHidden();
 
   await page.reload();
 
-  await expect(page.getByText('7% context used').first()).toBeVisible();
+  await expect(contextTrigger).toHaveAttribute('aria-label', /7% context used/);
 });
 
 test('usage cache is scoped to conversation id and does not leak to another conversation', async ({ page }) => {
   await page.goto('/chat/conv-e2e');
-  const usageSummary = page.getByText('7% context used').first();
+  const contextTrigger = page.getByTestId('chat-context-trigger');
 
   await page.getByTestId('chat-input-textarea').fill('Generate usage for this conversation.');
   await page.getByTestId('chat-send').click();
-  await expect(usageSummary).toBeVisible();
+  await expect(contextTrigger).toHaveAttribute('aria-label', /7% context used/);
 
   await page.goto('/chat/conv-empty');
-  await expect(page.getByText(/context used/i)).toHaveCount(0);
+  await expect(contextTrigger).not.toHaveAttribute('aria-label', /\d+% context used/);
 });
 
 test('context HUD groups detailed segments and averages cache across completed turns', async ({ page }) => {
   await page.goto('/chat/conv-e2e');
-  const overview = page.getByTestId('chat-run-overview');
+  const contextTrigger = page.getByTestId('chat-context-trigger');
+  const contextDetails = page.getByTestId('chat-context-details');
 
   await page.getByTestId('chat-input-textarea').fill('Generate the first cache sample.');
   await page.getByTestId('chat-send').click();
 
+  await contextTrigger.hover();
+  await expect(contextDetails).toBeVisible();
   await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('50%');
-  await expect(overview.getByText('Prompts 4.5K')).toBeVisible();
-  await expect(overview.getByText('Memory 2.0K')).toBeVisible();
-  await expect(overview.getByText('Skills 1.0K')).toBeVisible();
-  await expect(overview.getByText('Sources 500')).toBeVisible();
-  await expect(overview.getByText('Tools 400')).toBeVisible();
-  await expect(overview.getByText(/Other/)).toHaveCount(0);
+  await expect(contextDetails.getByText('Prompts 4.5K')).toBeVisible();
+  await expect(contextDetails.getByText('Memory 2.0K')).toBeVisible();
+  await expect(contextDetails.getByText('Skills 1.0K')).toBeVisible();
+  await expect(contextDetails.getByText('Sources 500')).toBeVisible();
+  await expect(contextDetails.getByText('Tools 400')).toBeVisible();
+  await expect(contextDetails.getByText(/Other/)).toHaveCount(0);
 
   await page.getByTestId('chat-input-textarea').fill('Generate a lower cache sample.');
   await page.getByTestId('chat-send').click();
 
+  await contextTrigger.hover();
   await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('40%');
 });
 
@@ -402,7 +436,7 @@ test('manual compact shows progress, locks input, and refreshes context usage', 
 
   await page.getByTestId('chat-input-textarea').fill('Generate usage before compacting.');
   await page.getByTestId('chat-send').click();
-  await expect(page.getByText('7% context used').first()).toBeVisible();
+  await expect(page.getByTestId('chat-context-trigger')).toHaveAttribute('aria-label', /7% context used/);
 
   await page.getByTestId('chat-compact').click();
   await expect(page.getByTestId('chat-compact-status').first()).toBeVisible();
@@ -412,6 +446,6 @@ test('manual compact shows progress, locks input, and refreshes context usage', 
   await expect(page.getByTestId('chat-input-textarea')).toBeEnabled();
   await expect(page.getByTestId('chat-compact-status').first()).toBeVisible();
   await expect(page.getByText('Compaction complete').first()).toBeVisible();
-  await expect(page.getByText('7% context used')).toHaveCount(0);
-  await expect(page.getByText('0% context used').first()).toBeVisible();
+  await expect(page.getByTestId('chat-context-trigger')).not.toHaveAttribute('aria-label', /7% context used/);
+  await expect(page.getByTestId('chat-context-trigger')).toHaveAttribute('aria-label', /0% context used/);
 });

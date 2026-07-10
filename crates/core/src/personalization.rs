@@ -704,7 +704,7 @@ pub async fn extract_memories_from_conversation(
     } else {
         existing_memories
             .iter()
-            .map(|m| format!("- {}", &m.content))
+            .map(|m| format!("- {}", m.content))
             .collect::<Vec<_>>()
             .join("\n")
     };

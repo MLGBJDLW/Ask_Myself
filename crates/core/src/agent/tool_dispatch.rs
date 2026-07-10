@@ -88,12 +88,14 @@ impl AgentExecutor {
         let offered_tool_names: HashSet<String> =
             tool_defs.iter().map(|tool| tool.name.clone()).collect();
         let registered_tool_names: HashSet<String> = self.tools.tool_names().into_iter().collect();
+        let has_hidden_registered_tools = offered_tool_names.len() < registered_tool_names.len();
         let layout = prompt_layout::PromptLayout::for_request(
             self.config.provider_type,
             self.config.model.as_deref(),
         );
-        let effective_dynamic_tool_visibility =
-            layout.effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility);
+        let effective_dynamic_tool_visibility = layout
+            .effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility)
+            || has_hidden_registered_tools;
         let tool_policy = ToolSchedulerPolicy::new(
             self.config.tool_timeout_secs,
             effective_dynamic_tool_visibility,
@@ -548,7 +550,7 @@ impl AgentExecutor {
             while let Some(finished_tool) = tool_futures.next().await {
                 let tc = finished_tool.call;
                 let tool_elapsed = finished_tool.elapsed;
-                let (tool_msg, tool_context_msg, tool_artifacts, tool_is_error, run_status) =
+                let (tool_msg, mut tool_context_msg, tool_artifacts, tool_is_error, run_status) =
                     match finished_tool.outcome {
                         ToolExecutionOutcome::Result(result, status) => {
                             let context_content = result.llm_context_content();
@@ -658,11 +660,28 @@ impl AgentExecutor {
                     .await;
 
                 if !tool_is_error && tc.name == "tool_search" {
-                    let activation = tool_discovery::activate_tool_search_matches(
-                        &self.tools,
-                        tool_defs,
-                        tool_artifacts.as_ref(),
-                    );
+                    let mut activation = if has_hidden_registered_tools {
+                        let (max_definitions, max_tool_tokens) =
+                            prompt_layout::cache_stable_tool_surface_limits(
+                                model,
+                                self.config.context_window,
+                                self.config.max_tokens.unwrap_or(4096),
+                            );
+                        tool_discovery::activate_tool_search_matches_bounded(
+                            &self.tools,
+                            tool_defs,
+                            tool_artifacts.as_ref(),
+                            model,
+                            max_definitions,
+                            max_tool_tokens,
+                        )
+                    } else {
+                        tool_discovery::activate_tool_search_matches(
+                            &self.tools,
+                            tool_defs,
+                            tool_artifacts.as_ref(),
+                        )
+                    };
                     if activation.has_changes() {
                         let content = format!(
                             "Activated {} deferred tool(s): {}",
@@ -677,6 +696,21 @@ impl AgentExecutor {
                             .send(AgentEvent::Status {
                                 content,
                                 tone: Some("muted".to_string()),
+                            })
+                            .await;
+                    }
+                    if !activation.capacity_limited.is_empty() {
+                        let names = std::mem::take(&mut activation.capacity_limited).join(", ");
+                        let content = format!(
+                            "Tool-surface capacity prevented activating: {names}. Refine tool_search to a smaller, more specific match set."
+                        );
+                        tool_context_msg.push_str("\n\n");
+                        tool_context_msg.push_str(&content);
+                        append_persisted_trace_status(persisted_trace_items, &content, "warning");
+                        let _ = tx
+                            .send(AgentEvent::Status {
+                                content,
+                                tone: Some("warning".to_string()),
                             })
                             .await;
                     }

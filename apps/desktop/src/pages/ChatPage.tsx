@@ -1061,16 +1061,6 @@ export function ChatPage() {
                 </div>
               </div>
             )}
-            {chat.activeId && (
-              <ChatRunOverview
-                isStreaming={chat.isStreaming}
-                tokenUsage={chat.tokenUsage}
-                runtimeProfile={chat.runtimeProfile}
-                finishReason={chat.finishReason}
-                contextOverflow={chat.contextOverflow}
-                isCompacting={isCompacting}
-              />
-            )}
             <ChatMessages
               messages={chat.messages}
               turns={chat.turns}
@@ -1149,6 +1139,16 @@ export function ChatPage() {
               planModeEnabled={planModeEnabled}
               onPlanModeChange={setPlanModeEnabled}
               activeGoalContext={activeGoalContext}
+              contextIndicator={chat.activeId ? (
+                <ChatRunOverview
+                  isStreaming={chat.isStreaming}
+                  tokenUsage={chat.tokenUsage}
+                  runtimeProfile={chat.runtimeProfile}
+                  finishReason={chat.finishReason}
+                  contextOverflow={chat.contextOverflow}
+                  isCompacting={isCompacting}
+                />
+              ) : null}
               onRestoreCheckpoint={chat.activeId ? async () => {
                 await chat.reloadMessages();
               } : undefined}

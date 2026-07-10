@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation, type TranslationKey } from '../../i18n';
 import { ProviderIcon } from '../../lib/providerIcons';
 
@@ -75,20 +75,17 @@ const SEGMENT_LABEL_KEYS: Record<string, TranslationKey> = {
 };
 
 const CONTEXT_SEGMENT_COLOR: Record<string, string> = {
-  prompts: 'bg-sky-400/70',
-  conversation: 'bg-indigo-400/70',
-  tools: 'bg-amber-400/70',
-  toolResults: 'bg-orange-400/70',
-  mcp: 'bg-fuchsia-400/70',
-  memory: 'bg-emerald-400/70',
-  sources: 'bg-teal-400/70',
-  skills: 'bg-purple-400/70',
-  thinking: 'bg-pink-400/70',
-  cacheRead: 'bg-accent/75',
-  cacheMiss: 'bg-amber-400/75',
-  cacheCreation: 'bg-orange-400/70',
-  estimated: 'bg-text-tertiary/60',
-  other: 'bg-text-tertiary/50',
+  prompts: 'bg-sky-400/80',
+  conversation: 'bg-indigo-400/80',
+  tools: 'bg-amber-400/80',
+  toolResults: 'bg-orange-400/80',
+  mcp: 'bg-fuchsia-400/80',
+  memory: 'bg-emerald-400/80',
+  sources: 'bg-teal-400/80',
+  skills: 'bg-purple-400/80',
+  thinking: 'bg-pink-400/80',
+  estimated: 'bg-text-tertiary/65',
+  other: 'bg-text-tertiary/55',
 };
 
 const SEGMENT_KIND_ALIASES: Record<string, string> = {
@@ -113,6 +110,9 @@ const SEGMENT_KIND_ALIASES: Record<string, string> = {
   toolcalls: 'tools',
   toolresults: 'toolResults',
 };
+
+const RING_RADIUS = 12;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -175,44 +175,22 @@ function segmentKey(kind: string): string {
 }
 
 function segmentLabel(kind: string, t: ReturnType<typeof useTranslation>['t']): string {
-  if (kind === 'cacheRead') return t('chat.cached');
-  if (kind === 'cacheMiss') return 'uncached';
-  if (kind === 'cacheCreation') return 'cache write';
   return t(SEGMENT_LABEL_KEYS[kind] ?? SEGMENT_LABEL_KEYS.other);
 }
 
-function providerCacheSegmentsForBar(usage: TokenUsage): ContextUsageSegment[] | null {
-  if (usage.isEstimated) return null;
-
-  const readTokens = safeTokenCount(usage.cacheReadTokens);
-  let missTokens = safeTokenCount(usage.cacheMissTokens);
-  if (missTokens <= 0 && readTokens > 0 && usage.promptTokens > readTokens) {
-    missTokens = usage.promptTokens - readTokens;
-  }
-  if (readTokens + missTokens <= 0) return null;
-
-  const segments: ContextUsageSegment[] = [];
-  if (readTokens > 0) segments.push({ kind: 'cacheRead', tokens: readTokens });
-  if (missTokens > 0) segments.push({ kind: 'cacheMiss', tokens: missTokens });
-  return segments;
-}
-
-function contextSegmentsForBar(usage: TokenUsage): ContextUsageSegment[] {
-  const providerCacheSegments = providerCacheSegmentsForBar(usage);
-  if (providerCacheSegments) return providerCacheSegments;
-
+function contextSegments(usage: TokenUsage): ContextUsageSegment[] {
   const breakdown = usage.contextBreakdown;
   if (breakdown?.segments?.length) {
     const totals = new Map<string, number>();
     for (const segment of breakdown.segments) {
-      const tokens = Math.max(0, Math.round(segment.tokens));
+      const tokens = safeTokenCount(segment.tokens);
       if (tokens <= 0) continue;
       const key = segmentKey(segment.kind);
       totals.set(key, (totals.get(key) ?? 0) + tokens);
     }
     return Array.from(totals.entries()).map(([kind, tokens]) => ({ kind, tokens }));
   }
-  const promptTokens = Math.max(0, usage.promptTokens);
+  const promptTokens = safeTokenCount(usage.promptTokens);
   return promptTokens > 0 ? [{ kind: 'estimated', tokens: promptTokens }] : [];
 }
 
@@ -225,6 +203,10 @@ export function ChatRunOverview({
   isCompacting = false,
 }: ChatRunOverviewProps) {
   const { t } = useTranslation();
+  const overviewRef = useRef<HTMLDivElement>(null);
+  const pointerInsideRef = useRef(false);
+  const suppressHoverRef = useRef(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const usage = tokenUsage && tokenUsage.contextWindow > 0 ? tokenUsage : null;
   const cacheStats = cacheUsageStats(usage);
@@ -238,9 +220,8 @@ export function ChatRunOverview({
       ? 'warning'
       : 'ok';
 
-  const segments = useMemo(() => (usage ? contextSegmentsForBar(usage) : []), [usage]);
+  const segments = useMemo(() => (usage ? contextSegments(usage) : []), [usage]);
   const totalSegmentTokens = segments.reduce((sum, segment) => sum + segment.tokens, 0);
-  const barFillPercent = usage ? Math.min(100, usagePercent) : 0;
 
   const statusLabel = isCompacting
     ? t('chat.compacting')
@@ -258,14 +239,6 @@ export function ChatRunOverview({
                 : t('chat.contextUsageEstimated')
             : t('chat.contextNoUsage');
 
-  const statusTone = contextRisk === 'danger'
-    ? 'border-red-500/30 bg-red-500/10 text-red-300'
-    : contextRisk === 'warning'
-      ? 'border-amber-400/30 bg-amber-400/10 text-amber-300'
-      : isStreaming
-        ? 'border-accent/30 bg-accent/10 text-accent'
-        : 'border-border/60 bg-surface-0/70 text-text-secondary';
-
   const usageSourceLabel = usage
     ? usage.source === 'live'
       ? t('chat.contextUsageLive')
@@ -274,14 +247,36 @@ export function ChatRunOverview({
         : t('chat.contextUsageEstimated')
     : t('chat.contextNoUsage');
 
+  const statusTone = contextRisk === 'danger'
+    ? 'border-danger/30 bg-danger/10 text-text-primary'
+    : contextRisk === 'warning'
+      ? 'border-warning/35 bg-warning/10 text-text-primary'
+      : isStreaming || isCompacting
+        ? 'border-accent/30 bg-accent/10 text-text-primary'
+        : 'border-border/60 bg-surface-2/70 text-text-secondary';
+  const showStatusPill = isStreaming
+    || isCompacting
+    || contextOverflow
+    || finishReason === 'length';
+  const ringTone = contextRisk === 'danger'
+    ? 'stroke-danger'
+    : contextRisk === 'warning'
+      ? 'stroke-warning'
+      : 'stroke-accent';
+  const valueTone = contextRisk === 'danger'
+    ? 'text-danger'
+    : 'text-text-primary';
+  const statusDotTone = contextRisk === 'danger'
+    ? 'bg-danger'
+    : contextRisk === 'warning'
+      ? 'bg-warning'
+      : isStreaming || isCompacting
+        ? 'bg-accent'
+        : 'bg-text-tertiary';
+
   const modelLabel = runtimeProfile
     ? `${runtimeProfile.provider} / ${runtimeProfile.model}`
     : t('chat.contextNoModel');
-  const modelTitle = runtimeProfile?.contextWindow
-    ? `${t('chat.contextRuntimeModel')}: ${modelLabel} · ${t('chat.contextWindowValue', {
-      value: formatTokens(runtimeProfile.contextWindow),
-    })}`
-    : `${t('chat.contextRuntimeModel')}: ${modelLabel}`;
   const modelProvider = runtimeProfile?.provider || 'custom';
 
   const cacheDetailLabel = cacheStats
@@ -297,139 +292,261 @@ export function ChatRunOverview({
           write: formatTokens(cacheStats.creationTokens),
         })
         : t('chat.cacheRead', { read: formatTokens(cacheStats.readTokens) })
-    : '';
-  const cacheTitle = cacheStats
-    ? `${t('chat.providerCache')}: ${cacheDetailLabel}${cacheStats.hitPercent == null ? '' : ` (${cacheStats.hitPercent}%)`}${cacheStats.sampleCount > 0 ? ` · ${t('chat.cacheAverageTurns', { count: String(cacheStats.sampleCount) })}` : ''}`
-    : '';
-  const cacheTone = cacheStats?.readTokens
-    ? 'border-accent/35 bg-accent/10 text-accent'
-    : cacheStats?.creationTokens
-      ? 'border-amber-300/30 bg-amber-300/10 text-amber-300'
-      : 'border-border/60 bg-surface-2/60 text-text-tertiary';
-  const cacheValueLabel = `${cacheStats?.hitPercent ?? 0}%`;
+    : t('chat.contextHudNoCacheSamples');
+  const cacheSampleLabel = cacheStats && cacheStats.sampleCount > 0
+    ? t('chat.cacheAverageTurns', { count: String(cacheStats.sampleCount) })
+    : cacheDetailLabel;
 
-  if (!usage && !runtimeProfile && !isStreaming) {
+  const tokenUsageLabel = usage
+    ? t('chat.tokenUsage', {
+      used: formatTokens(usage.promptTokens),
+      total: formatTokens(usage.contextWindow),
+    })
+    : t('chat.contextNoUsage');
+  const percentLabel = usage
+    ? t('chat.tokenUsagePercent', { percent: usagePercentRounded })
+    : t('chat.contextNoUsage');
+  const triggerLabel = usage
+    ? `${t('chat.contextBudgetLabel')}: ${tokenUsageLabel} · ${percentLabel} · ${statusLabel}`
+    : `${t('chat.contextBudgetLabel')}: ${statusLabel}`;
+  const ringDashOffset = RING_CIRCUMFERENCE * (1 - usagePercent / 100);
+
+  useEffect(() => {
+    if (!detailsOpen) return undefined;
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      suppressHoverRef.current = pointerInsideRef.current;
+      setDetailsOpen(false);
+
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement && overviewRef.current?.contains(activeElement)) {
+        activeElement.blur();
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape, true);
+    return () => document.removeEventListener('keydown', handleEscape, true);
+  }, [detailsOpen]);
+
+  if (!usage && !runtimeProfile && !isStreaming && !isCompacting && !contextOverflow) {
     return null;
   }
 
   return (
     <div
-      className="shrink-0 border-b border-border/60 bg-surface-1/90 px-4 py-2 backdrop-blur"
+      ref={overviewRef}
+      className="relative z-30 ml-auto flex h-8 shrink-0 items-center"
       data-testid="chat-run-overview"
+      onMouseEnter={() => {
+        pointerInsideRef.current = true;
+        if (!suppressHoverRef.current) setDetailsOpen(true);
+      }}
+      onMouseLeave={() => {
+        pointerInsideRef.current = false;
+        suppressHoverRef.current = false;
+        if (!overviewRef.current?.contains(document.activeElement)) setDetailsOpen(false);
+      }}
+      onFocusCapture={() => {
+        suppressHoverRef.current = false;
+        setDetailsOpen(true);
+      }}
+      onBlurCapture={(event) => {
+        const nextTarget = event.relatedTarget;
+        if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+        if (!pointerInsideRef.current || suppressHoverRef.current) setDetailsOpen(false);
+      }}
     >
-      <div className="mx-auto grid w-full max-w-5xl grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 text-[11px] text-text-tertiary sm:gap-3">
-        <span
-          className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-surface-0/75 shadow-[0_1px_0_rgba(255,255,255,0.04)]"
-          title={modelTitle}
-          aria-label={modelTitle}
-          data-testid="chat-run-model-anchor"
+      <button
+        type="button"
+        className="relative flex h-8 w-8 items-center justify-center rounded-full outline-none transition-colors hover:bg-surface-2/80 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent/35"
+        aria-label={triggerLabel}
+        aria-describedby="chat-context-details"
+        aria-expanded={detailsOpen}
+        aria-controls="chat-context-details"
+        data-testid="chat-context-trigger"
+        onClick={() => {
+          suppressHoverRef.current = false;
+          setDetailsOpen(true);
+        }}
+      >
+        <svg className="h-8 w-8 -rotate-90" viewBox="0 0 32 32" aria-hidden="true">
+          <circle
+            cx="16"
+            cy="16"
+            r={RING_RADIUS}
+            fill="none"
+            strokeWidth="2.5"
+            className="stroke-surface-3"
+          />
+          {usage ? (
+            <circle
+              cx="16"
+              cy="16"
+              r={RING_RADIUS}
+              fill="none"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              className={`transition-[stroke-dashoffset] duration-500 ease-out motion-reduce:transition-none ${ringTone}`}
+              style={{
+                strokeDasharray: RING_CIRCUMFERENCE,
+                strokeDashoffset: ringDashOffset,
+              }}
+            />
+          ) : (
+            <circle
+              cx="16"
+              cy="16"
+              r={RING_RADIUS}
+              fill="none"
+              strokeWidth="2.5"
+              strokeDasharray="2 3"
+              className="stroke-text-tertiary/55"
+            />
+          )}
+        </svg>
+        <span className={`absolute inset-0 flex items-center justify-center text-[8px] font-semibold tabular-nums ${valueTone}`}>
+          {usage ? `${usagePercentRounded}%` : '—'}
+        </span>
+        {(isStreaming || isCompacting) && (
+          <span
+            className="absolute right-0 top-0 h-2 w-2 animate-pulse rounded-full border border-surface-1 bg-accent motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+        )}
+      </button>
+
+      <div
+        className={`absolute bottom-full right-0 w-[min(19rem,calc(100vw-2rem))] pb-2 ${
+          detailsOpen ? 'visible pointer-events-auto' : 'invisible pointer-events-none'
+        }`}
+      >
+        <div
+          id="chat-context-details"
+          role="tooltip"
+          aria-hidden={!detailsOpen}
+          data-testid="chat-context-details"
+          data-state={detailsOpen ? 'open' : 'closed'}
+          className={`relative origin-bottom-right rounded-xl border border-border/75 bg-surface-0/95 p-3 shadow-[0_18px_48px_rgba(0,0,0,0.28)] ring-1 ring-white/[0.04] backdrop-blur-xl transition-[opacity,transform] duration-150 motion-reduce:transition-none ${
+            detailsOpen
+              ? 'translate-y-0 scale-100 opacity-100'
+              : 'translate-y-1 scale-[0.98] opacity-0'
+          }`}
         >
+          <span
+            aria-hidden="true"
+            className="absolute -bottom-1 right-3 h-2 w-2 rotate-45 border-b border-r border-border/75 bg-surface-0"
+          />
+
+          <div className="flex min-w-0 items-center gap-2">
           <ProviderIcon
             provider={modelProvider}
             providerId={modelProvider}
             label={modelLabel}
-            size="md"
-            className="rounded-lg bg-transparent"
+            size="sm"
+            className="border border-border/55 bg-surface-1"
           />
-          <span
-            className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-surface-0 ${
-              isStreaming || isCompacting ? 'animate-pulse bg-accent' : 'bg-text-tertiary'
-            }`}
-            aria-hidden="true"
-          />
-        </span>
-
-        <div className="min-w-0">
-          {usage ? (
-            <>
-              <div className="mb-1 hidden items-center justify-between gap-2 sm:flex">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="shrink-0 font-medium text-text-secondary">{t('chat.contextBudgetLabel')}</span>
-                  <span className="truncate tabular-nums">
-                    {t('chat.tokenUsage', {
-                      used: formatTokens(usage.promptTokens),
-                      total: formatTokens(usage.contextWindow),
-                    })}
-                  </span>
-                </div>
-                <div className="shrink-0 text-right tabular-nums">
-                  <span className={contextRisk === 'danger'
-                    ? 'font-semibold text-red-300'
-                    : contextRisk === 'warning'
-                      ? 'font-semibold text-amber-300'
-                      : 'font-semibold text-text-secondary'}>
-                    {t('chat.tokenUsagePercent', { percent: usagePercentRounded })}
-                  </span>
-                  <span className="hidden pl-2 text-text-tertiary sm:inline">{usageSourceLabel}</span>
-                </div>
-              </div>
-              <div
-                className="h-1.5 overflow-hidden rounded-full bg-surface-3/80"
-                title={`${t('chat.contextBudgetLabel')}: ${t('chat.tokenUsage', {
-                  used: formatTokens(usage.promptTokens),
-                  total: formatTokens(usage.contextWindow),
-                })} · ${t('chat.tokenUsagePercent', { percent: usagePercentRounded })}`}
-              >
-                <div className="flex h-full" style={{ width: `${barFillPercent}%` }}>
-                  {segments.length > 0 ? (
-                    segments.map((segment, index) => {
-                      const width = totalSegmentTokens > 0
-                        ? Math.max(2, (segment.tokens / totalSegmentTokens) * 100)
-                        : 100;
-                      return (
-                        <div
-                          key={`${segment.kind}-${index}`}
-                          className={CONTEXT_SEGMENT_COLOR[segment.kind] ?? CONTEXT_SEGMENT_COLOR.other}
-                          style={{ width: `${width}%` }}
-                          title={`${segmentLabel(segment.kind, t)} · ${formatTokens(segment.tokens)}`}
-                        />
-                      );
-                    })
-                  ) : (
-                    <div className="h-full w-full bg-text-tertiary/60" />
-                  )}
-                </div>
-              </div>
-              {segments.length > 1 && (
-                <div className="mt-1 hidden flex-wrap gap-x-2 gap-y-1 md:flex">
-                  {segments.slice(0, 5).map((segment, index) => (
-                    <span key={`${segment.kind}-legend-${index}`} className="inline-flex items-center gap-1">
-                      <span className={`h-1.5 w-1.5 rounded-full ${CONTEXT_SEGMENT_COLOR[segment.kind] ?? CONTEXT_SEGMENT_COLOR.other}`} />
-                      <span className="truncate">
-                        {segmentLabel(segment.kind, t)} {formatTokens(segment.tokens)}
-                      </span>
-                    </span>
-                  ))}
-                  {segments.length > 5 && <span>+{segments.length - 5}</span>}
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="h-1.5 overflow-hidden rounded-full bg-surface-3/70" title={statusLabel}>
-              <div className={`h-full w-1/3 rounded-full ${isStreaming || isCompacting ? 'animate-pulse bg-accent/70' : 'bg-text-tertiary/50'}`} />
-            </div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-xs font-semibold text-text-primary">{modelLabel}</div>
+            <div className="mt-0.5 truncate text-[10px] text-text-tertiary">{usageSourceLabel}</div>
+          </div>
+          {showStatusPill && (
+            <span className={`inline-flex max-w-24 shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-medium ${statusTone}`}>
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotTone} ${isStreaming || isCompacting ? 'animate-pulse motion-reduce:animate-none' : 'opacity-70'}`} />
+              <span className="truncate">{statusLabel}</span>
+            </span>
           )}
         </div>
 
-        <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
-          {cacheStats && (
-            <span
-              className={`inline-flex h-7 min-w-12 items-center justify-center rounded-lg border px-2 text-[11px] font-semibold tabular-nums ${cacheTone}`}
-              title={cacheTitle}
-              aria-label={cacheTitle}
+        <div className="mt-3">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-text-tertiary">
+                {t('chat.contextBudgetLabel')}
+              </div>
+              <div className="mt-0.5 text-xs tabular-nums text-text-secondary">{tokenUsageLabel}</div>
+            </div>
+            <div className={`text-sm font-semibold tabular-nums ${valueTone}`}>{percentLabel}</div>
+          </div>
+
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-3/80">
+            <div className="flex h-full" style={{ width: `${usagePercent}%` }}>
+              {segments.length > 0 ? (
+                segments.map((segment, index) => {
+                  const width = totalSegmentTokens > 0
+                    ? Math.max(3, (segment.tokens / totalSegmentTokens) * 100)
+                    : 100;
+                  return (
+                    <span
+                      key={`${segment.kind}-bar-${index}`}
+                      className={CONTEXT_SEGMENT_COLOR[segment.kind] ?? CONTEXT_SEGMENT_COLOR.other}
+                      style={{ width: `${width}%` }}
+                    />
+                  );
+                })
+              ) : (
+                <span className="h-full w-full bg-text-tertiary/55" />
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="rounded-lg border border-border/55 bg-surface-1/75 px-2.5 py-2">
+            <div className="text-[10px] text-text-tertiary">{t('chat.contextHudPromptUsage')}</div>
+            <div className="mt-0.5 flex items-baseline gap-1.5">
+              <span className="text-sm font-semibold tabular-nums text-text-primary">
+                {usage ? formatTokens(usage.promptTokens) : '—'}
+              </span>
+              {usage && (
+                <span className="text-[10px] tabular-nums text-text-tertiary">{usagePercentRounded}%</span>
+              )}
+            </div>
+          </div>
+          <div className="rounded-lg border border-border/55 bg-surface-1/75 px-2.5 py-2">
+            <div className="text-[10px] text-text-tertiary">{t('chat.contextHudAverageCache')}</div>
+            <div
+              className="mt-0.5 text-sm font-semibold tabular-nums text-text-primary"
               data-testid="chat-run-cache-hit"
             >
-              {cacheValueLabel}
-            </span>
-          )}
-          <span
-            className={`inline-flex h-7 w-7 items-center justify-center gap-1.5 rounded-lg border px-0 sm:w-auto sm:max-w-[8rem] sm:px-2 ${statusTone}`}
-            title={statusLabel}
-            aria-label={statusLabel}
-          >
-            <span className={`h-1.5 w-1.5 rounded-full ${isStreaming || isCompacting ? 'animate-pulse bg-current' : 'bg-current opacity-70'}`} />
-            <span className="hidden truncate text-[11px] font-medium sm:block">{statusLabel}</span>
-          </span>
+              {cacheStats?.hitPercent == null ? '—' : `${cacheStats.hitPercent}%`}
+            </div>
+            <div className="mt-0.5 truncate text-[9px] text-text-tertiary" title={cacheDetailLabel}>
+              {cacheSampleLabel}
+            </div>
+          </div>
+        </div>
+
+        {segments.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1" data-testid="chat-context-segments">
+            {segments.slice(0, 6).map((segment, index) => (
+              <span
+                key={`${segment.kind}-detail-${index}`}
+                className="inline-flex items-center gap-1 rounded-md border border-border/45 bg-surface-1/60 px-1.5 py-0.5 text-[9px] text-text-tertiary"
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${CONTEXT_SEGMENT_COLOR[segment.kind] ?? CONTEXT_SEGMENT_COLOR.other}`} />
+                <span>
+                  {segmentLabel(segment.kind, t)}{' '}
+                  <span className="tabular-nums text-text-secondary">{formatTokens(segment.tokens)}</span>
+                </span>
+              </span>
+            ))}
+            {segments.length > 6 && (
+              <span className="px-1 py-0.5 text-[9px] text-text-tertiary">+{segments.length - 6}</span>
+            )}
+          </div>
+        )}
+
+        {usage && (
+          <div className="mt-2 border-t border-border/45 pt-2 text-[9px] tabular-nums text-text-tertiary">
+            {t('chat.tokenIO', {
+              input: formatTokens(usage.promptTokens),
+              output: formatTokens(usage.completionTokens),
+            })}
+          </div>
+        )}
         </div>
       </div>
     </div>
