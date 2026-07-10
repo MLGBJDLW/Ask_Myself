@@ -55,6 +55,7 @@ interface ChatInputProps {
   planModeEnabled?: boolean;
   onPlanModeChange?: (enabled: boolean) => void;
   activeGoalContext?: ActiveGoalContext | null;
+  contextIndicator?: ReactNode;
 }
 
 interface ChatDraftState {
@@ -217,6 +218,7 @@ export function ChatInput({
   planModeEnabled,
   onPlanModeChange,
   activeGoalContext,
+  contextIndicator,
 }: ChatInputProps) {
   const { t } = useTranslation();
   const draftKey = conversationId ?? NEW_CONVERSATION_DRAFT_KEY;
@@ -1176,7 +1178,10 @@ export function ChatInput({
       )}
 
       <div className="space-y-2">
-        {modeSegment}
+        <div className="flex min-h-8 items-center justify-between gap-2">
+          {modeSegment}
+          {contextIndicator}
+        </div>
         {planModeBanner}
 
         <div
