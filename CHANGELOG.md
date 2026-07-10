@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.10.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.4...nexa-monorepo-v0.10.5) (2026-07-10)
+
+
+### Features
+
+* **chat:** improve telemetry and prompt cache stability ([6ef5685](https://github.com/MLGBJDLW/Nexa/commit/6ef5685f42bdaa0123cbc35db19c36d0a9a0692d))
+* **chat:** redesign context usage HUD ([190f1af](https://github.com/MLGBJDLW/Nexa/commit/190f1afc6aa80ae2c73b39f0f50c7cb0a5d72d0b))
+
+
+### Bug Fixes
+
+* **chat:** compact tool card running state ([b84b8b1](https://github.com/MLGBJDLW/Nexa/commit/b84b8b11b5469ae043b53c4718a79ccdacbf1d91))
+* **ci:** satisfy Rust 1.97 clippy ([664bf7a](https://github.com/MLGBJDLW/Nexa/commit/664bf7ac1d34e8bfd3a90a6bef1887cce7c8222c))
+
+
+### Performance Improvements
+
+* **core:** stabilize bounded prompt cache prefixes ([8bf464d](https://github.com/MLGBJDLW/Nexa/commit/8bf464daf0fd04619f41714d5cbfa91cb25c313f))
+
 ## [0.10.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.3...nexa-monorepo-v0.10.4) (2026-07-07)
 
 
