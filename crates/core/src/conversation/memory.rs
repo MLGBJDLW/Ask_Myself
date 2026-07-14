@@ -778,7 +778,7 @@ mod tests {
     fn test_model_context_window_case_insensitive() {
         assert_eq!(model_context_window("GPT-5.5"), 1_050_000);
         assert_eq!(model_context_window("GPT-5.4"), 1_050_000);
-        assert_eq!(model_context_window("Claude-Opus-4-6"), 200_000);
+        assert_eq!(model_context_window("Claude-Opus-4-6"), 1_000_000);
         assert_eq!(model_context_window("GEMINI-2.5-PRO"), 1_048_576);
     }
 
