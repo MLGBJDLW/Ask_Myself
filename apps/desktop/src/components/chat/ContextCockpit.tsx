@@ -151,7 +151,7 @@ export function ContextCockpit({
   const cacheCreationTokens = usage?.cacheCreationTokens ?? 0;
   const cacheHitDenominator = cacheReadTokens + cacheMissTokens;
   const cacheHitRateLabel = cacheHitDenominator > 0
-    ? `${Math.round((cacheReadTokens / cacheHitDenominator) * 100)}%`
+    ? `${((cacheReadTokens / cacheHitDenominator) * 100).toFixed(1)}%`
     : null;
   const modelLabel = runtimeProfile
     ? `${runtimeProfile.provider} / ${runtimeProfile.model}`
