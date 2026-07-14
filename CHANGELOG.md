@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.5...nexa-monorepo-v0.10.6) (2026-07-14)
+
+
+### Features
+
+* **chat:** refine plan and attachment previews ([0e60589](https://github.com/MLGBJDLW/Nexa/commit/0e60589a1ca92b3839d9493c1f9ef013ef0ce047))
+* **providers:** refresh shared model catalog ([5f5feda](https://github.com/MLGBJDLW/Nexa/commit/5f5feda7dd6813d0516bfc2156b0c10e0a70a718))
+* refresh providers and improve chat UI ([079e34c](https://github.com/MLGBJDLW/Nexa/commit/079e34c3f5d4f44efc879db75de115e5291b10d7))
+
+
+### Bug Fixes
+
+* **chat:** hide internal trace status noise ([1a707e1](https://github.com/MLGBJDLW/Nexa/commit/1a707e1f0d3190bf6c6059a80991bf3f3db6f29b))
+* **chat:** show cache hit rates to one decimal ([23c2e84](https://github.com/MLGBJDLW/Nexa/commit/23c2e84857a28c1bf36b1e5783d577605038a21d))
+
 ## [0.10.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.4...nexa-monorepo-v0.10.5) (2026-07-10)
 
 
