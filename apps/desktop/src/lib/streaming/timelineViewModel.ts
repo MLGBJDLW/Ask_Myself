@@ -46,6 +46,20 @@ const INTERNAL_TRACE_TOOLS = new Set([
   'tool_search',
 ]);
 
+const INTERNAL_TRACE_STATUSES = new Set([
+  'applied user steering after an assistant draft and continued the turn.',
+  'applied user steering before the next model step.',
+  'applied user steering during streaming and restarted the model response.',
+  'auto pre-graph: injected compact knowledge graph index.',
+  'auto pre-search: injected graph-guided knowledge base results.',
+  'pause checkpoint saved',
+  'pre-fetched graph-guided search results for grounding.',
+  'pre-fetched knowledge graph index.',
+  'saved a resume checkpoint after reaching max iterations.',
+  'stream event gap detected; replay may be required.',
+  'stream recovery update.',
+]);
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -271,6 +285,9 @@ export function shouldHideTraceStatus(text: string | null | undefined): boolean 
   const compact = (text ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
   const normalized = compact.replace(/\s+/g, '');
   return (
+    INTERNAL_TRACE_STATUSES.has(compact) ||
+    /^resume checkpoint saved after tool round \d+\.$/.test(compact) ||
+    /^activated \d+ deferred tool\(s\):/.test(compact) ||
     normalized === 'routeselected:directresponse' ||
     normalized === 'route:directresponse' ||
     normalized === 'routeselected:fileoperation' ||
