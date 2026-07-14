@@ -32,7 +32,7 @@ export function TaskBoard({
   return (
     <div
       data-testid="task-board"
-      className="shrink-0 border-t border-border/60 bg-surface-0/95 px-3 py-1.5 backdrop-blur"
+      className="pointer-events-none absolute right-3 top-14 z-20 w-[min(22rem,calc(100%-1.5rem))] md:right-4"
     >
       <PlanProgressPanel plan={plan} />
     </div>
