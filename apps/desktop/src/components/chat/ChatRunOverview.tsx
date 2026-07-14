@@ -1,6 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import { Target } from 'lucide-react';
 import { useTranslation, type TranslationKey } from '../../i18n';
 import { ProviderIcon } from '../../lib/providerIcons';
+import type { ActiveGoalContext } from '../../lib/goalContext';
 
 interface ContextUsageSegment {
   kind: string;
@@ -58,6 +67,7 @@ interface ChatRunOverviewProps {
   finishReason?: string | null;
   contextOverflow?: boolean;
   isCompacting?: boolean;
+  activeGoalContext?: ActiveGoalContext | null;
 }
 
 const SEGMENT_LABEL_KEYS: Record<string, TranslationKey> = {
@@ -113,6 +123,36 @@ const SEGMENT_KIND_ALIASES: Record<string, string> = {
 
 const RING_RADIUS = 12;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+const DRAG_THRESHOLD_PX = 4;
+const SNAP_BACK_DURATION_MS = 320;
+
+interface HudDragState {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startOffsetX: number;
+  startOffsetY: number;
+  baseLeft: number;
+  baseTop: number;
+  width: number;
+  height: number;
+  nextOffsetX: number;
+  nextOffsetY: number;
+  moved: boolean;
+  frameId: number | null;
+}
+
+function currentTranslation(element: HTMLElement): { x: number; y: number } {
+  const transform = window.getComputedStyle(element).transform;
+  if (!transform || transform === 'none') return { x: 0, y: 0 };
+
+  try {
+    const matrix = new DOMMatrixReadOnly(transform);
+    return { x: matrix.m41, y: matrix.m42 };
+  } catch {
+    return { x: 0, y: 0 };
+  }
+}
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -201,11 +241,15 @@ export function ChatRunOverview({
   finishReason,
   contextOverflow = false,
   isCompacting = false,
+  activeGoalContext = null,
 }: ChatRunOverviewProps) {
   const { t } = useTranslation();
   const overviewRef = useRef<HTMLDivElement>(null);
   const pointerInsideRef = useRef(false);
   const suppressHoverRef = useRef(false);
+  const suppressClickRef = useRef(false);
+  const dragStateRef = useRef<HudDragState | null>(null);
+  const snapAnimationRef = useRef<Animation | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   const usage = tokenUsage && tokenUsage.contextWindow > 0 ? tokenUsage : null;
@@ -220,7 +264,10 @@ export function ChatRunOverview({
       ? 'warning'
       : 'ok';
 
-  const segments = useMemo(() => (usage ? contextSegments(usage) : []), [usage]);
+  const segments = useMemo(
+    () => (detailsOpen && usage ? contextSegments(usage) : []),
+    [detailsOpen, usage],
+  );
   const totalSegmentTokens = segments.reduce((sum, segment) => sum + segment.tokens, 0);
 
   const statusLabel = isCompacting
@@ -306,10 +353,139 @@ export function ChatRunOverview({
   const percentLabel = usage
     ? t('chat.tokenUsagePercent', { percent: usagePercentRounded })
     : t('chat.contextNoUsage');
-  const triggerLabel = usage
+  const contextTriggerLabel = usage
     ? `${t('chat.contextBudgetLabel')}: ${tokenUsageLabel} · ${percentLabel} · ${statusLabel}`
     : `${t('chat.contextBudgetLabel')}: ${statusLabel}`;
+  const goalTriggerLabel = activeGoalContext
+    ? `${t('chat.goalStatusTitle')}: ${activeGoalContext.objective}`
+    : null;
+  const triggerLabel = goalTriggerLabel
+    ? `${goalTriggerLabel}; ${contextTriggerLabel}`
+    : contextTriggerLabel;
   const ringDashOffset = RING_CIRCUMFERENCE * (1 - usagePercent / 100);
+
+  const applyDragFrame = useCallback(() => {
+    const element = overviewRef.current;
+    const dragState = dragStateRef.current;
+    if (!element || !dragState) return;
+    dragState.frameId = null;
+    element.style.transform = `translate3d(${dragState.nextOffsetX}px, ${dragState.nextOffsetY}px, 0)`;
+  }, []);
+
+  const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    const element = overviewRef.current;
+    if (!element) return;
+
+    const translation = currentTranslation(element);
+    snapAnimationRef.current?.cancel();
+    snapAnimationRef.current = null;
+    element.style.transform = `translate3d(${translation.x}px, ${translation.y}px, 0)`;
+    element.style.willChange = 'transform';
+    element.dataset.dragging = 'true';
+
+    const rect = element.getBoundingClientRect();
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startOffsetX: translation.x,
+      startOffsetY: translation.y,
+      baseLeft: rect.left - translation.x,
+      baseTop: rect.top - translation.y,
+      width: rect.width,
+      height: rect.height,
+      nextOffsetX: translation.x,
+      nextOffsetY: translation.y,
+      moved: false,
+      frameId: null,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, []);
+
+  const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+    const deltaX = event.clientX - dragState.startClientX;
+    const deltaY = event.clientY - dragState.startClientY;
+    if (!dragState.moved && Math.hypot(deltaX, deltaY) < DRAG_THRESHOLD_PX) return;
+
+    if (!dragState.moved) {
+      dragState.moved = true;
+      suppressHoverRef.current = true;
+      setDetailsOpen(false);
+    }
+
+    event.preventDefault();
+    const viewportPadding = 8;
+    const minX = viewportPadding - dragState.baseLeft;
+    const maxX = window.innerWidth - viewportPadding - dragState.baseLeft - dragState.width;
+    const minY = viewportPadding - dragState.baseTop;
+    const maxY = window.innerHeight - viewportPadding - dragState.baseTop - dragState.height;
+    dragState.nextOffsetX = Math.min(maxX, Math.max(minX, dragState.startOffsetX + deltaX));
+    dragState.nextOffsetY = Math.min(maxY, Math.max(minY, dragState.startOffsetY + deltaY));
+
+    if (dragState.frameId === null) {
+      dragState.frameId = window.requestAnimationFrame(applyDragFrame);
+    }
+  }, [applyDragFrame]);
+
+  const finishDrag = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    const element = overviewRef.current;
+    const dragState = dragStateRef.current;
+    if (!element || !dragState || dragState.pointerId !== event.pointerId) return;
+
+    if (dragState.frameId !== null) {
+      window.cancelAnimationFrame(dragState.frameId);
+      dragState.frameId = null;
+      applyDragFrame();
+    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    dragStateRef.current = null;
+    delete element.dataset.dragging;
+    if (!dragState.moved) {
+      element.style.transform = '';
+      element.style.willChange = '';
+      return;
+    }
+
+    suppressClickRef.current = true;
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 0);
+
+    const startTransform = `translate3d(${dragState.nextOffsetX}px, ${dragState.nextOffsetY}px, 0)`;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduceMotion || typeof element.animate !== 'function') {
+      element.style.transform = '';
+      element.style.willChange = '';
+      return;
+    }
+
+    const animation = element.animate(
+      [
+        { transform: startTransform },
+        { transform: 'translate3d(0, 0, 0)' },
+      ],
+      {
+        duration: SNAP_BACK_DURATION_MS,
+        easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        fill: 'forwards',
+      },
+    );
+    snapAnimationRef.current = animation;
+    animation.onfinish = () => {
+      if (snapAnimationRef.current !== animation) return;
+      snapAnimationRef.current = null;
+      element.style.transform = '';
+      element.style.willChange = '';
+      animation.cancel();
+    };
+  }, [applyDragFrame]);
 
   useEffect(() => {
     if (!detailsOpen) return undefined;
@@ -331,7 +507,15 @@ export function ChatRunOverview({
     return () => document.removeEventListener('keydown', handleEscape, true);
   }, [detailsOpen]);
 
-  if (!usage && !runtimeProfile && !isStreaming && !isCompacting && !contextOverflow) {
+  useEffect(() => () => {
+    const dragState = dragStateRef.current;
+    if (dragState?.frameId !== null && dragState?.frameId !== undefined) {
+      window.cancelAnimationFrame(dragState.frameId);
+    }
+    snapAnimationRef.current?.cancel();
+  }, []);
+
+  if (!usage && !runtimeProfile && !isStreaming && !isCompacting && !contextOverflow && !activeGoalContext) {
     return null;
   }
 
@@ -342,7 +526,7 @@ export function ChatRunOverview({
       data-testid="chat-run-overview"
       onMouseEnter={() => {
         pointerInsideRef.current = true;
-        if (!suppressHoverRef.current) setDetailsOpen(true);
+        if (!suppressHoverRef.current && !dragStateRef.current) setDetailsOpen(true);
       }}
       onMouseLeave={() => {
         pointerInsideRef.current = false;
@@ -361,18 +545,32 @@ export function ChatRunOverview({
     >
       <button
         type="button"
-        className="relative flex h-8 w-8 items-center justify-center rounded-full outline-none transition-colors hover:bg-surface-2/80 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent/35"
+        className={`relative flex h-8 touch-none select-none items-center rounded-full outline-none transition-colors hover:bg-surface-2/80 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent/35 active:cursor-grabbing ${
+          activeGoalContext
+            ? 'max-w-[min(16rem,45vw)] cursor-grab gap-1 border border-accent/25 bg-accent/10 pr-2.5 text-left'
+            : 'w-8 cursor-grab justify-center'
+        }`}
         aria-label={triggerLabel}
-        aria-describedby="chat-context-details"
+        aria-describedby={detailsOpen ? 'chat-context-details' : undefined}
         aria-expanded={detailsOpen}
-        aria-controls="chat-context-details"
+        aria-controls={detailsOpen ? 'chat-context-details' : undefined}
         data-testid="chat-context-trigger"
-        onClick={() => {
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
+        onClick={(event) => {
+          if (suppressClickRef.current) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
           suppressHoverRef.current = false;
           setDetailsOpen(true);
         }}
       >
-        <svg className="h-8 w-8 -rotate-90" viewBox="0 0 32 32" aria-hidden="true">
+        <span className="relative flex h-8 w-8 shrink-0 items-center justify-center">
+          <svg className="h-8 w-8 -rotate-90" viewBox="0 0 32 32" aria-hidden="true">
           <circle
             cx="16"
             cy="16"
@@ -406,15 +604,26 @@ export function ChatRunOverview({
               className="stroke-text-tertiary/55"
             />
           )}
-        </svg>
-        <span className={`absolute inset-0 flex items-center justify-center text-[8px] font-semibold tabular-nums ${valueTone}`}>
-          {usage ? `${usagePercentRounded}%` : '—'}
+          </svg>
+          <span className={`absolute inset-0 flex items-center justify-center text-[8px] font-semibold tabular-nums ${valueTone}`}>
+            {usage ? `${usagePercentRounded}%` : '—'}
+          </span>
+          {(isStreaming || isCompacting) && (
+            <span
+              className="absolute right-0 top-0 h-2 w-2 animate-pulse rounded-full border border-surface-1 bg-accent motion-reduce:animate-none"
+              aria-hidden="true"
+            />
+          )}
         </span>
-        {(isStreaming || isCompacting) && (
+        {activeGoalContext && (
           <span
-            className="absolute right-0 top-0 h-2 w-2 animate-pulse rounded-full border border-surface-1 bg-accent motion-reduce:animate-none"
-            aria-hidden="true"
-          />
+            className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold text-text-primary"
+            data-testid="chat-context-goal-summary"
+          >
+            <Target className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+            <span className="shrink-0 text-accent">{t('chat.goalStatusTitle')}</span>
+            <span className="truncate">{activeGoalContext.objective}</span>
+          </span>
         )}
       </button>
 
@@ -423,17 +632,13 @@ export function ChatRunOverview({
           detailsOpen ? 'visible pointer-events-auto' : 'invisible pointer-events-none'
         }`}
       >
+        {detailsOpen && (
         <div
           id="chat-context-details"
           role="tooltip"
-          aria-hidden={!detailsOpen}
           data-testid="chat-context-details"
-          data-state={detailsOpen ? 'open' : 'closed'}
-          className={`relative origin-bottom-right rounded-xl border border-border/75 bg-surface-0/95 p-3 shadow-[0_18px_48px_rgba(0,0,0,0.28)] ring-1 ring-white/[0.04] backdrop-blur-xl transition-[opacity,transform] duration-150 motion-reduce:transition-none ${
-            detailsOpen
-              ? 'translate-y-0 scale-100 opacity-100'
-              : 'translate-y-1 scale-[0.98] opacity-0'
-          }`}
+          data-state="open"
+          className="chat-run-overview-details relative rounded-xl border border-border/75 bg-surface-0 p-3 shadow-[0_12px_32px_rgba(0,0,0,0.24)] ring-1 ring-white/[0.04]"
         >
           <span
             aria-hidden="true"
@@ -459,6 +664,27 @@ export function ChatRunOverview({
             </span>
           )}
         </div>
+
+        {activeGoalContext && (
+          <div
+            className="mt-3 flex min-w-0 items-start gap-2 rounded-lg border border-accent/25 bg-accent/10 px-2.5 py-2"
+            data-testid="chat-context-goal"
+          >
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent/15 text-accent">
+              <Target className="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[10px] font-semibold uppercase tracking-[0.1em] text-accent">
+                {activeGoalContext.status === 'active'
+                  ? t('chat.goalStatusActive')
+                  : t('chat.goalStatusTitle')}
+              </span>
+              <span className="mt-0.5 block line-clamp-2 text-xs leading-4 text-text-primary">
+                {activeGoalContext.objective}
+              </span>
+            </span>
+          </div>
+        )}
 
         <div className="mt-3">
           <div className="flex items-end justify-between gap-3">
@@ -548,6 +774,7 @@ export function ChatRunOverview({
           </div>
         )}
         </div>
+        )}
       </div>
     </div>
   );
