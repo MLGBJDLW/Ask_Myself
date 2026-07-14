@@ -6,16 +6,100 @@
     "baseUrl": "https://api.openai.com/v1",
     "requiresApiKey": true,
     "icon": "🤖",
-    "description": "GPT-5.5, GPT-5.4, GPT-4.1, o3/o4 series",
+    "description": "GPT-5.6, GPT-5.5, GPT-5.4, GPT-4.1, o3/o4 series",
     "capabilities": {
       "vision": true
     },
     "models": [
       {
+        "id": "gpt-5.6",
+        "name": "GPT-5.6",
+        "tagKey": "providers.tagLatest",
+        "recommended": true,
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "gpt-5.6-sol",
+        "name": "GPT-5.6 Sol",
+        "tagKey": "providers.tagMostIntelligent",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "gpt-5.6-terra",
+        "name": "GPT-5.6 Terra",
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "gpt-5.6-luna",
+        "name": "GPT-5.6 Luna",
+        "tagKey": "providers.tagCheapest",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
         "id": "gpt-5.5",
         "name": "GPT-5.5",
         "tagKey": "providers.tagLatest",
-        "recommended": true,
         "capabilities": {
           "reasoning": {
             "effortLevels": [
@@ -302,6 +386,242 @@
         "name": "Anthropic: Claude Fable Latest",
         "tagKey": "providers.tagLatest",
         "recommended": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "openai/gpt-5.6-sol-pro",
+        "name": "OpenAI: GPT-5.6 Sol Pro",
+        "tagKey": "providers.tagMostIntelligent",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "openai/gpt-5.6-sol",
+        "name": "OpenAI: GPT-5.6 Sol",
+        "tagKey": "providers.tagMostIntelligent",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "openai/gpt-5.6-terra-pro",
+        "name": "OpenAI: GPT-5.6 Terra Pro",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "openai/gpt-5.6-terra",
+        "name": "OpenAI: GPT-5.6 Terra",
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "openai/gpt-5.6-luna-pro",
+        "name": "OpenAI: GPT-5.6 Luna Pro",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "openai/gpt-5.6-luna",
+        "name": "OpenAI: GPT-5.6 Luna",
+        "tagKey": "providers.tagCheapest",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "x-ai/grok-4.5",
+        "name": "xAI: Grok 4.5",
+        "tagKey": "providers.tagLatest",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "high",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "~x-ai/grok-latest",
+        "name": "xAI: Grok Latest",
+        "tagKey": "providers.tagLatest",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "high",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "anthropic/claude-sonnet-5",
+        "name": "Anthropic: Claude Sonnet 5",
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "z-ai/glm-5.2",
+        "name": "Z.AI: GLM 5.2",
+        "tagKey": "providers.tagLatest",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "moonshotai/kimi-k2.7-code",
+        "name": "MoonshotAI: Kimi K2.7 Code",
+        "tagKey": "providers.tagCoding",
         "capabilities": {
           "vision": true,
           "reasoning": {
@@ -5942,7 +6262,7 @@
     "baseUrl": "https://api.anthropic.com/v1",
     "requiresApiKey": true,
     "icon": "🧠",
-    "description": "Claude Fable 5, Opus 4.8/4.7, Sonnet 4.6, Haiku 4.5",
+    "description": "Claude Fable 5, Sonnet 5, Opus 4.8/4.7, Sonnet 4.6, Haiku 4.5",
     "capabilities": {
       "vision": true
     },
@@ -5960,6 +6280,27 @@
               "high",
               "xhigh",
               "max"
+            ],
+            "defaultEffort": "high",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "claude-sonnet-5",
+        "name": "Claude Sonnet 5",
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
             ],
             "defaultEffort": "high",
             "thinkingBudget": {
@@ -6358,16 +6699,35 @@
     "baseUrl": "https://api.x.ai/v1",
     "requiresApiKey": true,
     "icon": "🚀",
-    "description": "Grok 4.3, Grok Build 0.1, Grok 4.20",
+    "description": "Grok 4.5, Grok 4.3, Grok Build 0.1, Grok 4.20",
     "capabilities": {
       "vision": true
     },
     "models": [
       {
-        "id": "grok-4.3",
-        "name": "Grok 4.3",
+        "id": "grok-4.5",
+        "name": "Grok 4.5",
         "tagKey": "providers.tagLatest",
         "recommended": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "high",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "grok-4.3",
+        "name": "Grok 4.3",
+        "tagKey": "providers.tagBest",
         "capabilities": {
           "vision": true,
           "reasoning": {
@@ -6450,6 +6810,123 @@
         "capabilities": {
           "vision": true,
           "reasoning": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "minimax",
+    "name": "MiniMax",
+    "provider": "open_ai",
+    "baseUrl": "https://api.minimax.io/v1",
+    "requiresApiKey": true,
+    "icon": "🌊",
+    "description": "MiniMax M3, M2.7, M2.5, M2.1, and M2",
+    "capabilities": {
+      "vision": false
+    },
+    "models": [
+      {
+        "id": "MiniMax-M3",
+        "name": "MiniMax M3",
+        "tagKey": "providers.tagLatest",
+        "recommended": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "MiniMax-M2.7",
+        "name": "MiniMax M2.7",
+        "tagKey": "providers.tagReasoning",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "MiniMax-M2.7-highspeed",
+        "name": "MiniMax M2.7 Highspeed",
+        "tagKey": "providers.tagFast",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "MiniMax-M2.5",
+        "name": "MiniMax M2.5",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "MiniMax-M2.5-highspeed",
+        "name": "MiniMax M2.5 Highspeed",
+        "tagKey": "providers.tagFast",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "MiniMax-M2.1",
+        "name": "MiniMax M2.1",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "MiniMax-M2.1-highspeed",
+        "name": "MiniMax M2.1 Highspeed",
+        "tagKey": "providers.tagFast",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "MiniMax-M2",
+        "name": "MiniMax M2",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
         }
       }
     ]
@@ -6665,16 +7142,38 @@
     "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
     "requiresApiKey": true,
     "icon": "🔵",
-    "description": "GLM-5.1, GLM-5, GLM-5V-Turbo, GLM-4.7, GLM-4.6V",
+    "description": "GLM-5.2, GLM-5.1, GLM-5, GLM-5V-Turbo, GLM-4.7, GLM-4.6V",
     "capabilities": {
       "vision": false
     },
     "models": [
       {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "tagKey": "providers.tagLatest",
+        "recommended": true,
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
         "id": "glm-5.1",
         "name": "GLM-5.1",
-        "tagKey": "providers.tagLatest",
-        "recommended": true
+        "tagKey": "providers.tagBest"
       },
       {
         "id": "glm-5",
@@ -6737,16 +7236,30 @@
     "baseUrl": "https://api.moonshot.cn/v1",
     "requiresApiKey": true,
     "icon": "🌙",
-    "description": "Kimi K2.6, K2.5, K2 Thinking",
+    "description": "Kimi K2.7 Code, K2.6, K2.5, K2 Thinking",
     "capabilities": {
       "vision": false
     },
     "models": [
       {
+        "id": "kimi-k2.7-code",
+        "name": "Kimi K2.7 Code",
+        "tagKey": "providers.tagCoding",
+        "recommended": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
         "id": "kimi-k2.6",
         "name": "Kimi K2.6",
         "tagKey": "providers.tagLatest",
-        "recommended": true,
         "capabilities": {
           "vision": true
         }
@@ -6814,6 +7327,14 @@
         "id": "qwen3.7-max-2026-06-08",
         "name": "Qwen3.7 Max 2026-06-08",
         "tagKey": "providers.tagLatest",
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "qwen3.7-max-preview",
+        "name": "Qwen3.7 Max Preview",
+        "tagKey": "providers.tagPreview",
         "capabilities": {
           "vision": true
         }

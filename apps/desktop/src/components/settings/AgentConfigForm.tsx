@@ -909,7 +909,7 @@ export function AgentConfigForm({
             }}
             placeholder={
               provider === "open_ai"
-                ? "gpt-5.5"
+                ? "gpt-5.6"
                 : provider === "openrouter"
                   ? "qwen/qwen3.7-max"
                 : provider === "anthropic"

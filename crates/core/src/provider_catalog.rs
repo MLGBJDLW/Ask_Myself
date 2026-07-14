@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_catalog_defaults_to_gpt_55() {
+    fn openai_catalog_defaults_to_gpt_56() {
         let openai = find_provider_preset("open_ai", Some("https://api.openai.com/v1"))
             .expect("openai preset should match");
         let ids = openai
@@ -279,24 +279,26 @@ mod tests {
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids.first(), Some(&"gpt-5.5"));
-        assert!(ids.contains(&"gpt-5.5-pro"));
+        assert_eq!(ids.first(), Some(&"gpt-5.6"));
+        assert!(ids.contains(&"gpt-5.6-sol"));
+        assert!(ids.contains(&"gpt-5.6-terra"));
+        assert!(ids.contains(&"gpt-5.6-luna"));
         assert!(ids.contains(&"gpt-5.4"));
         assert!(ids.contains(&"gpt-5.4-mini"));
         assert!(ids.contains(&"gpt-5.4-nano"));
 
-        let gpt_55 = openai
+        let gpt_56 = openai
             .models
             .iter()
-            .find(|model| model.id == "gpt-5.5")
-            .expect("gpt-5.5 should be listed");
-        assert_eq!(gpt_55.recommended, Some(true));
+            .find(|model| model.id == "gpt-5.6")
+            .expect("gpt-5.6 should be listed");
+        assert_eq!(gpt_56.recommended, Some(true));
 
-        let reasoning = gpt_55
+        let reasoning = gpt_56
             .capabilities
             .as_ref()
             .and_then(|capabilities| capabilities.reasoning.as_ref())
-            .expect("gpt-5.5 should expose reasoning capability");
+            .expect("gpt-5.6 should expose reasoning capability");
         assert_eq!(
             reasoning.effort_levels,
             vec![
@@ -305,6 +307,7 @@ mod tests {
                 "medium".to_string(),
                 "high".to_string(),
                 "xhigh".to_string(),
+                "max".to_string(),
             ]
         );
         assert_eq!(reasoning.default_effort.as_deref(), Some("medium"));
@@ -322,6 +325,7 @@ mod tests {
 
         assert_eq!(ids.first(), Some(&"claude-fable-5"));
         assert!(ids.contains(&"claude-mythos-5"));
+        assert!(ids.contains(&"claude-sonnet-5"));
         assert!(ids.contains(&"claude-opus-4-8"));
         assert!(ids.contains(&"claude-opus-4-7"));
         assert!(ids.contains(&"claude-sonnet-4-6"));
@@ -404,6 +408,11 @@ mod tests {
 
         assert_eq!(ids.first(), Some(&"~anthropic/claude-fable-latest"));
         assert!(ids.contains(&"anthropic/claude-fable-5"));
+        assert!(ids.contains(&"openai/gpt-5.6-sol"));
+        assert!(ids.contains(&"x-ai/grok-4.5"));
+        assert!(ids.contains(&"anthropic/claude-sonnet-5"));
+        assert!(ids.contains(&"z-ai/glm-5.2"));
+        assert!(ids.contains(&"moonshotai/kimi-k2.7-code"));
         assert!(ids.contains(&"qwen/qwen3.7-plus"));
         assert!(ids.contains(&"x-ai/grok-build-0.1"));
         assert!(ids.contains(&"anthropic/claude-sonnet-4.6"));
@@ -429,9 +438,39 @@ mod tests {
     }
 
     #[test]
+    fn openai_compatible_presets_match_exact_base_urls() {
+        let xai = find_provider_preset("open_ai", Some("https://api.x.ai/v1/"))
+            .expect("xAI preset should match its exact base URL");
+        assert_eq!(
+            xai.models.first().map(|model| model.id.as_str()),
+            Some("grok-4.5")
+        );
+
+        let minimax = find_provider_preset("open_ai", Some("https://api.minimax.io/v1"))
+            .expect("MiniMax preset should match its exact base URL");
+        assert_eq!(
+            minimax.models.first().map(|model| model.id.as_str()),
+            Some("MiniMax-M3")
+        );
+
+        let zhipu = find_provider_preset("zhipu", Some("https://open.bigmodel.cn/api/paas/v4"))
+            .expect("Zhipu preset should match");
+        assert_eq!(
+            zhipu.models.first().map(|model| model.id.as_str()),
+            Some("glm-5.2")
+        );
+        let glm52_reasoning = zhipu.models[0]
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning.as_ref())
+            .expect("GLM-5.2 should expose reasoning controls");
+        assert!(glm52_reasoning.effort_levels.contains(&"max".to_string()));
+    }
+
+    #[test]
     fn provider_catalog_drives_vision_capabilities() {
         assert_eq!(
-            model_supports_vision_from_catalog(ProviderType::OpenAi, "gpt-5.5"),
+            model_supports_vision_from_catalog(ProviderType::OpenAi, "gpt-5.6"),
             Some(true)
         );
         assert_eq!(
@@ -463,7 +502,7 @@ mod tests {
     #[test]
     fn provider_catalog_drives_reasoning_capabilities() {
         assert_eq!(
-            model_supports_reasoning_from_catalog(ProviderType::OpenAi, "gpt-5.5"),
+            model_supports_reasoning_from_catalog(ProviderType::OpenAi, "gpt-5.6"),
             Some(true)
         );
         assert_eq!(
