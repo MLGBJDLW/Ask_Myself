@@ -104,6 +104,12 @@ const PROVIDER_ICON_META: Record<string, ProviderIconMeta> = {
     label: 'Mistral AI',
     tone: 'bg-orange-500/12 text-orange-400',
   },
+  minimax: {
+    asset: '/provider-icons/minimax.svg',
+    fallback: 'MM',
+    label: 'MiniMax',
+    tone: 'bg-violet-500/12 text-violet-400',
+  },
   xai: {
     asset: '/provider-icons/xai.svg',
     fallback: 'xAI',
@@ -144,6 +150,7 @@ const PROVIDER_TYPE_TO_ICON: Record<string, string> = {
   ollama: 'ollama',
   lm_studio: 'lmstudio',
   azure_open_ai: 'azureai',
+  minimax: 'minimax',
   custom: 'custom',
 };
 
@@ -155,6 +162,7 @@ const PRESET_ID_TO_ICON: Record<string, string> = {
   deepseek: 'deepseek',
   xai: 'xai',
   mistral: 'mistral',
+  minimax: 'minimax',
   ollama: 'ollama',
   lmstudio: 'lmstudio',
   zhipu: 'zhipu',
@@ -180,6 +188,7 @@ const BASE_URL_ICON_MATCHERS: Array<[RegExp, string]> = [
   [/localhost:1234|lmstudio|lm-studio/i, 'lmstudio'],
   [/azure\.com|openai\.azure/i, 'azureai'],
   [/mistral\.ai/i, 'mistral'],
+  [/minimax\.io/i, 'minimax'],
   [/x\.ai/i, 'xai'],
   [/openai\.com/i, 'openai'],
 ];
@@ -199,6 +208,7 @@ const LABEL_ICON_MATCHERS: Array<[RegExp, string]> = [
   [/lm\s*studio/i, 'lmstudio'],
   [/azure/i, 'azureai'],
   [/mistral/i, 'mistral'],
+  [/minimax/i, 'minimax'],
   [/\bxai\b|\bx\.ai\b|grok/i, 'xai'],
   [/openai|gpt/i, 'openai'],
 ];
