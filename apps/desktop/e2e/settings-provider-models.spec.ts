@@ -278,6 +278,18 @@ test("settings provider form shows updated preset models for add and edit flows"
   ]);
 });
 
+test("settings uses the MiniMax logo for its OpenAI-compatible preset", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+
+  const minimaxCard = page.getByRole("button", { name: /MiniMax/ });
+  await expect(minimaxCard).toBeVisible();
+  const minimaxGlyph = minimaxCard.locator('[title="MiniMax"] > span');
+  await expect(minimaxGlyph).toHaveAttribute("style", /provider-icons\/minimax\.svg/);
+  await expect(minimaxGlyph).not.toHaveAttribute("style", /provider-icons\/openai\.svg/);
+});
+
 test("settings exposes image generation model config under AI providers", async ({
   page,
 }) => {

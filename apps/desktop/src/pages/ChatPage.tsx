@@ -1147,6 +1147,7 @@ export function ChatPage() {
                   finishReason={chat.finishReason}
                   contextOverflow={chat.contextOverflow}
                   isCompacting={isCompacting}
+                  activeGoalContext={activeGoalContext}
                 />
               ) : null}
               onRestoreCheckpoint={chat.activeId ? async () => {

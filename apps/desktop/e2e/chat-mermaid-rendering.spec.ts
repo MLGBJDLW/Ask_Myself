@@ -28,6 +28,15 @@ test.beforeEach(async ({ page }) => {
           '  B -->|Yes| C[Render diagram]',
           '  B -->|No| D[Show source]',
           '```',
+          '',
+          '```mermaid',
+          'timeline',
+          '  title Accessible release timeline',
+          '  Jan-Feb : Research',
+          '  Mar : Planning',
+          '  Apr : Delivery',
+          '  May-Jun : Review',
+          '```',
         ].join('\n'),
         toolCallId: null,
         toolCalls: [],
@@ -162,8 +171,50 @@ test.beforeEach(async ({ page }) => {
 test('renders Mermaid code blocks as SVG diagrams', async ({ page }) => {
   await page.goto('/chat/conv-mermaid');
 
-  await expect(page.locator('svg[id^="mermaid-"]')).toBeVisible();
+  await expect(page.locator('svg[id^="mermaid-"]').first()).toBeVisible();
+  await expect(page.locator('.timeline-node')).toHaveCount(8);
   await page.getByRole('button', { name: /Thinking completed/ }).click();
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(2);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(3);
   await expect(page.getByText('Could not render this Mermaid diagram')).toHaveCount(0);
+});
+
+test('keeps every Mermaid timeline section readable', async ({ page }) => {
+  await page.goto('/chat/conv-mermaid');
+
+  const timelineNodes = page.locator('.timeline-node');
+  await expect(timelineNodes).toHaveCount(8);
+
+  const contrasts = await timelineNodes.evaluateAll((nodes) => {
+    const parseRgb = (value: string) => {
+      const channels = value.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+      if (!channels || channels.length !== 3) throw new Error(`Unsupported color: ${value}`);
+      return channels;
+    };
+    const luminance = (value: string) => {
+      const channels = parseRgb(value).map((channel) => {
+        const normalized = channel / 255;
+        return normalized <= 0.04045
+          ? normalized / 12.92
+          : ((normalized + 0.055) / 1.055) ** 2.4;
+      });
+      return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+    };
+
+    return nodes.map((node) => {
+      const background = getComputedStyle(node.querySelector('.node-bkg') as SVGElement).fill;
+      const foreground = getComputedStyle(node.querySelector('text') as SVGTextElement).fill;
+      const lighter = Math.max(luminance(background), luminance(foreground));
+      const darker = Math.min(luminance(background), luminance(foreground));
+      return { background, foreground, ratio: (lighter + 0.05) / (darker + 0.05) };
+    });
+  });
+
+  expect(contrasts, JSON.stringify(contrasts)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ ratio: expect.any(Number) }),
+    ]),
+  );
+  for (const contrast of contrasts) {
+    expect(contrast.ratio, JSON.stringify(contrast)).toBeGreaterThanOrEqual(4.5);
+  }
 });

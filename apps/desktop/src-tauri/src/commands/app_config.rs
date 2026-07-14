@@ -33,14 +33,16 @@ pub fn get_web_search_status_cmd(
 }
 
 #[tauri::command]
-pub fn check_office_runtime_cmd(
+pub async fn check_office_runtime_cmd(
     app_handle: AppHandle,
 ) -> Result<nexa_core::office_runtime::OfficeRuntimeReadiness, String> {
     let data_dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
-    Ok(nexa_core::office_runtime::check_office_runtime(&data_dir))
+    tokio::task::spawn_blocking(move || nexa_core::office_runtime::check_office_runtime(&data_dir))
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))
 }
 
 #[tauri::command]

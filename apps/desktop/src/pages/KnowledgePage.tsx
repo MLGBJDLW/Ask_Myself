@@ -68,11 +68,11 @@ function severityVariant(s: Severity): 'info' | 'warning' | 'danger' {
 
 function checkTypeIcon(ct: CheckType) {
   switch (ct) {
-    case 'stale': return <AlertTriangle size={14} />;
-    case 'orphan': return <FileText size={14} />;
-    case 'duplicate': return <Layers size={14} />;
-    case 'gap': return <AlertCircle size={14} />;
-    case 'contradiction': return <AlertCircle size={14} />;
+    case 'stale': return <AlertTriangle size={14} className="block shrink-0" />;
+    case 'orphan': return <FileText size={14} className="block shrink-0" />;
+    case 'duplicate': return <Layers size={14} className="block shrink-0" />;
+    case 'gap': return <AlertCircle size={14} className="block shrink-0" />;
+    case 'contradiction': return <AlertCircle size={14} className="block shrink-0" />;
   }
 }
 
@@ -348,7 +348,7 @@ export function KnowledgePage() {
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
         <div className="flex items-center gap-2.5">
-          <Brain size={20} className="text-accent" />
+          <Brain size={20} className="block shrink-0 text-accent" />
           <h2 className="text-base font-semibold text-text-primary">{t('knowledge.title')}</h2>
         </div>
         <button
@@ -373,7 +373,7 @@ export function KnowledgePage() {
                 : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
               }`}
           >
-            <Icon size={15} />
+            <Icon size={15} className="block shrink-0" />
             {label}
           </button>
         ))}
@@ -439,11 +439,11 @@ export function KnowledgePage() {
                       <div className="flex items-center justify-between text-xs text-text-secondary">
                         <span className="flex items-center gap-1.5">
                           {compileProgress.phase === 'error' ? (
-                            <AlertTriangle size={12} className="text-danger" />
+                            <AlertTriangle size={12} className="block shrink-0 text-danger" />
                           ) : compileProgress.phase === 'timeout' ? (
-                            <AlertCircle size={12} className="text-warning" />
+                            <AlertCircle size={12} className="block shrink-0 text-warning" />
                           ) : (
-                            <RefreshCw size={12} className="animate-spin text-accent" />
+                            <RefreshCw size={12} className="block shrink-0 animate-spin text-accent" />
                           )}
                           <span className="font-medium">
                             {compileProgress.phase === 'error'
@@ -492,7 +492,7 @@ export function KnowledgePage() {
                           className="flex items-center justify-between p-3 rounded-lg border border-border bg-surface-1"
                         >
                           <div className="flex items-center gap-2 min-w-0">
-                            <CheckCircle2 size={14} className="text-success shrink-0" />
+                            <CheckCircle2 size={14} className="block shrink-0 text-success" />
                             <span className="text-sm text-text-primary truncate">
                               {t('knowledge.documents')} {r.documentId.slice(0, 8)}
                             </span>
@@ -808,7 +808,7 @@ export function KnowledgePage() {
                         <p className="text-sm text-text-primary">{issue.description}</p>
                         {issue.suggestion && (
                           <p className="text-xs text-text-tertiary flex items-start gap-1">
-                            <Info size={12} className="shrink-0 mt-0.5" />
+                            <Info size={12} className="mt-0.5 block shrink-0" />
                             {issue.suggestion}
                           </p>
                         )}

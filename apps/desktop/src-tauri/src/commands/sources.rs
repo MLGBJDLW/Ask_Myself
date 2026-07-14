@@ -776,11 +776,15 @@ pub fn test_api_connection_cmd(api_key: String, base_url: String) -> Result<bool
 }
 
 #[tauri::command]
-pub fn check_local_model_cmd(local_model: Option<String>) -> Result<bool, String> {
-    let model = local_model
-        .map(|s| LocalEmbeddingModel::from_config_str(&s))
-        .unwrap_or_default();
-    Ok(nexa_core::embed::check_local_model_exists_for(None, &model))
+pub async fn check_local_model_cmd(local_model: Option<String>) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        let model = local_model
+            .map(|s| LocalEmbeddingModel::from_config_str(&s))
+            .unwrap_or_default();
+        nexa_core::embed::check_local_model_exists_for(None, &model)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))
 }
 
 #[tauri::command]

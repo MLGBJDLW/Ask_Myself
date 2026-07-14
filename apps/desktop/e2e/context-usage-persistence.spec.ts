@@ -30,6 +30,7 @@ test.beforeEach(async ({ page }) => {
       sortOrder: number;
       thinking: string | null;
       imageAttachments: null;
+      artifacts?: unknown;
     };
 
     const nowIso = new Date().toISOString();
@@ -281,6 +282,7 @@ test.beforeEach(async ({ page }) => {
             sortOrder: currentMessages.length,
             thinking: null,
             imageAttachments: null,
+            artifacts: args.userArtifacts ?? null,
           };
           const assistantMessage: Message = {
             id: nextId('m-assistant'),
@@ -294,6 +296,7 @@ test.beforeEach(async ({ page }) => {
             sortOrder: currentMessages.length + 1,
             thinking: null,
             imageAttachments: null,
+            artifacts: null,
           };
           messagesByConversation[conversationId] = [...currentMessages, userMessage, assistantMessage];
           if (conversations[conversationId]) {
@@ -429,6 +432,39 @@ test('context HUD groups detailed segments and averages cache across completed t
 
   await contextTrigger.hover();
   await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('40.0%');
+});
+
+test('active goal is visible in the draggable HUD and snaps back to the right', async ({ page }) => {
+  await page.goto('/chat/conv-e2e');
+
+  await page.getByTestId('chat-input-textarea').fill('/goal Finish the performance release');
+  await page.getByTestId('chat-send').click();
+
+  const overview = page.getByTestId('chat-run-overview');
+  const trigger = page.getByTestId('chat-context-trigger');
+  await expect(page.getByTestId('chat-context-goal-summary')).toContainText('Finish the performance release');
+
+  await trigger.hover();
+  await expect(page.getByTestId('chat-context-goal')).toContainText('Finish the performance release');
+
+  const initialBox = await overview.boundingBox();
+  if (!initialBox) throw new Error('Missing context HUD geometry');
+  const startX = initialBox.x + initialBox.width / 2;
+  const startY = initialBox.y + initialBox.height / 2;
+
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX - 180, startY - 80, { steps: 4 });
+
+  await expect.poll(async () => (await overview.boundingBox())?.x ?? initialBox.x).toBeLessThan(initialBox.x - 100);
+  await expect(page.getByTestId('chat-context-details')).toBeHidden();
+  await page.mouse.up();
+
+  await expect.poll(async () => {
+    const box = await overview.boundingBox();
+    return box ? Math.abs(box.x - initialBox.x) : Number.POSITIVE_INFINITY;
+  }).toBeLessThan(1);
+  await expect(overview).not.toHaveAttribute('data-dragging');
 });
 
 test('manual compact shows progress, locks input, and refreshes context usage', async ({ page }) => {
