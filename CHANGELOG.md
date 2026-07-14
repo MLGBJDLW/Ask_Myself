@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.10.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.6...nexa-monorepo-v0.10.7) (2026-07-14)
+
+
+### Features
+
+* **chat:** add draggable goal-aware context HUD ([27fda83](https://github.com/MLGBJDLW/Nexa/commit/27fda8304c53c03c333a99174d1a26baedad9057))
+* **desktop:** improve chat goals and interface responsiveness ([0f90945](https://github.com/MLGBJDLW/Nexa/commit/0f90945d877a854a4ee10c670bf45d13b1d6a497))
+
+
+### Bug Fixes
+
+* **chat:** keep Mermaid timelines readable ([0af747e](https://github.com/MLGBJDLW/Nexa/commit/0af747e4a2c6f35988d4d152b59f8be53edfe079))
+* **knowledge:** align topic graph icons ([a9defff](https://github.com/MLGBJDLW/Nexa/commit/a9defff9dd42d3fd5cc28c6d7cb7dabceb9a9250))
+* **settings:** show the MiniMax provider logo ([8f065af](https://github.com/MLGBJDLW/Nexa/commit/8f065afd9427c7ed1b7b4f02e4dd2264591b1069))
+
+
+### Performance Improvements
+
+* **settings:** move model probes off UI thread ([a37fc1a](https://github.com/MLGBJDLW/Nexa/commit/a37fc1a683e1f62618b6707c10ed605bd6f3541f))
+
 ## [0.10.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.5...nexa-monorepo-v0.10.6) (2026-07-14)
 
 
