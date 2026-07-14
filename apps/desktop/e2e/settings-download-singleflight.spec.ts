@@ -9,6 +9,26 @@ test.beforeEach(async ({ page }) => {
     let callbackSeq = 1;
     let listenerSeq = 1;
     let downloadModelCalls = 0;
+    let activeModelProbes = 0;
+    let maxConcurrentModelProbes = 0;
+    let modelProbeCalls = 0;
+
+    const runModelProbe = async <T,>(value: T): Promise<T> => {
+      activeModelProbes += 1;
+      modelProbeCalls += 1;
+      maxConcurrentModelProbes = Math.max(maxConcurrentModelProbes, activeModelProbes);
+      (window as unknown as {
+        __modelProbeCalls: number;
+        __maxConcurrentModelProbes: number;
+      }).__modelProbeCalls = modelProbeCalls;
+      (window as unknown as {
+        __modelProbeCalls: number;
+        __maxConcurrentModelProbes: number;
+      }).__maxConcurrentModelProbes = maxConcurrentModelProbes;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      activeModelProbes -= 1;
+      return value;
+    };
 
     const appConfig = {
       toolTimeoutSecs: 30,
@@ -90,7 +110,7 @@ test.beforeEach(async ({ page }) => {
             vectorDimensions: 384,
           };
         case "check_local_model_cmd":
-          return false;
+          return runModelProbe(false);
         case "download_local_model_cmd":
           downloadModelCalls += 1;
           (window as unknown as { __downloadModelCalls: number }).__downloadModelCalls = downloadModelCalls;
@@ -106,7 +126,7 @@ test.beforeEach(async ({ page }) => {
             languages: ["en"],
           };
         case "check_ocr_models_cmd":
-          return false;
+          return runModelProbe(false);
         case "get_video_config_cmd":
           return {
             enabled: false,
@@ -124,9 +144,9 @@ test.beforeEach(async ({ page }) => {
           };
         case "check_whisper_model_cmd":
         case "check_ffmpeg_cmd":
-          return false;
+          return runModelProbe(false);
         case "check_office_runtime_cmd":
-          return {
+          return runModelProbe({
             status: "ready",
             summary: "Ready",
             pythonPath: "python",
@@ -139,13 +159,21 @@ test.beforeEach(async ({ page }) => {
             needsPythonInstall: false,
             pythonDownloadUrl: "https://www.python.org/downloads/",
             dependencies: [],
-          };
+          });
         default:
           return null;
       }
     };
 
     (window as unknown as { __downloadModelCalls: number }).__downloadModelCalls = 0;
+    (window as unknown as {
+      __modelProbeCalls: number;
+      __maxConcurrentModelProbes: number;
+    }).__modelProbeCalls = 0;
+    (window as unknown as {
+      __modelProbeCalls: number;
+      __maxConcurrentModelProbes: number;
+    }).__maxConcurrentModelProbes = 0;
     (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
       invoke,
       transformCallback: (callback: (event: unknown) => void) => {
@@ -169,7 +197,7 @@ test.beforeEach(async ({ page }) => {
 test("model downloads coalesce rapid repeated clicks into one backend call", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "Models & Embedding" }).click();
-  await page.getByRole("button", { name: "Expand" }).first().click();
+  await page.getByRole("button", { name: /^Models Manage AI models/ }).click();
 
   const downloadButton = page.getByRole("button", { name: "Download Model" }).first();
   await expect(downloadButton).toBeEnabled();
@@ -183,5 +211,22 @@ test("model downloads coalesce rapid repeated clicks into one backend call", asy
 
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { __downloadModelCalls: number }).__downloadModelCalls))
+    .toBe(1);
+});
+
+test("model status probes are serialized when the tab opens", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Models & Embedding" }).click();
+
+  await expect
+    .poll(() => page.evaluate(() => (
+      window as unknown as { __modelProbeCalls: number }
+    ).__modelProbeCalls))
+    .toBeGreaterThanOrEqual(5);
+
+  await expect
+    .poll(() => page.evaluate(() => (
+      window as unknown as { __maxConcurrentModelProbes: number }
+    ).__maxConcurrentModelProbes))
     .toBe(1);
 });

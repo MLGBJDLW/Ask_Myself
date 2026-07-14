@@ -18,8 +18,10 @@ pub fn save_ocr_config_cmd(
 }
 
 #[tauri::command]
-pub fn check_ocr_models_cmd(config: nexa_core::ocr::OcrConfig) -> bool {
-    nexa_core::ocr::check_ocr_models_exist(&config)
+pub async fn check_ocr_models_cmd(config: nexa_core::ocr::OcrConfig) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || nexa_core::ocr::check_ocr_models_exist(&config))
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))
 }
 
 #[tauri::command]
@@ -64,8 +66,12 @@ pub fn save_video_config_cmd(
 
 #[cfg(feature = "video")]
 #[tauri::command]
-pub fn check_whisper_model_cmd(config: nexa_core::video::VideoConfig) -> bool {
-    nexa_core::video::check_whisper_model_exists(&config)
+pub async fn check_whisper_model_cmd(
+    config: nexa_core::video::VideoConfig,
+) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || nexa_core::video::check_whisper_model_exists(&config))
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))
 }
 
 #[cfg(feature = "video")]
@@ -89,8 +95,12 @@ pub async fn download_whisper_model_cmd(
 
 #[cfg(feature = "video")]
 #[tauri::command]
-pub fn check_ffmpeg_cmd(config: nexa_core::video::VideoConfig) -> Result<bool, String> {
-    nexa_core::video::check_ffmpeg(&config).map_err(|e| e.to_string())
+pub async fn check_ffmpeg_cmd(config: nexa_core::video::VideoConfig) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        nexa_core::video::check_ffmpeg(&config).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 #[cfg(feature = "video")]

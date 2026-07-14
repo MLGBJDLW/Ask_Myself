@@ -19,7 +19,17 @@ const STORAGE_KEY = 'nexa-model-status-cache-v1';
 
 const cache = new Map<string, Entry<unknown>>();
 const inFlight = new Map<string, Promise<unknown>>();
+let probeQueueTail: Promise<void> = Promise.resolve();
 let storageLoaded = false;
+
+function enqueueProbe<T>(fetcher: () => Promise<T>): Promise<T> {
+  const result = probeQueueTail.then(fetcher, fetcher);
+  probeQueueTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
 
 function buildKey(kind: ProbeKind, key: string): string {
   return `${kind}:${key}`;
@@ -70,7 +80,10 @@ export async function getModelStatus<T>(
   if (pending) {
     return pending;
   }
-  const promise = fetcher()
+  // Cold Settings loads can request several filesystem/process probes at once.
+  // Run cache misses sequentially so opening the tab does not create an I/O and
+  // subprocess burst; identical probes are still coalesced through `inFlight`.
+  const promise = enqueueProbe(fetcher)
     .then((value) => {
       cache.set(cacheKey, { value, expiresAt: Date.now() + TTL_MS });
       saveStorage();
