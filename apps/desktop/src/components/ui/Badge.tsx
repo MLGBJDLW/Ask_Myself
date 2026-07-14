@@ -50,7 +50,11 @@ export function Badge({ variant = 'default', icon, children, className = '', ...
       className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${variantStyles[variant]} ${className}`}
       {...props}
     >
-      {icon}
+      {icon && (
+        <span className="inline-flex shrink-0 items-center justify-center leading-none [&>svg]:block [&>svg]:shrink-0">
+          {icon}
+        </span>
+      )}
       {children}
     </span>
   );

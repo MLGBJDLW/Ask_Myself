@@ -1,4 +1,12 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
+
+async function expectVerticallyCentered(container: Locator, icon: Locator) {
+  const [containerBox, iconBox] = await Promise.all([container.boundingBox(), icon.boundingBox()]);
+  if (!containerBox || !iconBox) throw new Error('Missing icon geometry');
+  const containerCenter = containerBox.y + containerBox.height / 2;
+  const iconCenter = iconBox.y + iconBox.height / 2;
+  expect(Math.abs(containerCenter - iconCenter)).toBeLessThanOrEqual(1);
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -138,6 +146,49 @@ test('keeps folder scope usable across all sources and makes empty filters recov
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { __lastGraphArgs?: unknown }).__lastGraphArgs))
     .toMatchObject({ sourceId: null, pathPrefix: null });
+});
+
+test('keeps topic and relationship icons vertically centered', async ({ page }) => {
+  await page.goto('/knowledge');
+  await page.evaluate(() => {
+    (window as unknown as { __knowledgeGraphMock?: unknown }).__knowledgeGraphMock = {
+      nodes: [
+        {
+          id: 'aligned-topic',
+          label: 'Aligned Topic',
+          entityType: 'concept',
+          description: 'Icon alignment fixture',
+          mentionCount: 4,
+          documentCount: 1,
+          linkCount: 0,
+          firstSeenDoc: 'doc-1',
+          documents: [],
+        },
+      ],
+      edges: [],
+      totalNodes: 1,
+      totalEdges: 0,
+      scopeLabel: 'alignment',
+    };
+  });
+
+  const mapTab = page.getByRole('button', { name: 'Topics & Connections' });
+  await expectVerticallyCentered(mapTab, mapTab.locator('svg'));
+  await mapTab.click();
+
+  const refreshButton = page.getByRole('button', { name: 'Refresh' });
+  await expectVerticallyCentered(refreshButton, refreshButton.locator('svg'));
+
+  const searchInput = page.getByPlaceholder('Search nodes...');
+  await expectVerticallyCentered(searchInput, searchInput.locator('xpath=..').locator('svg'));
+
+  const graphTitle = page.getByText('Relationship Graph', { exact: true });
+  await expectVerticallyCentered(graphTitle, graphTitle.locator('svg'));
+
+  const detailHeading = page.getByRole('heading', { name: 'Aligned Topic' });
+  const detailHeaderRow = detailHeading.locator('../..');
+  const detailIcon = detailHeaderRow.locator('svg').first();
+  await expectVerticallyCentered(detailIcon.locator('..'), detailIcon);
 });
 
 test('shows multi-relation bundles and stores bundled agent context', async ({ page }) => {

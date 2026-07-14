@@ -1038,7 +1038,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
             onChange={(event) => setSearchText(event.target.value)}
           />
           <label className="relative">
-            <Filter size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
+            <Filter size={15} className="pointer-events-none absolute left-3 top-1/2 block shrink-0 -translate-y-1/2 text-text-tertiary" />
             <select
               value={relationFilter}
               onChange={(event) => setRelationFilter(event.target.value)}
@@ -1091,7 +1091,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
-                <Network size={16} className="text-accent" />
+                <Network size={16} className="block shrink-0 text-accent" />
                 {t('knowledge.relationshipGraph')}
               </div>
               <p className="mt-0.5 truncate text-xs text-text-tertiary">
@@ -1134,7 +1134,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
 
           {loading && (
             <div className="absolute right-4 top-16 z-10 inline-flex items-center gap-2 rounded-md border border-border bg-surface-0 px-3 py-2 text-xs text-text-secondary shadow-md">
-              <Loader2 size={14} className="animate-spin text-accent" />
+              <Loader2 size={14} className="block shrink-0 animate-spin text-accent" />
               {t('common.loading')}
             </div>
           )}
@@ -1638,8 +1638,8 @@ function NodeDetail({
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-border p-4">
         <div className="flex items-start gap-3">
-          <div className={`rounded-lg border border-border bg-surface-0 p-2 ${tone.text}`}>
-            <Icon size={20} />
+          <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-surface-0 leading-none ${tone.text}`}>
+            <Icon size={20} className="block shrink-0" />
           </div>
           <div className="min-w-0 flex-1">
             <h3 className="line-clamp-2 text-base font-semibold text-text-primary">{node.label}</h3>
@@ -1713,7 +1713,7 @@ function NodeDetail({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <section>
           <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-text-tertiary">
-            <BookOpen size={13} />
+            <BookOpen size={13} className="block shrink-0" />
             {t('knowledge.evidenceDocuments')}
           </div>
           <div className="space-y-2">
@@ -1726,7 +1726,7 @@ function NodeDetail({
                 <div key={doc.documentId} className="rounded-md border border-border bg-surface-0 px-3 py-2">
                   <div className="line-clamp-1 text-sm font-medium text-text-primary">{doc.title}</div>
                   <div className="mt-1 flex items-center gap-1 text-[11px] text-text-tertiary">
-                    <ExternalLink size={11} />
+                    <ExternalLink size={11} className="block shrink-0" />
                     <span className="truncate">{shortPath(doc.path)}</span>
                   </div>
                 </div>
@@ -1737,7 +1737,7 @@ function NodeDetail({
 
         <section className="mt-5">
           <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-text-tertiary">
-            <GitFork size={13} />
+            <GitFork size={13} className="block shrink-0" />
             {t('knowledge.connectedRelations')}
           </div>
           <div className="space-y-2">
@@ -1814,8 +1814,8 @@ function RelationBundleDetail({
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-border p-4">
         <div className="flex items-start gap-3">
-          <div className={`rounded-lg border border-border bg-surface-0 p-2 ${style.text}`}>
-            <ArrowLeftRight size={20} />
+          <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-surface-0 leading-none ${style.text}`}>
+            <ArrowLeftRight size={20} className="block shrink-0" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-xs font-semibold uppercase tracking-[0.12em] text-text-tertiary">
@@ -1891,7 +1891,7 @@ function RelationBundleDetail({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <section>
           <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-text-tertiary">
-            <GitFork size={13} />
+            <GitFork size={13} className="block shrink-0" />
             {t('knowledge.relationsInBundle')}
           </div>
           <div className="space-y-2">
