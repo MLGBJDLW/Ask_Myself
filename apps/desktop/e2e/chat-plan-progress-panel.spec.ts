@@ -773,23 +773,26 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('lower plan progress panel renders only the update_plan checklist', async ({ page }) => {
+test('floating plan capsule renders only the update_plan checklist', async ({ page }) => {
   await page.goto('/chat/conv-plan-progress');
 
   const board = page.getByTestId('task-board');
   await expect(board).toBeVisible();
+  await expect(board).toHaveCSS('position', 'absolute');
+  await expect(board.getByRole('button')).toHaveAttribute('aria-expanded', 'false');
+  await expect(board).toContainText('Plan');
   await expect(board.getByTestId('task-board-progress')).toHaveText('1/3');
   await expect(board).toContainText('Apply change');
   await expect(board).not.toContainText('Verify result');
 
   await board.getByRole('button').click();
+  await expect(board.getByRole('button')).toHaveAttribute('aria-expanded', 'true');
   await expect(board).toContainText('Inspect context');
   await expect(board).toContainText('Apply change');
   await expect(board).toContainText('Verify result');
 
   await expect(board).not.toContainText('Work Tracker');
   await expect(board).not.toContainText('Progress');
-  await expect(board).not.toContainText('Plan');
   await expect(board).not.toContainText('Detailed execution plan');
   await expect(board).not.toContainText('Only the live checklist progress should be visible here.');
   await expect(board).not.toContainText('Subagent result that should not render');
@@ -801,6 +804,33 @@ test('lower plan progress panel ignores automatic task run plans', async ({ page
 
   await expect(page.getByTestId('task-board')).toHaveCount(0);
   await expect(page.getByText('Answer directly unless a tool is clearly needed for accuracy.')).toHaveCount(0);
+});
+
+test('pasted images use a compact thumbnail and open a large preview', async ({ page }) => {
+  await page.goto('/chat/conv-plan-progress');
+
+  await page.getByTestId('chat-input-textarea').evaluate((textarea) => {
+    const event = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', {
+      value: {
+        files: [],
+        items: [],
+        getData: (type: string) => type === 'text/plain'
+          ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+          : '',
+      },
+    });
+    textarea.dispatchEvent(event);
+  });
+
+  const thumbnail = page.getByTestId('chat-attachment-thumbnail');
+  await expect(thumbnail).toBeVisible();
+  await expect(thumbnail).toHaveCSS('width', '40px');
+  await expect(thumbnail).toHaveCSS('height', '40px');
+
+  await thumbnail.click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.getByTestId('chat-attachment-preview')).toBeVisible();
 });
 
 test('edit_file tool result renders a structured diff preview', async ({ page }) => {

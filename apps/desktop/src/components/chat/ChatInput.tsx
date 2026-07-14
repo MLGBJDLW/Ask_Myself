@@ -29,6 +29,7 @@ import {
 import { CheckpointMenu } from "./CheckpointMenu";
 import { VoiceInputButton } from "./VoiceInputButton";
 import { EmojiPicker } from "./EmojiPicker";
+import { Modal } from "../ui/Modal";
 
 const LLM_CONTEXT_CONTENT_ARTIFACT_KEY = "llmContextContent";
 
@@ -230,6 +231,7 @@ export function ChatInput({
   const [attachments, setAttachments] = useState<ImageAttachment[]>(() => (
     initialDraftRef.current?.attachments ?? []
   ));
+  const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
   const [loadedDraftKey, setLoadedDraftKey] = useState(draftKey);
   const [isDragging, setIsDragging] = useState(false);
   const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowCatalogTemplate[]>([]);
@@ -283,6 +285,7 @@ export function ChatInput({
     setLoadedDraftKey(draftKey);
     setValue(draft.value);
     setAttachments(draft.attachments);
+    setPreviewAttachment(null);
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
@@ -564,6 +567,7 @@ export function ChatInput({
     resetInputHistoryNavigation();
     setValue("");
     setAttachments([]);
+    setPreviewAttachment(null);
     setDismissedSlashToken(null);
     setCaretPosition(0);
     setTimeout(() => {
@@ -771,11 +775,15 @@ export function ChatInput({
 
   const removeAttachment = useCallback((index: number) => {
     setAttachments((prev) => {
+      const removed = prev[index];
       const next = prev.filter((_, i) => i !== index);
+      if (removed && previewAttachment === removed) {
+        setPreviewAttachment(null);
+      }
       persistDraft(value, next);
       return next;
     });
-  }, [persistDraft, value]);
+  }, [persistDraft, previewAttachment, value]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -1190,21 +1198,31 @@ export function ChatInput({
           }`}
         >
         {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2 border-b border-border/35 px-3 py-2.5">
+          <div className="flex flex-wrap gap-1.5 border-b border-border/35 px-3 py-2">
             {attachments.map((att, i) => (
               <div key={i} className="relative group">
                 {att.mediaType.startsWith("image/") ? (
-                  <img
-                    src={`data:${att.mediaType};base64,${att.base64Data}`}
-                    alt={att.originalName}
-                    className="h-14 w-14 rounded-md border border-border object-cover"
-                  />
+                  <button
+                    type="button"
+                    data-testid="chat-attachment-thumbnail"
+                    onClick={() => setPreviewAttachment(att)}
+                    className="block h-10 w-10 overflow-hidden rounded-md border border-border bg-surface-2 transition-colors hover:border-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
+                    aria-label={att.originalName}
+                    title={att.originalName}
+                  >
+                    <img
+                      src={`data:${att.mediaType};base64,${att.base64Data}`}
+                      alt=""
+                      className="h-full w-full object-cover"
+                    />
+                  </button>
                 ) : (
-                  <div className="h-14 w-14 rounded-md border border-border bg-surface-2 flex items-center justify-center">
-                    <FileText className="h-5 w-5 text-text-tertiary" />
+                  <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-surface-2">
+                    <FileText className="h-4 w-4 text-text-tertiary" />
                   </div>
                 )}
                 <button
+                  type="button"
                   onClick={() => removeAttachment(i)}
                   className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-danger text-[10px] leading-none text-white opacity-0 transition-opacity cursor-pointer group-hover:opacity-100"
                   aria-label={t("chat.removeAttachment")}
@@ -1355,6 +1373,20 @@ export function ChatInput({
         </div>
         </div>
       </div>
+      <Modal
+        open={previewAttachment !== null}
+        onClose={() => setPreviewAttachment(null)}
+        title={previewAttachment?.originalName ?? ""}
+      >
+        {previewAttachment && (
+          <img
+            data-testid="chat-attachment-preview"
+            src={`data:${previewAttachment.mediaType};base64,${previewAttachment.base64Data}`}
+            alt={previewAttachment.originalName}
+            className="mx-auto max-h-[68vh] max-w-full rounded-lg object-contain"
+          />
+        )}
+      </Modal>
     </div>
   );
 }

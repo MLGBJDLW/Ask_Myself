@@ -416,7 +416,7 @@ test('context HUD groups detailed segments and averages cache across completed t
 
   await contextTrigger.hover();
   await expect(contextDetails).toBeVisible();
-  await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('50%');
+  await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('50.0%');
   await expect(contextDetails.getByText('Prompts 4.5K')).toBeVisible();
   await expect(contextDetails.getByText('Memory 2.0K')).toBeVisible();
   await expect(contextDetails.getByText('Skills 1.0K')).toBeVisible();
@@ -428,7 +428,7 @@ test('context HUD groups detailed segments and averages cache across completed t
   await page.getByTestId('chat-send').click();
 
   await contextTrigger.hover();
-  await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('40%');
+  await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('40.0%');
 });
 
 test('manual compact shows progress, locks input, and refreshes context usage', async ({ page }) => {

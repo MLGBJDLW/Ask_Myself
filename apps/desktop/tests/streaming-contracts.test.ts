@@ -1743,7 +1743,28 @@ test('command tool cards do not stream partial arguments into the title target',
 test('timeline view model hides low-signal statuses and internal successful tools', () => {
   assert(shouldHideTraceStatus('Route selected: DirectResponse'), 'direct response route status should hide');
   assert(shouldHideTraceStatus('Task queued'), 'queued status should hide');
+  assert(
+    shouldHideTraceStatus('Resume checkpoint saved after tool round 12.'),
+    'resume checkpoint bookkeeping should hide',
+  );
+  assert(
+    shouldHideTraceStatus('Stream event gap detected; replay may be required.'),
+    'stream recovery bookkeeping should hide',
+  );
+  assert(
+    shouldHideTraceStatus('Pre-fetched knowledge graph index.'),
+    'automatic retrieval bookkeeping should hide',
+  );
+  assert(
+    shouldHideTraceStatus('Applied user steering before the next model step.'),
+    'internal steering acknowledgement should hide',
+  );
+  assert(
+    shouldHideTraceStatus('Activated 3 deferred tool(s): browser, github, shell'),
+    'deferred tool activation bookkeeping should hide',
+  );
   assert(!shouldHideTraceStatus('Running shell command'), 'useful status should remain visible');
+  assert(!shouldHideTraceStatus('Retrying after provider timeout'), 'actionable recovery status should remain visible');
   assert(!shouldRenderTraceToolCall('tool_search', undefined, 'done', false), 'successful tool_search should hide');
   assert(shouldRenderTraceToolCall('tool_search', undefined, 'error', true), 'failed tool_search should remain visible');
   assert(!shouldRenderTraceToolCall('update_plan', 'plan', 'done', false), 'board-only plan tool should hide from trace');
@@ -2106,6 +2127,11 @@ test('live ordering ignores duplicate and late events while marking gaps', () =>
     state.traceEvents.some(trace =>
       trace.kind === 'status' && trace.text.includes('Stream event gap detected')),
     'gap should be marked in trace events',
+  );
+  assert(
+    !visibleTraceEventsForTimeline(state.traceEvents).some(trace =>
+      trace.kind === 'status' && trace.text.includes('Stream event gap detected')),
+    'gap bookkeeping should not be rendered in the timeline',
   );
 
   streamStore.clearStream(conversationId);

@@ -153,7 +153,7 @@ function cacheUsageStats(usage: TokenUsage | null): CacheUsageStats | null {
       ? promptTokens
       : readTokens + creationTokens;
   const hitPercent = denominator > 0
-    ? Math.max(0, Math.min(100, Math.round((readTokens / denominator) * 100)))
+    ? Math.max(0, Math.min(100, (readTokens / denominator) * 100))
     : null;
 
   return {
@@ -511,7 +511,7 @@ export function ChatRunOverview({
               className="mt-0.5 text-sm font-semibold tabular-nums text-text-primary"
               data-testid="chat-run-cache-hit"
             >
-              {cacheStats?.hitPercent == null ? '—' : `${cacheStats.hitPercent}%`}
+              {cacheStats?.hitPercent == null ? '—' : `${cacheStats.hitPercent.toFixed(1)}%`}
             </div>
             <div className="mt-0.5 truncate text-[9px] text-text-tertiary" title={cacheDetailLabel}>
               {cacheSampleLabel}

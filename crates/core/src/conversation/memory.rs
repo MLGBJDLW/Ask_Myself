@@ -145,7 +145,8 @@ pub fn model_context_window(model: &str) -> u32 {
 
     // ── Exact matches for verified model IDs (highest priority) ────
     match m {
-        // OpenAI GPT-5.5 / GPT-5.4 series (1.05M)
+        // OpenAI GPT-5.6 / GPT-5.5 / GPT-5.4 series (1.05M)
+        "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" => 1_050_000,
         "gpt-5.5" | "gpt-5.5-2026-04-23" | "gpt-5.5-pro" | "gpt-5.5-pro-2026-04-23" => 1_050_000,
         "gpt-5.4" | "gpt-5.4-2026-03-05" | "gpt-5.4-pro" | "gpt-5.4-pro-2026-03-05" => 1_050_000,
         "gpt-5.4-mini" | "gpt-5.4-mini-2026-03-05" => 400_000,
@@ -180,17 +181,14 @@ pub fn model_context_window(model: &str) -> u32 {
         // OpenAI Codex
         "codex-mini-latest" => 200_000,
 
-        // Anthropic Claude 4.x
-        // Opus 4.8 and 4.7 default to 1M context. Most other Claude 4.x
-        // models default to 200K; selected models can reach 1M only when the
-        // context-1m-2025-08-07 beta header is enabled.
-        "claude-opus-4-8" => 1_000_000,
-        "claude-opus-4-7" => 1_000_000,
-        "claude-opus-4-6" => 200_000,
+        // Anthropic current models with a default 1M context window.
+        "claude-fable-5" | "claude-mythos-5" | "claude-sonnet-5" => 1_000_000,
+        "claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-4-6" => 1_000_000,
+        "claude-sonnet-4-6" => 1_000_000,
+        // Other Claude 4.x models default to 200K.
         "claude-opus-4-5" | "claude-opus-4-5-20251101" => 200_000,
         "claude-opus-4-1" | "claude-opus-4-1-20250805" => 200_000,
         "claude-opus-4-0" | "claude-opus-4-20250514" => 200_000,
-        "claude-sonnet-4-6" => 200_000,
         "claude-sonnet-4-5" | "claude-sonnet-4-5-20250929" => 200_000,
         "claude-sonnet-4-0" | "claude-sonnet-4-20250514" => 200_000,
         "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => 200_000,
@@ -222,12 +220,23 @@ pub fn model_context_window(model: &str) -> u32 {
         "deepseek-chat" | "deepseek-reasoner" => 128_000,
 
         // Zhipu GLM
+        "glm-5.2" | "glm-5.2-fast-preview" => 1_000_000,
         "glm-5.1" | "glm-5" | "glm-5-turbo" => 200_000,
         "glm-4-long" => 1_000_000,
 
         // Moonshot / Kimi
-        "kimi-k2.6" | "kimi-k2.5" | "kimi-k2-thinking" | "kimi-k2" => 256_000,
+        "kimi-k2.7-code" | "kimi-k2.6" | "kimi-k2.5" | "kimi-k2-thinking" | "kimi-k2" => 256_000,
         "kimi-latest" => 128_000,
+
+        // MiniMax
+        "minimax-m3" => 1_000_000,
+        "minimax-m2.7"
+        | "minimax-m2.7-highspeed"
+        | "minimax-m2.5"
+        | "minimax-m2.5-highspeed"
+        | "minimax-m2.1"
+        | "minimax-m2.1-highspeed"
+        | "minimax-m2" => 204_800,
 
         // Doubao
         "doubao-seed-1-6-251015"
@@ -246,6 +255,7 @@ pub fn model_context_window(model: &str) -> u32 {
         | "baichuan4-turbo" | "baichuan4" => 32_000,
 
         // xAI Grok
+        "grok-4.5" => 500_000,
         "grok-4.3" => 1_000_000,
         "grok-4" | "grok-4-0709" => 256_000,
         "grok-4-1-fast" | "grok-4-1-fast-reasoning" | "grok-4-1-fast-non-reasoning" => 2_000_000,
@@ -341,7 +351,7 @@ fn prefix_model_context_window(m: &str) -> u32 {
 
     match m {
         // OpenAI
-        _ if m.starts_with("gpt-5.5") => 1_050_000,
+        _ if m.starts_with("gpt-5.6") || m.starts_with("gpt-5.5") => 1_050_000,
         _ if m.starts_with("gpt-5.4-mini") || m.starts_with("gpt-5.4-nano") => 400_000,
         _ if m.starts_with("gpt-5.4") => 1_050_000,
         _ if m.starts_with("gpt-5") => 400_000,
@@ -354,6 +364,12 @@ fn prefix_model_context_window(m: &str) -> u32 {
         _ if m.starts_with("codex") => 200_000,
 
         // Anthropic
+        _ if m.starts_with("claude-fable-5")
+            || m.starts_with("claude-mythos-5")
+            || m.starts_with("claude-sonnet-5") =>
+        {
+            1_000_000
+        }
         _ if m.contains("claude") => 200_000,
 
         // Google
@@ -364,6 +380,7 @@ fn prefix_model_context_window(m: &str) -> u32 {
         _ if m.contains("deepseek") => 128_000,
 
         // xAI Grok
+        _ if m.starts_with("grok-4.5") => 500_000,
         _ if m.starts_with("grok-4.3") => 1_000_000,
         _ if m.starts_with("grok-4-1-fast") || m.starts_with("grok-4-fast") => 2_000_000,
         _ if m.starts_with("grok-code-fast") => 256_000,
@@ -381,11 +398,16 @@ fn prefix_model_context_window(m: &str) -> u32 {
         _ if m.contains("llama") => 128_000,
 
         // Zhipu GLM
+        _ if m.starts_with("glm-5.2") => 1_000_000,
         _ if m.contains("glm") => 128_000,
 
         // Moonshot / Kimi
         _ if m.contains("kimi-k2") => 256_000,
         _ if m.contains("kimi") || m.contains("moonshot") => 128_000,
+
+        // MiniMax
+        _ if m.starts_with("minimax-m3") => 1_000_000,
+        _ if m.starts_with("minimax-m2") => 204_800,
 
         // Qwen
         _ if m.starts_with("qwen3.7-plus") => 1_000_000,
@@ -588,6 +610,8 @@ mod tests {
     #[test]
     fn test_model_context_window_exact_match() {
         // OpenAI GPT-5
+        assert_eq!(model_context_window("gpt-5.6"), 1_050_000);
+        assert_eq!(model_context_window("gpt-5.6-sol"), 1_050_000);
         assert_eq!(model_context_window("gpt-5.5"), 1_050_000);
         assert_eq!(model_context_window("gpt-5.5-pro"), 1_050_000);
         assert_eq!(model_context_window("gpt-5.4"), 1_050_000);
@@ -619,10 +643,12 @@ mod tests {
         assert_eq!(model_context_window("o4-mini"), 200_000);
         assert_eq!(model_context_window("codex-mini-latest"), 200_000);
         // Anthropic
+        assert_eq!(model_context_window("claude-fable-5"), 1_000_000);
+        assert_eq!(model_context_window("claude-sonnet-5"), 1_000_000);
         assert_eq!(model_context_window("claude-opus-4-8"), 1_000_000);
         assert_eq!(model_context_window("claude-opus-4-7"), 1_000_000);
-        assert_eq!(model_context_window("claude-opus-4-6"), 200_000);
-        assert_eq!(model_context_window("claude-sonnet-4-6"), 200_000);
+        assert_eq!(model_context_window("claude-opus-4-6"), 1_000_000);
+        assert_eq!(model_context_window("claude-sonnet-4-6"), 1_000_000);
         assert_eq!(model_context_window("claude-opus-4-5"), 200_000);
         assert_eq!(model_context_window("claude-sonnet-4-5-20250929"), 200_000);
         assert_eq!(model_context_window("claude-haiku-4-5"), 200_000);
@@ -638,15 +664,20 @@ mod tests {
         assert_eq!(model_context_window("gemini-1.5-pro"), 2_097_152);
         assert_eq!(model_context_window("gemini-1.5-flash"), 1_048_576);
         // Zhipu GLM
+        assert_eq!(model_context_window("glm-5.2"), 1_000_000);
         assert_eq!(model_context_window("glm-5.1"), 200_000);
         assert_eq!(model_context_window("glm-5"), 200_000);
         assert_eq!(model_context_window("glm-4-long"), 1_000_000);
         // Moonshot / Kimi
+        assert_eq!(model_context_window("kimi-k2.7-code"), 256_000);
         assert_eq!(model_context_window("kimi-k2.6"), 256_000);
         assert_eq!(model_context_window("kimi-k2.5"), 256_000);
         assert_eq!(model_context_window("kimi-k2-thinking"), 256_000);
         assert_eq!(model_context_window("kimi-k2"), 256_000);
         assert_eq!(model_context_window("kimi-latest"), 128_000);
+        // MiniMax
+        assert_eq!(model_context_window("MiniMax-M3"), 1_000_000);
+        assert_eq!(model_context_window("MiniMax-M2.7"), 204_800);
         // DeepSeek
         assert_eq!(model_context_window("deepseek-v4-pro"), 1_000_000);
         assert_eq!(model_context_window("deepseek-v4-flash"), 1_000_000);
@@ -690,6 +721,7 @@ mod tests {
         assert_eq!(model_context_window("Baichuan4-Turbo"), 32_000);
         assert_eq!(model_context_window("Baichuan4"), 32_000);
         // xAI Grok
+        assert_eq!(model_context_window("grok-4.5"), 500_000);
         assert_eq!(model_context_window("grok-4.3"), 1_000_000);
         assert_eq!(model_context_window("grok-4"), 256_000);
         assert_eq!(model_context_window("grok-4-1-fast-reasoning"), 2_000_000);
@@ -711,6 +743,7 @@ mod tests {
         // These hit prefix/substring matching, not exact match
         assert_eq!(model_context_window("gpt-5-future"), 400_000);
         assert_eq!(model_context_window("gpt-5.5-chat-latest"), 1_050_000);
+        assert_eq!(model_context_window("gpt-5.6-latest"), 1_050_000);
         assert_eq!(model_context_window("gpt-5.4-chat-latest"), 1_050_000);
         assert_eq!(model_context_window("gpt-5.4-mini-latest"), 400_000);
         assert_eq!(model_context_window("gpt-5.4-nano-latest"), 400_000);
@@ -729,6 +762,7 @@ mod tests {
         assert_eq!(model_context_window("qwen3-max-latest"), 262_144);
         assert_eq!(model_context_window("qwen3-vl-flash-2026-01-22"), 258_048);
         assert_eq!(model_context_window("grok-4.3-latest"), 1_000_000);
+        assert_eq!(model_context_window("grok-4.5-latest"), 500_000);
         assert_eq!(model_context_window("grok-4-future"), 256_000);
         assert_eq!(model_context_window("grok-4-fast-anything"), 2_000_000);
         assert_eq!(model_context_window("grok-3-beta"), 131_072);
@@ -744,7 +778,7 @@ mod tests {
     fn test_model_context_window_case_insensitive() {
         assert_eq!(model_context_window("GPT-5.5"), 1_050_000);
         assert_eq!(model_context_window("GPT-5.4"), 1_050_000);
-        assert_eq!(model_context_window("Claude-Opus-4-6"), 200_000);
+        assert_eq!(model_context_window("Claude-Opus-4-6"), 1_000_000);
         assert_eq!(model_context_window("GEMINI-2.5-PRO"), 1_048_576);
     }
 
