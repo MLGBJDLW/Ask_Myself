@@ -219,16 +219,16 @@ export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
 
   return (
     <div
-      className={`pointer-events-auto ml-auto border border-border/70 bg-surface-1/90 shadow-lg shadow-black/10 backdrop-blur-xl transition-[border-radius,width] ${
-        open ? 'w-full rounded-2xl px-2.5 py-2' : 'w-fit max-w-full rounded-full px-1.5 py-1'
-      }`}
+      className="pointer-events-auto relative ml-auto h-10 w-full"
+      data-open={open}
     >
       <button
         type="button"
-        className={`flex w-full items-center text-left transition-colors hover:bg-surface-2/70 ${
-          open ? 'gap-2 rounded-xl px-1 py-1' : 'gap-1.5 rounded-full px-1.5 py-1'
-        }`}
+        data-testid="task-board-collapsed"
+        className="chat-plan-capsule-collapsed ml-auto flex max-w-full items-center gap-1.5 rounded-full border border-border/70 bg-surface-1 px-3 py-2 text-left shadow-lg shadow-black/10 hover:bg-surface-2"
         aria-expanded={open}
+        aria-hidden={open}
+        tabIndex={open ? -1 : 0}
         onClick={() => setOpen((value) => !value)}
       >
         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-accent/20 bg-accent/10">
@@ -239,22 +239,12 @@ export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
             <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-accent">
               {t('chat.planLabel')}
             </span>
-            {!open && current?.title && (
+            {current?.title && (
               <span className="max-w-44 truncate text-xs font-medium text-text-primary">
                 {current.title}
               </span>
             )}
           </div>
-          {open && (
-            <>
-              <div className="mt-0.5 truncate text-xs font-semibold text-text-primary">
-                {current?.title ?? plan.title ?? ''}
-              </div>
-              {current?.notes && (
-                <div className="mt-0.5 truncate text-[11px] text-text-tertiary">{current.notes}</div>
-              )}
-            </>
-          )}
         </div>
         <span
           data-testid="task-board-progress"
@@ -264,21 +254,53 @@ export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
         </span>
         <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && (
-        <>
-          <div className="mx-1 mt-1 h-1 rounded-full bg-surface-0">
-            <div
-              className="h-full rounded-full bg-accent transition-[width] duration-300"
-              style={{ width: `${percent}%` }}
-            />
+
+      <div
+        data-testid="task-board-expanded"
+        className="chat-plan-capsule-expanded absolute right-0 top-0 w-full rounded-2xl border border-border/70 bg-surface-1 px-2.5 py-2 shadow-lg shadow-black/10"
+        aria-hidden={!open}
+      >
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left transition-colors hover:bg-surface-2/70"
+          aria-expanded={open}
+          tabIndex={open ? 0 : -1}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-accent/20 bg-accent/10">
+            {currentIcon}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-accent">
+                {t('chat.planLabel')}
+              </span>
+            </div>
+            <div className="mt-0.5 truncate text-xs font-semibold text-text-primary">
+              {current?.title ?? plan.title ?? ''}
+            </div>
+            {current?.notes && (
+              <div className="mt-0.5 truncate text-[11px] text-text-tertiary">{current.notes}</div>
+            )}
           </div>
-          <ol className="mt-2 max-h-40 space-y-1 overflow-y-auto px-1 pr-1.5">
-            {plan.steps.map((step, index) => (
-              <PlanProgressStepRow key={step.id || `${step.title}-${index}`} step={step} />
-            ))}
-          </ol>
-        </>
-      )}
+          <span className="shrink-0 text-[11px] tabular-nums text-text-tertiary">
+            {counts.completed}/{counts.total}
+          </span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 rotate-180 text-text-tertiary transition-transform" />
+        </button>
+
+        <div className="mx-1 mt-1 h-1 rounded-full bg-surface-0">
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-300"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+        <ol className="mt-2 max-h-40 space-y-1 overflow-y-auto px-1 pr-1.5">
+          {plan.steps.map((step, index) => (
+            <PlanProgressStepRow key={step.id || `${step.title}-${index}`} step={step} />
+          ))}
+        </ol>
+      </div>
     </div>
   );
 }
