@@ -19,6 +19,7 @@ import {
 import {
   buildCurrentTimelineSections,
   buildLiveTraceTimeline,
+  persistedTraceItemToTimelineSections,
   shouldHideTraceStatus,
   shouldRenderTraceToolCall,
   skillNamesFromTraceItems,
@@ -1932,6 +1933,20 @@ test('timeline view model keeps completed rounds when steering adds a new status
   assert(section.kind === 'steering', 'steering status gets a dedicated section');
   assertEqual(section.text, 'focus on edge cases instead', 'steering text is preserved');
   assertEqual(round.reply, 'Partial answer before steering.', 'completed round reply is preserved separately');
+});
+
+test('persisted trace replay omits completed steering controls', () => {
+  const sections = persistedTraceItemToTimelineSections({
+    item: {
+      kind: 'status',
+      text: 'User steering: focus on edge cases instead',
+      tone: 'muted',
+    },
+    id: 'persisted-steering-status',
+    trace: true,
+  });
+
+  assertEqual(sections.length, 0, 'completed steering is not replayed from persisted trace');
 });
 
 test('watchdog arms, fires, and clears timeout handles', async () => {

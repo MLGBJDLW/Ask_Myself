@@ -48,34 +48,6 @@ export function hasPersistedResultAfterLatestUserMessage(
     .some(message => message.role === 'assistant' || message.role === 'tool');
 }
 
-function latestNormalUserMessageIndex(messages: ConversationMessage[]): number {
-  for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
-    if (isNormalUserTurnMessage(messages[idx])) return idx;
-  }
-  return -1;
-}
-
-function projectCompletedHistoryMessages(
-  messages: ConversationMessage[],
-): ConversationMessage[] {
-  const lastUserIdx = latestNormalUserMessageIndex(messages);
-  if (lastUserIdx < 0) {
-    return messages.filter(message => !isOptimisticSteeringMessage(message));
-  }
-
-  const beforeTurnResult = messages.slice(0, lastUserIdx + 1);
-  const afterLatestUser = messages.slice(lastUserIdx + 1);
-  const persistedSteering = afterLatestUser.filter(
-    message => isSteeringMessage(message) && !isOptimisticSteeringMessage(message),
-  );
-  const nonSteeringResults = afterLatestUser.filter(message => !isSteeringMessage(message));
-  return [
-    ...beforeTurnResult,
-    ...persistedSteering,
-    ...nonSteeringResults,
-  ];
-}
-
 /**
  * ChatMessages renders live trace and completed stream rounds through two
  * separate paths. The live trace path intentionally trims events that have
@@ -112,49 +84,21 @@ export function projectChatStreamingVisibility(
 }
 
 /**
- * Optimistic steering messages are real user messages, but while a turn is
- * still live the assistant's current reply/thinking/tool output is not in the
- * persisted message list yet. Rendering temporary steering inside the history
- * list therefore places it right after the turn's first user message and before
- * the live trace overlay. Keep temporary steering out of the history path and
- * let the backend-emitted steering status appear inside the trace timeline at
- * the actual interruption point.
+ * Steering is an in-turn control signal rather than a new conversation turn.
+ * While streaming, the backend-emitted status renders it at the actual point
+ * where it was applied. Once streaming stops, both optimistic and persisted
+ * steering rows must stay out of history. This invariant deliberately does not
+ * depend on the assistant result having reloaded yet: `done` can flip the live
+ * state before persistence catches up, which previously made steering flash at
+ * the end of the turn and disappear again on the next send.
  */
 export function projectChatMessageVisibility(
   input: ChatMessageVisibilityInput,
 ): ChatMessageVisibilityProjection {
-  const liveSteeringMessages = input.messages.filter(isOptimisticSteeringMessage);
-  const hasCompletedResult = hasPersistedResultAfterLatestUserMessage(input.messages);
-  if (hasCompletedResult && !input.isStreaming) {
-    return {
-      historyMessages: projectCompletedHistoryMessages(input.messages),
-      liveSteeringMessages: [],
-    };
-  }
-
-  const shouldHideSteeringFromHistory = input.isStreaming;
-  if (!shouldHideSteeringFromHistory && liveSteeringMessages.length === 0) {
-    return {
-      historyMessages: input.messages,
-      liveSteeringMessages: [],
-    };
-  }
-
-  const historyMessages = input.messages.filter((message) => (
-    shouldHideSteeringFromHistory
-      ? !isSteeringMessage(message)
-      : !isOptimisticSteeringMessage(message)
-  ));
-
-  if (!input.isStreaming) {
-    return {
-      historyMessages,
-      liveSteeringMessages: [],
-    };
-  }
-
   return {
-    historyMessages,
-    liveSteeringMessages,
+    historyMessages: input.messages.filter(message => !isSteeringMessage(message)),
+    liveSteeringMessages: input.isStreaming
+      ? input.messages.filter(isOptimisticSteeringMessage)
+      : [],
   };
 }

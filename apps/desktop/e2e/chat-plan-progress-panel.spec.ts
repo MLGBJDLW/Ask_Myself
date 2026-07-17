@@ -777,26 +777,46 @@ test('floating plan capsule renders only the update_plan checklist', async ({ pa
   await page.goto('/chat/conv-plan-progress');
 
   const board = page.getByTestId('task-board');
+  const collapsed = board.getByTestId('task-board-collapsed');
+  const expanded = board.getByTestId('task-board-expanded');
   await expect(board).toBeVisible();
   await expect(board).toHaveCSS('position', 'absolute');
-  await expect(board.getByRole('button')).toHaveAttribute('aria-expanded', 'false');
-  await expect(board).toContainText('Plan');
-  await expect(board.getByTestId('task-board-progress')).toHaveText('1/3');
-  await expect(board).toContainText('Apply change');
-  await expect(board).not.toContainText('Verify result');
+  await expect(collapsed).toBeVisible();
+  await expect(collapsed).toHaveAttribute('aria-expanded', 'false');
+  await expect(expanded).toBeHidden();
+  await expect(collapsed).toContainText('Plan');
+  await expect(collapsed.getByTestId('task-board-progress')).toHaveText('1/3');
+  await expect(collapsed).toContainText('Apply change');
 
-  await board.getByRole('button').click();
-  await expect(board.getByRole('button')).toHaveAttribute('aria-expanded', 'true');
-  await expect(board).toContainText('Inspect context');
-  await expect(board).toContainText('Apply change');
-  await expect(board).toContainText('Verify result');
+  const stableWidth = (await board.boundingBox())?.width;
+  const transitionProperties = await expanded.evaluate((element) =>
+    getComputedStyle(element).transitionProperty,
+  );
+  expect(transitionProperties).toContain('transform');
+  expect(transitionProperties).toContain('opacity');
+  expect(transitionProperties).not.toContain('width');
+  expect(transitionProperties).not.toContain('border-radius');
 
-  await expect(board).not.toContainText('Work Tracker');
-  await expect(board).not.toContainText('Progress');
-  await expect(board).not.toContainText('Detailed execution plan');
-  await expect(board).not.toContainText('Only the live checklist progress should be visible here.');
-  await expect(board).not.toContainText('Subagent result that should not render');
-  await expect(board).not.toContainText('Verification summary that should not render');
+  await collapsed.click();
+  await expect(expanded).toBeVisible();
+  await expect(expanded.getByRole('button')).toHaveAttribute('aria-expanded', 'true');
+  await expect(expanded).toContainText('Inspect context');
+  await expect(expanded).toContainText('Apply change');
+  await expect(expanded).toContainText('Verify result');
+  expect((await board.boundingBox())?.width).toBe(stableWidth);
+
+  await expect(expanded).not.toContainText('Work Tracker');
+  await expect(expanded).not.toContainText('Progress');
+  await expect(expanded).not.toContainText('Detailed execution plan');
+  await expect(expanded).not.toContainText('Only the live checklist progress should be visible here.');
+  await expect(expanded).not.toContainText('Subagent result that should not render');
+  await expect(expanded).not.toContainText('Verification summary that should not render');
+
+  await expanded.getByRole('button').click();
+  await expect(collapsed).toBeVisible();
+  await expect(collapsed).toHaveAttribute('aria-expanded', 'false');
+  await expect(expanded).toBeHidden();
+  expect((await board.boundingBox())?.width).toBe(stableWidth);
 });
 
 test('lower plan progress panel ignores automatic task run plans', async ({ page }) => {

@@ -26,7 +26,8 @@ test.beforeEach(async ({ page }) => {
 
     const conversation = {
       id: 'conv-steering',
-      title: 'Steering test',
+      title: 'Initial broad answer',
+      titleIsAuto: true,
       provider: 'open_ai',
       model: 'gpt-4.1',
       systemPrompt: '',
@@ -44,6 +45,7 @@ test.beforeEach(async ({ page }) => {
       stopCalls: 0,
       chatMessages: [] as string[],
       steerCalls: [] as Array<{ conversationId: string; message: string }>,
+      titleCalls: [] as string[],
     };
 
     const callbackMap = new Map<number, (event: unknown) => void>();
@@ -248,6 +250,12 @@ test.beforeEach(async ({ page }) => {
         case 'compact_conversation_cmd':
         case 'save_agent_config_cmd':
           return null;
+        case 'generate_title_cmd': {
+          const conversationId = String(args.conversationId ?? '');
+          diagnostics.titleCalls.push(conversationId);
+          conversation.title = 'Focused edge case analysis';
+          return conversation.title;
+        }
         case 'agent_stop_cmd':
           diagnostics.stopCalls += 1;
           return null;
@@ -290,7 +298,7 @@ test.beforeEach(async ({ page }) => {
               type: 'textDelta',
               delta: 'Adjusted answer after steering.',
             });
-          }, 35);
+          }, 800);
           setTimeout(() => {
             const assistantMessage: Message = {
               id: nextId('m-assistant'),
@@ -321,7 +329,7 @@ test.beforeEach(async ({ page }) => {
               finishReason: 'stop',
               cached: false,
             });
-          }, 70);
+          }, 1_200);
           return null;
         }
         default:
@@ -437,36 +445,17 @@ test('sends steering while an agent stream is running without stopping it', asyn
   await expect(page.getByText('Steering', { exact: true })).toBeVisible();
   await expect(page.getByText('focus on edge cases instead')).toBeVisible();
   await expect(page.getByText('Adjusted answer after steering.')).toBeVisible();
+  await expect(page.getByText('Focused edge case analysis', { exact: true })).toBeVisible();
   await expect(page.getByTestId('task-board')).toHaveCount(0);
-  await expect
-    .poll(async () =>
-      page.locator('body').evaluate((body) => {
-        const text = body.innerText;
-        return (
-          text.indexOf('focus on edge cases instead') >= 0 &&
-          text.indexOf('Adjusted answer after steering.') >= 0 &&
-          text.indexOf('focus on edge cases instead') <
-            text.indexOf('Adjusted answer after steering.')
-        );
-      }),
-    )
-    .toBe(true);
-
-  await expect
-    .poll(async () =>
-      page.locator('body').evaluate((body) => {
-        const text = body.innerText;
-        const matches = text.match(/focus on edge cases instead/g) ?? [];
-        return matches.length;
-      }),
-    )
-    .toBe(1);
+  await expect(page.getByText('focus on edge cases instead')).toHaveCount(0);
+  await expect(page.getByText('Steering', { exact: true })).toHaveCount(0);
 
   const diagnostics = await page.evaluate(() => (window as unknown as {
     __STEERING_E2E__: {
       chatCalls: number;
       stopCalls: number;
       steerCalls: Array<{ conversationId: string; message: string }>;
+      titleCalls: string[];
     };
   }).__STEERING_E2E__);
 
@@ -475,4 +464,5 @@ test('sends steering while an agent stream is running without stopping it', asyn
   expect(diagnostics.steerCalls).toEqual([
     { conversationId: 'conv-steering', message: 'focus on edge cases instead' },
   ]);
+  expect(diagnostics.titleCalls).toEqual(['conv-steering']);
 });

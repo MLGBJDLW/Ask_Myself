@@ -605,6 +605,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const recordedUsageSampleRef = useRef<string | null>(null);
   const pendingStreamConversationRef = useRef<string | null>(null);
   const streamingConversationRef = useRef<string | null>(null);
+  const autoTitleInFlightRef = useRef<Set<string>>(new Set());
   const systemPromptCacheRef = useRef<Record<string, string>>({});
   const contextWindowCacheRef = useRef<Record<string, number>>({});
   const agentConfigsRef = useRef<AgentConfig[]>([]);
@@ -998,7 +999,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         recordUsageCacheSampleForConversation(completedConversationId, completedUsage);
       }
       // Re-fetch messages after agent is done.
-      Promise.all([
+      const refreshConversationPromise = Promise.all([
         api.getConversation(completedConversationId),
         api.getConversationTurns(completedConversationId),
         api.getAgentTaskRuns(completedConversationId),
@@ -1034,38 +1035,47 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         console.error('Failed to refresh messages after streaming:', e);
       });
       // Also refresh conversation list (updatedAt changes)
-      loadConversations();
+      const refreshListPromise = loadConversations();
 
-      // Auto-title: request LLM-generated title. Show a truncated placeholder
-      // in local React state for responsiveness, but do NOT persist it — the
-      // DB stays empty until generateTitle() returns, and `loadConversations()`
-      // picks up the final LLM title.
+      // Auto-title runs after every completed turn while the title remains
+      // auto-managed. This lets the opening placeholder mature as the topic
+      // becomes clearer. The backend atomically refuses to overwrite a manual
+      // rename that happens while generation is in flight.
       const conv = conversationsRef.current.find((c) => c.id === completedConversationId);
-      if (conv && !conv.title) {
+      if (
+        conv
+        && conv.titleIsAuto !== false
+        && !autoTitleInFlightRef.current.has(completedConversationId)
+      ) {
         const firstUserMsg = (messageCacheRef.current[completedConversationId] ?? []).find((m) => m.role === 'user');
-        if (firstUserMsg) {
+        if (!conv.title && firstUserMsg) {
           const placeholder = generateTitle(firstUserMsg.content);
           if (placeholder && !cancelled) {
-            // Optimistic UI only — purely local state, not persisted.
             setConversations((prev) =>
               prev.map((c) => (c.id === completedConversationId ? { ...c, title: placeholder } : c)),
             );
           }
-          // Request LLM-generated title in background; DB is written once here.
-          api.generateTitle(completedConversationId)
-            .then((llmTitle) => {
-              if (!cancelled && llmTitle) {
-                setConversations((prev) =>
-                  prev.map((c) => (c.id === completedConversationId ? { ...c, title: llmTitle } : c)),
-                );
-              }
-            })
-            .catch((e) => {
-              // LLM title failed; placeholder remains in local state only.
-              console.error('LLM title generation failed, keeping placeholder:', e);
-              toast.warning(t('chat.smartTitleGenerationFailed', { message: String(e) }));
-            });
         }
+        autoTitleInFlightRef.current.add(completedConversationId);
+        // Both refresh paths can carry the pre-generation title. Wait for them
+        // before generating so a late stale response cannot overwrite the new
+        // title in local state.
+        Promise.allSettled([refreshConversationPromise, refreshListPromise])
+          .then(() => api.generateTitle(completedConversationId))
+          .then((llmTitle) => {
+            if (llmTitle) {
+              setConversations((prev) =>
+                prev.map((c) => (c.id === completedConversationId ? { ...c, title: llmTitle } : c)),
+              );
+            }
+          })
+          .catch((e) => {
+            console.error('Automatic title generation failed:', e);
+            toast.warning(t('chat.smartTitleGenerationFailed', { message: String(e) }));
+          })
+          .finally(() => {
+            autoTitleInFlightRef.current.delete(completedConversationId);
+          });
       }
     }
     return () => { cancelled = true; };
@@ -1238,7 +1248,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       try {
         await api.renameConversation(id, title);
         setConversations((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, title } : c)),
+          prev.map((c) => (c.id === id ? { ...c, title, titleIsAuto: false } : c)),
         );
       } catch (e) {
         toast.error(formatUserError(t('chat.renameError'), e));

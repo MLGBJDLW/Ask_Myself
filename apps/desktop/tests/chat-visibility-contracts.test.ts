@@ -198,7 +198,7 @@ test('live optimistic steering is projected out of history while streaming', () 
   assertEqual(projected.liveSteeringMessages[0].id, 'temp-steer-1', 'live steering id');
 });
 
-test('persisted steering is placed before the completed assistant result', () => {
+test('persisted steering stays hidden after the assistant result completes', () => {
   const firstUser = message({
     id: 'user-1',
     role: 'user',
@@ -224,10 +224,34 @@ test('persisted steering is placed before the completed assistant result', () =>
     messages,
   });
 
-  assertEqual(projected.historyMessages.length, 3, 'history count');
+  assertEqual(projected.historyMessages.length, 2, 'history count');
   assertEqual(projected.historyMessages[0].id, 'user-1', 'first user remains');
-  assertEqual(projected.historyMessages[1].id, 'steer-persisted-1', 'steering moves before assistant');
-  assertEqual(projected.historyMessages[2].id, 'assistant-1', 'assistant remains after steering');
+  assertEqual(projected.historyMessages[1].id, 'assistant-1', 'assistant remains');
+  assertEqual(projected.liveSteeringMessages.length, 0, 'live steering count');
+});
+
+test('persisted steering stays hidden during the done-to-reload gap', () => {
+  const firstUser = message({
+    id: 'user-1',
+    role: 'user',
+    content: 'Start the turn',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+  const steering = message({
+    id: 'steer-persisted-1',
+    role: 'user',
+    content: 'Please redirect the investigation here.',
+    createdAt: '2026-01-01T00:00:05.000Z',
+    artifacts: { kind: 'steering' },
+  });
+
+  const projected = projectChatMessageVisibility({
+    isStreaming: false,
+    messages: [firstUser, steering],
+  });
+
+  assertEqual(projected.historyMessages.length, 1, 'history count');
+  assertEqual(projected.historyMessages[0].id, 'user-1', 'first user remains');
   assertEqual(projected.liveSteeringMessages.length, 0, 'live steering count');
 });
 

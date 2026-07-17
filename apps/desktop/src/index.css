@@ -456,6 +456,64 @@ body {
   animation: none;
 }
 
+/* Keep the floating plan board's geometry stable. The previous fit-content ↔
+   full-width transition forced layout and backdrop-filter repainting on every
+   frame, while its detail rows mounted or unmounted in the same update. */
+.chat-plan-capsule-collapsed,
+.chat-plan-capsule-expanded {
+  transform-origin: top right;
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+}
+
+.chat-plan-capsule-collapsed {
+  visibility: visible;
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition:
+    opacity 100ms ease 35ms,
+    transform 140ms cubic-bezier(0.16, 1, 0.3, 1) 35ms,
+    visibility 0s linear 0s;
+}
+
+[data-open='true'] > .chat-plan-capsule-collapsed {
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transform: translate3d(0, -1px, 0) scale(0.97);
+  transition:
+    opacity 80ms ease,
+    transform 120ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 120ms;
+}
+
+.chat-plan-capsule-expanded {
+  contain: layout style;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transform: translate3d(0, -3px, 0) scale(0.985);
+  transition:
+    opacity 110ms ease,
+    transform 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 150ms;
+}
+
+[data-open='true'] > .chat-plan-capsule-expanded {
+  pointer-events: auto;
+  visibility: visible;
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition-delay: 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-plan-capsule-collapsed,
+  .chat-plan-capsule-expanded {
+    transition: none;
+  }
+}
+
 .chat-compact-status-line {
   display: flex;
   width: min(100%, 34rem);

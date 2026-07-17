@@ -477,7 +477,10 @@ export function persistedTraceItemToTimelineSections(input: {
       {
         const steeringText = steeringTextFromTraceStatus(item.text);
         if (steeringText) {
-          return [{ kind: 'steering', id, text: steeringText }];
+          // Steering is useful only while the turn is live. Persisted trace
+          // replays otherwise make the same control message reappear after the
+          // turn has completed.
+          return [];
         }
       }
       if (shouldHideTraceStatus(item.text)) return [];
